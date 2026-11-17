@@ -344,7 +344,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	// The guard's settings reach an accepted issue-pod launcher on the answer to its hello
 	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "run no guard", so a
 	// deployment that turned runtime.kubernetes.memory_guard.issue_pods off and a daemon built
-	// before the guard write the same ack (shimwire.LauncherHelloAck.MemoryGuard, INFRA-3557).
+	// before the guard write the same ack (shimwire.LauncherHelloAck.MemoryGuard, POMJU-3557).
 	var memoryGuard *shimwire.LauncherMemoryGuard
 	if g := k.MemoryGuard.IssuePods; g.Enabled {
 		memoryGuard = &shimwire.LauncherMemoryGuard{
@@ -664,7 +664,7 @@ func memoryGuardKillEventID(report shimwire.LauncherMemoryKill) string {
 // That last one once fell back to the owner's own write token, since a request naming a
 // repository the installation did not reach was refused with the same 422 as a permission it
 // was not granted, and a pod that could not clone was worth a wider token. No request names a
-// repository any longer (INFRA-2543), so the owner's write token now reaches every repository of
+// repository any longer (POMJU-2543), so the owner's write token now reaches every repository of
 // the owner's installation: a fallback would answer a refused reading lease with the widest
 // credential the daemon holds, handed to the process that provisions a pod. A refused reading
 // lease fails the mint instead.
@@ -726,7 +726,7 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 
 // leakCheckToken mints the token the shared public leak check is read with: the implement App's
 // read lease on the check's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
-// tarball read needs). No request names a repository any longer (INFRA-2543), so the lease reaches
+// tarball read needs). No request names a repository any longer (POMJU-2543), so the lease reaches
 // every repository that owner's installation holds and the reading permissions are the whole of
 // what keeps it from writing. It mints nothing else: an installation the account has not granted
 // those permissions is refused, with no wider token in its place, since the owner's own write

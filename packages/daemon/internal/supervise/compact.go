@@ -11,7 +11,7 @@ import (
 
 // A claim whose session a provider keeps refusing is compacted rather than started again: the
 // session, its workspace and everything it knows stay, and what goes is the length of the
-// transcript the provider is being asked to read (dispatch://INFRA-956 R3). `legion claims
+// transcript the provider is being asked to read (dispatch://POMJU-956 R3). `legion claims
 // compact` and the controller's own compact both run it (api's compact), and this file is the
 // machine's half: taking the claim, asking Oh My Pi, and giving the claim back with its owed
 // task sent again.
@@ -358,7 +358,7 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // It is turnEnded's shape, for the same reason: the claim was working, nothing of it is working
 // now, and what was held for that is owed now — the suspension an operator asked for while the
 // compaction ran, and the task the claim owes, which goes again whether the compaction ran or was
-// refused (dispatch://INFRA-956 R3). A claim that owes none is sent nothing.
+// refused (dispatch://POMJU-956 R3). A claim that owes none is sent nothing.
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, so the
 // project's controller can be told a second time if the compacted session's turns go the same

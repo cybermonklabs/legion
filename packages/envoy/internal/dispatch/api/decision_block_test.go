@@ -321,7 +321,7 @@ func assertDecisionBlockRefused(t *testing.T, request string, response *httptest
 // Every route that stores a comment, a message or a broadcast body refuses a decision block
 // written into it, wherever it stands in that body and whoever writes it: 400
 // DECISION_BLOCK_IN_BODY, worded once by itemblocks.DecisionBlock, the same text on every route
-// (INFRA-1201). Nothing is stored by a refusal: the issue's comments and messages, the spec's
+// (POMJU-1201). Nothing is stored by a refusal: the issue's comments and messages, the spec's
 // comments and its reviews, the session's messages and the broadcasts are counted before and
 // after each row, as a reader reads them and as rows of the store, and the edited comment's
 // body is read back byte for byte.
@@ -418,7 +418,7 @@ func TestACommentStoredWithADecisionBlockIsStillReadWholeAndIndexedAsAnAsk(t *te
 // nothing like, for a typed block it does not declare, for a line its reader and the browser's
 // read differently, and for nesting past a bound - each holding the same decision block, which
 // the browser reader draws its card for all the same: the reader draws a card for every `ask` its
-// own parser makes, whatever else in the body the server's parse refused (INFRA-1201). Each is
+// own parser makes, whatever else in the body the server's parse refused (POMJU-1201). Each is
 // named by what makes the parse refuse it, so a reader of a failure reads the class.
 var decisionRefusedParse = []struct{ name, body string }{
 	{name: "a link reference definition", body: theDecisionBlock + "\n\n[a]: http://x\n"},
@@ -439,7 +439,7 @@ func decisionAtTheTop() string { return decisionRefusal(1, "ask") }
 
 // A body the parser refuses is refused for its decision block too, in the same words and under
 // the same code: every write route answers one such body so, and the comment route answers one of
-// every class of refusal. Before INFRA-1201 each of these was stored while the browser drew its
+// every class of refusal. Before POMJU-1201 each of these was stored while the browser drew its
 // decision card in full, which is the silent failure the rule exists to stop. Nothing is stored by
 // these refusals either.
 func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
@@ -503,7 +503,7 @@ func TestACommentOfLoneCarriageReturnsIsStoredWithLineFeeds(t *testing.T) {
 // both branches are driven here: a review written with no request open, and one that answers an
 // open request. The same reason reaches artifact_reviews unchecked through the ask answer route
 // besides. So a reason holding a decision block is stored, read back whole, and draws a card on
-// the approval chip that nobody can answer, which this issue does not close (INFRA-1201).
+// the approval chip that nobody can answer, which this issue does not close (POMJU-1201).
 func TestAReviewReasonHoldingADecisionBlockIsStored(t *testing.T) {
 	f := newDecisionFixture(t)
 	before := f.stored(t)

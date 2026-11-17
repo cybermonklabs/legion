@@ -4,7 +4,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { procmgr } from "@oh-my-pi/pi-utils";
 
 /**
- * The `!command` a person can send one Oh My Pi session from Dispatch (R4 of dispatch://INFRA-812).
+ * The `!command` a person can send one Oh My Pi session from Dispatch (R4 of dispatch://POMJU-812).
  * A Send or an Aside whose first character is `!` is no prompt: the session runs the rest of it
  * and answers with what it printed. It runs under the host's own shell configuration, read from
  * the host itself (`procmgr.getShellConfig()`): its shell, the environment it builds for a child

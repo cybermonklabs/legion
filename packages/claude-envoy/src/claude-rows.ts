@@ -1,4 +1,4 @@
-// The rows Claude Code writes of its own bookkeeping, parsed (INFRA-1026).
+// The rows Claude Code writes of its own bookkeeping, parsed (POMJU-1026).
 //
 // One command a person runs writes three rows by the `command` door - the caveat, the echo of
 // what was typed, and the output - and two readers of this plugin parse them. The live view draws
@@ -113,7 +113,7 @@ export function claudeCommandOutput(content: readonly ModContentBlock[]): string
 /** Whether a row of the `command` door is Claude Code's bookkeeping of the command rather than
  *  anything a person wrote: the caveat it records before the command runs, and the command's own
  *  output, which published shows the person raw tags and a `/context` table in the agent's
- *  conversation (INFRA-1026). */
+ *  conversation (POMJU-1026). */
 export function isCommandBookkeeping(content: readonly ModContentBlock[]): boolean {
   const text = claudeRowText(content)
   return COMMAND_BOOKKEEPING_TAGS.some((tag) => text.startsWith(tag))
@@ -136,7 +136,7 @@ const PICTURE_ATTACHMENT_ROW = /^\[Image: source: \/[^\]]+\]$/
 
 /** Whether a row is that note of Claude Code's rather than anything a person wrote
  *  (`PICTURE_ATTACHMENT_ROW`), so the live view drops it as it drops a command's bookkeeping:
- *  drawn, it is a second user row for the one message the person sent (INFRA-1026). */
+ *  drawn, it is a second user row for the one message the person sent (POMJU-1026). */
 export function isPictureAttachmentRow(content: readonly ModContentBlock[]): boolean {
   return PICTURE_ATTACHMENT_ROW.test(claudeRowText(content).trim())
 }

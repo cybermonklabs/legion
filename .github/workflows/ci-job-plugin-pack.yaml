@@ -20,7 +20,7 @@ name: CI job plugin-pack
 # itself. They were tests of .github/workflows/ci-job-daemon-go.yaml's race step, which skips them
 # by name now: their reads are the whole reason that job's filter named the lockfile and skills/,
 # and a change to either then ran the daemon's entire Go suite, 1,083 s of tests that could not
-# see it (dispatch://INFRA-1413). With the tests here, a change to bun.lock or to one skill runs
+# see it (dispatch://POMJU-1413). With the tests here, a change to bun.lock or to one skill runs
 # them and no other daemon Go test.
 #
 # The tests' names are written in .github/scripts/ci_job_reads.py (PLUGIN_PACK_TESTS), which

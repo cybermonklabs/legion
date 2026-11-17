@@ -2,7 +2,7 @@
 // display tree was stored one, and the retention that keeps the text_trees table to the two
 // newest display parser versions (texttrees, migration 20261105121325).
 //
-// Every path that stores a text has stored that text's display tree beside it since INFRA-635
+// Every path that stores a text has stored that text's display tree beside it since POMJU-635
 // (api/text_trees.go, docs/ledger.go, architecture/importer.go), so a read of it copies the
 // stored bytes instead of reading the markdown again. Two sets of texts have no row even so: the
 // ones written before that change - 140,622 of them, holding 5.8 GB of markdown, when it shipped

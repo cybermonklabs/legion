@@ -32,7 +32,7 @@ func TestABundleOverTheReleasesBoundIsRefusedWithItsSize(t *testing.T) {
 	p.open(t)
 
 	// What this workspace bundles to, under a bound it fits: the save itself.
-	p.send(t, shimwire.BundleWorkspace{ID: "bundle-1", Issue: "INFRA-945", MaxBytes: 40 << 20, TimeoutMs: 120_000})
+	p.send(t, shimwire.BundleWorkspace{ID: "bundle-1", Issue: "POMJU-945", MaxBytes: 40 << 20, TimeoutMs: 120_000})
 	got, ok := p.next(t).(shimwire.BundleWorkspaceResult)
 	if !ok || !got.OK {
 		t.Fatalf("the shim answered %#v", got)
@@ -46,7 +46,7 @@ func TestABundleOverTheReleasesBoundIsRefusedWithItsSize(t *testing.T) {
 	}
 
 	// One byte under it: the save is built and then refused, with the size the daemon records.
-	p.send(t, shimwire.BundleWorkspace{ID: "bundle-2", Issue: "INFRA-945", MaxBytes: size - 1, TimeoutMs: 120_000})
+	p.send(t, shimwire.BundleWorkspace{ID: "bundle-2", Issue: "POMJU-945", MaxBytes: size - 1, TimeoutMs: 120_000})
 	got, ok = p.next(t).(shimwire.BundleWorkspaceResult)
 	if !ok {
 		t.Fatalf("the shim answered %#v", got)
@@ -86,7 +86,7 @@ func TestABundleOfNoWorkspaceIsRefusedByName(t *testing.T) {
 	run(t, cfg, newClock())
 	p := daemon.accept(t)
 	p.open(t)
-	p.send(t, shimwire.BundleWorkspace{ID: "bundle-3", Issue: "INFRA-945", MaxBytes: 40 << 20, TimeoutMs: 10_000})
+	p.send(t, shimwire.BundleWorkspace{ID: "bundle-3", Issue: "POMJU-945", MaxBytes: 40 << 20, TimeoutMs: 10_000})
 	got, ok := p.next(t).(shimwire.BundleWorkspaceResult)
 	if !ok || got.OK || !strings.Contains(got.Error, "LEGION_WORKSPACE") {
 		t.Fatalf("the shim answered %#v, want a refusal naming LEGION_WORKSPACE", got)

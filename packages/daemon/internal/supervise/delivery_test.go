@@ -169,7 +169,7 @@ func TestATaskGivenBeforeReadyWaitsForReady(t *testing.T) {
 // state: that task has reached nobody, so accepting over it would lose a task. The refusal is
 // ErrDeliveryPending, and it says so rather than naming the state.
 //
-// This test read StateWorking until dispatch://INFRA-714 — the state where the claim's own task
+// This test read StateWorking until dispatch://POMJU-714 — the state where the claim's own task
 // has been taken by a turn — and so pinned the refusal this change ends
 // (TestANewerTaskTakesThePlaceOfOneATurnHasTaken, below). It reaches ready with a task queued and
 // unsent instead, which is the untaken state itself.
@@ -197,7 +197,7 @@ func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 // start, which the daemon queues while that turn runs — and it is sent at the next point a turn
 // may take it, not into the running one. Refusing it instead left three supervise rows of the
 // live daemon answered "a delivery is already pending" with nothing ever sent and the phase
-// waiting on a worker that had finished (dispatch://INFRA-1352, INFRA-1443, INFRA-1519).
+// waiting on a worker that had finished (dispatch://POMJU-1352, POMJU-1443, POMJU-1519).
 func TestANewerTaskTakesThePlaceOfOneATurnHasTaken(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateWorking)
@@ -394,7 +394,7 @@ func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t
 // matched no row at all (table.go's onTurnEnd), so the task the busy refusal left unread waited
 // for a turn start that had already happened. Three workers sat idle holding their phase task for
 // 35 to 75 minutes that way, and each completion from the blind turn was refused HANDOFF_NO_RUN
-// (dispatch://INFRA-1691, INFRA-1545, INFRA-722, A9). The end sends it now, and nothing goes into
+// (dispatch://POMJU-1691, POMJU-1545, POMJU-722, A9). The end sends it now, and nothing goes into
 // the turn itself.
 //
 // The busy refusal no longer leaves such a claim ready: it records the claim working for the turn
@@ -630,7 +630,7 @@ func TestAReplayedTurnStartIsFencedOnItsDeliveryID(t *testing.T) {
 // So the late start confirms the task, and the prompt's result — naming the id the bound took
 // back — retires it, and no prompt follows. Before, the late start was taken for a foreign turn,
 // the result was dropped at the fence, and the task was sent again when the turn ended, to a
-// worker that had just done it: the loop dispatch://INFRA-3276 measured.
+// worker that had just done it: the loop dispatch://POMJU-3276 measured.
 //
 // The prompt's own result is what corrects a start taken for it that was in fact another input's.
 // A result that says the prompt ran no turn takes the task back, charged nothing more than the
@@ -642,7 +642,7 @@ func TestAReplayedTurnStartIsFencedOnItsDeliveryID(t *testing.T) {
 // with no prompt after it; a late turn the prompt's result shows was foreign, after which the task
 // is sent again while the issue holds its phase; and the same turn once the issue has left the
 // phase, after which nothing is sent. The name speaks of the last two alone: it is the name the
-// acceptance check of dispatch://INFRA-3276 R4 (c-r4-tests) runs the test by, so it stays.
+// acceptance check of dispatch://POMJU-3276 R4 (c-r4-tests) runs the test by, so it stays.
 func TestALateForeignTurnResendsTheTaskUnlessTheIssueLeftThePhase(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -722,7 +722,7 @@ func TestALateForeignTurnResendsTheTaskUnlessTheIssueLeftThePhase(t *testing.T) 
 	}
 }
 
-// The loop dispatch://INFRA-3276 measured, in the order the daemon's log showed it: Oh My Pi
+// The loop dispatch://POMJU-3276 measured, in the order the daemon's log showed it: Oh My Pi
 // acknowledges the task's prompt and spends some thirty seconds in its pre-turn work, the
 // daemon's five-second wait for the turn runs out and takes the task back under a new id, the
 // sweep's re-send is answered busy — Oh My Pi is preparing that very turn — and takes it back
@@ -774,7 +774,7 @@ func TestALateTurnOfAnOutstandingPromptSettlesItsTask(t *testing.T) {
 	}
 }
 
-// dispatch://INFRA-3135's case: a claim held a pending task whose late turn's result was dropped
+// dispatch://POMJU-3135's case: a claim held a pending task whose late turn's result was dropped
 // at the fence, so the task never settled, and its next task was refused "a delivery is already
 // pending" 160 times while every completion was refused HANDOFF_STALE_ASSIGNMENT. The late turn
 // now confirms the task it serves, so a newer task of the claim delivered while that turn runs
@@ -875,7 +875,7 @@ func TestABusyAnswerBeforeItsOwnAcknowledgementAddsNothing(t *testing.T) {
 }
 
 // A guard that this change keeps the bound a silent prompt has and adds none of its own (the
-// charge is dispatch://INFRA-2811's): a prompt Oh My Pi acknowledges that never starts a turn and
+// charge is dispatch://POMJU-2811's): a prompt Oh My Pi acknowledges that never starts a turn and
 // never answers is still charged at each acknowledgement, and the task is still sent again at the
 // next sweep, so the claim walks its prompt budget to its retirement exactly as before the
 // outstanding prompts were kept. Those prompts go with the retired process (letGo). In the same

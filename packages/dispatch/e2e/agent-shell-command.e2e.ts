@@ -5,8 +5,8 @@ import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * A person's `!command` in the live view (INFRA-812, R4; the browser cases of the Verification
- * document's k6, dispatch://INFRA-812/artifact/verification-md).
+ * A person's `!command` in the live view (POMJU-812, R4; the browser cases of the Verification
+ * document's k6, dispatch://POMJU-812/artifact/verification-md).
  *
  * The session runs the line itself and publishes one user message frame carrying the person's
  * line, what the command printed and how it ended (`packages/pi-envoy/src/typed-shell.ts`'s

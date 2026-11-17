@@ -598,7 +598,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		// generation 1 (workflow.ArchitectStartTask's last rule). That task supersedes the held one
 		// (supervise's supersedes), so the start does not send the held task first
 		// (supervise.Machine.StartedBy), its delivery retires the held task unsent, and the
-		// architect's first prompt is the re-admission's own task (dispatch://INFRA-2614 R3, R4).
+		// architect's first prompt is the re-admission's own task (dispatch://POMJU-2614 R3, R4).
 		// The decision the held task named is released with it, so no delivery holds it, and the
 		// catch-up the start writes for the running architect (the outbox's start, workflow's
 		// claimReady) names it and claims it.

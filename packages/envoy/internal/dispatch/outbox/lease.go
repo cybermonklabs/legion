@@ -54,7 +54,7 @@ const (
 // still live. At 1 s it holds three, at 1 s, 2 s and 3 s, and each abandons an unanswered
 // statement after 1 s rather than 2 s.
 //
-// What that buys, measured (dispatch://INFRA-1568, 2026-11-07, with a fake Holds that answers at
+// What that buys, measured (dispatch://POMJU-1568, 2026-11-07, with a fake Holds that answers at
 // once outside one stall and makes every statement issued inside it wait the stall out, swept
 // over stalls of 0.5 s to 4 s in steps of 250 ms and over offsets of the stall from the last
 // confirmed renewal of 0 to one Renew in four steps): at Renew 2 s the hold survives a stall of

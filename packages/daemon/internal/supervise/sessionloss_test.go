@@ -1,7 +1,7 @@
 package supervise
 
 // Every start resumes the session its claim recorded, and the two ways that can fail are not the
-// same failure: dispatch://INFRA-714 R8. A session no store holds is gone, so the claim starts
+// same failure: dispatch://POMJU-714 R8. A session no store holds is gone, so the claim starts
 // fresh, uncharged, and the loss is reported; a store that cannot be asked says nothing about the
 // session, so the claim keeps it and waits.
 

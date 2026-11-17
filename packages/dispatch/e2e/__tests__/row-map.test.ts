@@ -1,6 +1,6 @@
 /** The committed row map is the one a fresh generation writes.
  *
- *  `e2e/row-map.md` is what dispatch://INFRA-1407's k2 is read from and what the pull request
+ *  `e2e/row-map.md` is what dispatch://POMJU-1407's k2 is read from and what the pull request
  *  links, and it is generated rather than written (`e2e/tools/row-map.ts`). A map that drifts
  *  from the suite is worse than none: it reads as a current account of what moved and what did
  *  not, so a row added, moved or tagged since would be covered by a sentence nobody wrote about

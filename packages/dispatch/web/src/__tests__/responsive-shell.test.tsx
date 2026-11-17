@@ -353,7 +353,7 @@ function agent(sessionId: string, title: string): Agent {
 
 const PINS_KEY = "dispatch.agents.pinned:alice";
 
-// The pins were this browser's until INFRA-812 made them the person's. The shell writes each id
+// The pins were this browser's until POMJU-812 made them the person's. The shell writes each id
 // the old key holds as a pin and removes the key, so the person's pins survive the change
 // without being pinned again by hand, and each browser migrates only its own list.
 //

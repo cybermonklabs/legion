@@ -641,7 +641,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   or needs what only that person can provide. A finding outside the tree is always an ask. A cost
   or risk the person would weigh is now also a reason for a new version of an approved spec. The
   deployment's owner said Legion's architects asked him too many questions that did not need him.
-- Daemon API contract 38 (INFRA-225): Legion admits no root and starts no child while Dispatch
+- Daemon API contract 38 (POMJU-225): Legion admits no root and starts no child while Dispatch
   shows it blocked by an issue that is not `done`, and says what it is waiting for. `legion state`
   and the controller's `read_state` carry `admission.blocked`, every root and child Legion is
   waiting to start, each `{issue, blockedBy}` with the keys it waits on that are not done, and
@@ -649,14 +649,14 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   and each child it left held with the issues it waits on. All three required, so a plugin built
   before it refuses the state and the release answer. Install this release with a `legion` built
   from the same commit.
-- The skills this plugin ships carry that rule (INFRA-225). The `legion-architect` skill links
+- The skills this plugin ships carry that rule (POMJU-225). The `legion-architect` skill links
   children that depend on one another with `dispatch issue-update --blocked-by`, releases a child
   Legion holds all the same, and says a never-started child that still waits is handed over from
   a finished tree as a root carrying no run; its wake routing's `child-status` row says what
   cleared a held child's hold. The `legion-controller` skill names the tick's `blocked` waits in
   the day's report and counts the free slots without the waiting roots in `admission.blocked`,
   which take none, and its admission reference reads a root both waiting and blocked.
-- Daemon API contract 37 (INFRA-80): under the Kubernetes runtime an issue's disk is a generic
+- Daemon API contract 37 (POMJU-80): under the Kubernetes runtime an issue's disk is a generic
   ephemeral volume its own pod owns, created with the pod and deleted with it, so an issue pod's
   `workspace-init provision` container is no longer told `LEGION_EXPECT_ISSUE_VOLUME`, and the
   lost-disk machinery that variable drove is gone with it: `workspace-init`'s exit code 3 for a
@@ -669,7 +669,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
 - The skill-scenarios rig (`scripts/skill-scenarios/`, not shipped in the package) measures how
   agents write Dispatch specs:
   - `label-comments.ts` labels the comments people wrote on Dispatch in a window with the eleven
-    questions of the INFRA-140 labels, and prints the share of comments that complain about
+    questions of the POMJU-140 labels, and prints the share of comments that complain about
     writing. It reads production Dispatch with GET only.
   - `fetch-spec-sources.ts` reads an issue's or a project document's input from Dispatch into a
     work directory outside the checkout.
@@ -688,8 +688,8 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   model from several source repositories: a root's `.dispatch/architecture/<id>.md` file goes in
   the branch of the source whose repository holds it, `parent` and `depends_on` name components of
   that same source, an id must be one no other source of the project uses, and
-  `dispatch architecture-sync --repo <owner/name>` imports one source alone (INFRA-391).
-- Daemon API contract 36 (INFRA-229): `legion state` and the controller's `read_state` carry
+  `dispatch architecture-sync --repo <owner/name>` imports one source alone (POMJU-391).
+- Daemon API contract 36 (POMJU-229): `legion state` and the controller's `read_state` carry
   `state` on an issue's pull request, its `open`, `merged` or `closed`. An architect's acceptance
   is refused while an issue beneath it is still in the workflow and a merged root's close waits
   for the rest of its tree, so a root stands in `awaiting_merge` for days and an operator reads
@@ -702,7 +702,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   the coarse priority, as the signal people and filters read and as the order by which an agent
   takes its own next issue, but it changes no admission; the reference used to have the controller
   set priority and rank together so that "highest priority, then board rank" produced the plan's
-  order (INFRA-188).
+  order (POMJU-188).
 
 - The skill-scenario rig has an `askgate` scenario. It seeds an issue whose one
   comment is the person's and gives a plain session one of three prompts, which
@@ -721,7 +721,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   link to that comment, because an ask whether to do what the person asked fails AskGate's rule
   authority 6. The seeded issue's title, "Release and nightly job settings", fits the write of
   each case.
-- Daemon API contract 39 (INFRA-208): under the Kubernetes runtime an issue pod runs one
+- Daemon API contract 39 (POMJU-208): under the Kubernetes runtime an issue pod runs one
   container, `roles`, whose PID 1 is one `legion launcher` in multi-role mode, each role's
   generation in Linux namespaces of its own (`legion launcher role-init`), and
   `runtime.kubernetes.resources` takes `issue` and `controller` alone, so `legion state`'s and the
@@ -937,7 +937,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   version, so the person approves the spec again only when scope, acceptance or their decision
   changes.
 - The Legion skills this plugin ships are rewritten to the minimum text that carries their
-  instructions (INFRA-353): `legion-architect`, `legion-controller`, `legion-worker`,
+  instructions (POMJU-353): `legion-architect`, `legion-controller`, `legion-worker`,
   `legion-retro`, `legion-oracle`, `thermonuclear-code-quality` and `thermonuclear-deep-review`,
   from about 141,000 bytes of SKILL.md to 50,000. Every rule now carries its reason beside it,
   detail that only some tasks need moved whole to `references/` files named at the step that
@@ -949,7 +949,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   into the workspace before completing a phase, checked with `jj status`.
 - The `legion-worker` skill's tools reference no longer tells a role to add a new image package to
   the licence file by hand: the worker image lists every Debian package it carries in
-  `/usr/share/doc/legion/THIRD_PARTY_NOTICES` from its own dpkg database (INFRA-255). The
+  `/usr/share/doc/legion/THIRD_PARTY_NOTICES` from its own dpkg database (POMJU-255). The
   Dockerfile's comments and its toolchain smoke step stay hand-kept.
 
 - The merger's READY, as the `legion` tool's `handoff_complete` with `ready: true` reaches it,
@@ -973,13 +973,13 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   a merge ended when it has not. Dropping it loses one telling; the row goes on submitting.
 - The `legion-controller` skill and its `backlog-stewardship` reference name no person: a directive is
   a direct Dispatch message to this controller from a person rather than from one named individual,
-  and the duty list, the pass trigger and both definitions say so (dispatch://INFRA-227). The
+  and the duty list, the pass trigger and both definitions say so (dispatch://POMJU-227). The
   daemon's `controller-root` role prompt and `packages/envoy/AGENTS.md` drop the same name, and the
   root `AGENTS.md` now carries the standing rule that a skill, a role prompt and an `AGENTS.md`
   name no person and write the role instead. The controller behaves as it did: a directive still sets
   off the full reconciliation pass and a weekly-plan record.
 - Retro's push never carries the `skip-checks: true` trailer line, whatever paths its commits
-  touch (INFRA-149). Before, the `legion-worker` skill, the `legion-retro` skill and the daemon's
+  touch (POMJU-149). Before, the `legion-worker` skill, the `legion-retro` skill and the daemon's
   worker and implementer prompts all decided the line by the paths a push changed, so a retro with
   no learning to write — whose one commit is the removal of `.legion/<issue>/` — added the line and
   left the commit that merges with no check runs at all, which a base branch that requires a check
@@ -1079,7 +1079,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   - `request_backward_move` checks `to` (a backward target) and `reason` before it mints a grant,
     so a refused call mints none; a blank or non-string `to` is refused as `requires to`, and any
     other value outside the backward targets as `request_backward_move's to is one of …`.
-- Daemon API contract 34 (INFRA-31): under the Kubernetes runtime the roles of an issue share one
+- Daemon API contract 34 (POMJU-31): under the Kubernetes runtime the roles of an issue share one
   scratch on the issue's volume, and every role container of a pod, a workflow role's and the
   project controller's, is told the same four directories of it —
   `TMPDIR=/legion/scratch/tmp`, `XDG_CACHE_HOME=/legion/scratch/cache`,
@@ -1458,7 +1458,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   attempt whose connection dropped, that refusal says the dropped attempt may have been applied.
 - The `legion-architect` skill was 51,256 bytes, over Oh My Pi's 51,200-byte spill threshold, so it
   reached an architect with its middle cut out; its Wake routing table moves unchanged to
-  `skill://legion-architect/references/wake-routing.md` (INFRA-376).
+  `skill://legion-architect/references/wake-routing.md` (POMJU-376).
 
 - Each skill-scenario run has a Dispatch of its own: a database named after the run in the batch's
   Postgres, and a Dispatch server on it, which the run seeds, captures from and stops when it

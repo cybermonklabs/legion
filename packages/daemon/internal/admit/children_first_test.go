@@ -90,7 +90,7 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) []record
 
 // A5. A root whose gate opens with two Dispatch children in backlog does its own work after
 // theirs: it starts no phase while either is open, it gives back the row it took at its
-// admission for as long as the wait lasts (INFRA-3036), its architect is told once,
+// admission for as long as the wait lasts (POMJU-3036), its architect is told once,
 // admission.blocked names it with both children, and it takes a row again and starts planning
 // once both have left the workflow. The children are
 // released in the architect's design-approved turn, after the gate opened, which is exactly
@@ -169,7 +169,7 @@ func TestAParentBelowTheRootWaitsForItsOwnChild(t *testing.T) {
 	if got := issue(t, pool, cfFirst); got.Phase != phase.Admitted {
 		t.Fatalf("the released child with an open child of its own = %#v, want it held at admitted", got)
 	}
-	// The root gave its own row back when its wait on the child began (INFRA-3036), and the
+	// The root gave its own row back when its wait on the child began (POMJU-3036), and the
 	// child it released holds none either, its first phase having still to start.
 	assertSlots(t, pool, nil)
 	told := childrenFirstNotices(t, pool, cfFirst)
@@ -351,7 +351,7 @@ func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 // A5. The waiting line itself never offers a slot to a parent whose children are open, whatever
 // else is in the line: the rule is read where the line is read, from the pass's own judgement,
 // and never from a stored flag. The parent stands in that line meanwhile, waiting for the row
-// it gave back when its wait began (INFRA-3036, record.LineWaitingOnIssue), which is the same
+// it gave back when its wait began (POMJU-3036, record.LineWaitingOnIssue), which is the same
 // answer in slots: neither candidate holds one.
 func TestTheWaitingLineLeavesOutAParentWhoseChildrenAreOpen(t *testing.T) {
 	pool := migratedPool(t)

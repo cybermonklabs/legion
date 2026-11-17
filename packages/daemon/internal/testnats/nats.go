@@ -179,7 +179,7 @@ func URL(t testing.TB) string {
 		// just as often after the purge, so a sequence check would bring the random failures back
 		// by another door.
 		//
-		// Measured in an issue pod on 2026-11-10 (dispatch://INFRA-2583), against nats-server
+		// Measured in an issue pod on 2026-11-10 (dispatch://POMJU-2583), against nats-server
 		// 2.10.22, of the 2.10 line this package's image is (the image reports v2.10.29 now), one
 		// round being create, publish 12, delete, create again, read. Under a load of four busy
 		// loops on its two CPUs, 9 of 10,000 rounds of delete-then-create came back holding all 12
@@ -321,7 +321,7 @@ var readConnections = clientConnections
 // clientConnections lists the server's open client connections, each by id and name, by reading
 // the monitoring endpoint's /connz. It is readConnections' one implementation here, and the one
 // function to re-point: a server running inside the test process answers the same question from
-// the server object instead, which is the shape this fixture takes under dispatch://INFRA-1524's
+// the server object instead, which is the shape this fixture takes under dispatch://POMJU-1524's
 // rewrite.
 func clientConnections() ([]Connection, error) {
 	response, err := monitorClient.Get(monitorURL + "/connz")

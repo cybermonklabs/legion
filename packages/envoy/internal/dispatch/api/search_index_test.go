@@ -144,7 +144,7 @@ func planTreeOf(
 // another project, other_project_offers reads 0, and 0 is also what "no other project qualified"
 // reads. This case catches a statement whose order the index cannot serve. It does not catch a
 // planner that chooses to join first and order after, as the comment arm's did on the load-test
-// corpus, where it read 5,166 ms of a 5,351 ms statement (INFRA-988, searchMeaningCommentArm in
+// corpus, where it read 5,166 ms of a 5,351 ms statement (POMJU-988, searchMeaningCommentArm in
 // search.go): the three assertions below do not look for a join between the index scan and its
 // limit. TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins walks the plan for that, for
 // the comment arm alone.
@@ -200,7 +200,7 @@ func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
 // project holding few of a kind's rows the plan that answers it is an exact read of those rows
 // through embeddings_kind_project (migration 20261110155257) and a sort of them, not a walk of
 // embeddings_cosine filtered down to them: on the load-test deployment that is 800 of 800
-// windows in 13.7 ms against 2 of 800 in 225 ms (INFRA-988). The unscoped statement's own plan
+// windows in 13.7 ms against 2 of 800 in 225 ms (POMJU-988). The unscoped statement's own plan
 // is the test above, which reads embeddings_cosine for all five arms; one "$2 is empty, or it
 // matches" predicate would have to be planned once for all of them and can lose any.
 //
@@ -310,7 +310,7 @@ func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, projec
 	return meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx), false)
 }
 
-// TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds INFRA-988's measurement as a
+// TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds POMJU-988's measurement as a
 // plan. embeddings_cosine answers `order by embedding <=> $9` only while nothing between that
 // scan and the LIMIT it feeds has to see every row it hands up: the comment arm this replaced
 // joined comments, issues, artifacts and projects inside its ordered, limited select, and the
@@ -354,7 +354,7 @@ func TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins(t *testing.T) {
 
 // seesEveryRow answers whether a node standing between a window arm's index scan and its LIMIT
 // would have to read every row that scan hands up: a join brings the item's tables in below the
-// limit, and a sort re-orders what the index already ordered. Either is the shape INFRA-988
+// limit, and a sort re-orders what the index already ordered. Either is the shape POMJU-988
 // measured, and either costs the index its ordering.
 func seesEveryRow(nodeType string) bool {
 	return strings.Contains(nodeType, "Join") || nodeType == "Nested Loop" ||
@@ -430,7 +430,7 @@ func planString(t *testing.T, planJSON []byte) string {
 const issuesSearchIndex = "issues_search"
 
 // The issue arm's vector match is an index condition of its own, which is what lets the planner
-// read issues_search for it. Before INFRA-1042 the arm made one predicate do two jobs -
+// read issues_search for it. Before POMJU-1042 the arm made one predicate do two jobs -
 // `(i.search @@ q.tsq or i.key = any(q.own_keys))` - and the plan carried that OR whole, as a
 // join filter over a sequential scan of issues or at best as the recheck of a BitmapOr, which
 // re-tested every candidate row's vector on the heap. Split, the match stands alone and the

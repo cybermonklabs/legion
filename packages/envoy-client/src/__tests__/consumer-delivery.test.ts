@@ -21,8 +21,8 @@ import type { DeliveryAnswer } from "../transport";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
-const ISSUE_TOPIC = "notifications.dispatch.issue.INFRA-1.>";
-const ISSUE = "notifications.dispatch.issue.INFRA-1.comment";
+const ISSUE_TOPIC = "notifications.dispatch.issue.POMJU-1.>";
+const ISSUE = "notifications.dispatch.issue.POMJU-1.comment";
 const STREAM = "stream-1";
 const T0 = Date.parse("2026-10-27T05:00:00Z");
 const MINUTE = 60_000;
@@ -779,7 +779,7 @@ describe("follow filter", () => {
     delivery.receive(relay({ seq: 3, subject: ISSUE, storedAt: T0 + 11 * MINUTE }));
     // The base subject of a `.>` follow is followed too.
     delivery.receive(
-      relay({ seq: 4, subject: "notifications.dispatch.issue.INFRA-1", storedAt: T0 + 11 * MINUTE })
+      relay({ seq: 4, subject: "notifications.dispatch.issue.POMJU-1", storedAt: T0 + 11 * MINUTE })
     );
 
     expect(repliesTo(replies, "_INBOX.1")).toEqual(["received", "done"]);
@@ -794,7 +794,7 @@ describe("follow filter", () => {
   });
 
   // A message name the rename moves has two forms while every reader takes both
-  // (dispatch://INFRA-3862): the listener's filters carry both, so this client, the last reader
+  // (dispatch://POMJU-3862): the listener's filters carry both, so this client, the last reader
   // of a frame, must take a frame in either form of a topic the session follows. One that
   // compares the spellings as they are drops every event of a session that followed the other
   // form, and drops it in silence: the frame is answered `done` and the resume point passes it.
@@ -802,11 +802,11 @@ describe("follow filter", () => {
     const stored = T0 + MINUTE;
     for (const [followed, subject] of [
       [ISSUE_TOPIC, ISSUE],
-      [ISSUE_TOPIC, "notifications.dispatch.issue.INFRA.INFRA-1.comment"],
-      ["notifications.dispatch.issue.INFRA.INFRA-1.>", ISSUE],
+      [ISSUE_TOPIC, "notifications.dispatch.issue.POMJU.POMJU-1.comment"],
+      ["notifications.dispatch.issue.POMJU.POMJU-1.>", ISSUE],
       [
-        "notifications.dispatch.issue.INFRA.INFRA-1.>",
-        "notifications.dispatch.issue.INFRA.INFRA-1.comment",
+        "notifications.dispatch.issue.POMJU.POMJU-1.>",
+        "notifications.dispatch.issue.POMJU.POMJU-1.comment",
       ],
     ] as const) {
       const { delivery, handed, replies } = setup();
@@ -1162,7 +1162,7 @@ describe("one registration", () => {
       relay,
       ownAgentSubject: AGENT,
       // The bare base a stored row or a transcript brings back: the listener stores it for no
-      // session and warns about it, so it never goes out (INFRA-771 review).
+      // session and warns about it, so it never goes out (POMJU-771 review).
       followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
       outage: inboundUnavailable((why) => told.push(why)),
       send: (topics, delivery) => {

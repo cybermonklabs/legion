@@ -249,7 +249,7 @@ func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
 // A registration that lands while a clean stop is on its way keeps its consumer. The stop names
 // if_not_registered_after, reads the entry the relaunch replaces - the relaunch has not written
 // its own yet - and answers EntryDeleted, which is the order the Legion daemon's clean stop of a
-// relaunched role takes (dispatch://INFRA-392). What keeps the live session's consumer is the
+// relaunched role takes (dispatch://POMJU-392). What keeps the live session's consumer is the
 // lock: the registration holds it from its consumer call through the write of its entry, and the
 // delete reads the session bucket under that same lock and finds the record there. Without both
 // the session would be live with no consumer, and its relay paused on

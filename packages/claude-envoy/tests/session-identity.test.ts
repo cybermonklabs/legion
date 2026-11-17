@@ -46,7 +46,7 @@ test("role state is keyed by session id, never by process", () => {
 
 // The file name carries the session id alone, so the writing process has to be in the record:
 // two `claude` processes share one state directory the moment a second resumes a live session's
-// id (dispatch://INFRA-783).
+// id (dispatch://POMJU-783).
 test("a role record carries the process that wrote it, and one written before it still loads", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-role-record-"))
   try {

@@ -60,7 +60,7 @@ func failReconnectHooks(t *testing.T, client *bus.Client) {
 // stall is under it. A rewatch that keeps failing after a reconnect ends no watcher and clears no
 // cache, so every other check here passes - WatchErr stays nil, the bucket ping answers, and the
 // durable is bound - and the regression this catches is /healthz calling a listener healthy whose
-// caches follow buckets they no longer watch (INFRA-743). The answer stays 200 because the probes
+// caches follow buckets they no longer watch (POMJU-743). The answer stays 200 because the probes
 // act on it: a 503 would replace the only listener there is (the ECS container health check is
 // curl -sf /healthz) into the same failing rebuild, whose empty caches then lose the fanout
 // messages this task's stale ones still place. There are two negative controls. One is the same
@@ -127,7 +127,7 @@ func hookStallFixture(t *testing.T, consumer string) (*bus.Client, *hookStallClo
 // the stall answers 200 - this task's stale caches still place the fanout messages a replacement's
 // empty ones would lose - does not hold for a listener that is deaf. The regression this catches is
 // the stall deciding first and reporting such a listener as merely degraded, which every probe that
-// reads /healthz then leaves in service (INFRA-743).
+// reads /healthz then leaves in service (POMJU-743).
 func TestHealthzReportsARecreatedDurableThroughAHookStall(t *testing.T) {
 	consumer := "listener-healthz-hook-stall-unbound"
 	client, clock, get := hookStallFixture(t, consumer)

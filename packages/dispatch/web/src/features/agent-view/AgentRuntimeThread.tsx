@@ -48,7 +48,7 @@ function dispatchId(messageId: string): string {
  * A turn saying what the person wrote is that message, beside what the stream names of what the
  * message carried, such as a picture's `[image]` (`turnSaysBody`, which holds the row to the
  * body's own lines and to the body's own pictures): `"says-body"`. So is the report of a
- * person's `!command` (INFRA-812, R4): the session runs the line itself and publishes the
+ * person's `!command` (POMJU-812, R4): the session runs the line itself and publishes the
  * person's line and what the command printed as one user message, because the person ran it and
  * the host wrote nothing (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). What
  * a report reads like is one rule both packages import rather than spell twice
@@ -228,7 +228,7 @@ export function AgentRuntimeThread({
     isRunning: false,
     // The composer cannot send while a model or thinking switch is pending on this session, and
     // the box still takes the next message. A message still out, late or refused holds nothing:
-    // the next one goes out behind it (INFRA-442).
+    // the next one goes out behind it (POMJU-442).
     isSendDisabled: sendDisabled,
     messages,
     // assistant-ui's composer has already emptied the box when this runs. The write store owns the

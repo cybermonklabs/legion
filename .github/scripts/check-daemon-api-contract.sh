@@ -51,7 +51,7 @@
 # and the manifests packages/pi-legion/package.json and packages/claude-envoy/package.json at
 # legion.daemonApiVersion. A file this check cannot read there is refused as a read that failed.
 # This rule runs before the pass for a number above the base's, because a bump is where a file
-# is left behind: INFRA-3621's bump forgot state.json, and that pass would have let it through.
+# is left behind: POMJU-3621's bump forgot state.json, and that pass would have let it through.
 # It reads only this checkout, so its refusal reads no open pull request and names no free
 # number: the files disagree, and the number is not what is wrong.
 #

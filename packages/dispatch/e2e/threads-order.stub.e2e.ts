@@ -1,4 +1,4 @@
-/** One thread order everywhere (INFRA-450), in the surfaces the Inbox draws itself: the reading
+/** One thread order everywhere (POMJU-450), in the surfaces the Inbox draws itself: the reading
  *  pane, its card below the pane's width, and an ask's own thread, each with the fold and the
  *  reply box the chosen order places.
  *

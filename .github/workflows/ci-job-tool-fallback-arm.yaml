@@ -52,7 +52,7 @@ jobs:
     # the helper makes here is of npm, which answers. In the step list of job 129743510021 one
     # step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
     # The two minutes above stay as the headroom of the run where npm does not answer at once.
-    # This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
+    # This job is therefore the control of the change POMJU-2621 makes to the tool-fallback job:
     # a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs
     # drive no such ladder, must not move.
     # Each of this job's two install steps declares `timeout-minutes: 11`, for the reason the
@@ -71,7 +71,7 @@ jobs:
 
       # The same reading as the tool-fallback job's, over both halves of this one, and for the
       # same reason: this is the only job of this repository that installs a tool on arm64, so
-      # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
+      # nothing else says what one of those runners had (dispatch://POMJU-2605). The comment on
       # that job's own pair (.github/workflows/ci-job-tool-fallback.yaml) says what the series
       # shows and what it cannot.
       - name: Start the machine watch over both halves

@@ -28,7 +28,7 @@ import (
 //
 // A root waiting on a person (phase.AwaitingPerson) closes the same way, because it has started
 // no phase either: a root reaches that phase only from admitted, and it is where the answer
-// "close this" arrives (dispatch://INFRA-545, whose architect could not end its tree and whose
+// "close this" arrives (dispatch://POMJU-545, whose architect could not end its tree and whose
 // controller's own Dispatch close the daemon set back, as a session's write on a waiting root).
 // It keeps its slot while it waits (blockers.waitsOf), and leave frees that slot once.
 func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (intake.Result, error) {

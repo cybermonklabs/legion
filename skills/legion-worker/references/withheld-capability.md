@@ -156,9 +156,9 @@ carrying `legion-testpg`, use the pod's own server
 unpack nothing. On a digest without it, the way
 that stack is stood up here is Debian packages unpacked with `dpkg-deb -x` into one root on the
 issue's volume — the five packages and the start sequence are in
-`docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md`,
+`docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-POMJU-42.md`,
 and
-`docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-INFRA-43.md`
+`docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-POMJU-43.md`
 puts it on the volume, moves the caches with it, and writes it as one idempotent script the next
 role re-runs. That passes both conditions, and the second is the one to get right: export the
 root's `PATH` and `LD_LIBRARY_PATH` around the harness's own commands — `initdb`, `pg_ctl`, the

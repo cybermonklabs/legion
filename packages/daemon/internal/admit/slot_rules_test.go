@@ -190,7 +190,7 @@ func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
 // held, and as a root standing at admitted whose design gate has opened, when it waits on no
 // other issue. What the phase rule does not
 // decide is a wait on another issue: an issue the daemon started that waits on one before its
-// review gives its row back (INFRA-3036, releaseSlotsForWaits), which is the root of the first
+// review gives its row back (POMJU-3036, releaseSlotsForWaits), which is the root of the first
 // tree here.
 //
 // The first reading gives one started issue each phase and reads the rows one admission pass
@@ -224,7 +224,7 @@ func TestSlotPerPhase(t *testing.T) {
 	// hold it back — which would move it out of the phase this case is about. An open Dispatch
 	// child holds it at admitted instead (record.LineFacts.ChildWaits). That wait is also why it
 	// is the one started issue here holding no row: an issue the daemon started and that waits
-	// on another issue gives its row back (INFRA-3036), and the state names it under
+	// on another issue gives its row back (POMJU-3036), and the state names it under
 	// admission.blocked, read below beside the rows.
 	seedMirror(t, pool, "LEGION-1", "in_progress")
 	seedMirrorChild(t, pool, "LEGION-99", "backlog", "LEGION-1")

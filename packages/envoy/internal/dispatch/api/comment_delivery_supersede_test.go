@@ -134,7 +134,7 @@ func TestTheQueuedAttemptIsSentWhenNoRetryOvertakesIt(t *testing.T) {
 // A Retry that fails while the first attempt waits on a held lane delivered nothing, so the
 // attempt it overtook stands and its lane sends it: the issue has no route, so that send is the
 // only thing that can hand s1 the comment, and s1 gets it exactly once. (The reviewer's
-// reproduction of INFRA-606: before this the lane settled the attempt superseded without sending
+// reproduction of POMJU-606: before this the lane settled the attempt superseded without sending
 // it, and s1 got the comment from nothing at all.)
 func TestAFailedRetryLeavesTheQueuedAttemptToItsLane(t *testing.T) {
 	lane := aMentionQueuedBehindAStalledSend(t, "")

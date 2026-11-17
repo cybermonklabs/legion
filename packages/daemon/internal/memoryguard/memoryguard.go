@@ -1,6 +1,6 @@
 // Package memoryguard ends the largest process it may end when a container nears its memory
-// limit, so that the kernel does not end the whole sandbox instead (INFRA-3557, by the rules of
-// INFRA-3531). Under gVisor the host kernel sees one sandbox and not its processes: a container
+// limit, so that the kernel does not end the whole sandbox instead (POMJU-3557, by the rules of
+// POMJU-3531). Under gVisor the host kernel sees one sandbox and not its processes: a container
 // that passes its limit loses every process at once, which in an issue pod is every role's turn.
 //
 // The guard reads the pod's anonymous memory, AnonPages of /proc/meminfo, and the container's
@@ -36,10 +36,10 @@
 // way when its stat, read again, shows it gone or exited, since it may have exited in between.
 //
 // What it may end is its caller's to say (Classifier): the launcher protects Legion's own
-// processes and the agents', and INFRA-3531's controller pod protects its own. The package
+// processes and the agents', and POMJU-3531's controller pod protects its own. The package
 // protects only its own process.
 //
-// In a pod that runs in a GKE Sandbox microVM (INFRA-3729) the launcher runs Guest in place of the
+// In a pod that runs in a GKE Sandbox microVM (POMJU-3729) the launcher runs Guest in place of the
 // guard (guest.go). The microVM's kernel is the pod's own, and its out-of-memory killer stops one
 // process rather than the whole sandbox, so Guest ends nothing. At each scan it raises to
 // oom_score_adj 1000 every process of a role that the same Classifier does not protect, and sets

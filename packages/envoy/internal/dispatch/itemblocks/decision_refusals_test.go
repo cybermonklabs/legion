@@ -17,7 +17,7 @@ func tablePastThePaddingBudget(columns, rows int) string {
 		strings.Repeat("| x |\n", rows)
 }
 
-// decisionRefusalRows are the 44 bodies measured for INFRA-1201: every distinct reason
+// decisionRefusalRows are the 44 bodies measured for POMJU-1201: every distinct reason
 // pmdoc/refusals.go and the parse around it refuse a body for, each with a decision block standing
 // in it, and every spelling of a decision block's opening line the browser reader opens an `ask`
 // container on where this parser's own grammar reads no typed directive. Each row is named by the
@@ -311,7 +311,7 @@ var decisionRefusalRows = []struct {
 		blockType: "ask",
 	},
 	{
-		reason:    "unsupportedDirective: malformedDirectiveReason (the production probe of INFRA-1201)",
+		reason:    "unsupportedDirective: malformedDirectiveReason (the production probe of POMJU-1201)",
 		trigger:   "the attribute-less decision block written into production to measure what it does",
 		body:      ":::ask\nDoes production refuse this?\n\n- Yes: refused\n- No: stored\n:::\n",
 		position:  1,
@@ -366,7 +366,7 @@ var decisionRefusalRows = []struct {
 		// The browser editor's `ask` takes `paragraph+ bullet_list?`, so its reader draws this
 		// block's lines in place as text rather than as a card, where the server's parse reads
 		// the block and the rule refuses the body for the ask standing in it: the content of an
-		// ask the reader opens decides nothing (INFRA-1201).
+		// ask the reader opens decides nothing (POMJU-1201).
 		position:  1,
 		blockType: "ask",
 		parsed:    true,
@@ -415,7 +415,7 @@ func TestCheckRefusesEveryMeasuredBodyTheReaderOpensAnAskIn(t *testing.T) {
 	}
 }
 
-// carriageReturnRows are the bodies of INFRA-1201's second measurement: a decision block whose
+// carriageReturnRows are the bodies of POMJU-1201's second measurement: a decision block whose
 // line endings are lone carriage returns, which a browser's own reader ends its lines at and
 // this parser ends none at, so the body reaches the parse here as one line holding no block
 // while the dashboard draws its decision card for it. The rule reads such a body as the reader
@@ -487,7 +487,7 @@ func TestCheckReadsTheLineEndingsTheReaderReads(t *testing.T) {
 	}
 }
 
-// byteOrderMarkRows are the bodies of INFRA-1201's third measurement: a decision block whose
+// byteOrderMarkRows are the bodies of POMJU-1201's third measurement: a decision block whose
 // opening line stands behind a byte-order mark, which the browser's own reader drops before it
 // reads the line and this parser reads as the line's first character, so the body reaches the
 // parse here as a paragraph holding no block while the dashboard draws its decision card for it.

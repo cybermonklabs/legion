@@ -39,7 +39,7 @@ var ErrUnavailable = errors.New("NATS is unreachable")
 //
 // A Request that ran out of time went unanswered because the stream did not acknowledge the copy
 // it was asked to store, which is the whole of a request's outcome: nobody else answers one,
-// since no session subscribes to its agent subject (INFRA-771). Such a request is known to have
+// since no session subscribes to its agent subject (POMJU-771). Such a request is known to have
 // left this process when its flush confirmed the publish; a flush that failed or timed out - a
 // reconnecting or stalled connection still buffering the request - adds ErrPublishUnconfirmed
 // with its own reason, since that request is not known to have left. One the server denied is

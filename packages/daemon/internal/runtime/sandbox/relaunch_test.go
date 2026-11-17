@@ -702,7 +702,7 @@ const nextImage = "ghcr.io/cybermonklabs/legion-worker@sha256:2e2e2e2e0000000000
 // A pod launched from another release's image — every container of it, or an init container alone,
 // since a pod is built whole from one image — runs agents that call this daemon as that release,
 // for a route it no longer serves or a variable it no longer sets. It has drifted, and a live
-// drifted pod a round covers is kept by every launch into it (INFRA-484, roundCovers): replacing
+// drifted pod a round covers is kept by every launch into it (POMJU-484, roundCovers): replacing
 // it there would end every role's turn in it and delete the issue's disk with everything unpushed
 // on it, so the pod is left to its update round, which first has every worker in it push its work.
 // The controller's pod is covered by no round — nobody in it holds an issue workspace, so there is
@@ -2000,7 +2000,7 @@ func TestALaunchWhoseRunningPatchTimesOutAfterApplyingLeavesItsSandboxSuspended(
 // A launch that runs out of time on a pod still Pending reports that pod's events beside its
 // phase. A pod whose disk the kubelet cannot provision — one waiting behind the claim of a
 // predecessor the garbage collector has not reaped — reports nothing but Pending, and the event is
-// the whole of the reason (INFRA-80). A pod past Pending carries none: its phase is the answer.
+// the whole of the reason (POMJU-80). A pod past Pending carries none: its phase is the answer.
 func TestALaunchThatWaitedOutAPendingPodReportsItsEvents(t *testing.T) {
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))

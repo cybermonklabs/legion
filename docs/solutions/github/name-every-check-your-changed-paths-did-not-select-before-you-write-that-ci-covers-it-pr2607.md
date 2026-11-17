@@ -13,7 +13,7 @@ related_issues:
 ---
 # Name every check your changed paths did not select, before you write that CI covers it
 
-Extends docs/solutions/legion/a-red-lane-outside-the-required-set-merges-unread-read-every-lane-that-builds-the-changed-package-INFRA-379.md, which is about lanes that ran and went unread.
+Extends docs/solutions/legion/a-red-lane-outside-the-required-set-merges-unread-read-every-lane-that-builds-the-changed-package-POMJU-379.md, which is about lanes that ran and went unread.
 This is the lanes that never started, which no read of the head's check runs can show you, because they are not there.
 
 - On a path-filtered router, the set of jobs a pull request runs is a function of the paths it touches.
@@ -25,7 +25,7 @@ This is the lanes that never started, which no read of the head's check runs can
 
 ## Evidence
 
-- INFRA-909's spec required six checks green on the head.
+- POMJU-909's spec required six checks green on the head.
   On its original three-file path set, measured in planning, `ci.yaml`'s `test` job and its `ci-filters` job were both unselected, so the four `.github/scripts/*.test.sh` files and `check-ci-filters.sh` would not have run in CI at all.
 - One file put in scope for an unrelated reason changed that: `.github/scripts/check-release-credentials.sh` carried a stale sentence ("four build jobs"), and the `test` filter names `.github/scripts/*` (`.github/workflows/ci.yaml:473`), so the four `.test.sh` files ran.
   That is the accident this rule exists to stop relying on; the next change may have no such file.

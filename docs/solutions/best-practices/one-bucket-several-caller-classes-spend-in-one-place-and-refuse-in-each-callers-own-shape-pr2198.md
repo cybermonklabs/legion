@@ -15,7 +15,7 @@ related_issues:
 
 # One bucket, several caller classes: spend it in one place and refuse in each caller's own shape
 
-Extends docs/solutions/best-practices/a-route-that-verifies-before-it-limits-lets-a-stranger-spend-your-upstream-INFRA-228.md.
+Extends docs/solutions/best-practices/a-route-that-verifies-before-it-limits-lets-a-stranger-spend-your-upstream-POMJU-228.md.
 
 That rule puts the bucket before the credential check. When a second kind of caller joins the
 same bucket — a browser beside a service, a public route beside an authenticated one — the spend

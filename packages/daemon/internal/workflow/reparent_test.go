@@ -18,7 +18,7 @@ import (
 // no release of children and no admission sweep takes such a root in, so it stays a tree of its
 // own. The daemon says so once per parent — on the issue, where the person reads it, and to the
 // architect of the tree it was moved under, which would otherwise wait for a release it cannot
-// make (dispatch://INFRA-714/spec R3). A later event under the same parent repeats nothing; a move
+// make (dispatch://POMJU-714/spec R3). A later event under the same parent repeats nothing; a move
 // under another live tree is told anew.
 func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 	pool := migratedPool(t)

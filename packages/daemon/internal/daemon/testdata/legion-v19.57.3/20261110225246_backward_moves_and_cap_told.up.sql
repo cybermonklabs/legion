@@ -1,6 +1,6 @@
 -- 20261110225246_backward_moves_and_cap_told.up.sql — the daemon counts every backward move of an
 -- issue by its kind, tells the review_round_cap message once for each value of the cap, and puts a
--- hook's prompt in front of a role through the outbox (INFRA-2551).
+-- hook's prompt in front of a role through the outbox (POMJU-2551).
 --
 -- backward_moves is one count for each kind of move, keyed "<from>-<to>" with the phase words of
 -- the daemon's forward line, "testing-implementing" and "reviewing-implementing" among them

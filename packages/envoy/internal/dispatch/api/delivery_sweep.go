@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The delivery sweep (INFRA-258). A write that delivers to sessions - a send to one session, the
+// The delivery sweep (POMJU-258). A write that delivers to sessions - a send to one session, the
 // live view's model and thinking switch, a broadcast's recipients, an issue message to a session,
 // a comment's and a document comment's mentions, and a retry from an agent card - claims each
 // attempt before its send and settles it after. A process that dies between the two leaves the

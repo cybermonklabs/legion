@@ -158,7 +158,7 @@ func TestNoSkillsRepositoryLeavesThePodAsItWas(t *testing.T) {
 // wrapper's skills step adds the clone as a *local* marketplace, by the path the init container
 // cloned it to, and installs every plugin the clone's own record names. It names no `owner/repo`
 // and runs no git, because a clone in a role's launch context ends the pod's gVisor sandbox
-// (dispatch://INFRA-1262); a local marketplace has no remote, so neither this step nor Oh My Pi's
+// (dispatch://POMJU-1262); a local marketplace has no remote, so neither this step nor Oh My Pi's
 // own refresh of a stale marketplace fetches anything.
 func TestARolesStartWrapperInstallsTheSkillsFromThePodsVolume(t *testing.T) {
 	r := skillsRuntime(t)
@@ -370,7 +370,7 @@ esac
 
 // A check that finds the installed files are not the pod's recorded commit stops the wrapper
 // before the setup command and before the harness, with its own line: a role whose loaded bytes
-// nobody can account for must not start (dispatch://INFRA-1300, R4). Its passing arm is the
+// nobody can account for must not start (dispatch://POMJU-1300, R4). Its passing arm is the
 // wrapper's ordinary path, which every other executable test here already runs.
 func TestSkillsCheckFailureNeverStartsSetupOrTheHarness(t *testing.T) {
 	dir := t.TempDir()

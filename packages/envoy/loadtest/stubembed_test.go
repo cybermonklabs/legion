@@ -340,7 +340,7 @@ func TestRunStubEmbedRefusesWhatItCannotServe(t *testing.T) {
 
 // TestStubEmbedReadsItsKeyFromAFile: the embedder's api-key has a file form, because a key given
 // as -key is in this process's argv, and in the argv of the ssh that started it, for the whole
-// life of the deployment (dispatch://INFRA-988). The file's content with its trailing white
+// life of the deployment (dispatch://POMJU-988). The file's content with its trailing white
 // space trimmed is the key, and the four refusals are the ones every credential of this package
 // is read with (readCredentials).
 func TestStubEmbedReadsItsKeyFromAFile(t *testing.T) {

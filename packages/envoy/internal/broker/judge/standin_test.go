@@ -30,7 +30,7 @@ import (
 // the bound a request asks past in the one case the class's own 15 minutes would let through.
 const (
 	testSecret        = "DEEL_API_KEY"
-	testIssue         = "INFRA-1353"
+	testIssue         = "POMJU-1353"
 	testModel         = "claude-standin"
 	shortJudgeSecret  = "SHORT_JUDGE_KEY"
 	shortJudgeSeconds = 300
@@ -84,7 +84,7 @@ func newDispatch(t *testing.T, status, markdown string) *dispatchStandIn {
 	d := &dispatchStandIn{
 		issueStatus: http.StatusOK, specStatus: http.StatusOK,
 		issue: map[string]any{"key": testIssue, "title": "The broker's model judge", "status": status,
-			"project": "INFRA", "number": 1353},
+			"project": "POMJU", "number": 1353},
 		spec: map[string]any{"markdown": markdown, "version": 12, "token": "sha256:standin"},
 	}
 	d.server = httptest.NewServer(http.HandlerFunc(d.serve))

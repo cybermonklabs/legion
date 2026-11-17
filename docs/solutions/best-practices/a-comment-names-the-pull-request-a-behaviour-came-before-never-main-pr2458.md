@@ -12,7 +12,7 @@ module: packages/envoy/internal/dispatch/pmdoc
 
 # A comment names the pull request a behaviour came before, never "main"
 
-Extends docs/solutions/best-practices/a-number-or-a-guarantee-restated-in-prose-is-a-copy-that-drifts-cite-or-generate-it-INFRA-236.md.
+Extends docs/solutions/best-practices/a-number-or-a-guarantee-restated-in-prose-is-a-copy-that-drifts-cite-or-generate-it-POMJU-236.md.
 
 - Do not write "main", "main's bytes" or "the old reader" for an earlier writer in a comment, a
   test name or a test message. Main moves, so the word names a different revision at every reading.

@@ -55,7 +55,7 @@ import { serveWithoutDisplayTrees } from "./strip-trees";
 import { asUser } from "./users";
 
 /**
- * The Inbox reading column keeps the reader's place (INFRA-2512).
+ * The Inbox reading column keeps the reader's place (POMJU-2512).
  *
  * Two families of row say the column is the reader's: an approval request whose position stands
  * through every drive that reads the signed-in person again, and a question or thread whose

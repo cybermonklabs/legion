@@ -28,7 +28,7 @@ import { asUser } from "./users";
 /**
  * The machine pages (`/machines` and `/machines/<machine>`), which draw a machine's tmux layout
  * from the `tmux_place` each `Agent` of `GET /api/v1/agents` carries. One `test.describe` per
- * check of dispatch://INFRA-883/artifact/verification-md, each carrying that check's grep tag:
+ * check of dispatch://POMJU-883/artifact/verification-md, each carrying that check's grep tag:
  * `@machines-draw` is k5, `@machines-honesty` k7 and `@machines-width` k9. The width check is
  * two cases, because `packages/dispatch/AGENTS.md` refuses the `@phone` tag to a case that
  * starts at a desktop width and narrows itself: the untagged 1440 px case is a stubbed row

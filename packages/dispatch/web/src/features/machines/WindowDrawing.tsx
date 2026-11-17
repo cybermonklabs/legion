@@ -28,7 +28,7 @@ import { parseTmuxLayout, type TmuxLayout, type TmuxLayoutPane } from "./tmux-la
 /** The width a short session name needs beside its state dot. */
 const MIN_PANE_WIDTH_PX = 96;
 
-/** The height dispatch://INFRA-812 gives an Agents row: under it a pane holds no row of text. */
+/** The height dispatch://POMJU-812 gives an Agents row: under it a pane holds no row of text. */
 const MIN_PANE_HEIGHT_PX = 42;
 
 /** A terminal cell is a character, about twice as tall as it is wide, so a window of `C` columns

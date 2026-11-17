@@ -77,7 +77,7 @@ test("a turn the model answered is reported clean, under the claim's own credent
   ]);
 });
 
-// What dispatch://INFRA-264's implementer did on every turn: Oh My Pi ended the run with the last
+// What dispatch://POMJU-264's implementer did on every turn: Oh My Pi ended the run with the last
 // assistant message stopped at `error`, and the provider's words beside it.
 test("a turn the provider refused is reported refused, with the provider's own message", async () => {
   const { report, posted } = rig();

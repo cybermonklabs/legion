@@ -42,7 +42,7 @@ const natsDownCommit = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
 // webhook sweeper's first pass runs and says why it swept nothing. Once the server answers, every
 // client connects with no restart: `nats` reads true, an issue written afterwards has its event on
 // the stream, the announcement of the stamped build is on it, both delivery intakes bind their
-// durables, and an agent view relays a session's frame. Before INFRA-555 the boot exited on the
+// durables, and an agent view relays a session's frame. Before POMJU-555 the boot exited on the
 // first failed connect.
 func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 	database := storetest.Open(t)

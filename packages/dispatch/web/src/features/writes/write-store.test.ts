@@ -1372,7 +1372,7 @@ test("a write waiting its turn and never sent can be discarded; one out cannot",
   });
 });
 
-// INFRA-592. Dispatch answers `503 DATABASE_BUSY` and `503 REQUEST_TIMEOUT` with a `Retry-After`
+// POMJU-592. Dispatch answers `503 DATABASE_BUSY` and `503 REQUEST_TIMEOUT` with a `Retry-After`
 // it means, as it does a `429`: a write so answered is made again under its key once that wait
 // is out, and its backoff stays where it was. Any other `503` names no wait the page can trust,
 // so it keeps the 1 s, 2 s, 4 s backoff whatever `Retry-After` it carries.

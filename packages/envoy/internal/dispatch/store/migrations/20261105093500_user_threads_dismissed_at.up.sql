@@ -1,6 +1,6 @@
 -- 20261105093500_user_threads_dismissed_at.up.sql
 --
--- INFRA-450: a thread stays in a person's Inbox, read or not, until they dismiss it, as an email
+-- POMJU-450: a thread stays in a person's Inbox, read or not, until they dismiss it, as an email
 -- stays until it is archived. This adds the two columns one person's dismissal of one thread is
 -- kept in: dismissed_at, the mark itself, beside the row's read mark, and version, which counts
 -- the writes somebody else has made in the thread.

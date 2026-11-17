@@ -48,7 +48,7 @@ import (
 // What the boundary protects is identity, not a repository-write token kept off the issue's disk:
 // an implement role now holds the implement App's token — for the issue's owner the App's own
 // installation token, which writes, where the provisioning token is that same App narrowed to
-// reading, so the two are no longer one lease (INFRA-1254) — read-only in its own gh directory
+// reading, so the two are no longer one lease (POMJU-1254) — read-only in its own gh directory
 // (GHConfigDir), and a review role the review App's. What the fetch container's boundary still
 // keeps is that no review role ever holds the implement App's token, which is what lets the
 // daemon read a push's App from the App that made it, and so tell the review App's red tests
@@ -333,7 +333,7 @@ func (rig *initRig) initialize(pod *rigPod) error {
 			dir = rig.tree
 		case volume.Ephemeral != nil:
 			// A generic ephemeral volume is the pod's own: the kubelet creates it with the pod and
-			// deletes it with the pod (INFRA-80), so no other pod, the issue's next included, sees
+			// deletes it with the pod (POMJU-80), so no other pod, the issue's next included, sees
 			// it, and a restart of the pod finds it as the pod left it.
 		default:
 			scratch = append(scratch, dir)

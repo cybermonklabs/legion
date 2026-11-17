@@ -64,7 +64,7 @@ type sizes struct {
 
 	// Priorities is the live priorities the deployment holds, and Advances the `advances`
 	// relations issues of every project state on them. The parent spec names neither: the
-	// priority landed after it (INFRA-2947), so these two figures are this command's own.
+	// priority landed after it (POMJU-2947), so these two figures are this command's own.
 	//
 	// Priorities is fixed at every scale, as Projects is. It is a shape and not a row count: a
 	// priority is a goal a person writes and reads on one page rather than a row the work

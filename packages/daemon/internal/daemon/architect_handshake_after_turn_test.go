@@ -16,7 +16,7 @@ import (
 
 // The state carries the handshake between the daemon and a root's architect: beside the two entry
 // numbers, the time the task of that entry was first queued and the time the architect confirmed
-// it (dispatch://INFRA-2614, R6). The absence of both times is what marks a root of the release
+// it (dispatch://POMJU-2614, R6). The absence of both times is what marks a root of the release
 // before this one, whose migration gives the claim the two numbers and no times (R8), and the live
 // reading of R9 reads both times once the architect has acted on its task.
 //
@@ -30,7 +30,7 @@ import (
 // registers its gate in that first turn, so the root then waits on a person, and after the
 // approval it stands in planning. The times are the architect's handshake for the root's current
 // generation, and they stay on the root through those phases, read as the architect's
-// (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e, and k5 of the
+// (dispatch://POMJU-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e, and k5 of the
 // Verification document at version 10).
 //
 // The path is main's own: admission queues the start, the outbox runner launches the architect on

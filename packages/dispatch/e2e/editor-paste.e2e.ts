@@ -7,7 +7,7 @@ import { type Browser, expect, type Page, test } from "./test";
 // asserted the markdown the server stored for the document the paste built, and runs in a
 // fraction of the time in packages/proof-editor/tests/paste-matrix.test.ts, which rebuilds that
 // document headless and compares its own serializer's spelling of it - each column's alignment
-// included - against that same stored markdown (INFRA-1415).
+// included - against that same stored markdown (POMJU-1415).
 
 const table = "| alpha one | beta two |\n| --- | --- |\n| gamma three | delta four |\n";
 

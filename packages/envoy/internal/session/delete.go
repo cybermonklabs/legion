@@ -104,7 +104,7 @@ type DeleteConditions struct {
 	// NotRegisteredAfter is the moment the delete belongs to, in unix milliseconds: the entry
 	// is removed only while it was last written at or before it (SessionEntry.UpdatedAt). It
 	// is what the Legion daemon's clean stop of a dead role's session carries — the moment
-	// its probe judged the agent process gone (dispatch://INFRA-392) — so the registration
+	// its probe judged the agent process gone (dispatch://POMJU-392) — so the registration
 	// the relaunch of that claim writes under the same session id, which is newer than the
 	// stop, stays. Zero or negative compares no moment.
 	NotRegisteredAfter int64

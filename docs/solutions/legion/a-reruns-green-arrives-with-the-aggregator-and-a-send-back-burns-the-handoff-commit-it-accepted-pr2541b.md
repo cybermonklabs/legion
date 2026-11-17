@@ -51,7 +51,7 @@ costs.
 
 ## Evidence
 
-sjawhar/legion#2541 (INFRA-264), the round after its first retro. CI run 41216990032 attempt 1 at
+sjawhar/legion#2541 (POMJU-264), the round after its first retro. CI run 41216990032 attempt 1 at
 `61e45835` was red on `ci-ok` alone, because the `dispatch` job failed one Playwright row. Attempt
 2 of that run was green (`dispatch` 20:31:04Z, `ci-ok` 20:59:52Z). The implementer completed at
 `1fd41445` while the daemon still carried attempt 1's red; the issue came straight back to

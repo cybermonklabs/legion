@@ -1,7 +1,7 @@
 -- 20261111010031_issue_moved_at.up.sql — records, for every issue the daemon runs, when the
 -- daemon last saw that issue move, so that a measure of a tree that has stopped reads one column
 -- of the issue rather than deriving a movement again from the phases, the outbox and the claims
--- (INFRA-2560).
+-- (POMJU-2560).
 --
 -- What the column holds. The daemon writes it at the points that already mean the record
 -- changed: a Dispatch event of the issue, a GitHub event of its pull request, a phase change, a

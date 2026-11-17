@@ -14,7 +14,7 @@ module: .github/workflows
 
 # Give one job its own gate derived from an anchored shared filter, and let the workflow-only pull request prove it
 
-Extends docs/solutions/github/gate-an-expensive-step-inside-a-required-job-with-a-paths-filter-that-runs-only-on-pull-requests-and-prove-the-skip-with-a-stacked-scratch-pr-INFRA-584.md.
+Extends docs/solutions/github/gate-an-expensive-step-inside-a-required-job-with-a-paths-filter-that-runs-only-on-pull-requests-and-prove-the-skip-with-a-stacked-scratch-pr-POMJU-584.md.
 
 - **Before you change one job's definition, read its `if:` gate.** If the job's paths filter does
   not list the workflow file that holds the job, a pull request that changes only that job skips
@@ -34,7 +34,7 @@ Extends docs/solutions/github/gate-an-expensive-step-inside-a-required-job-with-
   before the change as the negative control. No scratch pull request is needed for this half.
 - **The shared-paths half is not exercised by this pull request.** That half is a file inside the
   shared filter changed with no change to the workflow. Prove it on the pinned action's own code
-  (docs/solutions/github/prove-a-path-filter-change-with-the-pinned-actions-own-code-and-a-skip-and-run-pair-of-scratch-pull-requests-based-on-the-branch-INFRA-583.md),
+  (docs/solutions/github/prove-a-path-filter-change-with-the-pinned-actions-own-code-and-a-skip-and-run-pair-of-scratch-pull-requests-based-on-the-branch-POMJU-583.md),
   or name it on the pull request's `Not proven / risk` line.
 
 ## Evidence

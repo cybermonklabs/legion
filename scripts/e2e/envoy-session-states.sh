@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The pod proof of the three session states (dispatch://INFRA-392): a session is live,
+# The pod proof of the three session states (dispatch://POMJU-392): a session is live,
 # unresponsive or gone by its registration record's age alone, and an unresponsive session is not
 # dead — it keeps its role claim and its issue claim, messages are stored for it, no replacement is
 # started for it, and nothing but the gone horizon takes any of that away.
@@ -74,7 +74,7 @@
 # The session bucket's maximum age is 2h for the whole run but check 8. At the shipping five
 # minutes JetStream removes a stalled session's key at five minutes — before the gone horizon can
 # be reached — so no stalled session could ever read `unresponsive` and nothing above could be
-# proved at all. Raising it is the rollout this issue's sibling carries (dispatch://INFRA-887), and
+# proved at all. Raising it is the rollout this issue's sibling carries (dispatch://POMJU-887), and
 # check 8 is its proof: the two running listeners leave ENVOY_SESSION_MAX_AGE unset, so neither
 # writes the bucket's age and both adopt what the bucket carries (applyMaxAge, on every reaper
 # pass), and a listener of the run's own writes it — 2h at setup, then in check 8 the shipping 5m,
@@ -152,7 +152,7 @@ checks=(
 
 usage() {
   cat <<'EOF'
-envoy-session-states.sh — the pod proof of live, unresponsive and gone (dispatch://INFRA-392)
+envoy-session-states.sh — the pod proof of live, unresponsive and gone (dispatch://POMJU-392)
 
   bash scripts/e2e/envoy-session-states.sh [--checks <name,name,…>] [--list]
 
@@ -446,7 +446,7 @@ api() { # api PORT METHOD PATH [BODY]
 # age by the second rather than by a process's own clock. The listener refuses a registration that
 # names a port (sjawhar/legion#2674), and a session receives what its own consumer holds and
 # nothing else, so the registration below names no port.
-# It asks for the session consumer, as every plugin's registration does (dispatch://INFRA-771):
+# It asks for the session consumer, as every plugin's registration does (dispatch://POMJU-771):
 # whatever else a registration says, one that asks for no consumer is refused 409 not_requested
 # and writes nothing (`consumerFor`), so a session registered without it would exist for no check
 # to read. It says `self_subscribed` as every plugin's registration does, and that field decides
@@ -1720,7 +1720,7 @@ check_every_plugin_shows_the_state() {
 }
 
 # ---- 8. a change to the bucket's maximum age reaches both listeners ---------------------------------------
-# The rollout this issue's sibling carries (dispatch://INFRA-887). The raise is proved for a session
+# The rollout this issue's sibling carries (dispatch://POMJU-887). The raise is proved for a session
 # stalled *after* it, never one stalled before: raising a bucket's maximum age restores no key
 # JetStream has already removed. That restatement is this issue's architect's.
 check_max_age_change_reaches_both_listeners() {

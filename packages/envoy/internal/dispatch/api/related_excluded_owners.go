@@ -10,7 +10,7 @@ import (
 // (searchKindsCTE): true of an arm's row whose owner the check leaves out. Parameter $owners
 // holds those owners as relatedInput.excluded writes them, so a statement drops exactly what
 // relatedInput.excludes drops - but before the page takes its suggestionSearchDepth rows rather
-// than after, which is the whole point of filtering here (INFRA-1160). Those two forms of the
+// than after, which is the whole point of filtering here (POMJU-1160). Those two forms of the
 // one rule, the SQL here and the Go below, are in this file together for that reason: the
 // statement drops an excluded owner's rows before the page takes its suggestionSearchDepth, and
 // excludes applies the same rule again in Go to whatever rows come back (fillRelatedItems).

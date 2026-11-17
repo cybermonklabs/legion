@@ -1,6 +1,6 @@
 package daemon
 
-// The early release (dispatch://INFRA-2981 R5, R9, verification's c-early-release): an answer a
+// The early release (dispatch://POMJU-2981 R5, R9, verification's c-early-release): an answer a
 // role gives stands for its round through any turn after it, an answered claim is handed no task
 // until the round ends, and an answer brings the round's end forward while silence delays nothing
 // past the bound. These cases drive the pod-update rig of podupdate_test.go, with the bound of

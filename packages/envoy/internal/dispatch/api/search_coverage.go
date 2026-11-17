@@ -8,7 +8,7 @@ import (
 
 // searchCoverage answers GET /api/v1/search/coverage: how much of what meaning search ranks has a
 // current vector from the embedder search embeds its queries with, and how many items each kind
-// search covers nothing of holds (embedqueue.Coverage, INFRA-393), counted in one statement so
+// search covers nothing of holds (embedqueue.Coverage, POMJU-393), counted in one statement so
 // every number reads one snapshot. The identity is Deps.Embedder's, the client cmd/dispatch
 // builds and never wraps for search, so it is the identity search filters candidates by; with no
 // embedder configured it is empty, the report's identity, place and model are null and nothing

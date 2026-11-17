@@ -25,7 +25,7 @@ type dependencyEdge struct{ issue, target string }
 
 // TestBlockedByCrossesAProjectAndStillRefusesACycle: a `blocked_by` target may be an issue of
 // another project, so an issue that waits on work tracked elsewhere can record that wait
-// (INFRA-3036). Every refusal that stood before stands across projects too — a ring, a child
+// (POMJU-3036). Every refusal that stood before stands across projects too — a ring, a child
 // waiting on its parent, a parent waiting on its descendant and an issue waiting on itself —
 // and concurrent writers that would close a ring between projects meet on the deployment-wide
 // dependency lock every dependency write takes exclusively, so each ends with the write applied

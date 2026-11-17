@@ -329,12 +329,12 @@ func TestHoldTokenReadsBack(t *testing.T) {
 //
 // Both halves used to allow a fixed 100 ms between the statement Expiry runs and the statement
 // the test compares it with, and a loaded runner spends more than that between two round trips:
-// the run that red INFRA-1039 read -2.176685 s, which is 176 ms of inter-statement time and not a
+// the run that red POMJU-1039 read -2.176685 s, which is 176 ms of inter-statement time and not a
 // clock that disagrees. So each comparison is bracketed by the database's own clock instead, and
 // what it allows is the time those statements took, read from that same clock. Load can only
 // lengthen it, so a slow runner cannot fail the test, while a reading wrong by more than the time
 // those two statements took still falls outside the bracket: the now() plus or minus one second
-// mutants of this issue's plan (INFRA-985, task T7) are caught.
+// mutants of this issue's plan (POMJU-985, task T7) are caught.
 func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()

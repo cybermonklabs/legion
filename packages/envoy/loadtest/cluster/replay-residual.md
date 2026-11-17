@@ -1,10 +1,10 @@
-- The replay does not reproduce production's reads. It assumes ρ = 1 read per write, with INFRA-639's read mix.
+- The replay does not reproduce production's reads. It assumes ρ = 1 read per write, with POMJU-639's read mix.
 - The replay assumes the split between document edits and uploads, at an upload share of U = 0.25.
 - The replay does not send browser document edits or settlements.
 - The replay does not reproduce the time that a CLI process takes to start between its requests.
 - The seed's historical versions hold the 22:55 text with a marker line. Each synthetic version changes as many bytes as the real version that it replaces.
 - The seed's anchor count, document sizes and history bytes are faithful. The placement of an anchor in its document is approximate when the seed puts the anchor on the nearest surviving block. The cost of the anchor refresh on each write scales with the anchor count and the document size, which are faithful. The cost of quote matching can depend on the placement of the anchors.
-- Some small synthetic versions in the seed change the logged number of bytes in the opposite direction: they add bytes where the real version removed bytes, or remove bytes where it added bytes. INFRA-639's seed check counts these versions in `sign_flipped`.
+- Some small synthetic versions in the seed change the logged number of bytes in the opposite direction: they add bytes where the real version removed bytes, or remove bytes where it added bytes. POMJU-639's seed check counts these versions in `sign_flipped`.
 - When the client's text does not hold the logged quote of an anchored comment, the replay sends a substitute quote. `summary.json` counts these in `replay.substitutes.quote`.
 - For a cut diff, and for a version with no diff, the replay sends substitute content of the logged size change. `summary.json` counts these in `replay.substitutes.edit`.
 - When version 1 of a created issue's spec was unreadable, the replay sends synthetic text of the logged size. `spec_sizes` counts these specs.
@@ -25,7 +25,7 @@
   - `f45fd509` feat(dispatch): embed through Bedrock or Azure AI Foundry, chosen by DISPATCH_EMBEDDER (#2208)
   - `383b889d` feat(dispatch): the live view shows and switches a session's model and thinking level (#2205)
   - `8f3d4237` feat(dispatch): a project imports its architecture components from several repositories (#2209)
-  - `5bc72900` fix(dispatch): reload a document room another process left behind, and keep a force-closed room's record (INFRA-218, INFRA-352) (#2212)
+  - `5bc72900` fix(dispatch): reload a document room another process left behind, and keep a force-closed room's record (POMJU-218, POMJU-352) (#2212)
   - `c8974e2e` test(dispatch): suggestion deadline tests prove the allowance ends a query waiting behind the lock, with no stopwatch (#2217)
   - `f1ea47ae` fix(dispatch): a reader on another process gets the stored document back within the stale-room window (#2211)
   - `a9c9542f` fix(dispatch): boot from the App key as Secret Manager stores it, and read large branch heads (#2202)

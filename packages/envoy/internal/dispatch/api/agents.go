@@ -107,7 +107,7 @@ func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (ma
 // The copy carries the unresponsive sessions as well as the live ones, each row with its own
 // `state`, so the Agents page shows a session that missed its heartbeats as stalled rather than
 // dropping it: it is still working, still holds its claims, and is still a target a reader may
-// pick (dispatch://INFRA-392).
+// pick (dispatch://POMJU-392).
 func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -132,7 +132,7 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	if !roster.answered {
 		// The roster's reason is the one every process reads, stored on the row beside the
 		// answer, so a refill one process met answers ENVOY_REFILLING here too, with the
-		// Retry-After the listener sent, never the unreachable listener dispatch://INFRA-261
+		// Retry-After the listener sent, never the unreachable listener dispatch://POMJU-261
 		// forbids (listIssues refuses a judged filter the same way).
 		if roster.reason == model.RouteReasonRefilling {
 			writeEnvoyRefilling(w, roster.retryAfter)

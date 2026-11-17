@@ -28,7 +28,7 @@ related_issues:
   replaces the older one's, and unbinding the view drops it. A path that bypasses it is the bug
   the next review finds.
 - Prove each entry point with a browser row that turns scroll anchoring off
-  (docs/solutions/testing/a-mutation-that-stays-green-because-the-platform-implements-the-behaviour-too-INFRA-43.md),
+  (docs/solutions/testing/a-mutation-that-stays-green-because-the-platform-implements-the-behaviour-too-POMJU-43.md),
   holds the content until the target has landed, then releases it.
 
 ## Evidence

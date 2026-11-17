@@ -42,7 +42,7 @@ function drawer(page: Page) {
  *
  * Below `READING_PANE_WIDTH` that is the card in the question's row on the Inbox page. From
  * there the page shows an approval as the document under review in its reading column
- * (INFRA-575), which carries no card, and the drawer is the Inbox that still keeps one
+ * (POMJU-575), which carries no card, and the drawer is the Inbox that still keeps one
  * (`pane={false}`): it opens over whatever page is showing, so this navigates to one.
  */
 async function approvalCard(page: Page, askId: string): Promise<Locator> {
@@ -77,7 +77,7 @@ test("a spec's approval is a human review pinned to its version: requested by th
   try {
     const page = await alice.newPage();
     await page.goto("/");
-    // From 1280 px an approval's own surface in the Inbox is the reading column (INFRA-575):
+    // From 1280 px an approval's own surface in the Inbox is the reading column (POMJU-575):
     // the document at the version under review, with Approve and Request changes in the
     // column's head. That head is where the reader answers it.
     const head = await askControls(page, requested.ask.id);
@@ -399,7 +399,7 @@ test("an approval request stays in one Inbox card while its document version mov
     const page = await alice.newPage();
     await page.goto("/");
     // One request, one item: the row it is, in the band whose turn it is. From 1280 px the
-    // card the Inbox drew for it is the reading column's document (INFRA-575), so the row
+    // card the Inbox drew for it is the reading column's document (POMJU-575), so the row
     // carries the question's own words and the column's head carries Approve.
     const row = inboxRow(page, requested.ask.id);
     await expect(row).toHaveAttribute("data-inbox-section", "human");
@@ -483,7 +483,7 @@ test("a human comment, revision, and hand-back return an approval card to Waitin
     const page = await alice.newPage();
     await page.goto("/");
     // The band the question sits in is the row's, at every width: from 1280 px an approval's
-    // card in the Inbox is the reading column's document (INFRA-575), not a card in the list.
+    // card in the Inbox is the reading column's document (POMJU-575), not a card in the list.
     await expect(inboxRow(page, requested.ask.id)).toHaveAttribute("data-inbox-section", "human");
     await page.goto(`/issues/${issue.key}`);
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (1)");
@@ -526,7 +526,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
     // The same version, question and summary: the hand-back alone changes whose turn it is,
     // and the open Inbox moves on the ask.handed_back event it records, which rewords nothing
     // - the question waits on the reader again, live. The row the reading column is showing
-    // is held in the band they saw it in until they look away (INFRA-575, `heldRow`), so its
+    // is held in the band they saw it in until they look away (POMJU-575, `heldRow`), so its
     // band is read on their next look at the list.
     const handedBack = withOpenedAsk(
       await requestApproval(issue.primary_artifact_id, { summary }, session)
@@ -628,7 +628,7 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
   try {
     // No live socket on this page: the card stays as the human loaded it, mid-answer. An
     // answer can be half-made only where the Inbox draws the question's own card, which for an
-    // approval from 1280 px is the drawer rather than the page's reading column (INFRA-575):
+    // approval from 1280 px is the drawer rather than the page's reading column (POMJU-575):
     // the column shows the document under review, whose Approve is one press with no draft to
     // hold. The drawer keeps today's card at every width.
     const answering = await alice.newPage();
@@ -708,7 +708,7 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
     const page = await alice.newPage();
     // The question's own card is where the Inbox shows the question itself: the row's card
     // below 1280 px, and the drawer's from there up, since the Inbox page's reading column
-    // shows an approval as the document under review rather than a card (INFRA-575) and its
+    // shows an approval as the document under review rather than a card (POMJU-575) and its
     // short row gives the question one line on purpose.
     const card = await approvalCard(page, requested.ask.id);
     await expect(card).toBeVisible();
@@ -763,7 +763,7 @@ test("reading an approved spec and moving the caret through its numbered list le
   try {
     const page = await alice.newPage();
     await page.goto("/");
-    // The reading column's head is where the Inbox offers the review from 1280 px (INFRA-575).
+    // The reading column's head is where the Inbox offers the review from 1280 px (POMJU-575).
     await (await askControls(page, requested.ask.id))
       .getByRole("button", { exact: true, name: "Approve" })
       .click();
@@ -921,7 +921,7 @@ test("an approval request for an unassigned issue's non-primary document remains
     await page.goto("/");
     await expect(inboxRow(page, nonPrimary.ask.id)).toBeVisible();
     // Actionable means the Inbox offers the review where this width draws it: the reading
-    // column's head over the document under review from 1280 px (INFRA-575), and the
+    // column's head over the document under review from 1280 px (POMJU-575), and the
     // question's own card, which names itself an approval, below that.
     const controls = await askControls(page, nonPrimary.ask.id);
     if (hasReadingPane(page)) {
@@ -991,7 +991,7 @@ test("an approval ask's Inbox row, drawer link and bare ask route land on the sp
 
     // The Inbox row's own link for the request lands on the spec, approve control in view — not
     // the Conversation turn `useItemLanding` fell through to before this fix. From 1280 px the
-    // reading column's head carries the selected question's owner link too (INFRA-575), and it
+    // reading column's head carries the selected question's owner link too (POMJU-575), and it
     // names the same address; following the row's link is the row's click, not the list's
     // selection, so the issue it opens stays open.
     await page.goto("/");
@@ -1079,7 +1079,7 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     // document has no assignee, so its question reaches the default assignee of its project -
     // alice, who made GATE - and her own list is where the Inbox lists it. The link is the
     // card's named version below 1280 px, and from there the short row's own owner link, the
-    // reading column having drawn the document itself in place of a card (INFRA-575); both
+    // reading column having drawn the document itself in place of a card (POMJU-575); both
     // carry the same address.
     await page.goto("/");
     const inboxLink = hasReadingPane(page)

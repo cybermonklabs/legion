@@ -15,7 +15,7 @@ import { serverBlockSchema } from "./block-schema-fixture";
 import { withDomWindow } from "./dom-window";
 
 /**
- * Tearing an editor down leaves nothing that can draw it (INFRA-2409).
+ * Tearing an editor down leaves nothing that can draw it (POMJU-2409).
  *
  * `Editor.destroy()` runs every plugin's cleanup before its own, and a `$ctx` plugin's cleanup
  * removes its slice, so the commonmark presets' mark attributes - `inlineCodeAttr` among them -

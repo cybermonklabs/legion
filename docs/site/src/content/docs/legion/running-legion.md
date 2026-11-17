@@ -598,7 +598,7 @@ What each part is for:
   some or none of the overlays of, so each model call says which arm's files it ran with. The agent
   takes the last value a key is given, which is why Legion's pairs come last. A spend row names an
   issue, a role or an arm only where your spend collector keeps that key: a collector that keeps
-  a list of `theorem.*` attributes alone drops all three (dispatch://INFRA-1835).
+  a list of `theorem.*` attributes alone drops all three (dispatch://POMJU-1835).
   The project controller serves no issue and carries the role alone. The image probe's container
   runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
   role either and keeps it with its trailing commas and whitespace dropped and nothing added.

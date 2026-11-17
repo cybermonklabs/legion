@@ -496,7 +496,7 @@ func TestAnAncestryHoldStandsWhileAQueuedRootOnItsChainIsAdoptedIntoTheLiveTree(
 }
 
 // A labelled todo issue whose Dispatch chain reaches a live tree past a recorded root parked out of
-// the workflow (INFRA-214's state: a once-queued root a person moved under the live tree and did
+// the workflow (POMJU-214's state: a once-queued root a person moved under the live tree and did
 // not release) is held under the live tree, whose release would reach it, not passed by the parked
 // root, which is not live: it takes no slot and no architect with one free. Once the live tree
 // lingers, no live root is left on its chain, and it waits as its own root and takes the slot.

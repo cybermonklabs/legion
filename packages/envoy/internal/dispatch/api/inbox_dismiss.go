@@ -177,7 +177,7 @@ var inboxDismissCheckAgentRoots = myAgentMarks + `
 // is; a request that named threads rather than filters binds no text at all, and least() over a
 // null mark is now(), the moment it was dismissed. read_through only moves forward. A timestamp
 // as a value is sound, and a filtered dismissal is matched by one: it writes the rows whose
-// replied_at is at or before dismiss_through, the as_of rule the mark-all takes too (INFRA-450's
+// replied_at is at or before dismiss_through, the as_of rule the mark-all takes too (POMJU-450's
 // spec, v32). What decides a named dismissal's rows is the version.
 //
 // That version is user_threads.version ($4, one per thread beside the ids in $3), which the list

@@ -68,7 +68,7 @@ const (
 const dequeueRetry = 20 * time.Millisecond
 
 // TestADequeuedPullRequestReachesItsMerger holds that a pull request GitHub takes out of the merge
-// queue reaches the issue's merger (dispatch://INFRA-3274/spec R1): the daemon reads the pull
+// queue reaches the issue's merger (dispatch://POMJU-3274/spec R1): the daemon reads the pull
 // request once, applies the merge when GitHub reports one, and otherwise tells the merger on its
 // own role topic, waking its pod when the idle release took it and holding the message until the
 // woken session holds the merger's role. Nothing else tells a merger of the removal: its pull

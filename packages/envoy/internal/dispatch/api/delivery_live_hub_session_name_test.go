@@ -50,7 +50,7 @@ func hubSessionTitles(t *testing.T, body json.RawMessage) map[string]string {
 // dirty, record nothing for the session while a read is under way, and leave the resolved read
 // (delivery.ResolveSessionTitles, which the GET this delta must land on makes) naming it. A
 // session that never stamped a title is held by its bare id throughout, which is the limit chosen
-// for INFRA-1368: nothing backfills a name for it.
+// for POMJU-1368: nothing backfills a name for it.
 func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	var pause *notePause
 	rig := newHubRig(t, func(hub *deliveryHub) { pause = pauseNotes(hub) })

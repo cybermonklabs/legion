@@ -1,5 +1,5 @@
 /**
- * The live views the shell has mounted (INFRA-812, D5 and D6).
+ * The live views the shell has mounted (POMJU-812, D5 and D6).
  *
  * A live view does not belong to its route: the person leaves it for the Inbox or another agent
  * and comes back, and what they were writing, where they were reading and the session's own

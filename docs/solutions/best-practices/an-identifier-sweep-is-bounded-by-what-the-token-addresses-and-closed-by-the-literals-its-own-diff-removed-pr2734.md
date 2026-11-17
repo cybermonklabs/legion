@@ -63,7 +63,7 @@ Two corollaries:
   which is the opposite of the exclusion heuristic.
 - Enumerate every directory holding a `go.mod` that the diff touched and run each module's own
   gate. A module outside the root `go.work` is reached by no root `go test` or `go vet`
-  (docs/solutions/github/a-go-jobs-path-filter-is-the-closure-of-what-its-command-compiles-production-imports-included-and-stops-at-a-nested-module-INFRA-583.md).
+  (docs/solutions/github/a-go-jobs-path-filter-is-the-closure-of-what-its-command-compiles-production-imports-included-and-stops-at-a-nested-module-POMJU-583.md).
 
 ## Evidence
 
@@ -83,7 +83,7 @@ cybermonklabs/legion#2734 moved this repository's own address from the `sjawhar`
   buildcache tag and two package version ids
   (`docs/solutions/github/a-branch-experiment-writes-only-state-scoped-to-the-branch-or-state-its-app-can-delete-pr2297.md:35`),
   two past image tags, and a recorded certificate SAN
-  (`docs/solutions/github/keep-an-attestation-signer-identity-by-calling-one-reusable-workflow-build-only-then-attest-only-INFRA-576.md:50`).
+  (`docs/solutions/github/keep-an-attestation-signer-identity-by-calling-one-reusable-workflow-build-only-then-attest-only-POMJU-576.md:50`).
 - The sweep excluded `*_test.go`, `*.test.sh` and `*.test.ts` to protect the fixture owner. That
   hid three stale expectations, each found one red CI lane at a time across three rounds:
   `packages/envoy/infra/aws/webhooklistener_test.go:173` against the alarm description at

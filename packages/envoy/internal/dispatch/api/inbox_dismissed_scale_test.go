@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// INFRA-450's a14: what the Inbox's reads cost once a person has dismissed a very great many
+// POMJU-450's a14: what the Inbox's reads cost once a person has dismissed a very great many
 // threads. A dismissal keeps the row rather than deleting it, so the pile only grows, and the
 // question this measures is the one the person it is for asked - whether reading the Inbox, or
 // reading a page of what he has dismissed, gets slower as it does.

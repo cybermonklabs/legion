@@ -490,7 +490,7 @@ func TestARereadSkipsARootWhoseChainItCannotRead(t *testing.T) {
 }
 
 // A labelled todo issue whose Dispatch chain reaches a running tree past a recorded root parked out
-// of the workflow (INFRA-214's state: a once-queued root a person moved under the tree and did not
+// of the workflow (POMJU-214's state: a once-queued root a person moved under the tree and did not
 // release) is held under the running tree, whose release would reach it: the parked root, not
 // live, is passed over rather than ending the chain, whether it is the issue's parent or further up.
 func TestARootHeldPastAParkedRootOnItsChainTakesNoSlot(t *testing.T) {

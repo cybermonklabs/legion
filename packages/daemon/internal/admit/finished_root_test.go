@@ -101,7 +101,7 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 // waits on (record.OpenBeneath). Counting it would deadlock the pair: the child waits for the
 // root to close and the root waits for the child to leave, and no act of a person short of
 // parking the child breaks it. This is the one recorded departure from the spec of
-// dispatch://INFRA-980, decided on dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
+// dispatch://POMJU-980, decided on dispatch://POMJU-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 1, MergeSHA: "merge-1"}, engine, admission); err != nil || result.Refusal != nil {
@@ -447,7 +447,7 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 			if tc.hold == nil {
 				// The merger is no longer told an approved head: Legion re-implements none of a
 				// repository's rules, so no role compares a head with the one a review approved
-				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
+				// (dispatch://POMJU-714 R2). A carried root's merger is resumed into the phase it
 				// stood in, and the merge it makes is the head it reads for itself.
 				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."
 				if len(mergerTasks) != 1 || mergerTasks[0] != want {

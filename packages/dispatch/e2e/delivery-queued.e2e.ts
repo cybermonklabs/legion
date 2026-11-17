@@ -17,7 +17,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * INFRA-626. A session the Envoy listener knows and that is not running is a recipient, not
+ * POMJU-626. A session the Envoy listener knows and that is not running is a recipient, not
  * a refusal: the listener stores the message for it and hands it over when it runs again, and
  * Dispatch records that attempt `queued`. This spec reads that word on each of the three surfaces
  * a person sees it on - a message aimed at one session, a mention in a comment, and a broadcast

@@ -123,7 +123,7 @@ func newOneStartRig(t *testing.T) oneStartRig {
 // The daemon used to write two rows for a start (workflow.StartOrOwe): a task-less relaunch row
 // claimable at once, which started the process, and a second row that carried the task and
 // waited for the issue's admission slot. A worker could therefore run a whole turn with nothing
-// to do (INFRA-1573). The assertion that shows that behaviour is theOneStartRow's, which every
+// to do (POMJU-1573). The assertion that shows that behaviour is theOneStartRow's, which every
 // case here begins with: before this change the planner's completion left two start rows for the
 // implementer and this test stopped there.
 //

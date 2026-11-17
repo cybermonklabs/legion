@@ -146,7 +146,7 @@ func TestParseRefusesAFootnoteDefinitionInsideAnother(t *testing.T) {
 	}
 }
 
-// Since the browser editor reads a `:::` block as a container like a quote (INFRA-581), a footnote
+// Since the browser editor reads a `:::` block as a container like a quote (POMJU-581), a footnote
 // definition inside a typed block defines its footnote for a call anywhere in the text: before the
 // block, inside it and after it, as a definition inside a quote does. A document write reads such
 // a definition as the browser editor does and keeps it where it was written; refusing it, or

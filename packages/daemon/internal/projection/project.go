@@ -449,7 +449,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// (atWorkPastReview).
 	//
 	// The running roots are the term that says an issue past its review is at work: it holds no
-	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
+	// slot since dispatch://POMJU-2560, so no list of the three places it and the answer turns
 	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,

@@ -17,7 +17,7 @@ related_issues:
 
 # Three reds, one shape: a flaky upper bound is repaired by the statistic or the observable, never by the bound
 
-Extends docs/solutions/testing/a-row-that-fails-at-about-five-seconds-in-a-worker-pod-is-buns-spawnsync-timeout-under-gvisor-INFRA-92.md,
+Extends docs/solutions/testing/a-row-that-fails-at-about-five-seconds-in-a-worker-pod-is-buns-spawnsync-timeout-under-gvisor-POMJU-92.md,
 which says not to widen a bound and to measure the call rather than the harness. This one is about
 the red that is neither the code nor simply the host, and about what to do instead of widening.
 
@@ -38,7 +38,7 @@ changing *what is observed* or *which statistic of it is held*:
 - the memory test held the **least of three runs** to the bound, since uncollected garbage only
   adds to a peak (the same edit peaked from 190 to 263 MiB over five runs with a live heap under
   about 130 MiB) - a statistic that hid two causes, both of them named and repaired below
-  (INFRA-985);
+  (POMJU-985);
 - the readiness test **waits for the state production waits for**, the server's own report that
   the durable is bound.
 

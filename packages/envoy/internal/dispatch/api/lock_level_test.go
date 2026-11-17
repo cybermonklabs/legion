@@ -17,7 +17,7 @@
 // once in the text-check run that names the fifteen tests of these seven guards and
 // one_expression_guard_test.go. That file is where the module's second walk went: main had it
 // as a subtest of who_waits_test.go, parsing the same tree in the race binary, and its subject
-// is the module's text, which R15 of dispatch://INFRA-1066 has run in the text-check job rather
+// is the module's text, which R15 of dispatch://POMJU-1066 has run in the text-check job rather
 // than inside a product suite - so it is on this side of the tag now.
 
 package api

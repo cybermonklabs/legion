@@ -37,7 +37,7 @@ import (
 // answer at all: an issue of `admission.active` whose worker is running, an issue at
 // phase.Held whose hold came from a phase that keeps a slot and which holds that slot, which
 // stands in that same list, and an issue whose work is running past its own review, which holds
-// no slot since dispatch://INFRA-2560 and so stands in none of the three lists that place an
+// no slot since dispatch://POMJU-2560 and so stands in none of the three lists that place an
 // issue, only in `admission.held` (atWorkPastReview). An issue at phase.Held that gave its slot
 // back to wait on another issue stands in the line and reads `waiting` (blockers.waitsOf). A
 // hold from a phase past the review keeps no slot (record.KeepsSlot, which reads
@@ -270,7 +270,7 @@ func linkReason(waitsOn []string) string {
 
 // atWorkPastReview is an issue whose work is running now in a phase past its own review:
 // accepting, where the architect that owns the issue reads the head the issue's worker built, its
-// retro, and its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
+// retro, and its merge. Since dispatch://POMJU-2560 such an issue holds none of the cap's slots
 // (record.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
 // whyStates standing in none of the three lists that place an issue: the held list names it
 // instead, under the ladder's at_work where no earlier word is true of it (record.HeldAtWork).
@@ -425,8 +425,8 @@ func heldWordReason(state api.WhyState, cause record.HeldIssue) (string, bool) {
 	return entry.sentence(englishIssues(cause.HeldBy)), serves
 }
 
-// englishIssues is a list of issue keys as a person writes it: `INFRA-123` alone,
-// `INFRA-123 and INFRA-456` for two, and `INFRA-1, INFRA-2 and INFRA-3` for three or more, in
+// englishIssues is a list of issue keys as a person writes it: `POMJU-123` alone,
+// `POMJU-123 and POMJU-456` for two, and `POMJU-1, POMJU-2 and POMJU-3` for three or more, in
 // the order the judgement that named them gave them. It is the one list render the sentences of
 // `why` share (whyStates), so no two of them punctuate a list differently.
 func englishIssues(keys []string) string {

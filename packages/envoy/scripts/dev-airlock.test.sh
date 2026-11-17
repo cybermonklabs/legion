@@ -216,8 +216,8 @@ cat <<REPORT
   "github_app_id": "123456",
   "github_app_key_file": "$dir/github-app.pem",
   "model_answer_url": "http://127.0.0.1:$$/answers/model",
-  "dispatch_open_issue": "INFRA-1353",
-  "dispatch_done_issue": "INFRA-1200",
+  "dispatch_open_issue": "POMJU-1353",
+  "dispatch_done_issue": "POMJU-1200",
   "stands": {
     "s": {"address": "127.0.0.1:1001", "url": "https://127.0.0.1:1001", "records_url": "http://127.0.0.1:$$/records/s"},
     "t": {"address": "127.0.0.1:1002", "url": "https://127.0.0.1:1002", "records_url": "http://127.0.0.1:$$/records/t"},
@@ -445,7 +445,7 @@ for want in "AIRLOCK_MODEL_RECORDS=$records_url/records/model" \
   "AIRLOCK_DISPATCH_RECORDS=$records_url/records/dispatch" \
   "AIRLOCK_METADATA_RECORDS=$records_url/records/metadata" \
   "AIRLOCK_MODEL_ANSWER_URL=$model_answer_url" \
-  "AIRLOCK_DISPATCH_OPEN_ISSUE=INFRA-1353" "AIRLOCK_DISPATCH_DONE_ISSUE=INFRA-1200"; do
+  "AIRLOCK_DISPATCH_OPEN_ISSUE=POMJU-1353" "AIRLOCK_DISPATCH_DONE_ISSUE=POMJU-1200"; do
   if [[ "$(exported "${want%%=*}")" != "${want#*=}" ]]; then
     echo "FAIL: the banner exports ${want%%=*}=$(exported "${want%%=*}"); want ${want#*=}" >&2
     exit 1

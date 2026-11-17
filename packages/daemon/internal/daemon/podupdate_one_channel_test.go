@@ -2,7 +2,7 @@ package daemon
 
 // The update round's ask reaches each role on one channel: the sweep publishes it once per claim
 // per round, as a role-message outbox row (record.UpdateAsk) to that claim's own Envoy topic, and
-// no claim is queued or sent a task for the round (dispatch://INFRA-2981 R1, verification's
+// no claim is queued or sent a task for the round (dispatch://POMJU-2981 R1, verification's
 // c-one-channel). These cases drive the pod-update rig of podupdate_test.go.
 
 import (
@@ -123,7 +123,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	}
 }
 
-// The round's terms are fixed when it opens (dispatch://INFRA-2981 R9, verification's
+// The round's terms are fixed when it opens (dispatch://POMJU-2981 R9, verification's
 // c-early-release terms case). A later sweep that reads other drift for the same pod writes no
 // new reasons over the open round, and the ask the sweep publishes names the reasons the round
 // opened with: the ask a role reads and the record an operator reads name one thing for one

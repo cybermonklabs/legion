@@ -120,7 +120,7 @@ function fixture(startOn = OPUS) {
 }
 
 /** The reason the host names on the event when a content filter refused the turn it walked for:
- * what the live pane proof measured (dispatch://INFRA-956 R1). */
+ * what the live pane proof measured (dispatch://POMJU-956 R1). */
 const REFUSAL_REASON = "Request failed: Refusal (cyber): Declined";
 /** A reason that is no content filter: the busy model the host's own retry handles. */
 const BUSY_REASON = "Request failed: 529 Overloaded";
@@ -183,7 +183,7 @@ describe("a fallback the host applied", () => {
     expect(pane.setModelCalls).toEqual([OPUS]);
   });
 
-  // The reviewer's own case (dispatch://INFRA-956 R1, round 1): `opus-5-5` refused before any
+  // The reviewer's own case (dispatch://POMJU-956 R1, round 1): `opus-5-5` refused before any
   // text, which the host walked itself, and then `opus-5` refused after text, which the host
   // leaves where it is. Both refusals land in one turn, and the session must end up one step
   // further down the chain with its return still pointing at the model it started on.
@@ -511,7 +511,7 @@ describe("the return to the session's own model", () => {
   });
 });
 
-// Plan answer 5 (dispatch://INFRA-956 R1): a session already sitting on a fallback when this
+// Plan answer 5 (dispatch://POMJU-956 R1): a session already sitting on a fallback when this
 // build starts — one applied before the plugin shipped, or a host walk `ownFallback` did not
 // claim — has no record of its own to restore, and nothing else would ever bring it back.
 describe("a session this runner finds already on a fallback", () => {
@@ -543,7 +543,7 @@ describe("a session this runner finds already on a fallback", () => {
     expect(pane.setModelCalls).toEqual([OPUS]);
   });
 
-  // The reviewer's round-4 case (dispatch://INFRA-956 R4): two steps of one walk, neither of them
+  // The reviewer's round-4 case (dispatch://POMJU-956 R4): two steps of one walk, neither of them
   // this plugin's, so the branch is the only record of where that walk started. The middle of the
   // chain is a model the session was handed by a refusal, and coming back to it is coming back to
   // no model of the role's.

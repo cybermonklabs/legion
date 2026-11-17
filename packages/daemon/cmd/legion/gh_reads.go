@@ -23,7 +23,7 @@ const ghCheckedOnlyVisibility = "checked-only"
 // whole guard. A bump of the pin fails that test until the tag, the sha256 and the tests' port of
 // the check all move: port the new check's gh_guard, is_read, READ_ALL, READ_TWO, collect and
 // api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (both in
-// gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness against it with 0 mismatching
+// gh_pinned_check_test.go), run POMJU-3562's xcheck4069 harness against it with 0 mismatching
 // rows, then write its tag here and the sha256 of its public_leak_check.py, `git show
 // <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own repository.
 var ghReadsProvenCheck = struct{ tag, sha256 string }{
@@ -156,7 +156,7 @@ const (
 // makes gh send anything but a GET of its endpoint: --jq/-q, --template/-t, --cache,
 // -X/--method and -H/--header, each taking a value, and --paginate and --slurp. A method is
 // admitted only as exactly GET, and a header only where it names no method override
-// (ghAPIReadValue). INFRA-3562's spec v20 admits -X/--method GET and -H/--header only where the
+// (ghAPIReadValue). POMJU-3562's spec v20 admits -X/--method GET and -H/--header only where the
 // pinned check reads every spelling of them as a read too, and the generated spellings of
 // TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead hold that, against ghPinnedCheckReads.
 var ghAPIReadOptions = ghReadOptions("-q --jq -t --template --cache -X --method -H --header", "--paginate --slurp")
@@ -210,7 +210,7 @@ func ghReadOptions(values, switches string) map[string]bool {
 //
 // So this admits a read by a grammar of the words as typed, which gh's parse and the check's
 // read alike, and never by refusing the shapes the two were found to read otherwise
-// (INFRA-3562's spec v20): argv begins with the leaf's canonical path, with no cobra
+// (POMJU-3562's spec v20): argv begins with the leaf's canonical path, with no cobra
 // alias (`pr ls`) and no option before the command (`-R o/r pr view`, which the check also reads
 // as a read, and this does not, to keep one rule); the leaf is on ghReadLeaves or is `gh api`;
 // and the words after the path are in that leaf's grammar (ghReadGrammar). Every other call

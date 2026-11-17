@@ -1,6 +1,6 @@
 // The heading parse behind `anchors`, which decides whether a `skill://<name>/<path>#anchor` link
 // resolves. It stands in for `/^#{1,6}\s+(.+?)\s*#*$/`, an expression quadratic in a line's
-// trailing whitespace (dispatch://INFRA-1639), and each row below is that expression's own answer,
+// trailing whitespace (dispatch://POMJU-1639), and each row below is that expression's own answer,
 // oddities included: it is the meaning every skill's anchors were written against.
 import { expect, test } from "bun:test";
 import { anchors, headingText } from "./skills-guard";

@@ -136,7 +136,7 @@ func TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing(t *testing
 // refer writes its row and nothing else, which leaves the request for its person.
 func TestApproveAppliesTheDecisionAndReferWritesTheRowAlone(t *testing.T) {
 	for _, c := range []struct{ verdict, reason string }{
-		{Approve, "The reason names INFRA-1353 and the issue is the broker's judge."},
+		{Approve, "The reason names POMJU-1353 and the issue is the broker's judge."},
 		{Refer, "The reason says nothing about this secret."},
 	} {
 		t.Run(c.verdict, func(t *testing.T) {

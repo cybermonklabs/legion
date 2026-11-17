@@ -310,7 +310,7 @@ gates:
   design: root-issues
 admission_cap: 2
 review_round_cap: 3
-# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# The wake pacing off (POMJU-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
 worker_wakes_per_minute: 0
 # The production check's bound (14 days by default) must come due inside the run, since its wake,
@@ -371,7 +371,7 @@ stop_dispatch() {
 issue_worker_pane() {
   daemon_state | jq -er --arg issue "$1" --arg role "$2" '.issues[$issue].workers[$role].claim.locator.tmux.pane'
 }
-# A slot is one issue the daemon has started, not one tree (dispatch://INFRA-980), so a child
+# A slot is one issue the daemon has started, not one tree (dispatch://POMJU-980), so a child
 # takes a slot of its own once the daemon starts its first phase. This child cannot start yet: its
 # tree's design gate has never opened, so it stands at admitted, holds no slot and is in no line,
 # while the cap's two slots stay with the two roots the daemon has started. admission.trees names
@@ -528,7 +528,7 @@ production_audit() {
   audited=1
   sessions=$(rig_sessions_json)
   printf '%s\n' "$sessions" >"$evidence/rig-sessions.json"
-  # include=unresponsive, because the default answers live sessions alone (dispatch://INFRA-392):
+  # include=unresponsive, because the default answers live sessions alone (dispatch://POMJU-392):
   # a rig session that leaked and then stopped answering is the one this audit most needs to find,
   # and without the parameter it would be absent from the list and the audit would pass over it.
   envoy=$(curl -fsS --max-time 10 "$prod_envoy_url/v1/sessions?include=unresponsive") || { printf 'could not read %s/v1/sessions\n' "$prod_envoy_url"; return 1; }
@@ -1278,7 +1278,7 @@ restart_scenarios() {
   until_true 240 "the implementer pane to read the pull request" session_contains "$restart_issue" implementer "CRED-PR=https://github.com/$repo/pull/$pr_number"
   # The directory the agent printed is the one its OMP process was launched with: its repository's
   # owner's directory of the bundle named for its claim, which holds the two gh files the daemon
-  # writes for the pane and, since INFRA-513 narrowed every token, a directory per other repository
+  # writes for the pane and, since POMJU-513 narrowed every token, a directory per other repository
   # the project serves under that owner, each holding those two files alone; nothing else is in
   # either.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"

@@ -360,7 +360,7 @@ test("a route change in a status write moves the open card's route row without a
 
     // The reader starts answering. A question the server drops leaves the Inbox at once, except
     // where they have typed an answer to it: the column then keeps that question, closed, until
-    // they select another row (INFRA-575, `dispatch://INFRA-575/spec`). That is what holds this
+    // they select another row (POMJU-575, `dispatch://POMJU-575/spec`). That is what holds this
     // card in front of the close below.
     const typed = "Ship it once the route lands.";
     await card.locator("[data-ask-answer]").fill(typed);

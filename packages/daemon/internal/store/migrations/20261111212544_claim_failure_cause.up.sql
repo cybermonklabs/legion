@@ -1,6 +1,6 @@
 -- 20261111212544_claim_failure_cause.up.sql — the one word for what failed a claim, beside the
 -- sentence the daemon already keeps, and the cause of the episode a relaunch is under way for
--- (INFRA-3083).
+-- (POMJU-3083).
 --
 -- claims.failure_cause is supervise.Claim.FailureCause and claims.failed_at is
 -- supervise.Claim.FailedAt: the cause the site that failed the claim chose (supervise's fail) and

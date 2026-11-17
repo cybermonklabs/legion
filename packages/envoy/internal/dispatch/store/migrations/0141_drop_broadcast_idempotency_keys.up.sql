@@ -1,5 +1,5 @@
 -- 0141_drop_broadcast_idempotency_keys.up.sql
--- INFRA-258: the contracting half of 0137_request_keys. broadcast_idempotency_keys (0055) held the
+-- POMJU-258: the contracting half of 0137_request_keys. broadcast_idempotency_keys (0055) held the
 -- key of each broadcast a person sent before every write took an Idempotency-Key header; since
 -- 0137's release a broadcast's key is a request_keys row, and no server of that release or any
 -- later one reads or writes this table. 0137 kept it so a deploy of that release could roll back

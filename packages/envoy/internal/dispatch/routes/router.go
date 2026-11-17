@@ -122,7 +122,7 @@ type AppContextOptions struct {
 	Docs       docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
-	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
+	// Answerer answers a going request's question (POMJU-1279); nil means no model is configured.
 	// cmd/dispatch builds it (newAnswerer). See api.DepsInput.
 	Answerer      api.Answerer
 	Events        *events.Broker

@@ -35,7 +35,7 @@ for the wrong reason.
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454) used all three in one pull request.
+`sjawhar/legion#2705` (dispatch://POMJU-454) used all three in one pull request.
 
 Overlay, for the model linked into the test binary: one edit snapping each refused renewal's
 failure to the nearer end of its client timeout turns six pinned rows of

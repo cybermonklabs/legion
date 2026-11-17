@@ -34,7 +34,7 @@ accepting by the old arithmetic, and nothing is red.
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454). Before the fix, the client timeout the bound counted
+`sjawhar/legion#2705` (dispatch://POMJU-454). Before the fix, the client timeout the bound counted
 was restated as `&http.Client{Timeout: 30 * time.Second}` in `cmd/agent-secrets/client.go` and
 `cmd/agent-secrets-helper/main.go`, and the renew divisor as `lease / 3` in
 `cmd/agent-secrets/main.go`'s `renewLoop` and `internal/broker/helper/server.go`'s `renewLoop`.

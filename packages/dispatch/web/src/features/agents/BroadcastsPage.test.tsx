@@ -22,7 +22,7 @@ const planner: Agent = {
   title: "Planner",
 };
 
-// INFRA-440. A row is one link to its broadcast, and a session sender is drawn by `AgentName`,
+// POMJU-440. A row is one link to its broadcast, and a session sender is drawn by `AgentName`,
 // whose name links to its live conversation: the sender sits beside the row's link, never inside
 // it, so neither link holds the other and the row link keeps its broadcast destination.
 test("a broadcast row draws its session sender outside the row's link", async () => {

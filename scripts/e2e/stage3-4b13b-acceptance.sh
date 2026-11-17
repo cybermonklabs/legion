@@ -276,7 +276,7 @@ gates:
   design: root-issues
 admission_cap: 5
 review_round_cap: 3
-# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# The wake pacing off (POMJU-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
 worker_wakes_per_minute: 0
 instructions: $work/instructions.md
@@ -395,7 +395,7 @@ production_audit() {
   sessions=$(rig_sessions_json)
   printf '%s\n' "$sessions" >"$evidence/rig-sessions.json"
   # A non-200 (the refilling 503 included) is a list the audit could not read, never an empty one.
-  # include=unresponsive, because the default answers live sessions alone (dispatch://INFRA-392):
+  # include=unresponsive, because the default answers live sessions alone (dispatch://POMJU-392):
   # a rig session that leaked and then stopped answering is the one this audit most needs to find,
   # and without the parameter it would be absent from the list and the audit would pass over it.
   envoy=$(curl -fsS --max-time 10 "$prod_envoy_url/v1/sessions?include=unresponsive") || { printf 'could not read %s/v1/sessions\n' "$prod_envoy_url"; return 1; }

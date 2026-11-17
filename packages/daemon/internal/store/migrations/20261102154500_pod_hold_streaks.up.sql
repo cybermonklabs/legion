@@ -1,4 +1,4 @@
--- 20261102154500_pod_hold_streaks.up.sql — a pod's hold streak ends (INFRA-945).
+-- 20261102154500_pod_hold_streaks.up.sql — a pod's hold streak ends (POMJU-945).
 --
 -- pod_holds is one row per streak of the idle rule keeping a pod for one reason, and a streak has
 -- to be able to end: keyed by (project, issue, reason) for all time, a pod held for `image` on

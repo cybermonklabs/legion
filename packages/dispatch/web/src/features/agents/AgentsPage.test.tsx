@@ -425,7 +425,7 @@ test("Agents lists live session activity and capability-aware actions", async ()
 
 // A session that has missed its heartbeats is still listed, still holds its roles and claims,
 // and is still worth messaging. A page that dropped it, or drew it like any other row, sent a
-// person looking for a replacement for a session that was working (dispatch://INFRA-392).
+// person looking for a replacement for a session that was working (dispatch://POMJU-392).
 test("Agents lists an unresponsive session with its state, neither dropped nor drawn as running", async () => {
   const stalled = {
     ...agents[0],
@@ -933,7 +933,7 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
     session_id: "silent-session",
     title: "Silent",
   };
-  // The pin is the person's, held by Dispatch (INFRA-812): this page reads it from their agent
+  // The pin is the person's, held by Dispatch (POMJU-812): this page reads it from their agent
   // state, where it was `dispatch.agents.pinned:<login>` in this browser before.
   const page = renderAgents({
     agentState: { "silent-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
@@ -1117,7 +1117,7 @@ test("Agents lists an ended session under Replied, no longer connected and in no
   }
 });
 
-// The pin belongs to the person, not to the browser (INFRA-812, R1): pressing it writes the
+// The pin belongs to the person, not to the browser (POMJU-812, R1): pressing it writes the
 // session's state to Dispatch, so their other browsers and the rail show it, and nothing of it
 // is kept in this browser's own storage.
 test("Agents pins a card by writing the person's agent state, not a browser preference", async () => {
@@ -2882,7 +2882,7 @@ test("a selected session missing from an agent list that is not current is unkno
   const failed: BroadcastRoster = { agents: [reviewer], current: false, refilling: false };
 
   // A current list that no longer holds the Planner still names it a recipient, and nothing to
-  // check: it may be stopped rather than ended, which only the server can tell (INFRA-626).
+  // check: it may be stopped rather than ended, which only the server can tell (POMJU-626).
   expect(broadcastPlan(selected, currentList([reviewer]), "aside")).toEqual({
     excluded: [],
     recipients: [planner.session_id, reviewer.session_id],
@@ -2950,7 +2950,7 @@ test("a restored send claims no absence from an agent list that is not current",
   });
   // A current list says the Planner has nothing to check, and leaves the unnamed Reviewer out
   // only because the request does not name it: its absence from the list is no exclusion of its
-  // own, so an edit would include it (INFRA-626).
+  // own, so an edit would include it (POMJU-626).
   expect(composedBroadcast(composition, currentList([planner])).plan).toEqual({
     excluded: [
       {
@@ -3060,7 +3060,7 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
         .map((chip) => chip.textContent);
 
     // A current read without the Planner keeps it a recipient, named by its id with no reason:
-    // it may be stopped rather than ended, which the server decides (INFRA-626).
+    // it may be stopped rather than ended, which the server decides (POMJU-626).
     page.listAgents.mockResolvedValue([reviewer]);
     await refetchAgents(page.queryClient);
     await waitFor(() => expect(chips()[0]).toBe("session:planner-… ✕"));
@@ -3426,7 +3426,7 @@ test("Send says which of its reasons stops it, where that reason is shown, and t
   });
 
   // A selected session gone from the live list is still a recipient: Envoy may know it and it
-  // may simply be stopped, which the server decides and the sent broadcast names (INFRA-626).
+  // may simply be stopped, which the server decides and the sent broadcast names (POMJU-626).
   expect(state(both, [], "btw")).toEqual({
     label: "Send to 2",
     notice: null,
@@ -3999,7 +3999,7 @@ test("the search box reads its query from the page's address and writes back to 
   }
 });
 
-// The machines page of dispatch://INFRA-883 links here as `/agents?machine=<host>`. The address
+// The machines page of dispatch://POMJU-883 links here as `/agents?machine=<host>`. The address
 // is where the machine filter lives, so that link reads as one machine picked - a host with no
 // live session, which that link can name, included - the rows it does not name are hidden, and
 // unticking it brings them back and empties the parameter.

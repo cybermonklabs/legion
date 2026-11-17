@@ -26,7 +26,7 @@ import (
 )
 
 // The live test's environment. TestMemoryGuardLiveSandbox runs only where liveEnv is 1, which the
-// measurement Jobs of INFRA-3557 set and CI does not. liveHolderEnv is the test's own: it makes the
+// measurement Jobs of POMJU-3557 set and CI does not. liveHolderEnv is the test's own: it makes the
 // copy of the test binary the test starts the holder (holdMemory).
 const (
 	liveEnv = "LEGION_MEMORY_GUARD_LIVE"
@@ -87,7 +87,7 @@ const (
 )
 
 // TestMemoryGuardLiveSandbox runs the real guard, with the pidfd kill and the wall clock, on this
-// machine's own /proc and memory cgroup, against one scenario (liveRunEnv). INFRA-3557's Jobs run
+// machine's own /proc and memory cgroup, against one scenario (liveRunEnv). POMJU-3557's Jobs run
 // it in gVisor pods of each size, and its lines are the record the act share's default is set
 // from. The guard has no classifier, so it protects the test process alone, as the launcher
 // protects itself.

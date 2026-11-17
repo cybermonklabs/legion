@@ -123,7 +123,7 @@ const (
 // of a BitmapOr that re-tests the vector of every candidate row on the heap. Either way the arm
 // pays for the whole row, which an issue's own spec in issues.search made expensive (migration
 // 20261105145242_issues_search_spec): 8.5 kB a row against 190 bytes, 36 MB of out-of-line
-// values the planner prices at nothing (INFRA-1042). Split, the vector match is
+// values the planner prices at nothing (POMJU-1042). Split, the vector match is
 // `i.search @@ q.tsq` alone, the shape the comment, ask, message and document arms already take,
 // and the planner reads issues_search for it. Measured on a fixture of production's size with
 // the parameters bound as the route binds them (explain (analyze, buffers) of a generic plan):
@@ -338,7 +338,7 @@ var (
 // number alone names one issue of each project (searchOwnIssueKeys), and their ids are their
 // keys, so ordering them by id is ordering them by project key.
 //
-// The page also names the block a meaning hit matched (hit.block_id, INFRA-370). A meaning leg
+// The page also names the block a meaning hit matched (hit.block_id, POMJU-370). A meaning leg
 // matched one window of an owner's blocks, and that window covers a run of them (r.covers); the
 // block named is the covered block whose own text ranks highest for the query by ts_rank_cd over
 // the configuration the keyword legs are built with ('english' over search_text), ties broken by
@@ -475,7 +475,7 @@ with q as (select
 // for a query that leaves nothing out, whose text is then the arms as they stand. Search leaves
 // nothing out; the related-item check passes relatedExcludedOwners, because the page it takes is
 // ten rows deep (suggestionSearchDepth) and rows dropped after that page took places in it and
-// hid the matches the check exists to find (INFRA-1160).
+// hid the matches the check exists to find (POMJU-1160).
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.
@@ -524,7 +524,7 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     each pass it to tx.Query - but pgx cancels out of band: a CancelRequest is a new connection
 //     of its own, and under saturation, which is exactly when meaning searches pile up, there is
 //     none to open, so the cancellation never arrives and a search whose caller has gone keeps
-//     running. One measured 60-minute step of INFRA-988's load test left 219 backends on
+//     running. One measured 60-minute step of POMJU-988's load test left 219 backends on
 //     searchQueryMeaning, 5,049 seconds old on average, still running an hour after the load had
 //     stopped, holding the connection pool full and 15 GiB of temporary files; cancelling them
 //     by hand took that deployment from 221 active backends to 2 and released the 15 GiB. The
@@ -545,7 +545,7 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //     not move at ef_search 40, 400 or 1,000, with iterative_scan relaxed_order or off, at
 //     work_mem 256MB or hnsw.scan_mem_multiplier 16 - so neither the LIMIT nor
 //     hnsw.max_scan_tuples (20,000) was what ended the walk, and how deep an arm reaches is the
-//     index's own business (INFRA-988). That corpus's vectors are near-duplicates of each other,
+//     index's own business (POMJU-988). That corpus's vectors are near-duplicates of each other,
 //     the worst case for an HNSW walk's reach, so how much of the shortfall a corpus of real text
 //     would see is an inference from it rather than a measurement of it. Relaxed rather than
 //     strict: every arm re-ranks its rows by r (distinct on, then ranked), so nothing downstream
@@ -617,7 +617,7 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // orders by distance only to a value fixed for the whole scan, and a column joined in from q is
 // not one, so ordering by it sorts every candidate in memory instead. Each candidate CTE reads
 // only vectors whose embeddings.model is $11, the query embedder's own identity
-// (embed.Embedder.Identity, INFRA-393): a vector another model or place made lives in a different
+// (embed.Embedder.Identity, POMJU-393): a vector another model or place made lives in a different
 // space, and its cosine distance to this query means nothing. The coverage pass (embedqueue.Cover)
 // drops such vectors once the configured embedder has answered, so the filter has to catch what a
 // differently configured process writes during a roll, and every vector of the identity before
@@ -626,7 +626,7 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // noise, not a weak match, and reaching legs at all would put it on the page as an answer and
 // score it as one.
 //
-// Four of the five arms read windows of neighbouring blocks (INFRA-370: kinds document_block,
+// Four of the five arms read windows of neighbouring blocks (POMJU-370: kinds document_block,
 // comment_block, message_block and ask_part), where an issue's arm still reads the issue's one
 // whole-text row. A window's id is "<owner key>#<suffix>", so the item it belongs to is
 // split_part(id, '#', 1) - the artifact id for a document, "<kind>/<uuid>" for a comment, a
@@ -659,7 +659,7 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // row's project", because one generic plan of that OR has to serve both cases and
 // can lose the good plan of either: measured on the load-test deployment, the scoped form
 // takes a small project's windows through embeddings_kind_project (800 of 800 rows, 13.7 ms)
-// and the unscoped form takes every project's through embeddings_cosine (INFRA-988, migration
+// and the unscoped form takes every project's through embeddings_cosine (POMJU-988, migration
 // 20261109120000's header holds the four measured plans). All three take the same seventeen
 // parameters with the same meanings; in the unscoped one $2 is read by the keyword
 // legs alone, which keep the project predicate they share with searchQuery.
@@ -874,16 +874,16 @@ totals as (
 // gone, and above the limit it drops it after the window has taken a place in the candidate set,
 // where main's arm drops it inside the ordered select. So 1,001 windows of comments that no longer
 // exist, nearer than a project's three comments, would answer that project with none of them,
-// where main answers all three (measured on such a corpus, INFRA-988). It loses no row today
+// where main answers all three (measured on such a corpus, POMJU-988). It loses no row today
 // because no path deletes a comment row: no route deletes a comment, and nothing outside the
-// tests runs `delete from comments`. A change that adds comment deletion (dispatch://INFRA-1523)
+// tests runs `delete from comments`. A change that adds comment deletion (dispatch://POMJU-1523)
 // must delete the comment's windows in the same transaction, or move this join back inside the
 // limit.
 //
 // The three window arms beside it filter and join inside the ordered, limited select, and for
 // comments that order costs the index. The item join is on an expression of the window's id
 // (windowItemUUID), which carries no statistics, so the planner misreads it: measured on the
-// load-test deployment (INFRA-988, EXPLAIN (ANALYZE, BUFFERS) of this route's own statement with
+// load-test deployment (POMJU-988, EXPLAIN (ANALYZE, BUFFERS) of this route's own statement with
 // the eleven arguments it took then), the join planned for 475 rows and got 120,519, its hash side
 // planned 1,030 and got 158,727 per loop, and one hash batch became 32 spilled ones, 330 MB of
 // temp I/O. With that join below the ordering, `order by embedding <=> $9` could not be served
@@ -988,7 +988,7 @@ const searchMeaningCommentProject = `coalesce(i.project_key, p.key)`
 // of another project at cosine 1.000 against three comments of the named project: the hoisted
 // shape answered four kinds with the comment gone, where this shape and a build of the default
 // branch both answered five, and the threshold is the candidate limit itself - 1,001 windows
-// lose it, 999 do not (INFRA-988,
+// lose it, 999 do not (POMJU-988,
 // TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabelling).
 //
 // The fill's row reading done is what retires it for the unfiltered searches
@@ -1343,7 +1343,7 @@ func meaningStatementFor(project string, filled, filtered bool) string {
 // failure the server raises aborts the transaction it is raised in, and that is the
 // transaction the meaning statement is about to run on: without the savepoint the promise
 // above is not kept, and the search answers 500 rather than the joined statement's page. Both
-// failures were measured that way at this change's head (INFRA-988) - the progress table
+// failures were measured that way at this change's head (POMJU-988) - the progress table
 // missing, and a value this process cannot scan, whose first search on each pooled connection
 // met `cached plan must not change result type` (SQLSTATE 0A000), which pgx does not retry
 // inside a transaction. Rolling back to the savepoint leaves the transaction exactly as it was.
@@ -1359,7 +1359,7 @@ func meaningStatementFor(project string, filled, filtered bool) string {
 // one-row table, so the only wait it can take is a lock somebody else holds on the table, and
 // behind an ACCESS EXCLUSIVE lock the read waited out searchMeaningStatementBound's whole 15
 // seconds before it degraded - 15,002 ms measured at this change's head, against 202 ms with
-// the setting below (INFRA-988). A search that is going to answer from the joined statement
+// the setting below (POMJU-988). A search that is going to answer from the joined statement
 // anyway must not spend a quarter of a minute learning that, so the savepoint sets
 // embeddingProjectKeysFilledLockWait before the read and the deferred rollback takes it back
 // off the transaction the meaning statement then runs on.
@@ -1545,7 +1545,7 @@ func issueDocumentHref(issueHref string, artifact *model.SearchArtifact, primary
 // href reads as the block's node; one whose block is no node names the ask. An item with no
 // document is a Conversation turn, named by its own route so the turn is focused.
 //
-// matchBlock is the block a meaning hit matched (INFRA-370), which a document hit names in its
+// matchBlock is the block a meaning hit matched (POMJU-370), which a document hit names in its
 // fragment so the reader lands on the passage rather than at the top of the document. A comment,
 // a message and an ask keep the href they had: no item page reads a fragment, and the ask's own
 // fragment names the document block it is typed on, which is another block than the part of the

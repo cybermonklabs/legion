@@ -2,7 +2,7 @@
 # packages/envoy/scripts/airlock-clients.sh
 #
 # The clients checks k6 and k7 of the airlock's verification document
-# (dispatch://INFRA-1352/artifact/verification-md) drive, which a Legion issue pod does not have:
+# (dispatch://POMJU-1352/artifact/verification-md) drive, which a Legion issue pod does not have:
 # the Azure CLI, the Google Cloud CLI, Pulumi with the Tailscale provider, and boto3. Each is
 # installed at a pinned version whose SHA-256 is checked before anything of it runs, under
 # ${TMPDIR:-/tmp}, and the script prints the exports a check needs:

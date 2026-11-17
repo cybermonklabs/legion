@@ -266,7 +266,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	assertMoved("the daemon's own status write coming back as an event its own session authored", at(24))
 
 	// A pull request write that is news of nothing, which is the fifth kind of write that moves
-	// no issue (dispatch://INFRA-2560, R3): the webhook of a synchronize the record has already
+	// no issue (dispatch://POMJU-2560, R3): the webhook of a synchronize the record has already
 	// taken, delivered again at GitHub's own newer clock. Every pull request write of the
 	// workflow goes through one helper (workflow's putPullRequest), and that helper marks the
 	// movement only where the write is news of the pull request rather than the daemon writing
@@ -308,7 +308,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// the first report of a settlement standing for the head is news of the pull request — the
 	// head it settled on, the runs it names and what each of them concluded are all new to the
 	// record (workflow's checks, through putPullRequest). A GitHub event of the issue's pull
-	// request is a movement (dispatch://INFRA-2560, R3), and a settlement is the one GitHub
+	// request is a movement (dispatch://POMJU-2560, R3), and a settlement is the one GitHub
 	// sends when nothing else of the pull request has changed: a tree whose last news was its
 	// checks settling must be measured from that settlement, and a daemon that wrote the fence
 	// without the mark would measure it from whatever moved the issue before, which on a tree
@@ -518,7 +518,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	})
 
 	// A claim that fails takes its issue into held, which is a phase change and so a movement
-	// the record keeps (dispatch://INFRA-2560, R3, and Engine.claimFailed). The measure reads
+	// the record keeps (dispatch://POMJU-2560, R3, and Engine.claimFailed). The measure reads
 	// it: a tree stops at the moment its worker dies, so its quiet time runs from that moment
 	// and not from whatever last touched the issue before it. Without the mark a tree whose
 	// worker died hours into a silent phase reads as quiet for longer than it has been, and the
@@ -587,7 +587,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// the repair's own branch; a claim behind that entry is sent the entry's work through the one
 	// function every send of an owed entry is written by, which is the eighth kind below. Either
 	// start is the daemon re-asserting work the record already owes the worker, and R3 counts the
-	// daemon's own re-assertions as no movement (dispatch://INFRA-2560), as it counts the pod
+	// daemon's own re-assertions as no movement (dispatch://POMJU-2560), as it counts the pod
 	// wake's start as none: the tree has stopped, and the resend is the daemon
 	// reacting to the stop. Marked, it would make the quiet time read the daemon's own repair as
 	// the tree moving again, and a tree whose worker the daemon kept resending to would never
@@ -679,7 +679,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// given: every admission pass and a sweep of its own each minute (intake.EntrySweep) send
 	// the work of the entry to a role behind it (workflow's sendOwedEntry, through
 	// SendOwedEntry). Each such send is the daemon re-asserting work the record already owes,
-	// and R3 counts the daemon's own re-assertions as no movement (dispatch://INFRA-2560). The
+	// and R3 counts the daemon's own re-assertions as no movement (dispatch://POMJU-2560). The
 	// movement is the fact that created the entry, not each delivery of it: counting the sends
 	// would let the minute sweep reset a stuck tree's quiet time sixty times an hour, and the
 	// measure would never reach the bound on the stop it most needs to see.
@@ -869,7 +869,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// the entry's work through the one function every send of an owed entry is written by
 	// (workflow's sendOwedEntry), which the eighth kind above locks. Either start is the daemon
 	// re-asserting work the record already owes the worker, and R3 counts the daemon's own
-	// re-assertions as no movement (dispatch://INFRA-2560): the boot is the daemon coming back,
+	// re-assertions as no movement (dispatch://POMJU-2560): the boot is the daemon coming back,
 	// no fact of the issue, and DaemonBooted marks nothing of its own. Marked, every restart
 	// would read as every suspended tree moving at once, and a tree that had stopped before a
 	// deploy would have its quiet time reset by the deploy, so a fleet that restarts more often

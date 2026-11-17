@@ -276,7 +276,7 @@ This file is history: every entry after the last section below stays as a fragme
   `@legion/envoy-client/tool-contract` gains `sessionsOnMachine`, the `envoy_sessions` machine
   filter both plugins ran a copy of: it matches the machine a session's process runs on (`host`)
   and the listener it registered through (`machine_id`), and lists every session when the
-  argument is absent or empty (INFRA-594).
+  argument is absent or empty (POMJU-594).
 
 ### Changed
 
@@ -286,12 +286,12 @@ This file is history: every entry after the last section below stays as a fragme
   registration answered `consumer` with the relay subject subscribed, then checks that the
   connection nats.js dials in place of the frozen one subscribes the relay subject again (natsd's
   `/connz`), that the session's entry in `envoy_sessions` names a new epoch, and that the message
-  sent during the freeze and one sent after it are each shown once, neither as a replay (INFRA-594).
+  sent during the freeze and one sent after it are each shown once, neither as a replay (POMJU-594).
 - `envoy_subscribe` and `envoy_publish` describe stored delivery: a stored topic (agent, dispatch,
   github, slack, legion, ghostwispr, whatsapp, and a role message, which reaches its holder as a
   stored copy on the holder's agent topic) reaches each subscribed session once from the durable
   consumer its listener relays to it, also one that was away or restarted; team and other ad-hoc
-  topics are live only (INFRA-594).
+  topics are live only (POMJU-594).
 
 ## [main@ed9113e7c092] - 2026-11-01
 
@@ -401,7 +401,7 @@ This file is history: every entry after the last section below stays as a fragme
   between the two text reads. A target that names no document of its owner gives `"not-found"`,
   and every other failure throws. Each request carries the client's signal, so a stop ends the
   read. AskGate in `@sjawhar/pi-envoy` reads a retyped block's text and an upload's current block
-  ids with it (dispatch://INFRA-168). The executor finds its owner and documents through the same
+  ids with it (dispatch://POMJU-168). The executor finds its owner and documents through the same
   internal helper, and `dispatch doc-read --blocks` through the same read, with no change in
   behaviour.
 - `@legion/envoy-client/askgate-new-asks` exports `newAsks(toolName, input)` and the `NewAsk`
@@ -418,7 +418,7 @@ This file is history: every entry after the last section below stays as a fragme
   caller's own `Idempotency-Key` for that write, used in place of the one the client mints per
   call and sent on every attempt of it, so a caller whose intent outlives one call — AskGate's
   decision document, created once per session whatever process reaches for it, and each of its
-  records appended once (dispatch://INFRA-168) — has Dispatch run that intent once and replay it
+  records appended once (dispatch://POMJU-168) — has Dispatch run that intent once and replay it
   rather than write a second time. The key must match `IDEMPOTENCY_KEY_PATTERN`; every other
   write still mints its own, and a call that passes none is unchanged.
 
@@ -517,7 +517,7 @@ This file is history: every entry after the last section below stays as a fragme
 
 ### Added
 
-- Every Dispatch write a `dispatch` command makes carries one `Idempotency-Key` (INFRA-258): `DispatchClient.#send` mints a UUID per `POST` and `PATCH` call, sends it on every attempt of that call, and encodes the body once, so Dispatch runs the write once however many attempts reach it. A transport failure, any 5xx, a 408, a 429 and Dispatch's `409 KEY_IN_FLIGHT` are asked again under the key: at most five attempts, 1, 2, 4 and 8 s apart, a longer `Retry-After` waited instead, none starting more than 30 s after the first, all inside the call's 60 s deadline. An attempt that goes 20 s without progress before its answer begins is cut off and asked again the same way. A `GET`, `PUT` or `DELETE` carries no key and is sent once. A write is resent only against a Dispatch this process has seen run the keyed layer within the last five minutes: an answer echoing the key, or a `GET /healthz` answering `idempotency_keys: true` when no echo could arrive. Against a Dispatch without the layer nothing is resent, and the write is reported as one that may or may not have taken effect.
+- Every Dispatch write a `dispatch` command makes carries one `Idempotency-Key` (POMJU-258): `DispatchClient.#send` mints a UUID per `POST` and `PATCH` call, sends it on every attempt of that call, and encodes the body once, so Dispatch runs the write once however many attempts reach it. A transport failure, any 5xx, a 408, a 429 and Dispatch's `409 KEY_IN_FLIGHT` are asked again under the key: at most five attempts, 1, 2, 4 and 8 s apart, a longer `Retry-After` waited instead, none starting more than 30 s after the first, all inside the call's 60 s deadline. An attempt that goes 20 s without progress before its answer begins is cut off and asked again the same way. A `GET`, `PUT` or `DELETE` carries no key and is sent once. A write is resent only against a Dispatch this process has seen run the keyed layer within the last five minutes: an answer echoing the key, or a `GET /healthz` answering `idempotency_keys: true` when no echo could arrive. Against a Dispatch without the layer nothing is resent, and the write is reported as one that may or may not have taken effect.
 
   `DispatchClient.deliveryReply` sends a session's reply to a delivery attempt (`POST /api/v1/{messages,comments}/{id}/reply`), which `postDeliveryReply` used to send as a bare `fetch`: it is now keyed, retried and bounded by the client's 60 s deadline, and its refusals are `DispatchServiceError`s like every other call's.
 
@@ -617,7 +617,7 @@ This file is history: every entry after the last section below stays as a fragme
   single-source sync (`POST /api/v1/projects/{key}/architecture-source/sync`) and prints its one
   line, and `--repo` needs a Dispatch of this release; the other way round, an older plugin's
   `architecture-sync` keeps working against this release's Dispatch, which keeps the singular sync
-  route for it (INFRA-391).
+  route for it (POMJU-391).
 - A session refreshes its Envoy registration every 90 s rather than every 120 s: the listener
   expires a session record 300 s after its last write, and three refresh attempts plus one whole
   listener call's budget (10 250 ms: two 5 000 ms attempts and the 250 ms retry delay between
@@ -629,7 +629,7 @@ This file is history: every entry after the last section below stays as a fragme
   included; a session on a serve port, such as an OpenCode agent, receives it through its
   machine's listener when that listener subscribes to every topic (`ENVOY_SUBSCRIBE_ALL_TOPICS=1`;
   the shared hub's listener does not), where the description said such a session received nothing
-  (INFRA-122).
+  (POMJU-122).
 
 ### Added
 
@@ -705,7 +705,7 @@ This file is history: every entry after the last section below stays as a fragme
   `notifications.agent.*` or `notifications.>`, which the listener neither stores as an interest
   nor replays), the topics a restore follows again (`rememberedTopics`), a replayed removal's
   close and unregister (`closeReplayedRemoval`), and which one-time notices are a card or a
-  warning (`routeReplayNotice`) (INFRA-439).
+  warning (`routeReplayNotice`) (POMJU-439).
 - Every reference-graph node now carries `made_by`, `made_at`, `changed_by`, `changed_at`, `parent`
   and `parent_version`, and `dispatch read` prints them on a `Node:` line. The line comes before
   `Referenced by:` on the read of an issue, a document, a block, an ask, a comment and an issue
@@ -751,7 +751,7 @@ This file is history: every entry after the last section below stays as a fragme
   key only when at least one neighbour is named: a `rank` with neither is not a no-op, since the
   server ranks the issue last in its project, so an ordinary status update would otherwise drop its
   issue to the bottom of the board. The flags follow from the tool's schema, so the command itself
-  needed no change (INFRA-188).
+  needed no change (POMJU-188).
 
 - `ENVOY_PASS_DEADLINE_MS` resolves `passDeadlineMs`, the bound on one task of the pi-envoy
   plugin's serial queues, so a task that never settles cannot hold the next heartbeat tick, session
@@ -776,7 +776,7 @@ This file is history: every entry after the last section below stays as a fragme
   later line of a multi-line answer is indented four spaces, so it stays under its hit. A Dispatch
   older than this release reports no state, and its ask hits read `Answer state not reported by
   this Dispatch; open the link to read the ask.` rather than passing for open ones. `actorText`
-  moves to `actor-text.ts`, shared by the event log and the search answer (INFRA-569).
+  moves to `actor-text.ts`, shared by the event log and the search answer (POMJU-569).
 
 - `askgateSetting(file)` reads AskGate's switch, the top-level `askgate` section of the session's
   envoy.json: `{"askgate":{"enabled":false}}` turns AskGate off. A section that does not parse

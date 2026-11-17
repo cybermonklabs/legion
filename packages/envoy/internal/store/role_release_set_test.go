@@ -53,7 +53,7 @@ func assertNoInterestRecord(t *testing.T, rig *repairRig, sessionID string) {
 // interest record names both, since each grant wrote its role's lane topic there. The
 // deregistration frees both, and it pays one claim read per role and no scan of the role bucket:
 // the record names the claim the copy lost, so nothing needs the scan that answered the route 503
-// (dispatch://INFRA-1383). A release whose set came from the copy alone would leave the lost claim
+// (dispatch://POMJU-1383). A release whose set came from the copy alone would leave the lost claim
 // standing, and one that scanned the bucket in place of the per-role reads would show the scan.
 func TestAReleaseSetFreesAClaimTheCopyLostWithOneReadPerRole(t *testing.T) {
 	const (

@@ -69,14 +69,14 @@ enrichment of something you already hold — it is the decision.
   (`TestMergeForClaim_RejectedClaimLeavesTheIncumbentsClientInstanceIDStored`).
 
 One sentence to correct elsewhere.
-`docs/solutions/envoy/a-live-session-list-is-a-cache-view-decide-one-sessions-absence-by-its-own-record-INFRA-249.md`
+`docs/solutions/envoy/a-live-session-list-is-a-cache-view-decide-one-sessions-absence-by-its-own-record-POMJU-249.md`
 prices the trade as "a stale present costs a refused send, a wrong absent costs a session its
 work". That holds for delivery and not for ownership: once a field of the cached entry decides who
 keeps a capability, a stale **present** costs a live process its role.
 
 ## Evidence
 
-sjawhar/legion#2592 (dispatch://INFRA-404). `POST /v1/roles/set` took a role from any session a
+sjawhar/legion#2592 (dispatch://POMJU-404). `POST /v1/roles/set` took a role from any session a
 soft claim named as its predecessor, "live or not", so a process that resumed a session id another
 process still held could take its role; a Claude Code `/clear` handoff deleted that live process's
 registry entry first, which made the takeover look legitimate. Each client instance now mints 128

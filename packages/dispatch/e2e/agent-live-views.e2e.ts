@@ -19,8 +19,8 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The live views a person has open (INFRA-812, R2; the browser cases of the Verification
- * document's k2, dispatch://INFRA-812/artifact/verification-md).
+ * The live views a person has open (POMJU-812, R2; the browser cases of the Verification
+ * document's k2, dispatch://POMJU-812/artifact/verification-md).
  *
  * A person moves between their pinned agents from the rail, and nothing they were doing is
  * closed or lost: the view they left keeps its unsent draft, its place in the transcript and the

@@ -30,7 +30,7 @@ test("a reader takes the entries of its own kind and drops the rest", async () =
 
 // The defect this module exists for: the pane appends to the transcript while a case polls it, so
 // a read can land between a line's bytes and its newline. On the merge base that read threw
-// `JSON Parse error: Expected '}'` and failed the case (dispatch://INFRA-2188).
+// `JSON Parse error: Expected '}'` and failed the case (dispatch://POMJU-2188).
 test("a last line the writer has not finished is withheld while the writer is alive", async () => {
   const dir = await sessions(`${entry(KIND, 1)}\n${entry(KIND, 2)}\n{"customType":"${KIND}",`);
   expect(await transcriptEntries(dir, KIND, "alive")).toEqual([

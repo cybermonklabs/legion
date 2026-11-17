@@ -810,12 +810,12 @@ test("a search carrying a member everyBuildReadsSearch drops goes to /api/v1/sea
   const api = createApiClient(stub.fetch);
 
   await api.search("astrolabe", { status: "in_progress" });
-  await api.search("astrolabe", { number_project: "INFRA", keywords_only: true });
+  await api.search("astrolabe", { number_project: "POMJU", keywords_only: true });
   await api.search("astrolabe", { author: "sami@theorem.dev", updated_since: "2026-11-01" });
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
     "/api/v1/search/results?q=astrolabe&status=in_progress",
-    "/api/v1/search/results?q=astrolabe&number_project=INFRA&keywords_only=true",
+    "/api/v1/search/results?q=astrolabe&number_project=POMJU&keywords_only=true",
     "/api/v1/search/results?q=astrolabe&author=sami%40theorem.dev&updated_since=2026-11-01",
   ]);
 });
@@ -910,7 +910,7 @@ test("isUnauthorized distinguishes a 401 from a transient 5xx failure", async ()
 // client's `retryDelay`, which adds a random share of the wait again, here drawn at none), rather
 // than after the page's own 500 ms, which would ask a refusing server again while it still
 // refuses; Dispatch sends one with its `503 DATABASE_BUSY` and `503 REQUEST_TIMEOUT`
-// (INFRA-592). A refusal without one, and a failed connection, keep the 500 ms. A write is
+// (POMJU-592). A refusal without one, and a failed connection, keep the 500 ms. A write is
 // stricter: it waits out only Dispatch's own busy codes (`busyRetryAfterMs`, write-store tests).
 test("a read refused with a Retry-After waits it out, and a failure without one does not", async () => {
   const answered = async (status: number, code: string | undefined, retryAfter?: string) => {

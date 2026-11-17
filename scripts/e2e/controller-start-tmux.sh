@@ -187,7 +187,7 @@ nats_urls:
   - $nats_url
 envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
-# The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
+# The wake pacing off (POMJU-976): this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
 # wake keys add no line to legion start --check-config, which prints the renames, the open
 # capability rows and, under Kubernetes alone, the pod lines (checkStartConfig in cmd/legion):

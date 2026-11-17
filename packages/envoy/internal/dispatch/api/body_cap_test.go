@@ -50,7 +50,7 @@ func TestACommentIsBoundedBlockByBlockRatherThanAsAWhole(t *testing.T) {
 // Every route that stores a body holds it to the same two bounds, by the same wording: a body of
 // two 20,000-unit paragraphs is accepted and written back whole, one paragraph of
 // contracts.DispatchBlockUnits+1 units is refused naming the block, and a body of one block more
-// than contracts.DispatchItemBlocks is refused for how many blocks it holds (INFRA-370).
+// than contracts.DispatchItemBlocks is refused for how many blocks it holds (POMJU-370).
 func TestBodiesAreBoundedOnEveryWriteRoute(t *testing.T) {
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)

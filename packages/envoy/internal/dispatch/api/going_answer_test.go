@@ -288,7 +288,7 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	}
 }
 
-// One key, one run (INFRA-258): the same POST sent twice under one Idempotency-Key records one
+// One key, one run (POMJU-258): the same POST sent twice under one Idempotency-Key records one
 // question and answers that one run's id both times, the repeat replayed from the key rather than
 // run again, so a double press or a client's retry never starts a second answer.
 //

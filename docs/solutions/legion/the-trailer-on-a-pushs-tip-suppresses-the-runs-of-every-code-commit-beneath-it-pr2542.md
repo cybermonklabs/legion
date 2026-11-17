@@ -37,7 +37,7 @@ the trailer.
 - **"No check runs" had two causes that looked identical in the API.** Before
   sjawhar/legion#2354 one was a handoff-only head with a trailer, where the code beneath it was
   checked at its own commit (the designed shape then,
-  `docs/solutions/legion/a-base-with-no-required-check-makes-the-ci-verdict-a-hand-read-against-a-branch-line-baseline-INFRA-117.md`),
+  `docs/solutions/legion/a-base-with-no-required-check-makes-the-ci-verdict-a-hand-read-against-a-branch-line-baseline-POMJU-117.md`),
   and the other this one, where the code was checked nowhere. Every pushed head is a code head
   now, so a head with no check runs is this case, or a conflicting head
   (`docs/solutions/github/zero-check-runs-on-a-pushed-head-is-a-conflicting-head-not-a-trailer-pr2504.md`).
@@ -53,7 +53,7 @@ pushed without the trailer, carries no trailer and runs CI at its head". That wa
 code joined the push. sjawhar/legion#2354 superseded that page, since no push carries a handoff
 now. The rules above still say what happens when a trailer reaches a tip.
 
-`docs/solutions/legion/gh-run-list-commit-takes-the-full-sha-and-an-empty-answer-is-not-a-measurement-INFRA-92.md`
+`docs/solutions/legion/gh-run-list-commit-takes-the-full-sha-and-an-empty-answer-is-not-a-measurement-POMJU-92.md`
 records, in its evidence, a force-push ordered to drop a trailer where reading the code commit's
 check runs showed the content **was** checked. The case here is the other one: the code was checked
 nowhere, and the remedy was still not a rewrite.

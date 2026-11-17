@@ -1,7 +1,7 @@
 // Command refillrig is the Go half of scripts/e2e-refill.sh, the rig that proves on a real listener
 // and a real NATS server that the listener keeps its copy of a bucket while it reads the bucket
 // again, refuses its two list routes while it cannot stand behind that copy, and publishes no
-// active-sessions sample while it refuses (INFRA-261). The script builds, starts and signals the
+// active-sessions sample while it refuses (POMJU-261). The script builds, starts and signals the
 // processes; this command does what a shell cannot do quickly or exactly:
 //
 //   - seed writes session and interest records straight into their buckets, and register writes

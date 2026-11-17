@@ -25,7 +25,7 @@ const reportTimeout = 15 * time.Second
 // its launch generation (POST /legion/v1/claims/turn-outcome). The daemon derives the claim's run
 // of refused turns from those reports and fails the claim once the run reaches its launch failure
 // limit, which is the fault that left an implementer's every turn refused by its provider with its
-// claim never failing (dispatch://INFRA-714).
+// claim never failing (dispatch://POMJU-714).
 //
 // The bridge is the producer because it is what sees the refusal: a step Claude Code ends with an
 // error is the assistant message it writes with stopReason "error" (result), and the pane's own

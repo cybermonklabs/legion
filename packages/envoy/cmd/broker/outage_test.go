@@ -25,7 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// TestABrokerOutageLongerThanALease reproduces dispatch INFRA-487, the 2026-10-26 broker cutover:
+// TestABrokerOutageLongerThanALease reproduces dispatch POMJU-487, the 2026-10-26 broker cutover:
 // no broker served for longer than a pod's enrollment lease, and the first sweep of the broker
 // that came back ended every enrollment whose lease ran out while none was serving, so each pod's
 // `agent-secrets renew` was refused ENROLLMENT_NOT_LIVE and exited 76, and the pod was refused

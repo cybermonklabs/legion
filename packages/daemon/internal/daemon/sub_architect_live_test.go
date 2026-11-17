@@ -1,6 +1,6 @@
 //go:build e2e
 
-// The live proof's driver for INFRA-3915: every child that starts runs under an architect of its
+// The live proof's driver for POMJU-3915: every child that starts runs under an architect of its
 // own. A child's first phase start starts that architect beside the child's planner, whichever
 // door brought the child in: its architect's release_children, a person's todo under a live tree,
 // or the close of the issue it waited on (workflow's Engine.StartFirstPhase). At each launch's
@@ -79,7 +79,7 @@ import (
 const (
 	// subArchitectCap is the admission cap: one slot for the tree's root and one for each of the
 	// five children the proof starts, so no child waits in the line for a slot. A child takes a
-	// slot of its own (INFRA-980), and its architect starts only with its first phase, which is
+	// slot of its own (POMJU-980), and its architect starts only with its first phase, which is
 	// what this proof reads.
 	subArchitectCap = 6
 	// subArchitectGate is the root's approved design document, which lets its children start.

@@ -1,5 +1,5 @@
 -- 20261107212756_conflict_rounds.up.sql — the rounds a conflict with the base caused, which
--- review_round_cap does not count (INFRA-1442).
+-- review_round_cap does not count (POMJU-1442).
 --
 -- phases.conflict_rounds is record.PhaseRow.ConflictRounds: how many of the implementer's rounds
 -- were opened while the daemon's record held the pull request's own head as conflicting with its

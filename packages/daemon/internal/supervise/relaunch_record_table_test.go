@@ -446,7 +446,7 @@ func (h *harness) wantNoTaskSentInterruptedWithoutItsRecord(cause string, letGo 
 }
 
 // The relaunch record's table: every kind of let-go of a claim's process, against every state the
-// claim can be in when it lands (dispatch://INFRA-3276, the Verification document's c-r3-tests).
+// claim can be in when it lands (dispatch://POMJU-3276, the Verification document's c-r3-tests).
 // Each row states what the let-go records — its own cause, whether a turn and the task's turn were
 // cut off, and the background work the newest report named — and the sentence the next process
 // reads first: that cause, that statement of the turn, and that work. Every claim starts with an

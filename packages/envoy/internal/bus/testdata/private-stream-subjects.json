@@ -31,7 +31,7 @@
   },
   {
     "sessionID": "ses_a",
-    "topic": "notifications.agent.INFRA.ses_a",
+    "topic": "notifications.agent.POMJU.ses_a",
     "want": false
   },
   {
@@ -41,7 +41,7 @@
   },
   {
     "sessionID": "ses_a",
-    "topic": "notifications.agent.INFRA.ses_b",
+    "topic": "notifications.agent.POMJU.ses_b",
     "want": true
   },
   {
@@ -56,7 +56,7 @@
   },
   {
     "sessionID": "ses_a",
-    "topic": "notifications.agent.INFRA.>",
+    "topic": "notifications.agent.POMJU.>",
     "want": true
   },
   {
@@ -71,7 +71,7 @@
   },
   {
     "sessionID": "*",
-    "topic": "notifications.agent.INFRA.*",
+    "topic": "notifications.agent.POMJU.*",
     "want": true
   },
   {

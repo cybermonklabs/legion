@@ -56,7 +56,7 @@ for each variable immediately after `logging.New` and before any other work, wit
 a variable set to the empty string still warns.
 `TestAListenerStartedWithTheDeletedVariablesWarnsOncePerVariableAndServes` starts a real listener
 process with both set and reads its log: exactly one warning for each, then the listener serves.
-dispatch://INFRA-891 removes the setter with the image pin.
+dispatch://POMJU-891 removes the setter with the image pin.
 
 The contrast is in the same change's census.
 The `port > 0` refusal is immediate, not warn-first, because the approved spec required it and

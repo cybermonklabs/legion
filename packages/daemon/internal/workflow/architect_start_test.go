@@ -638,7 +638,7 @@ func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged
 // came with it, and no phase, so it does not say whether the root still stands in the phase that
 // came with it: the task names the phase it stands in now and the run the hand-over carried it
 // into, which holds of a root still in its carried phase and of one that has moved on in that
-// same run (dispatch://INFRA-2614 R3, R5). The gate clause is the row's own
+// same run (dispatch://POMJU-2614 R3, R5). The gate clause is the row's own
 // (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was reopened in
 // its linger comes with none, and a task that said a gate came with it would be false of it.
 func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *testing.T) {

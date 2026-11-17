@@ -11,7 +11,7 @@ date: 2026-11-02
 status: active
 module: packages/daemon
 related_issues:
-  - "INFRA-484"
+  - "POMJU-484"
   - "sjawhar/legion#2538"
 ---
 
@@ -44,7 +44,7 @@ this pin. Which number to take after a collision is
 docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md;
 this is the half about the constants derived from it.
 
-## Evidence (INFRA-484, sjawhar/legion#2538)
+## Evidence (POMJU-484, sjawhar/legion#2538)
 
 `supervise.PodUpdateContract` names the contract that introduced the `ready_for_update` operation.
 `api/version_test.go` asserted only `supervise.PodUpdateContract <= DaemonAPIVersion`. A forward

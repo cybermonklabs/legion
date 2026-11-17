@@ -1,5 +1,5 @@
 /**
- * The agents a person has pinned (INFRA-812, R1).
+ * The agents a person has pinned (POMJU-812, R1).
  *
  * A pin belongs to the person, not to the browser it was made in: it is the session's
  * `pinned_at` in the viewer's per-agent state (`userAgentStateQuery`), written through

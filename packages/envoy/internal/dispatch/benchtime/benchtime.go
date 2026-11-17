@@ -1,7 +1,7 @@
 // Package benchtime times one Dispatch statement against another on the seeded measurement
 // database that DISPATCH_BENCH_DATABASE_URL names, and binds the rows those statements read.
 //
-// It is INFRA-325's protocol 1, the committed harness: a named pair of statement texts - a
+// It is POMJU-325's protocol 1, the committed harness: a named pair of statement texts - a
 // before text and an after text - whose difference is SQL text alone, run alternately on one
 // connection, each run's time read as planning plus execution from the EXPLAIN output's own two
 // lines, the median of runs 2 to 12 reported, both plans printed, and the pair failed when the

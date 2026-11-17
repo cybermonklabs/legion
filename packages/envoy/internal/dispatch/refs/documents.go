@@ -20,7 +20,7 @@ import (
 // room lock, so a citation committed after that test still lands. What its row then points at is
 // the reference key and not the row: that key resolves to nothing, until a later document of the
 // same title on the same issue mints it again, and the citation then reads as a citation of that
-// document. The spec of dispatch://INFRA-1334 says the same of a citation written outside
+// document. The spec of dispatch://POMJU-1334 says the same of a citation written outside
 // Dispatch, and accepts it for a document that held nothing.
 //
 // The queue rows (refs_grammar_owed) are keyed by kind and id, and a document is owed under two

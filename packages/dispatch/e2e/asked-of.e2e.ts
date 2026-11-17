@@ -22,7 +22,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * dispatch://INFRA-1576 from the browser: a question is for a person, and a person may hand it
+ * dispatch://POMJU-1576 from the browser: a question is for a person, and a person may hand it
  * to another person.
  *
  * The first row drives the hand-on control the ask card carries on every surface that draws an

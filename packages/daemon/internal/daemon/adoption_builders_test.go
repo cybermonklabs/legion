@@ -11,7 +11,7 @@ package daemon
 // builder writes the phase it should and the outbox carries it on: a builder that stamped a phase on
 // a look or on an architect's start would adopt under a working role, and a phase task that lost its
 // phase on the way would let its commits land under whichever App adopted last
-// (dispatch://INFRA-2695).
+// (dispatch://POMJU-2695).
 //
 // So each builder is pinned where it writes its row. In every case the daemon's own builder writes
 // the row, through the fact the daemon applies or the pass it runs, and the real outbox executes

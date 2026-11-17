@@ -14,7 +14,7 @@ module: scripts/dispatch
 
 # A re-runnable setup block builds into .new and renames last, and the daemon it starts holds neither its lock nor its library path
 
-Extends docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-INFRA-43.md,
+Extends docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-POMJU-43.md,
 which asks for a setup script that "rebuilds only what is missing". These rules make "present"
 mean "complete".
 

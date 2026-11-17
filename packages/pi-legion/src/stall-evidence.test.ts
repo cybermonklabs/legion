@@ -140,7 +140,7 @@ test("a machine whose /proc cannot be read records that, never an empty tree", a
     // And the evidence says the same thing, rather than carrying no process at all.
     expect(stallProcessTree(scan)).toEqual({ read: false, reason: scan.reason });
     const record = stallEvidenceRecord(evidenceOf({ tree: stallProcessTree(scan) }), START, {
-      session: { kind: "phase-worker", role: "tester", tree: "INFRA-1000", issue: "INFRA-1274" },
+      session: { kind: "phase-worker", role: "tester", tree: "POMJU-1000", issue: "POMJU-1274" },
       claim: claimOf(),
     });
     expect(record.tree).toEqual({ read: false, reason: scan.reason });
@@ -186,8 +186,8 @@ function claimOf(over: Partial<ClaimCapability> = {}): ClaimCapability {
     sessionID: "ses_worker",
     claimToken: "claim-token",
     generation: 3,
-    tree: "INFRA-1000",
-    issue: "INFRA-1274",
+    tree: "POMJU-1000",
+    issue: "POMJU-1274",
     role: "implementer",
     secret: "claim-secret",
     ...over,
@@ -199,13 +199,13 @@ test("the record names the tool, the digest, the start, the age and the real tre
   const tree = stallProcessTree(await readStallProcesses());
   const at = START + 65 * MINUTE;
   const record = stallEvidenceRecord(evidenceOf({ tree }), at, {
-    session: { kind: "phase-worker", role: "implementer", tree: "INFRA-1000", issue: "INFRA-1274" },
+    session: { kind: "phase-worker", role: "implementer", tree: "POMJU-1000", issue: "POMJU-1274" },
     claim: claimOf(),
   });
 
   expect(record.kind).toBe("evidence");
   expect(record.at).toBe(new Date(at).toISOString());
-  expect(record.issue).toBe("INFRA-1274");
+  expect(record.issue).toBe("POMJU-1274");
   expect(record.role).toBe("implementer");
   expect(record.toolCallId).toBe("toolu_stuck");
   expect(record.tool).toBe("bash");
@@ -304,8 +304,8 @@ function tellerRig(
       options.session ?? {
         kind: "phase-worker",
         role: "implementer",
-        tree: "INFRA-1000",
-        issue: "INFRA-1274",
+        tree: "POMJU-1000",
+        issue: "POMJU-1274",
       },
     claim: () => ("claim" in options ? options.claim : claimOf()),
     project: options.project ?? "legion",
@@ -332,7 +332,7 @@ function tellerRig(
 function daemonState(architect: string | undefined): LegionState {
   return {
     issues: {
-      "INFRA-1274": {
+      "POMJU-1274": {
         ...(architect === undefined
           ? {}
           : { architect: { session: "ses_architect", state: architect, pluginContract: 57 } }),
@@ -354,8 +354,8 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   // And into the message: the same record, as the payload the listener takes.
   expect(rig.published).toHaveLength(1);
   const notice = rig.published[0] as PublishInput;
-  expect(notice.topic).toBe("notifications.role.legion-legion-infra-1274-architect");
-  expect(notice.message).toContain("The implementer of INFRA-1274 has a `bash` call");
+  expect(notice.topic).toBe("notifications.role.legion-legion-pomju-1274-architect");
+  expect(notice.message).toContain("The implementer of POMJU-1274 has a `bash` call");
   expect(notice.message).toContain('command="sleep 100000" pty=true');
   expect(JSON.parse(notice.payload as string)).toEqual(written);
   expect(notice.idempotencyKey).toBe("legion-stall:toolu_stuck");
@@ -368,38 +368,38 @@ test("a phase worker falls back to the tree's architect, as the reminder does", 
     const rig = tellerRig();
     rig.state = daemonState(architect);
     await rig.teller.tellOverdue(evidenceOf());
-    expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+    expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-pomju-1000-architect");
   }
   // A daemon that does not answer inside the bound is the same: the tree's architect is told.
   const silent = tellerRig();
   silent.state = "the daemon is unreachable";
   await silent.teller.tellOverdue(evidenceOf());
-  expect(silent.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+  expect(silent.published[0]?.topic).toBe("notifications.role.legion-legion-pomju-1000-architect");
 });
 
 test("a root architect's own session tells the controller role", async () => {
   const rig = tellerRig({
-    session: { kind: "root-architect", tree: "INFRA-1000" },
-    claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
+    session: { kind: "root-architect", tree: "POMJU-1000" },
+    claim: claimOf({ issue: "POMJU-1000", role: "architect", sessionID: "ses_root" }),
   });
   await rig.teller.tellOverdue(evidenceOf());
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-controller");
-  expect(rig.published[0]?.message).toContain("The architect of INFRA-1000");
+  expect(rig.published[0]?.message).toContain("The architect of POMJU-1000");
 });
 
 // The notice sends no `keep` field, so a listener keeps it for an owner's role that no live
 // session holds, and answers 202 kept. That has told no owner yet, and the notice is sent once and
 // never again, so the teller reports `ownerTold: false`: for the architect, and for the
-// controller, which owns a root architect's own call (dispatch://INFRA-2846, R6).
+// controller, which owns a root architect's own call (dispatch://POMJU-2846, R6).
 test("the owner notice is kept", async () => {
   const architect = tellerRig();
   const controller = tellerRig({
-    session: { kind: "root-architect", tree: "INFRA-1000" },
-    claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
+    session: { kind: "root-architect", tree: "POMJU-1000" },
+    claim: claimOf({ issue: "POMJU-1000", role: "architect", sessionID: "ses_root" }),
   });
   for (const [rig, topic] of [
-    [architect, "notifications.role.legion-legion-infra-1274-architect"],
+    [architect, "notifications.role.legion-legion-pomju-1274-architect"],
     [controller, "notifications.role.legion-legion-controller"],
   ] as const) {
     rig.publishAnswer = { kept: true, keptUntil: START + 60 * MINUTE };
@@ -435,16 +435,16 @@ test("the controller's own session publishes nothing and writes its evidence ins
 test("a session never publishes to the role its own session holds", async () => {
   // A sub-architect is a phase worker whose own claim is its issue's live architect.
   const rig = tellerRig({
-    session: { kind: "phase-worker", role: "architect", tree: "INFRA-1000", issue: "INFRA-1300" },
-    claim: claimOf({ issue: "INFRA-1300", role: "architect", sessionID: "ses_sub" }),
+    session: { kind: "phase-worker", role: "architect", tree: "POMJU-1000", issue: "POMJU-1300" },
+    claim: claimOf({ issue: "POMJU-1300", role: "architect", sessionID: "ses_sub" }),
   });
   rig.state = {
     issues: {
-      "INFRA-1300": { architect: { session: "ses_sub", state: "working", pluginContract: 57 } },
+      "POMJU-1300": { architect: { session: "ses_sub", state: "working", pluginContract: 57 } },
     },
   } as unknown as LegionState;
   await rig.teller.tellOverdue(evidenceOf());
-  expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+  expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-pomju-1000-architect");
 
   // And the controller's own session, which holds the only role its notice could reach.
   expect(

@@ -1,5 +1,5 @@
 /**
- * Claude Code's session, as the Agents page's live view reads it (INFRA-1026).
+ * Claude Code's session, as the Agents page's live view reads it (POMJU-1026).
  *
  * The mod (`../hooks/mod.ts`) sends what happens in the session over the link's socket as
  * `ModEvent`s; this turns each one into a call on the `AgentStreamPublisher` every Legion host
@@ -131,7 +131,7 @@ export interface ClaudeAgentStreamDeps {
    * the command it ran rather than the one that was asked for - `/cost` ran as `/usage`, and
    * `/model anthropic/haiku` as `/model haiku`, measured live on 2.1.310 - so the echo row
    * drawn is a second message the person never wrote, beside Dispatch's stored copy of the one
-   * they did send (INFRA-1026). Absent where no run of this session's can exist, and every
+   * they did send (POMJU-1026). Absent where no run of this session's can exist, and every
    * command row is a person's own.
    */
   readonly runsCommandRow?: (row: string) => boolean
@@ -139,7 +139,7 @@ export interface ClaudeAgentStreamDeps {
    * Whether a row of the `prompt` door is the row Claude Code wrote for this session's prompt
    * at the messages a turn never read (`./mod-session`, `runsUnreadPrompt`), asked by the row's
    * own id. That prompt quotes rows this view has already drawn, so drawn it shows a viewer
-   * each of those messages twice (INFRA-1026). A card submitted to an idle session is the other
+   * each of those messages twice (POMJU-1026). A card submitted to an idle session is the other
    * prompt this plugin submits without `asUser`, and it is drawn: the card reaches the
    * conversation nowhere else. Absent where no prompt of this session's can exist, and every
    * prompt row is a person's own.
@@ -347,7 +347,7 @@ export function createClaudeAgentStream(deps: ClaudeAgentStreamDeps): ClaudeAgen
     // request: a pick stands only while the steps agree with it. A step whose own effort is
     // another level, or none at all, ends the pick and leaves the step itself to answer -
     // measured live on 2.1.310, a pick of `low` with `claude-haiku-4-5` in force left the header
-    // reading `low` while the session's next request carried no effort at all (INFRA-1026).
+    // reading `low` while the session's next request carried no effort at all (POMJU-1026).
     if (event.effort !== picked) picked = undefined
     observed = { model: event.model, effort: event.effort }
     const content: ClaudeStreamPart[] = []
@@ -393,7 +393,7 @@ export function createClaudeAgentStream(deps: ClaudeAgentStreamDeps): ClaudeAgen
     // A row Claude Code marks `isMeta` is one the person does not see as typed
     // (`ModAppendMessage.isMeta`), so drawing it attributes to a person something they never
     // wrote - unless this session appended the row itself, which is the one `isMeta` row the
-    // page must show. Measured on live Claude Code 2.1.310 (INFRA-1026):
+    // page must show. Measured on live Claude Code 2.1.310 (POMJU-1026):
     //
     //   - a row `$.session.append` writes carries `isMeta: true` (the engine sets it,
     //     `hooks/claude-mod.d.ts`, `SessionAppendArgs`): the card this server delivers into a
@@ -407,7 +407,7 @@ export function createClaudeAgentStream(deps: ClaudeAgentStreamDeps): ClaudeAgen
     //     engine gives another installed mod's appended rows `{"kind":"plugin","name":"<that
     //     mod>"}` (`/legion/scratch/tmp/infra-1026-spike/logs`, where `spike-mod2` and
     //     `spike-mod3p` name themselves), so it drew that mod's model-facing context as the
-    //     person's own words (INFRA-1026 review, round ten);
+    //     person's own words (POMJU-1026 review, round ten);
     //   - a `/rename` typed at a terminal left, behind its echo and its
     //     `<local-command-stdout>` row, a `type: "user"` row carrying `isMeta: true` and
     //     `origin.kind` `engine` whose whole text is `<system-reminder> The user named this
@@ -426,7 +426,7 @@ export function createClaudeAgentStream(deps: ClaudeAgentStreamDeps): ClaudeAgen
     // message that carried the picture (`./claude-rows`, `isPictureAttachmentRow`). Nobody wrote
     // it, and published it draws a second user row for the one message the person sent: measured
     // on 2.1.310 in a Legion pane, where a picture sent from the Agents page drew the person's
-    // row and this one beside it (INFRA-1026). Checked for every door, since the row is a
+    // row and this one beside it (POMJU-1026). Checked for every door, since the row is a
     // companion of the prompt that carried the picture and no door of its own.
     if (isPictureAttachmentRow(message.content)) return
     if (door === "prompt") {
@@ -436,7 +436,7 @@ export function createClaudeAgentStream(deps: ClaudeAgentStreamDeps): ClaudeAgen
       // wrote for it by uuid, as a command run claims its echo row (`runsUnreadPrompt`). Read
       // instead off the prompt's
       // wording, the rule dropped any card carrying those words - a review of this code, or a
-      // message quoting one - which reaches the model and is drawn for nobody (INFRA-1026
+      // message quoting one - which reaches the model and is drawn for nobody (POMJU-1026
       // review, round ten). Every other prompt row is drawn: a person's own, and the card an
       // idle session is handed, which is that card and reaches the conversation nowhere else.
       if (deps.runsUnreadPrompt?.(uuid) === true) return
@@ -448,7 +448,7 @@ export function createClaudeAgentStream(deps: ClaudeAgentStreamDeps): ClaudeAgen
       // stays a part of its own and a picture becomes the `[image]` part the publisher names it
       // (`conversationParts` in `@legion/pi-shared/agent-stream`). Flattened into one
       // "Look at this\n[image]" part the row says what no stored message says, and the Agents
-      // page shows the person's message twice (INFRA-1026).
+      // page shows the person's message twice (POMJU-1026).
       const content = message.content.map(partOf)
       if (!content.some(shows)) return
       recordRow(subject, uuid, "user", content)
@@ -488,7 +488,7 @@ export function createClaudeAgentStream(deps: ClaudeAgentStreamDeps): ClaudeAgen
         // command Claude Code ran rather than the one the person sent, and their own line
         // reaches the page as the message Dispatch stored, which the Agents page shows beside
         // this stream. Drawn, a `/cost` the person sent put `/cost` and `/usage` in front of
-        // them as two messages of theirs, measured live on 2.1.310 (INFRA-1026).
+        // them as two messages of theirs, measured live on 2.1.310 (POMJU-1026).
         if (deps.runsCommandRow?.(uuid) === true) return
         recordRow(subject, uuid, "user", [{ text: line, type: "text" }])
         return

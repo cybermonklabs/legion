@@ -11,7 +11,7 @@ date: 2026-10-28
 status: active
 module: packages/envoy/internal/dispatch/pmdoc
 supersedes:
-  - docs/solutions/envoy/index-a-slow-pairing-walk-by-exactly-what-its-predicate-reads-and-prove-the-index-against-the-walk-INFRA-534.md
+  - docs/solutions/envoy/index-a-slow-pairing-walk-by-exactly-what-its-predicate-reads-and-prove-the-index-against-the-walk-POMJU-534.md
 related_issues:
   - "sjawhar/legion#2455"
 ---

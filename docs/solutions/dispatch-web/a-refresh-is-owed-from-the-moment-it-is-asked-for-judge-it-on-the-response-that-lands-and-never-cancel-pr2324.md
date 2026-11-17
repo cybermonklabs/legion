@@ -13,7 +13,7 @@ module: packages/dispatch/web/src/api
 
 # A refresh is owed from the moment it is asked for: judge it on the response that lands, keep it across an unmount, and never cancel
 
-Extends docs/solutions/testing/a-browser-race-with-no-in-page-signal-is-proven-by-a-held-read-a-margin-a-red-run-justifies-a-sampled-settle-and-one-shot-assertions-INFRA-303.md.
+Extends docs/solutions/testing/a-browser-race-with-no-in-page-signal-is-proven-by-a-held-read-a-margin-a-red-run-justifies-a-sampled-settle-and-one-shot-assertions-POMJU-303.md.
 
 TanStack's state while a fetch is in flight does not tell you whether that fetch saw the event. An event-driven scheduler on top of it must track that itself.
 

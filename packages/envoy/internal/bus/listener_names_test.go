@@ -34,7 +34,7 @@ func TestDispatchNamesKeepDispatchsExistingNames(t *testing.T) {
 	}
 }
 
-// The Legion agent registry's bucket is the name the INFRA-204 architect fixed, which the listener's
+// The Legion agent registry's bucket is the name the POMJU-204 architect fixed, which the listener's
 // NATS grant (packages/envoy/infra/core/permissions.go) and every reader of the bucket share.
 func TestLegionAgentBucketKeepsItsName(t *testing.T) {
 	if got := bus.LegionAgentBucket; got != "legion_agents" {

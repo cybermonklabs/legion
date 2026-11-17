@@ -2,7 +2,7 @@
 //go:build linux
 
 // A named session's grant surviving a reboot, against a REAL broker (brokertest.Rig), not the
-// package's hand-rolled fake: the whole point of dispatch://INFRA-1167 is a property of the
+// package's hand-rolled fake: the whole point of dispatch://POMJU-1167 is a property of the
 // broker's own enrollment conflict path (enroll.recoverConflict) and of what endEnrollment
 // cancels, and only an end-to-end run proves the helper's half lines up with it.
 package helper
@@ -256,7 +256,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 
 // TestContractTheProductionRecordsPathSurvivesTheRuntimeDirectoryGoing is the defect the two
 // tests above could not catch, because each hands the helper a records path of its own: in
-// production the path comes from the launcher, and until dispatch://INFRA-1167 it was
+// production the path comes from the launcher, and until dispatch://POMJU-1167 it was
 // `$XDG_RUNTIME_DIR/agent-secrets/sessions.json`, beside the socket — tmpfs, gone at the very
 // reboot the key must survive. This drives the paths a real helper derives from the socket and
 // the machine login it is configured with (cmd/agent-secrets-helper's loadConfig), removes the

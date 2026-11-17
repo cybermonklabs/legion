@@ -1,6 +1,6 @@
 Experiment 20, Temporal: the same handout held open for five minutes with no worker alive.
 Recorded 2026-11-08T02:36:34Z by docs/research/temporal-evaluation-2026-11/run.sh,
-from the branch of dispatch://INFRA-1546 based on commit ceef410e25f43882fa631b33b43c5c942f58c68b,
+from the branch of dispatch://POMJU-1546 based on commit ceef410e25f43882fa631b33b43c5c942f58c68b,
 in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------

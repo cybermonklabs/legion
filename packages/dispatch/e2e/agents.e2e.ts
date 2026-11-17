@@ -308,7 +308,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
 
     // Each pill's number is the number of rows the list its link opens holds. Needs you opens
     // the reader's own questions waiting on them, from this session: its one row. The Inbox's
-    // reading column writes the row it selects into that address as `?item=` (INFRA-575), so
+    // reading column writes the row it selects into that address as `?item=` (POMJU-575), so
     // each list here carries the selection beside the filter its link named, and a question's
     // text is read in the list column, which the column beside it repeats for the selected row.
     const selected = "(?:item=[^&]+&)?";
@@ -1664,7 +1664,7 @@ test("a mode no selected agent advertises leaves Send dead, and Send says so and
   }
 });
 
-// INFRA-626. A selected session that leaves the listener's live list is still a recipient: Envoy
+// POMJU-626. A selected session that leaves the listener's live list is still a recipient: Envoy
 // may know it and it may simply be stopped, in which case the send is stored for it and reaches
 // it when it runs again. Only the listener can tell that session from one it has never heard of,
 // so the composer leaves the judgment to the server, which names on the broadcast whatever it
@@ -1780,7 +1780,7 @@ test("the Agents page loads through one dropped request for its agents", async (
   }
 });
 
-// The row's two shapes (INFRA-812, k12). From `md` it is one line, because with six hundred
+// The row's two shapes (POMJU-812, k12). From `md` it is one line, because with six hundred
 // rows a second line is six hundred lines; below `md` the age and the directory take lines of
 // their own under the name, because on one line a 390 px row squeezed the name button to a
 // sliver the live link beside it took the press from, and left the directory unpainted. At
@@ -1795,12 +1795,12 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
   const tallestRowPx = isPhone ? 198 : 90;
   // The row is sized against what these fixtures put in it, so each one's length is asserted
   // here rather than trusted: a shorter name would prove nothing about the row's width.
-  const name64 = "Legion implementer · INFRA-92 — the whole name shows on this row";
+  const name64 = "Legion implementer · POMJU-92 — the whole name shows on this row";
   expect(name64).toHaveLength(64);
   const dir70 = "/workspaces/sjawhar/legion/infra-92/packages/dispatch/web/src/features";
   expect(dir70).toHaveLength(70);
   // A name with nothing to break on: wrapping it would have to break mid-word.
-  const unbroken64 = "legion-implementer-infra-92-agents-row-name-wraps-unbroken-names";
+  const unbroken64 = "legion-implementer-pomju-92-agents-row-name-wraps-unbroken-names";
   expect(unbroken64).toHaveLength(64);
   expect(unbroken64).not.toContain(" ");
 
@@ -1943,7 +1943,7 @@ test("an agent row's directory is still shown beside the longest name in use, so
   browser,
 }) => {
   // The name the spec sizes the row against: the longest in use on the Agents page today.
-  const name64 = "Legion implementer · INFRA-92 — the whole name shows on this row";
+  const name64 = "Legion implementer · POMJU-92 — the whole name shows on this row";
   expect(name64).toHaveLength(64);
   const dir70 = "/workspaces/sjawhar/legion/infra-92/packages/dispatch/web/src/features";
   expect(dir70).toHaveLength(70);

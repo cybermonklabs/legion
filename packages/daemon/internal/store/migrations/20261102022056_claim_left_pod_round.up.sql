@@ -1,5 +1,5 @@
 -- 20261102022056_claim_left_pod_round.up.sql — the round's own record of a claim that left it
--- (INFRA-484), which the daemon reads in place of the claim's locator. The locator moves under a
+-- (POMJU-484), which the daemon reads in place of the claim's locator. The locator moves under a
 -- relaunch and goes with a suspension, so a fact derived from it thaws: a claim frozen out of its
 -- round came back into it the moment an operator suspended the claim, and the report of what the
 -- pod took with it named a worker that had answered.

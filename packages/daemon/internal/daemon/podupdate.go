@@ -120,7 +120,7 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // store keeps the round for the next boot to restore. Waiting for the pod in its place to stop
 // drifting would leave such a round open for as long as that pod drifted, and the dead round's
 // slot would hold the issue's own next round back behind the project's open-round limit
-// (dispatch://INFRA-3276, R5).
+// (dispatch://POMJU-3276, R5).
 //
 // A group whose claims record no pod at all decides nothing from its claims: no locator is no
 // evidence either way — every claim of the issue may be suspended (letGo clears the locator), or
@@ -208,7 +208,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		return nil
 	}
 	// The drift this tick read opens a round and decides nothing of a round already open: a
-	// round's terms are fixed at its open (dispatch://INFRA-2981 R9), so what an open round's
+	// round's terms are fixed at its open (dispatch://POMJU-2981 R9), so what an open round's
 	// notices and its replacement name is its own recorded reasons (roundReasons). That holds
 	// where the drift has gone away too — an operator rolled the release back — and the round
 	// replaces the pod all the same. The round has already asked every role in that pod to push
@@ -263,7 +263,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // for no claim to be working keeps the promise that no worker is stopped mid-turn before the
 // bound — a worker answers from inside a turn, and that turn ends a moment later. At the bound
 // (roundBound) neither an answer nor a turn holds the round any more, and the pod is replaced
-// whatever the roles said (dispatch://INFRA-2981 R2). It reports whether it decided the round,
+// whatever the roles said (dispatch://POMJU-2981 R2). It reports whether it decided the round,
 // and with it the pod replacement that decision leaves the sweep to make.
 //
 // The replacement is handed back rather than made here because it waits its pod out, and the
@@ -397,7 +397,7 @@ type roundEnd struct {
 // holding is what holds the round's pod replacement at this reading of the round's end: before
 // the round's bound, the claims the round asks that have not answered it and the roles whose
 // turns run, and past the bound nothing. It is the one statement of that rule
-// (dispatch://INFRA-2981 R2). The walk's reading (readReplacement) and the last word under the
+// (dispatch://POMJU-2981 R2). The walk's reading (readReplacement) and the last word under the
 // pod's launch turn (replacementDue) read it here. The line of a replacement the bound made
 // (bounded) reads the same two fields, unanswered and working, past the bound.
 func (e roundEnd) holding() (unanswered []supervise.Claim, working []string) {
@@ -452,7 +452,7 @@ func pastBound(bound *time.Time, now time.Time) bool {
 //
 // The order the readings are taken in is the rule. An operator's suspension comes first, because
 // it is the one wait that is a person's and the one the bound never steps over
-// (dispatch://INFRA-2981 R5): a person's hold does not yield to a clock. It holds a pod that is
+// (dispatch://POMJU-2981 R5): a person's hold does not yield to a clock. It holds a pod that is
 // there, and only that: a hold over a round no live claim records a process in the pod of is
 // read as no process in the round's pod, carrying the claims the operator holds, so that its
 // caller asks first whether the pod is there at all. A round whose pod is gone ends whatever
@@ -553,7 +553,7 @@ type podReplacement struct {
 // answers or by its bound. One that the bound made — a claim had not answered, or a turn ran,
 // when the last word let it through — is logged on a second line of its own, `supervise pod
 // update replaced at the bound`, naming the claims that answered and those that did not
-// (dispatch://INFRA-2981 R8, whose production check reads those words). That line is written
+// (dispatch://POMJU-2981 R8, whose production check reads those words). That line is written
 // only where the last word ran and let the replacement through. A runtime that found no pod to
 // replace and returned nil without asking the last word replaced nothing, so the bound
 // replaced nothing either.
@@ -1151,13 +1151,13 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // askRound publishes the round's ask to each claim the round asks that records this round and
 // has not been asked it yet (unaskedClaims): one record.UpdateAsk row per claim, each to the
 // claim's own role on the issue, the architect's included, since every role whose process runs
-// in the pod loses it when the round replaces the pod (dispatch://INFRA-2981 R1).
+// in the pod loses it when the round replaces the pod (dispatch://POMJU-2981 R1).
 //
 // The text is the round's own terms, as its claims recorded them: the reasons the round opened
 // with (roundReasons), never the drift this tick read, and the moment the round ends at the
 // latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask). So every
 // role of one round reads one text, and the record an operator reads names the same reasons
-// (dispatch://INFRA-2981 R9).
+// (dispatch://POMJU-2981 R9).
 //
 // Every row of the round goes in one enqueue, so the round's asks land together or not at all
 // (workflowRuntime.enqueueOutbox), and each claim is marked afterwards (supervise's
@@ -1434,7 +1434,7 @@ func answeredClaims(group []supervise.Claim, round string) []supervise.Claim {
 // heldByOperator is every claim the round asks (askedClaims) that an operator's suspension holds
 // (supervise's Claim.RuleHolds): one the operator suspended, or one whose operator suspension
 // waits for its agent's turn to end. It is the one wait of a round that outlasts the round's
-// bound, because it is a person's (dispatch://INFRA-2981 R5): where a suspended claim is the
+// bound, because it is a person's (dispatch://POMJU-2981 R5): where a suspended claim is the
 // pod's only role its process is gone and nothing else would hold the pod, and where another
 // role still runs, nothing but this reading would hold it once the bound steps over the answers.
 //

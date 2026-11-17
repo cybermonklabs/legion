@@ -1,4 +1,4 @@
-/** One thread order everywhere (INFRA-450): the three threads the rows are read over, the parts
+/** One thread order everywhere (POMJU-450): the three threads the rows are read over, the parts
  *  of a collapsing thread, and the control that picks the order. Shared by
  *  `threads-order.e2e.ts` and the rows of that family which run against a recording
  *  (`threads-order.stub.e2e.ts`).
@@ -95,7 +95,7 @@ export async function seedThreads(replies: readonly string[] = REPLIES): Promise
   // force, because this fixture files a near copy on purpose: "Replay window" shares its only
   // meaning sentence, "The mirror replays the ledger on a cold start.", with "Replay budget"
   // above, which the near-copy gate refuses as a copy of an open issue
-  // (dispatch://INFRA-1160/spec#b-r2). The threads this spec reads are what it is about, so the
+  // (dispatch://POMJU-1160/spec#b-r2). The threads this spec reads are what it is about, so the
   // create goes in forced rather than the two texts being pulled apart.
   const blockIssue = await createIssue({
     force: true,

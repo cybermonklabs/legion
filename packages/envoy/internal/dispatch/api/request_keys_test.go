@@ -131,7 +131,7 @@ func heldUntilReleased(t *testing.T) (<-chan struct{}, func()) {
 	return release, once
 }
 
-// INFRA-258. A repeat under a key - a retry after a lost answer, a double press - is answered the
+// POMJU-258. A repeat under a key - a retry after a lost answer, a double press - is answered the
 // first request's stored status and body, marked replayed, and the handler runs once. A key sent
 // as a structured-field string is the same key as its bare form.
 func TestARepeatUnderAKeyReplaysTheFirstAnswerAndRunsOnce(t *testing.T) {
@@ -602,7 +602,7 @@ func committedAt(t *testing.T, database *store.Store, key string) bool {
 	return committed
 }
 
-// INFRA-258. A request committed its write, and its process died before the answer was kept. A
+// POMJU-258. A request committed its write, and its process died before the answer was kept. A
 // repeat past the lease must not run the write again: the key was marked committed in the write's
 // own transaction, and the repeat is answered 409 KEY_COMMITTED, naming the key, with no
 // Retry-After, since asking again changes nothing.

@@ -40,7 +40,7 @@ func roleTempDir(t *testing.T) string {
 }
 
 // Every test in this package that listens on its socket must still bind where a Legion role runs.
-// A role's TMPDIR is the issue's scratch on its volume since INFRA-31
+// A role's TMPDIR is the issue's scratch on its volume since POMJU-31
 // (`/legion/scratch/tmp`, 19 bytes, which roleTempDir's 31-byte fixture deliberately overshoots),
 // where a role was told none before and every tool fell back to `/tmp` (4); Linux's sun_path
 // holds 107 bytes, and a socket under t.TempDir() spells the whole test's name under TMPDIR, so

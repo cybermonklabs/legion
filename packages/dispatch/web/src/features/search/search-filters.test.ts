@@ -5,13 +5,13 @@ import { dayText, searchFilterChips, searchRequest } from "./search-filters";
 test("a chip reads back the filter in the words the person chose", () => {
   const chips = searchFilterChips({
     author: "alice",
-    project: "INFRA",
+    project: "POMJU",
     status: "in_progress",
     updatedSince: "2026-11-01",
   });
 
   expect(chips.map(({ name }) => name)).toEqual(["project", "status", "author", "updatedSince"]);
-  expect(chips[0]?.label).toBe("Project INFRA");
+  expect(chips[0]?.label).toBe("Project POMJU");
   expect(chips[1]?.label).toBe("Status In progress");
   expect(chips[2]?.label).toBe("Author alice");
   // The day is the reader's own month name and day number, never the `2026-11-01` of the wire.
@@ -38,10 +38,10 @@ test("a value the date control cannot have written reads as it stands", () => {
 
 test("the request carries each chosen filter under the route's own name", () => {
   expect(
-    searchRequest({ author: "alice", project: "INFRA", status: "needs_review" })
+    searchRequest({ author: "alice", project: "POMJU", status: "needs_review" })
   ).toMatchObject({
     author: "alice",
-    project: "INFRA",
+    project: "POMJU",
     status: "needs_review",
   });
   expect(searchRequest({})).toEqual({});
@@ -61,10 +61,10 @@ test("the day is sent as the instant its midnight began where the reader is", ()
 // own parameter and sets no chip, so a search from a project page is the search a person would
 // have got from anywhere.
 test("the page's project rides as context and narrows nothing", () => {
-  expect(searchRequest({}, "INFRA")).toEqual({ number_project: "INFRA" });
+  expect(searchRequest({}, "POMJU")).toEqual({ number_project: "POMJU" });
   expect(searchRequest({}, undefined)).toEqual({});
-  expect(searchRequest({ project: "LINUX" }, "INFRA")).toEqual({
-    number_project: "INFRA",
-    project: "LINUX",
+  expect(searchRequest({ project: "HAFJJ" }, "POMJU")).toEqual({
+    number_project: "POMJU",
+    project: "HAFJJ",
   });
 });

@@ -15,7 +15,7 @@ related_issues:
 ---
 # Arm a fault on the read the code makes: a resident room never reaches the store seam
 
-Extends docs/solutions/testing/failing-one-query-of-a-real-server-by-shadowing-a-function-on-search-path-INFRA-184.md.
+Extends docs/solutions/testing/failing-one-query-of-a-real-server-by-shadowing-a-function-on-search-path-POMJU-184.md.
 
 That document says where to put a failure when the server must stay unmodified. This one says how
 to choose the layer: arm the fault on the call the code under test makes, not on a layer below it

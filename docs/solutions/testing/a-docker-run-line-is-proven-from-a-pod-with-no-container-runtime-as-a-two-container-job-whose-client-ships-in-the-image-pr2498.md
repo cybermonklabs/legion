@@ -14,7 +14,7 @@ module: scripts/e2e
 
 # A docker run line is proven from a pod with no container runtime as a two-container Job whose client ships in the image
 
-Extends docs/solutions/testing/prove-a-worker-image-change-with-a-job-on-the-published-digest-the-bases-image-and-controls-inside-the-head-image-INFRA-257.md.
+Extends docs/solutions/testing/prove-a-worker-image-change-with-a-job-on-the-published-digest-the-bases-image-and-controls-inside-the-head-image-POMJU-257.md.
 
 That note runs a Job whose container is a check script that exits, and says a Job "can carry a
 sidecar, such as Postgres for a suite". This note is the other arrangement: the sidecar is the

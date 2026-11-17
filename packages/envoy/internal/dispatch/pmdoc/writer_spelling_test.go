@@ -12,7 +12,7 @@ import (
 // heading or in a table cell, or a document of another shape the writer refused to store at some
 // revision of this change, kept as a guard of the spelling it now takes, and the bytes the writer
 // stores it as. Later rows are the stored spellings the browser suite's parity rows asserted
-// before they were deleted (INFRA-1404), each marked by the spec it came from, so a reader knows
+// before they were deleted (POMJU-1404), each marked by the spec it came from, so a reader knows
 // why a browser claim is made here. For each row Parse reads it as the engine does, ParseForWrite
 // stores it, Render's bytes read back as Parse's tree in both parsers, and those bytes are want.
 func TestTheWriterSpellsEveryTreeItReadsAsTheEngine(t *testing.T) {
@@ -39,7 +39,7 @@ func TestTheWriterSpellsEveryTreeItReadsAsTheEngine(t *testing.T) {
 		{"an italic bare URL before a letter", "*http\\://a.example/a*b\\)**\n", "*http\\://a.example/a*b)**\n"},
 		// The rows below are the stored spellings five rows of the browser suite, in the four
 		// specs named under them, used to assert of a document written through the API, moved
-		// here when those rows were deleted (INFRA-1404): the fixture table cannot carry them,
+		// here when those rows were deleted (POMJU-1404): the fixture table cannot carry them,
 		// since fixtures.json's rendered_by_milkdown is the engine's own re-serialization and
 		// render_test.go compares it only through plain(), which strips a character reference
 		// and a backslash alike. Each want below was measured here, and carries what its browser

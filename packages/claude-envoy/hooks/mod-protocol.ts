@@ -52,7 +52,7 @@ export const MOD_SOCKET_PATH_MAX_BYTES = 100
  *  one mod. Two Claude Code processes can boot on one session id (`claude -c`, and
  *  `claude --resume <id>` in a second terminal), and sharing one server would put both
  *  conversations in one live view and hand a person's Send to whichever mod polled first
- *  (INFRA-1026 review). The refused mod stops rather than retrying. */
+ *  (POMJU-1026 review). The refused mod stops rather than retrying. */
 export const MOD_STATUS_TAKEN = 409
 
 /** The header every post of the mod's carries: the mod instance that sent it, minted once per
@@ -68,7 +68,7 @@ export const MOD_INSTANCE_HEADER = "x-claude-envoy-mod"
  *  else `<HOME>/.claude`. Nothing else is a base, `TMPDIR` and `/tmp` included: in a directory
  *  other local users can write, another of them binds the path first - a session id is not
  *  secret - and then reads the conversation and submits prompts as the person, or parks a plain
- *  file there and silences the session for good (INFRA-1026 review). A session none of the three
+ *  file there and silences the session for good (POMJU-1026 review). A session none of the three
  *  variables names a base for gets no mod link at all. */
 const MOD_SOCKET_RUNTIME_VARIABLE = "XDG_RUNTIME_DIR"
 const MOD_SOCKET_CONFIG_VARIABLE = "CLAUDE_CONFIG_DIR"
@@ -202,7 +202,7 @@ function socketBases(env: Readonly<Record<string, string | undefined>>): readonl
  * refused with that reason, never served out of a shared one.
  *
  * The name is the id's hash rather than the id itself because a uuid spelled out costs 36 bytes
- * more and passed the bound on a macOS temp directory (INFRA-1026 review). With the 38 bytes the
+ * more and passed the bound on a macOS temp directory (POMJU-1026 review). With the 38 bytes the
  * hashed name costs (`/claude-envoy/ce-` + 16 hex + `.sock`), the two real bases measured for
  * this rule are far inside the 100: a macOS `/Users/alexandra/.claude` (24) makes 62, and a
  * Legion pane's `CLAUDE_CONFIG_DIR` of `/legion/scratch/state/implementer/claude` (40) makes 78.
@@ -447,7 +447,7 @@ export type ModEvent =
        * `flush` holds an event behind a post already in flight while a result goes out on a
        * fetch of its own, so either can land first, and a claim made from the answer lands
        * after the live view has read the row on the runs where the event went first
-       * (INFRA-1026 k2, measured live on 2.1.310). An origin cannot stand in for it: another
+       * (POMJU-1026 k2, measured live on 2.1.310). An origin cannot stand in for it: another
        * installed mod's appended row reaches this mod's hook under a `plugin` origin too, and
        * the prompt row of a card is drawn where the prompt row of a pointer is not.
        */
@@ -489,7 +489,7 @@ export interface ModCommandInfo {
  *
  * It crosses the link because the mod writes that prompt: the mod is where a turn's requests
  * and this plugin's writes arrive in one order, so it is the only place that can say which row
- * a request read (`./mod.ts`, INFRA-1026 review, round eleven).
+ * a request read (`./mod.ts`, POMJU-1026 review, round eleven).
  */
 export type ModUnreadMessage =
   | { readonly kind: "person"; readonly text: string; readonly messageId: string }
@@ -503,7 +503,7 @@ export type ModUnreadMessage =
  * label is a label only where it carries this mark. A card's text is quoted under the same
  * prompt and any client on the bus can send a card, so without the mark a card carrying the
  * line `Dispatch message <id>, the person's own words:` took the person's authority for
- * whatever it put after it (INFRA-1026 review, security[prompt]). The text is fixed before the
+ * whatever it put after it (POMJU-1026 review, security[prompt]). The text is fixed before the
  * mark exists, so no text can carry it.
  *
  * `Math.random` is what the mod mints its own instance id with (`./mod.ts`), so it is there
@@ -541,7 +541,7 @@ function quotedUnread(message: ModUnreadMessage, fence: string): string {
  * on two sessions with a prompt that said "Read the message above": the row sat behind the
  * agent's own long answer, and the model replied `I don't see an actual Dispatch message content
  * above` on one and `it looks like an injection and I'm not going to act on it` on the other
- * (INFRA-1026). One prompt goes out however many rows went unread — the mod submits one per turn
+ * (POMJU-1026). One prompt goes out however many rows went unread — the mod submits one per turn
  * end — so it names each message, and a turn that left a card and a person's message unread gets
  * the one prompt holding both.
  *
@@ -553,7 +553,7 @@ function quotedUnread(message: ModUnreadMessage, fence: string): string {
  * What each message is, the prompt says in a label of its own, and the label carries this
  * prompt's fence (`promptFence`): the label is the router's, never the text's. A card that
  * wrote the person's label into its own text took their authority for what followed it, and
- * any client on the bus can send a card (INFRA-1026 review, security[prompt]). The mark is
+ * any client on the bus can send a card (POMJU-1026 review, security[prompt]). The mark is
  * minted here and nowhere else, fresh for every call: a mark a caller could name is a mark a
  * message could carry.
  */
@@ -593,7 +593,7 @@ export interface ModCallArguments {
    * while nothing is running (`$.prompt.submit`). Which of the two it is, and whether a turn
    * that ends without reading the row is pointed at it, is the mod's to decide, because the
    * mod is the one process where the turn's events and this write are in one order
-   * (INFRA-1026 review, round eleven; `./mod.ts`).
+   * (POMJU-1026 review, round eleven; `./mod.ts`).
    *
    * The mod answers with the write the message became - a row's uuid, or a prompt the engine
    * took - and a frame of Envoy's is answered on that answer and on nothing else. A request the
@@ -657,7 +657,7 @@ export interface ModCallResults {
    * a prompt the engine took is `{ as: "prompt" }` whether or not its row arrived, and it is
    * never a refusal: answered as one, the mod recorded nothing for the Envoy event and the
    * resend submitted the card a second time, while a person's own message had Dispatch tell
-   * them their session dropped a prompt it had in fact taken (INFRA-1026 review). This is the
+   * them their session dropped a prompt it had in fact taken (POMJU-1026 review). This is the
    * one statement of that rule; the writer's own doc blocks name it rather than repeat it.
    */
   "session.message":

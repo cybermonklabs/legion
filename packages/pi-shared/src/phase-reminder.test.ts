@@ -215,7 +215,7 @@ test("a notice the listener failed is published again by the run's next reminder
 // next delivered reminder publishes the notice again. A listener that names `kept_until` answers
 // a repeat of the key with the copy it still holds, so the key stays. A listener of an earlier
 // release names no time and answers a repeat as the first copy for 72 hours, even after it
-// dropped that copy, so the next attempt mints a new key (dispatch://INFRA-2846, R6).
+// dropped that copy, so the next attempt mints a new key (dispatch://POMJU-2846, R6).
 test("the owner notice is kept", async () => {
   const requests: Record<string, unknown>[] = [];
   // The listener's answers in turn: kept with its time, kept with no time (an earlier release),
@@ -384,7 +384,7 @@ test("a failed delivery arms nothing once a turn has started meanwhile", async (
   expect(timers).toHaveLength(1);
 });
 
-// The whole of dispatch://INFRA-264: every turn of that implementer was refused by the provider,
+// The whole of dispatch://POMJU-264: every turn of that implementer was refused by the provider,
 // and every reminder it was given at once bought another refused turn. So a refused turn earns no
 // continuation; but the daemon's task for the phase ended with that turn, and below
 // `launch_failure_limit` nothing fails the claim and nothing hands the task out again, so one

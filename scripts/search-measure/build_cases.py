@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Turn a set of measured cases into descriptors this repository can carry.
+"""Turn a set of measured cases into descriptors that carry none of Dispatch's text.
 
-usage: build_cases.py --corpus $TMPDIR/<dir> --cases <cases.json> --out cases.json
+usage: build_cases.py --corpus $TMPDIR/<dir> --cases <cases.json> --out $TMPDIR/cases.json
 
 A case the baseline measured is a query and the item that answers it. The query is Dispatch's own
-text, so this repository holds no case's text: for each case the output names the item the text
+text, so no descriptor holds a case's text: for each case the output names the item the text
 comes from, the version, the character range, and the SHA-256 of the text that range yields
 (case_text.py). The runner reads the range back out of the fixture and refuses a case whose hash
 has moved, so a case always runs the words it was measured with or does not run at all.
+
+A descriptor still names the deployment's own issue, project, document or ask, and this
+repository is public, so the set this writes is never committed: it is kept as the file
+cases.json in the deployment's own Dispatch (README.md), and --out has no default.
 
 A case whose query is nobody's text - a reworded title, written to ask search the same question
 in other words - cannot be described at all: it has no item, no range and no hash to re-extract,
@@ -28,7 +32,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", required=True)
     parser.add_argument("--cases", required=True, help="the measured cases, each with its query")
-    parser.add_argument("--out", required=True, help="the descriptors, safe to commit")
+    parser.add_argument("--out", required=True,
+                        help="where to write the descriptor set, outside this tree; it names the "
+                             "deployment's own issues and projects (README.md)")
     arguments = parser.parse_args()
 
     documents = {row["artifact_id"]: row for row in read_jsonl(arguments.corpus, "documents.jsonl")}
@@ -47,8 +53,8 @@ def main():
         descriptors.append(descriptor)
 
     with open(arguments.out, "w") as handle:
-        # Two spaces and a trailing newline: the repository's JSON formatter (`bunx biome check`)
-        # reads this file too.
+        # Two spaces and a trailing newline: the layout of the descriptor set kept in Dispatch,
+        # so a set rebuilt from the same harvest is the same bytes.
         json.dump(descriptors, handle, indent=2)
         handle.write("\n")
 

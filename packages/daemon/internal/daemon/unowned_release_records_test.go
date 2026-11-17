@@ -162,7 +162,7 @@ func (r *idleRig) startQueuedAt(t *testing.T, row int64, role claim.Role) {
 	}
 }
 
-// INFRA-1341 R6 and R9: what the release of a pod no role can use leaves behind for a deployment
+// POMJU-1341 R6 and R9: what the release of a pod no role can use leaves behind for a deployment
 // to read — the record of the release, the mark the teardown reads, the line that ends the
 // release and the line its pass writes — and, as much, what none of them says.
 //

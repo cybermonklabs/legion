@@ -113,7 +113,7 @@ export function claudeAgent(file: string, source: string, legionSkills?: Set<str
   return `---\n${lines.join("\n")}\n---\n${source.slice(match[0].length)}`
 }
 
-/** The phase reminder's hook entries (INFRA-220): the events Claude Code fires at a phase
+/** The phase reminder's hook entries (POMJU-220): the events Claude Code fires at a phase
  *  worker, each an `mcp_tool` hook on the pane's own Legion MCP server, which `claude` registers
  *  as the bare name `legion` (packages/daemon/internal/runtime/tmux/claude.go), and on the tool
  *  `legion_phase_hook` that server offers (packages/claude-envoy/src/legion-phase-hook.ts).

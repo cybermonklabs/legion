@@ -10,14 +10,14 @@ date: 2026-10-31
 status: active
 module: docs/solutions
 related_issues:
-  - "INFRA-841"
+  - "POMJU-841"
   - "sjawhar/legion#2580"
   - "sjawhar/legion#2598"
 ---
 
 # A symbol citation rots when the behaviour moves under the name, so read the symbol at the head you commit
 
-Extends docs/solutions/best-practices/an-instrument-that-answers-a-smaller-question-returns-the-comfortable-answer-INFRA-141.md.
+Extends docs/solutions/best-practices/an-instrument-that-answers-a-smaller-question-returns-the-comfortable-answer-POMJU-141.md.
 
 That page says to cite the calling symbol, "which cannot drift". A symbol's name cannot drift; what
 it does can, and then the citation is worse than a stale line number, because the reader resolves
@@ -41,7 +41,7 @@ it, reads the opposite of your sentence, and concludes your page is wrong.
 
 ## Evidence
 
-sjawhar/legion#2580, INFRA-841. A learning page written by that pull request's own retro said the
+sjawhar/legion#2580, POMJU-841. A learning page written by that pull request's own retro said the
 claim-list check "stops at the first line that is neither a bullet nor an indented continuation
 once it holds one claim", and cited the parser by file and line in
 `packages/envoy/internal/broker/oauth/claims_doc_test.go`. A forward merge then brought

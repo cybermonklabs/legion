@@ -1,6 +1,6 @@
 -- 20261115091510_doc_closed_edit_sources.up.sql
 --
--- INFRA-1138: the editor a settlement of a closed issue's document credited, kept for the
+-- POMJU-1138: the editor a settlement of a closed issue's document credited, kept for the
 -- settlement after the issue reopens (docs.clearSettlementPending, docs.settlementPendingStatement).
 --
 --   artifact_id  the document, one row at most.

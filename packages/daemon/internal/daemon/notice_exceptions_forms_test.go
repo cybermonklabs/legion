@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 )
 
-// A role lane's name has two forms while every reader takes both (dispatch://INFRA-3862): the old
+// A role lane's name has two forms while every reader takes both (dispatch://POMJU-3862): the old
 // form names the role alone, notifications.role.<role>, and the new one its project first,
 // notifications.role.<PROJECT>.<role>. The listener reports a failed forward on the lane's own
 // name under notifications.envoy.exceptions., so the daemon hears and reads a report of either.

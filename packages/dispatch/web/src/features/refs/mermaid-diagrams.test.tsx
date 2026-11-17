@@ -958,7 +958,7 @@ describe("Mermaid diagrams", () => {
   describe("mermaidDrawsSettled", () => {
     /** Whether `promise` settles within `ms`, so a promise that never resolves fails the case on
      *  its assertion rather than on the test's timeout. This wait stays on the real clock where
-     *  the rest of the file moved to a fake one (INFRA-1505): a fake clock only moves when the
+     *  the rest of the file moved to a fake one (POMJU-1505): a fake clock only moves when the
      *  test moves it, so the losing side of the race would never come up and the race would
      *  decide nothing. */
     const settlesWithin = (promise: Promise<void>, ms: number): Promise<boolean> =>

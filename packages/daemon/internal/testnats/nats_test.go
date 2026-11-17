@@ -379,7 +379,7 @@ func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 // name that client carries. The names come from the server's own account rather than from the
 // failing test, which is what lets one report tell apart the several clients a test can leave:
 // this row leaves one client the fixture named after the test and one its caller named itself,
-// and requires the report to carry both names (dispatch://INFRA-1964).
+// and requires the report to carry both names (dispatch://POMJU-1964).
 func TestAFixtureClientLeftOpenFailsTheCheckNamingIt(t *testing.T) {
 	ownName := "a-client-named-by-its-caller-" + rand.Text()
 	recorder, listed := clientsLeftOpen(t, ownName)
@@ -432,7 +432,7 @@ func TestTheCheckClosesTheFixtureClientsItReported(t *testing.T) {
 // process's client, or a raw dial of a test's own — so the check records it under the name of the
 // test that left it, and the next take is failed at once rather than after the drain's thirty
 // seconds. Before the record the next test waited that bound out and named nobody, which is the
-// fault this check exists to end (dispatch://INFRA-1964).
+// fault this check exists to end (dispatch://POMJU-1964).
 func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 	url := URL(t)
 	armed := armedNow(t)
@@ -478,7 +478,7 @@ func TestAConnectionTheFixtureDidNotOpenFailsTheNextTakeAtOnce(t *testing.T) {
 // A read of the server that fails after the check has closed the fixture's own clients leaves
 // the record of what the read before that close found standing. Without it the next test's drain
 // finds connections nothing recorded, waits its whole thirty seconds out and fails naming
-// nobody, which is the fault this check exists to end (dispatch://INFRA-1964). Nothing here
+// nobody, which is the fault this check exists to end (dispatch://POMJU-1964). Nothing here
 // waits on timing: the fixture holds one client no cleanup of this row will close, and the
 // reader fails from the moment closeFixtureConnections inside the check closes it, so the first
 // settle reads the server and every read after the close fails.
@@ -517,7 +517,7 @@ func TestAFailedReadAfterTheCloseKeepsTheRecord(t *testing.T) {
 // test's check wrote included: the record names the test whose check ran last, whatever that
 // check managed to read, so the next test's drain can never fail in the name of a test that is
 // not the leaker — a wrong name in the very message this check exists to make right
-// (dispatch://INFRA-1964). What that drain gets instead is nothing: it waits its bound out and
+// (dispatch://POMJU-1964). What that drain gets instead is nothing: it waits its bound out and
 // names nobody, which is this issue's old behaviour and no accusation of the wrong test.
 // Nothing here waits on timing: the reader fails from before the check runs, so both of the
 // check's reads fail, and the record put in place by hand carries a connection id no server

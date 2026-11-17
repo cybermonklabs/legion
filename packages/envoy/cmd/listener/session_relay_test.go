@@ -529,7 +529,7 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 	// Shorter than the production bounds, long enough that the silent window below ends before
 	// the first probe: the relay sends again receipt + pauseFirst after the frame it got no
 	// answer for. The receipt wait is this row's own rather than production's three seconds,
-	// which it would otherwise spend twice over in fixed sleeps (INFRA-985).
+	// which it would otherwise spend twice over in fixed sleeps (POMJU-985).
 	const receipt = 500 * time.Millisecond
 	const pauseFirst, pauseMax = 2 * time.Second, 4 * time.Second
 	rig := newRelayRigReceipt(t, pauseFirst, pauseMax, receipt)

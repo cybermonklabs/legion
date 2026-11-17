@@ -618,7 +618,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 	}
 	before := elsewhere()
 	// On a hold mark of its own, as workflowRuntime.run starts the sweep
-	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as in production (INFRA-3169).
+	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as in production (POMJU-3169).
 	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Hour))
 	starts := sweptStarts(t, pool, key)
 	if len(starts) != 1 {

@@ -8,7 +8,7 @@
 --                beside a null asked_of.
 --   asked_of_at  when that hand-on was written, null and written as asked_of_by is.
 --
--- INFRA-1576: a Dispatch ask reaches the assignee of its issue and nobody else, so a question
+-- POMJU-1576: a Dispatch ask reaches the assignee of its issue and nobody else, so a question
 -- meant for one person sat in another person's Inbox and the person it was meant for never saw
 -- it. The field is named asked_of and not `recipient` because `recipient` already means the
 -- sessions an answer reaches (AskRecipients in the web app). One expression in the server,

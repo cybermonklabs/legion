@@ -29,7 +29,7 @@ which authorises the in-place correction. The delta is who sweeps, and what.
   `grep -rno "[a-z_/]*\.\(go\|md\|ts\):[0-9]\+\(-[0-9]\+\)\?" docs/solutions/*/*pr<number>.md`.
   Check each hit against the merged tree and repoint it at the symbol, which is the standing rule
   in
-  `docs/solutions/best-practices/an-instrument-that-answers-a-smaller-question-returns-the-comfortable-answer-INFRA-141.md`
+  `docs/solutions/best-practices/an-instrument-that-answers-a-smaller-question-returns-the-comfortable-answer-POMJU-141.md`
   ("cite code by symbol, not by line"); the merge is simply the event that makes a line citation
   wrong fastest.
 - **The never-edit rule binds concurrent retros, not your own round.** Correcting a citation your

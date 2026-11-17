@@ -56,7 +56,7 @@ export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<S
  * way, so the answer here is the attempt's own reason rather than a throw: the bar says the
  * words did not reach the agent instead of saying they did. An attempt can settle as `queued`
  * too, for a session that stopped since the bar offered it: the words are stored for it rather
- * than refused, so the bar says that instead of either (INFRA-626).
+ * than refused, so the bar says that instead of either (POMJU-626).
  */
 export async function sendToAgent(
   writes: Writes,

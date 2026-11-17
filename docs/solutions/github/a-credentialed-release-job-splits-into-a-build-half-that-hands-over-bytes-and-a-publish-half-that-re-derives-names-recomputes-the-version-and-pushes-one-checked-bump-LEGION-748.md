@@ -44,7 +44,7 @@ related_issues:
    group and refuses on a mismatch (`release-push.sh version --expect`). Decide in the spec what
    a mismatch means when the work is already done: this issue's `--expect` turned a benign race
    (the version already released by an earlier run) into a red job that needed a whole-run
-   re-run, recorded on LEGION-772. dispatch://INFRA-281 later gave the two outcomes exit
+   re-run, recorded on LEGION-772. dispatch://POMJU-281 later gave the two outcomes exit
    statuses of their own: the listener's publish job ends green when nothing of its commit is
    left to release or a later run still running holds it, and starts a new run on `main`
    otherwise.

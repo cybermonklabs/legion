@@ -96,7 +96,7 @@ var contract46Issue = []string{
 
 // recordFieldClaimKeys are the six keys recordFieldsContract added to a claim view and
 // recordFieldIssueKeys the three it added to an issue, the decided claim and issue records
-// (dispatch://INFRA-3083). recordFieldKeys is the nine together: they arrive and leave as one
+// (dispatch://POMJU-3083). recordFieldKeys is the nine together: they arrive and leave as one
 // (withoutRecordFields), so one flag of the table below answers for all nine and that list is
 // what the flag is read over. The halves are named because the table strips each at its own
 // site, and a key written out there instead would be one this test could stop checking without

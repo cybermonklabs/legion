@@ -152,7 +152,7 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_resume_old_plugin"
-	const followed = "notifications.dispatch.issue.INFRA-2365.comment"
+	const followed = "notifications.dispatch.issue.POMJU-2365.comment"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", followed))
 	// It is handed nothing at all, which is the population this guard is for.

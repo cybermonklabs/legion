@@ -608,7 +608,7 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 			slog.Warn(answer.RefusalMessage, airlockLine.Fields([]any{"host", sent, "reason", "not allowed by rule", "path", "/v1/"})...)
 		}},
 		{"a port's own field after correlation_id", "slot", func() {
-			slog.Warn(answer.RefusalMessage, airlockLine.Fields(nil, "issue", "INFRA-1352", "slot", sent)...)
+			slog.Warn(answer.RefusalMessage, airlockLine.Fields(nil, "issue", "POMJU-1352", "slot", sent)...)
 		}},
 		{"a field of a line built by answer.ClipFields", "path", func() {
 			slog.Info("a call line", answer.ClipFields([]any{"answer_id", answer.NewID(), "method", http.MethodGet, "path", sent, "status", http.StatusOK})...)

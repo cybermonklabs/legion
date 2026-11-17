@@ -1,8 +1,8 @@
 -- 20261105231916_production_check_role_and_wake.up.sql — the production check names the role that
 -- works it and the time it is next looked at, the claim and its delivery name the look the worker
--- took, and the compare kind goes (INFRA-809).
+-- took, and the compare kind goes (POMJU-809).
 --
--- This migration is this branch's own and is not released, so every column INFRA-809 needs is
+-- This migration is this branch's own and is not released, so every column POMJU-809 needs is
 -- added here rather than in a second migration: there is no deployed store that has run it.
 --
 -- role is the role that works the check. It is written once, when the check opens, from the

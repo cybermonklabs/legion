@@ -30,7 +30,7 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 
 // RunCommand's jj and git are stopped the way execRunner's are: the budget's end sends SIGTERM to
 // the command's own process group, which is the group procgroup.Configure gives it and which
-// RunCommand never had before dispatch://INFRA-3098, waits the grace, and sends SIGKILL only
+// RunCommand never had before dispatch://POMJU-3098, waits the grace, and sends SIGKILL only
 // after it. The three cases are the three things that stop is: a command that handles SIGTERM
 // removes the lock it holds and the run ends well inside the grace; a helper the command forked is
 // stopped with it, which only a group can do; and a command that handles SIGTERM and exits 0 at

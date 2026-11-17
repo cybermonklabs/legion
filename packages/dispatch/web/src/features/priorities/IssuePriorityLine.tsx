@@ -35,7 +35,7 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
 }
 
 /**
- * The `Advances` item of the issue header's metadata rail (INFRA-2947, R16 and R3): each
+ * The `Advances` item of the issue header's metadata rail (POMJU-2947, R16 and R3): each
  * priority this issue advances, named by its order and title and linking to that priority's own
  * page, with the control that adds one beside them and a remove on each.
  *

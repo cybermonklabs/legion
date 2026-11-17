@@ -22,7 +22,7 @@ import (
 // from state - whether a stamp stands at the version the blocks are indexed at, and whether a
 // window row exists at all - so it reads every row of document_block_versions with two index
 // probes each: 112-122 ms a pass and 67,496 buffer hits over the load-test deployment's 9,881
-// documents, for an answer of no rows (INFRA-988).
+// documents, for an answer of no rows (POMJU-988).
 const documentsOwedWindowsFromState = `
 	select v.artifact_id::text from document_block_versions v
 	where v.artifact_id > $1::uuid
@@ -105,7 +105,7 @@ var documentWindowStates = []documentWindowState{{
 	window:  true,
 }, {
 	// A document indexed at a version that holds no block: an issue created with no spec
-	// carries a spec.md whose markdown is empty (INFRA-988). It has no row in
+	// carries a spec.md whose markdown is empty (POMJU-988). It has no row in
 	// document_blocks, so the semi-join the read had before this round dropped it, and
 	// since the write of a document's windows is the only statement that clears the
 	// marker, its row stayed marked for ever.
@@ -343,7 +343,7 @@ func TestAVersionWriteOwesADocumentItsWindowsAndWritingThemClearsIt(t *testing.T
 // arm's listing had before this round dropped such a document while the version write went on
 // marking it, and WriteDocumentWindows, the only statement that clears the marker, runs only
 // for a document the arm listed: the row stayed marked for ever, an entry in the partial index
-// every later pass paid for and no pass could remove (INFRA-988). Both halves are read here as
+// every later pass paid for and no pass could remove (POMJU-988). Both halves are read here as
 // behaviour: the arm lists it, and the write of its windows - of which it has none - deletes
 // the windows left from the version that did hold blocks and clears the marker.
 func TestADocumentWhoseVersionHoldsNoBlockIsListedAndWindowed(t *testing.T) {

@@ -16,8 +16,8 @@ import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The rail's Agents list (INFRA-812, R1; the browser cases of the Verification document's k1,
- * dispatch://INFRA-812/artifact/verification-md).
+ * The rail's Agents list (POMJU-812, R1; the browser cases of the Verification document's k1,
+ * dispatch://POMJU-812/artifact/verification-md).
  *
  * The heading stays the link to the Agents page and folds the rows under it; the rows are the
  * person's pinned agents, oldest pin first, each with its running state, its name, its unread

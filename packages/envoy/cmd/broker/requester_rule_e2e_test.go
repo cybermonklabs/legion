@@ -1,4 +1,4 @@
-// requester_rule_e2e_test.go is INFRA-1417's production-like proof: the REAL compiled broker
+// requester_rule_e2e_test.go is POMJU-1417's production-like proof: the REAL compiled broker
 // binary and the REAL compiled agent-secrets client, driven over sockets against a real Postgres,
 // with the requesters tag deciding every answer. Nothing here is a unit test — the binaries are
 // the ones cmd/broker and cmd/agent-secrets build, the schema is a fresh one on the test server,
@@ -184,7 +184,7 @@ const (
 // and that the quarterly access review reads every refusal in GET /v1/grant-log with its session
 // and its person.
 //
-// It is INFRA-1485's production-like proof as well, in the same run and through the same two
+// It is POMJU-1485's production-like proof as well, in the same run and through the same two
 // binaries: a pod of the registered service legion-daemon asks for an administrator's Google
 // service-account secret (GCP_ADMIN, admin: "true", human tier, its requesters naming the pod's
 // service beside its person owner), the answer is pending for that owner rather than an

@@ -2,7 +2,7 @@ import { getArtifactText, getIssue } from "./api";
 import { documentEditor, openWithCaret, paste } from "./editor";
 import { type Browser, expect, test } from "./test";
 
-// INFRA-565: a typed block whose content breaks its type's content rule, pasted as plain text into
+// POMJU-565: a typed block whose content breaks its type's content rule, pasted as plain text into
 // a live document, keeps every word. Milkdown dropped such a block and all its text silently, with
 // only "Cannot create node" in the console. The editor now draws the block as its literal lines:
 // the opening and closing lines are text, the content keeps its own blocks, and the save escapes

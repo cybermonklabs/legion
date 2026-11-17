@@ -125,8 +125,8 @@ func sessionIDs(agents []legionagents.Agent) []string {
 }
 
 func TestRoleTokenIsTheDaemonsToken(t *testing.T) {
-	if got := legionagents.RoleToken("infra", "INFRA-448", "tester"); got != "legion-infra-infra-448-tester" {
-		t.Fatalf("RoleToken = %q, want legion-infra-infra-448-tester", got)
+	if got := legionagents.RoleToken("pomju", "POMJU-448", "tester"); got != "legion-pomju-pomju-448-tester" {
+		t.Fatalf("RoleToken = %q, want legion-pomju-pomju-448-tester", got)
 	}
 	if got := legionagents.RoleToken("sjawharlegion", "LEGION-7", "architect"); got != "legion-sjawharlegion-legion-7-architect" {
 		t.Fatalf("RoleToken = %q, want legion-sjawharlegion-legion-7-architect", got)
@@ -137,7 +137,7 @@ func TestRoleTokenIsTheDaemonsToken(t *testing.T) {
 // carrying the recorded_at the store stamped at the write and no replacement.
 func TestAnEntryRoundTripsThroughEveryRead(t *testing.T) {
 	r := openRegistry(t)
-	want := agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")
+	want := agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")
 	want.RecordedAt = "1999-01-01T00:00:00Z" // a writer's recorded_at is not the store's
 	stored, err := r.store.Put(ctx(t), want)
 	if err != nil {
@@ -154,17 +154,17 @@ func TestAnEntryRoundTripsThroughEveryRead(t *testing.T) {
 	if got.Entry != want || got.ReplacedBy != nil || got.ReplacedAt != nil {
 		t.Fatalf("get = %#v, want %#v with no replacement", got, want)
 	}
-	byRole, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-tester")
+	byRole, err := r.store.ByRoleToken(ctx(t), "legion-pomju-pomju-448-tester")
 	if err != nil || len(byRole) != 1 || byRole[0].Entry != want {
 		t.Fatalf("by role token = %#v, %v; want the one entry", byRole, err)
 	}
-	byIssue, err := r.store.ByIssue(ctx(t), "INFRA-448")
+	byIssue, err := r.store.ByIssue(ctx(t), "POMJU-448")
 	if err != nil || len(byIssue) != 1 || byIssue[0].Entry != want {
 		t.Fatalf("by issue = %#v, %v; want the one entry", byIssue, err)
 	}
 	held := r.contents(t)
 	value, _ := json.Marshal(want)
-	for _, key := range []string{"session.ses-tester", "issue.INFRA-448.ses-tester", "role.legion-infra-infra-448-tester.ses-tester"} {
+	for _, key := range []string{"session.ses-tester", "issue.POMJU-448.ses-tester", "role.legion-pomju-pomju-448-tester.ses-tester"} {
 		if held[key] != string(value) {
 			t.Fatalf("key %s holds %q, want %q", key, held[key], value)
 		}
@@ -177,9 +177,9 @@ func TestAnEntryRoundTripsThroughEveryRead(t *testing.T) {
 func TestABatchRoundTripsInOrder(t *testing.T) {
 	r := openRegistry(t)
 	entries := []legionagents.Entry{
-		agent("infra", "INFRA-448", "planner", "ses-planner", "2026-10-26T01:00:00Z"),
-		agent("infra", "INFRA-448", "implementer", "ses-impl", "2026-10-26T02:00:00Z"),
-		agent("infra", "INFRA-449", "tester", "ses-other", "2026-10-26T03:00:00Z"),
+		agent("pomju", "POMJU-448", "planner", "ses-planner", "2026-10-26T01:00:00Z"),
+		agent("pomju", "POMJU-448", "implementer", "ses-impl", "2026-10-26T02:00:00Z"),
+		agent("pomju", "POMJU-449", "tester", "ses-other", "2026-10-26T03:00:00Z"),
 	}
 	stored, err := r.store.PutAll(ctx(t), entries)
 	if err != nil || len(stored) != 3 {
@@ -195,7 +195,7 @@ func TestABatchRoundTripsInOrder(t *testing.T) {
 			t.Fatalf("get %s = %#v, %v", entries[i].SessionID, got, err)
 		}
 	}
-	byIssue, err := r.store.ByIssue(ctx(t), "INFRA-448")
+	byIssue, err := r.store.ByIssue(ctx(t), "POMJU-448")
 	if err != nil {
 		t.Fatalf("by issue: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestABatchRoundTripsInOrder(t *testing.T) {
 // and keeps the recorded_at of its first write.
 func TestARewriteKeepsRecordedAtAndRewritesEveryKey(t *testing.T) {
 	r := openRegistry(t)
-	first := agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")
+	first := agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")
 	if _, err := r.store.Put(ctx(t), first); err != nil {
 		t.Fatalf("first put: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestARewriteKeepsRecordedAtAndRewritesEveryKey(t *testing.T) {
 		t.Fatalf("an identical rewrite changed the bucket: %v, then %v", before, after)
 	}
 	next := first
-	next.Title, next.Harness, next.StartedAt = "Legion tester · INFRA-448 (resumed)", "claude", "2026-10-26T03:20:00Z"
+	next.Title, next.Harness, next.StartedAt = "Legion tester · POMJU-448 (resumed)", "claude", "2026-10-26T03:20:00Z"
 	stored, err := r.store.Put(ctx(t), next)
 	if err != nil {
 		t.Fatalf("rewrite: %v", err)
@@ -254,21 +254,21 @@ func mapsEqual(a, b map[string]string) bool {
 // or role for a recorded session is refused, naming what it is recorded for, and writes nothing.
 func TestARePutMovingASessionIsRefusedAndWritesNothing(t *testing.T) {
 	r := openRegistry(t)
-	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
+	if _, err := r.store.Put(ctx(t), agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	before := r.contents(t)
 	for name, moved := range map[string]legionagents.Entry{
-		"another issue":          agent("infra", "INFRA-449", "tester", "ses-tester", "2026-10-26T03:15:00Z"),
-		"another role":           agent("infra", "INFRA-448", "reviewer", "ses-tester", "2026-10-26T03:15:00Z"),
-		"another Legion project": agent("sjawharlegion", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z"),
+		"another issue":          agent("pomju", "POMJU-449", "tester", "ses-tester", "2026-10-26T03:15:00Z"),
+		"another role":           agent("pomju", "POMJU-448", "reviewer", "ses-tester", "2026-10-26T03:15:00Z"),
+		"another Legion project": agent("sjawharlegion", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z"),
 	} {
 		_, err := r.store.Put(ctx(t), moved)
 		var conflict *legionagents.ConflictError
 		if !errors.As(err, &conflict) {
 			t.Fatalf("%s: err = %v, want a conflict", name, err)
 		}
-		if got := err.Error(); got != "legion agent ses-tester is recorded for INFRA-448 tester" {
+		if got := err.Error(); got != "legion agent ses-tester is recorded for POMJU-448 tester" {
 			t.Fatalf("%s: err = %q", name, got)
 		}
 		if after := r.contents(t); !mapsEqual(before, after) {
@@ -282,7 +282,7 @@ func TestARePutMovingASessionIsRefusedAndWritesNothing(t *testing.T) {
 func TestEveryInvalidEntryIsRefusedByBothWrites(t *testing.T) {
 	r := openRegistry(t)
 	valid := func() legionagents.Entry {
-		return agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")
+		return agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")
 	}
 	for _, tc := range []struct {
 		name  string
@@ -295,24 +295,24 @@ func TestEveryInvalidEntryIsRefusedByBothWrites(t *testing.T) {
 		{"a session id holding a slash", func(e *legionagents.Entry) { e.SessionID = "ses/tester" }, "session_id"},
 		{"a session id too long", func(e *legionagents.Entry) { e.SessionID = strings.Repeat("s", 129) }, "session_id"},
 		{"a role outside the six", func(e *legionagents.Entry) {
-			e.Role, e.RoleToken = "controller", "legion-infra-infra-448-controller"
+			e.Role, e.RoleToken = "controller", "legion-pomju-pomju-448-controller"
 		}, "role"},
 		{"a legion_project that is not a project token", func(e *legionagents.Entry) {
-			e.LegionProject, e.RoleToken = "Sjawhar/Legion", "legion-Sjawhar/Legion-infra-448-tester"
+			e.LegionProject, e.RoleToken = "Sjawhar/Legion", "legion-Sjawhar/Legion-pomju-448-tester"
 		}, "legion_project"},
 		{"no legion_project", func(e *legionagents.Entry) { e.LegionProject = "" }, "legion_project"},
 		{"a role_token of another Legion project", func(e *legionagents.Entry) {
-			e.RoleToken = "legion-sjawharlegion-infra-448-tester"
+			e.RoleToken = "legion-sjawharlegion-pomju-448-tester"
 		}, "role_token"},
-		// The Dispatch project is INFRA and the Legion project token here is sjawharlegion: a token
+		// The Dispatch project is POMJU and the Legion project token here is sjawharlegion: a token
 		// built from the Dispatch project's segment is not the daemon's.
 		{"a role_token built from the Dispatch project", func(e *legionagents.Entry) {
 			e.LegionProject = "sjawharlegion"
 		}, "role_token"},
-		{"a role_token of another issue", func(e *legionagents.Entry) { e.RoleToken = "legion-infra-infra-449-tester" }, "role_token"},
-		{"a role_token of another role", func(e *legionagents.Entry) { e.RoleToken = "legion-infra-infra-448-reviewer" }, "role_token"},
-		{"a lower-case issue", func(e *legionagents.Entry) { e.Issue = "infra-448" }, "issue"},
-		{"an issue that is not a key", func(e *legionagents.Entry) { e.Issue = "INFRA" }, "issue"},
+		{"a role_token of another issue", func(e *legionagents.Entry) { e.RoleToken = "legion-pomju-pomju-449-tester" }, "role_token"},
+		{"a role_token of another role", func(e *legionagents.Entry) { e.RoleToken = "legion-pomju-pomju-448-reviewer" }, "role_token"},
+		{"a lower-case issue", func(e *legionagents.Entry) { e.Issue = "pomju-448" }, "issue"},
+		{"an issue that is not a key", func(e *legionagents.Entry) { e.Issue = "POMJU" }, "issue"},
 		{"a harness outside the two", func(e *legionagents.Entry) { e.Harness = "codex" }, "harness"},
 		{"a started_at with an offset", func(e *legionagents.Entry) { e.StartedAt = "2026-10-26T05:15:00+02:00" }, "started_at"},
 		{"a started_at that is not RFC 3339", func(e *legionagents.Entry) { e.StartedAt = "2026-10-26 03:15:00" }, "started_at"},
@@ -340,18 +340,18 @@ func TestEveryInvalidEntryIsRefusedByBothWrites(t *testing.T) {
 // so does one that moves a session an earlier member of the same batch records.
 func TestABatchMemberMovingASessionRefusesTheWholeBatch(t *testing.T) {
 	r := openRegistry(t)
-	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
+	if _, err := r.store.Put(ctx(t), agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	before := r.contents(t)
 	for name, batch := range map[string][]legionagents.Entry{
 		"a recorded session": {
-			agent("infra", "INFRA-448", "reviewer", "ses-reviewer", "2026-10-26T03:30:00Z"),
-			agent("infra", "INFRA-449", "tester", "ses-tester", "2026-10-26T03:15:00Z"),
+			agent("pomju", "POMJU-448", "reviewer", "ses-reviewer", "2026-10-26T03:30:00Z"),
+			agent("pomju", "POMJU-449", "tester", "ses-tester", "2026-10-26T03:15:00Z"),
 		},
 		"a session earlier in the batch": {
-			agent("infra", "INFRA-450", "planner", "ses-new", "2026-10-26T03:30:00Z"),
-			agent("infra", "INFRA-450", "implementer", "ses-new", "2026-10-26T03:30:00Z"),
+			agent("pomju", "POMJU-450", "planner", "ses-new", "2026-10-26T03:30:00Z"),
+			agent("pomju", "POMJU-450", "implementer", "ses-new", "2026-10-26T03:30:00Z"),
 		},
 	} {
 		_, err := r.store.PutAll(ctx(t), batch)
@@ -371,7 +371,7 @@ func TestABatchPastTheBoundIsRefusedWhole(t *testing.T) {
 	r := openRegistry(t)
 	batch := make([]legionagents.Entry, legionagents.MaxBatch+1)
 	for i := range batch {
-		batch[i] = agent("infra", "INFRA-448", "tester", "ses-"+strconv.Itoa(i), "2026-10-26T03:15:00Z")
+		batch[i] = agent("pomju", "POMJU-448", "tester", "ses-"+strconv.Itoa(i), "2026-10-26T03:15:00Z")
 	}
 	if _, err := r.store.PutAll(ctx(t), batch); !errors.Is(err, legionagents.ErrTooMany) {
 		t.Fatalf("put all = %v; want ErrTooMany with nothing written", err)
@@ -386,15 +386,15 @@ func TestABatchPastTheBoundIsRefusedWhole(t *testing.T) {
 func TestEachReadDerivesWhoReplacedASession(t *testing.T) {
 	r := openRegistry(t)
 	_, err := r.store.PutAll(ctx(t), []legionagents.Entry{
-		agent("infra", "INFRA-448", "reviewer", "ses-new-reviewer", "2026-10-26T03:00:00Z"),
-		agent("infra", "INFRA-448", "reviewer", "ses-old-reviewer", "2026-10-26T01:00:00Z"),
-		agent("infra", "INFRA-448", "reviewer", "ses-mid-reviewer", "2026-10-26T02:00:00Z"),
-		agent("infra", "INFRA-448", "implementer", "ses-impl", "2026-10-26T00:30:00Z"),
+		agent("pomju", "POMJU-448", "reviewer", "ses-new-reviewer", "2026-10-26T03:00:00Z"),
+		agent("pomju", "POMJU-448", "reviewer", "ses-old-reviewer", "2026-10-26T01:00:00Z"),
+		agent("pomju", "POMJU-448", "reviewer", "ses-mid-reviewer", "2026-10-26T02:00:00Z"),
+		agent("pomju", "POMJU-448", "implementer", "ses-impl", "2026-10-26T00:30:00Z"),
 	})
 	if err != nil {
 		t.Fatalf("put all: %v", err)
 	}
-	byRole, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-reviewer")
+	byRole, err := r.store.ByRoleToken(ctx(t), "legion-pomju-pomju-448-reviewer")
 	if err != nil {
 		t.Fatalf("by role token: %v", err)
 	}
@@ -436,33 +436,33 @@ func TestEachReadDerivesWhoReplacedASession(t *testing.T) {
 func TestListingsFilterByIssueAndRoleToken(t *testing.T) {
 	r := openRegistry(t)
 	_, err := r.store.PutAll(ctx(t), []legionagents.Entry{
-		agent("infra", "INFRA-448", "merger", "ses-merger", "2026-10-26T05:00:00Z"),
-		agent("infra", "INFRA-448", "tester", "ses-tester-1", "2026-10-26T02:00:00Z"),
-		agent("infra", "INFRA-448", "tester", "ses-tester-2", "2026-10-26T03:00:00Z"),
-		agent("infra", "INFRA-448", "architect", "ses-architect", "2026-10-26T01:00:00Z"),
-		agent("infra", "INFRA-4480", "tester", "ses-other-issue", "2026-10-26T04:00:00Z"),
-		agent("infra", "INFRA-44", "tester", "ses-shorter-issue", "2026-10-26T04:00:00Z"),
+		agent("pomju", "POMJU-448", "merger", "ses-merger", "2026-10-26T05:00:00Z"),
+		agent("pomju", "POMJU-448", "tester", "ses-tester-1", "2026-10-26T02:00:00Z"),
+		agent("pomju", "POMJU-448", "tester", "ses-tester-2", "2026-10-26T03:00:00Z"),
+		agent("pomju", "POMJU-448", "architect", "ses-architect", "2026-10-26T01:00:00Z"),
+		agent("pomju", "POMJU-4480", "tester", "ses-other-issue", "2026-10-26T04:00:00Z"),
+		agent("pomju", "POMJU-44", "tester", "ses-shorter-issue", "2026-10-26T04:00:00Z"),
 	})
 	if err != nil {
 		t.Fatalf("put all: %v", err)
 	}
-	byIssue, err := r.store.ByIssue(ctx(t), "INFRA-448")
+	byIssue, err := r.store.ByIssue(ctx(t), "POMJU-448")
 	if err != nil {
 		t.Fatalf("by issue: %v", err)
 	}
 	if got := sessionIDs(byIssue); !slices.Equal(got, []string{"ses-architect", "ses-tester-2", "ses-tester-1", "ses-merger"}) {
 		t.Fatalf("by issue = %v, want the architect, the testers newest first, the merger", got)
 	}
-	byRole, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-tester")
+	byRole, err := r.store.ByRoleToken(ctx(t), "legion-pomju-pomju-448-tester")
 	if err != nil {
 		t.Fatalf("by role token: %v", err)
 	}
 	if got := sessionIDs(byRole); !slices.Equal(got, []string{"ses-tester-2", "ses-tester-1"}) {
-		t.Fatalf("by role token = %v, want the two testers of INFRA-448", got)
+		t.Fatalf("by role token = %v, want the two testers of POMJU-448", got)
 	}
-	other, err := r.store.ByIssue(ctx(t), "INFRA-4480")
+	other, err := r.store.ByIssue(ctx(t), "POMJU-4480")
 	if err != nil || !slices.Equal(sessionIDs(other), []string{"ses-other-issue"}) {
-		t.Fatalf("by issue INFRA-4480 = %v, %v", sessionIDs(other), err)
+		t.Fatalf("by issue POMJU-4480 = %v, %v", sessionIDs(other), err)
 	}
 }
 
@@ -470,28 +470,28 @@ func TestListingsFilterByIssueAndRoleToken(t *testing.T) {
 // session is ErrNotFound, and a listing answers no agents.
 func TestAnAbsenceIsAnsweredAsOne(t *testing.T) {
 	r := openRegistry(t)
-	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
+	if _, err := r.store.Put(ctx(t), agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	if _, err := r.store.Get(ctx(t), "ses-unknown"); !errors.Is(err, legionagents.ErrNotFound) || err.Error() != "unknown legion agent ses-unknown" {
 		t.Fatalf("get an unknown session: %v, want ErrNotFound naming it", err)
 	}
-	if agents, err := r.store.ByIssue(ctx(t), "INFRA-1"); err != nil || len(agents) != 0 {
+	if agents, err := r.store.ByIssue(ctx(t), "POMJU-1"); err != nil || len(agents) != 0 {
 		t.Fatalf("by issue with none = %v, %v; want none", agents, err)
 	}
-	if agents, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-reviewer"); err != nil || len(agents) != 0 {
+	if agents, err := r.store.ByRoleToken(ctx(t), "legion-pomju-pomju-448-reviewer"); err != nil || len(agents) != 0 {
 		t.Fatalf("by role token with none = %v, %v; want none", agents, err)
 	}
 }
 
-// The project.<legion_project> key is the daemon's own record (INFRA-204), and no read reaches it,
+// The project.<legion_project> key is the daemon's own record (POMJU-204), and no read reaches it,
 // whatever it holds.
 func TestAProjectKeyIsIgnoredByEveryRead(t *testing.T) {
 	r := openRegistry(t)
-	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
+	if _, err := r.store.Put(ctx(t), agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	for _, key := range []string{"project.infra", "project.INFRA-448"} {
+	for _, key := range []string{"project.pomju", "project.POMJU-448"} {
 		if _, err := r.raw.Put(key, []byte(`{"answering":true,"updated_at":"2026-10-26T04:00:00Z"}`)); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
@@ -500,10 +500,10 @@ func TestAProjectKeyIsIgnoredByEveryRead(t *testing.T) {
 	if err != nil || got.ReplacedBy != nil {
 		t.Fatalf("get = %#v, %v", got, err)
 	}
-	if agents, err := r.store.ByIssue(ctx(t), "INFRA-448"); err != nil || !slices.Equal(sessionIDs(agents), []string{"ses-tester"}) {
+	if agents, err := r.store.ByIssue(ctx(t), "POMJU-448"); err != nil || !slices.Equal(sessionIDs(agents), []string{"ses-tester"}) {
 		t.Fatalf("by issue = %v, %v; want the tester alone", sessionIDs(agents), err)
 	}
-	if agents, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-tester"); err != nil || !slices.Equal(sessionIDs(agents), []string{"ses-tester"}) {
+	if agents, err := r.store.ByRoleToken(ctx(t), "legion-pomju-pomju-448-tester"); err != nil || !slices.Equal(sessionIDs(agents), []string{"ses-tester"}) {
 		t.Fatalf("by role token = %v, %v; want the tester alone", sessionIDs(agents), err)
 	}
 }
@@ -515,16 +515,16 @@ func TestAReadOfAMalformedNameIsRefused(t *testing.T) {
 	if _, err := r.store.Get(ctx(t), "ses.tester"); !errors.Is(err, legionagents.ErrInvalid) {
 		t.Fatalf("get a session id with a dot: %v", err)
 	}
-	if _, err := r.store.ByIssue(ctx(t), "INFRA-448.>"); !errors.Is(err, legionagents.ErrInvalid) {
+	if _, err := r.store.ByIssue(ctx(t), "POMJU-448.>"); !errors.Is(err, legionagents.ErrInvalid) {
 		t.Fatalf("by issue with a wildcard: %v", err)
 	}
-	if _, err := r.store.ByIssue(ctx(t), "infra-448"); !errors.Is(err, legionagents.ErrInvalid) {
+	if _, err := r.store.ByIssue(ctx(t), "pomju-448"); !errors.Is(err, legionagents.ErrInvalid) {
 		t.Fatalf("by a lower-case issue: %v", err)
 	}
-	if _, err := r.store.ByRoleToken(ctx(t), "legion-infra-controller"); !errors.Is(err, legionagents.ErrInvalid) {
+	if _, err := r.store.ByRoleToken(ctx(t), "legion-pomju-controller"); !errors.Is(err, legionagents.ErrInvalid) {
 		t.Fatalf("by the controller's token: %v", err)
 	}
-	if _, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-tester.*"); !errors.Is(err, legionagents.ErrInvalid) {
+	if _, err := r.store.ByRoleToken(ctx(t), "legion-pomju-pomju-448-tester.*"); !errors.Is(err, legionagents.ErrInvalid) {
 		t.Fatalf("by a token with a wildcard: %v", err)
 	}
 }
@@ -534,7 +534,7 @@ func TestAReadOfAMalformedNameIsRefused(t *testing.T) {
 func TestEntriesSurviveANATSRestart(t *testing.T) {
 	server, uri := testnats.Start(t)
 	r := openRegistryAt(t, uri)
-	want, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z"))
+	want, err := r.store.Put(ctx(t), agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z"))
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -556,7 +556,7 @@ func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if _, err := store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
+	if _, err := store.Put(ctx(t), agent("pomju", "POMJU-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	first.Close()
@@ -624,7 +624,7 @@ func (r *registry) listsUnder(t *testing.T, issue, role string, want []string) {
 	if err != nil {
 		t.Fatalf("by issue %s: %v", issue, err)
 	}
-	byRole, err := r.store.ByRoleToken(ctx(t), legionagents.RoleToken("infra", issue, role))
+	byRole, err := r.store.ByRoleToken(ctx(t), legionagents.RoleToken("pomju", issue, role))
 	if err != nil {
 		t.Fatalf("by role token of %s %s: %v", issue, role, err)
 	}
@@ -645,8 +645,8 @@ func TestConcurrentWritesOfOneSessionRecordItOnce(t *testing.T) {
 		return &heldReads{KeyValue: kv, key: "session.ses-raced", pending: 2, release: make(chan struct{})}
 	})
 	writes := []legionagents.Entry{
-		agent("infra", "INFRA-448", "tester", "ses-raced", "2026-10-26T03:15:00Z"),
-		agent("infra", "INFRA-449", "tester", "ses-raced", "2026-10-26T03:15:00Z"),
+		agent("pomju", "POMJU-448", "tester", "ses-raced", "2026-10-26T03:15:00Z"),
+		agent("pomju", "POMJU-449", "tester", "ses-raced", "2026-10-26T03:15:00Z"),
 	}
 	c := ctx(t)
 	errs := make([]error, len(writes))
@@ -694,7 +694,7 @@ func TestABatchLosingASessionMidWriteNamesWhatItWrote(t *testing.T) {
 	uri := testnats.URL(t)
 	r := openRegistryAt(t, uri)
 	other := openRegistryAt(t, uri)
-	claimed := agent("infra", "INFRA-448", "tester", "ses-raced", "2026-10-26T03:15:00Z")
+	claimed := agent("pomju", "POMJU-448", "tester", "ses-raced", "2026-10-26T03:15:00Z")
 	r.store.WrapBucket(func(kv natsgo.KeyValue) natsgo.KeyValue {
 		return &claimFirst{KeyValue: kv, key: "session.ses-raced", before: func() {
 			if _, err := other.store.Put(ctx(t), claimed); err != nil {
@@ -703,8 +703,8 @@ func TestABatchLosingASessionMidWriteNamesWhatItWrote(t *testing.T) {
 		}}
 	})
 	_, err := r.store.PutAll(ctx(t), []legionagents.Entry{
-		agent("infra", "INFRA-450", "reviewer", "ses-first", "2026-10-26T03:00:00Z"),
-		agent("infra", "INFRA-449", "tester", "ses-raced", "2026-10-26T03:15:00Z"),
+		agent("pomju", "POMJU-450", "reviewer", "ses-first", "2026-10-26T03:00:00Z"),
+		agent("pomju", "POMJU-449", "tester", "ses-raced", "2026-10-26T03:15:00Z"),
 	})
 	var partial *legionagents.PartialWriteError
 	var batch *legionagents.BatchError
@@ -712,12 +712,12 @@ func TestABatchLosingASessionMidWriteNamesWhatItWrote(t *testing.T) {
 	if !errors.As(err, &partial) || partial.Written != 1 || partial.Total != 2 || !errors.As(err, &batch) || batch.Index != 1 || !errors.As(err, &conflict) {
 		t.Fatalf("put all = %v; want entries[1] refused as a conflict after 1 of 2 written", err)
 	}
-	if got := err.Error(); got != "wrote 1 of 2 legion agents, then entries[1]: legion agent ses-raced is recorded for INFRA-448 tester" {
+	if got := err.Error(); got != "wrote 1 of 2 legion agents, then entries[1]: legion agent ses-raced is recorded for POMJU-448 tester" {
 		t.Fatalf("err = %q", got)
 	}
-	r.listsUnder(t, "INFRA-448", "tester", []string{"ses-raced"})
-	r.listsUnder(t, "INFRA-449", "tester", nil)
-	r.listsUnder(t, "INFRA-450", "reviewer", []string{"ses-first"})
+	r.listsUnder(t, "POMJU-448", "tester", []string{"ses-raced"})
+	r.listsUnder(t, "POMJU-449", "tester", nil)
+	r.listsUnder(t, "POMJU-450", "reviewer", []string{"ses-first"})
 }
 
 // failingPuts fails every index key write after the first left, as a write that ends partway.
@@ -746,13 +746,13 @@ func TestAWriteEndingAfterItsClaimIsCompletedByItsRetry(t *testing.T) {
 		left []string
 	}{
 		"after the claim":    {0, []string{"session.ses-crashed"}},
-		"after the role key": {1, []string{"role.legion-infra-infra-448-tester.ses-crashed", "session.ses-crashed"}},
+		"after the role key": {1, []string{"role.legion-pomju-pomju-448-tester.ses-crashed", "session.ses-crashed"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			uri := testnats.URL(t)
 			crashed := openRegistryAt(t, uri)
 			crashed.store.WrapBucket(func(kv natsgo.KeyValue) natsgo.KeyValue { return &failingPuts{KeyValue: kv, left: tc.puts} })
-			entry := agent("infra", "INFRA-448", "tester", "ses-crashed", "2026-10-26T03:15:00Z")
+			entry := agent("pomju", "POMJU-448", "tester", "ses-crashed", "2026-10-26T03:15:00Z")
 			if _, err := crashed.store.Put(ctx(t), entry); err == nil || !strings.Contains(err.Error(), "the write ended here") {
 				t.Fatalf("the write that ends = %v, want its failure", err)
 			}
@@ -761,16 +761,16 @@ func TestAWriteEndingAfterItsClaimIsCompletedByItsRetry(t *testing.T) {
 				t.Fatalf("the ended write left %v, want %v", got, tc.left)
 			}
 			before := r.contents(t)
-			_, err := r.store.Put(ctx(t), agent("infra", "INFRA-449", "tester", "ses-crashed", "2026-10-26T03:15:00Z"))
+			_, err := r.store.Put(ctx(t), agent("pomju", "POMJU-449", "tester", "ses-crashed", "2026-10-26T03:15:00Z"))
 			var conflict *legionagents.ConflictError
-			if !errors.As(err, &conflict) || conflict.Issue != "INFRA-448" {
-				t.Fatalf("a move after the ended write = %v, want a conflict naming INFRA-448", err)
+			if !errors.As(err, &conflict) || conflict.Issue != "POMJU-448" {
+				t.Fatalf("a move after the ended write = %v, want a conflict naming POMJU-448", err)
 			}
 			if after := r.contents(t); !mapsEqual(before, after) {
 				t.Fatalf("the refused move changed the bucket: %v, then %v", before, after)
 			}
-			r.listsUnder(t, "INFRA-449", "tester", nil)
-			if got, err := r.store.Get(ctx(t), "ses-crashed"); err != nil || got.Issue != "INFRA-448" {
+			r.listsUnder(t, "POMJU-449", "tester", nil)
+			if got, err := r.store.Get(ctx(t), "ses-crashed"); err != nil || got.Issue != "POMJU-448" {
 				t.Fatalf("get after the ended write = %#v, %v; want the session alone", got, err)
 			}
 
@@ -778,7 +778,7 @@ func TestAWriteEndingAfterItsClaimIsCompletedByItsRetry(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the retried write: %v", err)
 			}
-			r.listsUnder(t, "INFRA-448", "tester", []string{"ses-crashed"})
+			r.listsUnder(t, "POMJU-448", "tester", []string{"ses-crashed"})
 			value, _ := json.Marshal(stored)
 			held := r.contents(t)
 			if len(held) != 3 {
@@ -800,8 +800,8 @@ func TestGetAnswersTheSessionKeyWithItsReplacementAfterAnEndedWrite(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			uri := testnats.URL(t)
 			r := openRegistryAt(t, uri)
-			later := agent("infra", "INFRA-448", "tester", "ses-later", "2026-10-26T04:00:00Z")
-			entry := agent("infra", "INFRA-448", "tester", "ses-ended", "2026-10-26T03:15:00Z")
+			later := agent("pomju", "POMJU-448", "tester", "ses-later", "2026-10-26T04:00:00Z")
+			entry := agent("pomju", "POMJU-448", "tester", "ses-ended", "2026-10-26T03:15:00Z")
 			first := []legionagents.Entry{later}
 			if recorded {
 				first = append(first, entry)
@@ -811,7 +811,7 @@ func TestGetAnswersTheSessionKeyWithItsReplacementAfterAnEndedWrite(t *testing.T
 			}
 			ended := openRegistryAt(t, uri)
 			ended.store.WrapBucket(func(kv natsgo.KeyValue) natsgo.KeyValue { return &failingPuts{KeyValue: kv} })
-			entry.Title = "Legion tester · INFRA-448, renamed"
+			entry.Title = "Legion tester · POMJU-448, renamed"
 			if _, err := ended.store.Put(ctx(t), entry); err == nil || !strings.Contains(err.Error(), "the write ended here") {
 				t.Fatalf("the write that ends = %v, want its failure", err)
 			}
@@ -873,19 +873,19 @@ const stallMargin = 500 * time.Millisecond
 // A listing of a bucket that stops delivering fails within the caller's context, not at some
 // longer bound of the scan's own: the route that reads under legionagents.ReadTimeout answers its
 // 503 inside the listener's HTTP write timeout rather than dropping the connection
-// (dispatch://INFRA-448). Get fails there too, since its session key is answered and only its role
+// (dispatch://POMJU-448). Get fails there too, since its session key is answered and only its role
 // token's listing stalls.
 func TestAStalledListingFailsWithinTheReadTimeout(t *testing.T) {
 	uri := testnats.URL(t)
 	r := openRegistryAt(t, uri)
-	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-stalled", "2026-10-26T03:15:00Z")); err != nil {
+	if _, err := r.store.Put(ctx(t), agent("pomju", "POMJU-448", "tester", "ses-stalled", "2026-10-26T03:15:00Z")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	stalled := openRegistryAt(t, uri)
 	stalled.store.WrapWatch(func(kv jetstream.KeyValue) jetstream.KeyValue { return stalledWatchKV{KeyValue: kv} })
 	for name, read := range map[string]func(context.Context) error{
 		"Get":     func(c context.Context) error { _, err := stalled.store.Get(c, "ses-stalled"); return err },
-		"ByIssue": func(c context.Context) error { _, err := stalled.store.ByIssue(c, "INFRA-448"); return err },
+		"ByIssue": func(c context.Context) error { _, err := stalled.store.ByIssue(c, "POMJU-448"); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, cancel := context.WithTimeout(context.Background(), legionagents.ReadTimeout)

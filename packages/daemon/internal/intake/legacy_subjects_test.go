@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// The two forms of an issue event's name (dispatch://INFRA-3862): the old form names the issue's
+// The two forms of an issue event's name (dispatch://POMJU-3862): the old form names the issue's
 // key alone, notifications.dispatch.issue.<KEY>.<type>, and the new one the key's project first,
 // notifications.dispatch.issue.<PROJECT>.<KEY>.<type>. The daemon reads both before any producer
 // moves to the new one, since a daemon that read only the old one would take every renamed event

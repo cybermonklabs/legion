@@ -737,7 +737,7 @@ func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
 // is refused 503 naming the bus rather than 404 naming the session. The 404 is the one answer a
 // sender routes around the pane on, so it must rest on the bucket's own word
 // (nats.ErrKeyNotFound) and on nothing else — reporting an absence this listener never checked is
-// the incident INFRA-141 is about. It is the one row of the send route's status map that only an
+// the incident POMJU-141 is about. It is the one row of the send route's status map that only an
 // unanswered read reaches: the cold-cache test's read answers, the bus-unreachable and
 // bus-refusal tests fail at the publish with the target already in the cache, and the absent
 // target's 404 is the bucket answering. Collapsing the two errors back into one 404 leaves every

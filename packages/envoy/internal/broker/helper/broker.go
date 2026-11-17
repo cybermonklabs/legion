@@ -1314,7 +1314,7 @@ func (b *Broker) logger() *slog.Logger {
 // generation the attempt belongs to rather than the broker rereading a session a rename may
 // have moved on. The answer of an attempt that began under an identity the session no longer
 // has must not be installed on the one it does, and must not be revoked either, since it may
-// be the very enrollment the new identity is about to be handed back (dispatch://INFRA-1167).
+// be the very enrollment the new identity is about to be handed back (dispatch://POMJU-1167).
 //
 // A named session states its omp session id as the enrolment's session_id. That is the name the
 // broker's own carry is keyed on: an enrolment of the same (carry principal, session_id) adopts

@@ -18,7 +18,7 @@
 -- (refs.WriteItemWindows). A backfill that required a block would mark no such item, and since
 -- nothing else ever marks one - its text is not going to change - its stale windows would
 -- outlive this upgrade for ever: measured as UPDATE 0 for a comment holding 0 blocks and 1 stale
--- window (INFRA-988).
+-- window (POMJU-988).
 --
 -- A migration of its own, because it is the only statement of the pair whose cost grows with
 -- the deployment and a migration is one transaction. Run beside the column it would have held
@@ -31,7 +31,7 @@
 --
 -- Each statement is written as the anti-joins and the semi-join rather than as the correlated
 -- `exists` and `not exists` probes under an `or`, because that is the cheaper of the two
--- readings of one predicate: 2.92 s against 13.7 s a pass at that size (INFRA-988). The arm
+-- readings of one predicate: 2.92 s against 13.7 s a pass at that size (POMJU-988). The arm
 -- itself reads a lateral join instead, because an arm reads the few marked rows where this reads
 -- the whole table once.
 --
@@ -46,7 +46,7 @@
 -- to that: an item already marked - by a write since the column arrived, or by a run of this
 -- statement - keeps the moment it carries, so running this twice marks no row a second time.
 -- Without that guard the same statement answered UPDATE 7 over the rows it had just marked
--- itself (INFRA-988), and a marker is read as a time, so re-stamping it is a rewrite. The rows
+-- itself (POMJU-988), and a marker is read as a time, so re-stamping it is a rewrite. The rows
 -- it does mark carry null and are work owed rather than a rewrite, so its census answers 0. Its
 -- own lock waits are bounded as every migration's are (pgmigrate.LockTimeout): a writer holding
 -- a state row it wants for five seconds fails that attempt, which the runner then makes again.

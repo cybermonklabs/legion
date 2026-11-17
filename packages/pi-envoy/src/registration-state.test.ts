@@ -1322,7 +1322,7 @@ describe("reassertRole", () => {
     expect(harness.state.heldRole()).toBe("alpha");
   });
 
-  // dispatch://INFRA-783: a second process that resumed this session's id can hold the role
+  // dispatch://POMJU-783: a second process that resumed this session's id can hold the role
   // under this very session id, and the lookup says so by naming another client instance. The
   // Claude Code channel server weighs both (`reassertRole` in envoy-channel-server.ts, which
   // confirms the role only when the holder is this session AND this process); this side must
@@ -1387,7 +1387,7 @@ describe("reassertRole", () => {
     expect(harness.state.heldRole()).toBe("alpha");
   });
 
-  // dispatch://INFRA-783: a client built before a release named its process hands a role back
+  // dispatch://POMJU-783: a client built before a release named its process hands a role back
   // without naming one, so the listener cannot free the live holder's claim and marks it
   // instead. Nothing renews a marked claim, so the holder would lose the role one live window
   // later while believing it held it. Reading the mark is what keeps that bounded: the very

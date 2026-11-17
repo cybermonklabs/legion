@@ -545,7 +545,7 @@ test("closing an issue removes its asks from the inbox and pinning stays private
   try {
     await Promise.all([page.goto(`/issues/${issue.key}`), inbox.goto("/")]);
     // The Inbox's rows are what the close takes a question out of: from 1280 px a card is drawn
-    // for the selected row alone (INFRA-575), so the rows are the list.
+    // for the selected row alone (POMJU-575), so the rows are the list.
     await expect(inbox.locator("[data-inbox-row]")).toHaveCount(2);
     await page.getByRole("button", { name: "Close issue" }).click();
     await expect

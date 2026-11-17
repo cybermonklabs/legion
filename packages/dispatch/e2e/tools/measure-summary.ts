@@ -1,7 +1,7 @@
 /** `bun e2e/tools/measure-summary.ts <records.jsonl> [more.jsonl]`: the per-test cost of the
  *  four parts every row pays before its own work, from the rows one measured run wrote
  *  (`E2E_MEASURE_FILE`, e2e/measure-reporter.ts). One markdown table per input file, so a
- *  merge-base run and a head run read side by side (INFRA-317's A10).
+ *  merge-base run and a head run read side by side (POMJU-317's A10).
  *
  *    E2E_MEASURE_FILE=/tmp/measure/head.jsonl bunx playwright test \
  *      --config e2e/playwright.config.ts --project=chromium e2e/smoke.e2e.ts

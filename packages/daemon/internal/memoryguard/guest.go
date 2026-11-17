@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// Guest is the memory watch of a pod that runs in a GKE Sandbox microVM (INFRA-3729), which a
+// Guest is the memory watch of a pod that runs in a GKE Sandbox microVM (POMJU-3729), which a
 // launcher runs in place of the guard (Guard): the microVM's kernel is the pod's own, and its
 // out-of-memory killer stops one process rather than the whole sandbox, so the launcher ends
 // nothing itself. It steers that kernel, names what the kernel stopped, and logs the pod's memory,

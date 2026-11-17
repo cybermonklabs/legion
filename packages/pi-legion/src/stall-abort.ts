@@ -2,7 +2,7 @@ import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import type { StallWatchdogAborter } from "@legion/pi-shared/stall-watchdog";
 
 /**
- * The second step of the stall ladder (INFRA-1274, R4): the turn, ended, and the worker's work
+ * The second step of the stall ladder (POMJU-1274, R4): the turn, ended, and the worker's work
  * started again. `packages/pi-shared/src/stall-watchdog.ts` decides when the step runs and writes
  * the message's words (`restartMessage`); this module is the one place that reaches the host for
  * either half of it.

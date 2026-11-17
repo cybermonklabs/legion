@@ -1,7 +1,7 @@
 import { useUserPreference } from "../shell/userPreference";
 
 /** The four states of a margin, which are the four filters over one list and not four lists:
- *  a tab and a state are the same object, so a reader learns one (dispatch://INFRA-1196). */
+ *  a tab and a state are the same object, so a reader learns one (dispatch://POMJU-1196). */
 export const MARGIN_STATES = [
   { id: "words", label: "Words anyone wrote" },
   { id: "questions", label: "Questions" },

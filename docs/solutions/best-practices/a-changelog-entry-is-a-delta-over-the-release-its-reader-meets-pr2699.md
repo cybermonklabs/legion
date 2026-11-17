@@ -36,7 +36,7 @@ changing.
 
 ## Evidence
 
-sjawhar/legion#2699 (INFRA-436) carried a fragment written before `main` merged sjawhar/legion#2625
+sjawhar/legion#2699 (POMJU-436) carried a fragment written before `main` merged sjawhar/legion#2625
 — the same fix, by another tree, in the shape this branch had at its first round. Tag
 `pi-envoy-v16.0.0` contains #2625's commit, so #2625's fragment folds under 16.0.0 and this one
 under the release after it, where three of its claims were false of what the reader has: 16.0.0

@@ -13,7 +13,7 @@ related_issues:
   - "sjawhar/legion#2411"
 supersedes:
   - docs/solutions/envoy/two-pull-requests-take-the-same-migration-number.md
-  - docs/solutions/envoy/a-migration-number-is-checked-against-mains-highest-at-every-push-and-the-local-harness-database-is-recreated-after-a-renumber-INFRA-367.md
+  - docs/solutions/envoy/a-migration-number-is-checked-against-mains-highest-at-every-push-and-the-local-harness-database-is-recreated-after-a-renumber-POMJU-367.md
 ---
 
 # A migration added after the numbered series is named for its creation instant, and a guard compares the applied set

@@ -732,7 +732,7 @@ for (const order of ["oldest", "newest"] as const) {
   });
 }
 
-// INFRA-869: the margin keeps a card per reference for a body of several, now that the one
+// POMJU-869: the margin keeps a card per reference for a body of several, now that the one
 // predicate decides which bodies show cards.
 test("a comment of several references shows a card for each of them", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({

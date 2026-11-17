@@ -1,5 +1,5 @@
 -- 20261113082415_claim_ended_work.up.sql — what the last let-go of a claim's process ended of the
--- work its agent had running, for the next process to be told (dispatch://INFRA-3276 R3).
+-- work its agent had running, for the next process to be told (dispatch://POMJU-3276 R3).
 --
 -- claims.ended_work is supervise.Claim.EndedWork: recorded where the daemon lets a claim's process
 -- go — every relaunch, every suspension, a failure, and a stop of the claim, under the cause "its

@@ -1,6 +1,6 @@
 -- 20261105093505_user_agent_thread_dismissed.up.sql
 --
--- INFRA-450: the Inbox's Agent rows are one-off messages a person sent an agent session, read
+-- POMJU-450: the Inbox's Agent rows are one-off messages a person sent an agent session, read
 -- straight from messages rather than from a row of their own (api/replies_agent.go,
 -- myAgentRootFilter), so a dismissal of one has nowhere to live. This table is that mark: one row
 -- per person per dismissed root message, keyed on the login the Inbox reads by
@@ -21,7 +21,7 @@
 -- reply that brings a thread back does not name whoever dismissed it - which only an index with
 -- message_id leading can read: under the other order every session reply would scan the table,
 -- one row per person per thread they have ever dismissed, 110,000 of them for one person at
--- INFRA-450's a14 seed.
+-- POMJU-450's a14 seed.
 --
 -- The index is the Dismissed view's read: the login it narrows to, then the order it answers in
 -- and the cursor it resumes from (newest dismissal first, ties by message id descending), so one

@@ -17,7 +17,7 @@ related_issues:
 
 # A fact field the prepare stage fills is filled for the boot listing by a read, is a safe no everywhere else, and is proven on a first boot after the act
 
-Extends docs/solutions/daemon/a-decider-in-a-no-io-transaction-reads-a-seq-fenced-mirror-the-first-handler-writes-INFRA-225.md.
+Extends docs/solutions/daemon/a-decider-in-a-no-io-transaction-reads-a-seq-fenced-mirror-the-first-handler-writes-POMJU-225.md.
 That note sends the boot listing through the same fenced write as a live event. This one is about
 a decision that needs something the event carried and the listing does not.
 

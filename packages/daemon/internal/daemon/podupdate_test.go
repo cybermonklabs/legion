@@ -244,7 +244,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	// orphan sweep's goroutine does in production (store.ForConcurrentWorker(s.supervisor.ctx)),
 	// while the supervisor keeps the unmarked base context production gives it. On an unmarked
 	// context the pool refuses nothing, so a sweep that asked it for a second connection under a
-	// held one would pass every test of this rig (INFRA-3169).
+	// held one would pass every test of this rig (POMJU-3169).
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log}
 	for _, role := range roles {
@@ -780,7 +780,7 @@ func TestPodUpdateHoldsTheReplacementWhileAClaimIsWorking(t *testing.T) {
 // bound: only a person can end that wait, and nobody can say whether its workspace holds
 // unpushed work. The pod is not replaced, and the controller is told once, at the bound itself —
 // not before it, and not a bound after the last answer — naming the suspension, which is what
-// brings the operator (dispatch://INFRA-2981 R5, R6; verification's c-no-stall). The notice
+// brings the operator (dispatch://POMJU-2981 R5, R6; verification's c-no-stall). The notice
 // lists every claim the round asks, each with whether it answered, and the store takes the row.
 func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testing.T) {
 	rig := newPodUpdateRig(t,
@@ -1619,7 +1619,7 @@ func TestPodUpdateDoesNotCallALaunchingClaimUnableToAnswer(t *testing.T) {
 // A suspended claim is not revived for the round, whoever suspended it and whatever contract it
 // last recorded: the round's ask is a message on the role's own topic, which a role with no live
 // session does not hold, and the round ends at its bound whether or not that role answers
-// (dispatch://INFRA-2981 R1). The claim is in the round, and it is not asked while it has no
+// (dispatch://POMJU-2981 R1). The claim is in the round, and it is not asked while it has no
 // live session: no row is enqueued for it and no mark is written on it, so the first sweep after
 // its agent says it is ready asks it (supervision.askRound). The claim stays suspended.
 func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
@@ -1821,7 +1821,7 @@ func wantAnswered(t *testing.T, notice record.ControllerNotice, roles ...claim.R
 // that tick can take a whole sweep interval, so after a fleet-wide roll that snapshot is minutes
 // old here. A turn that starts inside that window is in the machine alone, and a sweep deciding
 // from the snapshot would not see it: before the round's bound it would end that turn and delete
-// the disk the turn's work is on. The answer stands through that turn (dispatch://INFRA-2981 R9),
+// the disk the turn's work is on. The answer stands through that turn (dispatch://POMJU-2981 R9),
 // so the round waits for the turn to end, not for a second answer.
 func TestPodUpdateReadsTheClaimsAgainBeforeItReplacesThePod(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -2079,7 +2079,7 @@ func TestPodUpdateAbortsTheReplacementForAClaimTheGroupNeverHeld(t *testing.T) {
 // can start a turn in while it runs. The runtime asks the daemon one statement before the write
 // that ends every process in the pod, the daemon reads the claims again there, and the
 // replacement is refused rather than made. The answer stands through that turn
-// (dispatch://INFRA-2981 R9), so the pod is replaced once the turn ends, with no second answer.
+// (dispatch://POMJU-2981 R9), so the pod is replaced once the turn ends, with no second answer.
 func TestPodUpdateDoesNotCutATurnThatStartsWhileTheReplacementWaits(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -2493,7 +2493,7 @@ func TestPodUpdateRefusesALateAnswerFromAClaimSuspendedAfterItLeftTheRound(t *te
 
 // envoyTurn is a turn the daemon sent nothing for, started in the pod that replaced the round's
 // own: an Envoy notice delivered into the relaunched session, or a person's steer. An answer
-// stands for its round through such a turn, as through every turn (dispatch://INFRA-2981 R9).
+// stands for its round through such a turn, as through every turn (dispatch://POMJU-2981 R9).
 func (r *podUpdateRig) envoyTurn(role claim.Role) {
 	r.t.Helper()
 	r.handle(role, supervise.StreamTurnStart{Claim: r.tokens[role]})
@@ -2617,7 +2617,7 @@ func TestPodUpdateEndsOnlyTheDeadRoundOfATwoRoundGroup(t *testing.T) {
 // claim as the operator, forgets the session it recorded and resumes it (internal/api's
 // freshSession: suspendForFreshSession, forgetRecordedSession, then the resume), and none of the
 // three touches the round: the new session comes up in the pod in the dead pod's place still in
-// the round over the pod that went, as INFRA-1583's implementer claim read at 01:56:43Z on
+// the round over the pod that went, as POMJU-1583's implementer claim read at 01:56:43Z on
 // 2026-11-13, and the task its phase hands it is held behind that round. The next sweep ends the
 // round, whatever session the claim runs, and the task goes.
 func TestPodUpdateEndsAStaleRoundAfterAFreshSession(t *testing.T) {

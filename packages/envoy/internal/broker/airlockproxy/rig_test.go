@@ -52,7 +52,7 @@ const (
 	testGrantID  = "grant-00000000"
 	testEnrollID = "enrollment-00000000"
 	testRequest  = "request-00000000"
-	testIssue    = "INFRA-1352"
+	testIssue    = "POMJU-1352"
 )
 
 // workerPlaceholder is a placeholder in the shape the broker mints them, so a row that asserts a

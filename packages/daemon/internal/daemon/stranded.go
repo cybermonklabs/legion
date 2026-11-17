@@ -32,7 +32,7 @@ const strandedReportTimeout = 5 * time.Second
 // claims it is judged against were read in: both callers wanted the wakes and the claims from
 // one moment, and neither can ask the pool for a connection of its own while holding one, since
 // a pool whose every connection is held by a transaction waiting for a second one never serves
-// either (INFRA-3169).
+// either (POMJU-3169).
 //
 // It is the resumes table's cheap read: PodReleaseRecords, the other read of that table, carries
 // every release and hold of the project with it, so the state route — which judges this rule on

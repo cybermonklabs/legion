@@ -58,7 +58,7 @@ func TestCommentMentionExpectsReplyFollowsTheComment(t *testing.T) {
 		input["body"], input["mentions"] = body, mention
 		created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, input))
 		// The comment answers once it commits, its mention's attempt pending: the send runs after
-		// the response, one lane per recipient (INFRA-606), so the value this test reads reaches
+		// the response, one lane per recipient (POMJU-606), so the value this test reads reaches
 		// the listener a moment later rather than inside the request.
 		if len(created.Deliveries) != 1 || created.Deliveries[0].State != "pending" {
 			t.Fatalf("deliveries of %q = %#v, want one pending delivery", body, created.Deliveries)

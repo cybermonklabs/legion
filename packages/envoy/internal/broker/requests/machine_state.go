@@ -23,7 +23,7 @@
 // enrollment it is moving off holds — its grants, its requests and the names its operator withheld
 // from it — because an approval a person gives hours later, and the grant that comes of it, belong
 // to the session rather than to the box that asked (enroll.Create's adoption,
-// dispatch://INFRA-1167). So every read and every transition here is keyed by the enrollment the
+// dispatch://POMJU-1167). So every read and every transition here is keyed by the enrollment the
 // row itself names now, never by the one the append-only credential_requests record froze: that is
 // what gets a moved session its own grant back, lets it cancel its own request, and still refuses
 // it another session's. moved_session_test.go drives each of those surfaces across a move.
@@ -1083,7 +1083,7 @@ func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg 
 // request row moves with the grant: enroll.Create hands what a predecessor held to the next
 // enrollment of that session name under the same principal. Reading the record's own column
 // would answer an approval given after a move with "the requesting enrollment is no longer live"
-// and mint nothing, which is the half of the incident dispatch://INFRA-1167 reports.
+// and mint nothing, which is the half of the incident dispatch://POMJU-1167 reports.
 //
 // The work is one attempt (applyDecisionAttempt), made again when the request moves out from
 // under it. A session moves once per enrolment, so the attempt after a move reads one enrollment
@@ -1372,7 +1372,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// and dormant_since not null: ended by an end of its box while it still held a grant or this
 	// pending request, and kept for the session's next box (enroll.endEnrollment) — is the one
 	// this carry is for, and a grant may land on it: an approval given while the box is gone is
-	// the order dispatch://INFRA-1167 reports, the next enrollment of that session name adopts
+	// the order dispatch://POMJU-1167 reports, the next enrollment of that session name adopts
 	// the grant with the request (enroll.adopt), the carry sweep revokes it if nobody comes back
 	// (enroll.Service.EndCarried), and a person's revoke of the machine login or the sign-in
 	// reaches it as it reaches any grant (endCredential). The third is a row whose lease has

@@ -24,7 +24,7 @@ export interface IssueFiltersState {
    *  claim to the next agent that asks (`claimIsTakeable`) - its holder has gone, or has missed
    *  its heartbeats for longer than the claim's grace. A holder that has missed its heartbeats
    *  inside that grace keeps the issue, and the server refuses the take, so it stays out of
-   *  this list (dispatch://INFRA-392). */
+   *  this list (dispatch://POMJU-392). */
   readonly unclaimed: boolean;
   /** Why the Unclaimed filter cannot tell which claims are takeable while it is on: the agent
    *  list is `refilling`, or its read failed (`unreachable`). Until it can, every session's

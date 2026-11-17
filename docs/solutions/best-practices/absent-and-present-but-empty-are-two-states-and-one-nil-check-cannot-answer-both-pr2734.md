@@ -25,7 +25,7 @@ related_issues:
 - A fold like this survives every test written from the common case. The test that catches it is
   the one that starts the system in the deliberate-empty state.
 
-Related: docs/solutions/envoy/a-callee-that-folds-two-sentinels-makes-its-callers-arm-order-load-bearing-INFRA-249.md
+Related: docs/solutions/envoy/a-callee-that-folds-two-sentinels-makes-its-callers-arm-order-load-bearing-POMJU-249.md
 — the same family, a fold hiding a distinction, by a different mechanism.
 
 ## Evidence

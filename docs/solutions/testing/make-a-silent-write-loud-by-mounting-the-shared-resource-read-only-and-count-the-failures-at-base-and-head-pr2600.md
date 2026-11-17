@@ -48,7 +48,7 @@ unshare -Urm "$TMPDIR/ro.sh" <the directory that reproduces it> <the command>
   under the guard at every commit, your change or not. Run that package outside the guard and say
   which one it is.
 
-## Evidence (sjawhar/legion#2600, INFRA-623)
+## Evidence (sjawhar/legion#2600, POMJU-623)
 
 - The planner's first measurement, before any code moved: the `internal/workspace` test binary run
   from its package directory with `/legion/repos` read-only gave **61 test failures** and 96
@@ -67,7 +67,7 @@ unshare -Urm "$TMPDIR/ro.sh" <the directory that reproduces it> <the command>
   alike, and passes without it. It was controlled against the base commit's own file before being
   called the environment's.
 
-Related: `docs/solutions/legion/namespace-isolation-under-gvisor-holds-on-locked-mounts-and-ownership-not-a-read-only-root-INFRA-208.md`
+Related: `docs/solutions/legion/namespace-isolation-under-gvisor-holds-on-locked-mounts-and-ownership-not-a-read-only-root-POMJU-208.md`
 for what a namespace can and cannot hold, and
 `docs/solutions/testing/go-test-in-a-worker-pod-leaves-gowork-to-go-work-and-names-the-packages-the-pod-cannot-run-LEGION-630.md`
 for the packages a pod cannot run at all.

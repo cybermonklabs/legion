@@ -39,7 +39,7 @@ symptoms:
 
 ## Evidence
 
-sjawhar/legion#2699 (INFRA-436) added rows to `packages/pi-envoy/extensions/envoy.test.ts` that set
+sjawhar/legion#2699 (POMJU-436) added rows to `packages/pi-envoy/extensions/envoy.test.ts` that set
 `ENVOY_RESUBSCRIBE_DELAY_MS` to 60000 and never ended their session. The extension's background
 confirmation slept that long on a mock connection `afterEach` never closes
 (`isClosed` reads `closed || natsState.connectionsClosed`), woke inside whichever row was running a

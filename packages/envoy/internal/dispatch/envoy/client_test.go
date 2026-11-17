@@ -447,7 +447,7 @@ func TestRolePreservesListenerNotFoundText(t *testing.T) {
 	}
 }
 
-// dispatch://INFRA-392. The listener's lookup route answers an unresponsive holder with its 404:
+// dispatch://POMJU-392. The listener's lookup route answers an unresponsive holder with its 404:
 // the role cannot be reached now, its state is named, and claim_released is false because the
 // claim stands (cmd/listener roleHolderError, pinned by its own
 // TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas). A reader that took that
@@ -576,7 +576,7 @@ func TestSessionDecodesTheListenerRowAndFillsWhatItOmits(t *testing.T) {
 			},
 		},
 		{
-			// The answer INFRA-392 turns on: a session past the live window is a 200 with its
+			// The answer POMJU-392 turns on: a session past the live window is a 200 with its
 			// own state. A caller that read that 200 as a live session would keep calling a
 			// stalled one live; one that read a missing row as death would retire a session
 			// that is still working.
@@ -660,7 +660,7 @@ func TestSessionReportsAnUnreachableListenerAsUnavailable(t *testing.T) {
 }
 
 // Every session read asks for the unresponsive sessions too. A listener answers the live ones
-// alone unless it is asked (dispatch://INFRA-392), so a read that leaves the selector off reads
+// alone unless it is asked (dispatch://POMJU-392), so a read that leaves the selector off reads
 // a stalled session as no session at all: its issue claim looks free, its role looks unheld and
 // a message aimed at it is refused. The stub here answers only when asked, exactly as the
 // listener does.
@@ -717,7 +717,7 @@ func TestEverySessionReadAsksForTheUnresponsiveSessionsToo(t *testing.T) {
 	}
 }
 
-// Only the delivery's read asks for stopped sessions (INFRA-626). The registry route answers a
+// Only the delivery's read asks for stopped sessions (POMJU-626). The registry route answers a
 // session it knows by its record alone 200 with state stopped when the include list names
 // stopped, and 404 otherwise; Session, Sessions and Role keep the list without it, so an issue
 // claim's holder, the route roster and role resolution never read a stopped session as one that
@@ -815,8 +815,8 @@ func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
 	}
 }
 
-const legionAgentRow = `{"session_id":"ses-old","legion_project":"infra","issue":"INFRA-448","role":"reviewer",` +
-	`"role_token":"legion-infra-infra-448-reviewer","title":"Legion reviewer · INFRA-448","harness":"omp",` +
+const legionAgentRow = `{"session_id":"ses-old","legion_project":"infra","issue":"POMJU-448","role":"reviewer",` +
+	`"role_token":"legion-pomju-pomju-448-reviewer","title":"Legion reviewer · POMJU-448","harness":"omp",` +
 	`"started_at":"2026-10-26T01:00:00Z","recorded_at":"2026-10-26T01:00:05Z","live":false,` +
 	`"replaced_by":"ses-new","replaced_at":"2026-10-26T02:00:00Z","added_later":1}`
 
@@ -824,8 +824,8 @@ func wantLegionAgentRow(t *testing.T, got LegionAgent) {
 	t.Helper()
 	newer, at := "ses-new", "2026-10-26T02:00:00Z"
 	want := LegionAgent{
-		SessionID: "ses-old", LegionProject: "infra", Issue: "INFRA-448", Role: "reviewer",
-		RoleToken: "legion-infra-infra-448-reviewer", Title: "Legion reviewer · INFRA-448", Harness: "omp",
+		SessionID: "ses-old", LegionProject: "infra", Issue: "POMJU-448", Role: "reviewer",
+		RoleToken: "legion-pomju-pomju-448-reviewer", Title: "Legion reviewer · POMJU-448", Harness: "omp",
 		StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z", ReplacedBy: &newer, ReplacedAt: &at,
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -895,11 +895,11 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 		query string
 		call  func(*Client) ([]LegionAgent, error)
 	}{
-		{"by role token", "/v1/legion/agents/roles/legion-infra-infra-448-reviewer", "", func(c *Client) ([]LegionAgent, error) {
-			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
+		{"by role token", "/v1/legion/agents/roles/legion-pomju-pomju-448-reviewer", "", func(c *Client) ([]LegionAgent, error) {
+			return c.RoleAgents(context.Background(), "legion-pomju-pomju-448-reviewer")
 		}},
-		{"by issue", "/v1/legion/agents", "issue=INFRA-448", func(c *Client) ([]LegionAgent, error) {
-			return c.IssueAgents(context.Background(), "INFRA-448")
+		{"by issue", "/v1/legion/agents", "issue=POMJU-448", func(c *Client) ([]LegionAgent, error) {
+			return c.IssueAgents(context.Background(), "POMJU-448")
 		}},
 	} {
 		for _, listing := range []struct {
@@ -933,9 +933,9 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 	calls := map[string]func(*Client) ([]LegionAgent, error){
 		"RoleAgents": func(c *Client) ([]LegionAgent, error) {
-			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
+			return c.RoleAgents(context.Background(), "legion-pomju-pomju-448-reviewer")
 		},
-		"IssueAgents": func(c *Client) ([]LegionAgent, error) { return c.IssueAgents(context.Background(), "INFRA-448") },
+		"IssueAgents": func(c *Client) ([]LegionAgent, error) { return c.IssueAgents(context.Background(), "POMJU-448") },
 	}
 	for _, tc := range []struct {
 		status int

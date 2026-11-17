@@ -14,7 +14,7 @@ const forbidden = "github.com/testcontainers/"
 // testcontainers-go, naming each, or carries no module list to read. That library's package init
 // reads every process on the machine: 7.6 to 11.5 s and 600 to 910 MB of allocation per start of
 // internal/daemon's test binary on a machine that ran 13,000 to 20,000 processes
-// (dispatch://INFRA-3904). A test binary pays it at every start, so one that starts itself again
+// (dispatch://POMJU-3904). A test binary pays it at every start, so one that starts itself again
 // pays it at each child; the test that calls this says which starts its package makes. It reads
 // the modules the binary was built from, as `go version -m` prints them. CI's
 // .github/scripts/testcontainers_links.py holds every such binary to the same rule from the

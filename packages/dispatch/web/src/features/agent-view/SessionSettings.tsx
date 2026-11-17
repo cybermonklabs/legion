@@ -17,7 +17,7 @@ import type { SwitchRequest } from "./use-session-switch";
 /** A picker in the row under the message box: a native `<select>`, as the delivery control is. A
  *  long model id is clipped on screen only (the option's value, which a pick sends, is the whole
  *  id), so the picker never runs wider than a phone, and `shrink-0` keeps it at that width while
- *  the directory beside it takes what is left and shortens (INFRA-812, R6). A held picker
+ *  the directory beside it takes what is left and shortens (POMJU-812, R6). A held picker
  *  (`aria-disabled`, `useKeySteps`) looks disabled through the `refused:` variant
  *  (`styles.css`). */
 const selectClasses = `min-h-8 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-xs refused:opacity-50 ${inputClasses(false)}`;
@@ -131,7 +131,7 @@ function useKeySteps(
 
 /**
  * The session's model and thinking level in the row under the message box, and the pickers that
- * switch them (INFRA-195). `view` is `sessionSettingsView`'s answer; a pick hands `onPick` what
+ * switch them (POMJU-195). `view` is `sessionSettingsView`'s answer; a pick hands `onPick` what
  * was picked, and the page sends it. While a switch is pending the pickers are held
  * (`aria-disabled`): they keep focus and their keys still step, but nothing picks until the
  * switch ends. A picker's own keys only step its choice and `Enter` picks it (`useKeySteps`);
@@ -185,7 +185,7 @@ export function SessionSettings({
 
 /**
  * What the latest switch is doing, and why a session shows less than the pickers: each on a
- * line of its own under the row the pickers sit in (INFRA-812, R6).
+ * line of its own under the row the pickers sit in (POMJU-812, R6).
  *
  * Under the row rather than in it, because the row holds the seven parts R6 names and scrolls
  * sideways at a phone width: a line of prose inside that scroller is a flex item like any

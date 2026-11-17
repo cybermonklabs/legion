@@ -416,7 +416,7 @@ func TestBroadcastWithNoReachableRecipientIsRefusedAndWritesNothing(t *testing.T
 	}
 }
 
-// INFRA-249. The live list is the listener's in-memory cache of the registry, and a session
+// POMJU-249. The live list is the listener's in-memory cache of the registry, and a session
 // working through a cache refill is missing from it. A send asks about each selected session
 // by id instead, so a selection the list has dropped entirely still reaches every session the
 // store holds a record for, with nothing excluded.
@@ -451,7 +451,7 @@ func TestBroadcastReachesSessionsTheLiveListNoLongerHolds(t *testing.T) {
 	}
 }
 
-// INFRA-249. A per-session read the listener did not answer is not an absence: the send is
+// POMJU-249. A per-session read the listener did not answer is not an absence: the send is
 // refused and nothing is written, not even the recipients whose reads answered. A broadcast
 // commits under its idempotency key, and a replay of that key is answered "excluded by the
 // original send" for every session the original missed, so a recipient dropped on a transient
@@ -512,7 +512,7 @@ func TestBroadcastWhoseSessionReadDoesNotAnswerWritesNothingAndLeavesItsKeyFree(
 	awaitBroadcastDeliveries(t, handler, created.ID)
 }
 
-// INFRA-249. A send answers only once it has decided every selected session. The resolution's
+// POMJU-249. A send answers only once it has decided every selected session. The resolution's
 // budget can end after every read it launched has answered and before it launches the next,
 // and a read that was never made returns no error; taken for an absence, each unread session
 // would be excluded "no live session" and, with one recipient left, committed under the send's
@@ -645,7 +645,7 @@ func TestBroadcastRejectsMalformedInput(t *testing.T) {
 			}
 		})
 	}
-	// The key is a header now (INFRA-258): a body still naming one, as a tab opened before the
+	// The key is a header now (POMJU-258): a body still naming one, as a tab opened before the
 	// cutover sends it with no header, is a member the route does not take.
 	t.Run("a body key", func(t *testing.T) {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/broadcasts", map[string]any{

@@ -98,7 +98,7 @@ jobs:
       # Before init, as the starter workflow's comment says setup steps go: go.work asks for a Go
       # the runner image does not carry, and autobuild builds both modules of the workspace with
       # whatever `go` is on the PATH. cache: false, as in every other Go job here: this workflow
-      # fills no Actions cache entry (INFRA-490's budget).
+      # fills no Actions cache entry (POMJU-490's budget).
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: matrix.language == 'go'
         with:

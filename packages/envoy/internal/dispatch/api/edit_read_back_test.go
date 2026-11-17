@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The edits route answers what the batch wrote (INFRA-1520 R6): `Applied 1 ops (version 2)` reads
+// The edits route answers what the batch wrote (POMJU-1520 R6): `Applied 1 ops (version 2)` reads
 // the same whether the edit wrote a list or a paragraph of dashes, so the answer carries the
 // markdown of every block the write left that the document did not hold before, and names each
 // block it removed or emptied.
@@ -39,7 +39,7 @@ func listedBlocks(t *testing.T, handler http.Handler, artifactID string) []model
 }
 
 // A replace with no `with` deletes the text it matched and leaves the block standing with nothing
-// in it. The read-back names that block, which is the visibility dispatch://INFRA-1946 lacked:
+// in it. The read-back names that block, which is the visibility dispatch://POMJU-1946 lacked:
 // the answer read the same as one that wrote a paragraph.
 func TestDocumentEditReadBackNamesAnEmptiedBlock(t *testing.T) {
 	handler := newTestHandler(t)

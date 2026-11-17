@@ -39,7 +39,7 @@ import { type PaneCounts, WindowDrawing } from "./WindowDrawing";
 /**
  * One machine's tmux layout, drawn from the agent registry alone: one part per tmux server, each
  * with a strip of its windows and one of them drawn. The page says what it cannot know, because
- * each session reports only its own pane and its own window (dispatch://INFRA-883's spec): a
+ * each session reports only its own pane and its own window (dispatch://POMJU-883's spec): a
  * machine with no session in tmux, a server's windows that hold no agent, how old the reports
  * are, and what a machine name is.
  */

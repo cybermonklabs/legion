@@ -63,11 +63,11 @@ export interface ModLink {
   /** Ask the mod to make one call, and resolve with its answer. Rejects with the mod's own error
    *  when the call failed, when `timeoutMs` passes with no answer, and when the link closes
    *  first. A request whose own bound is up leaves the queue with it, so a mod that connects an
-   *  hour later is handed no work nobody is waiting for (INFRA-1026 review).
+   *  hour later is handed no work nobody is waiting for (POMJU-1026 review).
    *
    *  Nothing here reports a request handed to a mod. A hand-out is a write into a poll's
    *  response, which a SIGSTOPped process never reads, so it proves nothing about the session
-   *  (INFRA-1026 review, round eleven, repro `R-A`). What the session did with a message is the
+   *  (POMJU-1026 review, round eleven, repro `R-A`). What the session did with a message is the
    *  row the mod answers with, and a request the mod never answered is one its caller leaves
    *  unanswered too: Envoy sends the frame again, and the mod writes the message once
    *  (`../hooks/mod-writer.ts`, `writeOnce`). */
@@ -89,7 +89,7 @@ export interface ModLink {
   /** Called when a poll or an event arrives while this link did not count as connected: the
    *  rising edge of `connected()`. The mod sends its hello once per Claude Code process, so a
    *  server Claude Code starts again inside that process hears nothing else from a mod that is
-   *  already there, and neither does a listener added after the hello landed (INFRA-1026
+   *  already there, and neither does a listener added after the hello landed (POMJU-1026
    *  review). There is no falling edge: `connected()` goes false on its own, about ten seconds
    *  after the mod's last poll. */
   readonly onConnected: (listener: () => void) => void
@@ -263,7 +263,7 @@ async function exists(path: string): Promise<boolean> {
  *  write this directory can bind the socket before this server does and then read the
  *  conversation and submit prompts as the person, so a directory that is open to anyone else is
  *  refused rather than tightened: whatever left it open may have left something in it too
- *  (INFRA-1026 review). `mkdir` can only drop bits of the `0700` it is given, so a directory
+ *  (POMJU-1026 review). `mkdir` can only drop bits of the `0700` it is given, so a directory
  *  this server made is never the one that is refused. */
 async function privateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 })
@@ -317,7 +317,7 @@ async function bind(server: Server, socketPath: string): Promise<void> {
  *
  * One link serves one mod: the first mod instance to name itself in a post holds it, and every
  * other is refused (`MOD_STATUS_TAKEN`), so two Claude Code processes that booted on one session
- * id do not share a live view or a person's Send (INFRA-1026 review).
+ * id do not share a live view or a person's Send (POMJU-1026 review).
  *
  * Rejects when the session names no socket path or no private directory for it, when another
  * server owns it, and when the bind itself fails. Nothing here stops the MCP server: the caller
@@ -503,7 +503,7 @@ export async function startModLink(options: ModLinkOptions): Promise<ModLink> {
     // The queue goes with them: every request it held has just been rejected, and a mod that
     // posts one last poll as this server goes down is handed none of it. A request no mod took
     // leaves the queue when its own bound is up or when the link drops, and never sits there
-    // waiting for a mod that polls an hour later (INFRA-1026 review).
+    // waiting for a mod that polls an hour later (POMJU-1026 review).
     queued.length = 0
     for (const poll of held) {
       clearTimeout(poll.timer)
@@ -537,7 +537,7 @@ export async function startModLink(options: ModLinkOptions): Promise<ModLink> {
         // Out of the queue with it. Queued is where a request waits while no mod is polling,
         // and a mod that connects an hour later would otherwise run work whose caller gave up
         // long ago; in a session whose mod never connects the queue would grow for the life of
-        // the process (INFRA-1026 review).
+        // the process (POMJU-1026 review).
         const waiting = queued.indexOf(request)
         if (waiting !== -1) queued.splice(waiting, 1)
         settle.reject(new Error(`the mod did not answer ${call} within ${timeoutMs} ms`))

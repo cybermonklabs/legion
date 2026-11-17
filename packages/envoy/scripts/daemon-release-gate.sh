@@ -3,7 +3,7 @@
 #
 # Says whether every production reader of a message name runs a build at or after <commit> of
 # cybermonklabs/legion, the reading a pull request quotes before it moves a producer onto the new
-# form of a name (dispatch://INFRA-3862, plan C's rollout). A reader on an older image cannot read
+# form of a name (dispatch://POMJU-3862, plan C's rollout). A reader on an older image cannot read
 # the new form: a Legion daemon built before t-c-5 takes an issue event named in the new form for
 # another project's and acknowledges it with no fact, so moving a producer early stops the fleet's
 # workflow in silence.

@@ -12,7 +12,7 @@ date: 2026-10-31
 status: active
 module: packages/envoy/cmd/dispatch
 related_issues:
-  - "INFRA-841"
+  - "POMJU-841"
   - "sjawhar/legion#2580"
 ---
 
@@ -57,7 +57,7 @@ Two more, for the assertions around such a wait:
 
 ## Evidence
 
-sjawhar/legion#2580, INFRA-841. `startDispatchStream` in
+sjawhar/legion#2580, POMJU-841. `startDispatchStream` in
 `packages/envoy/cmd/dispatch/stream_replicas_test.go` ended on the first failed run of the bus's
 reconnect hooks, closed the client and returned the logged error. The bus retries that run itself
 (`internal/bus/recovery.go:86-97` starts `recover()` after a failed run), so a first reconcile that

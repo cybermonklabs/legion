@@ -167,7 +167,7 @@ function forwardedRoleEnvelope(summary: string, label: string): string {
  * deadline, and the refusal by name of a `nak` or any other word that is no take. A rig that
  * read the arrival of any reply as a take would read a closed session's refusal as one.
  *
- * A session takes its messages from that relay alone now (INFRA-771), so nothing reaches it on
+ * A session takes its messages from that relay alone now (POMJU-771), so nothing reaches it on
  * its agent subject. The stamp returned is the moment the answered send went out, which is the
  * message's arrival: it is earlier than the session's own reply, so measuring the role's next
  * turn against it is the stronger of the two readings.
@@ -417,7 +417,7 @@ async function startRolePane(): Promise<RolePane> {
     }
     // The Envoy listener: registration, the role claim, and any read answer with an interest. A
     // registration is answered a consumer on the session's own relay subject, the one path a
-    // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
+    // message reaches a session by (POMJU-771); an answer without one leaves the pane deaf and
     // its claim boot fails.
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",

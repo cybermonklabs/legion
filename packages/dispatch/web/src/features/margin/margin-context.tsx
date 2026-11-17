@@ -328,7 +328,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   // The marks whose recovery is running, which is set before the wait for a document to bind:
   // the reader can press Retry while that wait is out, the server refuses the same mark again,
   // and a second recovery for it would write a second mark once the bridge binds - one of the
-  // two left in the shared document with no record of its own (dispatch://INFRA-727).
+  // two left in the shared document with no record of its own (dispatch://POMJU-727).
   const recovering = useRef(new Set<string>());
   // Mirrors of the open compose and `documentBridge` for the compose callbacks, which stay stable
   // (the editor holds `composeForMark` for the document's lifetime).

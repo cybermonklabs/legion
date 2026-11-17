@@ -36,7 +36,7 @@ Extends docs/solutions/testing/an-embedded-postgres-from-the-zonky-jar-runs-the-
   Boot the daemon the way the script does — a `legion.yaml` with `project`, `port`, `postgres_dsn`,
   `state_dir`, `operator_token_file`, a port under 16000 — and cite CI's `Stage 1 live proof` step
   for the script itself.
-  *Note, 2026-10-26 (INFRA-253):* `scripts/e2e/lib/free-port.sh` is gone, and with it the port-range
+  *Note, 2026-10-26 (POMJU-253):* `scripts/e2e/lib/free-port.sh` is gone, and with it the port-range
   refusal and the `ss` need. Stage 1 now holds its daemon's port with
   `scripts/e2e/lib/held-port.py` (`python3`), and `legion start` serves on the inherited socket
   (`LEGION_LISTEN_FD`). The script runs in a pod given a Postgres (`LEGION_E2E_PG_DSN`) and a real

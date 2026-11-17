@@ -147,7 +147,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // parkWake). A hold protects a turn and a process, and this claim has neither — the launch its
 // wake holds has not been made — so the suspension has nothing to wait for, and the wait is dear.
 // A wave's queue is hundreds of claims let out at a few wakes a minute, so a claim far down it
-// waits tens of minutes, and for that long both halves of R2 of dispatch://INFRA-976/spec fail: the
+// waits tens of minutes, and for that long both halves of R2 of dispatch://POMJU-976/spec fail: the
 // claim does not "still decide" the suspend, since an operator's drain, a park or a tree close
 // lands only at the wake's turn (wakeNow), and it loses it as well, since the hold lives in memory
 // alone (holdSuspension) and an operator's suspend writes no outbox row — a restart inside those

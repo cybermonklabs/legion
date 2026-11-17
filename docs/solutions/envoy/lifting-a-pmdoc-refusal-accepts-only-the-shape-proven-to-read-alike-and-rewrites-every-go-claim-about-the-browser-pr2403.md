@@ -14,7 +14,7 @@ module: packages/envoy/internal/dispatch/pmdoc
 
 # Lifting a pmdoc refusal accepts only the shape proven to read alike, and rewrites every Go claim about the browser
 
-Extends docs/solutions/envoy/a-writer-that-checks-its-output-by-reading-it-back-keeps-stored-bytes-only-when-the-new-reader-joins-every-step-of-the-old-ladder-INFRA-534.md.
+Extends docs/solutions/envoy/a-writer-that-checks-its-output-by-reading-it-back-keeps-stored-bytes-only-when-the-new-reader-joins-every-step-of-the-old-ladder-POMJU-534.md.
 
 - Removing or narrowing a refusal in `pmdoc/refusals.go` changes what a document write stores. A
   refusal guards a whole family of shapes where Go and the browser editor disagree, but its reason

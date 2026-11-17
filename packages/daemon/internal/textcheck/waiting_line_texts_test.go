@@ -23,7 +23,7 @@ import (
 // whose subject is a file's words, where a documentation edit is the run that should start: it
 // holds each copy to the text it was taken from, and carries the one check no copy can carry.
 // Neither half alone is the guarantee: together they are the one the four tests used to give.
-// (INFRA-1413.)
+// (POMJU-1413.)
 //
 // What these tests prove: that the api package's copy is every window of the seven texts
 // that names the field's contract, in their own bytes; that every quotation of the workflow
@@ -59,7 +59,7 @@ const (
 	// them, with the indent and the one `//`, `*` or `#` comment marker the next line opens with:
 	// onOneLine's rule for a wrapped line, below. The repository's semantic line breaks let a
 	// sentence break there, in Markdown and YAML as in a Go or TypeScript comment, and a pattern
-	// that read only a space passed every wrapped mention over without a word (INFRA-4004). A
+	// that read only a space passed every wrapped mention over without a word (POMJU-4004). A
 	// blank line between the two is a paragraph break, and no mention.
 	waitingLineNamed  = `(?:contract|below)(?:[ \t]+|[ \t]*\n[ \t]*(?:(?://|\*|#)[ \t]*)?)(\d+)`
 	waitingLineWindow = 220
@@ -446,7 +446,7 @@ func waitingLineContractWindowsIn(named *regexp.Regexp, name, text string) []quo
 // cybermonklabs/legion#3659 wrapped packages/pi-legion/AGENTS.md's "after contract 85's" across
 // two lines, and the scan, which read only a space between the two, found no window there; that
 // run failed only because the copy had been taken from the text before the wrap, and a window
-// first written wrapped would never have reached the copy at all (INFRA-4004). Each case is a
+// first written wrapped would never have reached the copy at all (POMJU-4004). Each case is a
 // shape the seven texts are written in, and each wrapped mention in it must yield its window; a
 // blank line between the word and a number is a paragraph break, and yields none.
 //

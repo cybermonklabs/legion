@@ -7,7 +7,7 @@
 -- window row at all. The rows it looks for are rare exactly when the arm has nothing to do, so
 -- the whole table was read to find none: 511,595 comment state rows, 1,023,190 index searches,
 -- 5.6 million buffer hits, 13.7 s a pass, 200 passes an hour, 6.5% of the load-test
--- deployment's database time, for an answer of no rows (INFRA-988). Written as anti-joins the
+-- deployment's database time, for an answer of no rows (POMJU-988). Written as anti-joins the
 -- same question is 2.92 s a pass and writes 472 MB of temporary files, which is better and
 -- still a whole-table read.
 --

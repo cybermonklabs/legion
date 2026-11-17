@@ -1,5 +1,5 @@
 -- 20261104004500_children_first_notices.up.sql — the mark that a tree's architect has been told
--- its parent waits for its own children (INFRA-980, "Children first").
+-- its parent waits for its own children (POMJU-980, "Children first").
 --
 -- A parent's first phase does not start while Dispatch shows an open child under it, and that
 -- wait is never stored: each admission pass judges it again from the mirror, so a mirror row

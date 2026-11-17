@@ -22,7 +22,7 @@ import (
 // source's text, an editor writes new text and the edges of that new text, and the rebuild then
 // replaces those edges with the ones it built from the text it read, so the edit's own index is
 // lost until something re-indexes that source (stored-document finding 9 of
-// dispatch://INFRA-63/artifact/ha-audit-md, dispatch://INFRA-3285).
+// dispatch://POMJU-63/artifact/ha-audit-md, dispatch://POMJU-3285).
 //
 // The two rows below are the two kinds of writer, and they are two rows rather than one because
 // the mechanism differs: an edit of an ask, a comment or a message updates the row its text is

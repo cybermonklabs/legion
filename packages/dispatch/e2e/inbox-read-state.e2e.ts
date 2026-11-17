@@ -6,7 +6,7 @@ import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * Reading a thread in the Inbox marks it read (INFRA-450, A7): "a thread is marked when its
+ * Reading a thread in the Inbox marks it read (POMJU-450, A7): "a thread is marked when its
  * newest message has been on screen, in the pane or on a card ... three quarters of the message
  * visible for one second, or, for a message taller than the screen, the message filling three
  * quarters of the screen for one second". The row stays where it is, drawn as read: a thread

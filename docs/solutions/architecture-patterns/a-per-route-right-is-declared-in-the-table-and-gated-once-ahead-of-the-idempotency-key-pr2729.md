@@ -44,7 +44,7 @@ enforced in one wrapper. A handler that restates it is a second place to be wron
 
 ## Evidence
 
-INFRA-1017 replaced Dispatch's `403 HUMAN_ONLY` on 44 browser-only rows with two OAuth scopes. The
+POMJU-1017 replaced Dispatch's `403 HUMAN_ONLY` on 44 browser-only rows with two OAuth scopes. The
 first implementation called `requireScope(...)` inside each of 47 handlers; review round 1 refused
 it on two grounds, both observable: the scope check ran after `keyedWrites`, so a refusal was
 stored under the caller's `Idempotency-Key` and replayed after the person ticked the scope back,

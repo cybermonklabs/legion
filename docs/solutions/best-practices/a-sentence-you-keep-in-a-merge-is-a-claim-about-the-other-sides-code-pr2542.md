@@ -18,7 +18,7 @@ related_issues:
 Extends `docs/solutions/daemon/a-forward-merge-brings-mains-new-outbox-writer-in-unscoped-the-commit-scope-census-runs-again-and-the-racy-wakes-error-line-is-the-tests-witness-LEGION-694.md`,
 which runs its census the other way — main's new code against the branch's invariant. This is the
 mirror: the branch's own sentences against main's new code. It also extends
-`docs/solutions/best-practices/a-word-level-merge-of-prose-is-verified-by-reading-the-paragraph-INFRA-42.md`,
+`docs/solutions/best-practices/a-word-level-merge-of-prose-is-verified-by-reading-the-paragraph-POMJU-42.md`,
 whose check is grammatical: the paragraph here read perfectly and was false.
 
 ## Rules
@@ -33,7 +33,7 @@ whose check is grammatical: the paragraph here read perfectly and was false.
 - **A presence grep answers "something logs this string", never "this path logs it".** The
   predicate for a prose claim about a log line is the **guard of the `slog` call and its attribute
   list**, both of which are a four-line read. Add that row to the instrument table in
-  `docs/solutions/best-practices/an-instrument-that-answers-a-smaller-question-returns-the-comfortable-answer-INFRA-141.md`:
+  `docs/solutions/best-practices/an-instrument-that-answers-a-smaller-question-returns-the-comfortable-answer-POMJU-141.md`:
   the narrow answer is the comfortable one, because it lets the merge land.
 - A claim that names a message **and** an attribute is two conjuncts, and a re-route can falsify
   each separately.

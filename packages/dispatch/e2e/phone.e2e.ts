@@ -845,7 +845,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
 
     // The long name belongs to a project document, whose ask nobody holds: the cleared filter
     // is where the Inbox lists it. From 1280 px the owner link is on the short row and again
-    // in the reading column's head (INFRA-575), so each is read where it belongs: the name on
+    // in the reading column's head (POMJU-575), so each is read where it belongs: the name on
     // the row of the list, the author chip on the question's own card.
     await navigateInApp(page, "/?assignee=everyone");
     const inboxOwner = inboxList(page).locator("[data-inbox-owner]", { hasText: longName });

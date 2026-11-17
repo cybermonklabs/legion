@@ -919,7 +919,7 @@ func repositoriesGitHub(t *testing.T) string {
 // stopBound(stopBudget) — the budget, then the NATS close's, the stamp's and the store close's
 // bounds (daemon.go, stopBudget). Held to that contract a row reds on a machine that spends a
 // few milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s
-// against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
+// against 3 s, which is what POMJU-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {

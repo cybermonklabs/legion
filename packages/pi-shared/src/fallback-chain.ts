@@ -7,7 +7,7 @@ import type {
 import type { HostModel } from "./pi-types";
 
 /**
- * Which model is below this one in the deployment's own `retry.fallbackChains` (INFRA-956 R1), so
+ * Which model is below this one in the deployment's own `retry.fallbackChains` (POMJU-956 R1), so
  * a worker whose turn a content filter refused steps down the same chain the host's own recovery
  * would have stepped down.
  *

@@ -35,7 +35,7 @@ the obligation is arithmetic.
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454) replaced the broker's lease rule with one that walks
+`sjawhar/legion#2705` (dispatch://POMJU-454) replaced the broker's lease rule with one that walks
 both renewers' retry schedules. A review round found the changelog claiming "so no deployment that
 boots today stops booting", which was false: the old rule was `2 × lease ≤ 9 × sweep`
 (`packages/envoy/internal/broker/config/config.go`), so everything between four and a half times

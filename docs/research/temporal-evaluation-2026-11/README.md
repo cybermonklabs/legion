@@ -4,7 +4,7 @@ This directory is dated evidence that no job builds again.
 Nothing in CI compiles, vets or runs the Go module under `prototype/`, and nothing re-records the output files.
 They are the transcript of one run, on the date and at the commit their own headers name.
 
-The answer this evidence was gathered for is the Dispatch document dispatch://INFRA-1546/artifact/temporal-evaluation-md, on the issue dispatch://INFRA-1546.
+The answer this evidence was gathered for is the Dispatch document dispatch://POMJU-1546/artifact/temporal-evaluation-md, on the issue dispatch://POMJU-1546.
 The reasoning lives there and is not copied here, so the two cannot disagree.
 
 ## The recommendation, in one screen

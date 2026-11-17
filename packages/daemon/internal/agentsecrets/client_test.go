@@ -256,7 +256,7 @@ func tokenFile(t *testing.T, token string) string {
 // eventually polls fn until it returns true or the deadline passes, failing the test otherwise.
 // The deadline is a hang guard: every caller waits for a retry schedule measured in tens of
 // milliseconds, and a loaded machine stretches an HTTP round trip far past that without the
-// schedule being wrong. Five seconds was too near the work's own duration (INFRA-985); the
+// schedule being wrong. Five seconds was too near the work's own duration (POMJU-985); the
 // callers whose claim is "well before a refusal's minute" still read below that minute.
 func eventually(t *testing.T, fn func() bool, msg string) {
 	t.Helper()
@@ -607,7 +607,7 @@ func TestTokenLoginRetriesQuicklyWhileTheFrontDoorAnswersForADownBroker(t *testi
 	// The down broker is a listener this test owns that accepts each connection and closes it at
 	// once: the proxy reads EOF and answers 502, exactly as the front door answers while no broker
 	// serves. A port bound and released instead - which this row used - leaves the test depending
-	// on the OS not giving that ephemeral port to anything else (INFRA-985).
+	// on the OS not giving that ephemeral port to anything else (POMJU-985).
 	down, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

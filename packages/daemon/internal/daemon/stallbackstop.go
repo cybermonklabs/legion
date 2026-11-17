@@ -15,7 +15,7 @@ import (
 // backstopStalledTurns ends the turn of every claim the sweep finds in one whose recorded last
 // step is older than its role's backstop bound (`worker_stall_backstop_hours`,
 // config.Config.StallBackstopFor), over the claims the orphan sweep already read this tick. It is
-// the daemon's half of INFRA-1274: the worker's own plugin watches its tool calls and recovers in
+// the daemon's half of POMJU-1274: the worker's own plugin watches its tool calls and recovers in
 // steps, and this acts where that plugin is itself the thing that is broken, since the daemon is
 // the only part that outlives it.
 //

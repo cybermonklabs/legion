@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # run.sh reproduces the twenty-one experiments of the workflow-engine evaluation of
-# INFRA-1546 against the real thing in every case.
+# POMJU-1546 against the real thing in every case.
 #
 #   bash docs/research/temporal-evaluation-2026-11/run.sh
 #

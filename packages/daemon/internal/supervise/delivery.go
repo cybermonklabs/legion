@@ -123,7 +123,7 @@ type Delivery struct {
 	// failed there, charged or not, and that difference is the point of recording it. A send
 	// lost to the transport is charged nothing and waits for the next hello, sweep, turn end or
 	// ready — for ever, by design — so a claim can sit for days with its budget untouched and
-	// nothing on it saying why, and that is the case an operator most needs named (INFRA-1480:
+	// nothing on it saying why, and that is the case an operator most needs named (POMJU-1480:
 	// two planning tasks held 31 and 33 hours, whose only record of each failed send was a log
 	// line inside the pod, so diagnosing the stall took a person and a hand-run check in there).
 	// A prompt the agent acknowledged and then refused is not counted here: it comes back as a
@@ -157,7 +157,7 @@ type Delivery struct {
 	// daemon is sending the task again. It is built from structured fields alone — the HTTP
 	// status the provider answered, else nothing more than "a provider error" — because a
 	// refusal's own explanation is itself refused when it is sent back
-	// (dispatch://INFRA-956/artifact/cause-evidence-md), so no provider text reaches a prompt.
+	// (dispatch://POMJU-956/artifact/cause-evidence-md), so no provider text reaches a prompt.
 	// Empty for a task no provider error has taken back.
 	ProviderErrorNote string
 }
@@ -168,7 +168,7 @@ type Delivery struct {
 // its age within the first two hundred characters — so this is more room than the diagnosis asks
 // for and far less than the text can be. What it cuts is the rest of a relayed command's output:
 // a refused adoption carries the wedged command's whole stderr, measured at about a megabyte
-// (INFRA-1480), which would otherwise be stored on every failed send of the task and served
+// (POMJU-1480), which would otherwise be stored on every failed send of the task and served
 // again in every operator listing of the claim.
 const maxSendErrorRunes = 2048
 
@@ -390,8 +390,8 @@ func pendingID(p *Delivery) string {
 // (confirm writes ConfirmedAt), so there is no task left to give and the delivery is only the
 // record of the turn in flight. Such a delivery is retired here and the newer task queued in its
 // place. Refusing it instead is what left three supervise rows of the live daemon answered "a
-// delivery is already pending" with nothing ever sent (dispatch://INFRA-1352, INFRA-1443,
-// INFRA-1519): the phase's own start was the newer task, and the worker that would have taken it
+// delivery is already pending" with nothing ever sent (dispatch://POMJU-1352, POMJU-1443,
+// POMJU-1519): the phase's own start was the newer task, and the worker that would have taken it
 // was holding a delivery it had finished with. The newer task is not sent into the running turn —
 // queue sends nothing, and sendPending hands a working claim nothing — so it goes at the next
 // point a turn may take it, once, and no turn is interrupted or started twice.
@@ -402,7 +402,7 @@ func pendingID(p *Delivery) string {
 // ladder's wait stands for it and nothing works it. The next step of the ladder can be ten minutes
 // away and a run of errors has no end of its own, so a refusal would keep every newer task of the
 // claim behind a task the claim owes for as long as the provider keeps failing
-// (dispatch://INFRA-956 R2: a newer task replaces the owed one). The newer task takes its place:
+// (dispatch://POMJU-956 R2: a newer task replaces the owed one). The newer task takes its place:
 // it is work for this claim, queued since, and R2 has the newer of the two go. The other is the
 // daemon's own delivery of a relaunch's record (queueRelaunch) while no prompt of it waits on a
 // result: it holds no work of the claim's, only the sentence, and the newer task carries that same
@@ -414,7 +414,7 @@ func pendingID(p *Delivery) string {
 // The third is a tree's root architect's task of a run that a task of a newer entry supersedes
 // (supersedes): the pending task carries a run and an entry and is of an earlier run, or of the
 // same run at a lower entry, and the request carries a run and an entry of its own. Each task the
-// architect is given says what is true of its root (dispatch://INFRA-2614 R3), and the transition
+// architect is given says what is true of its root (dispatch://POMJU-2614 R3), and the transition
 // that raised the newer entry wrote that entry's task (R4), so the older text is no longer what
 // the daemon owes. In the case that was measured, the older task told a re-admitted architect
 // that its tree was open at the generation the re-admission ended, that every child was still to
@@ -434,11 +434,11 @@ func pendingID(p *Delivery) string {
 // the daemon's TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask (its case "another run")
 // starts with no entry, so supersedes answers false before it reads the role and that test pins
 // nothing of the scope. Which of a phase worker's two tasks goes first is that worker's model of
-// its phase entries, and dispatch://INFRA-2614 changes the architect's rule, not that model. Nor
+// its phase entries, and dispatch://POMJU-2614 changes the architect's rule, not that model. Nor
 // does the rule reach a root architect's task of no entry. A wake's task (workflow's wakeRow) is
 // one: it says why the architect's pod came back, which no entry's task says, so a newer entry's
 // task is refused behind it and the wake's task is sent first, as it was before
-// dispatch://INFRA-2614 (TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne), and the
+// dispatch://POMJU-2614 (TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne), and the
 // entry's task is sent once the wake's turn has ended
 // (TestAnEntrysTaskRefusedBehindAWakesTaskIsSentOnceTheWakesTurnEnds).
 //
@@ -589,7 +589,7 @@ func (m *Machine) supersedes(p Delivery, request RequestDeliver) bool {
 // answeredOpenRound is the hold an open update round puts on its claim: the round is open and
 // the worker has answered it (ready_for_update), so that worker has said its work is pushed and
 // its process may be replaced at any moment. The answer stands for the round, whatever turn
-// starts after it, so the hold does too until the round ends (dispatch://INFRA-2981 R5, R9).
+// starts after it, so the hold does too until the round ends (dispatch://POMJU-2981 R5, R9).
 // sendPending hands such a claim nothing, and NewMachine reads it through openRoundHoldsTask.
 func (c Claim) answeredOpenRound() bool {
 	return c.UpdateRound != "" && c.UpdateSignalledAt != nil
@@ -640,7 +640,7 @@ func (c Claim) openRoundHoldsTask() bool {
 //
 // The fourth is the same waste a wake earlier: a stale claim's relaunch is often not even
 // reserved yet — the refresh gate holds the lane to one minute of the pacing, so a fleet's
-// worth of claims wait sweeps for their credit (dispatch://INFRA-2712 R1, R2) — and through
+// worth of claims wait sweeps for their credit (dispatch://POMJU-2712 R1, R2) — and through
 // all of it the daemon answers that claim's own routes 409 (internal/api's staleClaim). A task
 // sent there buys a model turn the worker can finish nothing in, and worse, it puts the claim
 // in a turn, which is exactly what postpones the relaunch it is waiting for (refreshPlugin's
@@ -659,7 +659,7 @@ func (c Claim) openRoundHoldsTask() bool {
 // this refusal makes first reaches the hold with the launch still waiting, so the task the claim
 // is holding stays for that turn.
 //
-// It waits on the fourth all the same, and that is the spec as written (dispatch://INFRA-2712
+// It waits on the fourth all the same, and that is the spec as written (dispatch://POMJU-2712
 // P6): a stale claim whose credit the gate has not granted holds no parked launch for that task
 // to run, and the process it would reach refuses the operator's task every `legion` call it
 // could be worked with. So such a task waits for the credit and then for the replacement
@@ -832,7 +832,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// Every role of an issue works one jj workspace, so a task that adopts its working copy adopts
 	// it for all of them: an adoption run while another role is in a turn moves that role's worker
 	// onto a fresh commit mid-write, and the work it goes on to do lands authored by this role —
-	// a review App's adoption took the implementer's next commit that way (dispatch://INFRA-714).
+	// a review App's adoption took the implementer's next commit that way (dispatch://POMJU-714).
 	// The task waits for that turn instead. Nothing is written and nothing moves: the delivery is
 	// left exactly as it was, and the hold is decided again, from the claims as they stand then,
 	// at the next trigger — the turn's end elsewhere on the issue, which the daemon posts here
@@ -1242,7 +1242,7 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 // adopts nothing — a message another role sent, a notice, a reminder, an operator's own task, the
 // controller's start — because the role is not about to commit for a phase, and the working copy
 // is the issue's rather than this claim's: an adoption made for a prompt that writes no phase
-// commit only takes the workspace from whichever role is working in it (dispatch://INFRA-714). A
+// commit only takes the workspace from whichever role is working in it (dispatch://POMJU-714). A
 // daemon with no GitHub Apps (Deps.Identity nil) adopts nothing at all, and neither does the
 // project's controller, which works no checkout.
 func (m *Machine) adopts(d Delivery) bool {
@@ -1276,7 +1276,7 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 // runtime's own check of where the claim's process runs, then the round trip to the shim and back,
 // with the shim's own work inside it. The refusals are logged where the send's outcome is
 // (refused); without this line nothing in the log tells which tasks adopted the working copy,
-// which is what a production check reads to see the rule held (dispatch://INFRA-2695).
+// which is what a production check reads to see the rule held (dispatch://POMJU-2695).
 func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locator, d *Delivery) error {
 	if loc == nil {
 		return fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
@@ -1437,7 +1437,7 @@ func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error
 // with it: a tool call in flight answered nobody, and the daemon cannot say which subagents and
 // background jobs went with the process, so it says that every one of them is gone, none of which
 // the resumed transcript shows as missing — a worker relaunched six times in an hour and told none
-// of this read its own transcript as work in progress (dispatch://INFRA-714 R6). A record with no
+// of this read its own transcript as work in progress (dispatch://POMJU-714 R6). A record with no
 // cause says so plainly rather than inventing one.
 func interruptedTask(cause string) string {
 	return relaunchSentence(EndedWork{Cause: cause, Turn: true, TaskTurn: true}, true) + "\n\n"
@@ -1447,7 +1447,7 @@ func interruptedTask(cause string) string {
 // abandoned (forgetSession): one the provider refused out of its budget, one an operator retried
 // with --fresh-session, or one no session store holds any more. Nothing in a new session says
 // that an older one existed, so a worker reading an empty transcript takes its task for a fresh
-// start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
+// start and does again what is already pushed (dispatch://POMJU-714, item 4 of the refusal
 // section). It names the session that was left behind and why in the words the claim recorded —
 // for a refused session the provider's own, the size it refused at among them — and then the two
 // things that outlive a session: the issue's branch, and the handoff records its phases wrote on
@@ -1560,7 +1560,7 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // The claim's handshake gives back the same confirmation by the same reading (Claim.Handshake,
 // EntryHandshake.unconfirmed), where it was this task's: a turn that may be another input's is no
 // proof that the worker took the task, and a handshake that kept it would give the state an
-// `entryConfirmedAt` for an entry the worker may never have taken (dispatch://INFRA-2614 R6). The
+// `entryConfirmedAt` for an entry the worker may never have taken (dispatch://POMJU-2614 R6). The
 // doubt is read here, before anything forgets the send or the prompts outstanding
 // (confirmationInDoubt). A confirmation whose prompt's result has come, or for which no send or
 // prompt of the task was outstanding, is one a turn of the task did take, and the handshake keeps
@@ -1817,7 +1817,7 @@ func (m *Machine) confirmationInDoubt() bool {
 // untellInFlight is the rule for a confirmation a let-go cannot vouch for (confirmationInDoubt).
 // The pending task's confirmation is uncertain at a let-go while the send of its prompt is in
 // flight (Machine.send) or any prompt of the task still waits on its result (awaitsResult). A turn
-// that starts then is taken for the task's (beginTurn): with the send in flight, the INFRA-264
+// that starts then is taken for the task's (beginTurn): with the send in flight, the POMJU-264
 // race, and with an acknowledged prompt outstanding, however late the turn starts. Either way the
 // turn may be another input's, an Envoy notice's, and what would say so is still to come: the
 // send's busy answer (refused), or the prompt's own answer, a busy answer or a late refusal that

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smoke-registration-stall.sh — manual live smoke for the registration-stall fix (INFRA-246).
+# smoke-registration-stall.sh — manual live smoke for the registration-stall fix (POMJU-246).
 #
 # No unit test can show a real pane's listener record surviving the listener's own 300 s expiry,
 # so this drives a real headless `omp` pane against a real Envoy listener and watches the live

@@ -18,7 +18,7 @@ import (
 // lateral: one `distinct on (actor->>'id')` over every listed session at once. It is not the
 // statement that shipped. The shipped one read `where actor->>'kind' = 'session' and
 // actor->>'id' = any($1)` with no title condition at all and dropped the empty titles in Go,
-// which answers the newest event's title whatever that event stamped -- the defect INFRA-1368
+// which answers the newest event's title whatever that event stamped -- the defect POMJU-1368
 // fixes, since a later write carrying none took the session's name away. The title condition is
 // written in here so that both sides of the comparison below ask that one corrected question;
 // putting the shipped text back would not restore an equivalence, it would assert the defect,

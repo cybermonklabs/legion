@@ -1,5 +1,5 @@
 -- 20261108165219_claim_death_charged.up.sql — what the daemon has already charged for the death
--- of the process a claim records, so a restart charges it no second time (INFRA-956).
+-- of the process a claim records, so a restart charges it no second time (POMJU-956).
 --
 -- claims.death_charged is supervise.Claim.DeathCharged: the decision supervise's died made for
 -- the process the claim still records — the death charged, or nothing found to charge — written

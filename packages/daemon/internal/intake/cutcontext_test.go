@@ -21,7 +21,7 @@ import (
 // a handling is cut only when the sleep returns of its own accord, measurably later than the
 // deadline.
 //
-// That is Acceptance A2 of dispatch://INFRA-1574, the claim behind the two sentences the issue
+// That is Acceptance A2 of dispatch://POMJU-1574, the claim behind the two sentences the issue
 // puts in consume.go: what the intake cut guarantees, and what it relies on. consumeMessage runs
 // the handling under context.WithTimeout(ctx, spec.HandlerLimit) and then waits for it —
 // `outcome := handleMessage(work, …)`. The deadline cancels a context; it ends no goroutine. So

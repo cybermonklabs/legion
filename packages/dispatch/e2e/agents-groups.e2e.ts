@@ -24,8 +24,8 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * How the Agents page groups and narrows its sessions (INFRA-812, R7; the browser cases of the
- * Verification document's k12, dispatch://INFRA-812/artifact/verification-md).
+ * How the Agents page groups and narrows its sessions (POMJU-812, R7; the browser cases of the
+ * Verification document's k12, dispatch://POMJU-812/artifact/verification-md).
  *
  * Every listed session sits in one of four counted groups - who needs the reader, who is at
  * work, who is idle and who has gone quiet - and the first matching test wins, so a session
@@ -517,7 +517,7 @@ test("ticking two rows reads two selected, the composer names them, and a pill r
 
 // R7. How tall a row is, which is what six hundred of them cost a reader in room. The spec's
 // Design records the pair this reads against: "its row is 42 pixels against today's 46"
-// (dispatch://INFRA-812/spec, Design), measured on the prototype at a laptop width. The row the
+// (dispatch://POMJU-812/spec, Design), measured on the prototype at a laptop width. The row the
 // page draws here is 46 pixels at 1440 - today's figure exactly, not the prototype's 42 - so it
 // is no taller than the row the page drew before this change, with nothing to spare. At 390 the
 // directory takes a line of its own and the controls wrap to lines a thumb can hit, which is

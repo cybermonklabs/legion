@@ -11,7 +11,7 @@ import (
 )
 
 // silentNow is the moment every row below is judged at, and the moment of the reading the rule
-// was written from (dispatch://INFRA-3163). A table of values needs a clock of its own: the rule
+// was written from (dispatch://POMJU-3163). A table of values needs a clock of its own: the rule
 // reads no store and no wall clock, so the only times in it are the two the caller passes.
 var silentNow = time.Date(2026, 11, 12, 8, 18, 0, 0, time.UTC)
 

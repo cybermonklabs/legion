@@ -21,7 +21,7 @@ function Later(): ReactNode {
 // dist/@testing-library/dom.esm.js:171), and Bun's `jest` is a module binding from `bun:test`,
 // not a global. Without the line the library takes its real-clock path, which polls with timers
 // a held clock need not fire, so a wait that needs the clock to move can never end: that is the
-// 16 failures dispatch://INFRA-983 measured over four of its files on a 2-core pod.
+// 16 failures dispatch://POMJU-983 measured over four of its files on a 2-core pod.
 //
 // Measured here, and the reason this test is shaped as it is: the jest-global assertion is the
 // half that discriminates. With the line removed it fails naming the missing global; the `findBy`

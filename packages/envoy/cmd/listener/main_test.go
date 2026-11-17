@@ -1122,7 +1122,7 @@ func TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration(t *testing
 	}
 }
 
-// The finding this condition exists for (dispatch://INFRA-392): the daemon's clean stop of a dead
+// The finding this condition exists for (dispatch://POMJU-392): the daemon's clean stop of a dead
 // role's session can still be in flight when the very decision that asked for it has relaunched
 // the claim and the new process has registered the same session id again. The stop names the
 // moment its probe judged the process gone, and a registration written after that moment is the
@@ -3925,7 +3925,7 @@ func (f *roleForwarder) settled(t *testing.T) {
 
 // registerFanoutTarget records sessionID as a session of this machine following topic and
 // advertising capabilities, whose entry records no consumer of its own: the record a build
-// before dispatch://INFRA-771 left behind, which nothing reaches (session.ErrNoSessionRecord).
+// before dispatch://POMJU-771 left behind, which nothing reaches (session.ErrNoSessionRecord).
 // It is the recipient the fan-out alone reports, so a refusal of it records its attempt before
 // the exception (fanoutDelivery).
 func (h listenerDeliveryHarness) registerFanoutTarget(t *testing.T, sessionID, topic string, capabilities []string) {
@@ -5200,7 +5200,7 @@ func TestTheDefaultSessionReapIntervalMeetsTheTwoMinuteAdoption(t *testing.T) {
 // inside the gone horizon, so a holder that really is gone loses its role promptly.
 //
 // The floor the bucket's age sets holds only while that age is below the gone horizon, as the
-// shipping age is: once dispatch://INFRA-887 raises it past the horizon, the session reaper
+// shipping age is: once dispatch://POMJU-887 raises it past the horizon, the session reaper
 // deletes a record at the horizon and the bucket expires none before it, so the floor is the
 // horizon's and a period as long as the raised age would keep a gone holder's role for hours.
 func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucketsShippingAge(t *testing.T) {

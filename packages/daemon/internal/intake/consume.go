@@ -119,7 +119,7 @@ type ConsumerSpec struct {
 	// hold the message, and the warning, for the whole of its own run.
 	//
 	// This comment is where the delivery mechanism is written whole, in the four parts
-	// measured for dispatch://INFRA-1113. Every other site in this package that states the
+	// measured for dispatch://POMJU-1113. Every other site in this package that states the
 	// mechanism points here and states none of its own: each keeps its own window, its own
 	// measurement and its own point, and nothing more. Two sites are the exception, because
 	// they are where the mechanism was measured: the file comment of ackprogress_test.go and
@@ -653,7 +653,7 @@ func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Cons
 
 // issueNames counts, for one durable consumer, the issue events it read named in the old form and
 // the ones whose name carries a key in neither form (subjectforms.IssueEventKey), while both forms
-// are read (dispatch://INFRA-3862). A name in neither form is a fault, and each is logged at ERROR
+// are read (dispatch://POMJU-3862). A name in neither form is a fault, and each is logged at ERROR
 // as the poison it is. An old-form name is not: Dispatch publishes every issue event in the old
 // form until its producers move, and every daemon hears every project's, so the first is logged at
 // INFO at once and then at most one each issueNameLogEvery, each line with the running count, which

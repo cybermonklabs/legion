@@ -579,7 +579,7 @@ test("a duplicated mention delivery says the listener already had it, and offers
   }
 });
 
-// INFRA-249. The listener answers its live-session list out of an in-memory cache, so every
+// POMJU-249. The listener answers its live-session list out of an in-memory cache, so every
 // session working behind a cache that is refilling - the session bucket was recreated, another
 // listener's registrations are still arriving - is missing from that list. Dispatch asks about
 // the mentioned session by id now, which reads the session store through, so the comment is
@@ -615,7 +615,7 @@ test("a mention reaches a session the listener's list has dropped while its reco
   }
 });
 
-// The other half of INFRA-249: a session the listener holds no record of has really ended, and
+// The other half of POMJU-249: a session the listener holds no record of has really ended, and
 // that is the one answer a reader may act on, so its wording must not have moved.
 test("a mention of a session the listener holds no record of is still refused as no live session", async ({
   browser,
@@ -645,7 +645,7 @@ test("a mention of a session the listener holds no record of is still refused as
   }
 });
 
-// The third answer INFRA-249 made possible: the listener's store read did not answer at all. A
+// The third answer POMJU-249 made possible: the listener's store read did not answer at all. A
 // 503 is neither a delivery nor an absence, so the row carries the listener's own reason and
 // must not say "no live session" - those words read as "that agent has ended", and Dispatch's
 // own classifier (comment_delivery.go's prefix test) keys on them to decide a target was never

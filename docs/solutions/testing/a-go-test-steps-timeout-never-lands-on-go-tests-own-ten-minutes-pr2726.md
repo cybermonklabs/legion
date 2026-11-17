@@ -34,7 +34,7 @@ to find which step a panic came from by the deadline it prints.
 
 ## Evidence
 
-sjawhar/legion#2726 (dispatch://INFRA-1052) gave the `test` job's plain step an explicit
+sjawhar/legion#2726 (dispatch://POMJU-1052) gave the `test` job's plain step an explicit
 `-timeout` for the first time.
 
 - The acceptance criterion asked for at least 2 × the largest measured time of the slowest package

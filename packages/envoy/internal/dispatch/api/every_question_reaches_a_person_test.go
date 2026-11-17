@@ -9,7 +9,7 @@ import (
 // stands on. The chain askedOfPersonExpression resolves as a question is read ends at the
 // default assignee of its project, and every project names one
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so no write can
-// leave a question nobody waits on. This file is the Go half of dispatch://INFRA-3090's
+// leave a question nobody waits on. This file is the Go half of dispatch://POMJU-3090's
 // c-one-chain that drives the writes; TestOneExpressionDecidesWhoWaits beside it drives the
 // reads, holding that every read names the same person for one question.
 //

@@ -709,7 +709,7 @@ func (s *SessionConsumers) setPendingStart(name string, start uint64) {
 // consumer's delivered stream sequence is at or above the sequence before its start. Read as it
 // is, that floor would say the consumer has acked up to nothing, and a restart there would deliver
 // the stream from its first message
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-POMJU-594.md).
 // Measured on nats-server v2.10.29, with this package's own tests run against it, a consumer with
 // OptStartSeq 4 on a stream whose last sequence is 3 reports an ack floor of 0 in both sequences,
 // with a delivered stream sequence of 3 while it is new, 4 with its first delivery unacked, and 5
@@ -1017,7 +1017,7 @@ func (s *SessionConsumers) updated(current jetstream.ConsumerConfig, filters []s
 // exists, so that start reaches back no further than the session itself and hands it what was
 // stored for it before it could register - a message published while its NATS connection was down,
 // or one that raced its first registration - which is what sjawhar/legion#2720's sweep delivered
-// before this release removed the sweep (dispatch://INFRA-771). A session whose consumer was
+// before this release removed the sweep (dispatch://POMJU-771). A session whose consumer was
 // deleted has a resume record, so it starts at that floor and is handed nothing it had acked.
 func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, filters []string, startSeq uint64, callerStart bool) (SessionConsumerStart, error) {
 	state, err := s.streamState(ctx)

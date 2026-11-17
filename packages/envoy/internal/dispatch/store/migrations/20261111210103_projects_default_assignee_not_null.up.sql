@@ -1,6 +1,6 @@
 -- 20261111210103_projects_default_assignee_not_null.up.sql — every project names a default assignee.
 --
--- INFRA-3090: the person a question reaches is three steps resolved at read time — the person the
+-- POMJU-3090: the person a question reaches is three steps resolved at read time — the person the
 -- ask was handed to (asks.asked_of, 20261109221325), then the issue's assignee, then the default
 -- assignee of the ask's project. The last step reaches somebody only where the project names one,
 -- and 0116_project_default_assignee added the column nullable, so a project nobody ever set a

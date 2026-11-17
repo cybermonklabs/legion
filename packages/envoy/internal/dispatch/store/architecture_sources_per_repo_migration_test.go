@@ -7,7 +7,7 @@ import (
 )
 
 // architectureSourcesPerRepoVersion is the migration that lets a project hold one architecture
-// source per repository and records which source projects each component (INFRA-391).
+// source per repository and records which source projects each component (POMJU-391).
 const architectureSourcesPerRepoVersion = 117
 
 // seedSingleSourceProject seeds, at the schema before the migration, project CORE as the earlier

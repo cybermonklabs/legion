@@ -218,7 +218,7 @@ cat >"$bin/ssh" <<'EOF'
 # command is sshd's child on the far machine and not the client's, so a signal to the client --
 # or the client's own death -- reaches it never. `setsid -f -w` is that here: the pid this fake
 # leaves behind is the waiter's, killing it leaves the command running exactly as killing an ssh
-# leaves a `loadgen run` running on the load machine (dispatch://INFRA-988), and -w keeps the
+# leaves a `loadgen run` running on the load machine (dispatch://POMJU-988), and -w keeps the
 # command's own exit status as ssh keeps it. A driver that means to stop remote work has to say
 # so over a second connection, and the cases below hold it to that.
 set -u
@@ -796,7 +796,7 @@ cat >>"$bin/pprof-tunnel" <<'EOF'
 # yet, in the words and the status ssh answers with: that is the one thing this fake has to
 # have of the real ssh, because the deployment's own machines carry enable-oslogin and
 # block-project-ssh-keys and the load machine has no ~/.ssh at all, so a tunnel command with no
-# identity is refused `publickey` there and leaves no forward at all (dispatch://INFRA-988).
+# identity is refused `publickey` there and leaves no forward at all (dispatch://POMJU-988).
 set -u
 printf 'tunnel\t%s\n' "$*" >>"$FAKE_DIR/actions.log"
 printf '%s\n' "$*" >>"$FAKE_DIR/tunnel.log"
@@ -1417,7 +1417,7 @@ pass "the seed's rename of the database to the template ends the sessions its st
 # A psql that cannot reach the instance answers nothing, and nothing is not "the instance holds
 # no such database": the up that read it that way went on to `create database` on a database
 # that was plainly there, where the server refused it on pg_database_datname_index, and the
-# same up a minute later found the database and said so (dispatch://INFRA-988). These two cases
+# same up a minute later found the database and said so (dispatch://POMJU-988). These two cases
 # hold the probe to the three outcomes it has -- a row, no row, and no answer -- and the second
 # is what keeps the first from being bought by refusing every absent database.
 
@@ -1479,7 +1479,7 @@ line=$(tail -n1 "$fake/loadgen-run.log")
 # (routes.go loadRouteMix), which is the load machine, so the question is not what the step was
 # configured with but whether the path it named holds the mix over there. Nothing put a route
 # mix on a machine before this issue, and every loop step died at its first second reading one
-# (dispatch://INFRA-988).
+# (dispatch://POMJU-988).
 mix=$(run_flag route-mix "$line")
 [ -n "$mix" ] || fail "step's loadgen run names no -route-mix: $line"
 grep -q "^ssh	$gen_target	sh -c .* sh $mix 600$" "$fake/actions.log" ||
@@ -1529,7 +1529,7 @@ step=$(run_dir)/steps/2x
 # box_busy read and the registration of every session, so a driver reading "at the window's
 # end" reads inside the window -- a stop-the-world goroutine dump and a 500 MB heap?debug=1
 # render inside loadgen's own CPU profile -- and a healthy step then drops the three files
-# that cost, because loadgen's own are the ones kept (dispatch://INFRA-988).
+# that cost, because loadgen's own are the ones kept (dispatch://POMJU-988).
 #
 # So the question this case asks is not when the driver read Dispatch's port on that machine but
 # whether it read it there at all, which the action log answers without any clock: it holds every
@@ -1572,7 +1572,7 @@ pass "step samples every machine and runs the merge, the Cloud SQL read and the 
 # back brings them here; nothing of the driver's is written beside them, so a step whose tunnel
 # died under it holds no profile at all. The driver's own fetch was a `mv` onto whatever the
 # copy back had put there, so loadgen's profile of the window was replaced by one of the idle
-# deployment after it (dispatch://INFRA-988).
+# deployment after it (dispatch://POMJU-988).
 : >"$fake/run-writes-profiles"
 run_vm step --config "$config" tunnelprof 2 --duration 10m
 ((RC == 0)) || fail "the step whose loadgen wrote its own profiles failed: see the output above"
@@ -1647,7 +1647,7 @@ pass "a route_mix naming a file this pod does not hold refuses the step before a
 
 # ---- (x) a step ends the sampler it started --------------------------------------------------
 
-# dispatch://INFRA-988, found by driving this script against the deployment: four
+# dispatch://POMJU-988, found by driving this script against the deployment: four
 # `loadgen vm-sample` processes, one per step, alive long after their steps had ended and still
 # appending to the run's cgroup.jsonl. sampler_start backgrounded a shell function, so $! held
 # the subshell's pid and not the sampler's: the TERM sampler_stop sent ended that subshell,
@@ -1801,7 +1801,7 @@ pass "the production seed phase leaves a seed of the deployment's own shape as i
 
 # ---- (y) a second run of a seeded deployment adopts its seeding -----------------------------------
 
-# dispatch://INFRA-988, found by driving this script against the deployment: once a deployment
+# dispatch://POMJU-988, found by driving this script against the deployment: once a deployment
 # was seeded, no second run of it could ever run a step. A step wants the run's own
 # <run>/seed.json and a second run has none; seed refused to write one because the instance
 # already held the template database, so the harness was single-use per seeding and the only way
@@ -1999,7 +1999,7 @@ grep -q 'pool acquire waiters p50 = 0' "$tmp/out" ||
 rm -f "$fake/tunnel-refuses"
 pass "a step whose profiling tunnel does not answer is refused by name, before any load, and leaves no directory behind"
 
-# The tunnel's identity (dispatch://INFRA-988). The tunnel is an ssh the generator VM runs
+# The tunnel's identity (dispatch://POMJU-988). The tunnel is an ssh the generator VM runs
 # itself, and the only key those machines accept is the run's own OS Login key, which is made
 # on this pod: the load machine has no ~/.ssh at all. The first rehearsal on the deployment
 # refused all four steps for exactly that -- `Permission denied (publickey)` in
@@ -2079,7 +2079,7 @@ pass "the step's tunnel presents the run's own OS Login key, put on the load mac
 # ---- (n) the remote root is a directory loadgen can be executed from -----------------------------
 
 # The VMs are Container-Optimized OS, where /var is mounted noexec: without this mount up copies
-# loadgen where it cannot be run and every step fails on its first exec (dispatch://INFRA-49).
+# loadgen where it cannot be run and every step fails on its first exec (dispatch://POMJU-49).
 reset_fake
 run_vm up --config "$config"
 ((RC == 0)) || fail "up failed: see the output above"
@@ -2169,7 +2169,7 @@ pass "the deployment file names the backing directory under the stateful partiti
 
 # ---- (r) the deployment file says which machine each container runs on ---------------------------
 
-# The deployment this test's file describes has three machines, as INFRA-1051's has: an
+# The deployment this test's file describes has three machines, as POMJU-1051's has: an
 # application machine, a load generator and a machine of their own for NATS and the hub
 # listener. Nothing of that is in vm.sh, so these cases prove the script reads it.
 reset_fake
@@ -2605,7 +2605,7 @@ pass "deployment.example.json is valid JSON and names no routable address, no re
 
 # ---- (t) the eleven the deployment itself found --------------------------------------------
 
-# Driving this script against the deployment of INFRA-1051 found eleven defects that every case
+# Driving this script against the deployment of POMJU-1051 found eleven defects that every case
 # above agreed with, because a fake written from a script agrees with that script. These cases
 # hold each fix to what the deployment measured, and each one names the defect it stands for,
 # so a change that undoes one fails here by name rather than on the deployment again.
@@ -2658,7 +2658,7 @@ pass "every ssh accepts a new host key into the run's own known_hosts file and r
 # 3. put_file writes beside its target and renames it on, because a plain write onto a file that
 # is running answers ETXTBSY -- which is what a second up of a deployment whose loadgen or stub
 # embedder is still running meets -- and because a rename leaves no half-written file where a
-# whole one was. What it does between the two is its own: since INFRA-988 it chmods the file it
+# whole one was. What it does between the two is its own: since POMJU-988 it chmods the file it
 # wrote to the mode the reader of that file needs, which case (v) below reads off the files.
 put_cmd=$(grep -m1 -F 'cat >"$1.new"' "$fake/actions.log" || true)
 [ -n "$put_cmd" ] ||
@@ -2821,7 +2821,7 @@ pass "wait_healthz returns on ok and nats, waits while NATS is not up, and refus
 
 # ---- (u) no credential of the deployment reaches a command line ----------------------------
 
-# dispatch://INFRA-988. Driving this script against the deployment showed its secrets -- the
+# dispatch://POMJU-988. Driving this script against the deployment showed its secrets -- the
 # agent token, the listener's token and the Postgres URL with its password -- in the argv of
 # `loadgen` on the load machine and of the ssh that carried it there, where `ps -eo args` hands
 # them to anything that can list processes on either machine; the embedder's api-key and the
@@ -2960,7 +2960,7 @@ pass "down removes the run's credential files from the load machine, leaving non
 
 # ---- (v) every file up puts on a machine is at the mode its own reader needs ----------------
 
-# dispatch://INFRA-988. put_file wrote every file at mode 600, which is what a credential needs
+# dispatch://POMJU-988. put_file wrote every file at mode 600, which is what a credential needs
 # and the opposite of what the one file a container reads off the machine's own disk needs: the
 # stub embedder's certificate. A container runs as a user of its own, not as the ssh user this
 # script writes as, so SSL_CERT_FILE named Dispatch a file its process could not open; Go then
@@ -3082,7 +3082,7 @@ pass "every path up hands a container is reachable by the reader that reads it: 
 
 # ---- (w) reset empties a JetStream store the NATS container wrote in -------------------------
 
-# dispatch://INFRA-988, the sibling of case (v) and the defect that killed the series at its
+# dispatch://POMJU-988, the sibling of case (v) and the defect that killed the series at its
 # first step, 90 seconds in. Case (v) reads what up leaves, and up leaves the store the ssh
 # user's own, so no case of it can see what the store holds once a container has written there.
 # The NATS container runs as root and makes jetstream/ inside the store at mode 700. The ssh
@@ -3147,7 +3147,7 @@ pass "reset empties a JetStream store the NATS container wrote in as root -- the
 # R6 asks each step for Postgres's slowest statements, its lock waits and the database's size at
 # the start and at the end, and nothing collected one of them: a live step directory held
 # summary.json, meta.json, reset.json, cgroup.json, cloudsql-cpu.json with CPU alone, the
-# profiles, samples.json and relay-frames.csv (dispatch://INFRA-988). A step that finishes
+# profiles, samples.json and relay-frames.csv (dispatch://POMJU-988). A step that finishes
 # without them fails the issue's A3 check, "every measurement of R6 ... is present", and
 # `loadgen step-check` tells a collector that ran and found nothing -- an empty array -- from one
 # that never ran, which leaves no file at all. So this case reads the step's own directory, and
@@ -3227,7 +3227,7 @@ pass "both collectors read the step database over a file of mode 600 under the r
 # Measured on the deployment: a `vm.sh series` stopped with a TERM left its step's `loadgen run`
 # loading the deployment from the load machine with its whole window to go, the two local
 # processes that carried it, and the profiling tunnel -- each killed by hand afterwards, on both
-# machines (dispatch://INFRA-988). Two things did it. ssh carries no signal to the command it
+# machines (dispatch://POMJU-988). Two things did it. ssh carries no signal to the command it
 # runs, so the death of the local ssh is nothing to the load; and a bash script with no trap for
 # a signal dies of it and never runs its EXIT trap, so nothing of the step's own cleanup ran at
 # all. The fake ssh leaves its command in a session of its own for the first, so here too only a

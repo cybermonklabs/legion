@@ -1,4 +1,4 @@
-/** The timing fixture of INFRA-317: the four parts every row pays before its own work, measured
+/** The timing fixture of POMJU-317: the four parts every row pays before its own work, measured
  *  per row so a before/after run can be compared part by part. It is off unless
  *  `E2E_MEASURE_FILE` names the file e2e/measure-reporter.ts writes the rows to, and off it costs
  *  a call nothing: `measured` returns the body's own promise and adds no step. The fourth part,

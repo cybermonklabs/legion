@@ -143,7 +143,7 @@ const commentSeedScope = `(` + commentOwnScope + ` = $1
 // (store/migrations/0040_comment_query_indexes.up.sql:2). Written as one select the four are
 // `or`-ed, and the whole of them `and`-ed with commentSeedScope's coalesce over further columns,
 // so no arm is an index condition and the planner reads the whole table: on the deployment
-// measured for INFRA-988 that seed scanned 494,000 comments, 253,611 shared buffers, to answer
+// measured for POMJU-988 that seed scanned 494,000 comments, 253,611 shared buffers, to answer
 // 69 rows, and this statement, run once per document the block index re-indexes
 // (docs/block_index.go:858), was 28.1% of the database's time. One arm per index answers the same
 // rows there in 1.3 ms where the one select took 1,074 ms.

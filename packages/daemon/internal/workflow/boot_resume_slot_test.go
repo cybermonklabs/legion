@@ -32,7 +32,7 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 // resumes holds one, and writes it unmarked where that phase holds none (StartOrOwe, over
 // record.PhaseKeepsSlot).
 //
-// A start is one row since INFRA-1573, and that row carries the worker's task, so the mark now
+// A start is one row since POMJU-1573, and that row carries the worker's task, so the mark now
 // decides when the worker comes back. A started issue holds a slot until its work is past its
 // review (record.KeepsSlot), except while it waits on another issue (blockers.waitsOf), so the
 // resume of a worker past that review waits for nothing: the row is runnable the moment the boot
@@ -104,7 +104,7 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 }
 
 // The boot's resume by rule leaves a root's architect alone, at admitted as in accepting, though
-// phase.RoleFor answers the architect for both (dispatch://INFRA-2614, R2). The architect's claim
+// phase.RoleFor answers the architect for both (dispatch://POMJU-2614, R2). The architect's claim
 // is started with its tree by admission and sent the work of its entry by admission's sweep, so
 // the phase owners the boot reads (suspendedPhaseOwners) name no architect, and the boot writes
 // no start for one whatever source suspended its claim. The control is a phase worker of a

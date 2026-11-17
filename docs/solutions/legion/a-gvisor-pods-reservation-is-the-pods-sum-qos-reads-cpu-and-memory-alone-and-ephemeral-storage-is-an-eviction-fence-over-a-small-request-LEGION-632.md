@@ -25,7 +25,7 @@ related_issues:
   container-optimized compute platform: there a sandboxed pod reads `nproc` 2 whatever it reserves
   and whatever its host holds, while the pod's cgroup cpu quota (`cpu.cfs_quota_us` over
   `cpu.cfs_period_us`, which the sandbox does expose in-pod) reads Σ cpu limits. Measured
-  2026-11-05 (dispatch://INFRA-928/artifact/measurements-2026-11-05-md): pods at 2, 2.5, 3, 4 and 6
+  2026-11-05 (dispatch://POMJU-928/artifact/measurements-2026-11-05-md): pods at 2, 2.5, 3, 4 and 6
   CPU, each on an 8-vCPU node, read `nproc` 2 while the quota read each of those sums exactly, and
   a pod of the same cluster placed on a node of a named machine series
   (`cloud.google.com/machine-family`) read its whole reservation, 3 at a 3-CPU limit, where the
@@ -85,7 +85,7 @@ rule was confirmed live by stage 4a's `resources` checkpoint (PASS at 8129356d, 
 15dd07d9) on the platform where it holds; each of those four runs read one pod at one reservation,
 so they neither varied a pod's reservation nor established the GKE Autopilot exception. What
 establishes it is the 2026-11-05 measurement
-(dispatch://INFRA-928/artifact/measurements-2026-11-05-md): pods at 2, 2.5, 3, 4 and 6 CPU, each on
+(dispatch://POMJU-928/artifact/measurements-2026-11-05-md): pods at 2, 2.5, 3, 4 and 6 CPU, each on
 an 8-vCPU node, all read `nproc` 2 while their cgroup cpu quota read Σ cpu limits, and a pod of the
 same cluster on a node of a named machine series read 3 at a 3-CPU limit. The disk bound's eviction
 is exercised by no checkpoint (`review.json` `notProven`).

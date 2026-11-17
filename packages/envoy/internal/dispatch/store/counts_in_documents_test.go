@@ -14,7 +14,7 @@ import (
 // Every count the three documents of the connection-count check state of this package's pools,
 // held to the constant that decides it, from the shared pool to the listeners, with the sum's own
 // terms, the per-process total and the two-process ceiling beside them. Three rounds of
-// dispatch://INFRA-558 went to one class: a constant is raised, every test of both sides stays
+// dispatch://POMJU-558 went to one class: a constant is raised, every test of both sides stays
 // green because no test reads a sentence, and the number a person reads is left behind. These
 // entries read those sentences, so the next raise fails here instead of in a person's reading.
 //

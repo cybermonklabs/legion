@@ -224,7 +224,7 @@ func waveClaimsOf(t *testing.T, cfg config.Config, role claim.Role, count int, b
 // so that a test which seeds more than one wave gives each of them a range of issues of its own
 // and no tree holds a claim of two: the fleet on an earlier plugin contract and the roots whose
 // first architect launch the same boot raises are two such waves, and a root sharing a tree with
-// a stale claim would be no root of its own (dispatch://INFRA-2712 c-bound). i is the issue's own
+// a stale claim would be no root of its own (dispatch://POMJU-2712 c-bound). i is the issue's own
 // number, which build reads, so a claim built from it is the same claim wherever the range starts.
 func waveClaimsFrom(t *testing.T, cfg config.Config, role claim.Role, first, count int, build func(i int, token claim.Token) supervise.Claim) []claim.Token {
 	t.Helper()
@@ -1436,7 +1436,7 @@ func claimsOfWakes(waiting []api.WakeWaiting) map[claim.Token]bool {
 // A boot over more stale claims than the rate refreshes the rate and no more: the gate grants one
 // minute of the pacing and the pass posts nothing for the rest, so the wakes that start a newly
 // admitted tree's work queue behind one minute of refreshes rather than behind the fleet
-// (supervise.RefreshGate, dispatch://INFRA-2712 R1). What the refused claims cost is one line of
+// (supervise.RefreshGate, dispatch://POMJU-2712 R1). What the refused claims cost is one line of
 // the pass, naming how many were left, and nothing else: the lane re-reads every stale claim at
 // every sweep, so nothing of them is remembered or lost.
 //
@@ -1540,7 +1540,7 @@ const staleRelaunchHeldLine = "supervise: the process speaks another plugin cont
 // A stale claim the boot's snapshot shows in a turn is posted and takes no credit, and the
 // credits of that pass go to the claims the lane can relaunch now: "A claim in a turn takes no
 // admission; its turn's end asks the gate, so it is relaunched then if a credit is free and at
-// the next sweep otherwise" (requirement R2 of dispatch://INFRA-2712, afterTurn,
+// the next sweep otherwise" (requirement R2 of dispatch://POMJU-2712, afterTurn,
 // holdStaleRelaunch).
 //
 // What an admission for such a claim would cost is the whole of the gate's point. The machine
@@ -1696,7 +1696,7 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 	}
 }
 
-// R2 of dispatch://INFRA-976/spec asks of a waiting wake that it lose nothing, not only that its
+// R2 of dispatch://POMJU-976/spec asks of a waiting wake that it lose nothing, not only that its
 // claim still decide: an operator's suspend of a claim whose wake waits over no process writes no
 // outbox row and, were it held, would live in the machine's memory alone, so a restart inside the
 // tens of minutes such a wake waits would forget the drain while the claim stood persisted

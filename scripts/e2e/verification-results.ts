@@ -1656,12 +1656,12 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
 
 // --- a bare `-` given to a text flag -----------------------------------------------------------
 //
-// The three cases of dispatch://INFRA-2618. Each runs the `dispatch` command as a process against
+// The three cases of dispatch://POMJU-2618. Each runs the `dispatch` command as a process against
 // the run's own server (runDispatch) and judges each step by its exit code and what it printed.
 // Their negative controls name another build's bin/dispatch.ts in
 // VERIFICATION_RESULTS_E2E_DISPATCH_CLI (scripts/e2e/README.md, "Negative control").
 
-/** The first text of R1 of dispatch://INFRA-2618/spec, which `dispatch result` prints for the
+/** The first text of R1 of dispatch://POMJU-2618/spec, which `dispatch result` prints for the
  *  reported call. Its example is the command's own help example, not a value of this run. It is
  *  written out here and not built with the code it checks. */
 const reportedCallRefusal = `dispatch result was not called: 3 problems

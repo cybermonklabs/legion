@@ -10,7 +10,7 @@ date: 2026-11-02
 status: active
 module: packages/daemon
 related_issues:
-  - "INFRA-484"
+  - "POMJU-484"
   - "sjawhar/legion#2538"
 ---
 
@@ -32,7 +32,7 @@ related_issues:
 - When round after round of review finds defects in the same branch of the code, the branch is
   the finding. Deleting it is cheaper than patching each path through it.
 
-## Evidence (INFRA-484, sjawhar/legion#2538)
+## Evidence (POMJU-484, sjawhar/legion#2538)
 
 The invariant as shipped: **a round, once opened, ends only by replacing its pod, or because that
 pod is gone.** The drift clearing ends none — every worker in the pod has already been told to

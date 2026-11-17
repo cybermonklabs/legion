@@ -1,6 +1,6 @@
 -- 20261110030133_ci_reconcile_passes.up.sql
 --
--- INFRA-1179: one row per CI reconcile pass, so the counts a pass reports outlive the container
+-- POMJU-1179: one row per CI reconcile pass, so the counts a pass reports outlive the container
 -- log that carries its one INFO line. The log rotates fast -- the production pod's reached back
 -- only 45 minutes -- and a person asking why a head has not settled needs the passes of the last
 -- day, not of the last three quarters of an hour. The pass writes the row when it starts and

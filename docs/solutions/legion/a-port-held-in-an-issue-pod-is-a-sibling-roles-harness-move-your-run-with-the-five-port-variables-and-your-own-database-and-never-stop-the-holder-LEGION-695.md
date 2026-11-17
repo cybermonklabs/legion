@@ -18,7 +18,7 @@ related_issues:
 
 # A port held in an issue pod is a sibling role's harness: move your run with every harness port variable and your own database, and never stop the holder
 
-**Update (2026-10-26, INFRA-253): the harness has no fixed ports any more.** `bun run e2e`, CI's
+**Update (2026-10-26, POMJU-253): the harness has no fixed ports any more.** `bun run e2e`, CI's
 browser step, `bun run dispatch:local` and the docs media harness start every harness server
 through `packages/dispatch/e2e/harness-start.ts` on a port the OS chooses and holds until the
 server serves, and Playwright runs through `e2e/run.ts`, which exports those ports; the config's
@@ -27,7 +27,7 @@ longer meet on a port, so the port moves below are unneeded. A port variable set
 still used as given and fails with `address already in use` when taken; the rule never to stop or
 reuse a sibling's server stands. What follows is the record as it was written.
 
-**Update (2026-11-10, dispatch://INFRA-1410): `e2e/run.ts` is deleted.** Playwright exports the
+**Update (2026-11-10, dispatch://POMJU-1410): `e2e/run.ts` is deleted.** Playwright exports the
 ports itself now: `e2e/global-setup.ts`, the config's `globalSetup`, starts one stack per worker
 through `e2e/harness-pool.ts` and writes every stack into the environment each worker inherits.
 The ports still come from the OS, so the rest of the update above stands, and so does the rule
@@ -46,7 +46,7 @@ applies:
 - Read the Playwright config's port refusal, or `local-instance.ts`'s `already in use`, as that
   sibling, and run yours with `DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT`,
   `PLAIN_HTTP_PORT`, `FAKE_BROKER_PORT`, `DEV_OIDC_ISSUER_PORT` and `REAL_BROKER_PORT` (the last
-  two since INFRA-314) on free ports **and** a `DATABASE_URL` of your own
+  two since POMJU-314) on free ports **and** a `DATABASE_URL` of your own
   (`DISPATCH_E2E_REUSE_SERVERS=1` against the sibling's server truncates your database under a
   server that holds another and fails every row with `409 PROJECT_EXISTS`). Name the ports and
   the database in your proof so the next role can tell the two instances apart.
@@ -56,9 +56,9 @@ applies:
   `create extension vector`) and leaves it running for the roles after it, recording the
   `LD_LIBRARY_PATH`, `PATH` and `DATABASE_URL` it needs in the handoff's `trickyParts`. Two roles
   each built one (55432 and 55433): the first role's note is what spares the next the build.
-  **Note 2026-10-25 (INFRA-221):** the `/tmp` placement is replaced: build the root on the
+  **Note 2026-10-25 (POMJU-221):** the `/tmp` placement is replaced: build the root on the
   issue's volume, as
-  `docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-INFRA-43.md`
+  `docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-POMJU-43.md`
   does. `/tmp` is a directory on the container's own filesystem, so a build there fails the first
   condition of `skills/legion-worker/references/tools.md`, "The test: where it lands, and what it
   leaves resolving". The hand-over stands: what crosses to the next role is a **note, not an

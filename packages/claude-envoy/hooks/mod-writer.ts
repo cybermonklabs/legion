@@ -3,7 +3,7 @@
  *
  * The mod's other half is transport: a socket, a queue of events and a poll loop (`./mod.ts`,
  * `createLink`). This half is the rule those two carry between them, and it lives here because
- * it is the rule three review rounds have been about (INFRA-1026 review, rounds nine to
+ * it is the rule three review rounds have been about (POMJU-1026 review, rounds nine to
  * eleven): a message is a row of the turn running or the prompt of a new turn, a row no request
  * read is quoted by one prompt when the turn ends, and a write is made once however many times
  * Envoy sends the event. Deciding it needs the turn's events and this plugin's writes in one
@@ -51,7 +51,7 @@ const PROMPT_ROW_MS = 2_000
  *
  * `turn.start` followed the submit's resolution by 8 ms to 11 ms in the same six submits, so a
  * prompt that has started no turn by now starts none: its rows are pointed at rather than left
- * waiting for a `turn.complete` that never comes (INFRA-1026 review, round three, repro
+ * waiting for a `turn.complete` that never comes (POMJU-1026 review, round three, repro
  * `R-C`).
  */
 const TURN_START_MS = 2_000
@@ -101,7 +101,7 @@ interface WatchedRow {
    * Counted once the append has resolved rather than before it: a request that went out while
    * the row was being stored cannot be proven to carry it, and a row quoted though the model
    * had read it costs a repetition, where a row counted as read that never was costs the
-   * message (INFRA-1026 review, repro `R-B`).
+   * message (POMJU-1026 review, repro `R-B`).
    */
   readonly requests: number
   readonly message: ModUnreadMessage
@@ -186,7 +186,7 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
   const { send, sleep } = options
   /** The turn running now, as `turn.start` and `turn.complete` report it. Read in the same tick
    *  as the write that follows it, which is what makes "a row of this turn, or the prompt of a
-   *  new one" a decision and not a guess (INFRA-1026 review, round eleven). */
+   *  new one" a decision and not a guess (POMJU-1026 review, round eleven). */
   let turn: string | undefined
   /**
    * True from the moment this mod hands the engine a prompt until the turn that prompt starts
@@ -299,7 +299,7 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
 
   /** Stop waiting for the turn a prompt was to start: it started none, so every row handed over
    *  while it was in flight is read by nothing and the model is pointed at it. A submit the
-   *  engine dropped, one it refused, and one whose turn never came all end here (INFRA-1026
+   *  engine dropped, one it refused, and one whose turn never came all end here (POMJU-1026
    *  review, repro `R-C`). */
   const stopPrompting = (): void => {
     prompting = false
@@ -358,7 +358,7 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
     // answer in all six submits recorded on 2.1.310, and the wait for the answer itself was
     // 8.5 s, 11.2 s and 12.4 s where a turn was already running. Timed from the call instead,
     // the window closed on a row still coming and the pointer prompt's row went unstamped,
-    // which drew every message that prompt quotes a second time (INFRA-1026 review, round
+    // which drew every message that prompt quotes a second time (POMJU-1026 review, round
     // six). Both paths above drop the entry themselves, so nothing is left behind for a
     // prompt that never entered.
     void sleep(PROMPT_ROW_MS).then(row.drop)
@@ -385,7 +385,7 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
       // Nothing is running: an appended row would be read at the turn's next request, and an
       // idle session makes none, so the message is the prompt itself and nothing else is
       // stored for it — a row beside a prompt quoting it put the one message in front of the
-      // model twice (INFRA-1026, handoff v6).
+      // model twice (POMJU-1026, handoff v6).
       const sent = await submitPrompt(
         engine,
         args.message.text,
@@ -400,7 +400,7 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
     if (answer.deny !== undefined) return { deny: answer.deny, as: "row" }
     // Claude Code does not re-enter this mod's own `session.append` hook for a row this mod
     // appended, so the row reaches the server's mapper nowhere else and a card delivered into
-    // a running turn was drawn nowhere at all (INFRA-1026, handoff v6). Measured in the issue's
+    // a running turn was drawn nowhere at all (POMJU-1026, handoff v6). Measured in the issue's
     // spike: two `$.session.append` calls resolved
     // `{message: {type: "user", role: "user", isMeta: true, content}, uuid}` and neither uuid
     // ever arrived at a `session.append` hook
@@ -431,7 +431,7 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
     // will read the row, and the model is pointed at it here rather than at a `turn.complete`
     // or a `stopPrompting` that has been and gone: both ran while this row was not in the watch
     // yet. Read off the turn alone, this moment missed the dropped prompt, whose row then sat
-    // in the watch with its Envoy frame answered (INFRA-1026 review, round five).
+    // in the watch with its Envoy frame answered (POMJU-1026 review, round five).
     if (turn === undefined && !prompting) {
       pointAtUnread((uuid) => uuid === answer.uuid)
     }

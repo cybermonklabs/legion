@@ -29,7 +29,7 @@ const discoveryRetryWindow = 45 * time.Second
 // discovers both in the background with no restart: /healthz reports both true, the JWT is served,
 // and a person signs in. Then a Google outage at the token endpoint does not sign that person out:
 // past the hour their page and API requests are answered 503 with the same cookie, and 200 again
-// once the issuer answers. Before INFRA-555 the boot exited when either discovery failed.
+// once the issuer answers. Before POMJU-555 the boot exited when either discovery failed.
 func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLater(t *testing.T) {
 	database := storetest.Open(t)
 	signInIssuer := oidctest.New(t)

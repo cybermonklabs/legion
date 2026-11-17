@@ -199,7 +199,7 @@ test("approving sends one message naming the issue and the words, and the bar sa
   }
 });
 
-// INFRA-626. A session that stopped between the bar's read and the send has the words stored for
+// POMJU-626. A session that stopped between the bar's read and the send has the words stored for
 // it rather than refused: the bar says so in the words every queued attempt reads, and offers no
 // second press, which would store a second copy.
 test("a send the listener queued for a session that has stopped says so, and is not offered again", async () => {

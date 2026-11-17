@@ -283,7 +283,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 // registration for it, so its refusal carries no `last_seen` at all. A sender then cannot tell a
 // session this listener watched reach the gone horizon from one it has never heard of, and the
 // two call for different acts: the first is dead, the second may be alive on another listener.
-// The refusal says in its own text that the listener cannot name that time (dispatch://INFRA-392,
+// The refusal says in its own text that the listener cannot name that time (dispatch://POMJU-392,
 // A6). A session this rig holds no record and no remembered registration for is exactly the state
 // a restart leaves.
 func TestARefusalThatCannotNameTheLastRegistrationSaysSo(t *testing.T) {

@@ -49,7 +49,7 @@ type Command struct {
 // built is the binary each test has already built, by builtKey. go build relinks the whole
 // binary into every -o path it is given - about a second apiece on a warm build cache, minutes on
 // a loaded machine - and a row that starts five processes of one command asked for five of them
-// (INFRA-985), so a test builds each command once and hands every process of that test the same
+// (POMJU-985), so a test builds each command once and hands every process of that test the same
 // binary. The key holds the test itself, so no binary outlives the TempDir it was written into,
 // and the entry goes when the test ends.
 var built sync.Map

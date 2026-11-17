@@ -64,7 +64,7 @@ func architectStallArmsOf(t *testing.T, pool *store.Pool, admission *admit.Admis
 // dropArchitectStarts deletes every architect start row of the rig's root the outbox still holds,
 // which is the start lost before any lane ran it: the shape the measured defect leaves behind, a
 // root holding its slot with its architect's entry raised and nothing on its way to the claim
-// (dispatch://INFRA-2614).
+// (dispatch://POMJU-2614).
 func dropArchitectStarts(t *testing.T, r *mainPathRig) {
 	t.Helper()
 	tag, err := r.pool.Exec(r.ctx, `delete from outbox where issue = $1 and kind = 'supervise'
@@ -137,7 +137,7 @@ func seedLeftAlone(t *testing.T, r *mainPathRig, index int, row leftAloneClaim) 
 // names, and that task reaches the claim. The root here is the one the measured defect leaves: it
 // was admitted, its architect's entry was raised with that entry's work written on the row, and
 // the start row that would have carried it to the claim was lost before any lane ran it
-// (dispatch://INFRA-2614). Its architect is up and holds nothing.
+// (dispatch://POMJU-2614). Its architect is up and holds nothing.
 //
 // The whole path main runs is held here: the admission pass reads the claim's given entry below
 // the entry its row names and writes the start (admit's owedEntryRoles and resumeSlottedWorkers),

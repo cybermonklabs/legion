@@ -356,7 +356,7 @@ func TestARootTwoArchitectWakeArmsReadRaisesBothOfThem(t *testing.T) {
 
 // A claim that still holds a task its root's own record has superseded raises no took-nothing
 // wake, and the pass that reads it writes the start of the entry the architect's row names
-// (dispatch://INFRA-2614 R4, R5, R7). Such a task is of a run before the root's generation, or of
+// (dispatch://POMJU-2614 R4, R5, R7). Such a task is of a run before the root's generation, or of
 // the root's run at an entry below the row's: the work of a run re-admission ended, or of an entry
 // the row has moved past. It is no start on its way, so the sweep passes over it
 // (workflow.ArchitectStartPending) and the start it writes takes the task's place in the claim's
@@ -609,7 +609,7 @@ func TestTheTookNothingArchitectWakeCountsATakenBackTaskFromTheRelaunchedAgentsR
 
 // The first arm counts the task of an entry from when a task of that entry was first queued to the
 // claim, as R7 says ("its entry's task was first queued more than 10 minutes ago",
-// dispatch://INFRA-2614), which the claim's own handshake keeps (supervise.Claim.Handshake,
+// dispatch://POMJU-2614), which the claim's own handshake keeps (supervise.Claim.Handshake,
 // record.RoleClaim.Handshake), and not from the queueing of the delivery the claim holds now. A
 // task retired unconfirmed puts its entry back, and the sweep sends that entry again as a new
 // delivery queued at that send, while the handshake keeps the first queueing through it. Each case
@@ -856,7 +856,7 @@ func TestTheUnreachableClaimArchitectWakeIsRaisedOnlyWhereNoQueuedStartRelaunche
 // A queued start no lane holds that has not run against the claim is the daemon's next move only
 // for the bound the second arm reads (workflow.StrandedReleaseWake, ten minutes): a start of the
 // run that has stood owed longer than that is no next move, and the arm names the failed claim,
-// once (the architect's reading of R7 at dispatch://INFRA-2614). The control is the same start
+// once (the architect's reading of R7 at dispatch://POMJU-2614). The control is the same start
 // queued inside the bound, which the arm waits for. Each row is dated by its age in the store's own
 // clock, the clock the arm reads it in (record.QueuedSupervise.Age), a minute either side of ten
 // minutes, so a bound read wrong in either direction fails one of the two cases. The age is read

@@ -4,7 +4,7 @@
 # and no two call sites can disagree about what a refusal means.
 #
 # A tool this repository installs from a GitHub release asset has a second source, because an hour
-# of 504s on GitHub's release assets otherwise holds every merge (dispatch://INFRA-1873). The two
+# of 504s on GitHub's release assets otherwise holds every merge (dispatch://POMJU-1873). The two
 # sources are not equal in rank and the two failures are not alike:
 #
 #   A transport failure of the primary is a reason to try the second source. Nothing is known

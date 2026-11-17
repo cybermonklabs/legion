@@ -11,7 +11,7 @@ import (
 // came due while the implementer was still driving the change, an operator's hold ended it, or its
 // claim failed and was restarted in it. The look is over either way; what the implementer saw in
 // production is not, and refusing it threw the only report of that deploy away and left the check
-// to close as not run (dispatch://INFRA-714/spec R12).
+// to close as not run (dispatch://POMJU-714/spec R12).
 func TestALateReportOfTheCurrentLookIsRecorded(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

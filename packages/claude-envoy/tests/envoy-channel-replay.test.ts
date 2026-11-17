@@ -476,7 +476,7 @@ test("a /clear handoff to a new session id starts a fresh delivery state in a fi
 // it waits moves the id under it: that wait is the window where the session the notice names and
 // the conversation open here part company. So the id is compared when the notice's turn comes
 // (`ChannelDeliveryPath.notice`), and the new conversation is shown nothing of the old id's
-// frame, which goes back to the stream for whoever takes ses_old next (dispatch://INFRA-771).
+// frame, which goes back to the stream for whoever takes ses_old next (dispatch://POMJU-771).
 //
 // The row holds that window open with nothing but the channel itself: an earlier write still in
 // the queue when the notice joins it, held until the `/clear` has landed. A comparison made when

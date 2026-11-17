@@ -1,7 +1,7 @@
 // caller_kind_checks_test.go holds the checks the spec's "Checks that read the caller's kind"
 // names, each proven for a person's own credential: a credential holding the person scope acts
 // on them as the person at a browser does, because it is that person's own credential acting for
-// them (INFRA-1017, R1). The route table's own rows are proven in routes_table_test.go and
+// them (POMJU-1017, R1). The route table's own rows are proven in routes_table_test.go and
 // acting_agent_test.go; these are the checks inside handlers, which no route gate decides:
 // taking a claim away from its holder and releasing anyone's claim (issue_claim.go,
 // claimBlockedBy), following or unfollowing an ask for any session (ask_followers.go), rewording

@@ -651,7 +651,7 @@ func TestABatchWhoseOnlyRouteLeftIsAnUnclaimedRoleKeepsItForTheNextHolder(t *tes
 // next holder as an unclaimed role's is, rather than being retried for a session that will not
 // answer. The claim is not touched - releasing it is the listener's role-claim reaper's alone,
 // and a resolution that released it here would take an unresponsive holder's role on the next
-// event (dispatch://INFRA-392).
+// event (dispatch://POMJU-392).
 // The copy on the role's kept lane is the envelope as its sender sent it, kept for the holder the
 // role-claim reaper's release of this claim lets claim the role next.
 func TestARoleRouteWhoseHolderIsGoneKeepsTheClaimAndIsPublished(t *testing.T) {
@@ -726,7 +726,7 @@ func TestARoleRouteToAnUnresponsiveHolderStaysPending(t *testing.T) {
 // That publish is the harm, not a slower delivery: the listener, carrying the operator's
 // horizon, still calls the holder unresponsive and keeps its role, so an event Dispatch marks
 // reached with nothing sent reaches the holder never, however long it stalled
-// (dispatch://INFRA-392).
+// (dispatch://POMJU-392).
 func TestARoleRouteIsJudgedOnTheWindowsDispatchWasGiven(t *testing.T) {
 	rig := newRoleRig(t)
 	// Silent for longer than the compiled gone horizon, and well inside a horizon raised to
@@ -778,7 +778,7 @@ func TestARoleRouteIsJudgedOnTheWindowsDispatchWasGiven(t *testing.T) {
 // died. The event stays pending for the role-claim reaper or the holder's own return to settle,
 // and is not published with nothing sent. This is the case that cost a stalled Legion architect
 // its role: the resolution read the expired key as a session that is gone and released the claim
-// on the next event routed to the role (dispatch://INFRA-392).
+// on the next event routed to the role (dispatch://POMJU-392).
 func TestARoleRouteWhoseHolderSessionKeyExpiredKeepsTheClaimAndStaysPending(t *testing.T) {
 	rig := newRoleRigWithSessionMaxAge(t, time.Second)
 	const role, holder = "reviewer", "ses_expired"

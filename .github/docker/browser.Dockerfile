@@ -1,7 +1,7 @@
 # The image every CI job that can launch WebKit or Firefox runs in: Playwright's own browser
 # host image, with the few tools the Dispatch end-to-end harness needs added at image-build
 # time, so that no CI job installs a browser host package from Ubuntu's apt mirror pool
-# (dispatch://INFRA-1443).
+# (dispatch://POMJU-1443).
 #
 # .github/workflows/browser-image.yaml builds and publishes it, and .github/ci-images.yaml holds
 # its row: `built: .github/docker/browser.Dockerfile` where a copied row holds `upstream:`, with

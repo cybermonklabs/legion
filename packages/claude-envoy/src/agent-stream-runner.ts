@@ -1,4 +1,4 @@
-// The Agents page's live view of one Claude Code session (INFRA-1026): the mod's events as the
+// The Agents page's live view of one Claude Code session (POMJU-1026): the mod's events as the
 // conversation, the two header frames read off the mod's own `$` calls, and the control subject a
 // viewer takes this session on. It is driven by the channel server (`./envoy-channel-server`),
 // which gives it the link and the session's NATS connection, and it reaches nothing of that
@@ -107,7 +107,7 @@ export interface AgentStreamRunner {
 }
 
 /**
- * Publish this session's conversation for the Agents page's live view (INFRA-1026).
+ * Publish this session's conversation for the Agents page's live view (POMJU-1026).
  *
  * The mod's events become messages on the shared publisher (`./agent-stream-claude`), and this
  * answers the viewer's control subject the way every Oh My Pi session does (`packages/pi-envoy`,

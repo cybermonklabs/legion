@@ -36,7 +36,7 @@ import (
 // transaction of each claim write that changes the session holding a role, so an end whose claim
 // write failed with an error that the daemon owes is published when the daemon makes that write
 // again at the claim's next decision. An end whose claim write failed and is not owed leaves the
-// daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+// daemon's memory ended and its store live, and the set follows the store (dispatch://POMJU-4099).
 // A later decision of that claim, such as a second stop, makes that write again only while the
 // claim still holds a pending task that the decision retires, such as the task of a turn that is
 // over, because the retirement writes the claim with it; otherwise the session stays listed until

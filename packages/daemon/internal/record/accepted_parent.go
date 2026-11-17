@@ -82,8 +82,8 @@ func byKey(members []Issue) map[string]Issue {
 // as a root of its own (workflow's unfinishedHandOvers), whatever held it there, so the work a
 // person asked for runs once the ancestor that held it has closed, which is what the
 // architect's notice says it does. This is the one recorded departure from
-// the spec of dispatch://INFRA-980, decided by that tree's architect
-// (dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104).
+// the spec of dispatch://POMJU-980, decided by that tree's architect
+// (dispatch://POMJU-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104).
 func OpenBeneath(issue Issue, members []Issue) []string {
 	records := byKey(members)
 	open := []string{}

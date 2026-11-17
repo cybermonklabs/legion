@@ -1,5 +1,5 @@
 -- 20261102174500_workspace_bundle_release.up.sql — a saved workspace bundle names the release that
--- saved it (INFRA-945).
+-- saved it (POMJU-945).
 --
 -- release_id is issue_releases.id of the idle release whose save wrote the row. The restore of the
 -- issue's next pod carries it to that pod's launcher in every launcher_bundle slice and reads it

@@ -195,7 +195,7 @@ func (w *wakeCountingTrees) taken() int {
 	return w.takes
 }
 
-// The ask wakes nothing (dispatch://INFRA-2981 R1). A role whose pod an idle release took holds
+// The ask wakes nothing (dispatch://POMJU-2981 R1). A role whose pod an idle release took holds
 // no live session, so its topic answers notify.ErrNoHolder and the row finishes there: no pod
 // wake is taken, no process is resumed, and the claim stays released. The round ends at its
 // bound whether or not that role answers. The negative control is c-one-channel's: an executor

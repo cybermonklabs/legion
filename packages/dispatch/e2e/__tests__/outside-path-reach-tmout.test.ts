@@ -4,7 +4,7 @@
  *  the host's PATH or bash, curl and sleep alone, and needs the whole list read: the second line's
  *  hub listens, so the run must fail naming it. Before the script unset TMOUT, a TMOUT of 1 or 0.5
  *  cut the read at the first line, and bash 5.2 printed PASS on it alone (acceptance's finding on
- *  dispatch://INFRA-3862). The rows with no TMOUT and with TMOUT=3 read the whole list either way.
+ *  dispatch://POMJU-3862). The rows with no TMOUT and with TMOUT=3 read the whole list either way.
  *  A TMOUT the script cannot unset is `outside-path-reach-input.test.ts`'s, and
  *  `outside-path-reach-fixtures.ts` holds the fixtures and says how they work.
  */

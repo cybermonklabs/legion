@@ -129,7 +129,7 @@ func TestPromptHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 
 // The supervisor charges a prompt the agent refused and an adoption the shim refused, and
 // re-sends at no charge what the transport lost, telling them apart by runtime.ErrPromptRefused
-// and runtime.ErrAdoptRefused alone (LEGION-60, INFRA-1480). So a refusal is the sentinel of the
+// and runtime.ErrAdoptRefused alone (LEGION-60, POMJU-1480). So a refusal is the sentinel of the
 // command it refused and of no other: OMP's `{success:false}` for the prompt itself is
 // ErrPromptRefused, the shim's `ok:false` for the adoption — and the refusal an older shim's
 // forwarding of that frame earns from OMP, which does not know the command — is ErrAdoptRefused,

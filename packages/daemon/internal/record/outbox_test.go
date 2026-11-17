@@ -723,10 +723,10 @@ func TestGatedStepsPublishAtBoot(t *testing.T) {
 	}
 
 	inTx(t, st, func(tx pgx.Tx) {
-		rows, err := records.DueRows(ctx, tx, "INFRA", "", nil, now)
+		rows, err := records.DueRows(ctx, tx, "POMJU", "", nil, now)
 		must(t, err)
 		if len(rows) != 0 {
-			t.Fatalf("DueRows of INFRA = %#v, want nothing: LEGION's publish is LEGION's daemon's", rows)
+			t.Fatalf("DueRows of POMJU = %#v, want nothing: LEGION's publish is LEGION's daemon's", rows)
 		}
 	})
 

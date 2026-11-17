@@ -111,10 +111,10 @@ session the smoke started; on the shared default server it could end anyone's.
 
 Live proof that a role claim is weighed on the process that holds it: a second process that
 resumed a live session's id can neither take, release nor outlast that session's role
-(dispatch://INFRA-783), and a soft claim naming a predecessor takes the role only from a
-predecessor that is gone or is the claimant's own client instance (dispatch://INFRA-404, R8 and
+(dispatch://POMJU-783), and a soft claim naming a predecessor takes the role only from a
+predecessor that is gone or is the claimant's own client instance (dispatch://POMJU-404, R8 and
 A5 of its spec); and once a session that holds a role restarts, the role lookup and the session
-listing name the same holder (dispatch://INFRA-2747). It is the only smoke here that needs
+listing name the same holder (dispatch://POMJU-2747). It is the only smoke here that needs
 neither a model provider nor a deployment: `go` and `bun` alone, so CI runs it as a step of the
 `envoy-session-stall` job.
 
@@ -164,7 +164,7 @@ Eighteen rows are printed, each with its outcome:
 - **row 4** — a Claude Code `/clear` handoff gets the role: the deregistration removes the
   process's own entry, and the claim then finds no live predecessor.
 
-- **INFRA-783**, four rows — a second process that resumed a live session's id is refused the role
+- **POMJU-783**, four rows — a second process that resumed a live session's id is refused the role
   that session holds (`409` naming it, in Oh My Pi and in Claude Code); the Oh My Pi one is then
   granted the role once the holder stops renewing the claim and the window passes; and the
   process that no longer holds the claim hands the role topic back, which frees nothing.
@@ -178,7 +178,7 @@ Eighteen rows are printed, each with its outcome:
 - **A5**, two rows — a refused process stays registered, and after the holder exits the refused
   Oh My Pi process takes the role on its next session event.
 
-- **INFRA-783**, three further rows — an older client's hand-back, which is a release of a
+- **POMJU-783**, three further rows — an older client's hand-back, which is a release of a
   role's own lane topic under the holder's session id stating no `client_instance_id`, frees
   nothing and marks the claim: the lookup answers `handed_back`, the real Oh My Pi holder reads
   that as a role it does not hold, claims it back at its next heartbeat and takes the lane's
@@ -189,7 +189,7 @@ Eighteen rows are printed, each with its outcome:
   claim standing at a deploy is in — keeps its role across three live windows of registrations
   that carry no `client_instance_id`.
 
-- **INFRA-2747**, one row — a session that holds a role restarts: its Oh My Pi process is
+- **POMJU-2747**, one row — a session that holds a role restarts: its Oh My Pi process is
   killed, a new one starts under the same session id and is granted the role once the live
   window passes, and within 90 seconds of that process's first registration
   `GET /v1/roles/<role>` and `GET /v1/sessions?include=unresponsive` name the same holder, or
@@ -207,7 +207,7 @@ bash packages/pi-envoy/scripts/smoke-role-takeover.sh
 bash packages/pi-envoy/scripts/smoke-role-takeover.sh --base-rev main@origin   # every row passes at b601d25b
 bash packages/pi-envoy/scripts/smoke-role-takeover.sh --listener-bin <built listener>
 SMOKE_DROP_ROLE_FROM_COPY=1 bash packages/pi-envoy/scripts/smoke-role-takeover.sh \
-  --listener-bin <scratch build that serves the drop route>   # the INFRA-2747 row's control
+  --listener-bin <scratch build that serves the drop route>   # the POMJU-2747 row's control
 ```
 
 `--base-rev <rev>` builds only the listener from that revision, leaving every client as it is in
@@ -215,7 +215,7 @@ the working copy. Against `main@origin` at `b601d25b` (2026-11-13) none of the e
 fail. The eleven of seventeen that once failed there were counted in cybermonklabs/legion#2875
 (`277768d83e`, 2026-11-07) against the main of that day, which did not yet have the listener rule
 those rows drive; main has carried that change since, so `--base-rev main@origin` is no longer a
-negative control for them. The INFRA-2747 row passes there too: with nothing taken out of its
+negative control for them. The POMJU-2747 row passes there too: with nothing taken out of its
 copy, that listener's copy names the restarted holder's role as the claim record does, and that
 row's negative control is `SMOKE_DROP_ROLE_FROM_COPY=1` against a scratch build, below. It reads
 the revision without touching the working copy (`jj --ignore-working-copy log` resolves it,
@@ -227,8 +227,8 @@ scratch build; natsd is still built from the checkout. A path that is not an exe
 refused with exit 2, and so is `--listener-bin` beside `--base-rev`, since each chooses the
 listener.
 
-`SMOKE_DROP_ROLE_FROM_COPY=1` turns the INFRA-2747 row into its own control
-(c-live-restart of dispatch://INFRA-2747). Once the restarted process's claim is granted, the row
+`SMOKE_DROP_ROLE_FROM_COPY=1` turns the POMJU-2747 row into its own control
+(c-live-restart of dispatch://POMJU-2747). Once the restarted process's claim is granted, the row
 asks the listener to take the role out of its copy of the role claims
 (`POST /debug/role-copy/drop?role=<role>`) and fails, saying so, on any answer that is not a
 `2xx`, so a listener without that route never passes the control by doing nothing. It then reads
@@ -261,7 +261,7 @@ about four with `--base-rev`.
 
 ## smoke-registration-stall.sh
 
-Manual live smoke for the registration-stall fix (dispatch://INFRA-246): a real headless `omp`
+Manual live smoke for the registration-stall fix (dispatch://POMJU-246): a real headless `omp`
 pane against a real Envoy listener, watched through the live registry. `--arm stall` shows that a
 pane whose registration post is wedged forever keeps refreshing past one record lifetime and says
 so exactly once; `--arm recover` shows that a pane unregistered while its process runs
@@ -302,7 +302,7 @@ exhausted port range is reported through, `refuse` in both smokes here.
 
 The listener's own HTTP surface, in the second sourced file `smoke-role-takeover.sh` brings in
 beside `local-stack.sh`: one raw call either way (`listener_get`, `listener_post`), the three
-requests a client built before dispatch://INFRA-783 sends, which that smoke drives by `curl`
+requests a client built before dispatch://POMJU-783 sends, which that smoke drives by `curl`
 because no client in the checkout can be made to send them (`old_register`, `old_claim`,
 `old_handback`), and the readers every row states its outcome in — one field of
 `GET /v1/roles/<role>` (`role_field`, and `role_holder`, `role_instance`, `role_handed_back`,

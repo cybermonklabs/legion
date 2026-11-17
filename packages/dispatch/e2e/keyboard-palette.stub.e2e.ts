@@ -223,7 +223,7 @@ inboxTest(
     await expect(page.locator("[data-inbox-row]")).toHaveCount(1);
     await page.locator("body").focus();
     // Every other inbox binding is gated on the row in hand, so `j` first: with the reading
-    // column on (INFRA-575) that hand is the selection the column is showing, not the focus,
+    // column on (POMJU-575) that hand is the selection the column is showing, not the focus,
     // and the movement rows are still absent while the row's own action is offered.
     await page.keyboard.press("j");
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", scene.askId);
@@ -353,7 +353,7 @@ inboxTest(
     const row = page.locator("[data-inbox-row]");
     await expect(row).toHaveCount(1);
     await page.locator("body").focus();
-    // `j` puts the row in hand: with the reading column on (INFRA-575) that is the selection
+    // `j` puts the row in hand: with the reading column on (POMJU-575) that is the selection
     // the column is showing. The reader's own place is the row it selected, which is where the
     // palette hands the focus back.
     await page.keyboard.press("j");

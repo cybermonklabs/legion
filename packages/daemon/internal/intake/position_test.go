@@ -28,7 +28,7 @@ import (
 // tools.md` tells a pod to run, it is initialised at the stream's last sequence, 2, level with the
 // target. Both readings carry the same facts — nothing pending and nothing awaiting an ack — so a
 // test that asserted the floor stood short of the target measured the server rather than this
-// code, and was red on the documented pod route while green in CI (dispatch://INFRA-3027).
+// code, and was red on the documented pod route while green in CI (dispatch://POMJU-3027).
 //
 // So the precondition is stated as what both servers hold: the consumer has delivered none of the
 // messages published before it and has none to deliver, which is the state idle is read from.

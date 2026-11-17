@@ -238,7 +238,7 @@ function stateOf(sessionID: string): SessionState {
  *  is `absent` has really ended, and one the test stopped is known only by its known-session
  *  record, and then no answer may name it as running however the live set stands. An
  *  unresponsive session is named too: it has missed its heartbeats, it has not ended, and the
- *  listener still holds its record (dispatch://INFRA-392). */
+ *  listener still holds its record (dispatch://POMJU-392). */
 function isLive(sessionID: string): boolean {
   return (
     state.liveSessions.has(sessionID) &&

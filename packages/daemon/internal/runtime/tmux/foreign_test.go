@@ -317,7 +317,7 @@ func TestUnderTakeOverEverySessionFoundNowhereStartsFresh(t *testing.T) {
 // the runtime searched holds is runtime.ErrSessionFileMissing either way, because the search is
 // the same search and a session nothing holds is gone whichever runtime last wrote it. The claim's
 // machine then starts a fresh agent in its place, charged nothing and reported
-// (dispatch://INFRA-714 R8).
+// (dispatch://POMJU-714 R8).
 func TestWithoutTakeOverAMissingSessionIsStillTheMissingSession(t *testing.T) {
 	ctx := context.Background()
 	for name, session := range map[string]func(f *fakeServerRuntime) string{

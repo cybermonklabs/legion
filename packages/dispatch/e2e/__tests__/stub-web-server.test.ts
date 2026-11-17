@@ -12,7 +12,7 @@
  *  It is the full lane that this costs, and the full lane is what the merge queue runs, so a
  *  visual leg that cannot start is a merge that cannot happen; the pull-request lane skips
  *  `visual`, so no run on the pull request says a word about it. Measured on
- *  legion/INFRA-1407 at 7095aa36: the `full / visual` job of runs 42597757591 and 42576471811
+ *  legion/POMJU-1407 at 7095aa36: the `full / visual` job of runs 42597757591 and 42576471811
  *  failed with those two lines, while main's own nightly 42596473565 was green, main declaring
  *  no `webServer` at all.
  *

@@ -11,7 +11,7 @@ date: 2026-10-25
 status: active
 module: skills/legion-worker
 related_issues:
-  - "INFRA-251"
+  - "POMJU-251"
   - "sjawhar/legion#2163"
 ---
 
@@ -43,7 +43,7 @@ at one commit, and that is where this failure hides.
   unsure where you are: a `No matching entries` warning naming `.legion` or `docs/solutions` means
   you are not at the workspace root.
 
-## Evidence (INFRA-251, sjawhar/legion#2163)
+## Evidence (POMJU-251, sjawhar/legion#2163)
 
 The fresh-eyes read of the second retro found the roles' posted fingerprints disagreeing at one
 commit: at head `9d688fa557a1` the implementer posted `cb5c1756…` and the tester `e218c890…`, and

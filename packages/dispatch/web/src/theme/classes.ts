@@ -734,7 +734,7 @@ registerText(
 );
 
 // ---------------------------------------------------------------------------------------------
-// The issue page's palette (dispatch://INFRA-1196): the approved prototype's colours, as
+// The issue page's palette (dispatch://POMJU-1196): the approved prototype's colours, as
 // `styles.css` declares them in `@theme` under names that say what each is on that page. A
 // token's utility (`text-page-ink`) carries both schemes itself, because `styles.css` swaps the
 // value behind the name in the dark scheme, so a composite here writes no `dark:` for it.
@@ -822,7 +822,7 @@ export const pageWaitingBg = "bg-page-waiting";
  *  1280 px up and 44 px below, until the header's own rule lowers that floor. 24 px is the least
  *  a touch target may be (WCAG 2.5.8), and ruling 3 gives the header's controls that size at
  *  390 px because the header there is held to eight lines and 250 px, nine and 280 px while an
- *  approval request waits on the reader, which leaves no room for more (dispatch://INFRA-1196
+ *  approval request waits on the reader, which leaves no room for more (dispatch://POMJU-1196
  *  R13, rulings 3 and 8 of its build-rulings-md). */
 export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 rounded-[7px] border px-2.5 text-xs leading-5 font-medium md:min-h-0 md:min-w-0 md:py-px border-page-line bg-page-paper text-page-muted ${focusVisibleRing}`;
 /** The filter row's box for words, opened from its control (`IssuePresets.tsx`): the page's
@@ -933,7 +933,7 @@ export const pageStateText = {
  * caret is in the box. Every word in it says what it is, so the colours repeat what is written
  * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
  * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
- * dispatch://INFRA-1196/artifact/part-decisions-md).
+ * dispatch://POMJU-1196/artifact/part-decisions-md).
  */
 export const pageComposer = {
   answering:

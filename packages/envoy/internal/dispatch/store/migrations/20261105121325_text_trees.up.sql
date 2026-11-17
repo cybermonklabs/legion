@@ -1,7 +1,7 @@
 -- 20261105121325_text_trees.up.sql — the display tree of every stored text, so a read serves
 -- stored bytes instead of reading the markdown again.
 --
--- sjawhar/legion#2712 (INFRA-635): a response carries the display tree of every stored text it
+-- sjawhar/legion#2712 (POMJU-635): a response carries the display tree of every stored text it
 -- answers with (api's display_trees.go), and until now every one of those trees was read from the
 -- markdown on the request, kept only in the 64 MiB byte-LRU one process holds
 -- (pmdoc.DisplayCacheBytes), which a restart loses. A tree stored here outlives the process: the

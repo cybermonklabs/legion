@@ -36,7 +36,7 @@ func readActivity(t *testing.T, h *harness, token claim.Token) storedActivity {
 	return read
 }
 
-// INFRA-945: the four values the idle rule reads of a live session reach the claim's row and come
+// POMJU-945: the four values the idle rule reads of a live session reach the claim's row and come
 // back from it. The route decides nothing about the claim, so nothing but those four moves.
 func TestClaimActivityIsWrittenOntoTheClaimAndReadBack(t *testing.T) {
 	h := newHarness(t)

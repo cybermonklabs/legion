@@ -63,7 +63,7 @@ func (w *fakeWindows) pass(t *testing.T, ctx context.Context) {
 // CacheStreamLowSpeedTime runs for as long as its repository needs: seven such windows are 35
 // minutes of a pod's time, past the FetchTimeout a clock once gave the stream and its
 // verification together, and the stream still reaches its last byte whole and unstopped. The
-// clock in its place threw away a download that was still arriving (INFRA-495).
+// clock in its place threw away a download that was still arriving (POMJU-495).
 func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) {
 	const windows = 7
 	if ran := windows * CacheStreamLowSpeedTime; ran <= FetchTimeout {

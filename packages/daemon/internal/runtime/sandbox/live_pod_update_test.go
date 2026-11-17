@@ -1,6 +1,6 @@
 //go:build e2e
 
-// The Stage 4a harness's update-round check (INFRA-484): a running issue pod whose configuration
+// The Stage 4a harness's update-round check (POMJU-484): a running issue pod whose configuration
 // has drifted is kept while the workers in it still hold unpushed work, and is replaced only once
 // each of them has pushed that work and answered. The rig is live_test.go.
 //
@@ -413,7 +413,7 @@ func (round *liveFleetRound) names() []string {
 }
 
 // pod-update-fleet: one change to the pod configuration drifts every pod of the deployment at
-// once (INFRA-419), and each issue's pod is still a round of its own. Two issues run here, each
+// once (POMJU-419), and each issue's pod is still a round of its own. Two issues run here, each
 // with an architect and a worker in its own pod, and each pod's Sandbox records the one
 // configuration this runtime builds an issue pod from. The operator moves that configuration on
 // both Sandboxes in one step — the same moved shape on each, as one deployment change reaches

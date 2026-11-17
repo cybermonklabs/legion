@@ -1,6 +1,6 @@
 package daemon
 
-// The daemon saying when it is serving (INFRA-3169, R5): a whole daemon over a pool of one
+// The daemon saying when it is serving (POMJU-3169, R5): a whole daemon over a pool of one
 // connection, read on real HTTP at the two moments that decide the probe — while it serves HTTP
 // and has not latched, and once it has.
 

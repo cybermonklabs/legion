@@ -1,5 +1,5 @@
-// The rig both halves of k11 run on (INFRA-812, R2; the Verification document's k11,
-// dispatch://INFRA-812/artifact/verification-md): eight agents one person has pinned, each
+// The rig both halves of k11 run on (POMJU-812, R2; the Verification document's k11,
+// dispatch://POMJU-812/artifact/verification-md): eight agents one person has pinned, each
 // seeded with a conversation at the stream's limit, which is the heaviest transcript a live
 // view can ever be handed. The untimed half of the check - how many agent subscriptions the
 // socket holds, how many conversations are drawn, the page's heap, and the negative control

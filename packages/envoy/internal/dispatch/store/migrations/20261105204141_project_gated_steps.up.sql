@@ -1,6 +1,6 @@
 -- 20261105204141_project_gated_steps.up.sql — the design-gate steps a project's deployment gates.
 --
--- INFRA-1272: a Legion deployment's design gate stops being one document and becomes a list of
+-- POMJU-1272: a Legion deployment's design gate stops being one document and becomes a list of
 -- steps, each naming one document of a root issue: `decisions` its decisions document, `criteria`
 -- its Verification document, `spec` its primary document. The daemon publishes the list it is
 -- configured with onto its project's row (PUT /api/v1/projects/{key}/gated-steps,

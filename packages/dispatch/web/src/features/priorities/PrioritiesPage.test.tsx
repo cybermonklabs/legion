@@ -13,7 +13,7 @@ function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow
     id,
     title: `Priority ${id}`,
     description: "",
-    owner: "INFRA controller",
+    owner: "POMJU controller",
     rank: id,
     state: "live",
     made_at: "2026-11-01T00:00:00Z",
@@ -168,7 +168,7 @@ const FIFTEEN = body({
     priority("legion-first", {
       title: "Legion works reliably first",
       description: "The first line.\nThe rest of it, which the row shows when it is open.",
-      owner: "INFRA controller",
+      owner: "POMJU controller",
       work: {
         by_status: { in_progress: 5, testing: 1, needs_review: 1, retro: 0, todo: 9, triage: 3 },
         claimed: 2,
@@ -179,7 +179,7 @@ const FIFTEEN = body({
     }),
     priority("linkage-closure", {
       title: "Linkage closure eval",
-      owner: "BET controller",
+      owner: "BJB controller",
       work: {
         by_status: { in_progress: 1, backlog: 2, icebox: 1 },
         claimed: 0,
@@ -188,7 +188,7 @@ const FIFTEEN = body({
         open_asks: 0,
       },
     }),
-    priority("oss-verify", { title: "OSS Verify", owner: "OSSV controller" }),
+    priority("oss-verify", { title: "OSS Verify", owner: "HKUK controller" }),
   ],
 });
 
@@ -329,9 +329,9 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   // Why it was moved there: nothing records that yet, so every row says so, naming the work that
   // records one as a link to it (R6).
   for (const reason of [moved("Reason"), unrecorded("Reason")]) {
-    expect(reason.textContent).toBe("Not recorded until INFRA-2934");
-    expect(within(reason).getByRole("link", { name: "INFRA-2934" }).getAttribute("href")).toBe(
-      "/issues/INFRA-2934"
+    expect(reason.textContent).toBe("Not recorded until POMJU-2934");
+    expect(within(reason).getByRole("link", { name: "POMJU-2934" }).getAttribute("href")).toBe(
+      "/issues/POMJU-2934"
     );
   }
 
@@ -526,7 +526,7 @@ test("the page carries no estimate, no forecast, no percentage and no written st
 test("the priorities table counts its rows as priorities, as the agreed page reads", async () => {
   page(FIFTEEN);
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  // dispatch://INFRA-2947/artifact/priorities-round10-png reads "15 of 15 priorities" under the
+  // dispatch://POMJU-2947/artifact/priorities-round10-png reads "15 of 15 priorities" under the
   // table: a priority is no issue, and a reader counting the rows is told what they count.
   expect(screen.getByText("3 of 3 priorities")).toBeDefined();
   expect(screen.queryByText("3 of 3 issues")).toBeNull();
@@ -581,7 +581,7 @@ test("a grouped table counts each group in the plural its rows are called by", a
   // row every table draws (`DataTableGroupRow`).
   await user.selectOptions(groupBy("Priorities"), "owner");
   expect(
-    await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
+    await screen.findByRole("button", { name: "Collapse POMJU controller, 2 priorities" })
   ).toBeDefined();
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   await user.selectOptions(groupBy("In flight under no priority"), "status");

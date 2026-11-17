@@ -88,7 +88,7 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 }
 
 // A root recorded in the workflow at a status only a running tree has, whose tree nothing will
-// open again — the state dispatch://INFRA-129 reported, which an earlier release left — is
+// open again — the state dispatch://POMJU-129 reported, which an earlier release left — is
 // released at the boot read, even with a slot free: the controller is told, and nothing starts
 // for it. Its tree holds no lifecycle, which is what says a tree runs now: a root of a tree that
 // does run can hold no slot while it waits on another issue (it gave its slot back,

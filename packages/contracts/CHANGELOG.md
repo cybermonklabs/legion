@@ -275,15 +275,15 @@ This file is history: every entry after the last section below stays as a fragme
 
 ### Added
 
-- One WebSocket per browser tab at `GET /ws/live` (INFRA-258), with the common `Live*` frames and `LiveView`: a `DeliveryLiveView`, the Dispatch event-feed `EventsLiveView`, or one session's `AgentLiveView`. Delivery views resume with `DeliveryLiveResume` (`seq`, `revs`); events views resume with `EventsLiveResume` (`since`) and begin with `LiveEventsStart`, whose `replay_complete` says whether the subscription replays every event after the resume (a resume at or below the feed's head), so a page owes no refresh for the gap; agent views begin from the session replay. `LiveEventFrame`, `LiveAgentFrame`, and `LiveEnded` complete the new frame family; a `LiveAgentFrame`'s `data` is an `AgentStreamResponder` for its `responder` event and `unknown` for `replay` and `frame`, the session's own JSON, which Dispatch relays unparsed and a page checks before it renders it. `LIVE_SOCKET_MAX_AGE_CLOSE` (4001) rotates a socket at a random age in [`LIVE_SOCKET_MIN_AGE_MS`, `LIVE_SOCKET_MAX_AGE_MS`) (30 to 60 minutes), and `LIVE_SOCKET_MAX_SUBSCRIPTIONS` is 64.
+- One WebSocket per browser tab at `GET /ws/live` (POMJU-258), with the common `Live*` frames and `LiveView`: a `DeliveryLiveView`, the Dispatch event-feed `EventsLiveView`, or one session's `AgentLiveView`. Delivery views resume with `DeliveryLiveResume` (`seq`, `revs`); events views resume with `EventsLiveResume` (`since`) and begin with `LiveEventsStart`, whose `replay_complete` says whether the subscription replays every event after the resume (a resume at or below the feed's head), so a page owes no refresh for the gap; agent views begin from the session replay. `LiveEventFrame`, `LiveAgentFrame`, and `LiveEnded` complete the new frame family; a `LiveAgentFrame`'s `data` is an `AgentStreamResponder` for its `responder` event and `unknown` for `replay` and `frame`, the session's own JSON, which Dispatch relays unparsed and a page checks before it renders it. `LIVE_SOCKET_MAX_AGE_CLOSE` (4001) rotates a socket at a random age in [`LIVE_SOCKET_MIN_AGE_MS`, `LIVE_SOCKET_MAX_AGE_MS`) (30 to 60 minutes), and `LIVE_SOCKET_MAX_SUBSCRIPTIONS` is 64.
 
-  `AuthenticatedUser.event_head`, the decimal id of the newest event when `GET /auth/whoami` answered (INFRA-292). It is required: a page of this release subscribes the event feed on `GET /ws/live`, which only a server that answers the head serves, and the feed starts its first subscription there, so every read the page makes after the sign-in check is covered by a resume.
+  `AuthenticatedUser.event_head`, the decimal id of the newest event when `GET /auth/whoami` answered (POMJU-292). It is required: a page of this release subscribes the event feed on `GET /ws/live`, which only a server that answers the head serves, and the feed starts its first subscription there, so every read the page makes after the sign-in check is covered by a resume.
 
 ### Changed
 
-- **Breaking:** a write names its intent by the `Idempotency-Key` request header (`IDEMPOTENCY_KEY_HEADER`) on every `POST` and `PATCH` route, not by a body field (INFRA-258): `CreateBroadcastInput.idempotency_key` is gone, and a body that still carries it is `400 INVALID_JSON`. The key is optional; a repeat under it is answered with the first answer and `IDEMPOTENCY_REPLAYED_HEADER`, a different request under it is `422 KEY_REUSED` (`IDEMPOTENCY_KEY_REUSED`), and a repeat while the first still runs is `409 KEY_IN_FLIGHT` (`IDEMPOTENCY_KEY_IN_FLIGHT`) with `Retry-After: 1`; a 5xx, 401, 408 or 429 is not kept, so the next attempt runs again, unless the first attempt had committed its write, which makes the next attempt `409 KEY_COMMITTED` (`IDEMPOTENCY_KEY_COMMITTED`): the write landed, Dispatch has no answer to replay, and a client treats it as landed. Added `IDEMPOTENCY_KEY_MAX`, `IDEMPOTENCY_KEY_PATTERN`, `IDEMPOTENCY_KEY_INVALID`, `IDEMPOTENCY_ANSWER_NOT_KEPT`, `IDEMPOTENCY_KEY_TTL_MS`, `IDEMPOTENCY_LEASE_MS`, `retriesUnderKey`, `answerNotKept`, `IdempotencyLandedCode`, `DISPATCH_LOGIN_HEADER`, and `DISPATCH_LOGIN_CHANGED`.
+- **Breaking:** a write names its intent by the `Idempotency-Key` request header (`IDEMPOTENCY_KEY_HEADER`) on every `POST` and `PATCH` route, not by a body field (POMJU-258): `CreateBroadcastInput.idempotency_key` is gone, and a body that still carries it is `400 INVALID_JSON`. The key is optional; a repeat under it is answered with the first answer and `IDEMPOTENCY_REPLAYED_HEADER`, a different request under it is `422 KEY_REUSED` (`IDEMPOTENCY_KEY_REUSED`), and a repeat while the first still runs is `409 KEY_IN_FLIGHT` (`IDEMPOTENCY_KEY_IN_FLIGHT`) with `Retry-After: 1`; a 5xx, 401, 408 or 429 is not kept, so the next attempt runs again, unless the first attempt had committed its write, which makes the next attempt `409 KEY_COMMITTED` (`IDEMPOTENCY_KEY_COMMITTED`): the write landed, Dispatch has no answer to replay, and a client treats it as landed. Added `IDEMPOTENCY_KEY_MAX`, `IDEMPOTENCY_KEY_PATTERN`, `IDEMPOTENCY_KEY_INVALID`, `IDEMPOTENCY_ANSWER_NOT_KEPT`, `IDEMPOTENCY_KEY_TTL_MS`, `IDEMPOTENCY_LEASE_MS`, `retriesUnderKey`, `answerNotKept`, `IdempotencyLandedCode`, `DISPATCH_LOGIN_HEADER`, and `DISPATCH_LOGIN_CHANGED`.
 
-  **Breaking:** the frames every live view shares are renamed (INFRA-258): `DeliveryLiveSubscribe`, `DeliveryLiveUnsubscribe`, `DeliveryLiveClientFrame`, `DeliveryLiveError`, `DeliveryLiveHeartbeat` and `DeliveryLiveServerFrame` are `LiveSubscribe`, `LiveUnsubscribe`, `LiveClientFrame`, `LiveError`, `LiveHeartbeat` and `LiveServerFrame`. `LiveSubscribe` is a union by view kind: a `DeliveryLiveView` resumes with a `DeliveryLiveResume`, an `EventsLiveView` with an `EventsLiveResume`, and an `AgentLiveView` with none, which are the only pairings Dispatch accepts. `LiveServerFrame` adds the events and agent views' frames. The frame fixtures move with them: `fixtures/delivery-live/` is now `fixtures/live/`.
+  **Breaking:** the frames every live view shares are renamed (POMJU-258): `DeliveryLiveSubscribe`, `DeliveryLiveUnsubscribe`, `DeliveryLiveClientFrame`, `DeliveryLiveError`, `DeliveryLiveHeartbeat` and `DeliveryLiveServerFrame` are `LiveSubscribe`, `LiveUnsubscribe`, `LiveClientFrame`, `LiveError`, `LiveHeartbeat` and `LiveServerFrame`. `LiveSubscribe` is a union by view kind: a `DeliveryLiveView` resumes with a `DeliveryLiveResume`, an `EventsLiveView` with an `EventsLiveResume`, and an `AgentLiveView` with none, which are the only pairings Dispatch accepts. `LiveServerFrame` adds the events and agent views' frames. The frame fixtures move with them: `fixtures/delivery-live/` is now `fixtures/live/`.
 
 ## [main@a09a2f257406] - 2026-10-29
 
@@ -361,7 +361,7 @@ This file is history: every entry after the last section below stays as a fragme
   Dispatch of this release and absent on every other kind and on any hit from an older Dispatch.
   The `dispatch_search` description says an ask hit says whether it is answered: an answered one
   shows the latest answer, who gave it, when, the options chosen and its text, and a closed one
-  says it was closed with no answer or shows the last answer it had (INFRA-569).
+  says it was closed with no answer or shows the last answer it had (POMJU-569).
 
 - The event `artifact.human_edited` and its payload, `ArtifactHumanEditedEventPayload` and
   `ArtifactHumanEditedEventPayloadSchema`: `artifact_id`, `name`, `from_version`, `to_version`,
@@ -411,11 +411,11 @@ This file is history: every entry after the last section below stays as a fragme
   token authenticated, else `""` (always for a user or system). `actorLabel` is now `actorName`
   followed by it, with the same output as before, so a reader that draws the name and the
   attribution apart (the Dashboard's `AgentName`) takes the attribution from the one rule
-  instead of cutting it out of the label (INFRA-440).
+  instead of cutting it out of the label (POMJU-440).
 - `SearchCoverage`, `SearchCoverageKinds` and `SearchCoverageCounts`, the body of
   `GET /api/v1/search/coverage`: the configured embedder's identity, place (`bedrock` or `azure`)
   and model, and per kind and in total how many searchable items have a current vector, lack one or
-  failed, with the oldest lacking item's wait (INFRA-393). `SearchResponse.degraded`'s doc names the
+  failed, with the oldest lacking item's wait (POMJU-393). `SearchResponse.degraded`'s doc names the
   model service rather than Bedrock.
 - `AskEventPayload.restored`: `true` on the `ask.opened` or `ask.answered` Dispatch's settlement
   appends when an edit restores a decision block it retracted, which records no new answer. A
@@ -433,7 +433,7 @@ This file is history: every entry after the last section below stays as a fragme
   available, never cut or truncated) and `thinking` (`level`, what `/effort` reports, `null` for the
   model's default, and `levels`, what `/effort` offers; `thinking` is `null` when the model has no
   adjustable thinking). `AgentStreamSettingsUnreported` (`reported: false`) is a session whose
-  plugin cannot read them from its host. A viewer older than the frame ignores it (INFRA-195).
+  plugin cannot read them from its host. A viewer older than the frame ignores it (POMJU-195).
 - `dispatch_issues` takes `all` (`--all`), which asks Dispatch for the whole filtered listing in
   one read instead of a page: the request goes out with neither `limit` nor `offset`, the two
   parameters whose absence makes the server answer every match
@@ -463,7 +463,7 @@ This file is history: every entry after the last section below stays as a fragme
   refuses it, as it refuses a key that does not exist, one in another project, the issue itself, and
   a pair the board does not hold in that order. The spec's `example` is now the move riding along
   with another change, `{ issue: "DSP-1", priority: 1, before: "DSP-2" }`, so the one call
-  `dispatch issue-update --help` and every refusal print shows the board move (INFRA-188).
+  `dispatch issue-update --help` and every refusal print shows the board move (POMJU-188).
 - The repository an issue targets: `RepoProject.default`; `Issue.repo` and `resolved_repo`, also on
   `IssueSummary` and `IssueClaimEventPayload`; `CreateIssueInput.repo` and `UpdateIssueInput.repo`
   (`null` clears); and a `repo` argument on `dispatch_issue` and `dispatch_issue_update` (`""`
@@ -562,7 +562,7 @@ This file is history: every entry after the last section below stays as a fragme
   answers and followers that render the card without a fetch per ask; the list is unpaged, so a
   reader that draws no thread asks for none. Any other `thread` value is `400 INVALID_ASK_THREAD`.
   `Ask.last_reply` now names that list beside the Inbox rows and the issue detail's `open_asks`
-  (INFRA-44).
+  (POMJU-44).
 
 ### Changed
 
@@ -594,14 +594,14 @@ This file is history: every entry after the last section below stays as a fragme
   block read prints; `dispatch_ask`'s `ref` names a block among what it takes; and
   `dispatch_doc_edit` says a `{#id}` over 256 bytes is stored but its block is no graph node.
 
-- The daemon API fixtures (`fixtures/daemon-api/`) are at contract 39 (INFRA-208): `state.json`'s
+- The daemon API fixtures (`fixtures/daemon-api/`) are at contract 39 (POMJU-208): `state.json`'s
   `settings.runtime.kubernetes.resources` is `{issue, controller}`, each pod's six reservation
   fields, in place of one entry per role, and the `resource-limits` capability row's detail names
   pods (`no CPU and memory requests and limits under runtime.kubernetes.resources for the issue
   pod`) rather than roles. `LegionStateResponse` reads `settings` loosely, so its schema is
   unchanged.
 - **Breaking:** a project's architecture model comes from any number of sources, one per
-  repository (INFRA-391). `ArchitectureTree.sources`, each source's sync bookkeeping in the order
+  repository (POMJU-391). `ArchitectureTree.sources`, each source's sync bookkeeping in the order
   the project added them, replaces `source`; `ArchitectureTreeComponent.source` names the
   repository whose files define the component; `ArchitectureSource.components` counts the
   components that source projects now; and `ArchitectureSyncedEventPayload` and
@@ -624,14 +624,14 @@ This file is history: every entry after the last section below stays as a fragme
   `contracts.DispatchBodyMax` for the Dispatch server and as `dispatch.MessageBodyLimit` for the
   Legion daemon, whose derived `record.MessagePostLimit` moves from 1,956 to 31,956; the
   dashboard's composer takes it as its `maxLength`, and every `dispatch` command field that
-  carries a body takes it as its schema maximum (INFRA-45).
+  carries a body takes it as its schema maximum (POMJU-45).
 - **Breaking:** `DeliverySettings` and `DeliverySettingsInput` replace
   `production_job_name` with `production_job_names` and `production_apply_step_name`. A run's
   production result can be `skipped` when its configured apply step did not succeed, and
   `DeliveryDeployJobTiming.job` joins every followed job name with `or`.
 
 - `InboxThread` is now `AskThread`: an issue's ask list carries the same thread object an Inbox
-  row does, so the type is no longer the Inbox's alone (INFRA-44).
+  row does, so the type is no longer the Inbox's alone (POMJU-44).
 
 - `live` is removed from the capability row's `status` enum on `GET /legion/v1/state`: a live row
   is `present`, `open` or `unchecked` from the sessions' reports, and a row no session has reported

@@ -50,11 +50,11 @@ were pushed onto the red, which is what the counter is for.
 not count toward `fixAttempts` — the listener forwarded `changed_paths` and the daemon's
 `classifyPush` read them — and `pr-blocked` fires once per exhausted count. sjawhar/legion#2354
 made a handoff a Dispatch record, so no push is handoff-only and the classifier is deleted; every
-new head counts again. dispatch://INFRA-609 then removes `changed_paths`,
+new head counts again. dispatch://POMJU-609 then removes `changed_paths`,
 `changed_paths_truncated` and `forced` from the listener's push envelope, no daemon having been
 left to read them. An expected-external red still counts real fixes as before.
 
-**Superseded 2026-10-23 (dispatch://INFRA-83):** there is no PR body CI line to report the external
+**Superseded 2026-10-23 (dispatch://POMJU-83):** there is no PR body CI line to report the external
 cause in — the template (`skills/legion-worker/references/pr-body.md`) carries no `CI:` line, and no
 role records a check result for a later step to trust: the tester and the reviewer each read CI on
 GitHub at the head they are judging and record none of it (the reviewer's own four GitHub reads are

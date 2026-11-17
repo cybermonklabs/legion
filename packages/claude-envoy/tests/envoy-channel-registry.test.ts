@@ -653,7 +653,7 @@ test("a Dispatch subscription removal that names no topics removes nothing", asy
 
 // A topic the stream captures nothing of is left out of every registration
 // (`registrationTopics`), since the listener stores none: it drops such a topic from the row and
-// names it in a warning (INFRA-771). It is followed all the same when it came back from the
+// names it in a warning (POMJU-771). It is followed all the same when it came back from the
 // interest row a resume reads, and `follow`, which is the tool's call and nothing else, refuses
 // one its caller named itself, in the listener's own words.
 test("never registers a topic no stream subject captures, however it was followed", async () => {
@@ -709,7 +709,7 @@ test("never registers a topic no stream subject captures, however it was followe
 
 // The record outlives this process by the live window and the gone horizon after it, so the
 // deregistration is what ends the session for its peers: a registry write this listener has
-// stalled on must delay it, never swallow it (dispatch://INFRA-392).
+// stalled on must delay it, never swallow it (dispatch://POMJU-392).
 test("the shutdown deregistration waits for a stalled registration, then goes out anyway", async () => {
   const stateDirectory = scratchState()
   const calls: string[] = []
@@ -745,7 +745,7 @@ test("the shutdown deregistration waits for a stalled registration, then goes ou
 
 // The wait above is the shutdown path's whole budget, not one each: the two five-second waits in
 // a row left ten seconds before the DELETE was sent, and the process group is killed five
-// seconds after SIGTERM, so the record survived for the gone horizon (dispatch://INFRA-392).
+// seconds after SIGTERM, so the record survived for the gone horizon (dispatch://POMJU-392).
 test("the shutdown deregistration spends a quarter second settling, not the whole of both waits", async () => {
   const stateDirectory = scratchState()
   const calls: string[] = []
@@ -792,9 +792,9 @@ test("the shutdown deregistration spends a quarter second settling, not the whol
 // rewritten to the new form reads to this very comparison as a lost registration, unsubscribed on
 // one heartbeat and written back by the next, so a store that rewrote it would show here.
 test("a followed topic the record keeps in its old form is never unsubscribed, where a rewritten one would be", async () => {
-  const followed = legacyDispatchIssueSubject("INFRA-12", ">")
+  const followed = legacyDispatchIssueSubject("POMJU-12", ">")
   const rewritten = canonicalTopic(followed).canonical
-  expect(rewritten).toBe("notifications.dispatch.issue.INFRA.INFRA-12.>")
+  expect(rewritten).toBe("notifications.dispatch.issue.POMJU.POMJU-12.>")
   for (const { name, store, unsubscribed } of [
     { name: "as the caller wrote it", store: (topic: string) => topic, unsubscribed: false },
     {

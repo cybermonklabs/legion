@@ -7,7 +7,7 @@
  * cursor was in as the bar opened, and `Backspace` widens it to the project.
  *
  * This is not the project chip of the filter bar, which narrows the search and carries its own
- * `Remove Project INFRA` control: that chip says which items are searched, this one says what the
+ * `Remove Project POMJU` control: that chip says which items are searched, this one says what the
  * bar acts on. They sit on either side of the box, and only the filter chip can be removed.
  */
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";

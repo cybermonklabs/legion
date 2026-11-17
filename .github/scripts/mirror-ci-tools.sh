@@ -2,7 +2,7 @@
 # Fills the copy of every `second_source: ghcr-mirror` row of .github/ci-tools.yaml in the
 # package that file's `registry:` names.
 # An hour of 504s on GitHub's release assets holds every merge of this repository, because each
-# of those installs reads one source and has nowhere else to go (dispatch://INFRA-1873).
+# of those installs reads one source and has nowhere else to go (dispatch://POMJU-1873).
 # The copy in the package is the second source those installs read, and this script is what puts
 # the bytes in it.
 #

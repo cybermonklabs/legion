@@ -185,7 +185,7 @@ func replayFixture(function string, input json.RawMessage) ([]byte, error) {
 		return replayDispatchDecision(input)
 	case "reduceGithubEvent":
 		// The shipped GitHub reducer's recorded answer is its fix-attempt count, and no daemon
-		// counts one since a CI result stopped moving an issue (dispatch://INFRA-714/spec R1), so
+		// counts one since a CI result stopped moving an issue (dispatch://POMJU-714/spec R1), so
 		// there is nothing of it left to replay. The records stay for the TypeScript reducer they
 		// were taken from, held to the directory contract
 		// (TestFixtureRecordsFollowTheDirectoryContract).

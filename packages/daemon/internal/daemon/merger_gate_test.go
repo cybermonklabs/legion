@@ -19,7 +19,7 @@ import (
 
 // A new version of an approved spec closes the tree's design gate, and what may merge is what the
 // person's review of that version decides: the merger's start waits while the gate is closed and
-// runs when it opens again (dispatch://INFRA-714/spec R5). The start is held, not dropped: the row
+// runs when it opens again (dispatch://POMJU-714/spec R5). The start is held, not dropped: the row
 // stays on its backoff with nobody spawned, and the same row starts the merger once the approval
 // lands.
 func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
@@ -35,7 +35,7 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
 		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		// The deployment gates the spec step alone, the list `gates.design: root-issues` names
-		// (config.DesignGate.Steps, INFRA-1272): a runner told no step gates nothing, so the
+		// (config.DesignGate.Steps, POMJU-1272): a runner told no step gates nothing, so the
 		// start it holds here is held by the step this gate's row belongs to.
 		gatedSteps: config.DesignGateRootIssues.Steps(),
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {

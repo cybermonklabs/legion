@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# replay.sh: the LINUX replay's own stack.sh commands (README.md), sourced by stack.sh, which
+# replay.sh: the HAFJJ replay's own stack.sh commands (README.md), sourced by stack.sh, which
 # dispatches them and documents them in its header. Not executable.
 #
 # It holds replay-seed-patch-check and replay-seed (the seed build at REPLAY_COMMIT, the work
@@ -7,30 +7,30 @@
 # the bundle, the restored seed template), replay-prepare and its prepared templates, and the
 # `reset --replay` that resets database dispatch from one (cmd_reset_replay). Its functions call
 # stack.sh's own helpers (sql, spawn, start_dispatch, build_dispatch_at, loadgen) and common.sh's
-# (die, note, sha256_of, joined_sha256, and the part download and bundle verify that cluster.sh
-# shares with it: replay_fetch_parts, replay_get_bundle), which bash resolves when called, so stack.sh
-# sources it before it defines them; its top-level constants read $here and $ROOT, which stack.sh
-# sets before the source line. $here, $ROOT, $BIN, $LOGS, $PGBIN, base_env and BUILT_TREE (set by
-# build_dispatch_at) are stack.sh's (SC2154).
+# (die, note, sha256_of, joined_sha256, and the manifest and part downloads and bundle verify that
+# cluster.sh shares with it: replay_fetch_manifest, replay_fetch_parts, replay_get_bundle), which
+# bash resolves when called, so stack.sh sources it before it defines them; its top-level constants
+# read $here and $ROOT, which stack.sh sets before the source line. $here, $ROOT, $BIN, $LOGS,
+# $PGBIN, base_env and BUILT_TREE (set by build_dispatch_at) are stack.sh's (SC2154).
 # shellcheck disable=SC2154
 
-# The LINUX replay's seed: Dispatch at production's commit on 2026-10-26 (newest migration 0114,
+# The HAFJJ replay's seed: Dispatch at production's commit on 2026-10-26 (newest migration 0114,
 # no cmd/dispatch/pprof.go), with the allocation-free len16 patch unless --stock, on its own database.
 REPLAY_COMMIT=35efd326b66aea9ee2476396dabab7f7685fdbf3
 REPLAY_MIGRATION=114
 REPLAY_PATCH=$here/replay-seed-len16.patch
 REPLAY_DB=dispatch_replay_build
-# The replay's inputs (replay-get) and templates (replay-prepare, reset --replay): the manifest
-# that names the bundle's and the seed dump's parts, the restored seed's template database and how
-# many prepared templates are kept. The manifest names no Dispatch issue: the parts are file
-# artifacts of an issue the operator names in LOADTEST_REPLAY_ISSUE, which replay-get requires.
-REPLAY_MANIFEST=$here/replay-2026-10-26.json
+# The replay's inputs (replay-get) and templates (replay-prepare, reset --replay): where the
+# manifest (common.sh replay_fetch_manifest, a project file of the project of the issue
+# LOADTEST_REPLAY_ISSUE names) and the bundle's and the seed dump's parts it names (file artifacts
+# of that issue) are kept, the restored seed's template database and how many prepared templates
+# are kept. replay-get requires LOADTEST_REPLAY_ISSUE.
 REPLAY_DIR=$ROOT/replay
 REPLAY_SEED_DB=dispatch_replay_seed
 REPLAY_KEEP=3
 BUNDLE_META=bundle.meta.json
 
-# ---- the LINUX replay's seed -------------------------------------------------------------------------
+# ---- the HAFJJ replay's seed -------------------------------------------------------------------------
 
 cmd_replay_seed_patch_check() {
   [ $# -eq 1 ] || die "usage: stack.sh replay-seed-patch-check BUNDLE_DIR"
@@ -236,7 +236,7 @@ cmd_replay_seed() {
   # pg_dump's custom format under each compression; pgserver's 16.2 is built without zstd and
   # refuses those, which is logged and skipped. The smallest is kept.
   local name dump_log=$LOGS/replay-seed-dump.log candidates=() spec file best="" best_bytes=0 best_spec="" i=0
-  name=linux-replay-seed-$(printf '%04d' "$REPLAY_MIGRATION")
+  name=replay-seed-$(printf '%04d' "$REPLAY_MIGRATION")
   local pg_dump compression='[]'
   pg_dump=$(pg_tool pg_dump)
   : >"$dump_log"
@@ -298,7 +298,7 @@ cmd_replay_seed() {
   note "replay seed done: $(jq '.parts | length' "$out/seed.meta.json") parts of $best_bytes bytes ($best_spec) in $out; $(jq -c .counts "$out/seed.meta.json")"
 }
 
-# ---- the LINUX replay's inputs and templates ---------------------------------------------------------
+# ---- the HAFJJ replay's inputs and templates ---------------------------------------------------------
 
 # now_ns: the time now, UTC, to the nanosecond, so last_used_at orders prepared templates.
 now_ns() { date -u +%FT%T.%NZ; }
@@ -408,7 +408,7 @@ restore_replay_seed() {
 
 cmd_replay_get() {
   local usage="usage: stack.sh replay-get [--manifest FILE] [--from-dir DIR]"
-  local manifest=$REPLAY_MANIFEST from_dir=""
+  local manifest="" from_dir=""
   while [ $# -gt 0 ]; do
     case $1 in
       --manifest | --from-dir)
@@ -426,11 +426,18 @@ cmd_replay_get() {
   # artifacts of, and replay-get refuses before it reads or downloads anything without it.
   [ -n "${LOADTEST_REPLAY_ISSUE:-}" ] ||
     die "LOADTEST_REPLAY_ISSUE is not set: set it to the issue the replay's parts are file artifacts of (the manifest names none)"
-  [ -f "$manifest" ] || die "no replay manifest at $manifest"
-  [ "$(jq -r .schema "$manifest")" = 1 ] || die "$manifest is not a schema 1 replay manifest"
   [ -z "$from_dir" ] || [ -d "$from_dir" ] || die "--from-dir $from_dir is not a directory"
   need_stack
   [ -x "$BIN/loadgen" ] || die "no $BIN/loadgen; run stack.sh setup first"
+  # Without --manifest, the manifest is kept beside the parts, or copied from --from-dir, or
+  # downloaded from the issue's project, and checked against its pinned sha256; replay-get refuses,
+  # before any part, when it can have none of these.
+  if [ -z "$manifest" ]; then
+    replay_fetch_manifest "$REPLAY_DIR/parts" "$from_dir"
+    manifest=$REPLAY_MANIFEST_PATH
+  fi
+  [ -f "$manifest" ] || die "no replay manifest at $manifest"
+  [ "$(jq -r .schema "$manifest")" = 1 ] || die "$manifest is not a schema 1 replay manifest"
   local has_seed
   has_seed=$(jq '.seed != null' "$manifest")
   if [ "$has_seed" = true ]; then

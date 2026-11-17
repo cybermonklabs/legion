@@ -21,7 +21,7 @@ interface ArgumentValues {
 
 interface Options {
   readonly authorization: Record<string, string>;
-  /** Read the feed's start from `GET /auth/whoami`'s `event_head`, as a page does (INFRA-292). */
+  /** Read the feed's start from `GET /auth/whoami`'s `event_head`, as a page does (POMJU-292). */
   readonly fromWhoami: boolean;
   readonly since: string | null;
   /** How long to wait between whoami's answer and the socket, so a write can commit in between. */

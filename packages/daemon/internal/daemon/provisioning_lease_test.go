@@ -27,7 +27,7 @@ import (
 // installation it was addressed to, and the repositories and permissions its body named. Every
 // mint of this daemon names permissions, so they are never nil in a request a provisioning mint
 // made; no mint names a repository, the installation deciding what its token reaches
-// (INFRA-2543), so repositories is nil in every one.
+// (POMJU-2543), so repositories is nil in every one.
 type provisioningTokenRequest struct {
 	installation string
 	repositories []string
@@ -188,7 +188,7 @@ func provisioningRefusal(w http.ResponseWriter) {
 // The Sandbox runtime's provisioning token is a reading lease: implementTokens mints the
 // implement App's installation token on the owner of the repository the pod clones, narrowed to
 // contents, pull requests, Actions and metadata at read, which is all a clone, a fetch and a
-// repository cache do (INFRA-1254, INFRA-513).
+// repository cache do (POMJU-1254, POMJU-513).
 // Four installations, one per case, so no case's mints or cached leases reach another's:
 //
 //   - one granted the implement App's whole set: the one request names the reading set and no
@@ -199,7 +199,7 @@ func provisioningRefusal(w http.ResponseWriter) {
 //   - one that refuses the reading request: the refusal is returned as it came and nothing else
 //     is minted. It once fell back to the App's own write token for that owner, from when a
 //     request named the repository and a 422 could mean the installation did not reach it; no
-//     request names a repository now (INFRA-2543), so that write token would reach the owner's
+//     request names a repository now (POMJU-2543), so that write token would reach the owner's
 //     whole installation, and a refused reading lease fails the mint rather than hand it out;
 //   - one in GitHub's trouble (a 500): the error is returned as it came, with no second mint and
 //     nothing logged.
@@ -338,7 +338,7 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	}
 
 	// No request names a repository: the installation decides what the lease reaches
-	// (INFRA-2543), and the repository the pod clones keys the lease alone.
+	// (POMJU-2543), and the repository the pod clones keys the lease alone.
 	for _, installation := range []string{readingInstallation, narrowInstallation, refusedInstallation, flakyInstallation} {
 		for _, request := range github.requestsTo(installation) {
 			if request.repositories != nil {

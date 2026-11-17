@@ -37,7 +37,7 @@ not carry over is the sentence beside it that dates the hazard away.
   these files after \<change\> lands on it" is the honest form; "no branch carries these files" is
   the form that costs a reader a round.
 
-## Evidence (sjawhar/legion#2649, INFRA-879)
+## Evidence (sjawhar/legion#2649, POMJU-879)
 
 Two active pages state the end state of sjawhar/legion#2354, which moved every handoff from a
 committed file to a record on the Dispatch issue:
@@ -50,8 +50,8 @@ push carries the trailer") and
 This issue was admitted before that migration reached its branch, and all three retired
 consequences landed on it:
 
-- its handoffs were committed files under `.legion/INFRA-879/` until the import commit
-  `32face5f931280681d08706c2a7bbcc5975f0f58`, `chore(legion): INFRA-879's handoffs are on its
+- its handoffs were committed files under `.legion/POMJU-879/` until the import commit
+  `32face5f931280681d08706c2a7bbcc5975f0f58`, `chore(legion): POMJU-879's handoffs are on its
   Dispatch issue now`, removed them;
 - a push carrying two code commits under a handoff tip whose message ended `skip-checks: true`
   started no workflow at all, and the branch sat with `check-runs` `0` at that head for two rounds

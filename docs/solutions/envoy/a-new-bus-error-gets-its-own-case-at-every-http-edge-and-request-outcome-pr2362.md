@@ -13,7 +13,7 @@ module: packages/envoy/cmd/listener
 
 # A new bus error gets its own case at every HTTP edge and request outcome
 
-Extends docs/solutions/envoy/classify-a-store-error-by-the-stores-named-answers-and-let-every-other-error-be-the-store-not-answering-INFRA-141.md.
+Extends docs/solutions/envoy/classify-a-store-error-by-the-stores-named-answers-and-let-every-other-error-be-the-store-not-answering-POMJU-141.md.
 
 - When the bus layer gains a new named error, find every place that turns a bus error into an
   HTTP answer or a recorded outcome, and give the new error its own case in the same change. A

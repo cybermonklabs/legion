@@ -1,7 +1,7 @@
 /** What a move changed in a row's assertions, for the rows where the usual sentence is false.
  *
  *  `e2e/row-map.md` says of every moved row that the move touched no line of what it asserts,
- *  and that sentence is what dispatch://INFRA-1407's k2 is read from: a reviewer reads the map
+ *  and that sentence is what dispatch://POMJU-1407's k2 is read from: a reviewer reads the map
  *  rather than the diff, so a row the sentence covers is a row nobody looks at. A row whose
  *  assertions really did move therefore needs its own line, and this is where it is written.
  *

@@ -18,8 +18,8 @@ import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * What a person's open agents cost the page (INFRA-812, R2; the untimed half of the
- * Verification document's k11, dispatch://INFRA-812/artifact/verification-md). Eight agents are
+ * What a person's open agents cost the page (POMJU-812, R2; the untimed half of the
+ * Verification document's k11, dispatch://POMJU-812/artifact/verification-md). Eight agents are
  * pinned, each seeded with a conversation at the stream's limit, and each is opened in turn
  * through the rail; what the page then says about itself is the check: how many agent
  * subscriptions its one live socket holds, how many conversations it has drawn, and what its

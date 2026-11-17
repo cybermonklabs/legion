@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// C2 of dispatch://INFRA-3107 names two kinds of issue that read `unclassified`: the issues at
+// C2 of dispatch://POMJU-3107 names two kinds of issue that read `unclassified`: the issues at
 // `accepting`, which hold no slot and owe their worker no start, and "an issue whose tree root
 // the record does not hold". The second kind reads `design_gate` instead, with `heldBy` naming
 // the key no record holds, because record.treeRoots names only the issues that are their own
@@ -30,7 +30,7 @@ import (
 // keeps the word it reads today, because a root the pass's own records leave out is read by
 // record.ReadTreeRoots.
 //
-// The architect of dispatch://INFRA-2964 ruled on 2026-11-12T07:23Z that C2 binds, after this
+// The architect of dispatch://POMJU-2964 ruled on 2026-11-12T07:23Z that C2 binds, after this
 // round measured the word: "A requirement is read as written; that the state is unreachable
 // today changes what it costs to meet, not whether it is required." It ruled the form of the
 // fix, and these rows, at 07:28Z.

@@ -16,7 +16,7 @@
 // fallback gates on — and the one role the phase reminder leaves alone, so nothing but the driver's
 // two assignments starts a turn. The pane's own profile names two models of one OpenAI-shaped
 // provider and a chain from the first to the second, with `retry.fallbackRevertPolicy: never`, the
-// shape INFRA's operator overlay carries (deploy/kubernetes/operator-route/overlay.yml), and
+// shape POMJU's operator overlay carries (deploy/kubernetes/operator-route/overlay.yml), and
 // `retry.rateLimitWalksChain: true`, which Oh My Pi has off (`writeProfile` below says what it
 // does). The stand-in answers every request of the long turn with a `sleep`, so each
 // request says which model the session stood on a minute after the one before it.

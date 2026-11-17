@@ -30,7 +30,7 @@ import type {
 import type { LegionSessionKind } from "./classify";
 
 /**
- * The evidence one stuck tool call leaves, and the one notice its owner gets (INFRA-1274, R3).
+ * The evidence one stuck tool call leaves, and the one notice its owner gets (POMJU-1274, R3).
  * `packages/pi-shared/src/stall-watchdog.ts` is the detector: it holds the open calls, decides
  * which one is overdue and drives the ladder. This module is the half of that watch which has to
  * touch the machine and the listener, which is why it lives here and reaches the detector as the

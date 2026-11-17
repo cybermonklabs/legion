@@ -36,7 +36,8 @@ Every script reads the server it harvests from through its read API, with `GET` 
 
 `build_cases.py` turns a set of measured cases into descriptors.
 
-- A case's query is Dispatch's own text and this repository is public, so a committed case names the item its text comes from, the version, the character range, and the SHA-256 of what that range yields.
+- A case's query is Dispatch's own text, so a descriptor names the item its text comes from, the version, the character range, and the SHA-256 of what that range yields, and never the text.
+A descriptor still names one of the deployment's own issues and its project, so the set of them is not in this public tree either: it is kept in the deployment's own Dispatch, as [the descriptor set](#the-descriptor-set) says.
 
 - `case_text.py` holds the one rule for reading a range back, so the hash a descriptor carries is the hash of what the runner will send.
 
@@ -85,7 +86,7 @@ A ceiling over that spread would fail at random, which is worse than no ceiling.
 A number read against a vector of a key and a title alone is not comparable with this one.
 
 - It also assumes `issues_search` is carrying no backlog of pending entries.
-A GIN index created with the default `fastupdate` batches new entries into a pending list that every scan of the index must read whole before it reads anything else; 1.8 MB of that list priced the index above a sequential scan of `issues`, and the issue arm then detoasted the whole table on every search (INFRA-1042).
+A GIN index created with the default `fastupdate` batches new entries into a pending list that every scan of the index must read whole before it reads anything else; 1.8 MB of that list priced the index above a sequential scan of `issues`, and the issue arm then detoasted the whole table on every search.
 Migration `20261108015800_issues_search_fastupdate` turns `fastupdate` off and empties the list, and `load_fixture.py` migrates a fixture before it copies a row into it, so the index a fixture writes into batches nothing.
 
 - A run given no `--serial` pass measured no latency and says so, asserting nothing.
@@ -97,7 +98,7 @@ What makes them a check is the run after a change: a floor missed there is a reg
 - The floors are aggregate, so a change that broadened every query could still clear them; `TestSearchBroadensOnlyTheQueryNoItemAnswers`, in `packages/envoy/internal/dispatch/api/`, pins that behaviour directly.
 
 - A run that measured too few cases of a kind is void: `analyze.py` says so and exits non-zero instead of reading as a pass.
-The minimum is nine tenths of the committed descriptors of that kind — 250 of the 278 kind-1 cases, 391 of the 435 kind-3 ones.
+The minimum is nine tenths of the descriptor set's descriptors of that kind — 250 of the 278 kind-1 cases, 391 of the 435 kind-3 ones.
 A run refuses a case whose text has moved since the descriptors were built, and a few such refusals are normal (the run of 2026-11-05 refused one); a run that measured a handful measured a broken fixture, a half-loaded corpus or a server that stopped answering, and a handful of cases may never read as a pass.
 
 `serial120.json` is the 120 case ids of the latency sample, so a latency run is the same sample every time.
@@ -122,20 +123,41 @@ env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_CONFIG_FILE -u AWS_PROFILE \
   "$TMPDIR/envoy-dispatch"
 ```
 
-Build the cases once against the corpus, then run them:
+Download the descriptor set (the next section says where it is kept), then run the cases:
 
 ```bash
-python3 scripts/search-measure/build_cases.py --corpus "$TMPDIR/corpus" \
-  --cases "$TMPDIR/cases_all.json" --out scripts/search-measure/cases.json
-python3 scripts/search-measure/run_search.py --cases scripts/search-measure/cases.json \
+printf 'Authorization: Bearer %s\n' "$(cat "$DISPATCH_TOKEN_FILE")" |
+  curl -q -fsSL -H @- -o "$TMPDIR/cases.json" \
+    "${DISPATCH_URL%/}/api/v1/projects/$CASES_PROJECT/artifacts/cases-json/versions/1"
+sha256sum "$TMPDIR/cases.json"  # 0ae2de72642d9a537557ef70986a628a9da9b17ada261a14136c670cf0fb560e
+python3 scripts/search-measure/run_search.py --cases "$TMPDIR/cases.json" \
   --fixture-dsn "postgres://…/searchfix" --url http://127.0.0.1:8799 --token fixture-token \
   --workers 8 --out "$TMPDIR/out-all.jsonl"
-python3 scripts/search-measure/run_search.py --cases scripts/search-measure/cases.json \
+python3 scripts/search-measure/run_search.py --cases "$TMPDIR/cases.json" \
   --fixture-dsn "postgres://…/searchfix" --url http://127.0.0.1:8799 --token fixture-token \
   --only scripts/search-measure/serial120.json \
   --workers 1 --out "$TMPDIR/out-serial.jsonl"
 python3 scripts/search-measure/analyze.py "$TMPDIR/out-all.jsonl" --serial "$TMPDIR/out-serial.jsonl"
 ```
 
-`cases.json` is the descriptor set as it was built against a harvest of 2026-11-05: 278 kind-1 descriptors and 435 kind-3 ones.
+`DISPATCH_URL` and `DISPATCH_TOKEN_FILE` are the deployment's own Dispatch and a token for it, the two `dispatch_read.py` reads.
+`CASES_PROJECT` is the key, in the deployment's records, of the project that holds the issue whose work built this measurement, the command bar's search, which `dispatch search --query 'command bar search keyword'` finds.
+`dispatch doc-read --project "$CASES_PROJECT" --artifact cases.json` shows the file, its version and its size, but it prints that line before the file's bytes, so the download reads the file's own route, which answers the bytes alone.
+
+A new descriptor set is built against a corpus from a set of measured cases, each with its query, and is written outside this tree:
+
+```bash
+python3 scripts/search-measure/build_cases.py --corpus "$TMPDIR/corpus" \
+  --cases "$TMPDIR/cases_all.json" --out "$TMPDIR/cases.json"
+```
+
+## The descriptor set
+
+`cases.json` is the descriptor set as it was built against a harvest of 2026-11-05: 278 kind-1 descriptors and 435 kind-3 ones, 305,310 bytes, SHA-256 `0ae2de72642d9a537557ef70986a628a9da9b17ada261a14136c670cf0fb560e`.
+It carries none of Dispatch's text, but each descriptor names one of the deployment's own issues and its project, and a document or an ask by its id, and this repository is public, so this tree holds no copy of it.
+It is kept in the deployment's own Dispatch as a file of that name, version 1, among the documents of the project of the issue whose work built this measurement.
+That issue is closed, and a closed issue takes no file, so the file belongs to its project rather than to the issue.
+
+`run_search.py` takes it by `--cases`, which has no default, and refuses a path that holds no descriptor set, naming what is missing; a run that measured too few of its cases is void in `analyze.py`, as that script's entry above says.
 A case whose sentence its document no longer holds is refused by the runner and counted, which is how a later harvest says what has moved under it.
+A set built anew goes to Dispatch as the next version of that file, and the version and SHA-256 above and `DESCRIBED` in `analyze.py` move with it.

@@ -334,7 +334,7 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 
 // Every claim a previous daemon left in a plugin update round leaves it at this boot, whatever
 // its state, and the live ones are refreshed by the stale-plugin lane in that same pass
-// (dispatch://INFRA-2712 R5, endPluginRounds). Nothing of this release opens a plugin round and
+// (dispatch://POMJU-2712 R5, endPluginRounds). Nothing of this release opens a plugin round and
 // nothing of it carries one — the sweep reads pod rounds alone (reconcilePodUpdates) — so a
 // round left standing would hold the claim's next task behind it for as long as the claim
 // lives, and the lane would pass over that claim at every sweep for ever.

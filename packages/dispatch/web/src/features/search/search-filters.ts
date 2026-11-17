@@ -63,7 +63,7 @@ export function dayText(day: string, today: Date = new Date()): string {
 }
 
 /** The chips the bar shows for these filters, in the order it shows them: each names the filter
- *  and the value in the words the person chose (`Project INFRA`), never the query string a
+ *  and the value in the words the person chose (`Project POMJU`), never the query string a
  *  search syntax would spell it as. */
 export function searchFilterChips(
   filters: SearchBarFilters,

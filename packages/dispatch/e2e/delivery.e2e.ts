@@ -285,7 +285,7 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
   // grows from `PRs never checked` to that sentence, the Source freshness block rewraps
   // 56 px -> 96 px, and the page, scrolled to the chart, follows it from 2186 to 2226. Written
   // here, word for word what that pass writes, so the page the finger meets is already the one
-  // the pass leaves and a pass landing mid-row moves nothing (INFRA-1260).
+  // the pass leaves and a pass landing mid-row moves nothing (POMJU-1260).
   await sql(
     `UPDATE delivery_settings
        SET last_error = 'the GitHub App is not installed on acme/widgets'
@@ -330,7 +330,7 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
   // `Timeline.tsx` and the bundle rebuilt, a finger dragged down the chart with 2,226 px of room
   // above still moved the page 2,226 -> 2,226, while the same drag on the heading moved it
   // 0 -> 285 - so the class declares the intent and this reading catches a page moving under a
-  // finger that is down, which is what it last failed on (INFRA-1260).
+  // finger that is down, which is what it last failed on (POMJU-1260).
   expect(await layout()).toEqual(before);
   await finger.lift();
 

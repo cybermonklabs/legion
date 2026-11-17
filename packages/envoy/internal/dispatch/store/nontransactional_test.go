@@ -199,7 +199,7 @@ func TestMigrateTransactionalFailureStillRollsBackTheWholeMigration(t *testing.T
 	}
 }
 
-// The pod stopped mid-migration INFRA-1973 is about, at the layer that holds the key. The sleep
+// The pod stopped mid-migration POMJU-1973 is about, at the layer that holds the key. The sleep
 // is still in flight when the context is cancelled, so pgx's deadline watcher closes the
 // connection over the migration statement's own failure, and BeginFunc's rollback then fails on
 // a connection already closed; a cancel landing between two statements reaches the same place by
@@ -518,7 +518,7 @@ func TestWindowOwnerMigrationBuildsAValidPartialIndex(t *testing.T) {
 	}
 }
 
-// INFRA-1973's own sequence at the layer that records a version: a concurrent build cancelled at
+// POMJU-1973's own sequence at the layer that records a version: a concurrent build cancelled at
 // the runner's lock_timeout leaves an INVALID index of the migration's own name, and the retry
 // drops that leftover, builds the index again and records the migration's version.
 func TestMigrateRecordsTheVersionAfterATimedOutConcurrentBuild(t *testing.T) {
@@ -623,7 +623,7 @@ func checkRebuiltWindowOwner(t *testing.T, store *Store, leftover uint32) {
 	}
 }
 
-// The production case INFRA-1973 reports, against the real migration set: a killed boot left an
+// The production case POMJU-1973 reports, against the real migration set: a killed boot left an
 // INVALID embeddings_window_owner behind, and 20261102233630 must drop it, build the index again
 // and record its version instead of refusing on every later boot.
 func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
@@ -654,7 +654,7 @@ func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
 // this one measure lock waits against a five-second bound.
 const bootRaces = 20
 
-// Two Dispatch processes booting at once over the INVALID leftover INFRA-1973 reports. One of
+// Two Dispatch processes booting at once over the INVALID leftover POMJU-1973 reports. One of
 // them holds the migration advisory key while 20261102233630 drops that leftover and builds
 // embeddings_window_owner again, both CONCURRENTLY; the other waits for the key.
 //

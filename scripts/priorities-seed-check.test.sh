@@ -133,7 +133,7 @@ done
 port="$(cat "${temporary_dir}/port")"
 readonly port
 
-readonly document='dispatch://INFRA-10/artifact/priorities-table'
+readonly document='dispatch://POMJU-10/artifact/priorities-table'
 
 # The table every case reads back, at version 7: three rows, the second of them DONE.
 cat >"${state}/versions/7.md" <<'EOF'
@@ -143,9 +143,9 @@ Some prose over the table.
 
 | \# | Priority | Owner | Where |
 | --- | --- | --- | --- |
-| 1 | Ship the board | ana | INFRA-21 in flight |
+| 1 | Ship the board | ana | POMJU-21 in flight |
 | 2 | Cut the backlog in half | bo | DONE in October |
-| 3 | Keep the lights on | cy | INFRA-22, waiting |
+| 3 | Keep the lights on | cy | POMJU-22, waiting |
 EOF
 cp "${state}/versions/7.md" "${state}/text.md"
 
@@ -246,9 +246,9 @@ expect_status 2
 expect_output '--loudly is no argument of this check'
 
 case_name='a board that holds the table passes'
-board "$(priority p1 1 'INFRA-21')" "$(priority p3 3 'INFRA-22')"
-issue INFRA-21 p1
-issue INFRA-22 p3
+board "$(priority p1 1 'POMJU-21')" "$(priority p3 3 'POMJU-22')"
+issue POMJU-21 p1
+issue POMJU-22 p3
 run --artifact "$document"
 expect_status 0
 expect_output '2 rows stand on the board in the table'
@@ -261,7 +261,7 @@ expect_status 0
 expect_output 'read at version 7'
 
 case_name='a row no priority holds fails, naming that row'
-board "$(priority p1 1 'INFRA-21')"
+board "$(priority p1 1 'POMJU-21')"
 run --artifact "$document"
 expect_status 1
 expect_output 'row 3 of '"$document"' (Keep the lights on) stands on no priority of the board'
@@ -277,46 +277,46 @@ expect_output 'row 3 of '"$document"' (Keep the lights on) stands on no priority
 expect_output '2 faults'
 
 case_name='priorities that do not run in the table order fail'
-board "$(priority p3 3 'INFRA-22')" "$(priority p1 1 'INFRA-21')"
+board "$(priority p3 3 'POMJU-22')" "$(priority p1 1 'POMJU-21')"
 run --artifact "$document"
 expect_status 1
 expect_output 'the board draws row 3 of '"$document"' where the table writes row 1'
 
 case_name='a priority whose record names an issue that does not advance it fails, naming both'
-board "$(priority p1 1 'INFRA-21')" "$(priority p3 3 'INFRA-22')"
-issue INFRA-22 p9
+board "$(priority p1 1 'POMJU-21')" "$(priority p3 3 'POMJU-22')"
+issue POMJU-22 p9
 run --artifact "$document"
 expect_status 1
-expect_output "priority p3 (row 3 of ${document}) records that INFRA-22 advances it, and INFRA-22's own advances does not name it"
-refute_output 'INFRA-21 advances it, and'
+expect_output "priority p3 (row 3 of ${document}) records that POMJU-22 advances it, and POMJU-22's own advances does not name it"
+refute_output 'POMJU-21 advances it, and'
 
 case_name='a relation an issue only inherits is no relation of its own'
-printf '{"key":"INFRA-22","status":"todo","advances":[{"id":"p3","inherited":true}],"advances_revision":0}' \
-  >"${state}/issues/INFRA-22.json"
+printf '{"key":"POMJU-22","status":"todo","advances":[{"id":"p3","inherited":true}],"advances_revision":0}' \
+  >"${state}/issues/POMJU-22.json"
 run --artifact "$document"
 expect_status 1
-expect_output "INFRA-22's own advances does not name it"
+expect_output "POMJU-22's own advances does not name it"
 
 case_name='a key no issue carries fails, naming the priority and the key'
-rm -f -- "${state}/issues/INFRA-22.json"
+rm -f -- "${state}/issues/POMJU-22.json"
 run --artifact "$document"
 expect_status 1
-expect_output "priority p3 (row 3 of ${document}) records that INFRA-22 advances it, and no issue carries that key"
+expect_output "priority p3 (row 3 of ${document}) records that POMJU-22 advances it, and no issue carries that key"
 
 case_name='a board holding no row of this document is not a board to read back'
-issue INFRA-22 p3
+issue POMJU-22 p3
 board '{"id":"p7","title":"written by hand","description":"no record of any table."}'
 run --artifact "$document"
 expect_status 1
 expect_output 'no priority of the board records a row of '"$document"
 
 case_name='a priority of another table is passed over'
-board "$(priority p1 1 'INFRA-21')" "$(priority p3 3 'INFRA-22')" \
-  '{"id":"pX","title":"another table","description":"x\n\n---\n\nTable row 1 of dispatch://INFRA-99/artifact/other-table, read at version 2.\nAdvances: INFRA-98.\nNot advanced: none."}'
+board "$(priority p1 1 'POMJU-21')" "$(priority p3 3 'POMJU-22')" \
+  '{"id":"pX","title":"another table","description":"x\n\n---\n\nTable row 1 of dispatch://POMJU-99/artifact/other-table, read at version 2.\nAdvances: POMJU-98.\nNot advanced: none."}'
 run --artifact "$document"
 expect_status 0
 expect_output '2 rows stand on the board'
-refute_output 'INFRA-98'
+refute_output 'POMJU-98'
 
 case_name='every read presents the bearer as a header, and no run puts it in an argument'
 [[ -s "${state}/authorization" ]] || fail 'the stand-in recorded no Authorization header'

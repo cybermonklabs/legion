@@ -246,7 +246,7 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           # The amd64 leg keeps the module cache it has always had. An arm64 entry would be one more
-          # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against INFRA-490's target
+          # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against POMJU-490's target
           # of an Actions cache under 9 GB.
           cache: ${{ matrix.arch == 'amd64' }}
       - uses: ./.github/actions/setup-bun

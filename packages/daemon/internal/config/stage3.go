@@ -190,7 +190,7 @@ func readProjects(value *yaml.Node, key string) (map[string]Project, []string, e
 }
 
 // readProject is one `projects.<KEY>` entry and the warnings it raises. `deploys` is among its
-// known keys and nothing is read from it: INFRA's own deployment file still sets the key, and a
+// known keys and nothing is read from it: POMJU's own deployment file still sets the key, and a
 // reader that refused it would make this release that deployment's outage, on a schedule this
 // repository does not control
 // (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).

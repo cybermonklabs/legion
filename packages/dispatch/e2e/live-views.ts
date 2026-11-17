@@ -1,4 +1,4 @@
-// What a browser check can read about the page's live views (INFRA-812, D15). Two owners report
+// What a browser check can read about the page's live views (POMJU-812, D15). Two owners report
 // on one `window` handle, `window.__dispatchLiveViews`: the registry writes a snapshot of each
 // opened view (`web/src/features/agent-view/live-views.ts`) and the live socket writes how many
 // agent subscriptions it holds (`web/src/api/live-socket.ts`). The snapshot is a word and two

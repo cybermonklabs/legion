@@ -26,7 +26,7 @@ import (
 //
 // A typed block has no entry here, and none of its declared defaults is left out of a display
 // tree: the paragraph at displayNodeAttrs says why that is what this build ships, and
-// dispatch://INFRA-3404 is the change that reads them from the manifest instead.
+// dispatch://POMJU-3404 is the change that reads them from the manifest instead.
 var displayNodeDefaults = map[string]Attrs{
 	// heading: `id` is the slug milkdown's own generator would write and both readers leave
 	// empty; `level` is 1 for a heading nothing says the level of.
@@ -63,7 +63,7 @@ var displayMarkDefaults = map[string]Attrs{
 //
 // This merge keeps that encoding byte for byte: omitting the defaults is a different encoding of
 // every stored tree, which belongs with a raise of DisplayTreeVersion and the fill that backfills
-// it (texttreefill), not with a forward merge. dispatch://INFRA-3404 carries the fix, and until
+// it (texttreefill), not with a forward merge. dispatch://POMJU-3404 carries the fix, and until
 // it lands a typed block takes the same path as any other node, through displayNodeDefaults,
 // which holds no entry for one.
 
@@ -90,7 +90,7 @@ func (n *Node) toDisplayJSON() *jsonNode {
 
 // displayNodeAttrs is attrs as the display encoding writes them for a node of this type: every
 // node's defaults are displayNodeDefaults', and a typed block has no entry there, so none of its
-// attributes is left out (the paragraph above says why, and dispatch://INFRA-3404 changes it).
+// attributes is left out (the paragraph above says why, and dispatch://POMJU-3404 changes it).
 func displayNodeAttrs(nodeType string, attrs Attrs) Attrs {
 	return withoutDefaults(attrs, displayNodeDefaults[nodeType])
 }

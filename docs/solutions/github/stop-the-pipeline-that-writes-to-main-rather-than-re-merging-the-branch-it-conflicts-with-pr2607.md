@@ -28,7 +28,7 @@ related_issues:
   `release.yaml`'s `publish` job rewrote `packages/envoy-plugin/package.json` in place (`jq '.version = $v'`, in `envoy_plugin_build` and again in `publish`), committed it (`release-push.sh tag packages/envoy-plugin`) and pushed it to `main` (`release-push.sh push-main packages/envoy-plugin`) on every release.
   Each of those pushes is a `modify/delete` conflict against #2599.
 - The rate: `main` released that plugin five times on 2026-10-31, v12.5.0 to v12.7.0, two of them between a forward merge of #2599 and the moment it could have merged (13:51Z and 15:21Z).
-  #2599's head moved `677d6ee5` to `35ea1346` during the single day INFRA-909 ran, and it was still `OPEN` and `CONFLICTING` at the end of it.
+  #2599's head moved `677d6ee5` to `35ea1346` during the single day POMJU-909 ran, and it was still `OPEN` and `CONFLICTING` at the end of it.
 - sjawhar/legion#2607 is the stop: the `envoy_plugin_build` job, its publish steps and its trigger path, 187 deleted lines, four files.
   After it, `grep -nE 'release-push\.sh (push-main|tag) ' .github/workflows/release.yaml` names four write calls, all to the two Oh My Pi plugins, and `packages/envoy-plugin` appears once in the whole file, at the kept trigger entry.
   On `main` the same two commands gave six write calls and twelve lines.

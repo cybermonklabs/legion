@@ -112,7 +112,7 @@ func resolveThenLock[R, T any](
 // is no target. An unresponsive one - past the live window, inside the gone horizon - is
 // resolved like any other, for a role route as much as a session route: the listener stores the
 // frame and hands it over when the session answers again, so a message to a session that missed
-// its heartbeats waits for it rather than being dropped (dispatch://INFRA-392).
+// its heartbeats waits for it rather than being dropped (dispatch://POMJU-392).
 //
 // A session id resolves through SessionIncludingStopped, so a session the listener knows only by
 // its record, one that is not running, is a target like any other too: the listener takes a
@@ -205,7 +205,7 @@ func deliveryErrorText(err error) string {
 }
 
 // listenerTakeoverWindow is how long, from its first try, a sender keeps trying a listener that
-// is being replaced. The listener's take-over is meant to end within 10 seconds (INFRA-557), so a
+// is being replaced. The listener's take-over is meant to end within 10 seconds (POMJU-557), so a
 // send made at its start still reaches the session once the successor answers; the two seconds
 // past that target leave room for the last backoff. A session that is really gone settles
 // "no live session" that much later than its first try. It is the window every deployment runs:

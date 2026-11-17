@@ -1,5 +1,5 @@
 -- 20261029120700_merging_closes_the_issue.up.sql — the merger merges, so `merging` runs to the merge and the
--- merge closes the issue (dispatch://INFRA-714 R1, R2).
+-- merge closes the issue (dispatch://POMJU-714 R1, R2).
 --
 -- Phase `awaiting_merge` is gone. It existed for the stretch between the merger's READY and the
 -- merge the daemon submitted for it; the daemon submits none, so there is nothing between the two:

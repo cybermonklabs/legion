@@ -30,7 +30,7 @@ related_issues:
    cache to restore. A `workflow_dispatch` of that file on that branch works too, through the
    API, though the file is not on the default branch: sjawhar/legion-smoke run 40157672926, a
    push run, dispatched it with its own `GITHUB_TOKEN` as `gh workflow run <file> --ref
-   <branch>`, and GitHub created run 40157678321 (dispatch://INFRA-281, 2026-10-25).
+   <branch>`, and GitHub created run 40157678321 (dispatch://POMJU-281, 2026-10-25).
 2. **Put every step that first executes in production on that run.** Once the sandbox exists,
    list the steps of the change that no pre-merge surface reaches — a registry write, a binary
    the runner alone can execute, an action dropped on a measurement of its sibling — and probe
@@ -55,7 +55,7 @@ related_issues:
    Debian packages extracted for OpenSSH, release binaries for jq and shellcheck) and tell every
    subagent to prepend `$HOME/.local/bin` to `PATH`, since a subagent's shell starts without
    it. A harness that needs them fails before its first case otherwise.
-   **Superseded 2026-10-24 (INFRA-221):** the worker image carries `jq`, `ssh` and `ssh-keygen` as
+   **Superseded 2026-10-24 (POMJU-221):** the worker image carries `jq`, `ssh` and `ssh-keygen` as
    real binaries now, and the five clients `psql`, `redis-cli`, `sqlite3`, `nc` and `dig` with
    them, so for those the `$HOME/.local` installs above are no longer the step. `shellcheck` the
    image does not carry, and its route is a pinned runner rather than an extraction or a release

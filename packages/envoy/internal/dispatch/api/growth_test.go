@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// An answer holds at most contracts.DispatchEventBodyMax UTF-16 units (INFRA-370), so what
+// An answer holds at most contracts.DispatchEventBodyMax UTF-16 units (POMJU-370), so what
 // settlement's weighing of a returning answer turns on is the document it returns to rather
 // than the answer: boundedAnswer is an answer at that bound, and roomForOneAnswer a spec long
 // enough that the document has room for one such answer and not for two. The headroom covers
@@ -392,7 +392,7 @@ func openAsksSpec(asks int) string {
 
 // openAsksSpecWithRoomForOne is openAsksSpec with prose enough that the document has room for
 // one text at the ask bound and not for two: an ask's words are at most
-// contracts.DispatchEventBodyMax units (INFRA-370), so what a write of one weighs against is the
+// contracts.DispatchEventBodyMax units (POMJU-370), so what a write of one weighs against is the
 // document it joins rather than its own length.
 func openAsksSpecWithRoomForOne(asks int) string {
 	return roomForOneAnswer() + "\n" + openAsksSpec(asks)

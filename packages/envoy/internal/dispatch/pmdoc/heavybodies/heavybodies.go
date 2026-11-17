@@ -1,7 +1,7 @@
 // Package heavybodies holds the heavy markdown bodies a document write is measured and gated on,
 // in one place, so the reader's tests (internal/dispatch/pmdoc) and the API's (internal/dispatch/api)
 // write the very same bytes. They lived in pmdoc's own _test.go files, which no other package can
-// import, until the browser rows that wrote them through the API were moved into Go (INFRA-1404).
+// import, until the browser rows that wrote them through the API were moved into Go (POMJU-1404).
 //
 // Eight of these bodies are spelled a second time in TypeScript, in packages/dispatch/e2e/heavy-bodies.ts,
 // which the browser suite draws them from; the other three are Go's alone, drawn by no browser row.
@@ -150,7 +150,7 @@ func Shapes() []Shape {
 			// and they cost the parser different things - one line holding those 98 blocks open
 			// over 31,900 blank lines, against 49 lines of 4 to 100 characters and then 29,452
 			// blank lines - so both are here rather than one standing in for the other
-			// (INFRA-1404). e2e/heavy-bodies.ts spelled this body too, as nested49ThenBlankLines,
+			// (POMJU-1404). e2e/heavy-bodies.ts spelled this body too, as nested49ThenBlankLines,
 			// for the document writes the deleted
 			// heavy-document-writes.e2e.ts made through the API; no browser row draws it now, so
 			// testdata/shared-bodies.json lists this shape and the one above alike, as bodies only
@@ -189,7 +189,7 @@ func Shapes() []Shape {
 }
 
 // NestedDirective is one of the bodies that froze a reader's tab in the browser engine
-// (INFRA-581): a bare `:::a`, which Go reads as a malformed directive whatever it is nested in, so
+// (POMJU-581): a bare `:::a`, which Go reads as a malformed directive whatever it is nested in, so
 // a document write of either is refused.
 type NestedDirective struct {
 	// ID is the key testdata/shared-bodies.json pins this body's bytes to, and the key

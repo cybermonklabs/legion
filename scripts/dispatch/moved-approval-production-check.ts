@@ -52,19 +52,19 @@ const DOCUMENT_NAMES: readonly string[] = [SPEC, VERIFICATION, NOTES];
 const ASSERTIONS = 3;
 
 /** Everything the check writes into production. The texts are its own, the title and the closing
- *  reason name INFRA-3096 so a person who meets the issue knows what made it, and each inserted
+ *  reason name POMJU-3096 so a person who meets the issue knows what made it, and each inserted
  *  sentence is plain prose: a typed block would settle into a second version of its own and move
  *  the request again under the step's feet. */
 const WRITTEN = {
-  title: "Scratch issue of the INFRA-3096 production check of the moved approval request report",
+  title: "Scratch issue of the POMJU-3096 production check of the moved approval request report",
   spec: "# Design\n\nThe design, as it stands.\n",
   verification: "# Verification\n\nOne check.\n",
   notes: "# Notes\n\nOne note.\n",
-  summary: "The INFRA-3096 production check asks for approval of its own scratch documents.",
+  summary: "The POMJU-3096 production check asks for approval of its own scratch documents.",
   sentence: "One more check the person has not seen.",
   note: "One more note.",
   reason:
-    "The INFRA-3096 production check of the moved approval request report made this scratch " +
+    "The POMJU-3096 production check of the moved approval request report made this scratch " +
     "issue, and its run is over, so it closes it again.",
 } as const;
 

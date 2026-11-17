@@ -23,7 +23,7 @@ import (
 // the test freezes: the server sees a connection that answers nothing, not one that closed.
 //
 // Two of them hang a replica of a test auth service. Two replicas answer in one queue group, as the
-// auth service runs its replicas (dispatch://INFRA-840), and replica A is behind the proxy.
+// auth service runs its replicas (dispatch://POMJU-840), and replica A is behind the proxy.
 // nats-server sends each authorization request to one member of the group, so while A keeps its
 // place, each client the server routes to A waits out the 2 s authorization timeout and is
 // refused.

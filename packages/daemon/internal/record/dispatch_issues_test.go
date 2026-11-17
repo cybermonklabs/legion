@@ -81,7 +81,7 @@ func TestDispatchIssuesListsOneProject(t *testing.T) {
 		for _, row := range []DispatchIssueRow{
 			{Key: "LEGION-902", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-901"}, Seq: 2},
 			{Key: "LEGION-901", Project: "LEGION", Status: "done", Seq: 1},
-			{Key: "INFRA-7", Project: "INFRA", Status: "todo", Seq: 3},
+			{Key: "POMJU-7", Project: "POMJU", Status: "todo", Seq: 3},
 		} {
 			must(t, records.PutDispatchIssue(t.Context(), tx, row))
 		}

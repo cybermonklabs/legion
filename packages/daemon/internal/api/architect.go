@@ -932,7 +932,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	// No child enters the workflow beneath an ancestor the daemon has already accepted: that
 	// ancestor's own head is approved and on its way to the merge queue, and work released under
-	// it now would let it merge a head that does not carry that work (dispatch://INFRA-980,
+	// it now would let it merge a head that does not carry that work (dispatch://POMJU-980,
 	// "Children first"). The whole wave is refused rather than part of it, as every other
 	// refusal here is, so the architect retries one call. The chain is read from the records of
 	// the architect's tree, starting at the Dispatch parent of a child the records do not hold
@@ -1247,7 +1247,7 @@ func (s *server) adoptReleasedChildren(w http.ResponseWriter, r *http.Request, t
 // it adopts, but it cannot read Dispatch there, and its mirror of those links can be older than
 // this request's own read — a person's re-parent and link are one edit, and the daemon's consumer
 // may not have delivered its event — so the links travel with the fact and hold the adopted child
-// as the mirror's own do (workflow's enterChild, dispatch://INFRA-714/spec R3).
+// as the mirror's own do (workflow's enterChild, dispatch://POMJU-714/spec R3).
 func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChild {
 	var outside []intake.AdoptedChild
 	for _, child := range children {

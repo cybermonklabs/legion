@@ -41,7 +41,7 @@ type RegisterResponse struct {
 // from the registration because registration is the plugin's first act and readiness is its last:
 // the role claim on Envoy, the session attribution, and the tool gate all happen in between.
 // Capabilities is a report a claimed session sends after its boot, from the interval it runs
-// while it is idle (LEGION-663, INFRA-927); a boot's ready and a role-regain's carry none, and
+// while it is idle (LEGION-663, POMJU-927); a boot's ready and a role-regain's carry none, and
 // the controller sends no report either.
 type ReadyRequest struct {
 	ClaimToken   Token             `json:"claimToken"`
@@ -187,7 +187,7 @@ type TurnOutcomeResponse struct {
 
 // ActivityRequest is a live role's session reporting what it is doing, after each of its turns
 // and whenever the report's content changes, so the idle rule can decide whether the session's
-// pod may be released (INFRA-945). It carries no generation: it decides nothing about the claim,
+// pod may be released (POMJU-945). It carries no generation: it decides nothing about the claim,
 // and a relaunch mints a secret of its own, so the secret the registration issued is the whole
 // fence. A claim with no report after its last turn is never released, which is what makes a host
 // that cannot report safe.

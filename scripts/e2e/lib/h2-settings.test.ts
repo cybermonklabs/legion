@@ -115,7 +115,7 @@ test.skipIf(skip)(
     expect(answer.settings.enableConnectProtocol).toBe(true);
     expect(answer.settings.initialWindowSize).toEqual(expect.any(Number));
     expect(result.stderr).toBe(
-      `h2-settings: https://localhost:${port} advertises SETTINGS_ENABLE_CONNECT_PROTOCOL: a browser would run Dispatch's live socket over HTTP/2, where the INFRA-258 hang can return\n`
+      `h2-settings: https://localhost:${port} advertises SETTINGS_ENABLE_CONNECT_PROTOCOL: a browser would run Dispatch's live socket over HTTP/2, where the POMJU-258 hang can return\n`
     );
   }
 );

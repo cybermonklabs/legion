@@ -13,7 +13,7 @@ module: packages/envoy/cmd/listener
 
 # A confirmed send keeps its own confirmation record; a cache written on a skipped push is no receipt
 
-**Written before dispatch://INFRA-771, when a confirmation was a recipient's receipt.** The
+**Written before dispatch://POMJU-771, when a confirmation was a recipient's receipt.** The
 publish route now confirms only a role forward, and its confirmation is the stream's
 acknowledgement that it stored the forward; no session answers a receipt, and an ad-hoc topic is
 refused by name rather than fanned out (`packages/envoy/AGENTS.md`, "Session consumers"). The

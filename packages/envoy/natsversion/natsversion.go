@@ -6,7 +6,7 @@
 //
 // The requirement is a server whose scan of a consumer's stored messages reads every filter. A
 // session consumer filters on a session's agent subject in both forms of its name,
-// notifications.agent.<session> beside notifications.agent.*.<session> (dispatch://INFRA-3862),
+// notifications.agent.<session> beside notifications.agent.*.<session> (dispatch://POMJU-3862),
 // which puts a `*` and a literal at the same token of the server's filter tree. From v2.10.26, and
 // in 2.11.0 to 2.11.11 and 2.12.0 to 2.12.3, nats-server reads a file block by subject through an
 // intersection that can miss a literal filter beside a `*`: at v2.10.29 and v2.11.0

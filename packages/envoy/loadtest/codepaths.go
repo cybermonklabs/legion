@@ -24,7 +24,7 @@ import (
 )
 
 // codepaths is the code-path table of one replay step: Dispatch's CPU by entry point
-// (exclusive, the production profile's §2a rule) and by subsystem (inclusive, §2b, with INFRA-512's
+// (exclusive, the production profile's §2a rule) and by subsystem (inclusive, §2b, with POMJU-512's
 // write-path functions), its working set at the window's end split by the same entry points, and the
 // replay's cores and memory beside the 2026-10-26 outage's (§5), with the residual.
 
@@ -231,7 +231,7 @@ type subsystemRule struct {
 	match     func(string) bool
 }
 
-// subsystemRules are §2b's subsystems, then INFRA-512's write-path functions (matched by function
+// subsystemRules are §2b's subsystems, then POMJU-512's write-path functions (matched by function
 // name suffix; len16 is pmdoc's, not the API package's own len16, and loadRoom is ygo's
 // (*Server).loadRoom), which overlap the subsystems and each other.
 var subsystemRules = []subsystemRule{
@@ -1159,7 +1159,7 @@ func subsystemMD(md *markdown, c *cpCPU, subs []cpSubsystem) {
 		return
 	}
 	md.line("\n## CPU by subsystem (inclusive)\n")
-	md.line("A sample counts toward every subsystem on its stack, so the shares add up to more than 100%%. The subsystems are the production profile's §2b; the rows marked *(write path, overlapping)* are INFRA-512's write-path functions, matched by function name suffix (`len16` is `pmdoc.len16`; `loadRoom` is ygo's `(*Server).loadRoom`, `fold` is `docs.fold`), which overlap the subsystems and each other. `(not in profile)`: no function of the profile has that name.\n")
+	md.line("A sample counts toward every subsystem on its stack, so the shares add up to more than 100%%. The subsystems are the production profile's §2b; the rows marked *(write path, overlapping)* are POMJU-512's write-path functions, matched by function name suffix (`len16` is `pmdoc.len16`; `loadRoom` is ygo's `(*Server).loadRoom`, `fold` is `docs.fold`), which overlap the subsystems and each other. `(not in profile)`: no function of the profile has that name.\n")
 	md.header("subsystem", "samples", "share", "CPU s (profile)", "cores")
 	for _, s := range subs {
 		r := s.cpCPURow

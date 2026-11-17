@@ -41,7 +41,7 @@ func pressedAs(t *testing.T, handler http.Handler, method, target string, body a
 	return response
 }
 
-// INFRA-258. A write the page sends names the person who pressed it (Dispatch-Login), and runs only
+// POMJU-258. A write the page sends names the person who pressed it (Dispatch-Login), and runs only
 // as that person: another tab that signed someone else in in place makes this tab's retry go out on
 // the new cookie, and Dispatch answers it 409 LOGIN_CHANGED before anything runs, its key untouched,
 // on every write method. The person who pressed it runs it, however their login is cased; a bearer
@@ -107,7 +107,7 @@ func TestAWriteRunsOnlyAsThePersonWhoPressedIt(t *testing.T) {
 	}
 }
 
-// INFRA-258. The Conversation's read mark is a PUT, and runs only as the person who
+// POMJU-258. The Conversation's read mark is a PUT, and runs only as the person who
 // pressed it, as every write does: a mark pressed by bob that goes out on alice's session - another
 // tab signed her in in place - is refused 409 LOGIN_CHANGED and writes nothing into her state, so an
 // issue never reads as read for someone who never opened it. Pressed by alice, it is written.

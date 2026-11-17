@@ -16,13 +16,13 @@ import (
 // them - and Go's Parse is then compared with the engine's own reading. A row marked blocks is not
 // one paragraph (a table, a heading, a quote, a footnote definition), which ParseInline refuses, so
 // only the block readers read it. A `~` written `\&#126;` reads otherwise for a reason of its own
-// (dispatch://INFRA-536) and is left out.
+// (dispatch://POMJU-536) and is left out.
 func TestTildeRunsReadAsTheEngineReadsThem(t *testing.T) {
 	tests := []struct {
 		markdown, want string
 		blocks         bool
 	}{
-		// The cases dispatch://INFRA-534 was filed for, and a pair of each length.
+		// The cases dispatch://POMJU-534 was filed for, and a pair of each length.
 		{`Plain ~a~~ text.`, `paragraph: "Plain ~a~~ text."`, false},
 		{`Plain ~~a~ text.`, `paragraph: "Plain ~~a~ text."`, false},
 		{`Plain ~\~~ end.`, `paragraph: "Plain " | "~" strike_through | " end."`, false},

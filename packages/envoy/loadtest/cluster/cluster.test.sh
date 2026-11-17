@@ -18,7 +18,7 @@
 # build a checker from (a dispatch commit the git store lacks; a dispatch tree without the
 # stored-order command and no --stored-order-source; a --stored-order-source beside a dispatch
 # tree that has the command; a source that is not 40 hex, that the git store lacks or whose tree
-# lacks INFRA-707's files; --stored-order-source with --stored-order-checker-commit), an overlay
+# lacks POMJU-707's files; --stored-order-source with --stored-order-checker-commit), an overlay
 # whose dispatch subcommand table lacks the registration's anchor, and a checker that does not
 # compile (naming the dispatch commit, the source commit and the compiler's first error), and a
 # --browsertype-commit that the git store does not hold or whose tree has no loadtest/browsertype
@@ -37,7 +37,7 @@
 # copied back; up builds the stored-order checker from the dispatch commit's own archive with
 # GOWORK=off and CGO_ENABLED=0 and records its fields (dispatch_commit, built_from, overlay_source
 # null, overlay_files [], registration null, renderer_matches true) and sha256; with
-# --stored-order-source it copies the source's INFRA-707 files into the dispatch tree's scratch
+# --stored-order-source it copies the source's POMJU-707 files into the dispatch tree's scratch
 # copy and registers the source's stored-order entry after the table opener, recording the
 # overlay; with --stored-order-checker-commit it builds wholly from that commit, warns, and records
 # renderer_matches false; each step and replay then runs
@@ -585,13 +585,14 @@ EOF
 cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
 # The fake curl: a registry manifest read answers 200 with a digest, or 404 for a ref listed in
-# FAKE_DIR/missing-refs; a token read answers a token; a Dispatch artifact version download (-o
-# OUT) writes FAKE_DIR/parts/<slug>, after it reads the bearer header from its standard input.
+# FAKE_DIR/missing-refs; a token read answers a token; a Dispatch issue artifact version download
+# (-o OUT) writes FAKE_DIR/parts/<slug>, and a project file's FAKE_DIR/project-files/<project>/<slug>,
+# after it reads the bearer header from its standard input.
 printf '%s\n' "$*" >>"$FAKE_DIR/curl.log"
 url=${*: -1}
 case $url in
   */token\?*) echo '{"token": "anonymous"}' ;;
-  */api/v1/issues/*/artifacts/*/versions/*)
+  */api/v1/issues/*/artifacts/*/versions/* | */api/v1/projects/*/artifacts/*/versions/*)
     cat >/dev/null
     out="" prev=""
     for a in "$@"; do
@@ -599,7 +600,13 @@ case $url in
       prev=$a
     done
     slug=${url#*/artifacts/}
-    cp "$FAKE_DIR/parts/${slug%%/versions/*}" "$out" || exit 22
+    slug=${slug%%/versions/*}
+    if [[ $url == */api/v1/projects/* ]]; then
+      project=${url#*/api/v1/projects/}
+      cp "$FAKE_DIR/project-files/${project%%/*}/$slug" "$out" || exit 22
+    else
+      cp "$FAKE_DIR/parts/$slug" "$out" || exit 22
+    fi
     ;;
   */manifests/*)
     ref=${url##*/manifests/}
@@ -644,7 +651,7 @@ if [ "${*: -1}" = ./loadtest/browsertype ]; then
     exit 1
   }
   printf 'GOWORK=%s CGO_ENABLED=%s go %s\n' "${GOWORK:-}" "${CGO_ENABLED:-}" "$*" >>"$FAKE_DIR/go-browsertype.log"
-  # Its -help lists -protect and -person, as INFRA-707's driver of commit 67ac05a4 does;
+  # Its -help lists -protect and -person, as POMJU-707's driver of commit 67ac05a4 does;
   # FAKE_BT_NO_PROTECT=1 builds one without -protect, as the driver before that fix, and
   # FAKE_BT_NO_PERSON=1 one without -person, as the driver before it connected as people.
   if [ -n "${FAKE_BT_NO_PROTECT:-}" ]; then
@@ -866,7 +873,7 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
-export LOADTEST_REPLAY_ISSUE=INFRA-639
+export LOADTEST_REPLAY_ISSUE=POMJU-639
 echo fake-token >"$fake/token"
 # The seed's counts query, as common.sh holds it: the fake kubectl answers every count only for
 # exactly this query, so a cluster.sh seed that asks for less is seen.
@@ -882,7 +889,7 @@ readonly commit_parent=cccccccccccccccccccccccccccccccccccccccc
 readonly commit_ancestor=dddddddddddddddddddddddddddddddddddddddd
 printf '%s %s\n%s %s\n' "$commit_none" "$commit_parent" "$commit_parent" "$commit_ancestor" >"$fake/parents"
 printf '%s\n%s\n' "$commit_none" "$commit_parent" >"$fake/missing-refs"
-# The stored-order commits: commit_so, an INFRA-707 head (the command's files, and its
+# The stored-order commits: commit_so, an POMJU-707 head (the command's files, and its
 # stored-order entry in cmd/dispatch/subcommands.go's table); commit_old, a dispatch tree without
 # the command whose table has the opener the overlay anchors on (as 9b92ac14); commit_noanchor,
 # one without the command whose table has no such opener; commit_noentry, one with the command's
@@ -896,7 +903,7 @@ readonly commit_unknown=0123456789abcdef0123456789abcdef01234567
 mkdir -p "$fake/git-trees"
 so_files=(packages/envoy/internal/dispatch/docs/storedorder.go packages/envoy/cmd/dispatch/storedorder.go)
 so_registry=packages/envoy/cmd/dispatch/subcommands.go
-# The table's opener, an entry before the overlay's place, and INFRA-707's stored-order entry.
+# The table's opener, an entry before the overlay's place, and POMJU-707's stored-order entry.
 so_opener='var subcommands = []subcommand{'
 so_census=$'\t{"census", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {\n\t\treturn census(ctx, env.get("DATABASE_URL"), stdout, stderr)\n\t}},'
 so_entry=$'\t{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {\n\t\treturn storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)\n\t}},'
@@ -1109,7 +1116,7 @@ for c in "$commit_unknown||--dispatch-commit $commit_unknown is not a commit in 
   "$commit_ok|--stored-order-source $commit_so|--stored-order-source $commit_so is refused: --dispatch-commit $commit_ok's tree has the stored-order command" \
   "$commit_old|--stored-order-source 9b92ac1|--stored-order-source '9b92ac1' is not a full 40-hex commit sha" \
   "$commit_old|--stored-order-source $commit_unknown|--stored-order-source $commit_unknown is not a commit in this checkout's git store" \
-  "$commit_old|--stored-order-source $commit_old|--stored-order-source $commit_old has no packages/envoy/internal/dispatch/docs/storedorder.go, so it lacks INFRA-707's stored-order command" \
+  "$commit_old|--stored-order-source $commit_old|--stored-order-source $commit_old has no packages/envoy/internal/dispatch/docs/storedorder.go, so it lacks POMJU-707's stored-order command" \
   "$commit_old|--stored-order-source $commit_noentry|--stored-order-source $commit_noentry's packages/envoy/cmd/dispatch/subcommands.go holds no single stored-order entry" \
   "$commit_old|--stored-order-source $commit_so --stored-order-checker-commit $commit_so|--stored-order-source and --stored-order-checker-commit exclude each other" \
   "$commit_old|--stored-order-checker-commit 9b92ac1|--stored-order-checker-commit '9b92ac1' is not a full 40-hex commit sha" \
@@ -1122,7 +1129,7 @@ for c in "$commit_unknown||--dispatch-commit $commit_unknown is not a commit in 
   grep -qF -- "$want" "$tmp/out" || fail "up's refusal of --dispatch-commit $d ${flags[*]} does not say '$want': $(cat "$tmp/out")"
   checker_refused "--dispatch-commit $d ${flags[*]}"
 done
-pass "up refuses, naming them, before creating anything, stored-order flags it cannot build a checker from: a dispatch commit git lacks, a dispatch tree without the command and no --stored-order-source, a source beside a tree with the command, a source that is not 40 hex, git lacks or lacks INFRA-707's files or entry, and a bad or conflicting --stored-order-checker-commit"
+pass "up refuses, naming them, before creating anything, stored-order flags it cannot build a checker from: a dispatch commit git lacks, a dispatch tree without the command and no --stored-order-source, a source beside a tree with the command, a source that is not 40 hex, git lacks or lacks POMJU-707's files or entry, and a bad or conflicting --stored-order-checker-commit"
 
 reset_fake
 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_noanchor" --stored-order-source "$commit_so"
@@ -1183,14 +1190,14 @@ pass "up refuses a browsertype with no -person before the lock, naming the flag 
 
 # ---- (b) replay-prepare's refusals ---------------------------------------------------------------------
 
-# The committed manifest's seed is null until INFRA-639 uploads it; a seed check that failed any of
-# the three conditions is refused too. Each before any kubectl call, so before any kubectl write.
+# A manifest whose seed is null (its seed is not uploaded yet) and a seed check that failed any of
+# the three conditions are refused. Each before any kubectl call, so before any kubectl write.
 reset_fake
 jq '.seed = null' "$seeded" >"$fake/replay-null.json"
 write_manifest "$fake/replay-unpassed.json" '{"passed": false, "version_size_mismatches": 0, "anchors_outside_logged_block": 0}'
 write_manifest "$fake/replay-sizes.json" '{"passed": true, "version_size_mismatches": 2, "anchors_outside_logged_block": 0}'
 write_manifest "$fake/replay-anchors.json" '{"passed": true, "version_size_mismatches": 0, "anchors_outside_logged_block": 1}'
-for c in "null|seed is null): INFRA-639's seed is not uploaded yet" "unpassed|the seed check failed: check.passed is false" \
+for c in "null|seed is null): POMJU-639's seed is not uploaded yet" "unpassed|the seed check failed: check.passed is false" \
   "sizes|the seed check failed: version_size_mismatches is 2" "anchors|the seed check failed: anchors_outside_logged_block is 1"; do
   run_cluster replay-prepare --namespace "$ns" --manifest "$fake/replay-${c%%|*}.json"
   ((RC != 0)) || fail "replay-prepare accepted the manifest replay-${c%%|*}.json"
@@ -1212,6 +1219,44 @@ reset_fake
   [ ! -s "$fake/kubectl.log" ] || fail "replay-prepare called kubectl before refusing an unset LOADTEST_REPLAY_ISSUE: $(cat "$fake/kubectl.log")"
 ) || exit 1
 pass "replay-prepare refuses an unset LOADTEST_REPLAY_ISSUE, which the manifest does not name, before any kubectl call"
+
+# Without --manifest, the manifest is a project file of LOADTEST_REPLAY_ISSUE's project. With no
+# way to download it, replay-prepare and all are refused before any kubectl call, naming what is
+# missing; all without LOADTEST_REPLAY_ISSUE too; and a downloaded manifest of another sha256 than
+# the pinned one is refused, and deleted, before any kubectl call.
+reset_fake
+: >"$fake/curl.log"
+(
+  unset DISPATCH_URL
+  run_cluster replay-prepare --namespace "$ns"
+  ((RC != 0)) || fail "replay-prepare without --manifest and DISPATCH_URL went on"
+  grep -qF 'no replay manifest: give --manifest FILE, or set DISPATCH_URL and DISPATCH_TOKEN_FILE' "$tmp/out" ||
+    fail "replay-prepare's refusal without a manifest does not name what is missing: $(cat "$tmp/out")"
+  [ ! -s "$fake/kubectl.log" ] || fail "replay-prepare called kubectl before refusing with no manifest: $(cat "$fake/kubectl.log")"
+  run_cluster all "${up_args[@]}" --dispatch-commit "$commit_ok" --profile quick
+  ((RC != 0)) || fail "all without --manifest and DISPATCH_URL went on"
+  grep -qF 'no replay manifest: give --manifest FILE' "$tmp/out" || fail "all's refusal without a manifest does not name what is missing: $(cat "$tmp/out")"
+  [ ! -s "$fake/kubectl.log" ] || fail "all called kubectl before refusing with no manifest: $(cat "$fake/kubectl.log")"
+  unset LOADTEST_REPLAY_ISSUE
+  run_cluster all "${up_args[@]}" --dispatch-commit "$commit_ok" --profile quick
+  ((RC != 0)) || fail "all without --manifest and LOADTEST_REPLAY_ISSUE went on"
+  grep -qF 'all: LOADTEST_REPLAY_ISSUE is not set' "$tmp/out" || fail "all's refusal does not name LOADTEST_REPLAY_ISSUE: $(cat "$tmp/out")"
+  [ ! -s "$fake/kubectl.log" ] || fail "all called kubectl before refusing an unset LOADTEST_REPLAY_ISSUE: $(cat "$fake/kubectl.log")"
+) || exit 1
+[ ! -s "$fake/curl.log" ] || fail "a refusal with no manifest ran curl: $(cat "$fake/curl.log")"
+[ ! -e "$LOADTEST_CLUSTER_ROOT/replay-manifest/replay-2026-10-26.json" ] || fail "a refusal with no manifest wrote one"
+mkdir -p "$fake/project-files/POMJU"
+cp "$seeded" "$fake/project-files/POMJU/replay-2026-10-26-json"
+seeded_sha=$(sha256sum <"$seeded" | cut -d' ' -f1)
+LOADTEST_REPLAY_MANIFEST_SHA256=$(printf '0%.0s' {1..64}) run_cluster replay-prepare --namespace "$ns"
+((RC != 0)) || fail "replay-prepare accepted a downloaded manifest of another sha256"
+grep -qF "the replay manifest replay-2026-10-26.json: sha256 $seeded_sha, not the $(printf '0%.0s' {1..64}) it must have; deleted it" "$tmp/out" ||
+  fail "replay-prepare's refusal of a manifest of another sha256 does not name both: $(cat "$tmp/out")"
+grep -q "/api/v1/projects/POMJU/artifacts/replay-2026-10-26-json/versions/1\$" "$fake/curl.log" ||
+  fail "replay-prepare did not download the manifest from LOADTEST_REPLAY_ISSUE's project: $(cat "$fake/curl.log")"
+[ ! -e "$LOADTEST_CLUSTER_ROOT/replay-manifest/replay-2026-10-26.json" ] || fail "replay-prepare kept a manifest of another sha256"
+[ ! -s "$fake/kubectl.log" ] || fail "replay-prepare called kubectl before refusing a manifest of another sha256: $(cat "$fake/kubectl.log")"
+pass "replay-prepare and all without --manifest refuse, before any kubectl call, no way to download the manifest, no LOADTEST_REPLAY_ISSUE, and a manifest of another sha256"
 
 # write_lock RUN HEARTBEAT [UID]: another run's lock ConfigMap.
 write_lock() {
@@ -1341,7 +1386,7 @@ for sub in "step --namespace $ns typed 1 --duration 1m --typing" "replay --names
   read -ra words <<<"$sub"
   run_cluster "${words[@]}"
   ((RC != 0)) || fail "${words[0]} --typing ran although up was given no --browsertype-commit"
-  grep -qF -- "${words[0]}: --typing needs INFRA-707's browsertype, and up was given no --browsertype-commit" "$tmp/out" ||
+  grep -qF -- "${words[0]}: --typing needs POMJU-707's browsertype, and up was given no --browsertype-commit" "$tmp/out" ||
     fail "${words[0]} --typing without browsertype does not name --browsertype-commit"
   [ ! -e "$run_dir/steps/typed" ] || fail "${words[0]} --typing without browsertype made its step directory"
   new_calls=$(own_calls_since "$calls")
@@ -1436,7 +1481,7 @@ pass "a step's reset looks up the nats-box pod once, seed.json goes into the run
 FAKE_QUIET=1 run_cluster replay-prepare --namespace "$ns" --manifest "$seeded"
 ((RC == 0)) || fail "replay-prepare exited $RC"
 for slug in fake-replay-tar-zst-part00 fake-replay-tar-zst-part01 fake-seed-dump-part00; do
-  grep -q "/api/v1/issues/INFRA-639/artifacts/$slug/versions/1\$" "$fake/curl.log" || fail "replay-prepare did not download $slug"
+  grep -q "/api/v1/issues/POMJU-639/artifacts/$slug/versions/1\$" "$fake/curl.log" || fail "replay-prepare did not download $slug"
 done
 cmp -s "$fake/pod-dump" "$fake/parts/fake-seed-dump-part00" || fail "the dump streamed into the Postgres pod is not the seed part"
 grep -q -- '^pg_restore --no-owner --no-privileges .*-d dispatch /var/lib/postgresql/copy/replay-seed.dump$' "$fake/restores" ||
@@ -1453,6 +1498,19 @@ jq -e --arg dump "$(jq -r .seed.dump_sha256 "$seeded")" --arg tar "$(jq -r .bund
   '.seed_dump_sha256 == $dump and .bundle_tar_zst_sha256 == $tar and .migration_before == 121 and .migration_after == 121
     and .schema_version == 121 and .checksum.md5 == "fakemd5" and (.seconds | has("restore") and has("quiet") and has("total"))' \
   "$run_dir/replay-prepared.json" >/dev/null || fail "replay-prepared.json lacks a field: $(cat "$run_dir/replay-prepared.json")"
+
+# Without --manifest: the manifest downloaded from LOADTEST_REPLAY_ISSUE's project and checked
+# against the pinned sha256 (here the fixture's), the same seed dump as above, so the template is
+# reused and no part is downloaded again.
+: >"$fake/curl.log"
+LOADTEST_REPLAY_MANIFEST_SHA256=$seeded_sha FAKE_QUIET=1 run_cluster replay-prepare --namespace "$ns"
+((RC == 0)) || fail "replay-prepare without --manifest exited $RC"
+grep -q "/api/v1/projects/POMJU/artifacts/replay-2026-10-26-json/versions/1\$" "$fake/curl.log" ||
+  fail "replay-prepare without --manifest did not download the manifest from LOADTEST_REPLAY_ISSUE's project: $(cat "$fake/curl.log")"
+cmp -s "$seeded" "$LOADTEST_CLUSTER_ROOT/replay-manifest/replay-2026-10-26.json" || fail "the downloaded manifest is not kept in replay-manifest/"
+cmp -s "$seeded" "$run_dir/replay-manifest.json" || fail "replay-prepare without --manifest did not keep the downloaded manifest in the run"
+grep -qF 'replay-prepare: the template dispatch_replay of seed dump' "$tmp/out" || fail "replay-prepare with the downloaded manifest did not reuse the template: $(cat "$tmp/out")"
+pass "replay-prepare without --manifest downloads the manifest from LOADTEST_REPLAY_ISSUE's project, checks its sha256 and prepares from it"
 FAKE_STORED_ORDER=nosummary run_cluster replay --namespace "$ns" r16
 ((RC == 0)) || fail "replay r16 exited $RC"
 jq -e --argjson k "$checker" '. == $k + {exit: 1, since: "2026-10-28T10:00:00Z", documents: null, clean: null, mismatched: null, refused: null, failed: null, unchecked: null, evidence: []}' \
@@ -1818,10 +1876,10 @@ grep -qF 'step 10x-typing: browsertype exit 0: sent=78 skipped=1 errors=0' "$tmp
 [ ! -f "$tdir/step-failed.json" ] || fail "a typing step was marked failed: $(cat "$tdir/step-failed.json")"
 
 # --typing-docs 20 over a seed of 5 documents: one warning line, since the 20th has no planned
-# version and INFRA-707's acceptance 2 needs 10 of every typed document.
+# version and POMJU-707's acceptance 2 needs 10 of every typed document.
 FAKE_TYPING_RC=1 FAKE_PLAN_VERSIONS='40 12 7 30 60' run_cluster step --namespace "$ns" 10x-typing-err 10 --duration 1m --typing
 ((RC == 0)) || fail "step --typing with a peer error exited $RC"
-grep -qF 'WARNING: step 10x-typing-err: typed document number 20 has 0 planned versions, under the 10 versions INFRA-707'"'"'s acceptance 2 needs of every typed document (loadgen plan-docs named 5 documents of --typing-docs 20); the step runs on' "$tmp/out" ||
+grep -qF 'WARNING: step 10x-typing-err: typed document number 20 has 0 planned versions, under the 10 versions POMJU-707'"'"'s acceptance 2 needs of every typed document (loadgen plan-docs named 5 documents of --typing-docs 20); the step runs on' "$tmp/out" ||
   fail "a step whose 20th typed document has no planned version did not warn: $(grep WARNING "$tmp/out")"
 grep -q '^typing-10x-typing-err .* -peers 2 -rate 5 ' "$fake/runner-starts" || fail "step --typing's defaults are not 2 peers at 5 keystrokes/s"
 jq -e '.exit == 1 and .errors == 1 and .sent == 78 and (.docs | length) == 5 and (.planned_versions | length) == 5
@@ -1858,7 +1916,7 @@ run_cluster down --namespace "$ns"
 pass "up --browsertype-commit builds browsertype; step and replay --typing start it before loadgen as people (-identity-header, -person, no token anywhere), type into the documents their own writes plan the most versions for, stop it after the stored-order commands, and record browsertype.txt and browsertype.json; a peer error is no step failure; collect's STORED-ORDER.md has the typed and typing columns and its curves leave typing steps out"
 
 # up --stored-order-source: the checker is the dispatch tree (commit_old, without the command) with
-# the source's INFRA-707 files copied into its scratch copy and the source's stored-order entry
+# the source's POMJU-707 files copied into its scratch copy and the source's stored-order entry
 # registered on the line after the table's opener; state.json records the overlay.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-overlay
@@ -1871,17 +1929,17 @@ jq -e --arg d "$commit_old" --arg s "$commit_so" --argjson f "$(printf '%s\n' "$
   "$run_dir/state.json" >/dev/null || fail "state.json does not record the overlaid checker: $(jq -c .stored_order "$run_dir/state.json")"
 repo=$(cd -- "$here/../../../.." && pwd)
 grep -qx -- "-C $repo archive $commit_old packages/envoy" "$fake/git.log" || fail "up did not archive the dispatch commit's tree: $(cat "$fake/git.log")"
-grep -qx -- "-C $repo archive $commit_so ${so_files[*]}" "$fake/git.log" || fail "up did not archive the source's INFRA-707 files: $(cat "$fake/git.log")"
+grep -qx -- "-C $repo archive $commit_so ${so_files[*]}" "$fake/git.log" || fail "up did not archive the source's POMJU-707 files: $(cat "$fake/git.log")"
 [ "$(cat "$fake/go-dispatch-tree.log")" = ./cmd/dispatch/storedorder.go$'\n'./internal/dispatch/docs/storedorder.go ] ||
-  fail "the checker's tree does not hold the source's INFRA-707 files: $(cat "$fake/go-dispatch-tree.log")"
+  fail "the checker's tree does not hold the source's POMJU-707 files: $(cat "$fake/go-dispatch-tree.log")"
 printf 'package main\n\n%s\n' "$(printf '%s\n' "$so_opener" "$so_entry" "$so_census" '}')" | diff -u - "$fake/go-subcommands.go" >&2 ||
   fail "the overlay did not register the source's stored-order entry right after the table's opener"
-grep -qF "building the stored-order checker, envoy-dispatch (static) of dispatch commit $commit_old with INFRA-707's files of source commit $commit_so" "$tmp/out" ||
+grep -qF "building the stored-order checker, envoy-dispatch (static) of dispatch commit $commit_old with POMJU-707's files of source commit $commit_so" "$tmp/out" ||
   fail "up did not name the dispatch and source commits of the checker"
 ! grep -q WARNING "$tmp/out" || fail "up warned about an overlaid checker: $(grep WARNING "$tmp/out")"
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down of the overlay run exited $RC"
-pass "up --stored-order-source adds the source's INFRA-707 files and stored-order registration to a scratch copy of the dispatch tree, builds it and records the overlay with renderer_matches true"
+pass "up --stored-order-source adds the source's POMJU-707 files and stored-order registration to a scratch copy of the dispatch tree, builds it and records the overlay with renderer_matches true"
 
 # up --stored-order-checker-commit: the checker wholly from another commit, a warning, and
 # renderer_matches false.
@@ -2174,7 +2232,7 @@ pass "the replay residual is the notes, then the seed check's anchors by placeme
     fail "stored_order_checker after a redeploy to another commit does not say renderer_matches false: $(stored_order_checker)"
   # STORED-ORDER.md names the overlay, and the escape's renderer skew.
   stored_order_table || fail "stored_order_table failed"
-  grep -qF "The checker was built for dispatch commit $commit_old from that commit's tree with INFRA-707's files of source commit $commit_so added (\`a.go\`, \`b.go\`; its stored-order entry registered in \`c.go\`). renderer_matches: true. Binary sha256 feed." "$RUN_DIR/STORED-ORDER.md" ||
+  grep -qF "The checker was built for dispatch commit $commit_old from that commit's tree with POMJU-707's files of source commit $commit_so added (\`a.go\`, \`b.go\`; its stored-order entry registered in \`c.go\`). renderer_matches: true. Binary sha256 feed." "$RUN_DIR/STORED-ORDER.md" ||
     fail "STORED-ORDER.md does not name the overlay: $(cat "$RUN_DIR/STORED-ORDER.md")"
   jq --arg c "$commit_so" '.stored_order += {built_from: $c, overlay_source: null, overlay_files: [], registration: null, renderer_matches: false}' "$STATE" >"$STATE.tmp" &&
     mv "$STATE.tmp" "$STATE"
@@ -2398,7 +2456,7 @@ run_cluster down --namespace "$ns"
 unset FAKE_FAST_SLEEP
 pass "the heartbeat stops once no command of its run is alive, so an abandoned run's lock goes stale"
 
-# (p) stored_order_summary reads the summary line of INFRA-707's checker at eb0fe0be and later,
+# (p) stored_order_summary reads the summary line of POMJU-707's checker at eb0fe0be and later,
 # which ends it with ` unchecked=N` (a document the run compared nothing of) and exits 1. The
 # regex anchored at `failed=N$` matches no such line, so every count of stored-order.json and of
 # STORED-ORDER.md reads null, as if the checker had never printed a summary.

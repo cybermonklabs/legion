@@ -71,7 +71,7 @@ const (
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
 	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
 	// it and the listeners read it to hold each session to its token's projects
-	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
+	// (dispatch://POMJU-3862). It is deliberately in no list of the buckets a static grant
 	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
 	// refuses both its write and its read, which both sides read as no project being private.
 	PrivateProjectsBucket = "envoy_private_projects"
@@ -360,7 +360,7 @@ func NamesControllerNoticeLane(topics []string) bool {
 // form contracts.LegacyTwin reads back), and the controller notice lane of a project whose
 // controller role roles names (ControllerNoticeRole), which its holder registers because a session
 // receives what its own consumer delivers and nothing else, the lane's core subscription having
-// gone with the rest of that receive path (INFRA-771). roles is what the session holds, as each
+// gone with the rest of that receive path (POMJU-771). roles is what the session holds, as each
 // controller role's own claim record says (store.Registry's controllerLaneRoles, which reads the
 // record of every lane's role from the claim bucket rather than the listener's copy of the
 // claims), so a session that lost the role loses the lane at its next registration. A session id
@@ -507,7 +507,7 @@ const streamGenerationKey = "dispatch.stream-generation"
 // their last registration - about 60 to 85 at the rates above - plus the consumers a hub still
 // holds from before the sweep existed.
 //
-// dispatch://INFRA-514's capacity gate asks for at least twice the larger of the stream's consumer
+// dispatch://POMJU-514's capacity gate asks for at least twice the larger of the stream's consumer
 // count and that measured population, so the gate's own number is 9,102 to 12,894 across the two
 // readings. 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times that population. The
 // reading sets it: at the fleet's growth between the two, a cap only 1.2 to 1.3 times the gate's

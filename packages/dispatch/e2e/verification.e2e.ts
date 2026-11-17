@@ -173,7 +173,7 @@ A check nobody has run yet reads no result.
 // measured on this row: a fresh Chromium context (0.25 s), the cold parse of the dashboard
 // bundle a fresh context cannot cache (0.40 s) and the dashboard's own fifteen boot reads
 // before the first check draws (0.80 s). The row's own seven assertions are 0.26 s of it.
-// INFRA-1109 holds that floor; nothing in the row is removable.
+// POMJU-1109 holds that floor; nothing in the row is removable.
 test("a result the pull request has moved past stands at no commit the check compared with", async ({
   browser,
 }) => {

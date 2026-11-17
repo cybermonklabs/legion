@@ -105,7 +105,7 @@ type noLiveSessionRefusal struct {
 // kept prefix, because the two cases call for different acts and a missing field names neither:
 // a session this listener watched reach the gone horizon is dead, while one it has no record and
 // no remembered registration for — the state a restart leaves, and the state of an id that never
-// registered here — may be alive on another listener (dispatch://INFRA-392, A6).
+// registered here — may be alive on another listener (dispatch://POMJU-392, A6).
 func noLiveSession(sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry, state session.State) noLiveSessionRefusal {
 	refusal := noLiveSessionRefusal{
 		Error:    fmt.Sprintf("no live session %s", sessionID),
@@ -627,7 +627,7 @@ func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
 // listener, and any sender while the session cache refills after a reconnect, carries the title
 // the bucket holds. The read is made for a sender this cache misses, once per request, and nothing
 // remembers the miss - neither a negative cache nor a rate limit
-// (dispatch://INFRA-1368/artifact/decisions-md).
+// (dispatch://POMJU-1368/artifact/decisions-md).
 //
 // Two senders still give a message with no title, and no read answers either. A row the bucket
 // dropped at its maximum age is gone from the bucket too, because a cached row's deadline is that
@@ -973,7 +973,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 //   - if_not_registered_after names the moment the delete belongs to, in unix milliseconds, and
 //     the registration is removed only while it was last written at or before it. It is the
 //     Legion daemon's clean stop of a role whose agent process a probe judged gone
-//     (dispatch://INFRA-392): the very decision that asks for the stop relaunches the claim under
+//     (dispatch://POMJU-392): the very decision that asks for the stop relaunches the claim under
 //     the same session id, so a stop that lands after the relaunch has registered must leave that
 //     live registration alone. A value that is not a positive whole number of milliseconds is a
 //     400, since a caller that names a condition and has it silently dropped would delete exactly
@@ -1785,7 +1785,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		case err != nil:
 			// The 503, its Retry-After: 1 and the busUnansweredPrefix body are written in one
 			// place for every route that answers a bus that did not answer, so the string a
-			// deployed log filter matches has a single copy (INFRA-141). This route's own
+			// deployed log filter matches has a single copy (POMJU-141). This route's own
 			// literal was that copy's twin until the two changes met here.
 			writeBusUnavailable(w, err)
 		default:
@@ -2088,7 +2088,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			writeJSONError(w, http.StatusBadRequest, "role is required", "role")
 			return
 		}
-		// The role is read in either form, its project first (INFRA.legion-infra-infra-12-architect,
+		// The role is read in either form, its project first (POMJU.legion-pomju-pomju-12-architect,
 		// _.lead-reviewer) or its name alone, and everything below works on the name, which is what
 		// its claim record is keyed by. The old form is counted and named back in the answer's
 		// warnings with its new form (store.Registry.ClaimedRole); nothing is refused for it. In this
@@ -3076,7 +3076,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// for the topics the body names and for the row it already holds together, since either
 		// may name that lane, which its holder registers because a Legion controller receives
 		// that lane from its own consumer now and from no core subscription of its own
-		// (INFRA-771): a heartbeat whose body leaves the lane out therefore keeps it in the filter
+		// (POMJU-771): a heartbeat whose body leaves the lane out therefore keeps it in the filter
 		// and in the row alike, and the write below stores this plan rather than deciding it a
 		// second time (store.Registry.UpsertPlanned).
 		//

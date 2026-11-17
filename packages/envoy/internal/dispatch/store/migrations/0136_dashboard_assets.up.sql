@@ -1,4 +1,4 @@
--- INFRA-559: every server process keeps its build's dashboard assets in the database, so a page of
+-- POMJU-559: every server process keeps its build's dashboard assets in the database, so a page of
 -- one build is served its chunks by a process running another. A rolling update and a rollback run
 -- two builds behind one load balancer at once, and each image carries its own build's web dist
 -- alone: a tab holding build A's page asks for A's content-hashed chunks, and whichever process

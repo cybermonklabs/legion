@@ -10,7 +10,7 @@ import (
 // sweep after 0059 would otherwise take it back into the tree it left once that tree is live. 0059
 // marks the rows that still show the tree they left: an outbox hand-over the daemon processed, or a
 // phase worker's claim still naming another tree. A root that only waited, a root that re-admitted
-// itself after a trip to backlog (INFRA-214's case), and a member still in its tree keep the
+// itself after a trip to backlog (POMJU-214's case), and a member still in its tree keep the
 // default, so each stays adoptable or unaffected as before.
 func TestTheTreeARootLeftIsBackfilledBy0059(t *testing.T) {
 	store := emptyStore(t)

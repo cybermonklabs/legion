@@ -28,7 +28,7 @@ const (
 // after pass for as long as the report does, and not to be read once and dropped.
 const idleRigHeldPasses = 4
 
-// A session whose host runs a `task` subagent keeps its pod: R1 of dispatch://INFRA-3276, over
+// A session whose host runs a `task` subagent keeps its pod: R1 of dispatch://POMJU-3276, over
 // the rig of TestIdleReleaseAndWake (idle_rig_test.go says where each part comes from). The
 // role process reports the subagent as the Oh My Pi extension does, `subagent` among the
 // background work of its activity report, through the daemon's own route

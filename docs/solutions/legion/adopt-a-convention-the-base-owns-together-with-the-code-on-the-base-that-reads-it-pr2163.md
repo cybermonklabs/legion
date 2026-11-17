@@ -14,7 +14,7 @@ related_issues:
 
 # Adopt a convention the base owns together with the code on the base that reads it
 
-Extends docs/solutions/github/a-pull-request-github-calls-mergeable-can-still-be-unmergeable-in-substance-INFRA-66.md.
+Extends docs/solutions/github/a-pull-request-github-calls-mergeable-can-still-be-unmergeable-in-substance-POMJU-66.md.
 
 - When your branch renames files to a convention its base introduced (a migration name, a fixture name, an id format), the code that reads that convention is on the base too.
   Rename and merge the base forward in the same round, or do neither.

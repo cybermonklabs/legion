@@ -26,7 +26,7 @@ const StrandedReleaseWake = 10 * time.Minute
 // ArchitectGateWake is how long a root may stand at phase.Admitted with no step of its design
 // gate registered before the controller is told its architect has not moved it (admit's
 // architectSlowBeforeGate, record.ArchitectSlowBeforeGate): 90 minutes, above the longest
-// healthy time measured, 77 minutes (dispatch://INFRA-2614). It is the bound of that arm alone,
+// healthy time measured, 77 minutes (dispatch://POMJU-2614). It is the bound of that arm alone,
 // since a root writing its own design has turns of its own to take before it registers
 // anything, and the two arms that read a handshake take StrandedReleaseWake. It is the one copy
 // of that bound, and admission reads it here. `legion state`'s plain line prints the arms the

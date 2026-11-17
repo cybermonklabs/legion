@@ -105,7 +105,7 @@ function harness(
 ) {
   const asked: Array<{ directory: string; signal: AbortSignal }> = [];
   const deps: RecordDeps = {
-    env: opts.env ?? { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+    env: opts.env ?? { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
     now: () => NOW,
     dispatchClient: (directory, signal) => {
       asked.push({ directory, signal });
@@ -162,7 +162,7 @@ const HEADER =
   "each holding one JSON record.\n";
 
 /** The key the create of this session's document carries, as the recorder derives it. */
-const CREATE_KEY = `askgate-doc.${createHash("sha256").update(`INFRA\n${DOCUMENT}`).digest("hex")}`;
+const CREATE_KEY = `askgate-doc.${createHash("sha256").update(`POMJU\n${DOCUMENT}`).digest("hex")}`;
 
 /** The key one record's append carries: the sha256 of the session and that record's own id. */
 const appendKey = (id: string) =>
@@ -175,7 +175,7 @@ describe("the AskGate decision record", () => {
 
     expect(await g.write(REFUSAL)).toBeUndefined();
     expect(dispatch.uploads).toHaveLength(1);
-    expect(dispatch.uploads[0]?.project).toBe("INFRA");
+    expect(dispatch.uploads[0]?.project).toBe("POMJU");
     // A bearer caller that names no session of its own is refused ACTOR_KIND by Dispatch.
     expect(dispatch.uploads[0]?.actor).toEqual({ kind: "session", id: SESSION });
     expect(dispatch.uploads[0]?.name).toBe(DOCUMENT);
@@ -224,7 +224,7 @@ describe("the AskGate decision record", () => {
       session: SESSION,
       id: "t1",
       source: "machine",
-      project: "INFRA",
+      project: "POMJU",
       tool: "dispatch_ask",
       target: "dispatch_ask issue=X-1",
       rule: "no_change",
@@ -328,9 +328,9 @@ describe("the AskGate decision record", () => {
 
   test("source is pod with LEGION_ISSUE set, and machine without it", async () => {
     for (const [env, source] of [
-      [{ OMP_ASKGATE_RECORD_PROJECT: "INFRA", LEGION_ISSUE: "INFRA-168" }, "pod"],
-      [{ OMP_ASKGATE_RECORD_PROJECT: "INFRA", LEGION_ISSUE: "  " }, "machine"],
-      [{ OMP_ASKGATE_RECORD_PROJECT: "INFRA" }, "machine"],
+      [{ OMP_ASKGATE_RECORD_PROJECT: "POMJU", LEGION_ISSUE: "POMJU-168" }, "pod"],
+      [{ OMP_ASKGATE_RECORD_PROJECT: "POMJU", LEGION_ISSUE: "  " }, "machine"],
+      [{ OMP_ASKGATE_RECORD_PROJECT: "POMJU" }, "machine"],
     ] as const) {
       const dispatch = fakeRecord();
       await harness({ env, client: dispatch.client }).write(REFUSAL);
@@ -344,11 +344,11 @@ describe("the AskGate decision record", () => {
   test("the project falls back to LEGION_PROJECT, upper-cased as a project key is", async () => {
     const own = fakeRecord();
     await harness({
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA", LEGION_PROJECT: "legion" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU", LEGION_PROJECT: "legion" },
       client: own.client,
     }).write(REFUSAL);
-    expect(own.uploads[0]?.project).toBe("INFRA");
-    expect(recordsIn(own.markdown())[0]).toMatchObject({ project: "INFRA" });
+    expect(own.uploads[0]?.project).toBe("POMJU");
+    expect(recordsIn(own.markdown())[0]).toMatchObject({ project: "POMJU" });
 
     // A pod's LEGION_PROJECT is the daemon's lower-cased project name, and Dispatch answers 404
     // to every spelling of a project key but the uppercase one.
@@ -725,7 +725,7 @@ describe("the AskGate decision record", () => {
   test("two recorders create the session's document with the same bytes, under the same key", async () => {
     const pod = fakeRecord();
     await harness({
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA", LEGION_ISSUE: "INFRA-168" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU", LEGION_ISSUE: "POMJU-168" },
       client: pod.client,
     }).write(REFUSAL, SESSION, "t1");
     const machine = fakeRecord();

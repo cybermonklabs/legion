@@ -142,7 +142,7 @@ func Worker(ctx context.Context, cfg dbosx.WorkerConfig, shutdown time.Duration)
 
 	if cfg.Start {
 		params := Params{
-			IssueID:      "INFRA-1546",
+			IssueID:      "POMJU-1546",
 			QuestionFile: QuestionFile(cfg.WorkDir),
 			DecisionFile: DecisionFile(cfg.WorkDir),
 			Wait:         Wait,

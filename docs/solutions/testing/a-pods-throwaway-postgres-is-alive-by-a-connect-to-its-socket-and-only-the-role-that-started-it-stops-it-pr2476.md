@@ -14,8 +14,8 @@ module: scripts/dispatch
 
 # A pod's throwaway Postgres is alive by a connect to its socket, and only the role that started it stops it
 
-Extends docs/solutions/testing/a-pods-shared-postgres-is-alive-by-its-port-never-by-its-pid-file-INFRA-95.md
-and docs/solutions/testing/the-shared-harness-script-starts-postgres-only-when-its-port-is-silent-and-no-spec-changes-while-a-run-loads-INFRA-304.md.
+Extends docs/solutions/testing/a-pods-shared-postgres-is-alive-by-its-port-never-by-its-pid-file-POMJU-95.md
+and docs/solutions/testing/the-shared-harness-script-starts-postgres-only-when-its-port-is-silent-and-no-spec-changes-while-a-run-loads-POMJU-304.md.
 Those two cover a server on a TCP port. This one covers a server that listens only on a unix
 socket under the shared `$TMPDIR`.
 

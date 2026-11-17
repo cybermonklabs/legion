@@ -14,7 +14,7 @@ const OBSERVED_SHARES = Array.from({ length: 21 }, (_, step) => step / 20);
  * it vertically, else the observer's own root. The Inbox's reading pane is such an ancestor - an
  * inner scroller a couple of hundred pixels shorter than the window - and measuring the window
  * there made the rule below unmeetable, so a reply taller than the pane was never marked read
- * however long its reader scrolled it (INFRA-450). A clipping box taller than the root shows no
+ * however long its reader scrolled it (POMJU-450). A clipping box taller than the root shows no
  * more than the root does, so the smaller of the two is what the reader can see at once.
  */
 function readableHeight(entry: IntersectionObserverEntry): number {

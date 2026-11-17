@@ -45,8 +45,8 @@ const PodUpdateContract = 46
 // daemon's plugin (relaunchStale). The lane asked first until this change — a claim whose plugin
 // had the ready_for_update op was given an update round of its own and kept running until it
 // answered — and that ask cost a second paced wake and a model turn for every live session,
-// which is what took INFRA's wake queue 6 h 23 min to drain at the boot of 2026-11-10
-// (dispatch://INFRA-2712). What the ask bought is the turn in flight alone: the relaunch keeps
+// which is what took POMJU's wake queue 6 h 23 min to drain at the boot of 2026-11-10
+// (dispatch://POMJU-2712). What the ask bought is the turn in flight alone: the relaunch keeps
 // the pod and the disk under every runtime, so a worker loses what that turn has not pushed and
 // no workspace with it.
 //
@@ -124,11 +124,11 @@ const PodUpdateContract = 46
 // Every relaunch this lane raises waits under a wake kind of its own (WakePluginRefresh), the
 // controller's immediate one included: it is the lane's wake wherever it runs, and a reader of
 // the daemon's state tells the refresh of a fleet from the launches that start a tree's work by
-// that kind alone (dispatch://INFRA-2712 R4). The other caller of relaunchStale passes the
+// that kind alone (dispatch://POMJU-2712 R4). The other caller of relaunchStale passes the
 // launch kind instead, because it is one claim's own launch (staleRegistration).
 //
 // admitted is whether a credit of the refresh gate was taken for this claim before this decision
-// was asked for (RefreshGate, dispatch://INFRA-2712 R1): the daemon's pass takes one for each
+// was asked for (RefreshGate, dispatch://POMJU-2712 R1): the daemon's pass takes one for each
 // claim it posts and hands it over on the event (StalePlugin.Admitted). The machine holds it
 // from here until the decision that raises the relaunch ends with no refresh wake of this
 // claim's waiting, which is where every credit of this lane goes back (refreshCredit,
@@ -213,7 +213,7 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 //
 // A claim in a turn takes no admission of the refresh gate, and the relaunch its turn's end
 // runs asks for one where every uncredited relaunch of this lane asks, at refreshPlugin's own
-// guard (afterTurn, dispatch://INFRA-2712 R2). A wait of a turn is minutes, and a credit held
+// guard (afterTurn, dispatch://POMJU-2712 R2). A wait of a turn is minutes, and a credit held
 // through it is one of the K the lane has spent on a claim that raises nothing with it: at a
 // fleet whose stale claims are mostly working, the lane would admit its whole minute of the
 // pacing and relaunch nobody.
@@ -244,7 +244,7 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 // kind is which of those two callers raised this relaunch, and it is the wake kind the launch
 // waits under: WakePluginRefresh for the lane's own pass over a fleet, WakeLaunch for the
 // registration, which is one claim's own launch and outside the lane the gate bounds
-// (dispatch://INFRA-2712 R4, RefreshGate). It is carried on the relaunch's intent rather than
+// (dispatch://POMJU-2712 R4, RefreshGate). It is carried on the relaunch's intent rather than
 // passed down the launch path, because the launch path is every launch's and knows nothing of
 // the lane that raised this one (relaunchMarked, markPluginRelaunch, reserveWake).
 //
@@ -394,7 +394,7 @@ func refreshStalePlugin(m *Machine, ctx context.Context, ev Event) error {
 // process reconnected and registered current, or a relaunch of another path got there first — so
 // there is nothing left to replace. Or the claim has started a turn: the worker is working, and
 // a relaunch now is exactly the cut turn the whole lane is built to avoid (holdStaleRelaunch,
-// dispatch://INFRA-2712 R2), where the next sweep finds the claim idle and relaunches it then.
+// dispatch://POMJU-2712 R2), where the next sweep finds the claim idle and relaunches it then.
 //
 // Its one caller is runWake, ahead of the launch's own lifecycle recheck and the turn take-back
 // (StartsProcess), which is the only order in which the claim still holds what those two would
@@ -470,7 +470,7 @@ func (m *Machine) refreshOverturned() bool {
 // The relaunch this path raises keeps the launch kind, where the refresh lane's carries one of
 // its own (WakePluginRefresh, refreshPlugin). It is this claim's own launch, answering the
 // registration in front of it rather than working through a fleet, and a reader of the daemon's
-// state counting what the refresh has left to do must not count it (dispatch://INFRA-2712 R4).
+// state counting what the refresh has left to do must not count it (dispatch://POMJU-2712 R4).
 // The charged path beside it raises no stale-plugin intent at all, so its launch takes the kind
 // every launch takes (relaunchAfterFailure, launchAfter). Both let the stale process go as one
 // that ran an older plugin (endStalePlugin), which is what their launch records of what it ended.

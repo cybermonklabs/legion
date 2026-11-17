@@ -11,7 +11,7 @@ status: active
 module: skills/legion-worker
 supersedes: docs/solutions/legion/a-red-check-in-a-package-the-branch-does-not-touch-looks-for-mains-fix-first-pr2366.md
 related_issues:
-  - "INFRA-841"
+  - "POMJU-841"
   - "sjawhar/legion#2580"
   - "sjawhar/legion#2598"
 ---
@@ -56,7 +56,7 @@ whole procedure follows, so this page stands on its own.
 
 ## Evidence
 
-sjawhar/legion#2580, INFRA-841. `envoy-go` and the `ci-ok` aggregate were red at head
+sjawhar/legion#2580, POMJU-841. `envoy-go` and the `ci-ok` aggregate were red at head
 `c10800814dec`, run 41165294249, on `TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries`
 in `packages/envoy/internal/broker/oauth` — a package that pull request does not touch. The same
 test passed at the branch's own tree, before and after the merge

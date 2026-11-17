@@ -134,6 +134,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_private_names_test: check-private-names.test.sh and what it tests."
         type: string
         required: true
+      neutralize_private_keys_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.neutralize_private_keys_test:
+          neutralize-private-keys.test.sh and what it tests.
+        type: string
+        required: true
       check_plugin_names_test:
         description: "ci.yaml's needs.changes.outputs.check_plugin_names_test: check-plugin-names.test.sh and what it tests."
         type: string
@@ -254,7 +260,7 @@ jobs:
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
     # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
-    # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
+    # and a handful of Bun suites — the 325 s of setup dispatch://POMJU-1052 measured before the
     # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
     # about six times that, which leaves a slow runner room and still fails a hung harness inside
     # the hour.
@@ -395,6 +401,10 @@ jobs:
       - name: Test the private-name check
         if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
         run: .github/scripts/check-private-names.test.sh
+
+      - name: Test the project-key replacement
+        if: inputs.changes-result != 'success' || inputs.neutralize_private_keys_test == 'true'
+        run: .github/scripts/neutralize-private-keys.test.sh
 
       - name: Test the plugin-name check
         if: inputs.changes-result != 'success' || inputs.check_plugin_names_test == 'true'

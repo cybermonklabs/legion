@@ -20,7 +20,7 @@ import (
 // filter - a declared read applies to every compiled source file of a run - and a documentation
 // edit would then start the whole daemon Go lane. What holds the copy to the page is
 // internal/textcheck's TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable, in the job
-// whose subject is a file's words (INFRA-1413); the copy's header says the rest.
+// whose subject is a file's words (POMJU-1413); the copy's header says the rest.
 const troubleshootingExtract = "troubleshooting_refusals_extract.txt"
 
 // daemonWillNotStart is the heading of the refusal table every row below is taken from.

@@ -10,7 +10,7 @@ import (
 )
 
 // AuthCallout is a NATS server's authorization callout: every client that is not one of the
-// authorization's keyed users is admitted, or refused, by the auth service (dispatch://INFRA-840),
+// authorization's keyed users is admitted, or refused, by the auth service (dispatch://POMJU-840),
 // which reads the client's token and answers with that connection's grant. The server runs in
 // config mode, with no accounts block, so the service places each client in the global account,
 // $G, beside the static users.
@@ -44,7 +44,7 @@ type AuthCallout struct {
 // group, where the server's defaults (ping_interval 2 minutes, ping_max 2: server/const.go:120-123)
 // keep it there 4 to 8 minutes while each client sent to it is refused. It is the only thing that
 // acts when a replica's node loses its network; a liveness probe that restarts a replica whose
-// process stops answering, in seconds, is dispatch://INFRA-840's to provide.
+// process stops answering, in seconds, is dispatch://POMJU-840's to provide.
 //
 // nats-server v2.15.1 (server/client.go processPingTimer, :5943-6001) fires each connection's ping
 // timer every ping_interval. It skips a client's PING when it read messages, subscriptions or a
@@ -69,7 +69,7 @@ type AuthCallout struct {
 // It does not catch a replica whose request handler deadlocks while its process runs: nats.go
 // answers a PING from its read loop (nats.go v1.53.1 processPing, called at parser.go:324), not
 // from a handler, so the replica keeps its place in the group. Only the service can leave the
-// group then, by unsubscribing or closing its connection; that is INFRA-840's to provide.
+// group then, by unsubscribing or closing its connection; that is POMJU-840's to provide.
 //
 // ping_interval also governs a server's routes unless cluster.ping_interval is set, so the
 // clustered hub pins the routes' own (gcp clusteredHubCluster). The lines are part of
@@ -124,7 +124,7 @@ func (c AuthCallout) validate(a Authorization) error {
 }
 
 // validateCallout refuses the callout (AuthCallout.validate) and, with PrivateProjects, every
-// authorization that could admit a client past the auth service (R12 of dispatch://INFRA-3862): no
+// authorization that could admit a client past the auth service (R12 of dispatch://POMJU-3862): no
 // callout; a noAuthUser, whom a client presenting no credential becomes; a service user granted
 // more than the auth service's grant (serviceGrantRefusal), which nats-server admits by its seed
 // alone and so would be a client past the service; and any user but the service's, each a static

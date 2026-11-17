@@ -14,7 +14,7 @@ import {
 import { asUser } from "./users";
 
 /**
- * One thread order everywhere (INFRA-450), in the two surfaces that sit on the live document: a
+ * One thread order everywhere (POMJU-450), in the two surfaces that sit on the live document: a
  * document block's thread in the spec, and the margin thread beside the passage it is about,
  * with the Conversation card next to it. The Inbox's own surfaces - its reading pane, its card
  * and an ask's own thread - are in `threads-order.stub.e2e.ts`, and the three threads both

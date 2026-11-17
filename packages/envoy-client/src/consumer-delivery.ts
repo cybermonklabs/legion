@@ -346,7 +346,7 @@ function parseIdentity(data: string) {
  * followed topic.
  *
  * Both sides are read in every form of their name while the rename that put a project into an
- * issue's, an agent's and a role's name is under way (`topicForms`, dispatch://INFRA-3862): the
+ * issue's, an agent's and a role's name is under way (`topicForms`, dispatch://POMJU-3862): the
  * listener's consumer filters carry both forms, so a frame arrives in a form the session did not
  * follow in, and this client is the last reader of it. Comparing the spellings as they stand
  * would drop every such frame, and drop it in silence (`receive` answers `done` and the resume

@@ -5,7 +5,7 @@
 //
 // Key layout. session.<session_id> holds the entry, and two index keys hold the same entry JSON:
 // issue.<ISSUE>.<session_id> and role.<role_token>.<session_id>. project.<legion_project> is
-// reserved for the daemon's own record (INFRA-204), and no read here reaches it: every read is a
+// reserved for the daemon's own record (POMJU-204), and no read here reaches it: every read is a
 // session key or an issue or role prefix. A write claims the session key first, by compare-and-swap,
 // and writes the index keys after it, so a session two writes race for is listed under the winner's
 // issue alone. Nothing is ever deleted, so a closed issue's agents keep their entries and no read
@@ -38,7 +38,7 @@ type Entry struct {
 	// RoleToken is legion-<legion_project>-<issue lower-cased>-<role>, byte for byte what
 	// claim.NewToken and roleToken build.
 	RoleToken string `json:"role_token"`
-	// Title is the session's title as stamped (`Legion tester · INFRA-71`).
+	// Title is the session's title as stamped (`Legion tester · POMJU-71`).
 	Title string `json:"title"`
 	// Harness is omp or claude.
 	Harness string `json:"harness"`

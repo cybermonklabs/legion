@@ -11,7 +11,7 @@ import (
 // (api/issue_assignee.go) ends at the project's default assignee, which every project names
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), so a create that
 // names nobody and runs for nobody still lands on a person: the step that used to leave the
-// issue unassigned is gone. This file is the create half of dispatch://INFRA-3090; the question
+// issue unassigned is gone. This file is the create half of dispatch://POMJU-3090; the question
 // a read resolves is TestEveryQuestionReachesAPerson's.
 //
 // Each step of the chain is driven through POST /api/v1/issues and the issue is then read back,

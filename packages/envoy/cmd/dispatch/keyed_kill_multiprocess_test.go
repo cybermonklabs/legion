@@ -44,7 +44,7 @@ func backDateKeyLease(t *testing.T, database *store.Store, key string, by time.D
 // a loaded machine, which is why it is ten seconds and not one.
 const leaseMargin = 10 * time.Second
 
-// INFRA-258. A process killed while it runs a keyed write leaves the write's key held under a lease
+// POMJU-258. A process killed while it runs a keyed write leaves the write's key held under a lease
 // nothing renews any more. The other process answers a repeat under that key 409 KEY_IN_FLIGHT while
 // the lease lasts - the first run might still be alive - and, once the lease has lapsed with nothing
 // committed, takes the key over and makes the write, once; a repeat after that is its replay. The

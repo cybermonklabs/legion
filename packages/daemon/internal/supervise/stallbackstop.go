@@ -8,7 +8,7 @@ import (
 // LastStep is the moment the claim's agent was last known to be moving: the last step the daemon
 // received, or the turn's own start where the agent has sent no step since that turn began. It is
 // the zero time for a claim whose record holds neither, which is a claim nothing may be judged
-// from — the daemon reads this record and guesses nothing (INFRA-1274's backstop).
+// from — the daemon reads this record and guesses nothing (POMJU-1274's backstop).
 //
 // The two are compared rather than the call's own times read, because the record is never
 // cleared: after a recovery the call it names is the one that was open when the agent stopped, so

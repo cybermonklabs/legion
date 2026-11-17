@@ -395,7 +395,7 @@ func TestRouteStatusFilterListsOnlyOpenIssuesInThatState(t *testing.T) {
 // stateRosterServer is a Dispatch server whose listener answers GET /v1/sessions from rows, and
 // answers the live rows alone to a read that did not ask for the unresponsive ones - which is
 // what the listener does. A roster built from the live-only answer is the bug
-// dispatch://INFRA-392 is about: every stalled session reads as ended.
+// dispatch://POMJU-392 is about: every stalled session reads as ended.
 func stateRosterServer(t *testing.T, rows []map[string]any) *server {
 	t.Helper()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -670,7 +670,7 @@ func TestAListenerFailureOneServerMetReadsUnknownOnTheOther(t *testing.T) {
 	}
 }
 
-// A refill one server met is a refill on every server. dispatch://INFRA-261's approved spec
+// A refill one server met is a refill on every server. dispatch://POMJU-261's approved spec
 // (version 14) has every Dispatch view that reads the agent list - the Agents page and route
 // status among them - show a refilling state while the listener refills, and never an agent's
 // absence or an unreachable listener. The second server reads the answer the first stored, so it

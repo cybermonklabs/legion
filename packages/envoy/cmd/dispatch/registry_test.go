@@ -13,7 +13,7 @@ import (
 // bootProbeDialDelay is how late slowPostgres lets each of the process's connections reach
 // Postgres in the row below. It is half again store.healthProbeTimeout's two seconds, so the
 // boot's own cold dial cannot fit inside that warm bound however the machine is loaded, and the
-// boot pays it three times over: measured through a counting proxy (INFRA-1810), over three runs,
+// boot pays it three times over: measured through a counting proxy (POMJU-1810), over three runs,
 // the connections arrive in three rounds, each round waiting on the one before it. The shared
 // pool's one connection comes first, at 0.03-0.04 s, and carries every sequential boot step; ten
 // more open together once it is up, at 3.50-3.59 s; seven or eight more once those are up, at
@@ -27,7 +27,7 @@ const bootProbeDialDelay = 3 * time.Second
 
 // bootProbeDeadline is the failure CI showed when the boot's probe ran out of the warm probe's
 // bound - "register this server process: probe the database: context deadline exceeded"
-// (dispatch://INFRA-985, 1 run in 13 at a Postgres with max_connections 400 and 4 in 16 at 100)
+// (dispatch://POMJU-985, 1 run in 13 at a Postgres with max_connections 400 and 4 in 16 at 100)
 // - written as the binary writes it, which is slog's message and the error it wraps as two
 // fields rather than one joined string.
 const bootProbeDeadline = `msg="dispatch: register this server process" ` +

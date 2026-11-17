@@ -15,7 +15,7 @@ related_issues:
 
 # A copied connection count is re-summed from the merged code at every merge of main
 
-Extends docs/solutions/infra/a-shared-limit-during-a-roll-counts-terminating-pods-state-the-rule-not-a-replica-count-INFRA-560.md.
+Extends docs/solutions/infra/a-shared-limit-during-a-roll-counts-terminating-pods-state-the-rule-not-a-replica-count-POMJU-560.md.
 
 - **After each merge of main, set the copy to the merged sum.** `dispatchConnectionsPerPod`
   (`infra/gcp/dispatch.go`) copies `store.ConnectionsPerProcess`. When main and the branch both

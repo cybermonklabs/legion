@@ -15,7 +15,7 @@ related_issues:
 
 # Work that moves to another loop keeps its lease name and its once-per-period pass
 
-Extends docs/solutions/architecture-patterns/a-lease-is-a-name-and-the-name-is-its-blast-radius-INFRA-66.md.
+Extends docs/solutions/architecture-patterns/a-lease-is-a-name-and-the-name-is-its-blast-radius-POMJU-66.md.
 
 - When you move a piece of background work out of one loop into another, keep the lease name the
   work already runs under, even when the new loop's own name would read better. During a rolling

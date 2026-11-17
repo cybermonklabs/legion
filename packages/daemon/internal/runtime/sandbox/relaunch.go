@@ -70,7 +70,7 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // and this role is started in it.
 // Such a pod is replaced by an update round, which first asks every role in it to push its work
 // and answer, and then ends the pod (ReplacePod): replacing it at a launch would end every role's
-// turn in it and delete the issue's disk with everything unpushed on it (INFRA-484). A launch into
+// turn in it and delete the issue's disk with everything unpushed on it (POMJU-484). A launch into
 // a drifted pod is therefore an ordinary launch, the install of a stale-plugin pair (spec.Plugins,
 // LEGION-164) included, which brings this launch's agent onto the current plugin without a fresh
 // pod. Its role is started as the kept pod was built, from the volumes and mounts of that pod's
@@ -191,7 +191,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// configuration now reads (keptBy): a drifted pod the update round has not replaced yet
 		// carries neither an enrollment nor an overlay the configuration gained after it was
 		// created, and a start naming either would refuse to run, never register, and so never
-		// answer the round that is to replace it (INFRA-484). Where the stored template says
+		// answer the round that is to replace it (POMJU-484). Where the stored template says
 		// nothing the daemon can read, it cannot tell what the pod carries, and the launch
 		// replaces the pod where it stands, which is what every launch into a drifted pod did
 		// before the round existed.
@@ -310,7 +310,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
 // runs degraded until the update round replaces the pod — able to push its work and answer that
 // round, where a start naming what its pod cannot carry would refuse to run at all (keptPod,
-// INFRA-484).
+// POMJU-484).
 // The same enrollment decision writes the generation's address record (recordAddresses), so the
 // record says what the start said.
 //

@@ -13,7 +13,7 @@ module: packages/daemon/internal/notify
 
 # Before an old consumer reads a new answer as a generic error, check its retry cap and what waits behind it
 
-Extends docs/solutions/envoy/a-tolerance-for-a-lagging-timestamp-ships-first-inside-the-reader-and-its-doc-states-the-rule-not-the-timeline-INFRA-610.md.
+Extends docs/solutions/envoy/a-tolerance-for-a-lagging-timestamp-ships-first-inside-the-reader-and-its-doc-states-the-rule-not-the-timeline-POMJU-610.md.
 
 - When a producer gains a new error answer, read how each consumer of an earlier release handles
   an answer it does not know. Two facts decide the release order: whether it retries that answer

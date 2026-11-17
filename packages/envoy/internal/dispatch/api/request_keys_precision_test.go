@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// INFRA-258. A transaction that only locked rows - a claim's SELECT ... FOR UPDATE - is given a
+// POMJU-258. A transaction that only locked rows - a claim's SELECT ... FOR UPDATE - is given a
 // transaction id as a write is, and wrote nothing: its commit marks no key. A request whose write
 // failed after such a commit made nothing, so its next attempt runs the request again rather than
 // being told KEY_COMMITTED for a write that never landed.

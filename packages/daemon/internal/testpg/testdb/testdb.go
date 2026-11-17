@@ -126,7 +126,7 @@ type Execer interface {
 // superuser nor a member of pg_signal_backend as soon as one session belongs to another role — an
 // autovacuum worker, which attaches to a database a test has just filled. Every Legion pod shares
 // one server whose test login holds neither privilege, so the refusal is waited out for 30
-// seconds; any other error is the caller's at once (dispatch://INFRA-714 round six).
+// seconds; any other error is the caller's at once (dispatch://POMJU-714 round six).
 //
 // It lives here rather than in internal/testpg because this package imports nothing of the
 // module, so every package's tests can take it — internal/store's among them, whose own tests

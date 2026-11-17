@@ -429,7 +429,7 @@ check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a bump that leaves state.json at the number it bumps from"
 root=$(fixture bump-forgets-state)
-# INFRA-3621's bump: version.go and three of the other files at 8, and state.json still at 7.
+# POMJU-3621's bump: version.go and three of the other files at 8, and state.json still at 7.
 # The number is above the base's, and the check refuses it all the same, before it passes one.
 declaration 7 > "$root/stub/refs/main"
 declaration 8 > "$root/packages/daemon/internal/api/version.go"

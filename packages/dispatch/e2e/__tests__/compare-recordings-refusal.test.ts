@@ -13,7 +13,7 @@
  *  committed set, so it holds for every spelling that names that directory: the relative one a
  *  person types from `packages/dispatch`, where every command of this package is written from,
  *  a trailing slash, a `..`, a symlink, and the absolute path. Before that it compared the
- *  caller's word with the absolute path alone, and at legion/INFRA-1407 8fe394e1
+ *  caller's word with the absolute path alone, and at legion/POMJU-1407 8fe394e1
  *  `bun e2e/tools/compare-recordings.ts e2e/__recordings__` printed "every one of the 132
  *  committed recordings still answers as it holds" and exited 0.
  */

@@ -15,7 +15,7 @@ related_issues:
 
 # Removing a field from a strictly decoded durable payload needs a migration that strips it from the rows already queued
 
-Extends docs/solutions/daemon/a-guard-column-a-new-sweep-reads-is-backfilled-from-traces-nothing-prunes-and-proved-from-the-previous-migration-INFRA-252.md,
+Extends docs/solutions/daemon/a-guard-column-a-new-sweep-reads-is-backfilled-from-traces-nothing-prunes-and-proved-from-the-previous-migration-POMJU-252.md,
 which covers a column a new release adds. This is the same discipline for a field a release
 **removes** from a payload the previous release has already written into a durable queue.
 

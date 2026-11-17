@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// What the two rows here prove together is Acceptance A1 of dispatch://INFRA-1530: a fact held
+// What the two rows here prove together is Acceptance A1 of dispatch://POMJU-1530: a fact held
 // well past its acknowledgement window is delivered once and prepared once at the two-second
 // window these rows keep, because consumeMessage reports it in progress while its handler runs
 // (keepInProgress; the delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go).
@@ -58,7 +58,7 @@ import (
 // window expires and the redelivery lands in it the moment the server makes it.
 //
 // Both rows hold the first of a backlog of three events rather than one message alone, because a
-// backlog is what the daemon pays the cost on in production as well (dispatch://INFRA-456), and it
+// backlog is what the daemon pays the cost on in production as well (dispatch://POMJU-456), and it
 // lets the first row assert what A1 asks of every event rather than of one.
 
 // heldBacklog is how many Dispatch issue events each row publishes, each under a key of its own.
@@ -185,7 +185,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// period as a third of the window (spec.AckWait/3 in consume.go), so at two seconds the
 	// period is 667 ms and 1333 ms of the window are left after the first report is due.
 	//
-	// What that has to cover is measured. The campaign of dispatch://INFRA-1113 measured, at a
+	// What that has to cover is measured. The campaign of dispatch://POMJU-1113 measured, at a
 	// 200 ms window: the largest trip of an acknowledgement to the server 516.8 ms, the largest
 	// lateness of the keeper's own report 337 ms, and the largest trip of a progress report
 	// 158.6 ms. A late first report costs both of the last two, because the report is made late
@@ -310,7 +310,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 // row above: a third of it, 667 ms, is when that row's keeper owes its first report, 495.6 ms is
 // the largest delay on the report path, 516.8 ms is the acknowledgement's own trip, and the
 // acknowledgement path's composition, 667 + 337 + 516.8 = 1520.8 ms, is what binds. The campaign
-// of dispatch://INFRA-1113 measured those delays. This consumer reports nothing in progress, by
+// of dispatch://POMJU-1113 measured those delays. This consumer reports nothing in progress, by
 // design, so here the window alone says when the server makes the held message due again, and
 // this consumer's own open request takes it the moment the server does.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal(t *testing.T) {
@@ -377,7 +377,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSign
 	}
 }
 
-// What the three rows below prove together is Acceptance A2 of dispatch://INFRA-1530: the progress
+// What the three rows below prove together is Acceptance A2 of dispatch://POMJU-1530: the progress
 // signal stops the moment the handler it was reporting for ends, it stops before the message's one
 // terminal call so a nak keeps the retry it asked for, and a handler that never ends is cut at
 // HandlerLimit with its message naked and delivered again.
@@ -721,7 +721,7 @@ const heldFactLine = "an intake fact outlived its acknowledgement window and was
 // This line is the only thing in the daemon that reports how long a fact took: nothing else times
 // one, and the consumer-lag warning beside it (lagWatch) speaks five minutes late and names no
 // duration. The issue's after-merge check reads the line in production
-// (dispatch://INFRA-1530), so a change that dropped it, or that left its attributes behind, would
+// (dispatch://POMJU-1530), so a change that dropped it, or that left its attributes behind, would
 // go unnoticed until that deploy; hence a row of its own, under the name the check selects.
 //
 // Its count is of log lines rather than of deliveries, and what makes it sound at consumerSpec's

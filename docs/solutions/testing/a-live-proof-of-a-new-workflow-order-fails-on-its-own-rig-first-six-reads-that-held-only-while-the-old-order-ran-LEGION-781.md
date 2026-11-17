@@ -13,7 +13,7 @@ tags:
   - ISSUE_CLOSED
   - durable-consumers
 date: 2026-10-21
-status: superseded in part by INFRA-714 — one read its rig holds, the issue reaching `awaiting_merge`, names a phase that no longer exists; the rule, that a proof of a new workflow order fails on its own rig first, stands and is why this note exists
+status: superseded in part by POMJU-714 — one read its rig holds, the issue reaching `awaiting_merge`, names a phase that no longer exists; the rule, that a proof of a new workflow order fails on its own rig first, stands and is why this note exists
 module: scripts/e2e
 related_issues:
   - "LEGION-781"
@@ -28,7 +28,7 @@ not the daemon, and read each failure's artifact for which it is before touching
 These six held at main and broke under the new order.
 
 - **A fixture for work after the close waits for no Dispatch message.** When this was written a
-  closed issue took no Dispatch write (`409 ISSUE_CLOSED`; since INFRA-448 it takes comments and
+  closed issue took no Dispatch write (`409 ISSUE_CLOSED`; since POMJU-448 it takes comments and
   messages, and still refuses asks and document edits), so a `send_agent` to the implementer
   of a just-closed issue failed the checkpoint, and an instructions sentence telling that agent to
   "reply WAITING and wait for the targeted message" holds its look forever. The daemon's own task

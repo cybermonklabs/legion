@@ -37,10 +37,10 @@ export interface AgentConversation {
    *  them; undefined until one arrives, which a session that cannot take typed input never sends. */
   readonly commands: readonly AgentStreamCommand[] | undefined;
   /** The model and thinking level the session runs now, as its newest `settings` frame reports
-   *  them (INFRA-195); absent until one arrives, which a plugin older than the frame never sends. */
+   *  them (POMJU-195); absent until one arrives, which a plugin older than the frame never sends. */
   readonly settings?: AgentStreamSettings;
   /** How full the session's context window is, as its newest `context` frame reports it
-   *  (INFRA-812); absent until one arrives. A session whose host reports no window, or a window
+   *  (POMJU-812); absent until one arrives. A session whose host reports no window, or a window
    *  of zero, publishes none, and the view then draws no ring and no figure. */
   readonly context?: AgentStreamContextFrame;
   /** The highest `seq` already applied per message id, per tool call id, to the command list, to
@@ -363,7 +363,7 @@ export type SessionSettingsView =
     };
 
 /**
- * What the header shows of the session's model and thinking level, and why (INFRA-195). It never
+ * What the header shows of the session's model and thinking level, and why (POMJU-195). It never
  * shows a value the session did not report: the settings are the newest `settings` frame alone,
  * and a session that sent none shows the last turn's model, as the header did before the frame.
  * A picker is offered only where the session lists the built-in a pick runs (`model`, `effort`)
@@ -442,7 +442,7 @@ function bodyPictures(body: string): Map<string, number> {
  * against `spare` (the body's own, by `bodyPictures`); undefined for a row carrying a picture
  * the body does not hold, or holding one more time than the body wrote it.
  *
- * This is the page's own claim-checking, not the shared rule (INFRA-1026). The bus is open to
+ * This is the page's own claim-checking, not the shared rule (POMJU-1026). The bus is open to
  * any client, and the row is rendered as markdown under the person's name, so a row stripped of
  * picture markdown the way the body is would let a frame add `![any caption](dispatch://…@v1)`
  * to the words the person wrote, still "say" the body, hide the stored copy, and show a picture
@@ -458,7 +458,7 @@ function bodyPictures(body: string): Map<string, number> {
  * that one out too, which is how
  * `look at this ![I approve deleting prod](dispatch://agent/a1/artifact/x<the body's own
  * picture>@v1)` said a body of `look at this <that picture>` and drew its caption under the
- * person's name (INFRA-1026). Nothing honest is lost by comparing the leftover whole: for a row
+ * person's name (POMJU-1026). Nothing honest is lost by comparing the leftover whole: for a row
  * that is the body verbatim, both sides have had each of the body's pictures taken out exactly
  * once, so both end with the same text.
  */
@@ -479,7 +479,7 @@ function rowLines(text: string, spare: Map<string, number>): string[] | undefine
 
 /**
  * Whether a streamed turn says exactly what the person wrote, so Dispatch's stored copy of that
- * message gives way to the streamed row (INFRA-1026). The turn's lines are read against the
+ * message gives way to the streamed row (POMJU-1026). The turn's lines are read against the
  * body's own lines in order: the body's side is the shared rule (`comparableLines` in
  * `@legion/contracts`, which the Claude Code plugin tags its rows by), the row's side the
  * body's own pictures spent against what it carries and what is left read by the shared rule's
@@ -490,7 +490,7 @@ function rowLines(text: string, spare: Map<string, number>): string[] | undefine
  * the publisher writes for a person's own message is the one an image block becomes, one per
  * picture and after the person's text — `PICTURE_PLACEHOLDER`, the one spelling the publisher
  * writes and this guard reads, held in `@legion/contracts` because two copies of it drifting
- * would have this guard refuse every honest picture row with no error anywhere (INFRA-1026
+ * would have this guard refuse every honest picture row with no error anywhere (POMJU-1026
  * review). What a person's message reaches the session as is text blocks and image blocks
  * alone (`ContentBlock` in `@legion/pi-shared/pi-types`), so a row that puts a bracketed
  * word of its own anywhere — `[approved-by-me]` after the text of a body that embeds a

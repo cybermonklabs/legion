@@ -1,12 +1,12 @@
 package supervise
 
 // The stale-plugin refresh gate: the bound on how much of the daemon's wake pacing the
-// stale-plugin refresh lane may hold at once (dispatch://INFRA-2712). Every claim that lane
+// stale-plugin refresh lane may hold at once (dispatch://POMJU-2712). Every claim that lane
 // refreshes takes a reservation out of the one limiter the daemon paces every wake from
 // (WakePace, internal/wakepace), and a boot on a new plugin contract makes the lane as long as
 // the fleet: each live session of the release before this one is one more refresh in the queue,
 // and the first launch of a tree admitted after that boot waits behind all of them. Measured on
-// the INFRA daemon, 62 newly admitted trees held their slots two to three hours with no architect
+// the POMJU daemon, 62 newly admitted trees held their slots two to three hours with no architect
 // running, behind hundreds of refresh wakes the pacing had already given turns to.
 //
 // The gate is what keeps that queue short. The lane may hold K wakes in the pacing at a time, K
@@ -260,7 +260,7 @@ func (m *Machine) releaseRefresh() {
 }
 
 // endRefreshLane holds the stale-plugin lane to its two invariants, at the one line every
-// decision of a machine ends on (Machine.unlock, dispatch://INFRA-2712 R1). Both are of the same
+// decision of a machine ends on (Machine.unlock, dispatch://POMJU-2712 R1). Both are of the same
 // shape — nothing of a relaunch this lane raised may outlive the decision that raised it, except
 // the wake that relaunch is waiting on — and both are kept here rather than at each of the paths
 // that could break them, because a path added later keeps them by ending its decision.
@@ -278,7 +278,7 @@ func (m *Machine) releaseRefresh() {
 // (markPluginRelaunch, reserveWake, commitPluginRelaunch). One left standing here would mark
 // the next launch of this machine — a resume, a retry, a death's relaunch — as a relaunch of
 // this lane, which writes PluginRelaunchFor for a contract no relaunch was made for and reports
-// the lane one claim wide of what it holds (dispatch://INFRA-2712 R4). A retry that still owes
+// the lane one claim wide of what it holds (dispatch://POMJU-2712 R4). A retry that still owes
 // one carries it in its own closure and puts it back where it runs, so it loses nothing here
 // (retryHolding).
 func (m *Machine) endRefreshLane() {

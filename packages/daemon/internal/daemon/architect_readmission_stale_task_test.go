@@ -9,7 +9,7 @@ import (
 
 // A root whose architect was given its first task and never confirmed it, then parked and handed
 // back, is re-admitted at the next generation, and its architect is given that generation's task
-// (dispatch://INFRA-2614, R3: each task the architect is given says what is true of its root).
+// (dispatch://POMJU-2614, R3: each task the architect is given says what is true of its root).
 // The task the claim still held from the run before is no such task: it says the tree is open at
 // generation 1, that nothing in it runs, that every child of the decomposition is to be filed and
 // that no message is coming, all of a run re-admission ended. So the first prompt the re-admitted

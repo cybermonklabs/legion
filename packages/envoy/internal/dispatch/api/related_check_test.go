@@ -317,7 +317,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 // excluded issues nearer the text than the keeper fill the window the page takes
 // (suggestionSearchDepth rows), and the check still finds the keeper and still says it searched
 // by meaning and keywords. Left out after the page instead, the ten take every place in it and
-// the keeper, eleventh by vector, is never seen (INFRA-1160).
+// the keeper, eleventh by vector, is never seen (POMJU-1160).
 func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
 	const text = "Archive snapshots finish late"
 	const keeperTitle = "Our own nightly backup cousin"

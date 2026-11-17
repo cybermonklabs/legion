@@ -66,7 +66,7 @@ func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
 
 	t.Run("configured", func(t *testing.T) {
 		model := newCountingServer(t, `{}`)
-		dispatch := newCountingServer(t, `{"key":"INFRA-1353","title":"","status":"doing"}`)
+		dispatch := newCountingServer(t, `{"key":"POMJU-1353","title":"","status":"doing"}`)
 		broker := startBroker(t, brokerOptions{Binary: binary, Env: []string{
 			"BROKER_DATABASE_URL=" + storetest.URL(t),
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",

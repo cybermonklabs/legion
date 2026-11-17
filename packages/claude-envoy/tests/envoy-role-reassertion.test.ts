@@ -184,7 +184,7 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
 })
 
 test("the role read's 404 still means no live holder: the kept lane changed only the publish route", async () => {
-  // INFRA-839 gave a role publish a kept lane, so POST /v1/messages/publish answers 202 where it
+  // POMJU-839 gave a role publish a kept lane, so POST /v1/messages/publish answers 202 where it
   // used to answer 404. GET /v1/roles/<role> is untouched and still answers 404, with the
   // role-holder body, when no live session holds the role. The heartbeat's re-assertion reads
   // that route (`undefinedOnNotFound`), so it stays as it is.
@@ -244,7 +244,7 @@ test("the role read's 404 still means no live holder: the kept lane changed only
 test("a soft claim a different live session refuses removes the role record, which no kept answer touches", async () => {
   // The one path that removes a role record by hand (`pruneStaleSessionRoles` says so) is driven
   // by `setRole`'s 409 naming a session other than this one — that session holds the role, and
-  // this one demonstrably does not — and never by a publish answer. INFRA-839 changed only the
+  // this one demonstrably does not — and never by a publish answer. POMJU-839 changed only the
   // publish route, so this path is as it was.
   const stateDirectory = scratchState()
   const removed = Promise.withResolvers<void>()
@@ -296,7 +296,7 @@ test("a soft claim a different live session refuses removes the role record, whi
 })
 
 test("a refusal naming this session under another process keeps the record, asks again, and takes the role back once that claim lapses", async () => {
-  // The incident (dispatch://INFRA-783): a second `claude` resumed this session's id, took the
+  // The incident (dispatch://POMJU-783): a second `claude` resumed this session's id, took the
   // role under its own client instance and exited. The listener's 409 names this very session,
   // because the standing claim is on this session id; the role is still not this process's, and
   // the record is its only way back to it. So the record stays, every heartbeat asks again, and
@@ -373,7 +373,7 @@ test("a refusal naming this session under another process keeps the record, asks
 })
 
 test("a lookup marked handed back makes the heartbeat claim the role again and keeps the record", async () => {
-  // dispatch://INFRA-783: a `claude` built before a release named its process hands this role
+  // dispatch://POMJU-783: a `claude` built before a release named its process hands this role
   // back without naming one, so the listener cannot free this live process's claim and marks it
   // instead. Nothing renews a marked claim, so without reading the mark this process would go
   // on believing it holds the role and lose it a live window and up to one reap interval

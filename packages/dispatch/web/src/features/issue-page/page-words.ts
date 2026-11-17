@@ -1,6 +1,6 @@
 /**
  * Every word the issue page says of its own accord, and every shape it draws beside one
- * (INFRA-1196 R21, `dispatch://INFRA-1196/spec#b-r-plain-words`). Nothing the page draws names
+ * (POMJU-1196 R21, `dispatch://POMJU-1196/spec#b-r-plain-words`). Nothing the page draws names
  * itself in an internal word: a type name, a state word, a preset name, a control label, an
  * empty-state line and an attribute's own `when` value all come from here, so a word a reader
  * sees is a word somebody chose rather than a schema token, a slug or an enumeration case.
@@ -236,7 +236,7 @@ export function sentenceCase(name: string): string {
 /** The five controls of the filter row in the order the row draws them (R2): Conversation,
  *  which is the page with no filter on, then the four filters in the order of his answer of
  *  2026-11-11 20:57Z, "the spec, the verification, the plan, the decisions"
- *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). The page opens on
+ *  (dispatch://POMJU-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). The page opens on
  *  Conversation. */
 export const PRESET_ORDER = freeze([
   "conversation",
@@ -292,7 +292,7 @@ export const CONTENTS_MARK_WORDS = freeze({
 export type ContentsMark = keyof typeof CONTENTS_MARK_WORDS;
 
 /**
- * The words the Spec filter's body draws of its own (dispatch://INFRA-1196 R5, R17, R22, R35,
+ * The words the Spec filter's body draws of its own (dispatch://POMJU-1196 R5, R17, R22, R35,
  * `spec-filter/SpecFilterBody.tsx`). Nothing here says anything about the page or about
  * Dispatch. The mark at the right of a statement is how it stands at the commit the page
  * names, in the Verification filter's own words (`VERIFICATION_WORDS.states`: Met, Not met,
@@ -328,7 +328,7 @@ export const SPEC_WORDS = freeze({
 } as const);
 
 /**
- * The words the Decisions filter's body draws of its own (dispatch://INFRA-1196 R2, R22, R35,
+ * The words the Decisions filter's body draws of its own (dispatch://POMJU-1196 R2, R22, R35,
  * `decisions-filter/`). None is a sentence about the page or about Dispatch, and no sentence
  * explains the four parts: their headings are the whole of it. How a decision stands is
  * `NODE_STATE_WORDS.decision`, which the outline draws too.
@@ -360,7 +360,7 @@ export const DECISIONS_WORDS = freeze({
 } as const);
 
 /**
- * The words the Verification filter's body draws of its own (dispatch://INFRA-1196 R17, R22,
+ * The words the Verification filter's body draws of its own (dispatch://POMJU-1196 R17, R22,
  * `verification-filter/`). `states` is how a statement stands at the commit the page names,
  * which is the page's own reading of the checks that serve it and no state the model holds: a
  * `requirement` block has no state, so these are not `NODE_STATE_WORDS.requirement` and never
@@ -398,7 +398,7 @@ export const VERIFICATION_WORDS = freeze({
 export type StatementState = keyof typeof VERIFICATION_WORDS.states;
 
 /**
- * The words the Plan filter's body draws of its own (dispatch://INFRA-1196 R26, ruling 5 of
+ * The words the Plan filter's body draws of its own (dispatch://POMJU-1196 R26, ruling 5 of
  * build-rulings-md, `plan-filter/`): the two ways it draws the plan, which its one control
  * switches between, the chart's two headings, the line for tasks that need each other, and the
  * mark of a bar whose task holds no size.
@@ -421,7 +421,7 @@ export const PLAN_WORDS = freeze({
 
 /**
  * The words of the list of what references the row the reader is on, in Details
- * (dispatch://INFRA-1196 R14, R19, `node-references/NodeReferences.tsx`). The edge and kind
+ * (dispatch://POMJU-1196 R14, R19, `node-references/NodeReferences.tsx`). The edge and kind
  * words are lowercase, as `NODE_TYPE_NAMES` are, because a row draws them beside the author's
  * own words. What the list says while its read is out and when it failed is the page's answer to
  * the reader opening it (`ANSWER_LINES.references_loading`, `references_unreadable`).
@@ -520,7 +520,7 @@ export const EMPTY_STATE_LINES = freeze({
  * for a node that names no origin, since no requirement carries a `from` yet and no decision a
  * question it settles, and none for a summary nobody is recorded as writing or confirming,
  * which no issue records - and a requirement no plan task serves is no gap the page draws
- * either. Nor is a result that records no negative control: dispatch://INFRA-1253 R3 refuses
+ * either. Nor is a result that records no negative control: dispatch://POMJU-1253 R3 refuses
  * the results that gap would name, so it is no gap the page draws.
  *
  * `no_check` is the gap the coverage read already carries (`RequirementCoverage.gaps`), said in
@@ -597,7 +597,7 @@ export const STATE_LINES = freeze({
 
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
- * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
+ * a list they opened still being read, and a write of theirs still out (dispatch://POMJU-1196
  * R22). The page's other answers are tables of their own -
  * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
  * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
@@ -754,7 +754,7 @@ export const CONTROL_LABELS = freeze({
    *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
   add_priority: "Add a priority",
   /** What the priority row says of a priority the issue advances because an issue above it
-   *  does, which is that issue's to remove (dispatch://INFRA-2947 R4). */
+   *  does, which is that issue's to remove (dispatch://POMJU-2947 R4). */
   advances_inherited: "inherited",
   /** The other parents a transcluded node is also drawn under (R1, R4). */
   also_under: "Also under",
@@ -896,7 +896,7 @@ export const CONTROL_LABELS = freeze({
   /** The count that ends the header's properties line when the issue's labels do not all fit
    *  on it, after the number of labels left over: "+1 label", "+17 labels". It opens Details
    *  at its Labels row, which lists every label (R13, the ruling of
-   *  dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). */
+   *  dispatch://POMJU-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). */
   labels_left_one: "label",
   labels_left_many: "labels",
   /** What the shell's indicator calls a write of where this issue's messages go: "Route of
@@ -952,7 +952,7 @@ export const CONTROL_LABELS = freeze({
   reopen_thread: "Reopen",
   /** Every row of the conversation that takes a reply carries it on its focus: a comment, a
    *  message and an ask whatever its state, an answered or a resolved one included (R16,
-   *  dispatch://INFRA-3677); it sets the line at the foot of the outline to answer it, as `r`
+   *  dispatch://POMJU-3677); it sets the line at the foot of the outline to answer it, as `r`
    *  does. */
   reply: "Reply",
   /** What the line at the foot of the outline says of the row it replies to, before that row's

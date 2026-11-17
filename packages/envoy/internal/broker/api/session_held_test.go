@@ -1,5 +1,5 @@
 // session_held_test.go pins what POST /v1/enrollments answers a launcher reaching for a session
-// name another principal already holds (dispatch://INFRA-1167): 403 SESSION_HELD, the session
+// name another principal already holds (dispatch://POMJU-1167): 403 SESSION_HELD, the session
 // named so the operator reading it knows which name is taken, and nothing of whoever holds it.
 package api_test
 

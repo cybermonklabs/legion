@@ -1969,8 +1969,8 @@ printf 'no changie configuration\n' > "$ft/a/packages/nolog/README.md"
 changie_config "$ft/a/packages/rel"
 changie_config "$ft/a/packages/empty"
 commit_at 2026-02-01T12:00:00+00:00 "chore: seed"
-fragment rel INFRA-1-first Added "the first entry"
-fragment rel INFRA-1-another Added "another entry"
+fragment rel POMJU-1-first Added "the first entry"
+fragment rel POMJU-1-another Added "another entry"
 commit_at 2026-02-10T12:00:00+00:00 "feat: first"
 c1=$(git -C "$ft/a" rev-parse HEAD)
 # The bump-shaped release tag: on a child of the built commit that main never holds, which
@@ -1980,13 +1980,13 @@ printf '{"name": "rel", "version": "1.9.0"}\n' > "$ft/a/packages/rel/package.jso
 commit_at 2026-03-01T23:30:00-05:00 "chore: release rel v1.9.0 [skip ci]"
 git -C "$ft/a" tag rel-v1.9.0
 git -C "$ft/a" checkout -q main
-fragment rel INFRA-2-second Fixed "the second entry"
+fragment rel POMJU-2-second Fixed "the second entry"
 # The listener-shaped tag, on the built commit itself.
 commit_at 2026-03-05T01:00:00+09:00 "feat: second"
 c2=$(git -C "$ft/a" rev-parse HEAD)
 git -C "$ft/a" tag rel-v1.10.0
-fragment rel INFRA-3-third Added "the third entry"
-fragment nolog INFRA-3-nolog Added "an entry of a package with no configuration"
+fragment rel POMJU-3-third Added "the third entry"
+fragment nolog POMJU-3-nolog Added "an entry of a package with no configuration"
 commit_at 2026-04-10T22:15:00-07:00 "feat: third"
 c3=$(git -C "$ft/a" rev-parse HEAD)
 # A name under the prefix that is no release: it bounds no group and is rendered nowhere.
@@ -2052,14 +2052,14 @@ git init -q -b main "$rt"
 identity "$rt"
 for package in sub yml readme link two; do
   mkdir -p "$rt/packages/$package/$u"
-  printf 'kind: Added\nbody: fine\n' > "$rt/packages/$package/$u/INFRA-1-fine.yaml"
+  printf 'kind: Added\nbody: fine\n' > "$rt/packages/$package/$u/POMJU-1-fine.yaml"
 done
 mkdir -p "$rt/packages/sub/$u/sjawhar"
 printf 'kind: Added\nbody: nested\n' > "$rt/packages/sub/$u/sjawhar/fix-thing.yaml"
-printf 'kind: Added\nbody: yml\n' > "$rt/packages/yml/$u/INFRA-1-a.yml"
+printf 'kind: Added\nbody: yml\n' > "$rt/packages/yml/$u/POMJU-1-a.yml"
 printf 'not a fragment\n' > "$rt/packages/readme/$u/README.md"
-ln -s INFRA-1-fine.yaml "$rt/packages/link/$u/link.yaml"
-printf 'kind: Added\nbody: yml\n' > "$rt/packages/two/$u/INFRA-1-a.yml"
+ln -s POMJU-1-fine.yaml "$rt/packages/link/$u/link.yaml"
+printf 'kind: Added\nbody: yml\n' > "$rt/packages/two/$u/POMJU-1-a.yml"
 printf 'not a fragment\n' > "$rt/packages/two/$u/README.md"
 git -C "$rt" add -A
 git -C "$rt" commit -q -m "feat: odd entries"
@@ -2085,7 +2085,7 @@ refuse_run() {
   err=$(<"$work/fold-refuse.err")
 }
 refused='at HEAD: each entry in a package.s \.changes/unreleased/ must be a regular file whose name ends in \.yaml'
-for entry in sub/sjawhar yml/INFRA-1-a.yml readme/README.md link/link.yaml; do
+for entry in sub/sjawhar yml/POMJU-1-a.yml readme/README.md link/link.yaml; do
   refuse_run fold-notes 1.0.0 "$refuse_notes" "packages/${entry%%/*}" odd-v
   check "fold-notes: packages/${entry%%/*}/$u/${entry#*/} is refused by name, writing no file" \
     "$(is "$rc|$([ -e "$refuse_notes" ] && echo true || echo false)|$(contains "$err" "^::error::release-push\.sh fold-notes: packages/${entry%%/*}/$u/${entry#*/} $refused")" "1|false|true")"
@@ -2095,7 +2095,7 @@ for entry in sub/sjawhar yml/INFRA-1-a.yml readme/README.md link/link.yaml; do
 done
 refuse_run fold-notes 1.0.0 "$refuse_notes" packages/two odd-v
 check "fold-notes: one error names every refused entry of the package, sorted" \
-  "$(is "$rc|$(grep -c '^::error::' <<<"$err")|$(contains "$err" "^::error::release-push\.sh fold-notes: packages/two/$u/INFRA-1-a\.yml packages/two/$u/README\.md $refused")" "1|1|true")"
+  "$(is "$rc|$(grep -c '^::error::' <<<"$err")|$(contains "$err" "^::error::release-push\.sh fold-notes: packages/two/$u/POMJU-1-a\.yml packages/two/$u/README\.md $refused")" "1|1|true")"
 check "fold-notes: that refusal says to move or rename a fragment in one commit with git mv" \
   "$(contains "$err" 'in one commit, with git mv')"
 refuse_run fold-check
@@ -2113,7 +2113,7 @@ rc=$?
 set -e
 check "fold-check: with no changie on PATH it refuses once, naming the tool and how to install it" \
   "$(is "$rc|$(grep -c '^::error::' <<<"$out")|$(contains "$out" '^::error::release-push\.sh fold-check: changie is not on PATH,.*install-changie')" "1|1|true")"
-check "fold-check: that refusal names no fragment" "$(is "$(contains "$out" 'INFRA-1-fine')" false)"
+check "fold-check: that refusal names no fragment" "$(is "$(contains "$out" 'POMJU-1-fine')" false)"
 
 # The rendering cases need the real changie, which the release build jobs install with
 # .github/actions/install-changie. Without it on PATH they are skipped, not counted.
@@ -2140,26 +2140,26 @@ if command -v changie >/dev/null; then
   check "fold-notes: a package holding no fragment at all writes no file, prints notes=false and exits 0" \
     "$(is "$rc|$wrote|$out|$(contains "$err" '^No changelog fragment of packages/empty is new in 1\.11\.0; wrote no notes file$')" "0|false|notes=false|true")"
   # Only HEAD's tree counts: a file the working tree alone holds is in no release.
-  printf 'kind: Added\nbody: untracked\n' > "$ft/a/packages/rel/$u/INFRA-9-untracked.yaml"
+  printf 'kind: Added\nbody: untracked\n' > "$ft/a/packages/rel/$u/POMJU-9-untracked.yaml"
   notes_run "$c3" 1.11.0 packages/rel rel-v
-  rm -f "$ft/a/packages/rel/$u/INFRA-9-untracked.yaml"
+  rm -f "$ft/a/packages/rel/$u/POMJU-9-untracked.yaml"
   check "fold-notes: a fragment the working tree alone holds is rendered nowhere" \
     "$(is "$rc|$(contains "$notes" 'untracked')" "0|false")"
 
   # A fragment name holding a glob character is still one file: the commit that added that very
   # file decides which release ships it, never one that added another file the name matches as a
-  # pattern. Here INFRA-7-[a].yaml ships in glob-v1.0.0, and INFRA-7-a.yaml, which `[a]` matches
+  # pattern. Here POMJU-7-[a].yaml ships in glob-v1.0.0, and POMJU-7-a.yaml, which `[a]` matches
   # as a glob, is added after it and ships in glob-v1.1.0.
   gt="$work/fold-glob"
   mkdir -p "$gt/packages/glob/$u"
   git init -q -b main "$gt"
   identity "$gt"
   changie_config "$gt/packages/glob"
-  printf 'kind: Added\nbody: bracketed\n' > "$gt/packages/glob/$u/INFRA-7-[a].yaml"
+  printf 'kind: Added\nbody: bracketed\n' > "$gt/packages/glob/$u/POMJU-7-[a].yaml"
   git -C "$gt" add -A
   GIT_COMMITTER_DATE=2026-05-01T12:00:00+00:00 git -C "$gt" commit -q -m "feat: bracketed"
   git -C "$gt" tag glob-v1.0.0
-  printf 'kind: Added\nbody: plain\n' > "$gt/packages/glob/$u/INFRA-7-a.yaml"
+  printf 'kind: Added\nbody: plain\n' > "$gt/packages/glob/$u/POMJU-7-a.yaml"
   git -C "$gt" add -A
   GIT_COMMITTER_DATE=2026-05-02T12:00:00+00:00 git -C "$gt" commit -q -m "feat: plain"
   git -C "$gt" tag glob-v1.1.0
@@ -2172,7 +2172,7 @@ if command -v changie >/dev/null; then
     "$(is "$rc|$(contains "$glob_notes" '^- plain$')|$(contains "$glob_notes" 'bracketed')" "0|true|false")"
 
   # A fragment renamed with git mv keeps the release that first shipped it. Here sjawhar/fix.yaml
-  # ships in ren-v1.0.0; a later commit moves it to sjawhar-fix.yaml, and INFRA-8-later.yaml,
+  # ships in ren-v1.0.0; a later commit moves it to sjawhar-fix.yaml, and POMJU-8-later.yaml,
   # alike enough to read to git as a copy of it, is added after that and ships in ren-v1.1.0
   # (`git log --follow` would follow that copy and give it the older release).
   nt="$work/fold-rename"
@@ -2186,7 +2186,7 @@ if command -v changie >/dev/null; then
   git -C "$nt" tag ren-v1.0.0
   git -C "$nt" mv "packages/ren/$u/sjawhar/fix.yaml" "packages/ren/$u/sjawhar-fix.yaml"
   GIT_COMMITTER_DATE=2026-06-02T12:00:00+00:00 git -C "$nt" commit -q -m "chore: move the fragment"
-  printf 'kind: Fixed\ntime: 2026-06-03T12:00:00Z\nbody: a later fix\n' > "$nt/packages/ren/$u/INFRA-8-later.yaml"
+  printf 'kind: Fixed\ntime: 2026-06-03T12:00:00Z\nbody: a later fix\n' > "$nt/packages/ren/$u/POMJU-8-later.yaml"
   git -C "$nt" add -A
   GIT_COMMITTER_DATE=2026-06-03T12:00:00+00:00 git -C "$nt" commit -q -m "fix: later"
   git -C "$nt" tag ren-v1.1.0
@@ -2209,14 +2209,14 @@ if command -v changie >/dev/null; then
   git init -q -b main "$sc"
   identity "$sc"
   cp "$script_dir/../../packages/pi-legion/.changie.yaml" "$sc/packages/shipped/.changie.yaml"
-  cat > "$sc/packages/shipped/$u/INFRA-20-Added-20260101-120000.yaml" <<'YAML'
+  cat > "$sc/packages/shipped/$u/POMJU-20-Added-20260101-120000.yaml" <<'YAML'
 kind: Added
 body: a plain addition
 time: 2026-01-01T12:00:00Z
 custom:
-  Issue: INFRA-20
+  Issue: POMJU-20
 YAML
-  cat > "$sc/packages/shipped/$u/INFRA-21-Changed-20260101-130000.yaml" <<'YAML'
+  cat > "$sc/packages/shipped/$u/POMJU-21-Changed-20260101-130000.yaml" <<'YAML'
 kind: Changed
 body: |-
   a change whose entry runs
@@ -2225,7 +2225,7 @@ body: |-
   and a second paragraph
 time: 2026-01-01T13:00:00Z
 custom:
-  Issue: INFRA-21
+  Issue: POMJU-21
 YAML
   git -C "$sc" add -A
   GIT_COMMITTER_DATE=2026-01-02T12:00:00+00:00 git -C "$sc" commit -q -m "feat: two entries"
@@ -2264,33 +2264,33 @@ YAML
   check_run packages/shipped=shipped-v
   check "fold-check: a tag prefix on the directory is refused: fold-check reads no release line" \
     "$(is "$rc|$(contains "$out" '^::error::release-push\.sh fold-check: package directory packages/shipped=shipped-v is not a relative path')" "1|true")"
-  bad="$sc/packages/shipped/$u/INFRA-22-Fixd-20260101-140000.yaml"
+  bad="$sc/packages/shipped/$u/POMJU-22-Fixd-20260101-140000.yaml"
   cat > "$bad" <<'YAML'
 kind: Fixd
 body: a kind the configuration does not list
 time: 2026-01-01T14:00:00Z
 custom:
-  Issue: INFRA-22
+  Issue: POMJU-22
 YAML
   git -C "$sc" add -A
   GIT_COMMITTER_DATE=2026-01-03T12:00:00+00:00 git -C "$sc" commit -q -m "feat: a kind changie refuses"
   check_run packages/shipped
   check "fold-check: a kind the configuration does not list fails it, with one ::error:: naming that fragment and what changie said" \
-    "$(is "$rc|$(grep -c '^::error::' <<<"$out")|$(contains "$out" "packages/shipped/$u/INFRA-22-Fixd-20260101-140000\.yaml, where changie said: .*Fixd")" "1|1|true")"
+    "$(is "$rc|$(grep -c '^::error::' <<<"$out")|$(contains "$out" "packages/shipped/$u/POMJU-22-Fixd-20260101-140000\.yaml, where changie said: .*Fixd")" "1|1|true")"
   check "fold-check: the error names no fragment changie renders" \
-    "$(is "$(contains "$out" 'INFRA-20')|$(contains "$out" 'INFRA-21')" "false|false")"
-  cat > "$sc/packages/shipped/$u/INFRA-23-Chnged-20260101-150000.yaml" <<'YAML'
+    "$(is "$(contains "$out" 'POMJU-20')|$(contains "$out" 'POMJU-21')" "false|false")"
+  cat > "$sc/packages/shipped/$u/POMJU-23-Chnged-20260101-150000.yaml" <<'YAML'
 kind: Chnged
 body: another kind the configuration does not list
 time: 2026-01-01T15:00:00Z
 custom:
-  Issue: INFRA-23
+  Issue: POMJU-23
 YAML
   git -C "$sc" add -A
   GIT_COMMITTER_DATE=2026-01-04T12:00:00+00:00 git -C "$sc" commit -q -m "feat: a second kind changie refuses"
   check_run packages/shipped
   check "fold-check: both refused fragments are named, each with what changie said, in the one error" \
-    "$(is "$rc|$(grep -c '^::error::' <<<"$out")|$(contains "$out" "INFRA-22-Fixd-20260101-140000\.yaml, where changie said: .*Fixd")|$(contains "$out" "INFRA-23-Chnged-20260101-150000\.yaml, where changie said: .*Chnged")" "1|1|true|true")"
+    "$(is "$rc|$(grep -c '^::error::' <<<"$out")|$(contains "$out" "POMJU-22-Fixd-20260101-140000\.yaml, where changie said: .*Fixd")|$(contains "$out" "POMJU-23-Chnged-20260101-150000\.yaml, where changie said: .*Chnged")" "1|1|true|true")"
   # What fold-check is there to stop: the release that first ships such a fragment fails its own
   # build job, naming it the same way, on every run until a fix merges.
   set +e
@@ -2298,7 +2298,7 @@ YAML
   rc=$?
   set -e
   check "fold-notes: the release that first ships a fragment changie refuses fails, naming each one" \
-    "$(is "$rc|$(contains "$out" "^::error::release-push\.sh fold-notes: changie could not render packages/shipped's notes for 3\.2\.0; refused alone: .*INFRA-22-Fixd.*INFRA-23-Chnged.*; changie said: ")" "1|true")"
+    "$(is "$rc|$(contains "$out" "^::error::release-push\.sh fold-notes: changie could not render packages/shipped's notes for 3\.2\.0; refused alone: .*POMJU-22-Fixd.*POMJU-23-Chnged.*; changie said: ")" "1|true")"
 else
   echo "  SKIP: the cases that render with changie (changie is not on PATH)"
 fi

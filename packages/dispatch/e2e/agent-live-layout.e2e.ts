@@ -6,8 +6,8 @@ import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 /**
- * Where the live view puts the session's facts and its controls (INFRA-812, R6; the browser
- * cases of the Verification document's k10, dispatch://INFRA-812/artifact/verification-md).
+ * Where the live view puts the session's facts and its controls (POMJU-812, R6; the browser
+ * cases of the Verification document's k10, dispatch://POMJU-812/artifact/verification-md).
  *
  * The header carries the way back, the session's name with its running mark, the live state and
  * the pin, and nothing else: no picker, no machine, no directory and no paragraph of prose. One

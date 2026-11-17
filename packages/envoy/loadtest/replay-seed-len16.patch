@@ -1,5 +1,5 @@
 replay-seed-len16.patch: applied by stack.sh (build_dispatch_at) to Dispatch at 35efd326 for the
-LINUX replay seed (git apply -p1 at the root of a `git archive` of packages/envoy). len16 counts
+HAFJJ replay seed (git apply -p1 at the root of a `git archive` of packages/envoy). len16 counts
 UTF-16 units without allocating; len16_seed_test.go holds it equal to len(utf16.Encode([]rune(s))).
 
 diff --git a/packages/envoy/internal/dispatch/pmdoc/len16_seed_test.go b/packages/envoy/internal/dispatch/pmdoc/len16_seed_test.go

@@ -26,7 +26,7 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // lists that last spec, whose servers sign people in through the dev OIDC issuer alone
 // (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40). The fourth names the
 // three wall-clock projects (`clockProjectNames`, e2e/configurations.ts): they carry
-// `default: false` since dispatch://INFRA-1280, so a listing that names no project holds no row
+// `default: false` since dispatch://POMJU-1280, so a listing that names no project holds no row
 // of theirs, and `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and
 // `nested-directive.e2e.ts` - 51 rows in this head's wall-clock listing - reach the union below
 // from it alone.

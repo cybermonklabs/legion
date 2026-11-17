@@ -87,7 +87,7 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 // admitted — so the answer "close this" ends its tree the same way: the reason posted, done
 // written over the status the record kept, and the tree lingering. Before, close_root refused it
 // as a tree past its first phase, and the only way out was a person's own status write
-// (dispatch://INFRA-545).
+// (dispatch://POMJU-545).
 func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 	pool := migratedPool(t)
 	since := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)

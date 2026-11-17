@@ -136,7 +136,7 @@ func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 // of ReleaseIdleIssue, which opens by taking the daemon's global fact serializer
 // (treelifecycle.Serialize, pg_advisory_xact_lock(hashtext('legion.apply_fact'))) — the same
 // lock the intake takes for every fact, so a tick of candidates is a tick of facts not applied.
-// The reading behind that: on the INFRA deployment at 2026-11-10 19:39Z, 1,136 issues held
+// The reading behind that: on the POMJU deployment at 2026-11-10 19:39Z, 1,136 issues held
 // claims while 5 stood in the workflow under a live tree.
 //
 // It adds no index of its own, and the answer is read once a minute. The partial index

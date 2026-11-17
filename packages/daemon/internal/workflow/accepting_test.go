@@ -273,7 +273,7 @@ func seedAcceptingChild(t *testing.T, pool *pgxpool.Pool, key, parent string, at
 
 // A sign-off of an issue with nothing beneath it is taken whatever the rest of the tree does: a
 // child done, a child parked, a sibling elsewhere. The rule that nothing beneath an issue held
-// its acceptance is gone (dispatch://INFRA-980, "A parent is accepted after its children"): an
+// its acceptance is gone (dispatch://POMJU-980, "A parent is accepted after its children"): an
 // issue beneath that is still in the workflow now refuses the sign-off
 // (TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow), because a parent's head proves its
 // children's merged work and must carry their merges.

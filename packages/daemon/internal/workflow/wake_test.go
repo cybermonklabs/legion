@@ -591,7 +591,7 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 	}
 }
 
-// A role message wake tells the woken role what Envoy kept for it (dispatch://INFRA-2846/spec
+// A role message wake tells the woken role what Envoy kept for it (dispatch://POMJU-2846/spec
 // R7): a message kept for the role reaches the woken session as an Envoy card that shows kept_at,
 // possibly before the wake's task, unless its hour ended first; Envoy keeps a role message for one
 // hour and tells its sender when it drops one; and a message sent with keep: false is not kept, so

@@ -260,7 +260,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
 // 200, the message is with a live holder; 202, no live session holds the role and the message
 // waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
-// fallback must run. INFRA-514's architect decided it on 2026-10-31.
+// fallback must run. POMJU-514's architect decided it on 2026-10-31.
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	s.item = kept.item
 	s.holder = result.Holder

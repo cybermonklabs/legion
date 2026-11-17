@@ -119,7 +119,7 @@ func keysOf(l *broadcastListener) []string {
 	return keys
 }
 
-// INFRA-258. A single-session send without an Idempotency-Key is sent, as any write without one
+// POMJU-258. A single-session send without an Idempotency-Key is sent, as any write without one
 // is: it is only not replayed.
 func TestASingleSessionSendWithoutAKeyIsSent(t *testing.T) {
 	listener, sends := newBroadcastListener(t, agentSessions)

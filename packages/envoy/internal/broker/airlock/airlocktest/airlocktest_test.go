@@ -837,8 +837,8 @@ func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewDispatchStand(DispatchOptions{Issues: []DispatchIssue{
-		{Key: "INFRA-1353", Title: "The broker's model judge", Status: "in_progress", Spec: "## Summary\n\nOne model decides."},
-		{Key: "INFRA-1200", Title: "The local stack", Status: "done"},
+		{Key: "POMJU-1353", Title: "The broker's model judge", Status: "in_progress", Spec: "## Summary\n\nOne model decides."},
+		{Key: "POMJU-1200", Title: "The local stack", Status: "done"},
 	}}).Answer)
 	tokenFile := filepath.Join(t.TempDir(), "dispatch-token")
 	if err := os.WriteFile(tokenFile, []byte("the-stand-in-dispatch-token\n"), 0o600); err != nil {
@@ -846,18 +846,18 @@ func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
 	}
 	reader := judge.Dispatch{BaseURL: service.URL(), Account: brokertoken.NewAccountToken(tokenFile)}
 
-	issue, err := reader.Issue(t.Context(), "INFRA-1353")
+	issue, err := reader.Issue(t.Context(), "POMJU-1353")
 	if err != nil {
 		t.Fatalf("read the open issue: %v", err)
 	}
-	if issue.Key != "INFRA-1353" || issue.Title != "The broker's model judge" || issue.Status != "in_progress" {
+	if issue.Key != "POMJU-1353" || issue.Title != "The broker's model judge" || issue.Status != "in_progress" {
 		t.Errorf("the issue read is %+v; want the fixture's own key, title and status", issue)
 	}
 	if !issue.HasSpec || !strings.Contains(issue.Spec, "One model decides.") {
 		t.Errorf("the spec read is %q (held: %v); want the fixture's markdown", issue.Spec, issue.HasSpec)
 	}
 
-	done, err := reader.Issue(t.Context(), "INFRA-1200")
+	done, err := reader.Issue(t.Context(), "POMJU-1200")
 	if err != nil {
 		t.Fatalf("read the done issue: %v", err)
 	}
@@ -865,13 +865,13 @@ func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
 		t.Errorf("the done issue read is %+v; want it done and holding no spec", done)
 	}
 
-	if _, err := reader.Issue(t.Context(), "INFRA-9999"); !errors.Is(err, judge.ErrNoIssue) {
+	if _, err := reader.Issue(t.Context(), "POMJU-9999"); !errors.Is(err, judge.ErrNoIssue) {
 		t.Errorf("a key no issue carries answered %v; want %v", err, judge.ErrNoIssue)
 	}
 
 	// The 401 the real API answers a request with no credential, which a fixture of answers
 	// alone would quietly drop: a caller that presented nothing must read the refusal.
-	request, err := http.NewRequest(http.MethodGet, service.URL()+"/api/v1/issues/INFRA-1353", nil)
+	request, err := http.NewRequest(http.MethodGet, service.URL()+"/api/v1/issues/POMJU-1353", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,7 +38,7 @@
 // since the daemon judges no check, so the proof publishes no settlement; and the daemon reads a
 // head's mergeability at its start, after a handoff, and for an approved review round in reviewing
 // alone, so a head that starts conflicting with its base while the tester tests is not read until
-// the next handoff (dispatch://INFRA-3164). The move back into testing is the reviewer's own
+// the next handoff (dispatch://POMJU-3164). The move back into testing is the reviewer's own
 // request over POST /legion/v1/phase/backward, from reviewing, under a grant its registered
 // session minted, because the engine takes a backward move from no role but the one running the
 // issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).

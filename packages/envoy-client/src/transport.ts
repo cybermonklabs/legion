@@ -19,7 +19,7 @@ import type { TmuxPlace } from "./tmux-place";
 
 /**
  * A session's state, which the listener computes from that session's last registration and from
- * nothing else (dispatch://INFRA-392): `live` within the live window (5 minutes), `unresponsive`
+ * nothing else (dispatch://POMJU-392): `live` within the live window (5 minutes), `unresponsive`
  * past it and inside the gone horizon (an hour), `gone` past that or with no record at all. An
  * unresponsive session is not dead — it keeps its role and issue claims, a message sent to it is
  * stored for it, a message to a role it holds is kept for that role for an hour, and nothing
@@ -30,7 +30,7 @@ const SessionStateSchema = z.enum(["live", "unresponsive", "gone"]);
 export type SessionState = z.infer<typeof SessionStateSchema>;
 
 /**
- * What an agent must do about a session that stopped answering (dispatch://INFRA-392). Every
+ * What an agent must do about a session that stopped answering (dispatch://POMJU-392). Every
  * answer that names a session in that state says this, in one wording: the tool descriptions
  * (`tool-contract.ts`), the send confirmation, the publish confirmation of a message kept for an
  * unresponsive role holder, and the refusal that an unresponsive holder's role lookup, or a
@@ -78,7 +78,7 @@ const DeliveryAnswerWireSchema = z.object({
   consumer_start: z.number().int().nonnegative().optional(),
 });
 
-// A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
+// A list the listener may write as null (a session with no interest record, dispatch://POMJU-742),
 // as an absent key (a listener that predates the field), or as a real array. The reader answers []
 // for the first two and still refuses a wrong element type, so listSessions refuses such a row
 // rather than reading it as empty.
@@ -381,7 +381,7 @@ function namedProcess(id: string | undefined): string | undefined {
  * *and* `clientInstanceID` as the process whose claim stands, and it carries no hand-back mark.
  * A claim standing under this very session id that another process made is not this caller's to
  * renew — reading it as this caller's is how a lane kept heartbeating while a continuation's
- * claim held the role and then lapsed (dispatch://INFRA-783) — while a claim naming no process
+ * claim held the role and then lapsed (dispatch://POMJU-783) — while a claim naming no process
  * at all is read as this caller's, since an older listener and a claim an earlier build wrote
  * name none. `undefined` is the lookup's 404: no holder, so no hold of this caller's.
  *
@@ -418,7 +418,7 @@ export function roleHeldBy(
  * record named its writer: that build was one process per transcript and per state directory. A
  * record another process wrote is acted on only while this process holds no role. Two processes
  * read one record whenever a second client resumes a live session's id — which is how a copy's
- * release ended the live process's role for hours (dispatch://INFRA-783) — and the holder is
+ * release ended the live process's role for hours (dispatch://POMJU-783) — and the holder is
  * not the one to decide that from a record it did not write: with no role to lose it asks, and
  * the listener decides the claim on the two processes rather than this side guessing.
  */
@@ -695,7 +695,7 @@ export type PublishResult = {
  * answering, the rule that such a session is not dead. The listener's own text says none of it
  * ("no live session ses_x", "role reviewer holder ses_x lapsed; claim retained (last seen
  * 1762...)"), and an agent reading only the message cannot tell a peer that stopped answering
- * from one that ended — which is the mistake this change exists to stop (dispatch://INFRA-392,
+ * from one that ended — which is the mistake this change exists to stop (dispatch://POMJU-392,
  * R7). A body that names no state adds nothing, so an older listener's message is what it
  * always was.
  */

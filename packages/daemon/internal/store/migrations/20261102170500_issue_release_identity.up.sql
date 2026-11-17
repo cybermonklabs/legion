@@ -1,5 +1,5 @@
 -- 20261102170500_issue_release_identity.up.sql — a release has an id of its own, and its mark
--- names the claims it suspended (INFRA-945).
+-- names the claims it suspended (POMJU-945).
 --
 -- id is the release's identity, which outlives the rows it queued: the bundle the save stores
 -- carries it (workspace_bundles.release_id), so the restore report of the pod that replaces the

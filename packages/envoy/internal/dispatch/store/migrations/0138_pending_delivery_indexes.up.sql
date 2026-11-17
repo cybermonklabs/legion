@@ -1,4 +1,4 @@
--- INFRA-258: the delivery sweep (api/delivery_sweep.go, resumeOwedDeliveries) reads, once a minute
+-- POMJU-258: the delivery sweep (api/delivery_sweep.go, resumeOwedDeliveries) reads, once a minute
 -- under the maintenance loop's lease, every message and comment-mention delivery attempt still
 -- pending, oldest first, to resume what a process that died left owed. Pending attempts are the
 -- few in flight and those a crash stranded, so a partial index on them keeps that read to their

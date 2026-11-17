@@ -1,6 +1,6 @@
 // packages/envoy/internal/brokerclient/projected_test.go
 //
-// A pod's whole path, which is an acceptance clause of dispatch://INFRA-958: the client is given
+// A pod's whole path, which is an acceptance clause of dispatch://POMJU-958: the client is given
 // a projected Kubernetes service-account token in a file, trades it for one of the broker's
 // access tokens — the token its session writes Dispatch with — and renews that token before it
 // expires, reading the file again as it does, because the kubelet rewrites a projected token in

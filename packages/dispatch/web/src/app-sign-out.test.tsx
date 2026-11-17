@@ -689,7 +689,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
   // On the fake clock, so the window the question waits out for the silent tab is moved past in
   // the test's own steps rather than waited through in real time, and the `started` below reads
   // that clock: a loaded machine moves it no further than this test does. The clock is installed
-  // before the user, which captures the timers it will advance (dispatch://INFRA-1505).
+  // before the user, which captures the timers it will advance (dispatch://POMJU-1505).
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const answer = false;
@@ -746,7 +746,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
 test("the sign-out question names a duplicated tab's copies once, and forgets a tab that missed it", async () => {
   // On the fake clock, so the span the second question does not wait out is the clock this test
   // moves: read under the real one, a loaded machine can spend the whole window on scheduling
-  // and fail a question that waited for nothing (dispatch://INFRA-1505). The clock is installed
+  // and fail a question that waited for nothing (dispatch://POMJU-1505). The clock is installed
   // before the user, which captures the timers it will advance.
   jest.useFakeTimers();
   const user = userOnFakeClock();

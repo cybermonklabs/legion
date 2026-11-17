@@ -41,7 +41,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats
 // database holding a snapshot older than the build's (PostgreSQL's WaitForOlderSnapshots). In CI
 // and on a shared machine that database is the server's postgres, where every other package's
 // harness creates and drops its databases, so another package's create database could hold the
-// build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
+// build past its lock bound and fail whichever test migrated first (dispatch://POMJU-3904).
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	return storetest.Open(t).Pool, t.Context()

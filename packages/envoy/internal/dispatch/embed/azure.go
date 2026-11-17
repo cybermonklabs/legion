@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
-// The route and api-version AzureClient posts to, held here alone because INFRA-399's live probe
+// The route and api-version AzureClient posts to, held here alone because POMJU-399's live probe
 // may move them: Microsoft's Get Embeddings reference documents this route as the one that
 // carries input_type and dimensions, appended to the configured endpoint (for an AI Foundry
 // resource, https://<resource>.services.ai.azure.com/models).
@@ -27,7 +27,7 @@ const (
 
 const (
 	// azureMaxBatchTexts is Cohere Embed v4's own batch limit, the same 96 texts Bedrock
-	// accepts; INFRA-399's probe confirms or corrects it for the Azure deployment.
+	// accepts; POMJU-399's probe confirms or corrects it for the Azure deployment.
 	azureMaxBatchTexts = 96
 	// azureMaxBatchBytes is Limits().MaxBatchBytes: the most bytes of text (BoundedBytes) one
 	// background call carries, so it finishes well inside azureRequestTimeout. A Cohere token is

@@ -122,7 +122,7 @@ export async function runs(pid: number): Promise<boolean> {
  * the step's record is written while the process may still be on its way out, and a read of
  * `/proc` taken the moment a case sees that record can still find it running — once in 20 runs
  * of the first case under six busy loops on a 2-CPU pod, where the margin is thinnest
- * (dispatch://INFRA-2188). Waiting proves what the immediate read meant to prove, since a
+ * (dispatch://POMJU-2188). Waiting proves what the immediate read meant to prove, since a
  * process the step never ended still fails the case.
  */
 export async function gone(pane: StallPane, pid: number): Promise<void> {
@@ -357,7 +357,7 @@ export interface StallPane {
  * daemon's claim, grant, state and activity routes and the Envoy listener, and the three stall
  * numbers set low. The pane takes no NATS delivery of its own and is given a real server all the
  * same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
- * (INFRA-771), so one that can open no relay subject is answered no consumer, every registration
+ * (POMJU-771), so one that can open no relay subject is answered no consumer, every registration
  * of its fails, and its claim boot ends the session rather than running on deaf. A side request —
  * the run-end self-check, a routing hint — is answered at once with one word, since none of them
  * is a turn; a turn of the pane's own conversation is answered from `reply`.
@@ -442,7 +442,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     // The Envoy listener: registration, the role claim, and any read answer with an interest. A
     // registration is answered a consumer on the session's own relay subject, the one path a
-    // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
+    // message reaches a session by (POMJU-771); an answer without one leaves the pane deaf and
     // its claim boot fails.
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
@@ -516,7 +516,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
    * runs, so a case reads it while the pane is still running — and after it has ended itself.
    * While it runs, a read can land between a line's bytes and its newline, so the unfinished
    * last line is withheld rather than handed to `JSON.parse` half-written
-   * (`transcript-entries.ts`, dispatch://INFRA-2188); once the pane has exited nothing will
+   * (`transcript-entries.ts`, dispatch://POMJU-2188); once the pane has exited nothing will
    * finish it, so every line is parsed and a fragment throws where it is written. A case that
    * reads an empty result as proof a record is absent waits for `settled()` first. */
   const entries = async (customType: string): Promise<Record<string, unknown>[]> =>
@@ -537,7 +537,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     agentEnds: async () => {
       // Read the pane's state before the file, never after: a read that catches half a line
       // while the pane then exits would be marked "gone" and parsed, and the parse error would
-      // stand in for the real failure, which is that omp exited (dispatch://INFRA-2188).
+      // stand in for the real failure, which is that omp exited (dispatch://POMJU-2188).
       const writer = running ? "alive" : "gone";
       let written: string;
       try {

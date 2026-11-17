@@ -503,7 +503,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 				readinessAttempt(workflow.catchUpAwaiting, catchUpAttemptBound, dispatch.Unreachable))
 		}
 		// The repair of the mergers the `awaiting_merge` cutover left stopped is a boot step of its
-		// own (repairCutoverMergers, dispatch://INFRA-3274/spec R2): after the listing's reconcile,
+		// own (repairCutoverMergers, dispatch://POMJU-3274/spec R2): after the listing's reconcile,
 		// which is the boot's first admission pass, and after the roots' catch-up, and before attach
 		// and the consumers, so no consumer's fact and no wake of this boot comes before it. It is
 		// one Postgres transaction, and a failure of it stops the boot as the reconcile's own
@@ -1525,7 +1525,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // cleanSessionStop is what a machine calls once a probe has judged a claim's agent process gone
 // (supervise.Deps.SessionGone): it deletes that session's registration from the Envoy listener,
 // so the listener reads the session `gone` at once instead of holding its role claim and its
-// issue claims for the whole live window (dispatch://INFRA-392). It runs on the same client the
+// issue claims for the whole live window (dispatch://POMJU-392). It runs on the same client the
 // daemon's notices go through (notify.New), beside controller.NewProber, on the same base URL
 // and bearer.
 //
@@ -1719,7 +1719,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // one replaces could, and a round nobody ends holds the claim's next task behind it for ever:
 // the round's own answer is what releases that task, and no sweep of this release opens, carries
 // or ends a plugin round at all (reconcilePodUpdates reads pod rounds). So the boot ends them,
-// once, over the claims it read from the store (dispatch://INFRA-2712 R5).
+// once, over the claims it read from the store (dispatch://POMJU-2712 R5).
 //
 // The end takes the claim out of the round whole: the ask the round left unread goes, every
 // round field goes, the claim is written, and the task the round was holding back is sent
@@ -1795,7 +1795,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // in between.
 //
 // Every claim it does post takes a credit of the refresh gate but the two named below, and a
-// claim the gate refuses is not posted at all (supervise.RefreshGate, dispatch://INFRA-2712
+// claim the gate refuses is not posted at all (supervise.RefreshGate, dispatch://POMJU-2712
 // R1). That is what holds the lane to one minute of the daemon's wake pacing: the gate grants K
 // credits, K the rate, and the next sweep — a minute later, by which time this sweep's
 // admissions have had their turns — posts the next K. Nothing of the refresh is lost by a
@@ -1902,7 +1902,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // The readers are the pass that posts the lane's relaunches (refreshStalePlugins) and the count
 // of what the lane still has to do (claimsToRefresh), and they are one predicate because a term
 // added to one of them alone makes the count name work the lane never does or hide work it will
-// — which is the one thing the count exists not to do (dispatch://INFRA-2712 R4).
+// — which is the one thing the count exists not to do (dispatch://POMJU-2712 R4).
 //
 // A claim in a pod round is out of the set, whatever contract it records (InPodRound). That
 // round is carrying it, and the process is replaced when the round ends (reconcilePodUpdates),
@@ -1939,7 +1939,7 @@ func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bo
 // daemon's plugin, which the state serves as `claimsToRefresh` (api.State.ClaimsToRefresh,
 // contract 73): a reader of a running wave can then tell what the lane has left from what it
 // has already admitted into the pacing, which `wakesWaiting` alone cannot say now that the gate
-// holds no more than a minute of that pacing at a time (dispatch://INFRA-2712 R4).
+// holds no more than a minute of that pacing at a time (dispatch://POMJU-2712 R4).
 //
 // The set is the one refreshStalePlugins walks, read through that pass's own predicate and the
 // whole of it (staleForTheLane): the round term is in there with the other four, so no claim

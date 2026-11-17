@@ -2,7 +2,7 @@ package delivery
 
 // What a process that held the delivery durable does once its NATS connection comes back: the
 // durable belongs to whichever process took it over while it was away, and the one that came back
-// is never a second bound subscriber beside it (INFRA-1551, R1). One row drives each of the two
+// is never a second bound subscriber beside it (POMJU-1551, R1). One row drives each of the two
 // paths a connection comes back by -- a reconnect in place, where nats.go re-sends the
 // subscription itself, and a replaced connection, where the bus client binds its own registration
 // again (internal/bus/recovery.go).
@@ -95,7 +95,7 @@ func TestAHolderWhoseConnectionWasReplacedLeavesTheDurableToTheProcessThatTookIt
 
 // A message the process holding the delivery durable had in flight, inside its handler, when the
 // durable was taken away from it is handled by the process that keeps the durable, and soon
-// (INFRA-1551, R2). The hold lapses under the cut-off holder, which stops delivering and gives
+// (POMJU-1551, R2). The hold lapses under the cut-off holder, which stops delivering and gives
 // its handler intakeHoldMargin to finish before it abandons it (heldDurable.run,
 // stopDeliveringWithin); the message is left unacknowledged, since a hand-back is a publish and
 // the link is down; and the take-over recreates the durable at its ack floor (takeOverConfig),
@@ -216,7 +216,7 @@ func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func
 }
 
 // A handler that finishes while its process is cut off from NATS has its work redone by the
-// process that took the durable over, and a person sees that work once (INFRA-1551, R2). The
+// process that took the durable over, and a person sees that work once (POMJU-1551, R2). The
 // handler's own acknowledgement is a publish and the bus buffers none while the client reconnects
 // (opts.ReconnectBufSize = -1, internal/bus/connect.go), so a handling that finishes inside the
 // outage is never acknowledged; the hold lapses, the standby takes the durable over, and its

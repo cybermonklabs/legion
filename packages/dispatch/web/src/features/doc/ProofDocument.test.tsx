@@ -1326,7 +1326,7 @@ test("ProofDocument focuses nothing for a short block id two blocks of the docum
   }
 });
 
-// INFRA-869: a `#id` names a question of the text's own document, so a reader who follows one
+// POMJU-869: a `#id` names a question of the text's own document, so a reader who follows one
 // from the margin stays on the page already open. The editor binds once; the block focus
 // follows the address from then on.
 test("a hash change on the page already open focuses the block it names, whole and short", async () => {

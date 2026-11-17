@@ -473,7 +473,7 @@ func TestForgetSessionRefusesAStillLiveClaimEvenWithAnExplicitSession(t *testing
 
 // The operator's retry is for a claim that runs nothing. A live claim has not failed and a
 // suspended one is resumed: each is refused, naming its state, and left as it was. A retired
-// claim is no longer one of them (dispatch://INFRA-956 R3): it runs again, which
+// claim is no longer one of them (dispatch://POMJU-956 R3): it runs again, which
 // TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine and
 // TestTheOperatorsRetryOfAStoppedPhaseWorkerRestartsItsPhase hold to.
 func TestTheOperatorsRetryOfAClaimThatHasNotFailedIsRefused(t *testing.T) {
@@ -725,7 +725,7 @@ func stoppedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.T
 	return h, token
 }
 
-// A phase worker an operator stopped is retired, and until dispatch://INFRA-956 R3 the operator's
+// A phase worker an operator stopped is retired, and until dispatch://POMJU-956 R3 the operator's
 // retry refused it, so starting it again took an edit of the claims store. The retry now starts
 // the phase the worker works (intake.RestartPhase), which is what hands the relaunched role that
 // phase's task, and answers 202 with the claim as it is until that start runs.
@@ -1570,7 +1570,7 @@ func TestAnOperatorAnswerWhoseStepReadFailsCarriesNoRecordRatherThanTheMachinesC
 // A claim's view carries the record of the sends of its task that never reached a turn — how
 // many failed, when the last of them failed and the error it failed with — beside the queued,
 // delivered and confirmed times. Without it, a claim that has waited days on a send which never
-// lands says so only in a log line inside its own pod (INFRA-1480). The three are omitempty, and
+// lands says so only in a log line inside its own pod (POMJU-1480). The three are omitempty, and
 // the send that reaches a turn clears them, so a task no send has failed for carries none of
 // them on the wire.
 func TestClaimViewCarriesTheSendFailures(t *testing.T) {
@@ -1790,16 +1790,16 @@ func TestClaimsListPodUpdateLine(t *testing.T) {
 			name: "both limits set, with issues in a round and issues waiting",
 			rounds: PodUpdateRounds{
 				Swept: true, MaxOpenRounds: new(2), RoundsPerMinute: new(1),
-				InRound: []string{"INFRA-10", "INFRA-1000"}, WaitingOnMaxOpenRounds: []string{"INFRA-2"},
+				InRound: []string{"POMJU-10", "POMJU-1000"}, WaitingOnMaxOpenRounds: []string{"POMJU-2"},
 			},
 			want: `{"claims":[],"pod_update_rounds":{"swept":true,"max_open_rounds":2,"rounds_per_minute":1,` +
-				`"in_round":["INFRA-10","INFRA-1000"],"waiting_on_max_open_rounds":["INFRA-2"],"waiting_on_rounds_per_minute":[]}}`,
+				`"in_round":["POMJU-10","POMJU-1000"],"waiting_on_max_open_rounds":["POMJU-2"],"waiting_on_rounds_per_minute":[]}}`,
 		},
 		{
 			name:   "a project that sets neither key",
-			rounds: PodUpdateRounds{Swept: true, WaitingOnRoundsPerMinute: []string{"INFRA-2"}},
+			rounds: PodUpdateRounds{Swept: true, WaitingOnRoundsPerMinute: []string{"POMJU-2"}},
 			want: `{"claims":[],"pod_update_rounds":{"swept":true,"max_open_rounds":null,"rounds_per_minute":null,` +
-				`"in_round":[],"waiting_on_max_open_rounds":[],"waiting_on_rounds_per_minute":["INFRA-2"]}}`,
+				`"in_round":[],"waiting_on_max_open_rounds":[],"waiting_on_rounds_per_minute":["POMJU-2"]}}`,
 		},
 		{
 			name:   "a daemon that has not swept",

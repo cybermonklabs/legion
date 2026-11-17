@@ -13,7 +13,7 @@ module: .github/scripts
 
 # One EXIT trap registry, and no registering helper inside command substitution
 
-Narrows rule 1 of docs/solutions/best-practices/a-shared-bash-helper-sets-no-exit-trap-INFRA-629.md:
+Narrows rule 1 of docs/solutions/best-practices/a-shared-bash-helper-sets-no-exit-trap-POMJU-629.md:
 `on_exit_remove` is the one function that runs `trap … EXIT`, over every directory registered with
 it. Every other helper, shared or not, registers through it and never calls `trap` itself.
 

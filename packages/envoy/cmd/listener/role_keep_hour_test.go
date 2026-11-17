@@ -1176,7 +1176,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 	})
 
-	// The tester's red test of round 3 (INFRA-2846): the review's R2 finding was a dead-letter
+	// The tester's red test of round 3 (POMJU-2846): the review's R2 finding was a dead-letter
 	// sentence that is false for some walk. A walk drops a copy for its delivery mode and claims
 	// it to send the dead letter, the first publish of that dead letter fails with an error that
 	// can pass, and the copy's hour ends before the walk that takes the claim over sends it again.
@@ -1218,7 +1218,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 	})
 
-	// The tester's red test of round 4 (INFRA-2846), in the class of round 3's: a claim whose
+	// The tester's red test of round 4 (POMJU-2846), in the class of round 3's: a claim whose
 	// reason is lost when another walk takes it over. A walk claimed the copy to forward it and
 	// ended before it confirmed the forward, so the stream may hold that forward. A walk that
 	// takes the claim over after the copy's hour owes the sender a dead letter that says the
@@ -1266,7 +1266,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		}
 	})
 
-	// One more instance of the class rows (s) and (t) hold (INFRA-2846): what a claim says is
+	// One more instance of the class rows (s) and (t) hold (POMJU-2846): what a claim says is
 	// lost when another walk takes it over. A walk claimed the copy to forward it and ended
 	// before it confirmed the forward, so the stream may hold that forward. The walk that takes
 	// the claim over finds the copy inside its hour and the role held by a live session that

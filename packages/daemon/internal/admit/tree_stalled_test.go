@@ -460,7 +460,7 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 // record.LineFacts.Owed, and a rule that reads the cap's hold from the owed row alone finds it
 // held by nothing and tells its tree. That second shape is the commonest one a tree waiting
 // for the cap takes — a root at admitted waiting for its children with one released child in
-// the line — and eight trees of the INFRA deployment stood in it at 2026-11-11T16:36Z.
+// the line — and eight trees of the POMJU deployment stood in it at 2026-11-11T16:36Z.
 //
 // The test of that fourth wait is the need and not the mechanism, which is why two more trees
 // stand here that no row of the line names: a root waiting on a person with one released child
@@ -478,7 +478,7 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 // queued to a suspended role, which is a delivery waiting for a role nothing brings back; and
 // two mixed trees, each with one issue in a wait of the daemon's and one that has simply
 // stopped. The mixed two are what holds the rule to every quiet issue rather than any
-// (dispatch://INFRA-2560, R5): a rule answered on one member would silence a tree whose other
+// (dispatch://POMJU-2560, R5): a rule answered on one member would silence a tree whose other
 // member nothing is going to move. They are the control for the waits as well: the pass that
 // leaves the waiting trees alone is a pass that still names every tree that has stopped.
 //
@@ -779,7 +779,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		}
 	})
 
-	// The liveness clause of the silencing rule, in both directions (dispatch://INFRA-2560,
+	// The liveness clause of the silencing rule, in both directions (dispatch://POMJU-2560,
 	// R5). The trees above are its first half: they stand in a project whose line can still
 	// move, since the trees that have stopped hold slots no wait of the daemon's silences. The
 	// two projects below hold nothing but trees that wait by design, which is where the clause
@@ -929,7 +929,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		}
 	})
 
-	// The liveness clause reads "at work" as R6 defines it (dispatch://INFRA-2560, R6, which the
+	// The liveness clause reads "at work" as R6 defines it (dispatch://POMJU-2560, R6, which the
 	// architect ruled reaches this clause too): a phase worker the daemon names silent — up
 	// between turns in ready, holding no task, its last step older than
 	// `worker_silence_minutes` (workflow.SilentPhaseWorker) — makes no phase change and no
@@ -997,7 +997,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 // are the other half of the rule — an idle agent waits to be prompted, and a suspended, failed
 // or retired one is not coming back on its own — and a tree with nothing but those has stopped.
 //
-// R6 (dispatch://INFRA-2560) adds one exception, and the second pass below holds it with its
+// R6 (dispatch://POMJU-2560) adds one exception, and the second pass below holds it with its
 // control: a phase worker the daemon itself names silent — up between turns in ready, holding
 // no task, its last step older than `worker_silence_minutes` (workflow.SilentPhaseWorker) — is
 // no work under way, so a tree whose only claim is that worker is named; the same tree with

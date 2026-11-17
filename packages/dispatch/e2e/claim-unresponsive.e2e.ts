@@ -16,7 +16,7 @@ import { asUser } from "./users";
 // Agents page still lists it, a route still reaches it, and the pages a person reads have to say
 // so rather than call it gone. The dashboard and the server answer the same question here - the
 // chip names the moment the claim comes free, and a second agent asking for it before that
-// moment is refused and after it granted (dispatch://INFRA-392, R5 and A5).
+// moment is refused and after it granted (dispatch://POMJU-392, R5 and A5).
 
 const ROLE = "claim-stalled-role";
 const holder = {

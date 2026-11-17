@@ -43,18 +43,18 @@ var decisionBlockExempt = map[string]string{
 	"POST /api/v1/issues/{key}/handoffs/{phase}": "the body is one JSON object, held to contracts.DispatchHandoffBodyMax and stored exactly as sent (handoffs.go); every reader is given its fields as JSON and none of it as Markdown, so no decision card is ever drawn from it",
 
 	// The five ask writes. The reason is one decision, recorded as "An ask's own question, its
-	// options and its answers are left alone" (dispatch://INFRA-1201/artifact/decisions-md): the
+	// options and its answers are left alone" (dispatch://POMJU-1201/artifact/decisions-md): the
 	// same card is drawn for a decision block written in an ask's question, in an option's label,
 	// in an answer's text or in a resolution's reason, and none of those writes is refused,
 	// because an ask already reaches a person, so a block inside one is ugly rather than silent;
 	// because that wording is held by the ask's own check (validateAskWording, asks.go) and not
 	// by the body bound this rule sits beside; and because refusing a person's answer text would
 	// stop the one act this issue exists to protect.
-	"POST /api/v1/issues/{key}/asks":      "an ask's question and options are held by validateAskWording, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
-	"POST /api/v1/artifacts/{id}/asks":    "an ask's question and options are held by validateAskWording, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
-	"PATCH /api/v1/asks/{id}":             "an edit's question and options are held by validateAskWording against the ask as it will be stored, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
+	"POST /api/v1/issues/{key}/asks":      "an ask's question and options are held by validateAskWording, and a decision block in an ask is left alone (dispatch://POMJU-1201/artifact/decisions-md)",
+	"POST /api/v1/artifacts/{id}/asks":    "an ask's question and options are held by validateAskWording, and a decision block in an ask is left alone (dispatch://POMJU-1201/artifact/decisions-md)",
+	"PATCH /api/v1/asks/{id}":             "an edit's question and options are held by validateAskWording against the ask as it will be stored, and a decision block in an ask is left alone (dispatch://POMJU-1201/artifact/decisions-md)",
 	"POST /api/v1/asks/{id}/answer":       "refusing a person's answer text would stop the one act this issue exists to protect; the text is held to contracts.DispatchEventBodyMax (ask_transitions.go)",
-	"POST /api/v1/asks/{id}/resolve":      "a resolution's reason is a person's or a session's own wording on an ask that already reached a person, left alone by the same decision (dispatch://INFRA-1201/artifact/decisions-md)",
+	"POST /api/v1/asks/{id}/resolve":      "a resolution's reason is a person's or a session's own wording on an ask that already reached a person, left alone by the same decision (dispatch://POMJU-1201/artifact/decisions-md)",
 	"POST /api/v1/artifacts/{id}/reviews": reviewRouteExemption,
 	// The review that names the version its caller read answers an open approval request as the
 	// route above does, so it is left alone for the same reason.
@@ -62,7 +62,7 @@ var decisionBlockExempt = map[string]string{
 }
 
 // reviewRouteExemption is why decisionBlockExempt leaves both review routes unrefused.
-const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decisions document leaves an answer's text alone (dispatch://INFRA-1201/artifact/decisions-md); the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. A decision block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
+const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decisions document leaves an answer's text alone (dispatch://POMJU-1201/artifact/decisions-md); the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. A decision block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
 
 // decisionBlockGuardSees are the three writes the issue exists for, named so the guard cannot
 // pass by seeing nothing: a comment, a message and a broadcast. They are a control over the walk,
@@ -74,7 +74,7 @@ var decisionBlockGuardSees = []string{
 	"POST /api/v1/broadcasts",
 }
 
-// TestEveryRouteThatTakesABodyRefusesADecisionBlock holds R2 of INFRA-1201 — the rule is written
+// TestEveryRouteThatTakesABodyRefusesADecisionBlock holds R2 of POMJU-1201 — the rule is written
 // once, and a writer added later gets it — to the server's own route inventory rather than to a
 // list of the paths that have it today.
 //

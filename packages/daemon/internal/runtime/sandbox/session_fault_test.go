@@ -1,6 +1,6 @@
 package sandbox
 
-// The Kubernetes side of dispatch://INFRA-714 R8: the launcher says which of the two session
+// The Kubernetes side of dispatch://POMJU-714 R8: the launcher says which of the two session
 // refusals its start met, as one kind on its answer, and the runtime turns each into the
 // sentinel the supervisor acts on — the same two the tmux runtime answers with.
 

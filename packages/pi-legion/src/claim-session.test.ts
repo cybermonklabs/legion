@@ -62,7 +62,7 @@ describe("attributionInputs", () => {
 
   // The daemon sets LEGION_ISSUE for every pane; it sets LEGION_ISSUE_TRAILER only for an issue
   // whose repository the deployment names. A caller reading LEGION_ISSUE would stamp a Dispatch
-  // key into the commits of a repository it never named (dispatch://INFRA-472).
+  // key into the commits of a repository it never named (dispatch://POMJU-472).
   it("takes no key from LEGION_ISSUE", () => {
     expect(
       attributionInputs(ROOT_TRANSCRIPT, { LEGION_STATE_DIR: "/state", LEGION_ISSUE: "ACME-7" })

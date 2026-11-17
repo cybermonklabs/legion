@@ -278,7 +278,7 @@ test("a first turn that starts while claims/ready is still being retried is not 
   // The daemon took the first ready and its answer was lost, so the boot retries it — and the
   // daemon's task reaches this session meanwhile. The signal is registered at the registration,
   // before the first ready, so that turn is heard; the name is taken the moment the retry
-  // answers, rather than at the bound ten minutes away (INFRA-1573).
+  // answers, rather than at the bound ten minutes away (POMJU-1573).
   let readies = 0;
   let startTurn: (() => void) | undefined;
   const { host, steps, firstTurn } = claimHost({

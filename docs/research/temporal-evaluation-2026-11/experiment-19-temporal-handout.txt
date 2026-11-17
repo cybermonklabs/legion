@@ -1,6 +1,6 @@
 Experiment 19, Temporal: an activity handed out with ErrResultPending, its worker killed, and its completion by token.
 Recorded 2026-11-08T02:36:34Z by docs/research/temporal-evaluation-2026-11/run.sh,
-from the branch of dispatch://INFRA-1546 based on commit ceef410e25f43882fa631b33b43c5c942f58c68b,
+from the branch of dispatch://POMJU-1546 based on commit ceef410e25f43882fa631b33b43c5c942f58c68b,
 in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------
@@ -74,7 +74,7 @@ case-c-fence: the token of a superseded attempt: attempt 1 records its token and
 fence-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e19/exp19-fence-effects-1794104913926560919
 fence-maximum-attempts: 2
 fence-workflow-id: exp19-fence-1794104913926560919
-[worker2] time=2026-11-08T02:28:45.232Z level=ERROR msg="Activity error." Namespace=e7 TaskQueue=exp19-activity-1794104913926560919 WorkerID=57718@legion-infra-infra-1546@ WorkflowID=exp19-fence-1794104913926560919 RunID=01a1b8fc-9ba7-7d47-93a9-30d9c5bb8670 ActivityType=exp19Handout Attempt=1 Error="attempt 1 recorded its task token and then failed, so the server starts another attempt (type: HandoutAttemptFailed, retryable: true)"
+[worker2] time=2026-11-08T02:28:45.232Z level=ERROR msg="Activity error." Namespace=e7 TaskQueue=exp19-activity-1794104913926560919 WorkerID=57718@legion-pomju-pomju-1546@ WorkflowID=exp19-fence-1794104913926560919 RunID=01a1b8fc-9ba7-7d47-93a9-30d9c5bb8670 ActivityType=exp19Handout Attempt=1 Error="attempt 1 recorded its task token and then failed, so the server starts another attempt (type: HandoutAttemptFailed, retryable: true)"
 fence-body-line-1: attempt=1 pid=57718 at=2026-11-08T02:28:45.226594448Z
 fence-body-line-2: attempt=2 pid=57718 at=2026-11-08T02:28:46.212122698Z
 fence-body-executions: 2

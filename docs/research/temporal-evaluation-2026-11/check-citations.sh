@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# check-citations.sh resolves the citations of the two documents of INFRA-1546 that
+# check-citations.sh resolves the citations of the two documents of POMJU-1546 that
 # the grammar below reads, and prints how many resolved. It does not read every
 # citation those documents carry. What it does not read stands under "What this gate
 # does not read" below, which is this header's statement of the coverage table the
@@ -12,8 +12,8 @@
 # issue's Verification document says in its own words.
 # The two documents:
 #
-#   the answer   dispatch://INFRA-1546/artifact/temporal-evaluation-md
-#   the plan     dispatch://INFRA-1546/artifact/implementation-plan-md
+#   the answer   dispatch://POMJU-1546/artifact/temporal-evaluation-md
+#   the plan     dispatch://POMJU-1546/artifact/implementation-plan-md
 #
 #   bash docs/research/temporal-evaluation-2026-11/check-citations.sh
 #   bash docs/research/temporal-evaluation-2026-11/check-citations.sh --self-test
@@ -220,8 +220,8 @@ readonly -a document_labels=(
 	plan
 )
 readonly -a document_refs=(
-	'dispatch://INFRA-1546/artifact/temporal-evaluation-md'
-	'dispatch://INFRA-1546/artifact/implementation-plan-md'
+	'dispatch://POMJU-1546/artifact/temporal-evaluation-md'
+	'dispatch://POMJU-1546/artifact/implementation-plan-md'
 )
 readonly migrations_dir='packages/daemon/internal/store/migrations'
 readonly repo_marker='packages/daemon/internal/workflow/table.go'
@@ -945,7 +945,7 @@ An identifier the file holds only as a string, cited in the code form:
 A table no migration creates: the `no_such_table_of_infra_1546` table.
 A column no migration declares: the `no_such_column_of_infra_1546` column of `outbox`.
 A dispatch reference that does not read:
-dispatch://INFRA-1546/artifact/no-such-document-of-infra-1546
+dispatch://POMJU-1546/artifact/no-such-document-of-infra-1546
 A web address with no read date beside it: https://docs.temporal.io/evaluate/development-production-features
 An address that answers 404: https://docs.temporal.io/no-such-page-of-infra-1546 (read 2026-11-07)
 An address whose host no name server can resolve: https://no-such-host.invalid/ (read 2026-11-07)
@@ -972,7 +972,7 @@ Code: (`packages/daemon/internal/record/store.go`, `record.Postgres.Enqueue`).
 Code, the other way round: `supervise.Delivery` (`packages/daemon/internal/supervise/delivery.go`).
 Literal: (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ENTRY"`).
 Stored state: the `lease_token` column of `outbox`, and the `pending_task_deliveries` table.
-Dispatch: dispatch://INFRA-1546.
+Dispatch: dispatch://POMJU-1546.
 Web: https://docs.temporal.io/evaluate/development-production-features (read 2026-11-07)
 Code, a struct field: (`packages/daemon/internal/record/record.go`, `record.Issue.Generation`).
 Code, a member of a grouped const: (`packages/daemon/internal/daemon/outbox.go`, `daemon.outboxSettleTimeout`).

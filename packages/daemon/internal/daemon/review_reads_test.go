@@ -147,7 +147,7 @@ func reviewerDecision(t *testing.T, pool *store.Pool) (string, int) {
 // review decides the head its Legion footer names; a person's listed review decides nothing,
 // whatever permission GitHub gives the account, since the commit_id the list answers with is
 // GitHub's own and moves with the pull request (workflow's refusesRound,
-// dispatch://INFRA-1557). A comment, a dismissed review and a pending draft decide nothing, as
+// dispatch://POMJU-1557). A comment, a dismissed review and a pending draft decide nothing, as
 // they decide nothing by webhook. A round held from reviewing records the decision for the retry
 // to end it on.
 func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnTheRead(t *testing.T) {
@@ -472,7 +472,7 @@ func TestTheReadJudgesEachReviewOnce(t *testing.T) {
 // What the read keeps a review as refused for is a refusal that stands at every head
 // (workflow.RoundRefusal.AtEveryHead), not only one for who wrote the review. A person's listed
 // approval is refused whatever head the record comes to hold, since the commit_id GitHub lists it
-// under is GitHub's own and moves with the pull request (dispatch://INFRA-1557): this process
+// under is GitHub's own and moves with the pull request (dispatch://POMJU-1557): this process
 // judges it once, so the read after it reads the author's write access no more and logs no second
 // refusal. A review-App review refused for the head its footer names is judged again on the next
 // read, which is what lets it decide the round once that head arrives. Kept by who wrote it
@@ -574,7 +574,7 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 // The case no clock settles: the branch went from the head the record holds to another and a
 // force push put it back, so the head the record holds now is a head it held before the review
 // was written. GitHub gives that review the pull request's current commit_id
-// (dispatch://INFRA-1557), which is that same head, and the review's own Legion footer names the
+// (dispatch://POMJU-1557), which is that same head, and the review's own Legion footer names the
 // head it really read - the one the force push threw away. The read passes that review over and
 // applies nothing, so the issue stays in reviewing and the reviewer's row holds neither a
 // decision nor a refusal; an approval whose footer names the head the record holds decides the
@@ -627,7 +627,7 @@ func TestAListedApprovalDecidesOnTheHeadItsFooterNamesAcrossAForcePush(t *testin
 
 // GitHub's list holds every review a pull request has ever had, so the newest deciding review in
 // it is often one the round's rule refuses: a person's, whose commit_id GitHub rewrote to the
-// current head (dispatch://INFRA-1557), or a review-App review whose footer names a head the
+// current head (dispatch://POMJU-1557), or a review-App review whose footer names a head the
 // branch has left. Such a review hides no older one the rule admits - the read passes over it
 // and reads the review below it - so the reviewer's own approval of the head still decides the
 // round. Read as the newest alone, the round would never be decided by this read or by any read

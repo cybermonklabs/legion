@@ -9,7 +9,7 @@ import { withAlice } from "./users";
 
 /**
  * The Inbox's Agent row names its session by the title that session stamped, and not by its id
- * (dispatch://INFRA-1368). The server answers the name (`nameAgentSessions`,
+ * (dispatch://POMJU-1368). The server answers the name (`nameAgentSessions`,
  * `api/replies_agent.go`) out of the newest title the session stamped on anything it wrote
  * (`delivery.ResolveSessionTitles`), and the band draws that name as plain text
  * (`ThreadOwnerLine`, `web/src/features/inbox/AskOwnerLink.tsx`), so what a reader sees in the

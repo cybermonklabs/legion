@@ -22,7 +22,7 @@ import (
 // (lagWatch.observe in consume.go), while no second delivery of its message is made (the
 // delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go). A second delivery
 // brings the repeated preparation and the raised count back for that one delivery. The campaign
-// of dispatch://INFRA-1113 measured both halves of this at a 200 ms window: 21 messages whose
+// of dispatch://POMJU-1113 measured both halves of this at a 200 ms window: 21 messages whose
 // handler ran past the window were never delivered again, the longest running 888.6 ms under 12
 // reports of the keeper, and every redelivery it traced was a signal the server got late — five
 // times a progress report 2.3 ms to 177.9 ms late, and once the acknowledgement.
@@ -48,7 +48,7 @@ import (
 // covers the first period of a window, whatever the fraction is, because a ticker sends only after
 // each tick, so until one period has passed the window alone stands between the handler and the
 // server making the message due again (the delivery mechanism: ConsumerSpec.HandlerLimit's
-// comment in consume.go). The campaign of dispatch://INFRA-1113 measured that first report at a
+// comment in consume.go). The campaign of dispatch://POMJU-1113 measured that first report at a
 // 200 ms window, whose period is 66.7 ms: the largest interval from the keeper's start to its
 // first report was 403.7 ms, which is 6.06 times the period, and the 99th percentile of that
 // interval was 276.8 ms.

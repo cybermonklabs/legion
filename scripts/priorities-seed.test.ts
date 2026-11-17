@@ -43,18 +43,18 @@ const TABLE = [
   "",
   "| \\# | Priority | Owner | Where |",
   "| --- | --- | --- | --- |",
-  "| 1 | Legion works reliably first | INFRA controller | TEST-1 is implementing |",
+  "| 1 | Legion works reliably first | POMJU controller | TEST-1 is implementing |",
   "| 2 | Uninstall the old tracker | CHIEF | DONE: TEST-9 removed it from mise |",
-  "| 3 | Ship the gateway | OSSV controller | TEST-2 finished it |",
-  "| 4 | Nothing a person asked for is parked | INFRA controller (enforcement), BET controller " +
+  "| 3 | Ship the gateway | HKUK controller | TEST-2 finished it |",
+  "| 4 | Nothing a person asked for is parked | POMJU controller (enforcement), BJB controller " +
     "(its own list) | TEST-3 sits in icebox |",
   "| 5 | Hourly self-check against this list | CHIEF | nothing to point at yet |",
-  "| 6 | One cross-project view of priorities | INFRA fan | TEST-4, and the spec at " +
+  "| 6 | One cross-project view of priorities | POMJU fan | TEST-4, and the spec at " +
     "dispatch://TEST-5/artifact/spec-md |",
-  "| 7 | Chase the applications | OSSV controller | TEST-404 names no issue |",
-  "| 8 | Rocq and Lean speed work restarted | LINUX controller | OTHER-7 and OTHER-8 |",
+  "| 7 | Chase the applications | HKUK controller | TEST-404 names no issue |",
+  "| 8 | Rocq and Lean speed work restarted | HAFJJ controller | OTHER-7 and OTHER-8 |",
   "",
-  "INFRA holds every slot, so starting new work means ranking it above something.",
+  "POMJU holds every slot, so starting new work means ranking it above something.",
   "",
 ].join("\n");
 
@@ -244,9 +244,9 @@ test("writes one priority for each row but the DONE one, in the table's order", 
   expect(report.document).toBe(DOCUMENT);
   // The owner cell verbatim, several owners included.
   expect(priorities[2]?.owner).toBe(
-    "INFRA controller (enforcement), BET controller (its own list)"
+    "POMJU controller (enforcement), BJB controller (its own list)"
   );
-  expect(priorities[0]?.owner).toBe("INFRA controller");
+  expect(priorities[0]?.owner).toBe("POMJU controller");
   // Nothing of the DONE row is read: no priority, and no read of the key it names.
   expect(requests.some((recorded) => recorded.path.endsWith("/TEST-9"))).toBe(false);
 });
@@ -305,7 +305,7 @@ test("writes the row's own text, its number and the version it read as the descr
   expect(rowMarker(priorities[4]?.description ?? "")).toEqual({ row: "6", document: DOCUMENT });
   expect(
     priorityDescription(
-      { number: "6", title: "One cross-project view of priorities", owner: "INFRA fan", where: "" },
+      { number: "6", title: "One cross-project view of priorities", owner: "POMJU fan", where: "" },
       DOCUMENT,
       null,
       [],
@@ -360,7 +360,7 @@ test("two rows whose titles Dispatch writes under one id are refused before any 
       "| \\# | Priority | Owner | Where |",
       "| --- | --- | --- | --- |",
       "| 1 | Ship the gateway | CHIEF | TEST-1 is implementing |",
-      "| 2 | Ship the Gateway! | OSSV controller | nothing to point at yet |",
+      "| 2 | Ship the Gateway! | HKUK controller | nothing to point at yet |",
       "",
     ].join("\n"),
     version: 3,

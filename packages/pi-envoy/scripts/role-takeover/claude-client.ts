@@ -12,7 +12,7 @@
  *
  * Nothing of the server is faked: it registers, heartbeats, claims and deregisters over HTTP to
  * the smoke's recording proxy, and over NATS to the smoke's natsd. One process is one client
- * instance, which is what the listener's rule turns on (R5, R6 of dispatch://INFRA-404/spec).
+ * instance, which is what the listener's rule turns on (R5, R6 of dispatch://POMJU-404/spec).
  *
  * Usage:
  *   bun claude-client.ts --server <bin/envoy-channel.ts> --session <id> --state-dir <dir>

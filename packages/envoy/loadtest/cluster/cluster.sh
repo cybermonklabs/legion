@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # cluster.sh: the Dispatch load test on a full-size copy of Dispatch, its Postgres, the Envoy
 # listener and a three-pod NATS JetStream hub in a Kubernetes namespace, driven from a Legion
-# worker pod (INFRA-598). It installs the copy from manifests/, seeds it, runs loadgen steps from a
+# worker pod (POMJU-598). It installs the copy from manifests/, seeds it, runs loadgen steps from a
 # runner pod inside it, samples every copy container's cgroup, collects, and removes the copy.
 #
 #   cluster.sh up --namespace NS --storage-class SC --dispatch-commit SHA --pg-major 16|18
@@ -14,7 +14,7 @@
 #       digest, a stored-order checker it cannot build (below: a --dispatch-commit that this
 #       checkout's git store does not hold; a dispatch tree without the stored-order command and
 #       no --stored-order-source, or with it and a --stored-order-source; a source without
-#       INFRA-707's files or registration; a dispatch subcommand table without the registration's
+#       POMJU-707's files or registration; a dispatch subcommand table without the registration's
 #       anchor; a build failure, naming the commits and the compiler's first error), and a
 #       --browsertype-commit that the git store does not hold, whose tree has no
 #       packages/envoy/loadtest/browsertype or whose built browsertype has no -protect or no
@@ -45,12 +45,16 @@
 #                                                       CPU and MEMORY (Gi), on the same PVC.
 #   cluster.sh redeploy --namespace NS --dispatch-commit SHA   Dispatch's image only, then a reset.
 #   cluster.sh replay-prepare --namespace NS [--manifest FILE] [--from-dir DIR]
-#       INFRA-639's LINUX replay inputs (default manifest ../replay-2026-10-26.json) into the
-#       template database dispatch_replay. Refuses, before it touches the copy, a manifest whose
-#       seed is null (INFRA-639's seed is not uploaded yet) or whose seed check failed (check.passed
-#       not true, version_size_mismatches or anchors_outside_logged_block not 0), and an unset
+#       The HAFJJ replay's inputs into the template database dispatch_replay. The manifest is FILE,
+#       else replay-2026-10-26.json, a project file of the project of the issue
+#       LOADTEST_REPLAY_ISSUE names, kept in $LOADTEST_CLUSTER_ROOT/replay-manifest/ when its sha256
+#       is the pinned one, else copied from --from-dir or downloaded and checked (common.sh
+#       replay_fetch_manifest). Refuses, before it touches the copy, an unset
 #       LOADTEST_REPLAY_ISSUE, which names the issue the parts are file artifacts of (the manifest
-#       names none), even with --from-dir. Then downloads
+#       names none), even with --from-dir; no manifest (no FILE, and none it can keep, copy or
+#       download, naming what is missing); and a manifest whose seed is null (its seed is not
+#       uploaded yet) or whose seed check failed (check.passed not true, version_size_mismatches
+#       or anchors_outside_logged_block not 0). Then downloads
 #       (or copies from --from-dir) and verifies the parts with stack.sh replay-get's code
 #       (common.sh replay_get_bundle, replay_fetch_parts) under <run>/replay/; streams the dump into
 #       the Postgres pod and restores it (pg_restore --no-owner --no-privileges) into a fresh
@@ -93,7 +97,9 @@
 #       up, seed, the series, the refinement (full only), soak, replay-prepare, replay r16,
 #       db-size 4 15Gi, step 1x-db4, replay r4, collect, down; any exit runs down unless --keep.
 #       quick: 2 min steps, a 5 min hour, replays over 0-5m; full: 10 and 60 min, replays over
-#       0-39m. A manifest whose seed is null or fails its check skips the replay phases, one
+#       0-39m. Without --manifest, the manifest is the one replay-prepare fetches, fetched before
+#       up: no manifest, or an unset LOADTEST_REPLAY_ISSUE, is refused before anything starts. A
+#       manifest whose seed is null or fails its check skips the replay phases, one
 #       line each. all runs no browser typing; with --browsertype-commit and --keep, the run
 #       stays up for typing steps and replays named by the caller, held (--keep-for, default 2h,
 #       valid only with --keep) so it does not go stale while they are typed; cluster.sh hold
@@ -103,7 +109,7 @@
 # (git archive of this checkout's git store, built in a scratch directory), so the checker's
 # renderer is the one Dispatch runs. A dispatch tree without the stored-order command
 # (packages/envoy/cmd/dispatch/storedorder.go) needs --stored-order-source SHA, refused otherwise:
-# that commit's INFRA-707 files (internal/dispatch/docs/storedorder.go,
+# that commit's POMJU-707 files (internal/dispatch/docs/storedorder.go,
 # cmd/dispatch/storedorder.go) are copied into the scratch copy, and its stored-order entry of
 # cmd/dispatch/subcommands.go's table is inserted after the dispatch tree's table opener `var
 # subcommands = []subcommand{` (refused when that line is not there exactly once). The escape
@@ -113,7 +119,7 @@
 # overlay_files, registration (the file the overlay edited, or null), renderer_matches and the
 # binary's sha256; up builds the checker before it takes the lock.
 #
-# The stored-order check (INFRA-707's oracle): after each step's and each replay's loadgen run,
+# The stored-order check (POMJU-707's oracle): after each step's and each replay's loadgen run,
 # while Dispatch still runs, the runner runs the checker's `stored-order --since <meta.json
 # window_start>`, with the copy's DATABASE_URL on its standard input (never on a command line),
 # within STORED_ORDER_SECONDS. A step that typed runs it twice inside that bound: first over the
@@ -133,8 +139,8 @@
 # reported, never a step failure, and the evidence is never uploaded. collect writes
 # <run>/STORED-ORDER.md.
 #
-# Browser typing (step and replay --typing, INFRA-707's race of agent writes and browser typing):
-# INFRA-707's browsertype of --browsertype-commit, refused without it, types into the K
+# Browser typing (step and replay --typing, POMJU-707's race of agent writes and browser typing):
+# POMJU-707's browsertype of --browsertype-commit, refused without it, types into the K
 # (--typing-docs) documents the step writes most, --typing-peers peers each at --typing-rate
 # keystroke updates per second, through Dispatch's document websocket as people: each peer is a
 # person of its own, browsertype-<peer>, named in the X-Dispatch-User header the copy's Dispatch
@@ -149,7 +155,7 @@
 # documents `loadgen plan-docs` names from seed.json and the step's own loadgen run flags, those
 # its in-window edits and uploads plan the most versions for, and browsertype.json records each
 # one's planned count (planned_versions); a Kth document under 10 planned versions, which
-# INFRA-707's acceptance 2 needs, is one warning line. It starts detached in the runner just
+# POMJU-707's acceptance 2 needs, is one warning line. It starts detached in the runner just
 # before loadgen run, so its peers connect during loadgen's warm-up, with a -duration that
 # outlasts loadgen's window, grace and the stored-order check, and stops with SIGTERM right after
 # the last stored-order command. Its output goes into
@@ -234,8 +240,8 @@
 # 600, holds the digests and the run's random credentials; cgroup.jsonl; steps/; logs/); --run ID
 # names the run instead. Needs kubectl, jq, curl, gh, go, setsid, timeout, tar, gzip, base64,
 # sha256sum, uv (collect), git (up), dispatch (collect --upload-issue), and LOADTEST_REPLAY_ISSUE
-# with DISPATCH_URL and DISPATCH_TOKEN_FILE (replay-prepare's downloads; the issue even with
-# --from-dir, since the manifest names none).
+# with DISPATCH_URL and DISPATCH_TOKEN_FILE (replay-prepare's and all's downloads of the manifest
+# and the parts; the issue even with --from-dir, since the manifest names none).
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -248,7 +254,7 @@ source "$here/../common.sh"
 export LC_ALL=C TZ=UTC
 
 CLUSTER_ROOT=${LOADTEST_CLUSTER_ROOT:-${TMPDIR:-/tmp}/dispatch-loadtest-cluster}
-# The lock's name and data keys are a contract with prove-loadtest (INFRA-690), which refuses to
+# The lock's name and data keys are a contract with prove-loadtest (POMJU-690), which refuses to
 # run while it exists: holder-pod, holder-uid, issue, run, started, heartbeat.
 LOCK=dispatch-loadtest-lock
 STALE_SECONDS=900
@@ -308,15 +314,17 @@ PG_DISK_STOP_SECONDS=300
 # pg_disk_watch_stop writes when it has to kill it.
 PG_DISK_SIZE="" PG_DISK_USED="" PG_DISK_FREE=""
 PG_DISK_WATCHER="" PG_DISK_WATCH_STEP=""
-# The LINUX replay: INFRA-639's manifest, the template database replay-prepare makes,
-# where the dump goes in the Postgres pod (on its claim), and the outage's Dispatch figures that
-# loadgen codepaths sets a replay beside (production profile §5: 11.1-13.8 cores, 13.8 GiB).
-REPLAY_MANIFEST=$here/../replay-2026-10-26.json
+# The HAFJJ replay: where replay-prepare and all keep the manifest they fetch without --manifest
+# (common.sh replay_fetch_manifest; replay-prepare copies it into the run as replay-manifest.json),
+# the template database replay-prepare makes, where the dump goes in the Postgres pod (on its
+# claim), and the outage's Dispatch figures that loadgen codepaths sets a replay beside (production
+# profile §5: 11.1-13.8 cores, 13.8 GiB).
+REPLAY_MANIFEST_DIR=$CLUSTER_ROOT/replay-manifest
 REPLAY_TEMPLATE=dispatch_replay
 REPLAY_POD_DUMP=/var/lib/postgresql/copy/replay-seed.dump
 OUTAGE_CORES=11.1,13.8
 OUTAGE_MEMORY_GIB=13.8
-# The stored-order checker (INFRA-707's command): the file whose presence in a tree means the tree
+# The stored-order checker (POMJU-707's command): the file whose presence in a tree means the tree
 # has the command, the files an overlay copies from --stored-order-source into a dispatch tree
 # without it, the subcommand table the overlay registers it in, and the table's opener, after
 # which the overlay inserts the source's stored-order entry. CHECKER_TMP is up's scratch
@@ -336,13 +344,13 @@ STORED_ORDER_SECONDS=${LOADTEST_STORED_ORDER_SECONDS:-7200}
   { printf 'cluster.sh: LOADTEST_STORED_ORDER_SECONDS must be a whole number of seconds, not %s\n' "$STORED_ORDER_SECONDS" >&2; exit 2; }
 # The stored-order evidence export's bound for all of one step's documents, in seconds, and the
 # tables it exports for each document at the step's end, as table:key column[:order]: every table
-# that `envoy-dispatch stored-order` reads of a document (INFRA-707's
+# that `envoy-dispatch stored-order` reads of a document (POMJU-707's
 # internal/dispatch/docs/storedorder.go), and doc_snapshots. STORED_ORDER_START_TABLES are the ones
 # it exports again from the template database the step was reset from, as start-<table>.csv.gz.
 STORED_ORDER_EVIDENCE_SECONDS=600
 STORED_ORDER_TABLES=(artifacts:id doc_checkpoints:artifact_id artifact_versions:artifact_id:number doc_updates:artifact_id:version doc_snapshots:artifact_id:name)
 STORED_ORDER_START_TABLES=(doc_checkpoints:artifact_id artifact_versions:artifact_id:number doc_updates:artifact_id:version doc_snapshots:artifact_id:name)
-# Browser typing: the login prefix of the people INFRA-707's browsertype peers are (peer n of
+# Browser typing: the login prefix of the people POMJU-707's browsertype peers are (peer n of
 # every document is <prefix>-<n>), the header the copy's Dispatch reads a person from -- the one
 # manifests/dispatch.yaml's DISPATCH_IDENTITY=header:X-Dispatch-User names, trusted there
 # (DISPATCH_IDENTITY_HEADER_TRUSTED=1) -- and the runner's directory, which holds each step's
@@ -1880,17 +1888,17 @@ stored_order_args() {
   git -C "$REPO_DIR" cat-file -e "$commit^{commit}" 2>/dev/null ||
     die "up: --dispatch-commit $commit is not a commit in this checkout's git store ($REPO_DIR), and the stored-order checker is built from its tree; fetch it (jj git fetch)"
   if [ -n "$checker" ]; then
-    [ -z "$source" ] || die "up: --stored-order-source and --stored-order-checker-commit exclude each other: the source adds INFRA-707's files to the dispatch tree, the checker commit replaces that tree; give one"
+    [ -z "$source" ] || die "up: --stored-order-source and --stored-order-checker-commit exclude each other: the source adds POMJU-707's files to the dispatch tree, the checker commit replaces that tree; give one"
     valid commit "$checker" || die "up: --stored-order-checker-commit '$checker' is not a full 40-hex commit sha"
     [ "$checker" != "$commit" ] || die "up: --stored-order-checker-commit $checker is --dispatch-commit itself; drop it: the checker is built from the dispatch commit by default"
-    commit_source stored-order-checker-commit "$checker" "$STORED_ORDER_COMMAND" "so its envoy-dispatch has no stored-order command (INFRA-707)"
+    commit_source stored-order-checker-commit "$checker" "$STORED_ORDER_COMMAND" "so its envoy-dispatch has no stored-order command (POMJU-707)"
   elif tree_has "$commit" "$STORED_ORDER_COMMAND"; then
     [ -z "$source" ] || die "up: --stored-order-source $source is refused: --dispatch-commit $commit's tree has the stored-order command ($STORED_ORDER_COMMAND), so the checker is built from that tree alone"
   else
-    [ -n "$source" ] || die "up: --dispatch-commit $commit's tree has no stored-order command ($STORED_ORDER_COMMAND); give --stored-order-source <commit>, whose INFRA-707 files (${STORED_ORDER_FILES[*]}) and stored-order registration are added to it, or, naming the renderer mismatch, --stored-order-checker-commit <commit> to build the checker wholly from another commit"
+    [ -n "$source" ] || die "up: --dispatch-commit $commit's tree has no stored-order command ($STORED_ORDER_COMMAND); give --stored-order-source <commit>, whose POMJU-707 files (${STORED_ORDER_FILES[*]}) and stored-order registration are added to it, or, naming the renderer mismatch, --stored-order-checker-commit <commit> to build the checker wholly from another commit"
     valid commit "$source" || die "up: --stored-order-source '$source' is not a full 40-hex commit sha"
     for f in "${STORED_ORDER_FILES[@]}" "$STORED_ORDER_REGISTRY"; do
-      commit_source stored-order-source "$source" "$f" "so it lacks INFRA-707's stored-order command"
+      commit_source stored-order-source "$source" "$f" "so it lacks POMJU-707's stored-order command"
     done
     stored_order_entry "$source" >/dev/null ||
       die "up: --stored-order-source $source's $STORED_ORDER_REGISTRY holds no single stored-order entry (a line starting {\"stored-order\", func( and the }}, that closes it); name a commit that registers the command"
@@ -1914,7 +1922,7 @@ stored_order_build() {
     from=$checker matches=false what="checker commit $checker, not dispatch commit $commit"
     note "WARNING: --stored-order-checker-commit $checker: the stored-order checker is built wholly from $checker, not from dispatch commit $commit, so its renderer may differ from Dispatch's and a mismatch it reports may be renderer skew; state.json records renderer_matches false"
   elif [ -n "$source" ]; then
-    from=$commit what="dispatch commit $commit with INFRA-707's files of source commit $source (${STORED_ORDER_FILES[*]}, registered in $STORED_ORDER_REGISTRY)"
+    from=$commit what="dispatch commit $commit with POMJU-707's files of source commit $source (${STORED_ORDER_FILES[*]}, registered in $STORED_ORDER_REGISTRY)"
     files=$(printf '%s\n' "${STORED_ORDER_FILES[@]}" | jq -Rnc '[inputs]')
     registry=$STORED_ORDER_REGISTRY
   else
@@ -1953,7 +1961,7 @@ STORED_ORDER_SCRIPT='IFS= read -r DATABASE_URL; export DATABASE_URL; seconds=$1;
 # the checker's fields (CHECKER, the JSON object stored_order_checker gives: dispatch_commit,
 # built_from, overlay_source, overlay_files, registration, renderer_matches, sha256), its exit
 # status (null when it did not run), --since (null when none), and the counts of the last summary
-# line (`stored-order: documents=N clean=N mismatched=N refused=N failed=N`, which INFRA-707's
+# line (`stored-order: documents=N clean=N mismatched=N refused=N failed=N`, which POMJU-707's
 # checker from eb0fe0be on ends with ` unchecked=N`, a document it compared no update and no version
 # of), each null when there is no such line or the command timed out (exit 124), never 0; unchecked
 # is null too for a line without it.
@@ -1976,7 +1984,7 @@ stored_order_checker() {
 # The jq function that names a checker (stored_order_checker's object) in one phrase.
 # shellcheck disable=SC2016 # jq's program
 STORED_ORDER_LABEL='def checker_label: if .overlay_source != null
-    then "dispatch commit \(.built_from[0:12]) + INFRA-707 files of \(.overlay_source[0:12])"
+    then "dispatch commit \(.built_from[0:12]) + POMJU-707 files of \(.overlay_source[0:12])"
   elif .built_from == .dispatch_commit then "dispatch commit \(.built_from[0:12])"
   else "checker commit \(.built_from[0:12]), not dispatch commit \(.dispatch_commit[0:12])" end
   + ", renderer_matches \(.renderer_matches)";'
@@ -2255,16 +2263,16 @@ stored_order_table() {
   bt=$(state '.browsertype.commit // empty')
   {
     printf '# Stored order\n\n'
-    jq -r '.stored_order | if . == null then "No step ran INFRA-707'\''s oracle `envoy-dispatch stored-order`: state.json records no stored-order checker."
-      else "INFRA-707'\''s oracle `envoy-dispatch stored-order` ran on each step after its window, while Dispatch still ran, with `--since` the window start. Exit 1 (a mismatch, a refused document, a failed read, or a document the checker compared no update and no version of) is a correctness finding, not a failed step; `<step>/stored-order.txt` holds its lines. Unchecked counts those documents; it is `null` for a checker older than INFRA-707'\''s eb0fe0be, whose summary line has no such count.\n\n"
+    jq -r '.stored_order | if . == null then "No step ran POMJU-707'\''s oracle `envoy-dispatch stored-order`: state.json records no stored-order checker."
+      else "POMJU-707'\''s oracle `envoy-dispatch stored-order` ran on each step after its window, while Dispatch still ran, with `--since` the window start. Exit 1 (a mismatch, a refused document, a failed read, or a document the checker compared no update and no version of) is a correctness finding, not a failed step; `<step>/stored-order.txt` holds its lines. Unchecked counts those documents; it is `null` for a checker older than POMJU-707'\''s eb0fe0be, whose summary line has no such count.\n\n"
         + "The checker was built for dispatch commit \(.dispatch_commit) "
-        + (if .overlay_source != null then "from that commit'\''s tree with INFRA-707'\''s files of source commit \(.overlay_source) added (\(.overlay_files | map("`\(.)`") | join(", ")); its stored-order entry registered in `\(.registration)`)"
+        + (if .overlay_source != null then "from that commit'\''s tree with POMJU-707'\''s files of source commit \(.overlay_source) added (\(.overlay_files | map("`\(.)`") | join(", ")); its stored-order entry registered in `\(.registration)`)"
           elif .built_from == .dispatch_commit then "from that commit'\''s own tree (no overlay)"
           else "wholly from checker commit \(.built_from) (`--stored-order-checker-commit`), whose renderer may differ from Dispatch'\''s: a mismatch may be renderer skew" end)
         + ". renderer_matches: \(.renderer_matches). Binary sha256 \(.sha256)." end' "$STATE" || return 1
     printf '\n'
     if [ -n "$bt" ]; then
-      printf "Typing: the keystroke updates that INFRA-707's \`browsertype\`, built from commit %s, sent into the step's documents from its warm-up until the check ended (\`<step>/browsertype.json\`); \`none\` for a step run without \`--typing\`.\n\n" "$bt"
+      printf "Typing: the keystroke updates that POMJU-707's \`browsertype\`, built from commit %s, sent into the step's documents from its warm-up until the check ended (\`<step>/browsertype.json\`); \`none\` for a step run without \`--typing\`.\n\n" "$bt"
     else
       printf "Typing: \`none\` for every step: up was given no \`--browsertype-commit\`.\n\n"
     fi
@@ -2314,11 +2322,11 @@ typing_parse() {
   fi
   [[ $TYPING_DOCS =~ ^[1-9][0-9]{0,3}$ ]] || die "$CMD: --typing-docs '$TYPING_DOCS' is not a whole number from 1 to 9999"
   [ -n "$(state '.browsertype.commit // empty')" ] ||
-    die "$CMD: --typing needs INFRA-707's browsertype, and up was given no --browsertype-commit; bring the copy up with --browsertype-commit <sha>"
+    die "$CMD: --typing needs POMJU-707's browsertype, and up was given no --browsertype-commit; bring the copy up with --browsertype-commit <sha>"
   TYPING=1
 }
 
-# TYPING_MIN_VERSIONS is the versions INFRA-707's acceptance 2 needs of every typed document (at
+# TYPING_MIN_VERSIONS is the versions POMJU-707's acceptance 2 needs of every typed document (at
 # least 100 updates and at least 10 versions checked); typing_plan_step warns under it.
 TYPING_MIN_VERSIONS=10
 
@@ -2338,7 +2346,7 @@ typing_plan_step() {
     die "step $name: reading loadgen plan-docs' planned versions failed"
   count=$(jq -r --argjson k "$k" 'if length < $k then 0 else .[$k - 1].versions end' <<<"$plan")
   ((count >= TYPING_MIN_VERSIONS)) ||
-    note "WARNING: step $name: typed document number $k has $count planned versions, under the $TYPING_MIN_VERSIONS versions INFRA-707's acceptance 2 needs of every typed document (loadgen plan-docs named ${#TYPING_LIST[@]} documents of --typing-docs $k); the step runs on"
+    note "WARNING: step $name: typed document number $k has $count planned versions, under the $TYPING_MIN_VERSIONS versions POMJU-707's acceptance 2 needs of every typed document (loadgen plan-docs named ${#TYPING_LIST[@]} documents of --typing-docs $k); the step runs on"
 }
 
 # The jq program over a replay bundle's window.jsonl (typing_docs_replay): each document's agent
@@ -2909,13 +2917,13 @@ replay_manifest_valid() {
 }
 
 # replay_seed_refusal MANIFEST: why the manifest's seed may not be prepared, nothing when it may:
-# no seed (INFRA-639's seed is not uploaded yet), or a seed check that failed. INFRA-514's architect
+# no seed (POMJU-639's seed is not uploaded yet), or a seed check that failed. POMJU-514's architect
 # requires check.passed true, version_size_mismatches 0 (each synthetic version's byte delta is the
 # real version's size change) and anchors_outside_logged_block 0 (each anchor sits in its logged
 # block, or the bundle counts it under the stated rule for a block that no longer exists).
 replay_seed_refusal() {
   if [ "$(jq '.seed == null' "$1")" = true ]; then
-    printf "the manifest %s names no seed (seed is null): INFRA-639's seed is not uploaded yet\n" "${1##*/}"
+    printf "the manifest %s names no seed (seed is null): POMJU-639's seed is not uploaded yet\n" "${1##*/}"
     return 0
   fi
   jq -r '.seed.check as $c | if ($c | type) != "object" then "the manifest'"'"'s seed has no check"
@@ -3008,7 +3016,7 @@ replay_prepare_run() {
   fi
   ensure_daemons
 
-  # INFRA-639's parts, downloaded and verified on the worker as stack.sh replay-get does.
+  # POMJU-639's parts, downloaded and verified on the worker as stack.sh replay-get does.
   local s_inputs s_stream s_restore s_migrate s_backfill s_vacuum s_checksum bundle_meta_sha seed_parts
   t0=$EPOCHREALTIME
   replay_get_bundle "$manifest" "$rdir" "$from_dir" loadgen_local
@@ -3150,7 +3158,7 @@ run_replay() {
   ensure_daemons
   mkdir -p -- "$dir" "$RUN_DIR/phases"
   printf '%s\n' "$name" >>"$RUN_DIR/phases/$phase"
-  note "replay $name: LINUX's write log from $from to $to after 22:55 at rate 1, on Postgres $(state .postgres.tier)"
+  note "replay $name: HAFJJ's write log from $from to $to after 22:55 at rate 1, on Postgres $(state .postgres.tier)"
 
   put_loadgen
   reset_copy "$dir/reset.json" "$REPLAY_TEMPLATE"
@@ -3413,7 +3421,7 @@ up_run() {
   if [ -n "$bt_commit" ]; then
     valid commit "$bt_commit" || die "up: --browsertype-commit '$bt_commit' is not a full 40-hex commit sha"
     commit_source browsertype-commit "$bt_commit" packages/envoy/loadtest/browsertype \
-      "so it has no browsertype for browser typing (INFRA-707)"
+      "so it has no browsertype for browser typing (POMJU-707)"
   fi
 
   # Production's facts, from the production repository's main.
@@ -3446,9 +3454,9 @@ up_run() {
     local bt_help
     bt_help=$("$CHECKER_TMP/browsertype" -help 2>&1 || true)
     [[ $bt_help == *-protect* ]] ||
-      die "up: browsertype of commit $bt_commit has no -protect flag: it would type into loadgen's '$TYPING_PROTECT' paragraph and fail every later edit and upload of the typed documents; give a commit of INFRA-707's driver that has -protect"
+      die "up: browsertype of commit $bt_commit has no -protect flag: it would type into loadgen's '$TYPING_PROTECT' paragraph and fail every later edit and upload of the typed documents; give a commit of POMJU-707's driver that has -protect"
     [[ $bt_help == *-person* ]] ||
-      die "up: browsertype of commit $bt_commit has no -person flag: Dispatch admits only the identity service's person into a document room (sjawhar/legion#2541), so a driver that connects with the copy's agent token types nothing; give a commit of INFRA-707's driver at or after 67ac05a4, which takes -person and -identity-header"
+      die "up: browsertype of commit $bt_commit has no -person flag: Dispatch admits only the identity service's person into a document room (sjawhar/legion#2541), so a driver that connects with the copy's agent token types nothing; give a commit of POMJU-707's driver at or after 67ac05a4, which takes -person and -identity-header"
   fi
 
   set_run "lt-$(date -u +%Y%m%dt%H%M%S)-$(random_hex 2)"
@@ -3651,14 +3659,19 @@ cmd_collect() {
 cmd_replay_prepare() {
   parse "namespace run manifest from-dir" "" "$@"
   positional 0 "no positional arguments"
-  local manifest=${OPT[manifest]:-$REPLAY_MANIFEST} from_dir=${OPT[from-dir]:-} why
-  replay_manifest_valid "$manifest"
-  why=$(replay_seed_refusal "$manifest")
-  [ -z "$why" ] || die "replay-prepare: $why; refusing before it touches the copy"
-  # The manifest names no issue; the operator does, and the parts are read from it.
+  local manifest=${OPT[manifest]:-} from_dir=${OPT[from-dir]:-} why
+  # The manifest names no issue; the operator does, and the parts are read from it, and without
+  # --manifest the manifest from its project.
   [ -n "${LOADTEST_REPLAY_ISSUE:-}" ] ||
     die "replay-prepare: LOADTEST_REPLAY_ISSUE is not set: set it to the issue the replay's parts are file artifacts of (the manifest names none); refusing before it touches the copy"
   [ -z "$from_dir" ] || [ -d "$from_dir" ] || die "replay-prepare: --from-dir $from_dir is not a directory"
+  if [ -z "$manifest" ]; then
+    replay_fetch_manifest "$REPLAY_MANIFEST_DIR" "$from_dir"
+    manifest=$REPLAY_MANIFEST_PATH
+  fi
+  replay_manifest_valid "$manifest"
+  why=$(replay_seed_refusal "$manifest")
+  [ -z "$why" ] || die "replay-prepare: $why; refusing before it touches the copy"
   use_run
   replay_prepare_run "$manifest" "$from_dir"
 }
@@ -3751,7 +3764,7 @@ cmd_hold() {
 cmd_all() {
   parse "namespace storage-class dispatch-commit pg-major production-repo pg-volume listener-image stored-order-source stored-order-checker-commit browsertype-commit profile manifest upload-issue keep-for" "keep" "$@"
   positional 0 "no positional arguments"
-  local step_d hour_d replay_to refine collect_rc issue=${OPT[upload-issue]:-} manifest=${OPT[manifest]:-$REPLAY_MANIFEST} why
+  local step_d hour_d replay_to refine collect_rc issue=${OPT[upload-issue]:-} manifest=${OPT[manifest]:-} why
   case ${OPT[profile]:-} in
     quick) step_d=2m hour_d=5m replay_to=5m refine=false ;;
     full) step_d=10m hour_d=60m replay_to=39m refine=true ;;
@@ -3763,6 +3776,13 @@ cmd_all() {
     die "all: --keep-for is valid only with --keep: without --keep the run is torn down at the end, so there is nothing to hold"
   valid duration "$ALL_KEEP_FOR" || die "all: --keep-for '$ALL_KEEP_FOR' is not a whole number of s, m or h (for example 2h)"
   [ -z "$issue" ] || valid issue "$issue" || die "--upload-issue '$issue' is not an issue key"
+  if [ -z "$manifest" ]; then
+    # The manifest is a file of the operator's issue's project: fetched now, before up.
+    [ -n "${LOADTEST_REPLAY_ISSUE:-}" ] ||
+      die "all: LOADTEST_REPLAY_ISSUE is not set: set it to the issue the replay's parts are file artifacts of, whose project holds the manifest, or give --manifest FILE"
+    replay_fetch_manifest "$REPLAY_MANIFEST_DIR" ""
+    manifest=$REPLAY_MANIFEST_PATH
+  fi
   replay_manifest_valid "$manifest"
   # A seeded manifest runs the replay phases, whose parts are file artifacts of the operator's
   # issue; a null-seed manifest skips them and needs none.

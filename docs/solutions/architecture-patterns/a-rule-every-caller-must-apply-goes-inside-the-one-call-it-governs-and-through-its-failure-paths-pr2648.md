@@ -15,7 +15,7 @@ related_issues:
 
 # A rule every caller must apply goes inside the one call it governs, and through that call's failure paths
 
-Extends docs/solutions/legion/a-fix-that-produces-the-next-finding-is-a-ratchet-stop-it-with-a-rule-written-early-INFRA-66.md.
+Extends docs/solutions/legion/a-fix-that-produces-the-next-finding-is-a-ratchet-stop-it-with-a-rule-written-early-POMJU-66.md.
 That note says to write the stopping rule before it is needed; this one says what the stopping
 rule is when the findings are "here is another site that forgot to do X first".
 

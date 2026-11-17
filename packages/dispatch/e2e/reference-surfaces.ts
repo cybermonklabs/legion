@@ -339,7 +339,7 @@ export async function closeMarginThread(page: Page, project: string): Promise<vo
  * page (`web/src/features/answers/AnswersPage.tsx`, a `MarkdownPreview` with no `links` prop,
  * which is what makes it inert).
  *
- * The Replies page's own row carried this before INFRA-450, and that page is gone: `/replies`
+ * The Replies page's own row carried this before POMJU-450, and that page is gone: `/replies`
  * lands on the Inbox, and the Inbox draws a thread row's thread whole with `MarkdownBody` and
  * live links (`features/inbox/ThreadBody.tsx`), so no one-line preview of a reply is left to
  * read. A preview is one control's text, so a reference in it reads as link-styled text with no

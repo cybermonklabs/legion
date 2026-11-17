@@ -1202,7 +1202,7 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 
 // The child of a generation with a session database finds its socket already bound: the proxy is
 // up, and has proven one connection to the instance, before anything the agent runs can ask Oh My
-// Pi for its session (INFRA-271).
+// Pi for its session (POMJU-271).
 func TestAChildFindsItsGenerationsSessionSocketAlreadyBound(t *testing.T) {
 	dialer := &sessionDialer{addr: idleUpstream(t)}
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build})

@@ -96,7 +96,7 @@ func orderingLog() *slog.Logger { return slog.New(slog.DiscardHandler) }
 // in hand before the wait begins: its StartListener answers onConnected in the call itself, so
 // what this names there is a hang guard on a wait that is already over. The catch-up row's wait
 // is a real one, against a real dial and a real LISTEN on a real Postgres, and it hands boot
-// listenHangGuard instead: it was these thirty seconds until dispatch://INFRA-1248, and a
+// listenHangGuard instead: it was these thirty seconds until dispatch://POMJU-1248, and a
 // merge-queue runner whose listener was redialing on pglisten's backoff reached them, which
 // failed that row for its own setup rather than for the catch-up it is about.
 const bootListenWait = 30 * time.Second

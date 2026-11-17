@@ -30,8 +30,8 @@ once before the fix lands" is therefore two pushes, not a local run.
 - Before the red push, read what the red can move. Check the workflow is not in the base's required
   set (`gh api repos/<owner>/<repo>/rules/branches/main`; `Worker Image` is not, so its red moves no
   issue), and that the red lands during implementing, which the daemon's CI-red move never touches.
-  Read the job's `concurrency`. Since 2026-10-27 (INFRA-520, the CI router, and
-  dispatch://INFRA-600) `worker-image.yaml` cancels a pull request's older build when a newer head
+  Read the job's `concurrency`. Since 2026-10-27 (POMJU-520, the CI router, and
+  dispatch://POMJU-600) `worker-image.yaml` cancels a pull request's older build when a newer head
   starts its own run (`cancel-in-progress` on `pull_request`, per PR number; ci.yaml's
   `worker-image` job is the call), whether it waits or runs. So push the fix only after the red run
   has failed in the guard's step and you have recorded its failure: a fix pushed earlier cancels the
@@ -54,7 +54,7 @@ once before the fix lands" is therefore two pushes, not a local run.
 - A fix inside the apt `RUN` rebuilds every layer below it, so the fix push's run is cold and is the
   one whose later steps print; the next head's run reused them and printed `CACHED`
   (docs/solutions/daemon/a-cached-image-layer-s-output-is-in-the-run-that-built-it-cite-both-runs-LEGION-764.md).
-  Since 2026-10-27 (INFRA-520) a pull request's image build writes no cache: only builds on main
+  Since 2026-10-27 (POMJU-520) a pull request's image build writes no cache: only builds on main
   write the Actions cache scope `worker-image`. A later head of the same
   pull request reuses only the layers main's builds cached, so it rebuilds the fix's layers and
   prints the same lines again. Cite the fix run, or the run of the head you rely on.

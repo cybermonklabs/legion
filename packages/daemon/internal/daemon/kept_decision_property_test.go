@@ -2037,7 +2037,7 @@ func (r *keptRun) runRow() {
 // root's catch-ups (record.Store.DropCatchUps) that one row runs sees the lease of each other row
 // as it sees a lane's claim. A lease written after another row of the step has started can commit
 // inside that row's drop, which then deletes a row it read unleased, a schedule no lane makes while
-// its lease is live (dispatch://INFRA-2836). The model picks its rows by next_at alone, without the
+// its lease is live (dispatch://POMJU-2836). The model picks its rows by next_at alone, without the
 // lanes' claim rule (record's outboxClaimable), so it still differs from a lane in three cases: a
 // step can run two rows of one issue's lifecycle lane at once, which outboxLaneFree forbids the
 // lanes; a row whose simulated crash left its lease can run again at a later step while that lease
@@ -3405,7 +3405,7 @@ func keptRefs(decisions []record.ParkedDecision) string {
 // prompted again, which is the one extra telling the invariant accepts (held).
 //
 // One prompt comes from no row at all: the daemon's own delivery of what a relaunch ended, which a
-// claim holding no task is given at its ready (supervise's queueRelaunch, dispatch://INFRA-3276
+// claim holding no task is given at its ready (supervise's queueRelaunch, dispatch://POMJU-3276
 // R3). Its text is the relaunch's sentence alone, so it tells no decision, and the invariant holds
 // it to that: a reference in it is a telling no row accounts for.
 func (r *keptRun) observe() {

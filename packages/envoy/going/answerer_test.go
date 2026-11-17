@@ -30,19 +30,19 @@ const testTokensPerMinute = 300_000
 var (
 	routeHit = going.Hit{
 		Kind:  "issue",
-		ID:    "INFRA-1279",
+		ID:    "POMJU-1279",
 		Title: "The answer route",
-		Href:  "/issues/INFRA-1279",
+		Href:  "/issues/POMJU-1279",
 	}
 	planHit = going.Hit{
 		Kind:  "artifact",
 		ID:    "plan-md",
 		Title: "The plan",
-		Href:  "/issues/INFRA-1279/artifact/plan-md",
+		Href:  "/issues/POMJU-1279/artifact/plan-md",
 	}
 )
 
-const outsideAnswerHref = "/issues/INFRA-9999"
+const outsideAnswerHref = "/issues/POMJU-9999"
 
 // errStreamWriter is the failure a test's stream writer hands back, which is the one failure Run
 // reports to its caller.
@@ -684,9 +684,9 @@ func TestRunGivesAHitPastTheRuneBudgetNoBody(t *testing.T) {
 	for i := range count {
 		hit := going.Hit{
 			Kind:  "issue",
-			ID:    fmt.Sprintf("INFRA-%d", 2000+i),
+			ID:    fmt.Sprintf("POMJU-%d", 2000+i),
 			Title: fmt.Sprintf("the item ranked %d", i),
-			Href:  fmt.Sprintf("/issues/INFRA-%d", 2000+i),
+			Href:  fmt.Sprintf("/issues/POMJU-%d", 2000+i),
 		}
 		search.hits = append(search.hits, hit)
 		body := fmt.Sprintf("%s%d.", marker, i)

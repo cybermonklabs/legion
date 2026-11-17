@@ -103,7 +103,7 @@ test.each([
   expect(body.replace(/\s+/g, " ")).toContain("Run only commands that read.");
 });
 
-// dispatch://INFRA-331: a thermonuclear agent returned `{"verdict":"APPROVE","report":"see
+// dispatch://POMJU-331: a thermonuclear agent returned `{"verdict":"APPROVE","report":"see
 // markdown"}` and no report, and the reviewer answered the security rows itself. No Legion agent
 // or caller defines a `report` field and no Legion overlay sets an output schema, so the rule
 // names the whole result the agent hands back, whatever its shape.

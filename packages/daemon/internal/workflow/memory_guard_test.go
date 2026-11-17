@@ -1,7 +1,7 @@
 package workflow
 
 // A process an issue pod's memory guard ended is told to the role whose process it was, on that
-// role's own topic, and to nobody else (dispatch://INFRA-3557).
+// role's own topic, and to nobody else (dispatch://POMJU-3557).
 
 import (
 	"bytes"

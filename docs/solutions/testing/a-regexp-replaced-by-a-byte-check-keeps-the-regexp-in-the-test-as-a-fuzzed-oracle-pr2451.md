@@ -33,5 +33,5 @@ related_issues:
   and `:37` `FuzzYattrToMarkName` ran 1.04 M inputs with no difference.
 - The tester took the newline guard out of a head export, and the pull request's own tests failed
   on that mutant (the tester's handoff in commit 6ae486da, `testsJudged`).
-- The plan measured `treeOf` 22-26% faster without the regexp, on three LINUX specs (the plan
+- The plan measured `treeOf` 22-26% faster without the regexp, on three HAFJJ specs (the plan
   handoff in commit bb536ecf).

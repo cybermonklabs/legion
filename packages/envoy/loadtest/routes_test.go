@@ -136,7 +136,7 @@ func TestSpecLoopRouteMixParses(t *testing.T) {
 	}
 	if b, err := os.ReadFile(specLoopRouteMixName); err != nil {
 		t.Fatal(err)
-	} else if head := string(b); !strings.Contains(head, "INFRA-988") || !strings.Contains(head, "share of the loop's reads") {
+	} else if head := string(b); !strings.Contains(head, "POMJU-988") || !strings.Contains(head, "share of the loop's reads") {
 		t.Error("the committed file's header names neither the issue nor what its weights are")
 	}
 }

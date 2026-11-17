@@ -98,7 +98,7 @@ func TestTheSessionsOwnOldAgentSubjectIsCountedAndNamedInNoWarning(t *testing.T)
 	}
 	// A registry the listener opened with no counter counts nothing and still names the topic.
 	bare := &Registry{}
-	if warnings := bare.LegacyTopicWarnings("ses_own", []string{"notifications.dispatch.issue.INFRA-12.>"}); len(warnings) != 1 {
+	if warnings := bare.LegacyTopicWarnings("ses_own", []string{"notifications.dispatch.issue.POMJU-12.>"}); len(warnings) != 1 {
 		t.Fatalf("warnings with no counter = %q, want one", warnings)
 	}
 }
@@ -130,7 +130,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeItIsReadIntoAFilter(t *testing.T) {
 	if len(counter.kinds) != 0 {
 		t.Fatalf("the session's own agent subject was counted %q, want nothing", counter.kinds)
 	}
-	(&Registry{}).CountStoredLegacyTopics("ses_stored", []string{"notifications.dispatch.issue.INFRA-12.>"})
+	(&Registry{}).CountStoredLegacyTopics("ses_stored", []string{"notifications.dispatch.issue.POMJU-12.>"})
 }
 
 // A role claimed in the old form, its name alone, is read as that name, counted once
@@ -160,8 +160,8 @@ func TestEachOldFormRoleIsReadAsItsNameAndCounted(t *testing.T) {
 // publishes.
 func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
 	interests := map[string]Interest{
-		"ses_old": {SessionID: "ses_old", MachineID: "m", Topics: []string{"notifications.dispatch.issue.INFRA-12.>", contracts.LegacyAgentSubject("ses_old")}},
-		"ses_new": {SessionID: "ses_new", MachineID: "m", Topics: []string{contracts.DispatchIssueSubject("INFRA", "INFRA-12", ">"), contracts.AgentSubject("INFRA", "ses_new")}},
+		"ses_old": {SessionID: "ses_old", MachineID: "m", Topics: []string{"notifications.dispatch.issue.POMJU-12.>", contracts.LegacyAgentSubject("ses_old")}},
+		"ses_new": {SessionID: "ses_new", MachineID: "m", Topics: []string{contracts.DispatchIssueSubject("POMJU", "POMJU-12", ">"), contracts.AgentSubject("POMJU", "ses_new")}},
 	}
 	r := holding(t, interests)
 	matched := func(interests []Interest) []string {
@@ -173,8 +173,8 @@ func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
 		return sessions
 	}
 	for _, subject := range []string{
-		"notifications.dispatch.issue.INFRA-12.comment.created",
-		contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"),
+		"notifications.dispatch.issue.POMJU-12.comment.created",
+		contracts.DispatchIssueSubject("POMJU", "POMJU-12", "comment.created"),
 	} {
 		if got := matched(r.Match("m", subject)); !slices.Equal(got, []string{"ses_new", "ses_old"}) {
 			t.Errorf("Match(%q) = %q, want both sessions", subject, got)
@@ -192,14 +192,14 @@ func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
 			t.Errorf("Match(%q) = %q, want %s alone", subject, got, want)
 		}
 	}
-	if got := r.Match("m", contracts.AgentSubject("INFRA", "ses_other")); len(got) != 0 {
+	if got := r.Match("m", contracts.AgentSubject("POMJU", "ses_other")); len(got) != 0 {
 		t.Errorf("another session's agent subject matched %v", got)
 	}
 
 	known := NewTopicMatcher()
 	known.Set("ses_old", interests["ses_old"].Topics)
 	var visited []string
-	known.Match(contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"), func(key string) { visited = append(visited, key) })
+	known.Match(contracts.DispatchIssueSubject("POMJU", "POMJU-12", "comment.created"), func(key string) { visited = append(visited, key) })
 	if !slices.Equal(visited, []string{"ses_old"}) {
 		t.Errorf("the known sessions' matcher visited %q for the new form, want ses_old once", visited)
 	}
@@ -212,8 +212,8 @@ func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
 func TestRemovingATopicRemovesEveryFormOfIt(t *testing.T) {
 	const kept = "notifications.github.o.r.>"
 	for _, tc := range []struct{ name, stored, removed string }{
-		{"an issue by its old name", "notifications.dispatch.issue.INFRA.INFRA-12.>", "notifications.dispatch.issue.INFRA-12.>"},
-		{"an issue by its new name", "notifications.dispatch.issue.INFRA-12.>", "notifications.dispatch.issue.INFRA.INFRA-12.>"},
+		{"an issue by its old name", "notifications.dispatch.issue.POMJU.POMJU-12.>", "notifications.dispatch.issue.POMJU-12.>"},
+		{"an issue by its new name", "notifications.dispatch.issue.POMJU-12.>", "notifications.dispatch.issue.POMJU.POMJU-12.>"},
 		{"an agent by its old name", "notifications.agent._.ses_a", "notifications.agent.ses_a"},
 		{"an agent under a project by its old name", "notifications.agent.PRIV.ses_a", "notifications.agent.ses_a"},
 		{"an agent by its new name", "notifications.agent.ses_a", "notifications.agent._.ses_a"},
@@ -266,8 +266,8 @@ func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
 	unmoved := []string{
 		"notifications.github.o.r.>",
 		"notifications.team.deploy-squad",
-		"notifications.dispatch.document.INFRA.spec.>",
-		contracts.DispatchIssueSubject("INFRA", "INFRA-12", ">"),
+		"notifications.dispatch.document.POMJU.spec.>",
+		contracts.DispatchIssueSubject("POMJU", "POMJU-12", ">"),
 	}
 	if warnings := (&Registry{legacySubjects: counter}).LegacyTopicWarnings("ses_r9", unmoved); len(warnings) != 0 || len(counter.kinds) != 0 {
 		t.Fatalf("topics the rename leaves alone were named %q and counted %q, want neither", warnings, counter.kinds)
@@ -285,7 +285,7 @@ func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
 		t.Fatalf("open the second registry: %v", err)
 	}
 	defer reader.StopWatch()
-	topics := append(slices.Clone(unmoved), "notifications.dispatch.issue.INFRA-12.>", contracts.LegacyAgentSubject("ses_r9"))
+	topics := append(slices.Clone(unmoved), "notifications.dispatch.issue.POMJU-12.>", contracts.LegacyAgentSubject("ses_r9"))
 	if _, err := writer.Upsert(Interest{SessionID: "ses_r9", MachineID: "m1"}, topics); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -297,5 +297,5 @@ func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
 	if !slices.Equal(row.Topics, want) {
 		t.Fatalf("stored topics = %q, want %q as written", row.Topics, want)
 	}
-	pollMatch(t, reader, "m1", contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"), 1, 5*time.Second)
+	pollMatch(t, reader, "m1", contracts.DispatchIssueSubject("POMJU", "POMJU-12", "comment.created"), 1, 5*time.Second)
 }

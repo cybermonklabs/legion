@@ -474,7 +474,7 @@ func (s *Service) authorizeSchemaVersion(ctx context.Context, room, token string
 // requestActor is the person a document connection is: the identity service's answer, and nothing
 // else. The socket once took the shared agent token too, with the session named in a header the
 // caller wrote; that was a second, weaker door into Dispatch, and only the browser - a same-origin
-// cookie - ever connected through it (INFRA-264). The cookie proved the login, so the person is
+// cookie - ever connected through it (POMJU-264). The cookie proved the login, so the person is
 // Proven, as the API's cookie caller is.
 func (s *Service) requestActor(r *http.Request) (model.Actor, error) {
 	if s.identity == nil {

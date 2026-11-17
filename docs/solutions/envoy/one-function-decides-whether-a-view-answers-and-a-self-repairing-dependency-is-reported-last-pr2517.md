@@ -26,7 +26,7 @@ predicates, and a gate on the weaker one serves a view that refuses every read. 
 and a view that refuses until its scan is complete is not. Each view's gate is that view's own
 answerability condition, and exactly one function decides it, so what a route refuses and what a
 probe reports cannot drift apart. (The same rule for daemon holds is
-`docs/solutions/daemon/a-hold-is-computed-with-the-check-the-action-that-releases-it-uses-INFRA-252.md`.)
+`docs/solutions/daemon/a-hold-is-computed-with-the-check-the-action-that-releases-it-uses-POMJU-252.md`.)
 
 **Report a self-repairing dependency last, after every check that answers the terminal status.**
 A readiness probe passes on any 2xx, so a `degraded` answer placed before a terminal check hides

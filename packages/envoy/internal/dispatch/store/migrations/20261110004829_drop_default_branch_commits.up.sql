@@ -1,6 +1,6 @@
 -- 20261110004829_drop_default_branch_commits.up.sql
 --
--- INFRA-1700: 20261102122400_default_branch_commits created default_branch_commits as the cache
+-- POMJU-1700: 20261102122400_default_branch_commits created default_branch_commits as the cache
 -- of what Dispatch's GitHub App answered about one commit of one repository: does the
 -- repository's default branch carry it? The answer is read when an issue's results are read, a
 -- yes kept for good and a no re-read after five minutes. 20261107234701_branch_commits holds

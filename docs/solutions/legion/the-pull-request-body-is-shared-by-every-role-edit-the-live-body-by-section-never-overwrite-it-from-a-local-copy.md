@@ -41,7 +41,7 @@ The same holds in the other direction: a tester or reviewer appending its line m
 live body too — the implementer's `CI` line may already name a newer head after a
 conflict-forced rebase.
 
-**Superseded 2026-10-23 (dispatch://INFRA-83):** only the reason is superseded — the implementer's
+**Superseded 2026-10-23 (dispatch://POMJU-83):** only the reason is superseded — the implementer's
 `CI` line naming a newer head after a conflict-forced rebase — because the body carries no `CI:`
 line (`skills/legion-worker/references/pr-body.md`), and no role records a check result for a later
 step to trust: the tester and the reviewer each read CI on GitHub at the head they are judging and

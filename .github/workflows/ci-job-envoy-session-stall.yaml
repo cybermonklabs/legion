@@ -88,20 +88,20 @@ jobs:
       - name: Stall test of claude-envoy
         run: bun test tests/envoy-channel-stall.test.ts
         working-directory: packages/claude-envoy
-      # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
+      # The role takeover smoke (POMJU-404, A5): one line per row of its spec's R8 table, driven
       # with real client processes against a listener and natsd this job already sets Go up for.
       # It needs no model provider and no deployment, so unlike the other smokes in
       # packages/pi-envoy/scripts it runs here.
       - name: Role takeover smoke
         run: bash packages/pi-envoy/scripts/smoke-role-takeover.sh
-      # The design-gate advice over the real CLI and a real Dispatch server (dispatch://INFRA-1727):
+      # The design-gate advice over the real CLI and a real Dispatch server (dispatch://POMJU-1727):
       # the server this suite starts is built from this tree, so what it asserts is the sentence a
       # person reads in a terminal rather than one rendered from a stub.
       - name: Design-gate advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/design-gate-advice.live.test.ts
         working-directory: packages/envoy-client
       # The moved-approval-request advice over the same real CLI and real Dispatch
-      # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
+      # (dispatch://POMJU-3096): it proves the field the server fills on a write that takes an
       # open approval request back from the person is the field the CLI reads and prints.
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts

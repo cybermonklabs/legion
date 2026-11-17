@@ -9,7 +9,7 @@ import (
 )
 
 // EndedWork is the claim's record of what the last let-go of its process ended of the work its
-// agent had running (dispatch://INFRA-3276 R3): when, why in the daemon's own words, whether a
+// agent had running (dispatch://POMJU-3276 R3): when, why in the daemon's own words, whether a
 // turn was cut off and whether that turn was the pending task's, what background work the
 // process's own activity report named, whether the daemon held a report of that process that
 // speaks of its last turn at all, and whether the record has been told. The next process is told
@@ -68,7 +68,7 @@ type EndedWork struct {
 	// cut off before its end has none and the newest report is the turn before's, and a stale
 	// plugin's report is refused — so what background work that turn started is unknown, as is all
 	// of the process's where it left no report at all, which is said rather than read as nothing
-	// (dispatch://INFRA-3276 R3, "unknown is not silence").
+	// (dispatch://POMJU-3276 R3, "unknown is not silence").
 	Reported bool `json:"reported"`
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
 	// confirmation told it, as confirm states, or "" for an old session's record the abandonment
@@ -126,7 +126,7 @@ type ActivityReport struct {
 // in its phase), the controller keeper's retry of a retired controller (daemon's
 // controllerKeeper.keep, RequestRetry) and the workflow's start of a retired worker's phase
 // (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
-// ended (dispatch://INFRA-3276 R3).
+// ended (dispatch://POMJU-3276 R3).
 //
 // The cause is read into an agent's prompt as it stands (RelaunchSentence), so every word of it
 // that is not the daemon's own — the runtime's account of a death, the failure sentence that can

@@ -321,7 +321,7 @@ func TestTwoProcessesListEveryEditorOnExactlyOneVersion(t *testing.T) {
 }
 
 // twoProcessRegressionSeeds are seeds TestTwoProcessesListEveryEditorOnExactlyOneVersion drew that
-// failed on every replay, kept so each run plays them again (INFRA-218). In both, one process's
+// failed on every replay, kept so each run plays them again (POMJU-218). In both, one process's
 // room stood behind the durable head after the other process wrote the document, and that room's
 // settlement was refused there three times in a row: the third refusal failed the room, and the
 // process's next named version, made before the failure's eviction had run, was refused with it.

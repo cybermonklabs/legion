@@ -17,7 +17,7 @@ related_issues:
 
 # A package that moves to a router job of its own takes its services and env with it
 
-Extends docs/solutions/testing/the-envoy-brokers-postgres-tests-skip-without-broker-test-database-url-so-a-proof-counts-zero-skips-INFRA-379.md.
+Extends docs/solutions/testing/the-envoy-brokers-postgres-tests-skip-without-broker-test-database-url-so-a-proof-counts-zero-skips-POMJU-379.md.
 
 `docs/solutions/github/join-a-job-to-the-ci-router.md` lists six places a job joins the router.
 A job that takes a package away from another job has a seventh: the `services:` and `env:` that

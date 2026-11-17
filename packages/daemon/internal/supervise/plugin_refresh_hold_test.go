@@ -1,7 +1,7 @@
 package supervise
 
 // The task a stale claim is owed waits for the process the refresh lane's relaunch starts
-// (sendPending's staleRefusesClaim, dispatch://INFRA-2712 R2). The window these tests drive is
+// (sendPending's staleRefusesClaim, dispatch://POMJU-2712 R2). The window these tests drive is
 // the one a plugin wave leaves the whole fleet in: every live claim records the contract of the
 // daemon before this one, the gate lets the lane relaunch only K of them a minute, and until a
 // claim's own relaunch has run the daemon answers that claim's every `legion` route 409
@@ -76,7 +76,7 @@ func TestAStaleClaimHoldsItsTaskUntilItsReplacementRegistersOnThisDaemonsContrac
 	}
 	// The stale process left no report the daemon took (a stale plugin's report is refused), so
 	// the relaunch recorded its background work as unknown, and the task carries that sentence in
-	// front of it (dispatch://INFRA-3276 R3).
+	// front of it (dispatch://POMJU-3276 R3).
 	ended := h.claim().EndedWork
 	if ended.Cause != endStalePlugin || ended.Reported || !ended.Tells() {
 		t.Fatalf("the relaunch recorded %+v, want an untold, unreported end of the stale plugin's process", ended)

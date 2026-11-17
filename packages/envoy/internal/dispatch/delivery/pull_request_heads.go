@@ -639,9 +639,9 @@ const (
 // head repository is one such row (recordPullRequestHead attributes nobody, since it cannot
 // tell this repository's branch from a fork's), and so is every pull request merged under an
 // older attribution rule that credited nobody — a title naming another repository's issue first
-// was the whole of INFRA-1240.
+// was the whole of POMJU-1240.
 //
-// The rule half of the arm takes a row an older rule credited too, which is R8 of INFRA-1522:
+// The rule half of the arm takes a row an older rule credited too, which is R8 of POMJU-1522:
 // rule 2 ranks the head branch and the two links above the title and the body, so a child's
 // pull request that rule 1 credited to the parent its title names belongs to the child, and
 // only a read that judges the row again moves it. Under rule 1 that half was held to the rows
@@ -670,7 +670,7 @@ const (
 // The rule half is read in a pass of its own, bounded by RejudgedHeadsPerPass, and the rest of
 // limit goes to the rows a reader meets now: the open rows, whose head decides a live result,
 // and the merged rows no read ever reached. Raising the rule offers every merged row of the
-// deployment once, which on a production-shaped table measured for INFRA-1522 is 12,000 rows,
+// deployment once, which on a production-shaped table measured for POMJU-1522 is 12,000 rows,
 // about 12,000 GitHub reads and 2,400 an hour against an installation's 5,000 — half a
 // deployment's budget for five hours, for a backfill nothing live waits on. At 50 a pass it is
 // about 600 an hour and about a day, and a table of a few hundred merged rows is still a few

@@ -387,7 +387,7 @@ type launch struct {
 
 // keptPod is what a live pod a launch keeps was built with, for the one role that launch starts in
 // it: the facets of the pod the role's own start command names, which a pod cannot be changed to
-// carry (INFRA-484). A pod that has drifted from the configuration is replaced by an update round,
+// carry (POMJU-484). A pod that has drifted from the configuration is replaced by an update round,
 // which first asks every role in it to push its work and answer, and not by the launch that
 // finds it; so the launch starts its role as that pod was built, and the role runs degraded —
 // without the secrets broker, without an overlay added since — until the round replaces the pod.
@@ -439,7 +439,7 @@ type keptPod struct {
 // itself, which carries the configuration as it now reads.
 //
 // Everything a generation's broker reaches reads this one answer, so its argv and its environment
-// can never disagree again (INFRA-484): the shim's three agent-secrets flags (launcherCommand)
+// can never disagree again (POMJU-484): the shim's three agent-secrets flags (launcherCommand)
 // and the AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR an agent reads to decide it holds a broker
 // at all (mainEnvironment), both through launch.enrolls; the record of what the generation was
 // handed (handedAddresses, recordFor, from the launch's own answer); and the comparison an
@@ -500,7 +500,7 @@ func (l launch) trades(r *Runtime) bool {
 // A pod built before an arm's mount was added holds none of that arm's files, so a unit recorded
 // in it starts its role without them — in neither arm, until the update round replaces the pod —
 // since Oh My Pi refuses to start on an entry that is not there and a role that never starts
-// never answers that round (INFRA-484). Each such drop is logged once, at the launch that makes
+// never answers that round (POMJU-484). Each such drop is logged once, at the launch that makes
 // it, naming the issue, the role, the experiment and the arm.
 //
 // carried are the arms the launch runs in: each arm of l.spec.Variants, in its order, of which
@@ -567,7 +567,7 @@ func withVariantOverlays(own, variants []string) []string {
 // (sessionDSNFile). Oh My Pi refuses to start on a URL file it cannot read, so a role of a kept
 // pod told the configuration's store — a key the pod's providers volume does not project, a
 // proxy its launcher does not serve — would never register and never answer the round that is to
-// replace that pod (INFRA-484). What it costs is that such a role writes its session into the
+// replace that pod (POMJU-484). What it costs is that such a role writes its session into the
 // store its pod has until the round replaces the pod, which a role that never started could not
 // do at all.
 func (l launch) sessionStore(r *Runtime) ompsessions.StoreKind {
@@ -690,7 +690,7 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 
 // SessionOnVolume is where a recorded session file sits on a tree or controller volume mounted at
 // root: an agent's sessions directory was the volume's SessionsSubPath, so a session's path below
-// the one is its path below the other. No pod keeps sessions on a volume any more (INFRA-80), so
+// the one is its path below the other. No pod keeps sessions on a volume any more (POMJU-80), so
 // its one caller is `legion sessions import --tree-volume`, the copy of a legion-v10.0.0
 // deployment's session files into the session table. It refuses a path no pod ever kept a session
 // at, which names no place on such a volume.
@@ -808,7 +808,7 @@ func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 // sandboxManifest is the Sandbox a relaunch creates when none exists: Suspended, so no pod starts
 // before the claim's Secret is written, with whatever volume its kind has the Sandbox own
 // (podKind.disk). An issue's Sandbox owns none: its pod's disk is a generic ephemeral
-// volume the pod itself owns, created with the pod and deleted with it (INFRA-80), so nothing of
+// volume the pod itself owns, created with the pod and deleted with it (POMJU-80), so nothing of
 // an issue survives the pod that did it. The controller's Sandbox still owns its one `issue`
 // template, so the working root its launcher runs in outlives the pod that left it. Its pod
 // template never runs: the relaunch's Running patch replaces it with the template the launch
@@ -1216,7 +1216,7 @@ const settingsOverlays = "PI_CONFIG_FILES"
 // The overlays are the launch's, not the configuration's, so a role started in a live pod the
 // launch keeps is told only the files that pod holds (keptPod): Oh My Pi refuses to start on an
 // entry that is not there, and a role of a drifted pod that never starts never answers the update
-// round that is to replace that pod (INFRA-484). A role whose kept pod holds none of its overlays
+// round that is to replace that pod (POMJU-484). A role whose kept pod holds none of its overlays
 // is told operatorEnv unchanged, exactly as a role with none configured is, and runs without them
 // until the round replaces its pod.
 func (r *Runtime) roleOperatorEnv(l launch) []corev1.EnvVar {
@@ -1365,7 +1365,7 @@ func roleStateHome(role claim.Role) string {
 // transcripts, its plugin data and the rest of Claude Code's own state. It is the role's own
 // directory of the issue's scratch (roleStateHome), so it is writable by the pod's uid and gid
 // 1000 and is no other role's; like the rest of the pod's disk it lives and dies with the pod
-// (INFRA-80). Nothing in the image makes it: the generation's start script does, before the agent
+// (POMJU-80). Nothing in the image makes it: the generation's start script does, before the agent
 // execs (startScript).
 func claudeConfigDir(role claim.Role) string {
 	return roleStateHome(role) + "/claude"
@@ -1447,7 +1447,7 @@ func fetchEnvironment(l launch) []corev1.EnvVar {
 // directory on the issue's disk, so the git and jj it resolves from PATH are never ones an agent
 // put there; it carries no tool-path variables, and it is never pointed at the provisioning token.
 // It carries no role's session path either: a missing transcript must not prevent sibling
-// launchers from starting, and no session lives on the disk at all (INFRA-80). It expects nothing
+// launchers from starting, and no session lives on the disk at all (POMJU-80). It expects nothing
 // of the disk: a pod's disk is created with the pod and empty, so every provision is the first.
 // Nothing here sizes a wait on another pod: each issue pod provisions its own clone on its own
 // disk, so no two provisions share a repository.
@@ -1527,7 +1527,7 @@ func (r *Runtime) LaunchBound() time.Duration {
 // the generation runs in, which is the configuration's store for a launch that builds the pod and
 // the kept pod's own otherwise (launch.sessionStore). Oh My Pi refuses to start on an unreadable
 // URL file, so a generation told a file its pod does not carry never starts, never registers and
-// never answers the round that is to replace that pod (INFRA-484); a pod created before the store
+// never answers the round that is to replace that pod (POMJU-484); a pod created before the store
 // was configured carries no URL file at all, and its generation is told neither variable rather
 // than one it cannot read, until the round replaces the pod (movedSessionStore, keptPod.store).
 // None of them repeats another: the runtime refuses a spec naming one of its own (runtimeOwned),
@@ -1655,7 +1655,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// was configured projects no URL file, and a role told one it cannot read would refuse to
 	// start, never register and never answer the round that is to replace that pod — so it is told
 	// neither and keeps its session as a file on the pod's disk until the round replaces the pod
-	// (INFRA-484, keptPod.store).
+	// (POMJU-484, keptPod.store).
 	if store := l.sessionStore(r); store.InDatabase() {
 		add(ompsessions.StorageVariable, ompsessions.SQLStorage)
 		add(ompsessions.DSNFileVariable, r.sessionDSNFile(l))

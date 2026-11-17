@@ -25,7 +25,7 @@ import (
 // The simulated sessions: on NATS, each subscribes its relay subject, as the pi plugin does
 // before it registers (relay.go); on the listener, each registers, asks for consumer delivery and
 // sends its heartbeat. It subscribes nothing else: a session is delivered to by the relay of its
-// own consumer alone (INFRA-771), so a registration the listener can give no consumer is refused
+// own consumer alone (POMJU-771), so a registration the listener can give no consumer is refused
 // and counted an error, and a core subscription here would credit such a session with deliveries
 // no plugin receives.
 

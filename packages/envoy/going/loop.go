@@ -8,10 +8,10 @@ import (
 
 // This file is the seam the shared model loop replaces. The loop that calls a model, hands a tool
 // call to the tool and calls the model again inside the run's bounds is landing as
-// github.com/sjawhar/envoy/agentloop (dispatch://INFRA-1311), which every caller of a model in
+// github.com/sjawhar/envoy/agentloop (dispatch://POMJU-1311), which every caller of a model in
 // this tree will share; this route needs that loop before it exists, so it assembles the calls
 // here and nowhere else, in the names the agreed interface
-// (dispatch://INFRA-1311/artifact/agentloop-interface-md) gives them.
+// (dispatch://POMJU-1311/artifact/agentloop-interface-md) gives them.
 //
 // What is mirrored, so the swap is a replacement and not a redesign: loopRequest's System, Input,
 // Tools and Bounds are agentloop.Request's own fields, each tool carries its own Run closure
@@ -24,7 +24,7 @@ import (
 //
 // The swap is: replace runLoop with agentloop.Run, convert this package's Message and ToolCall to
 // agentloop's Message, Block and ToolCall, and give agentloop an Endpoint in place of the Client.
-// It needs Go 1.27.3 (dispatch://INFRA-1312) and agentloop on main first, which is why nothing
+// It needs Go 1.27.3 (dispatch://POMJU-1312) and agentloop on main first, which is why nothing
 // else in this package assembles a model call.
 
 // loopFault names why a run ended with no answer, in agentloop.Fault's own words. The route maps

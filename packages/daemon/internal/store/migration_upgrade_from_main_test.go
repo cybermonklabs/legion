@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
-// thisBranchsMigrations are the versions this branch adds (dispatch://INFRA-714), which main has
+// thisBranchsMigrations are the versions this branch adds (dispatch://POMJU-714), which main has
 // not recorded; main carries every other version of the embedded set and nothing of its own beyond
 // mainsNewestMigration. Store.apply asks each migration whether its own version is recorded, so an
 // upgrade of a database main migrated applies exactly these, in version order, over main's rows —
@@ -17,7 +17,7 @@ import (
 // database main migrated can carry a hook-prompt row the constraint would otherwise refuse — and
 // after both the head-arrival column and the drop that takes it away again (20261109130413),
 // which leaves the table as main has it, the resume's own anchor (20261111181500), and the pull
-// request's read stamp (20261112070503), which dispatch://INFRA-3027 adds on top of this branch
+// request's read stamp (20261112070503), which dispatch://POMJU-3027 adds on top of this branch
 // and which a database the main before this branch migrated lacks as surely as this branch's own,
 // so the upgrade applies it after them. The nine versions of main's above the claim-death
 // charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
@@ -29,39 +29,39 @@ import (
 // main's own and are applied as main's run applied them. Every version of this branch's but
 // thirteen stands below main's newest: a migration's version is a timestamp rather than a place in
 // a line, and the thirteen above it are the phase entry's own (20261111225552,
-// dispatch://INFRA-2800), which this branch wrote after main's claim-failure cause, and the twelve
+// dispatch://POMJU-2800), which this branch wrote after main's claim-failure cause, and the twelve
 // the next paragraph names.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
 // above main's newest is this branch's and has to be named here. That holds for a change built on
-// this one too: INFRA-3036's 20261111214351, the mark of a slot released for a wait, stands above
+// this one too: POMJU-3036's 20261111214351, the mark of a slot released for a wait, stands above
 // main's newest and below the phase entry's, and a database main migrated has not recorded it
-// either, so the upgrade applies it with the rest. dispatch://INFRA-3219's claim leak-check cause
+// either, so the upgrade applies it with the rest. dispatch://POMJU-3219's claim leak-check cause
 // (20261112180548), which came after, is above main's newest too, and above the phase entry's as
 // well, so a database main migrated takes it in the same upgrade, after the phase entry, and it is
-// named here with the rest, as is dispatch://INFRA-3027's pull request read stamp (20261112070503)
-// for the same reason. So are dispatch://INFRA-2981's kind list with the update ask
+// named here with the rest, as is dispatch://POMJU-3027's pull request read stamp (20261112070503)
+// for the same reason. So are dispatch://POMJU-2981's kind list with the update ask
 // (20261113082214) and its drop of the claim's two update answer marks (20261113110610),
-// dispatch://INFRA-3276's record of what a relaunch ended (20261113082415), and
-// dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
+// dispatch://POMJU-3276's record of what a relaunch ended (20261113082415), and
+// dispatch://POMJU-3274's kind list with the merge-queue read and removal (20261114031356), which
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list. The
 // last of them is the last word of outbox_kind_check: the upgrade applies it after 20261029120800
 // has deleted main's merge-lane rows, and it names every other kind main's daemon writes
 // (mainsOutboxKinds), with update_ask and the two merge-queue kinds besides, which main's daemon
-// never writes. And so is dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512),
-// which stands between INFRA-2981's two and adds one column beside the phase entry's, true on
+// never writes. And so is dispatch://POMJU-3146's `phases.entry_moved_back` (20261113090512),
+// which stands between POMJU-2981's two and adds one column beside the phase entry's, true on
 // every row it finds and false by default after, and so needs no row of its own here
 // (migration_20261113090512_test.go reads both). Store.Migrate applies every embedded migration a
-// database has not recorded, so a database that took INFRA-2981's two before this one takes it
+// database has not recorded, so a database that took POMJU-2981's two before this one takes it
 // in its next upgrade all the same.
-// dispatch://INFRA-2614's architect stall marks (20261113181500), its architect entry upgrade
+// dispatch://POMJU-2614's architect stall marks (20261113181500), its architect entry upgrade
 // (20261113182000), its claim handshake (20261114020537) and its phase entry's mark that a task is
 // sent again as written (20261114061900) are named here too: an upgrade of a database main
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
-// cybermonklabs/legion#3575's experiment assignments (20261111045636, dispatch://INFRA-2566) are
+// cybermonklabs/legion#3575's experiment assignments (20261111045636, dispatch://POMJU-2566) are
 // named here as well, though that version stands below main's newest: the migration was written
 // after main recorded its newest, so a database main migrated has not recorded it, and the loop
 // below, which holds this list only to the versions above main's newest, would otherwise apply it
@@ -83,11 +83,11 @@ var thisBranchsMigrations = []int{
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
 // failure. Every embedded version above it is named in thisBranchsMigrations: main's newest came in
-// above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and above it stand
-// INFRA-3036's 20261111214351, the phase entry's 20261111225552, dispatch://INFRA-3027's
-// 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
-// and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
-// 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
+// above dispatch://POMJU-714's own at the forward merge of 2026-11-12, and above it stand
+// POMJU-3036's 20261111214351, the phase entry's 20261111225552, dispatch://POMJU-3027's
+// 20261112070503, dispatch://POMJU-3219's 20261112180548, dispatch://POMJU-2981's 20261113082214
+// and 20261113110610, dispatch://POMJU-3276's 20261113082415, dispatch://POMJU-3146's
+// 20261113090512, dispatch://POMJU-3274's 20261114031356, dispatch://POMJU-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the role-holders
 // publication's 20261116165926, which is why the loop below holds the list rather than counting
 // it, so that a version added above any of them is named here rather than read as main's.

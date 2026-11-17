@@ -9,7 +9,7 @@ import (
 )
 
 // RelaunchSentence is what a claim's next process is told of what the last let-go of its process
-// ended (EndedWork, dispatch://INFRA-3276 R3), where the sentence stands alone: the delivery of the
+// ended (EndedWork, dispatch://POMJU-3276 R3), where the sentence stands alone: the delivery of the
 // daemon's own that a claim holding no task is given at its ready (queueRelaunch), and a root
 // architect's catch-up, which the workflow is handed through the ready's report
 // (intake.ClaimReady.Relaunch, workflow's QueueCatchUp). In front of a task the same record is told
@@ -52,7 +52,7 @@ func RelaunchSentence(ended EndedWork) string { return relaunchSentence(ended, f
 //     turn started is unknown, and unknown is said, never read as nothing;
 //   - that no result of that work will come, and that the transcript does not say so, since the
 //     resumed session shows neither a lost tool call nor a lost subagent as missing
-//     (dispatch://INFRA-714 R6);
+//     (dispatch://POMJU-714 R6);
 //   - what to do: check what the work did before doing it again, and for a task, then continue it.
 //
 // The two statements the sentence of an interrupted task made before this record existed — the
@@ -216,7 +216,7 @@ func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relau
 // that carries the sentence of its untold record alone (RelaunchSentence), so the next prompted
 // turn of the new process reads what the last one ended at once, whatever the role: a root
 // architect's goal-red-team reading that died while it held nothing is the measured case
-// (dispatch://INFRA-3276 R3). A claim that holds a delivery needs none: its task carries the
+// (dispatch://POMJU-3276 R3). A claim that holds a delivery needs none: its task carries the
 // sentence in front of it (Delivery.message).
 //
 // The delivery has no phase, no run, no entry and no look, so nothing holds it back

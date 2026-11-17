@@ -35,7 +35,7 @@ related_issues:
 ## Evidence
 
 sjawhar/legion#2620 added a ServiceAccount term to `relaunch`'s `replace` expression in
-`packages/daemon/internal/runtime/sandbox/relaunch.go`. sjawhar/legion#2538 (dispatch://INFRA-484)
+`packages/daemon/internal/runtime/sandbox/relaunch.go`. sjawhar/legion#2538 (dispatch://POMJU-484)
 rewrites that whole expression and touches `relaunch_test.go`, `one_container_test.go`,
 `shared_pod_test.go`, `busy_test.go` and `watch_test.go`, so a term added to today's expression
 could disappear in the merge with nothing failing.
@@ -54,7 +54,7 @@ annotation, normalized `""` → `default` on both sides: a Sandbox stored before
 existed carries none, and the round then falls back to comparing the image alone, which is exactly
 the fleet a ServiceAccount migration has to move. The controller's pod is not round-covered, so
 the term must also stay in `relaunch`'s own decision, outside the plugin-install guard. That was
-written in `.legion/INFRA-934/plan.json`, the committed plan handoff of the day, which retro
+written in `.legion/POMJU-934/plan.json`, the committed plan handoff of the day, which retro
 removed before READY, which is why it is restated here. sjawhar/legion#2354 has since made a
 handoff a Dispatch record, so it outlives the merge — on this issue, where the other branch's
 worker still never looks.

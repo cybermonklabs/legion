@@ -2,7 +2,7 @@ import { lastCustomEntry } from "./custom-entry";
 import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
 
 /**
- * The phase-stall check (LEGION-208 Stage 4b, task 4b.15; made endless by INFRA-220). A phase
+ * The phase-stall check (LEGION-208 Stage 4b, task 4b.15; made endless by POMJU-220). A phase
  * worker whose turn ends with its phase still open, without the `legion` tool's `handoff_complete`
  * having succeeded since the daemon's last assignment, would otherwise sit idle while nothing wakes
  * anyone: in Stage 3 at 1ee62d31 the round-2 implementer wrote its final `legion handoff complete`
@@ -34,7 +34,7 @@ import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
  *   arrives as the daemon's own prompt, which is an `assignment` and opens the phase again. A
  *   reminder steered into this wait would instead start a turn of work the replacement throws
  *   away, and before the round's bound a turn in progress holds that replacement back
- *   (INFRA-484).
+ *   (POMJU-484).
  * The reminding never stops where a reminder is the worker's only wake: one that changes nothing
  * is followed by another. */
 export type PhaseStall = "closed" | "open" | "waiting" | "awaiting-update";
@@ -52,7 +52,7 @@ export type PhaseStallInput =
   | { readonly kind: "inbound-event" }
   | { readonly kind: "phase-closed" }
   /** The `legion` tool's `ready_for_update` returned without throwing: the worker has pushed
-   * what it wants kept and answered the daemon's update message on its pod (INFRA-484). */
+   * what it wants kept and answered the daemon's update message on its pod (POMJU-484). */
   | { readonly kind: "update-answered" }
   /** The settling assistant message ran at least one real tool call (`assistantRanTool`). */
   | { readonly kind: "tool-call" }
@@ -154,7 +154,7 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
       // The provider, not the worker, ended this turn: nothing was read and nothing was said, so
       // the count stands where the last real turn left it and the settling itself earns no
       // reminder. Reminding such a session at once only buys another refusal, which is what left
-      // the implementer of dispatch://INFRA-264 reminded for ever; the runner arms a delayed one
+      // the implementer of dispatch://POMJU-264 reminded for ever; the runner arms a delayed one
       // instead, by which time the daemon — which counts these turns over
       // `POST /legion/v1/claims/turn-outcome` — has failed the claim if the provider refused it
       // out of its budget, and a failed claim is reminded of nothing.
@@ -233,7 +233,7 @@ export function assistantText(message: unknown): string {
 
 /** Whether a settled assistant message ran at least one real tool call: its `content` holds a
  * tool-call block. The plugin reads this from the host's `message_end`, which is where a settled
- * message is: the `tool_call` handler it registers for the stall watch (INFRA-1274) records one
+ * message is: the `tool_call` handler it registers for the stall watch (POMJU-1274) records one
  * call's arguments and returns, and says nothing about whether the turn that call belongs to
  * settled. Neither handler blocks or shapes a call the worker makes.
  *

@@ -2,7 +2,7 @@
 // decides - a pool's size, a bound, a margin - is usually written again in a guide or an
 // architecture document, and nothing holds the two together: the constant is raised, every test
 // stays green because no test reads a sentence, and the number a person reads is left behind.
-// dispatch://INFRA-558 met that four times in one night, in three shapes (digits in two files and
+// dispatch://POMJU-558 met that four times in one night, in three shapes (digits in two files and
 // a word in a third), each found by a person reading rather than by a row.
 //
 // A caller registers its own constants and documents and gets one row that fails when a sentence

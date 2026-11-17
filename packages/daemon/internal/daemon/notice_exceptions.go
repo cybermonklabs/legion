@@ -30,7 +30,7 @@ import (
 // (packages/envoy/cmd/listener/delivery.go, publishDeliveryException). A role topic is outside the
 // notification stream, so the report goes over core NATS and reaches only a subscriber connected
 // when it is sent. The role topic has two forms while every reader takes both
-// (dispatch://INFRA-3862), the role alone and its project first, so the subscription takes every
+// (dispatch://POMJU-3862), the role alone and its project first, so the subscription takes every
 // name under the role lanes' prefix, which the daemon's grant names whole
 // (daemonpermissions.Grant), and exceptionNotice reads either form.
 const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + ">"
@@ -97,7 +97,7 @@ func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats
 // (`delivery_failed`), the holder lapsed between the two (`no_holder`), or the session the
 // listener forwarded to did not confirm it in time (`receipt_timeout`). A listener of this
 // release answers no `receipt_timeout`: no session confirms a forward any more, and every
-// forward the stream did not store is `delivery_failed` (dispatch://INFRA-771). The reason is
+// forward the stream did not store is `delivery_failed` (dispatch://POMJU-771). The reason is
 // still handled here because a listener of the deployed, older build raises it until the rollout
 // finishes. Such a listener sends a
 // role message on its role lane, which forwards it once and reports a failure on
@@ -180,7 +180,7 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // is kept whole: no copy is spent and no slot of the re-hold schedule with it, and the row waits
 // (wait.ErrWaiting), tried again on the outbox's backoff until the session's heartbeats land,
 // which is what reaches a session stalled under box load once it answers again
-// (dispatch://INFRA-392). That answer is logged as the wait it is, naming the holder and the
+// (dispatch://POMJU-392). That answer is logged as the wait it is, naming the holder and the
 // state the listener reported it in: a session that will answer for itself is no failure of the
 // row's, so it costs no error line per attempt, where a publish that did fail still costs one.
 // A role no session holds is held for its architect while that architect's claim can hold it
@@ -274,7 +274,7 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // architect's role topic, the listener named reason, and recipient is the session it forwarded to
 // ("" when it named none). It runs from a role-lane exception of an earlier listener (rehold) and
 // from the 504 `receipt_timeout` answer of a confirmed publish route of a listener older than
-// dispatch://INFRA-771, which this daemon still handles until that rollout finishes (a listener
+// dispatch://POMJU-771, which this daemon still handles until that rollout finishes (a listener
 // of this release answers `delivery_failed` instead). A session that
 // stopped running but is still registered produced a receipt_timeout there: the listener
 // forwarded to it

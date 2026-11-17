@@ -35,7 +35,7 @@ func broadcastCount(t *testing.T, handler http.Handler) int {
 	return len(decodeBody[[]json.RawMessage](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts", nil, "alice")))
 }
 
-// LEGION-446, INFRA-258. A repeat of one send under its Idempotency-Key - a double press, a
+// LEGION-446, POMJU-258. A repeat of one send under its Idempotency-Key - a double press, a
 // proxy's retry or the Sends strip's Retry - is answered the broadcast the first request made,
 // with the first answer's exclusions, so every recipient is handed the message once rather than
 // twice.

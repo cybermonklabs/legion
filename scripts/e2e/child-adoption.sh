@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The live proof that a labelled root still queued in admission, which a person then makes a child
-# of a live tree, joins that tree and runs there (INFRA-252): admission's sweep adopts it once its
+# of a live tree, joins that tree and runs there (POMJU-252): admission's sweep adopts it once its
 # recorded parent is in the tree, an architect's release_children adopts it from todo, from backlog
-# and from the state INFRA-214 reached before it answers, a todo root under an unreleased child of
+# and from the state POMJU-214 reached before it answers, a todo root under an unreleased child of
 # the tree waits in no line, past a root of its own parked on its chain too, and a child recorded in
 # another tree, the child of a root held under an unreleased child among them, is refused by name.
 # The whole daemon is booted by the function `legion start` calls, over a real PostgreSQL and a

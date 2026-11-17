@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives what `dispatch doc-edit`'s `replace` does with a `with` that names blocks
-# (dispatch://INFRA-1520), end to end through the real `dispatch` command against a running
+# (dispatch://POMJU-1520), end to end through the real `dispatch` command against a running
 # Dispatch, as an agent runs it: `with` is read by the block parser an `insert`'s `markdown` is
 # read by, and the blocks it names are written over the match, fitted where the match sits; a
 # `with` of one paragraph keeps the inline behaviour it always had; and every `doc-edit` answers

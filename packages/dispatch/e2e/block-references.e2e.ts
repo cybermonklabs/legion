@@ -237,7 +237,7 @@ test("a link to a block of a comment stops showing the block's text once its aut
 // card and the link stop showing the block's text without a reload, reading as a freshly loaded
 // page reads the same link (no text of a block the document no longer holds). The link then
 // reads the address its author wrote, where it read the short form `CORE-1 spec block` before
-// INFRA-869, whose R4 says: "A reference whose target is missing shows its address as written."
+// POMJU-869, whose R4 says: "A reference whose target is missing shows its address as written."
 // The hover card is not the reference's own words: it heads with the route's short form, as it
 // does for every target it has not read yet, so the two read differently on purpose.
 // SLOW(>=2s): the second load is the claim - a freshly loaded page reads the same link the same

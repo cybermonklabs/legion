@@ -46,7 +46,7 @@ const (
 	// second sized for a large one drift apart and nobody re-sizes either as the fleet grows.
 	//
 	// Sixty seconds, from a measurement rather than from a failure. Read on 2026-11-12 from an
-	// issue pod of the INFRA deployment (the test handoff of dispatch://INFRA-2554): six reads
+	// issue pod of the POMJU deployment (the test handoff of dispatch://POMJU-2554): six reads
 	// of `GET /legion/v1/state` of that daemon, 2368 issues and 610 of them waiting, answered in
 	// 7.05 s, 7.06 s and 7.30 s to the first byte and 7.07 s, 7.08 s and 7.32 s for the whole
 	// 4.0 MB body. That is a dated reading of one deployment and no property of the daemon: the
@@ -1309,12 +1309,12 @@ type entryBehind struct {
 // this reads no arm of its own.
 //
 // A root is named for the arms alone, whatever role works the phase it stands in
-// (dispatch://INFRA-2614, R6): every root reads as behind for the moments between a transition
+// (dispatch://POMJU-2614, R6): every root reads as behind for the moments between a transition
 // and its delivery, so the difference alone would name a healthy root at every read. A root is an
 // issue whose tree is its own key (api.Issue.Tree, claim.IsTreeRoot), and the numbers it carries
 // past its architect's phases are its phase worker's, which the line names for no root. The
 // numbers are named for the role a phase worker works on any other issue, which is
-// dispatch://INFRA-2800's line; a role of the architect's, a child at admitted among them, which
+// dispatch://POMJU-2800's line; a role of the architect's, a child at admitted among them, which
 // phase.RoleFor names the architect's phase, is named for nothing. An issue whose current phase
 // names no role at all carries neither number and is never named for them: the projection writes
 // them only where phase.RoleFor names a role, and that is the role this reads back for the line.
@@ -1402,7 +1402,7 @@ func wakesWaitingSummary(wakes []api.WakeWaiting) string {
 
 // strandedSuspenders is who suspended each stranded claim, which the state body does not carry:
 // every plugin parses that body with the schema of its own contract, so a key added to it refuses
-// the whole state in a session whose plugin predates INFRA-1048 and that the daemon has not
+// the whole state in a session whose plugin predates POMJU-1048 and that the daemon has not
 // relaunched, and is dropped by every plugin after it (api.StrandedClaim). The
 // operator claim routes serve it, and this reads them with the bearer --operator-token-file
 // names, on the daemon op already names. Without that flag, and when the daemon refuses the

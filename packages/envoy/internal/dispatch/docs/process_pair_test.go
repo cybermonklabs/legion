@@ -50,7 +50,7 @@ func newProcessPair(t *testing.T) processPair {
 // tests over the pair check is what an answer holds and what a write does with it, and on a loaded
 // machine an answer can take longer than that latency budget to cross Postgres twice, which
 // failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no answer at all
-// (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget itself.
+// (dispatch://POMJU-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget itself.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	t.Helper()
 	database := storetest.Open(t)

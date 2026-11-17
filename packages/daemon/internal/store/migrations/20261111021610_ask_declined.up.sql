@@ -1,6 +1,6 @@
 -- 20261111021610_ask_declined.up.sql -- a person may decline to answer an ask, and the daemon
 -- keeps that decline on the ask's mirror row so it can tell the root's architect so, in Dispatch's
--- own words (INFRA-1282).
+-- own words (POMJU-1282).
 --
 -- Dispatch closes a question nobody will answer with the resolution kind `declined`, whose payload
 -- carries the person's note apart from the four sentences Dispatch writes for the asking agent

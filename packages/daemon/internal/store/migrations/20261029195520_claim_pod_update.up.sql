@@ -1,4 +1,4 @@
--- 20261029195520_claim_pod_update.up.sql — the update round each claim is in (INFRA-484), which
+-- 20261029195520_claim_pod_update.up.sql — the update round each claim is in (POMJU-484), which
 -- lets a pod whose configuration has drifted be replaced only after the work on it is pushed,
 -- rather than the moment the drift is found.
 --

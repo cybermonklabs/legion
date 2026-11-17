@@ -4,7 +4,7 @@
 # caller names, driving the image's wrappers, its `legion leak-check`, the gitleaks engine linked
 # into that binary and the rule file embedded in it
 # (`packages/daemon/internal/leakguard/private-names.toml`). It is check k1 of
-# dispatch://INFRA-1527 and, for the two shared-check failures at k1's own call sites, part of k7;
+# dispatch://POMJU-1527 and, for the two shared-check failures at k1's own call sites, part of k7;
 # the tester runs it before the merge and the production check runs it again after the rollout, so
 # this recipe is the one all three read. It is two files: this harness, which renders the Job and
 # reads its verdict, and `leak-guard-image-probe.sh` beside it, the text the Job runs inside the
@@ -96,7 +96,7 @@
 # on the Job, no service account and no projected token, and one `emptyDir` and nothing else. It
 # carries no Service and no reachability label, because nothing reaches it: it is read by its log,
 # which is what that rule is for ("a workload that asks to be reachable"). Its security context is
-# the worker container's, as dispatch://INFRA-257's solutions page prescribes for a Job on this
+# the worker container's, as dispatch://POMJU-257's solutions page prescribes for a Job on this
 # image: uid, gid and fsGroup 1000, no privilege escalation, every capability dropped and the
 # RuntimeDefault seccomp profile.
 set -euo pipefail
@@ -316,7 +316,7 @@ spec:
       runtimeClassName: gvisor
       nodeSelector:
 ${selector_yaml}      securityContext:
-        # The worker container's own, as dispatch://INFRA-257 prescribes for a Job on this image.
+        # The worker container's own, as dispatch://POMJU-257 prescribes for a Job on this image.
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000

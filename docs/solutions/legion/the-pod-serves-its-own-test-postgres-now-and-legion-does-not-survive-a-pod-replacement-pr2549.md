@@ -9,7 +9,7 @@ tags:
 date: 2026-11-01
 status: active
 module: packages/dispatch/e2e
-supersedes: docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-INFRA-43.md
+supersedes: docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-POMJU-43.md
 related_issues:
   - "sjawhar/legion#2549"
 ---
@@ -17,7 +17,7 @@ related_issues:
 # The pod serves its own test Postgres now, and /legion does not survive a pod replacement
 
 Two clauses of
-docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-INFRA-43.md are
+docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-POMJU-43.md are
 no longer true: that a role unpacks Postgres from Debian packages, and that `/legion` survives a
 pod replacement. Its other rules stand, and the one that matters most held here - one idempotent
 `setup.sh` plus a sourced `env.sh` is what made a lost harness cheap to rebuild.

@@ -63,7 +63,7 @@
 # packages/envoy/go.mod:31 and packages/daemon/go.mod:13, with its checksum in each go.sum.
 # .github/dependabot.yml covers the github-actions ecosystem alone, so no automation raises pgx,
 # and no CI job runs `go mod tidy`, `go mod verify` or any other check that reads which pgx
-# version is in use. dispatch://INFRA-2338 tracks that gap. A raise is a deliberate edit of those
+# version is in use. dispatch://POMJU-2338 tracks that gap. A raise is a deliberate edit of those
 # files, and this comment is the one text that says what such a raise moves:
 # scripts/e2e/README.md and packages/daemon/internal/testpg/testdb/testdb_test.go point here
 # rather than write it again. Whoever raises pgx moves the safety of those four proofs, and of

@@ -167,7 +167,7 @@ function appendRow(
  *  `../src/claude-rows`).
  *
  *  `origin` says nothing about who ran it, and the default is what a terminal writes: measured
- *  on live Claude Code 2.1.310 (INFRA-1026), a `/config` a person typed and the `/usage` echo
+ *  on live Claude Code 2.1.310 (POMJU-1026), a `/config` a person typed and the `/usage` echo
  *  of a run this session made both carried `{"kind":"engine"}`, a run's echo in a Legion pane
  *  carried `{"kind":"plugin"}`, and the pane's own seeded command carried
  *  `{"kind":"unclassified"}`. The row Claude Code writes carries `type: "system"` and
@@ -197,7 +197,7 @@ function commandEcho(
 
 /** The output row Claude Code writes behind a command's echo: one text block wrapped in
  *  `<local-command-stdout>`, `type: "system"`, `name: "local_command"`, measured on live
- *  Claude Code 2.1.310 beside the echo above (INFRA-1026). */
+ *  Claude Code 2.1.310 beside the echo above (POMJU-1026). */
 function commandStdout(
   text: string,
   uuid: string,
@@ -343,7 +343,7 @@ test("a person's message shows as their own, and the prompt pointing at a row it
 // (`/legion/scratch/tmp/t-term-uz/config/projects/-legion-scratch-tmp-t-term-uz-cwd/9bdfebc9-06e5-496a-ad93-06105d0af932.jsonl:167`,
 // the HAZEL card delivered while a turn ran). That row is all such a card ever becomes - no
 // prompt of its own carries it - so a view that drew nothing of an `isMeta` row showed the
-// model answering a message the viewer never saw (INFRA-1026 review). The session says which
+// model answering a message the viewer never saw (POMJU-1026 review). The session says which
 // `isMeta` row is its own by the uuid its append answered with (`appendedRow`).
 //
 // While the session is idle it is the prompt itself, submitted without `asUser` and stored
@@ -402,7 +402,7 @@ test("a card shows in both states, appended during a turn and submitted while id
 // unread rows is built from: a review of this plugin's code, or a message quoting one, holds
 // them (`../hooks/mod-protocol`, `unreadRowPrompt`). The rule before this one read those words off
 // the row, so such a card reached the model and was drawn for nobody, and the prompt's wording
-// was a contract with this mapper that no test of the wording could keep (INFRA-1026 review,
+// was a contract with this mapper that no test of the wording could keep (POMJU-1026 review,
 // round ten). The session says which prompt row is its own prompt at unread rows by the uuid
 // Claude Code wrote the row under, and claims no other.
 test("a card carrying the unread prompt's own words is drawn for the person", async () => {
@@ -450,7 +450,7 @@ test("a card carrying the unread prompt's own words is drawn for the person", as
 // `{"kind":"plugin","name":"spike-mod2"}` and `{"kind":"plugin","name":"spike-mod3p"}` in the
 // 2.1.310 recordings of the issue's spike (`/legion/scratch/tmp/infra-1026-spike/logs`). The
 // rule before this one kept every `isMeta` row whose origin was a plugin's, so that mod's
-// context was drawn as the person's own words (INFRA-1026 review, round ten). This session's
+// context was drawn as the person's own words (POMJU-1026 review, round ten). This session's
 // own appended row names this plugin instead: the mod reports it under
 // `{"kind":"plugin","name":"claude-envoy"}`, the origin Claude Code itself stamps on a row of
 // this plugin's (`../hooks/mod.ts`), and the session claims that row's uuid by that name,
@@ -515,7 +515,7 @@ test("another plugin's meta row is not the person's, and this session's appended
 // read the row while that call is still unanswered, and a claim made from its answer is not
 // there yet. Driven live on real Claude
 // Code 2.1.310 against this stack, a card delivered into a running turn reached the model and
-// was drawn nowhere in the view at all (INFRA-1026 k2, session
+// was drawn nowhere in the view at all (POMJU-1026 k2, session
 // 1cdb849c-cfa4-458f-91a9-6f2c09653222). The session claims the row as it handles the row's
 // own event, and the server hands it every event before the view records it
 // (`../src/envoy-channel-server`), so the claim is in place when the mapper asks.
@@ -585,7 +585,7 @@ test("a command row keeps the row's own role and a note row an assistant one", (
 // command's output went to the person rather than to the model, the echo of what was typed, and
 // the output itself (measured on 2.1.310 with this plugin's own mod running `/usage`). Recorded
 // as they stand, the caveat and the output draw a person the raw tags and Claude Code's
-// `/context` table inside the agent's conversation (INFRA-1026).
+// `/context` table inside the agent's conversation (POMJU-1026).
 test("a command's caveat row and its output record nothing", () => {
   const live = harness()
   const caveat =
@@ -631,7 +631,7 @@ test("a command a person ran shows as the plain command line they typed", () => 
 
 // A person's `/` message from Dispatch runs as `$.command.run`, and the row Claude Code writes
 // of it echoes the command it ran rather than the one they sent: `/cost` ran as `/usage`, and
-// `/model anthropic/haiku` as `/model haiku`, both measured live on 2.1.310 (INFRA-1026).
+// `/model anthropic/haiku` as `/model haiku`, both measured live on 2.1.310 (POMJU-1026).
 // Drawn, that row is a second message the person never wrote, beside Dispatch's stored copy of
 // the one they did send, which is what the Agents page shows next to this stream. The rows of a
 // run arrive after the call that asked for it has answered
@@ -685,7 +685,7 @@ test("the echo of a command this session ran shows nothing, and one typed at the
 // build). So that rule hid the person's command and drew the run's echo in its place, which is
 // the defect it set out to remove, and the person's `/cost` reply carried the other command's
 // output. Whatever tells the two apart, the person's own command must reach the view
-// (INFRA-1026).
+// (POMJU-1026).
 test("a command typed at the terminal shows although its origin is the run's own", async () => {
   const ran = Promise.withResolvers<ModCallResults["command.run"]>()
   const session = modSession({
@@ -720,7 +720,7 @@ test("a command typed at the terminal shows although its origin is the run's own
 
 // A run whose `$.command.run` has not been answered has written no row of its own yet, so a row
 // that arrives while it waits belongs to whoever typed it. Measured on live Claude Code 2.1.310
-// (INFRA-1026): a Dispatch `/cost` asked at 08:09:56.390 opened a dialog at the terminal and
+// (POMJU-1026): a Dispatch `/cost` asked at 08:09:56.390 opened a dialog at the terminal and
 // had written no row 36 seconds later, when the person typed `/config` there - and the rule
 // before this one handed that run the person's echo and output rows, so their command vanished
 // from the view.
@@ -757,7 +757,7 @@ test("a command typed at the terminal shows while a command this session ran is 
 })
 
 // A `/rename` typed at a terminal leaves three rows, measured on live Claude Code 2.1.310
-// (INFRA-1026) at 08:29:23: the echo by the `command` door (`{"kind":"engine"}`,
+// (POMJU-1026) at 08:29:23: the echo by the `command` door (`{"kind":"engine"}`,
 // `type: "system"`, `name: "local_command"`) at .018, its `<local-command-stdout>` row at .048,
 // and at .070 a row by the `note` door - `{"kind":"engine"}`, `type: "user"`, `isMeta: true` -
 // whose whole text is the `<system-reminder>` naming the session. Drawn, that reminder is
@@ -790,7 +790,7 @@ test("a terminal rename shows the command line alone", () => {
 // A Legion pane is named before anything else happens in it: the daemon's bridge types
 // `/rename <title>` into the session's input
 // (`packages/daemon/internal/claudebridge/bridge.go`, lines 210-213), and Claude Code runs it
-// as the command it is. Measured on live 2.1.310 in a pane (INFRA-1026): the caveat row
+// as the command it is. Measured on live 2.1.310 in a pane (POMJU-1026): the caveat row
 // (`{"kind":"unclassified"}`, `isMeta: true`), the echo (`{"kind":"unclassified"}`) and the
 // `<local-command-stdout>` row (`{"kind":"engine"}`), and no prompt row at all. The pane being
 // named is no message of a person's, and nothing of it is drawn.
@@ -809,10 +809,10 @@ test("a pane's seeded rename draws nothing", () => {
       origin: { kind: "unclassified" },
       uuid: "row-pane-caveat",
     }),
-    commandEcho("rename", "legion/INFRA-1026 worker", "row-pane-rename", {
+    commandEcho("rename", "legion/POMJU-1026 worker", "row-pane-rename", {
       kind: "unclassified",
     }),
-    commandStdout("Session renamed to: legion/INFRA-1026 worker", "row-pane-stdout"),
+    commandStdout("Session renamed to: legion/POMJU-1026 worker", "row-pane-stdout"),
   )
 
   expect(messages(pane.replay())).toEqual([])
@@ -839,7 +839,7 @@ test("an unknown content part renders as its type in brackets", () => {
 // session streamed says what the person wrote, so the person's text has to stay a part of its
 // own, as it does by every other door: flattened with the picture into one
 // "Look at this\n[image]" part it matches no stored message, and the message shows twice
-// (INFRA-1026).
+// (POMJU-1026).
 test("a person's message with a picture keeps the person's text as a part of its own", () => {
   const live = harness({ tagFor: () => "m1" })
   live.feed(
@@ -869,7 +869,7 @@ test("a person's message with a picture keeps the person's text as a part of its
 // person's row
 // (`/legion/scratch/tmp/i3-k5-pane/config/projects/-legion-scratch-tmp-i3-k5-pane-cwd/f376a3a9-6e75-461b-806b-22dea4e83ddf.jsonl:123`).
 // Recorded as it stands, it draws a second user row for the one message the person sent
-// (INFRA-1026).
+// (POMJU-1026).
 test("Claude Code's note of where it put a picture's bytes records nothing", () => {
   const live = harness({ tagFor: () => "m1" })
   const source =
@@ -911,7 +911,7 @@ test("Claude Code's note of where it put a picture's bytes records nothing", () 
 // block
 // (`/legion/scratch/tmp/t-term-h1/config/projects/-legion-scratch-tmp-t-term-h1-cwd/b6411755-7568-4608-93a5-1db3c839e038.jsonl:70`).
 // Recorded as it stands, it draws the tags and Claude Code's note to the model where the person
-// wrote one sentence (INFRA-1026).
+// wrote one sentence (POMJU-1026).
 test("a line typed while a turn runs shows the person's words and none of the wrapper", () => {
   const live = harness({ tagFor: () => "m1" })
   const typed = "TYPED-AT-TERMINAL-h1: say the word CEDAR when you can."
@@ -946,7 +946,7 @@ test("a line typed while a turn runs shows the person's words and none of the wr
 // any other text row. Measured on 2.1.310: a peer session's message comes by the same `delivery`
 // door (`origin.kind: "peer"`), carrying an announcement of its own
 // (`/legion/scratch/tmp/infra-1026-spike/logs/mod3-q1q3q5.jsonl:223`). This pins the behaviour
-// the mid-turn reader leaves alone (INFRA-1026).
+// the mid-turn reader leaves alone (POMJU-1026).
 test("a system reminder of another kind still crosses whole", () => {
   const live = harness()
   const peer =
@@ -1184,7 +1184,7 @@ test("a thinking pick is the level the header shows at once, until a step report
 // its own (`../hooks/mod`, `turn.step`), and only another pick changes it. So a person who picks
 // a model after picking a level is still thinking at that level until a step of that model says
 // otherwise, and the header says so: falling back to the model's default would tell the person a
-// level the requests do not carry (INFRA-1026).
+// level the requests do not carry (POMJU-1026).
 test("a model pick keeps the effort the mod puts on every later request in the header", async () => {
   const recorded = await fixture("claude-2.1.310-turn")
   const live = harness()
@@ -1228,7 +1228,7 @@ test("a model that reports no effort has no thinking to adjust", async () => {
 // Measured live on 2.1.310 and rejected by the tester: after a thinking pick of `low` with
 // `claude-haiku-4-5` in force the header read `low` while the session's next request carried no
 // effort at all. A step tells the truth about the request it ran, so a step whose own effort is
-// not the picked one - another level, or none at all - ends the pick (INFRA-1026).
+// not the picked one - another level, or none at all - ends the pick (POMJU-1026).
 test("a step of a model that reports no effort ends a thinking pick", async () => {
   const recorded = await fixture("claude-2.1.310-no-effort")
   const live = harness()

@@ -281,8 +281,8 @@ The agent-secrets helper holds a credential of its own: the machine login a pers
 (`packages/envoy/internal/broker/helper/broker.go`) and asks the broker for no Dispatch token. The
 broker can exchange such a login's access token for one (`docs/kubernetes.md`, "The Dispatch
 identity the broker can issue"), and nothing on this box does that at this release.
-`dispatch://INFRA-267` is where the daemon and its workers get Dispatch tokens of their own, a dev
-box session writing under an approved machine login included, and `dispatch://INFRA-264` is where
+`dispatch://POMJU-267` is where the daemon and its workers get Dispatch tokens of their own, a dev
+box session writing under an approved machine login included, and `dispatch://POMJU-264` is where
 Dispatch accepts a broker token.
 
 ## Phase workers on Claude Code
@@ -432,7 +432,7 @@ provider_keys:
   files it ran with. The agent keeps the last value a key is
   given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
   where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
-  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
+  attributes alone drops all three (dispatch://POMJU-1835). A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it

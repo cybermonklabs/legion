@@ -40,7 +40,7 @@ const sessionResetBound = 5 * time.Second
 // transaction with no statement running, and idleBound the value this pool's connections carry
 // (Open). It is set once, on the pool, because the invariant is the pool's and not any one call
 // site's: no transaction of this daemon idles on purpose, so one setting enforces it and no
-// caller can forget it. The measured failure it answers is INFRA-3169, where all 32 connections
+// caller can forget it. The measured failure it answers is POMJU-3169, where all 32 connections
 // of the production pool sat `idle in transaction` and every claim write and state read timed
 // out behind them.
 //

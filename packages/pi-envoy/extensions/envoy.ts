@@ -1048,7 +1048,7 @@ export default function envoyExtension(pi: PiApi): void {
       // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the one it left from
       // here on. Left in the registry that id reads as live for the live window and as
       // unresponsive for the gone horizon after it, so peers go on sending to a session that no
-      // longer exists (dispatch://INFRA-392). The DELETE goes out behind that id's own
+      // longer exists (dispatch://POMJU-392). The DELETE goes out behind that id's own
       // registration (`deregisterSession`) and off this chain: no session event waits on it.
       if (previousSessionID !== "") {
         void deregisterSession(previousSessionID).catch((error: unknown) => {
@@ -2698,7 +2698,7 @@ export default function envoyExtension(pi: PiApi): void {
   // nothing while a frame per message of a storm would be noise.
   const CONTEXT_FRAME_INTERVAL_MS =
     Number(process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS ?? "") || 2_000;
-  // The context window's filling, as a viewer's ring shows it (INFRA-812). The host fires no event
+  // The context window's filling, as a viewer's ring shows it (POMJU-812). The host fires no event
   // for it either, so it is re-read after each message of a turn, at each turn's start and after a
   // compaction, and put on the wire at most once per interval. The read is an in-memory getter
   // over the session's own breakdown; a host too old to have it (`getContextUsage`, read behind
@@ -3092,7 +3092,7 @@ export default function envoyExtension(pi: PiApi): void {
    * that overtakes one is undone when it lands: the listener writes the record again, and a
    * session this process no longer heartbeats reads as live for the whole live window and as
    * unresponsive for the gone horizon after it, so peers wait an hour on a pane that has gone
-   * (dispatch://INFRA-392). Every deregistration waits its session's registration out first.
+   * (dispatch://POMJU-392). Every deregistration waits its session's registration out first.
    */
   const registrationsInFlight = new Map<string, Promise<void>>();
 
@@ -3188,7 +3188,7 @@ export default function envoyExtension(pi: PiApi): void {
   // The listener delivers nothing to a self-subscribed session (its own consumer's relay does),
   // so the registered topics are what that consumer is filtered on, which `registrationTopics`
   // decides for every host: every subject the session follows, a role-bound one included, since
-  // a notice lane reaches this session from its own consumer and from nowhere else (INFRA-771),
+  // a notice lane reaches this session from its own consumer and from nowhere else (POMJU-771),
   // but one the listener would not store for it. They are read afresh at every registration.
   const sendRegistration = (
     send: (input: RegistrationInput) => Promise<SubscribeResult>
@@ -3196,7 +3196,7 @@ export default function envoyExtension(pi: PiApi): void {
     // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
     // and posted without a tmux call in between: the session the deregistration at shutdown
     // waits out is the one that reaches the wire, and no registration can resume behind the
-    // DELETE (dispatch://INFRA-392). The cache answers the last reading, none while it has had
+    // DELETE (dispatch://POMJU-392). The cache answers the last reading, none while it has had
     // none, and starts the reading the registration after this one carries.
     const place = tmuxPlaces.place();
     const registeringFor = sessionID;
@@ -3495,7 +3495,7 @@ export default function envoyExtension(pi: PiApi): void {
   // `undefined` where this process acts on no record at all — which `mayActOnRoleRecord`, the
   // one rule both clients read, decides from the writer the record names. Two processes can
   // read one transcript, a continuation resuming a live session's id, which is how a copy's
-  // release ended the live process's role for hours (dispatch://INFRA-783): a release another
+  // release ended the live process's role for hours (dispatch://POMJU-783): a release another
   // instance wrote ends nothing here while this process holds a role, and a claim it wrote is
   // pressed only when there is no role to lose, where the listener decides the claim on the two
   // processes rather than this side guessing.
@@ -3695,7 +3695,7 @@ export default function envoyExtension(pi: PiApi): void {
     }
     // The relay subject and the agent-stream control subject are what need NATS, and the
     // registration needs the relay: a session is delivered to through its own consumer alone, so
-    // a registration asks for one and the listener refuses one it cannot give (INFRA-771). A
+    // a registration asks for one and the listener refuses one it cannot give (POMJU-771). A
     // NATS outage therefore stops the registration, and with it the role claim that registers
     // first (a Legion claim through the bridge included); the pass reports it, and the next pass
     // opens the relay and registers again. A steady pass touches no NATS.
@@ -4164,7 +4164,7 @@ export default function envoyExtension(pi: PiApi): void {
     shuttingDown = true;
     // A reading still away answers nobody from here on: the DELETE below is what the session
     // leaves behind, and a place written after it would be a registration the heartbeat has
-    // stopped refreshing (dispatch://INFRA-392).
+    // stopped refreshing (dispatch://POMJU-392).
     tmuxPlaces.shutDown();
     cardWake.cancel();
     // A person's `!command` runs in a process group of its own, which outlives this process

@@ -16,7 +16,7 @@ import (
 
 // A child that was already planning when the daemon that writes its phase's status was deployed
 // shows `todo` in Dispatch, and no transition is coming to correct it: the boot writes it
-// (dispatch://INFRA-714/spec R4). The write is the phase's own status, conditional on the status
+// (dispatch://POMJU-714/spec R4). The write is the phase's own status, conditional on the status
 // the record held, and the record takes that status with it.
 func TestTheBootWritesTheStatusOfAPhaseAnIssueAlreadyStoodIn(t *testing.T) {
 	pool := migratedPool(t)

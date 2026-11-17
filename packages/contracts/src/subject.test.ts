@@ -50,11 +50,11 @@ test("each builder of a project's message names writes the shared fixture's name
 });
 
 test("the old issue form names the key alone, the new one its project first", () => {
-  expect(legacyDispatchIssueSubject("INFRA-12", ">")).toBe(
-    "notifications.dispatch.issue.INFRA-12.>"
+  expect(legacyDispatchIssueSubject("POMJU-12", ">")).toBe(
+    "notifications.dispatch.issue.POMJU-12.>"
   );
-  expect(dispatchIssueSubject("INFRA", "INFRA-12", ">")).toBe(
-    "notifications.dispatch.issue.INFRA.INFRA-12.>"
+  expect(dispatchIssueSubject("POMJU", "POMJU-12", ">")).toBe(
+    "notifications.dispatch.issue.POMJU.POMJU-12.>"
   );
 });
 

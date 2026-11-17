@@ -1,6 +1,6 @@
 -- 20261110132532_github_rate_limits_struck_at.up.sql
 --
--- INFRA-1179: when a scope was last struck, which is the clock the doubling backoff resets by
+-- POMJU-1179: when a scope was last struck, which is the clock the doubling backoff resets by
 -- (internal/dispatch/githubapp/ratelimit, StrikeReset).
 --
 --   struck_at   the database's now() at the scope's last Strike, and null for a scope no strike

@@ -856,7 +856,7 @@ echo "case: rule 3 — release-asset addresses the gate's one spelling misses"
 # www.github.com spellings each answered 301 to it. None of the three is an address a job
 # assembles from pieces, and none is in a file whose name holds .test., so none is one of the two
 # bounds AGENTS.md names: each is a release asset a new install fetches with no row, no entry and
-# nothing saying so, which is the class R1 of dispatch://INFRA-1974 closes.
+# nothing saying so, which is the class R1 of dispatch://POMJU-1974 closes.
 root=$(fixture reach-asset-spellings)
 cat > "$root/.github/workflows/spellings.yaml" <<'YAML'
 name: Spellings
@@ -1331,7 +1331,7 @@ no_second_source:
   - url: $SOLO_URL
     digest: $SOLO
     pinned_in: .github/workflows/solo.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "exits 0 once the entry names it" "$(is "$status" 0)"
@@ -1434,7 +1434,7 @@ no_second_source:
   - url: $SOLO_URL
     digest: $SOLO
     pinned_in: .github/workflows/solo.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
@@ -1461,7 +1461,7 @@ no_second_source:
   - url: $SOLO_URL
     digest: $SOLO
     pinned_in: .github/workflows/solo.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
@@ -1489,7 +1489,7 @@ no_second_source:
   - url: $SOLO_URL
     digest: $SOLO
     pinned_in: .github/ci-tools.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
@@ -1522,7 +1522,7 @@ no_second_source:
   - url: $SOLO_URL
     digest: $SOLO
     pinned_in: .github/scripts/pin.test.sh
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
@@ -1551,7 +1551,7 @@ no_second_source:
   - url: https://github.com/example/tool/releases/download/v2.0.0/tool_2.0.0_linux_amd64.tar.gz
     digest: $SOLO
     pinned_in: .github/workflows/tool.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
@@ -1582,7 +1582,7 @@ no_second_source:
   - url: https://github.com/oven-sh/bun/releases/download/bun-v9.9.9/bun-linux-x64.zip
     digest: $SOLO
     pinned_in: .github/workflows/bun.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
@@ -1616,7 +1616,7 @@ no_second_source:
   - url: https://github.com/Example/Tool/releases/download/v2.0.0/tool_2.0.0_linux_amd64.tar.gz
     digest: $SOLO
     pinned_in: .github/workflows/tool.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
@@ -1633,7 +1633,7 @@ no_second_source:
   - url: https://registry.npmjs.org/solo/-/solo-2.2.2.tgz
     digest: $SOLO
     pinned_in: .github/workflows/ci.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
@@ -1661,7 +1661,7 @@ no_second_source:
   - url: $SOLO_URL
     digest: $SOLO
     pinned_in: .github/workflows/solo.yaml
-    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://POMJU-1986 owns.
 
   - url: $SOLO_URL
     digest: $SOLO

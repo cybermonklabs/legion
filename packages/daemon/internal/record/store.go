@@ -45,7 +45,7 @@ func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID
 // ForgetProcessed removes the processed-events row of one fact, so the same fact id applies again
 // when it is sent anew. ApplyFact uses it for a refused production check report — the report of
 // a look is one fact id, and a refusal of it must not stand as the answer to the implementer's
-// next report of that same look (dispatch://INFRA-714/spec R12) — and for a fact a handler left
+// next report of that same look (dispatch://POMJU-714/spec R12) — and for a fact a handler left
 // unspent (intake.Result.Unspent).
 func (s *Postgres) ForgetProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) error {
 	if _, err := tx.Exec(ctx, "delete from processed_events where source = $1 and event_id = $2", source, eventID); err != nil {
@@ -865,8 +865,8 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		}
 	}
 	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing counts a fix
-	// attempt since dispatch://INFRA-956 R4, and nothing reads them at all since a CI result
-	// stopped moving an issue (dispatch://INFRA-714/spec R1), so they are kept rather than
+	// attempt since dispatch://POMJU-956 R4, and nothing reads them at all since a CI result
+	// stopped moving an issue (dispatch://POMJU-714/spec R1), so they are kept rather than
 	// dropped so a rollback to the daemon before either still runs. Each is `not null` with no
 	// default (migration 0004), so a new row is given its zero here and no write ever touches it
 	// again; planned_red, required, required_workflows and required_workflows_head are stopped too
@@ -2499,7 +2499,7 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // was a phase with no task and nothing saying so: no error and no row behind it, a claim owing
 // no task of the new work, so every completion its worker reported was refused, and no restart
 // cured it, since the record a restart rebuilds the claim from carries that same row. Only a
-// start under a row of its own did (dispatch://INFRA-2800).
+// start under a row of its own did (dispatch://POMJU-2800).
 //
 // A row under a live lease is left where it is: its slot came, its lane has it, and the caller's
 // row is the next start, written beside it. A lapsed lease is no lane holding anything — the

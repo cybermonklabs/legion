@@ -28,7 +28,7 @@ Two readings a forward merge needs that the fingerprint command and `git` do not
   first, before writing your own, is
   `docs/solutions/legion/a-red-check-in-a-package-the-branch-does-not-touch-looks-for-mains-fix-first-pr2366.md`;
   fixing a red that is `main`'s in a pull request of its own rather than in the issue branch is
-  `docs/solutions/legion/a-red-main-gives-you-at-a-forward-merge-is-fixed-in-its-own-pull-request-against-main-built-off-the-shared-working-copy-INFRA-366.md`.
+  `docs/solutions/legion/a-red-main-gives-you-at-a-forward-merge-is-fixed-in-its-own-pull-request-against-main-built-off-the-shared-working-copy-POMJU-366.md`.
   A fix made in the issue branch instead costs a fingerprint change, a counted round, and then
   the merge that removes it again.
 - **When both sides delete from one file, a clean textual merge is no evidence.** Two deletions
@@ -39,7 +39,7 @@ Two readings a forward merge needs that the fingerprint command and `git` do not
 
 ## Evidence
 
-sjawhar/legion#2541 (INFRA-264), four forward merges. At `525d94c5` the fingerprint went
+sjawhar/legion#2541 (POMJU-264), four forward merges. At `525d94c5` the fingerprint went
 `bb321eb5…` → `80def57e…`, which is the value `46ce6038` already had: `main`'s #2598 fixed the
 claim-list parser this branch had fixed in `ba171533`, and the merge took `main`'s
 `claims_doc_test.go` whole. The merge comment says so. At `c9f4cb6e`, `main`'s #2526 removed the

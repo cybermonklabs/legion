@@ -496,7 +496,7 @@ func NowMillis() int64 {
 }
 
 // DispatchIssueSubject names an issue's event under its project and then its key
-// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// (notifications.dispatch.issue.POMJU.POMJU-12.comment.created), AgentSubject one session's
 // message under its project, RoleSubject a role's lane under the project it works for, each with
 // NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
 // token is token. LegacyAgentSubject is a session's agent subject in the old form, with no

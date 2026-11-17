@@ -47,7 +47,7 @@ import (
 // else: a catch-up of the tree named it while no delivery held it and its telling forgot it
 // (record.Store.ForgetKeptDecisions). Putting such a row back makes it KEPT again, the tree's
 // next start or catch-up names it, and a person's decision reaches one architect twice
-// (dispatch://INFRA-2339). The send-time narrowing drops such a mark from the task (the daemon's
+// (dispatch://POMJU-2339). The send-time narrowing drops such a mark from the task (the daemon's
 // rootTask), but only at a send, and a task the root cannot hear yet is written many times
 // before one. An issue that left the claim's tree is never put back.
 func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, kept []byte) error {

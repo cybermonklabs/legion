@@ -1465,7 +1465,7 @@ async function stopAfterDispatchCard(query: string, actor?: DispatchCardActor) {
 const ANY_CLIENT_INSTANCE = expect.stringMatching(/^[0-9a-f]{32}$/);
 
 /** The transcript record a landed claim of `role` for `session` writes: the role, the session
- *  claimed for and the process that claimed it (INFRA-783). */
+ *  claimed for and the process that claimed it (POMJU-783). */
 function roleClaimRecord(role: string, session: string): unknown {
   return {
     type: "custom",
@@ -1475,7 +1475,7 @@ function roleClaimRecord(role: string, session: string): unknown {
 }
 
 /** The body a claim of `role` for `session` sends, `rest` carrying what that claim adds (`soft`,
- *  `previous_session_id`): every claim names the process making it (INFRA-783). */
+ *  `previous_session_id`): every claim names the process making it (POMJU-783). */
 function roleClaimBody(session: string, role: string, rest: Record<string, unknown> = {}): unknown {
   return { session_id: session, role, ...rest, client_instance_id: ANY_CLIENT_INSTANCE };
 }
@@ -3950,7 +3950,7 @@ describe("envoy OMP extension", () => {
         body: {
           session_id: "ses_omp",
           role: "controller",
-          // The process making the claim, the same id the registration carries (INFRA-783).
+          // The process making the claim, the same id the registration carries (POMJU-783).
           client_instance_id: expect.stringMatching(/^[0-9a-f]{32}$/),
         },
       },
@@ -3987,7 +3987,7 @@ describe("envoy OMP extension", () => {
   // No live session holds the role, so the listener kept the message for one hour and answered
   // 202 with kept_until, the end of that hour. The tool must not read that as a failure, and it
   // tells the sender until when the copy waits and what comes if no session takes it: a message
-  // to the publish's source session (dispatch://INFRA-2846, R3). A subagent whose parent this
+  // to the publish's source session (dispatch://POMJU-2846, R3). A subagent whose parent this
   // process cannot resolve publishes from no session, so no such message comes to it.
   test("a kept publish says until when it is kept", async () => {
     const keptUntil = Date.UTC(2026, 10, 15, 10, 30);
@@ -4415,24 +4415,24 @@ describe("envoy OMP extension", () => {
   // `roleSetHandler`), and a resumed session reads the role it should hold off its record by
   // cutting that lane's prefix (`desiredRole`). So the role it claims again is the role itself. The
   // second row is the control the first leans on: a record rewritten to the new form,
-  // `notifications.role.INFRA.<role>`, reads to this very comparison as a role named
-  // `INFRA.<role>`, so a store that rewrote it would show here.
+  // `notifications.role.POMJU.<role>`, reads to this very comparison as a role named
+  // `POMJU.<role>`, so a store that rewrote it would show here.
   for (const { name, rewrite, claimed } of [
     {
       name: "as the listener wrote it",
       rewrite: false,
-      claimed: "legion-infra-controller",
+      claimed: "legion-pomju-controller",
     },
     {
       name: "rewritten to the new form",
       rewrite: true,
-      claimed: "INFRA.legion-infra-controller",
+      claimed: "POMJU.legion-pomju-controller",
     },
   ]) {
     test(`a resumed session reads its role off a record that keeps the lane ${name}`, async () => {
-      const lane = "notifications.role.legion-infra-controller";
+      const lane = "notifications.role.legion-pomju-controller";
       expect(canonicalTopic(lane).canonical).toBe(
-        "notifications.role.INFRA.legion-infra-controller"
+        "notifications.role.POMJU.legion-pomju-controller"
       );
       const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
       globalThis.fetch = async (input, init) => {
@@ -5839,7 +5839,7 @@ console.log(JSON.stringify(args));
       recordWrites.uploads = 0;
       recordWrites.appends = 0;
       recordDocuments.length = 0;
-      process.env.OMP_ASKGATE_RECORD_PROJECT = "INFRA";
+      process.env.OMP_ASKGATE_RECORD_PROJECT = "POMJU";
       const other = rowFetch();
       recordWaiters.length = 0;
       const keep = (markdown: string) => {
@@ -5849,7 +5849,7 @@ console.log(JSON.stringify(args));
       };
       globalThis.fetch = async (input, init) => {
         const url = String(input instanceof Request ? input.url : input);
-        const byName = /\/api\/v1\/projects\/INFRA\/artifacts\/(.+)$/.exec(url);
+        const byName = /\/api\/v1\/projects\/POMJU\/artifacts\/(.+)$/.exec(url);
         if (byName !== null && (init?.method ?? "GET").toUpperCase() === "GET") {
           // The read the recorder makes before it uploads: the one document of that name, as
           // Dispatch resolves a document reference, and its 404 where the project holds none.
@@ -5859,7 +5859,7 @@ console.log(JSON.stringify(args));
             ? Response.json({ code: "ARTIFACT_NOT_FOUND", error: "not found" }, { status: 404 })
             : Response.json(held);
         }
-        if (url.endsWith("/api/v1/projects/INFRA/artifacts")) {
+        if (url.endsWith("/api/v1/projects/POMJU/artifacts")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as {
             content?: string;
             name?: string;
@@ -5980,7 +5980,7 @@ console.log(JSON.stringify(args));
           // The tool call the CLI's line was read from, and the line's own place in it: what
           // tells this record from another write of the same call (#2161).
           id: "call-py#0",
-          project: "INFRA",
+          project: "POMJU",
           tool: "dispatch_ask",
           outcome: "unmarked",
           decision: "allow",
@@ -6068,7 +6068,7 @@ console.log(JSON.stringify(args));
       const { promise: hang } = Promise.withResolvers<Response>();
       globalThis.fetch = (async (input, init) => {
         const url = String(input instanceof Request ? input.url : input);
-        if (/\/api\/v1\/projects\/INFRA\/artifacts/.test(url)) {
+        if (/\/api\/v1\/projects\/POMJU\/artifacts/.test(url)) {
           reached.resolve();
           return hang;
         }
@@ -7159,7 +7159,7 @@ console.log(JSON.stringify(args));
     expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
   });
 
-  // INFRA-771: a session takes its messages from its own consumer, whose filter is the topics it
+  // POMJU-771: a session takes its messages from its own consumer, whose filter is the topics it
   // registered, so the controller's notice lane and its Slack mention topics have to be in the
   // registration while it holds the role — on the base they came in on a core subscription this
   // change deleted. Each test here imports its own copy of the extension, as every row does.
@@ -12046,7 +12046,7 @@ console.log(JSON.stringify(args));
 
   // A topic the stream captures nothing of is left out of every registration
   // (`registrationTopics`), since the listener stores none: it drops such a topic from the row
-  // and names it in a warning (INFRA-771). It is followed all the same when it came back from
+  // and names it in a warning (POMJU-771). It is followed all the same when it came back from
   // the interest row or the transcript a restore reads, and refused by name when a caller named
   // it itself, in the listener's own words.
   test("never registers a topic no stream subject captures, however it was followed", async () => {
@@ -12274,7 +12274,7 @@ console.log(JSON.stringify(args));
   });
 
   test("the role read's 404 still means no live holder: the kept lane changed only the publish route", async () => {
-    // INFRA-839 gave a role publish a kept lane, so POST /v1/messages/publish answers 202 where
+    // POMJU-839 gave a role publish a kept lane, so POST /v1/messages/publish answers 202 where
     // it used to answer 404. GET /v1/roles/<role> is untouched: it still answers 404, with the
     // role-holder body, when no live session holds the role. The heartbeat's re-assertion reads
     // that route, so it stays as it is — this pins the body it must keep reading as an absence.
@@ -14665,7 +14665,7 @@ console.log(JSON.stringify(args));
       });
     });
 
-    // A person's `!command` (R4 of dispatch://INFRA-812). The host is never handed the line: the
+    // A person's `!command` (R4 of dispatch://POMJU-812). The host is never handed the line: the
     // session runs the rest of it under the host's own shell configuration, in its own working
     // directory, and what it printed goes three ways - the live view's conversation, the
     // person's message on Dispatch, and the agent's transcript for its next turn.
@@ -15951,7 +15951,7 @@ console.log(JSON.stringify(args));
     // session, and every await before the work - the acknowledgement, the read of the body
     // whole, the accept, the picture load - is a window a `/new` or a `/resume` lands in. The
     // conversation the host moved to must neither run a person's line nor answer for it
-    // (dispatch://INFRA-812, the architect's decision of 2026-11-09T17:28Z).
+    // (dispatch://POMJU-812, the architect's decision of 2026-11-09T17:28Z).
     describe("a delivery whose session the host leaves", () => {
       /** The sentence each branch refuses with, the `!` path's own with the person's message in
        *  place of their command (`MOVED_SESSION_REFUSAL`, in `extensions/envoy.ts`). */
@@ -16956,7 +16956,7 @@ console.log(JSON.stringify(args));
     });
   });
 
-  // The ring a viewer draws over the session's context window (INFRA-812). The host fires no
+  // The ring a viewer draws over the session's context window (POMJU-812). The host fires no
   // event for its filling either, so it is read from `ctx.getContextUsage()` after each message of
   // a turn, at each turn's start and after a compaction, at most once in each
   // `ENVOY_CONTEXT_FRAME_INTERVAL_MS`. A reading no viewer could draw a true ring from is not
@@ -17225,7 +17225,7 @@ console.log(JSON.stringify(args));
 
     // A card is the addressed session's, whatever the host does while the accept runs: a switch
     // inside it leaves the card unshown and its picture unshown with it, so the copy that
-    // reaches that session carries the picture (dispatch://INFRA-812).
+    // reaches that session carries the picture (dispatch://POMJU-812).
     test("shows no card refused after a switch during the accept, and leaves its picture unshown", async () => {
       const slug = "card-after-accept-switch";
       const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
@@ -17308,7 +17308,7 @@ console.log(JSON.stringify(args));
     // addressed: its card is handed to nobody, and the copy the listener sends that session
     // again carries the picture. A frame that is no delivery is held to no session, on that
     // session's own subject as anywhere else: nothing sends it again, so its card goes to the
-    // conversation the host moved to rather than to nobody (dispatch://INFRA-812).
+    // conversation the host moved to rather than to nobody (dispatch://POMJU-812).
     for (const [kind, reason] of [
       ["a delivery", "new"],
       ["a comment", "new"],
@@ -17376,7 +17376,7 @@ console.log(JSON.stringify(args));
     // conversation's file. The card is itself the record: its `details` carry the frame's
     // identity (`replayLedgerIdentity` in `handCard`), and a restore reads a ledger entry from
     // every written card (`writtenCardIdentity`), so that conversation's own sweep passes the
-    // stream's copy over instead of carding the comment a second time (dispatch://INFRA-812).
+    // stream's copy over instead of carding the comment a second time (dispatch://POMJU-812).
     // No ledger entry is appended for it: that write would be bound to a session this instance
     // is not on, and would carry this session's whole replay state into the other's file.
     test("cards a comment once when the host moved with no session event, the moved-to conversation's own relay included", async () => {
@@ -17472,7 +17472,7 @@ console.log(JSON.stringify(args));
     // would go into the file of the conversation the host moved to, which was never shown the
     // comment, and whose sweep would pass over the stream's copy of a comment nobody showed it.
     // Nothing is recorded instead: a resume of ses_delivery cards the comment a second time, and
-    // no session's ledger holds a frame it never showed (dispatch://INFRA-812). The comment
+    // no session's ledger holds a frame it never showed (dispatch://POMJU-812). The comment
     // written before the move is the control: it shows that the ledger this row reads records
     // what it is given.
     test("records in no other conversation's ledger a card the host wrote after moving", async () => {
@@ -17528,7 +17528,7 @@ console.log(JSON.stringify(args));
     // addressed: a delivery's card is handed to nobody once the host is on another conversation,
     // so that conversation is shown nothing of the frame and its ledger gains nothing for it.
     // The picture stays unshown in both sessions, so the copy the listener sends ses_delivery
-    // again carries it (dispatch://INFRA-812).
+    // again carries it (dispatch://POMJU-812).
     test("hands a delivery's card to nobody when the host moved with no session event, and records it nowhere", async () => {
       const slug = "card-load-delivery-no-event";
       const address = `dispatch://LEGION-1/artifact/${slug}@v1`;
@@ -19339,7 +19339,7 @@ console.log(JSON.stringify(args));
 
       // The first registration starts the reading and goes out without it: a cold reading is a
       // tmux call of up to a second, and a registration that waited one out could reach the
-      // listener behind its own session's shutdown (dispatch://INFRA-392). The reading answers
+      // listener behind its own session's shutdown (dispatch://POMJU-392). The reading answers
       // between registrations, and the next one carries it.
       expect(session.places).toEqual([undefined]);
       expect(tmuxPlaceState.calls).toHaveLength(1);
@@ -20787,7 +20787,7 @@ console.log(JSON.stringify(args));
 
   // A registration still on the wire when the session ends lands after the DELETE and writes the
   // record back: the session is registered again with nobody heartbeating it, and peers read it
-  // as live for the live window and as unresponsive for an hour after (dispatch://INFRA-392).
+  // as live for the live window and as unresponsive for an hour after (dispatch://POMJU-392).
   test("session_shutdown holds the deregistration until a registration in flight settles", async () => {
     const requests: string[] = [];
     const registration = Promise.withResolvers<Response>();
@@ -20849,7 +20849,7 @@ console.log(JSON.stringify(args));
   // The wait above is bounded on the shutdown path, because Oh My Pi abandons a shutdown handler
   // after 2 s: a registration slower than the wait must not cost the DELETE. One never sent
   // leaves the record behind for the whole gone horizon, where one that overtakes a registration
-  // only may (dispatch://INFRA-392).
+  // only may (dispatch://POMJU-392).
   test("session_shutdown sends the DELETE when the registration in flight never settles", async () => {
     const requests: string[] = [];
     const registration = Promise.withResolvers<Response>();
@@ -21550,7 +21550,7 @@ describe("consumer delivery", () => {
   });
 
   test("the session file carries the follows map only when it changes, and either shape restores", async () => {
-    const issueTopic = legacyDispatchIssueSubject("INFRA-7", ">");
+    const issueTopic = legacyDispatchIssueSubject("POMJU-7", ">");
 
     const first = await bootConsumer("consumer-follows-a");
     await first.follow(issueTopic);
@@ -21590,16 +21590,16 @@ describe("consumer delivery", () => {
     ).toEqual([]);
   });
 
-  // What main's INFRA-812 row proved of the replay engine's state, carried onto the ledger that
+  // What main's POMJU-812 row proved of the replay engine's state, carried onto the ledger that
   // replaced it: a state entry carries the whole of this session's state - the topics it follows
   // - and a session restores the newest state its file holds as its own, whatever session wrote
   // it. So an entry appended once the host has moved would make the conversation the host moved
   // to follow this session's topics. The guard is the ledger's own bind (`transcriptSessionID`,
   // which answers nothing once the host's session is not this one), and the first follow below
   // is the control: it shows the ledger does write its state here when the host is on this
-  // session (dispatch://INFRA-812).
+  // session (dispatch://POMJU-812).
   test("appends no ledger state of this session to the conversation the host moved to", async () => {
-    const kept = legacyDispatchIssueSubject("INFRA-812", ">");
+    const kept = legacyDispatchIssueSubject("POMJU-812", ">");
     let live = SESSION;
     const session = await bootConsumer("consumer-state-not-carried", {
       hostSessionID: () => live,
@@ -21627,12 +21627,12 @@ describe("consumer delivery", () => {
     expect(JSON.stringify(appended)).not.toContain("notifications.team.moved-to");
   });
 
-  // The acceptance line of dispatch://INFRA-771: no Envoy session receives from a plain NATS
+  // The acceptance line of dispatch://POMJU-771: no Envoy session receives from a plain NATS
   // subscription. The whole set is asserted, never the presence of the two, so a core
   // subscription added back on any followed topic fails here.
   test("holds exactly its relay subject and its agent-stream control subject, and no other", async () => {
     const session = await bootConsumer("consumer-subscription-set");
-    await session.follow(legacyDispatchIssueSubject("INFRA-771", ">"));
+    await session.follow(legacyDispatchIssueSubject("POMJU-771", ">"));
     await session.follow("notifications.team.alpha");
     await settle();
     await session.tick();
@@ -21641,7 +21641,7 @@ describe("consumer delivery", () => {
     expect(session.subscriptions()).toEqual([`agentstream.${SESSION}.control`, RELAY]);
   });
 
-  // The listener's connection check (INFRA-626) is a core request on the session's own relay
+  // The listener's connection check (POMJU-626) is a core request on the session's own relay
   // subject that carries `Envoy-Probe: 1` and nothing else: an answer, or a second of silence,
   // reads connected, and the no-responders a server gives a subject nothing subscribes reads
   // stopped. The probe is no frame, so it reaches no card and moves no resume point, and the
@@ -21838,7 +21838,7 @@ describe("consumer delivery", () => {
   // part company, the ledger having bound the give-up to that session before it called - and the
   // notice is still held to the session it names: it is handed to nobody, the conversation the
   // host moved to is shown nothing of the frame, and the frame goes back to the stream for
-  // whoever takes ses_delivery next (dispatch://INFRA-771).
+  // whoever takes ses_delivery next (dispatch://POMJU-771).
   test("holds a give-up's notice to the session its frame was relayed to, showing the conversation the host moved to nothing of it", async () => {
     const moved = "ses_moved_notice";
     const warnings: logger.LogEvent[] = [];
@@ -21990,8 +21990,8 @@ describe("consumer delivery", () => {
   });
 
   test("a relayed subscription removal registers the session again without the topic, and stops taking its frames", async () => {
-    const issueTopic = legacyDispatchIssueSubject("INFRA-9", ">");
-    const issueSubject = legacyDispatchIssueSubject("INFRA-9", "issue.updated");
+    const issueTopic = legacyDispatchIssueSubject("POMJU-9", ">");
+    const issueSubject = legacyDispatchIssueSubject("POMJU-9", "issue.updated");
     const session = await bootConsumer("consumer-removal");
     await session.follow(issueTopic);
     await settle();
@@ -22005,10 +22005,10 @@ describe("consumer delivery", () => {
       topic: AGENT,
       dedupe_key: "dispatch-21",
       issued_at: 1,
-      payload_summary: "unsubscribed from INFRA-9",
+      payload_summary: "unsubscribed from POMJU-9",
       trace_id: "trace-dispatch-21",
       payload: JSON.stringify({
-        issue_key: "INFRA-9",
+        issue_key: "POMJU-9",
         type: "subscription.removed",
         actor: { kind: "user", id: "alice" },
         notify: true,
@@ -22192,8 +22192,8 @@ describe("consumer delivery", () => {
     const WHOLE = `${CARRIED}\n\nThe second paragraph, past where the event stopped.`;
     /** The topic the session follows, and the subject the comment event is published on: the
      *  frame reaches the session as its own consumer's relay of that subject. */
-    const CUT_TOPIC = legacyDispatchIssueSubject("INFRA-370", ">");
-    const CUT_SUBJECT = legacyDispatchIssueSubject("INFRA-370", "comment.created");
+    const CUT_TOPIC = legacyDispatchIssueSubject("POMJU-370", ">");
+    const CUT_SUBJECT = legacyDispatchIssueSubject("POMJU-370", "comment.created");
 
     /** The payload the event carries: the comment row with its body cut (`body_truncated`), or,
      *  for `omitted`, the stand-in a bus refusal leaves behind - the row's short top-level fields
@@ -22201,7 +22201,7 @@ describe("consumer delivery", () => {
     function commentPayload(omitted: boolean): Record<string, unknown> {
       const named = {
         id: CUT_COMMENT,
-        issue_key: "INFRA-370",
+        issue_key: "POMJU-370",
         author: { kind: "user", id: "alice" },
         created_at: "2026-11-02T00:00:00Z",
       };
@@ -22235,11 +22235,11 @@ describe("consumer delivery", () => {
         topic,
         dedupe_key: "dispatch-cut-1",
         issued_at: 1,
-        payload_summary: "INFRA-370 comment created",
+        payload_summary: "POMJU-370 comment created",
         payload: JSON.stringify({
           id: 1,
           seq: 1,
-          issue_key: "INFRA-370",
+          issue_key: "POMJU-370",
           type: "comment.created",
           actor: { kind: "user", id: "alice" },
           notify: true,
@@ -22251,7 +22251,7 @@ describe("consumer delivery", () => {
       });
     }
 
-    /** Boots a session following INFRA-370's topic, relays the comment event - cut, or the
+    /** Boots a session following POMJU-370's topic, relays the comment event - cut, or the
      *  stand-in when `omitted` - on the session's own consumer, the one path a frame reaches it
      *  by, and answers the comment read with `read`. Returns the card its agent was prompted
      *  with. */
@@ -22283,7 +22283,7 @@ describe("consumer delivery", () => {
         if (path !== `/api/v1/comments/${CUT_COMMENT}`) return undefined;
         reads.push(path);
         return response({
-          comment: { id: CUT_COMMENT, issue_key: "INFRA-370", body: WHOLE },
+          comment: { id: CUT_COMMENT, issue_key: "POMJU-370", body: WHOLE },
           replies: [],
         });
       });
@@ -22317,7 +22317,7 @@ describe("consumer delivery", () => {
           if (path !== `/api/v1/comments/${CUT_COMMENT}`) return undefined;
           reads.push(path);
           return response({
-            comment: { id: CUT_COMMENT, issue_key: "INFRA-370", body: WHOLE },
+            comment: { id: CUT_COMMENT, issue_key: "POMJU-370", body: WHOLE },
             replies: [],
           });
         },
@@ -22437,7 +22437,7 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
 });
 
 // What the envoy_send and envoy_publish tools tell the model about where a message went
-// (INFRA-626): a send to a stopped session is queued and never sent, and a publish counts the
+// (POMJU-626): a send to a stopped session is queued and never sent, and a publish counts the
 // other sessions it reaches, or says it reaches none.
 describe("the send and publish answers", () => {
   const SESSION = "ses_answers";

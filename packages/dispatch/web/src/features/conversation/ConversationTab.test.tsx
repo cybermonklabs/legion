@@ -2361,7 +2361,7 @@ for (const order of ["oldest", "newest"] as const) {
   });
 }
 
-// INFRA-869: a message that is nothing but a reference shows the reference's card under it, as
+// POMJU-869: a message that is nothing but a reference shows the reference's card under it, as
 // the margin's comments do.
 test("a message that is nothing but a reference shows its card", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
@@ -2395,7 +2395,7 @@ test("a message that is nothing but a reference shows its card", async () => {
   }
 });
 
-// INFRA-869: a turn's text is its message's, so its `#id` resolves against the question map the
+// POMJU-869: a turn's text is its message's, so its `#id` resolves against the question map the
 // server answers for that message (its issue's spec) - the one map the reference graph stores
 // its edges from.
 test("a Conversation turn links the `#q2` the question map of its message names", async () => {

@@ -104,7 +104,7 @@ func (r *installRig) runAs(exe string, args ...string) error {
 // foreignSocket names the socket install would reach when that is an absolute path outside the
 // rig's directory, and is nil otherwise. install answers the helper there, drains it, and runs
 // the rig's systemctl, which restarts nothing; so a drain of the machine's own helper leaves it
-// refusing every registration on the box. That happened on 2026-11-16 (dispatch://INFRA-3950):
+// refusing every registration on the box. That happened on 2026-11-16 (dispatch://POMJU-3950):
 // the rig named no XDG_RUNTIME_DIR, and a test that unset the socket drained
 // /run/user/<uid>/agent-secrets/helper.sock. A relative socket can reach no other user's
 // directory and install refuses it before it calls any helper.
@@ -125,7 +125,7 @@ func (r *installRig) foreignSocket() error {
 
 // TestInstallRigRefusesASocketItDidNotCreate: install drains the helper on the socket it reaches,
 // and the rig's systemctl restarts nothing, so a rig that reached the machine's own helper would
-// leave it refusing every registration on the box (dispatch://INFRA-3950). The rig's own socket,
+// leave it refusing every registration on the box (dispatch://POMJU-3950). The rig's own socket,
 // and the default socket under its own runtime directory, pass; the default a rig with no runtime
 // directory reaches, /run/user/<uid>/agent-secrets/helper.sock, and any other socket outside the
 // rig's directory, are refused, naming the socket.
@@ -642,7 +642,7 @@ func TestInstallUndrainsWhenTheRestartFails(t *testing.T) {
 // but the unit's main process is the one it was before, so the restart reached no process of the
 // helper install drained: install sends undrain, so that helper takes sessions again, and returns
 // an error saying the helper was not restarted. Before, install returned nil and left the helper
-// refusing every registration (dispatch://INFRA-3950).
+// refusing every registration (dispatch://POMJU-3950).
 func TestInstallUndrainsWhenTheRestartLeavesTheSameMainProcess(t *testing.T) {
 	r := newInstallRig(t)
 	if err := os.WriteFile(r.calls+".same-process", nil, 0o644); err != nil {

@@ -1,5 +1,5 @@
 -- 20261114081434_delivery_queued_state.up.sql
--- INFRA-626: a fourth delivery attempt state, `queued`. The Envoy listener now takes a message for
+-- POMJU-626: a fourth delivery attempt state, `queued`. The Envoy listener now takes a message for
 -- a session it knows and that is not running, stores it, and answers `state: "stopped"`
 -- (cmd/listener/api.go, sendHandler); the session reads it from its own consumer when it runs
 -- again, within the 72 hours the stream keeps it. Dispatch records such an attempt `queued` rather

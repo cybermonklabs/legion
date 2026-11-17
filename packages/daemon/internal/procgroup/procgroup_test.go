@@ -280,7 +280,7 @@ func pidOf(t *testing.T, path string) int {
 // the grace. The child here records its SIGTERM and keeps running, so it proves both halves at
 // once: the record is the SIGTERM, and the SIGKILL that finally ends it cannot have been sent
 // before the grace was over. A stop that sent SIGKILL alone, as this package's did before
-// dispatch://INFRA-3098, leaves a git no chance to remove the lock files it holds, since SIGKILL
+// dispatch://POMJU-3098, leaves a git no chance to remove the lock files it holds, since SIGKILL
 // runs no handler.
 func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 	dir := t.TempDir()
@@ -309,7 +309,7 @@ func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 // This is the issue itself, through the one package that stops a command. A git holds .git/index.lock
 // while it writes the index and removes it from its own signal handler; SIGKILL runs no handler, so
 // a git killed outright leaves that lock behind and every later git and jj of the repository fails
-// on it (dispatch://INFRA-3098). The child here stands in for that git: it takes a lock before it
+// on it (dispatch://POMJU-3098). The child here stands in for that git: it takes a lock before it
 // reports that it is running, removes it on SIGTERM and leaves. The lock must be gone by the time
 // the run ends, and the run must end well inside the grace rather than at the end of it, which is
 // what tells a grace that ends as soon as the group is gone from one slept in full on every stop.

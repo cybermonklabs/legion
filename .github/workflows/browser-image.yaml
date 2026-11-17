@@ -461,7 +461,7 @@ jobs:
   # into, which every consumer would keep running while this tree describes another image. A gate
   # on the bytes would read the attestation's source commit; none exists, by the controller's
   # decision, no such attack having been seen, and no by-hand reading stands in for it (one was
-  # written and withdrawn, dispatch://INFRA-1443). So this is a known limit of the row's gates,
+  # written and withdrawn, dispatch://POMJU-1443). So this is a known limit of the row's gates,
   # written down rather than papered over with prose.
   #
   # AGENTS.md's rule that an image is accepted only at a revision main contains is about

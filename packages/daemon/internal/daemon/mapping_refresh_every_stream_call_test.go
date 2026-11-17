@@ -36,7 +36,7 @@ func (h *eachHeldSubscription) set(ctx context.Context, repositories []ghrepo.Re
 // whichever of the read's calls it is. A refresh that unmaps a repository makes two: the superset
 // before the record snapshot and the narrowing after it (refreshMapping's first and third steps),
 // and the narrowing is the one a later edit is likeliest to fold back into the snapshot's
-// transaction, where it would sit across JetStream with the serializer held, which is INFRA-3169's
+// transaction, where it would sit across JetStream with the serializer held, which is POMJU-3169's
 // R2. TestTheMappingRefreshHoldsNoTransactionAcrossItsStreamCalls holds the first call alone, so it
 // passes whatever the later ones do; this holds every call, and at each one a fact's transaction,
 // which takes the same serializer, must still commit within a deadline of its own.

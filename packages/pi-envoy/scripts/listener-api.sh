@@ -1,7 +1,7 @@
 # shellcheck shell=bash disable=SC2154 # the variables named below are the caller's to set
 # listener-api.sh — the listener's HTTP surface as a smoke beside it drives it by hand: one raw
 # call either way (listener_get, listener_post), the three requests a client built before
-# INFRA-783 sends (old_register, old_claim, old_handback), and the readers each row states its
+# POMJU-783 sends (old_register, old_claim, old_handback), and the readers each row states its
 # outcome in — the fields of GET /v1/roles/<role> (role_field and the four readers over it,
 # role_unrenewed) and of GET /v1/registry/<session> (registered, unregistered).
 #
@@ -40,7 +40,7 @@ listener_post() {
 # record the role lookup reads a holder's liveness from. The delivery field asks for the
 # session's own consumer, which every registration this release answers asks for: a registration
 # that asks for no delivery is refused `409 not_requested`, since no session receives from a
-# plain NATS subscription any more (INFRA-771). What each row drives here is a client that names
+# plain NATS subscription any more (POMJU-771). What each row drives here is a client that names
 # no process, not one that reads from a path this release no longer has.
 old_register() {
   listener_post /v1/interests/subscribe "$(jq -nc --arg s "$1" --arg i "$2" \

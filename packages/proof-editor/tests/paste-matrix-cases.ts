@@ -6,7 +6,7 @@ import type { Clipboard } from "./paste";
  * fraction of the browser's time. The data tables below are that file's own, verbatim, each with
  * the comment that explains it; only the rows whose claim needs the server - Go's reading back
  * of the stored markdown, and the clipboard-to-server-to-reload path - stayed in the browser
- * (INFRA-1415), and the editor-side half of each of those is here too.
+ * (POMJU-1415), and the editor-side half of each of those is here too.
  *
  * Each case's `stored` is the markdown the e2e row asserted the *server* had stored, kept
  * verbatim so a reviewer can diff it against the deleted literal. Here the editor's own

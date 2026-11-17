@@ -40,7 +40,7 @@ export const bracketRun = `${"[".repeat(15_000)}${"]".repeat(15_000)}`;
 export const calloutBracketRun = `:::callout[${"[".repeat(15_000)}${"]".repeat(14_989)}`;
 export const markerChain = `${"- ".repeat(15_999)}x`;
 /** 2,000 unclosed `:::a` openers and then a 21,000-character line: with the body below, what
- *  froze a reader's tab for about a minute and 15 s (INFRA-581). Both are drawn by
+ *  froze a reader's tab for about a minute and 15 s (POMJU-581). Both are drawn by
  *  `nested-directive.e2e.ts`, which spells the row titles they are measured under. */
 export const directiveOpenersThenLongLine = `${":::a\n".repeat(2_000)}${"x".repeat(21_000)}`;
 /** 1,000 nested `:::a` openers and then as many closing lines. */

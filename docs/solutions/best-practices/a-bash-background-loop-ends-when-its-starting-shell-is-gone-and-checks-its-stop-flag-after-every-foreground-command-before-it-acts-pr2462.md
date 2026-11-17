@@ -16,7 +16,7 @@ related_issues:
 
 # A bash background loop ends when its starting shell is gone, and checks its stop flag after every foreground command before it acts
 
-Extends `docs/solutions/infra/a-shell-script-that-is-a-containers-pid-1-traps-term-sleeps-under-wait-and-exits-when-its-helper-dies-INFRA-560.md`.
+Extends `docs/solutions/infra/a-shell-script-that-is-a-containers-pid-1-traps-term-sleeps-under-wait-and-exits-when-its-helper-dies-POMJU-560.md`.
 That note says a shell runs a trap only after a foreground command returns, and so sleeps under `wait`.
 This one covers a watcher that acts on what it reads.
 

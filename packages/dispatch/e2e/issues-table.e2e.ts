@@ -1137,7 +1137,7 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
   }
 });
 
-// F2 (dispatch://INFRA-2542 item 1): a press on a panel's own prose focuses nothing, and the
+// F2 (dispatch://POMJU-2542 item 1): a press on a panel's own prose focuses nothing, and the
 // panel must still be the Escape key's owner afterwards.
 test("Escape closes a panel after a click on its own text", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });

@@ -1,7 +1,7 @@
 // packages/envoy/internal/brokerclient/pool_test.go
 //
 // The workload identity pool's whole path, which is an acceptance clause of
-// dispatch://INFRA-958: the credential this machine already holds is traded at Google's security
+// dispatch://POMJU-958: the credential this machine already holds is traded at Google's security
 // token service for a federated access token, that token is spent on one IAM Credentials
 // generateIdToken with includeEmail — the broker looks a machine up by the token's email claim,
 // so a mint without it names no account at all — and the identity token that mint answers is

@@ -12,7 +12,7 @@ status: active
 module: .github
 related_issues:
   - "sjawhar/legion#2599"
-  - "INFRA-429"
+  - "POMJU-429"
 ---
 
 # Deleting a published workspace package: the site list, the two meta-checks that prove it, and a census of the brand and the path

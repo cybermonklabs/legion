@@ -2,7 +2,7 @@
 # The rig of .github/workflows/ci.yaml's `tool-fallback` and `tool-fallback-arm` jobs, the live
 # proof that every tool install of this repository reads the second source .github/ci-tools.yaml
 # names when the first source does not serve the bytes, and that no unverified byte is ever
-# installed (dispatch://INFRA-1873).
+# installed (dispatch://POMJU-1873).
 # Those two jobs are this script's only callers, and it is this script's own exercise: every
 # verb below either prints a reading a job is judged on or refuses the job itself, so a rig that
 # misbehaves is a job that fails, and both jobs run on every change that touches what they prove
@@ -64,7 +64,7 @@
 #       credentials as arguments.
 #       It exists because this job spent 1952 s of its 1994 s inside retry ladders the proof
 #       does not read: a case here is a refusal this rig arranged, and a refusal arranged is a
-#       ladder nobody reads (dispatch://INFRA-2621). One case keeps the ladder, and
+#       ladder nobody reads (dispatch://POMJU-2621). One case keeps the ladder, and
 #       `ladder-report` below is the reading of it.
 #
 #   start-fault
@@ -362,7 +362,7 @@ PROBE_BOUND=15
 # `report` holds a case to, so a hung install would otherwise pass as a refusal.
 # A step held to its bound takes about 660 to 672 s. The longest single install measured over
 # 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z, before the ladders stopped
-# sleeping (dispatch://INFRA-2621), is 326 s (`install-jj` on slow runs), so this leaves 274 s
+# sleeping (dispatch://POMJU-2621), is 326 s (`install-jj` on slow runs), so this leaves 274 s
 # over the slowest healthy install there has been and at least 60 s under the fastest a held
 # step can be, and it reads no ladder's length. Since the ladders stopped sleeping, the slowest
 # timed install is far shorter: 42 s, the Bun second-source case, in job 130289341628.

@@ -1,6 +1,6 @@
 Experiment 8, DBOS: a wait for a person.
 Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
-from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+from the branch of dispatch://POMJU-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
 in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------
@@ -51,8 +51,8 @@ answer-sent: approved
 seconds-from-answer-to-terminal: 0.256
 sql-final-workflow_status: status=SUCCESS executor=exp8-gate-host version=exp8-code-1 queue=_dbos_internal_queue recovery_attempts=2 owner_xid=none output=eyJxdWVzdGlvbiI6Imlzc3VlPUlORlJBLTE1NDYgcXVlc3Rpb249YXBwcm92ZS10aGUtc3BlYyBhc2tlZC1ieS1waWQ9Mjg1MjQiLCJhbnN3ZXIiOiJhcHBy... (256 bytes of serialized value) error=empty
 sql-final-operation_outputs: 0:ask-the-person 1:DBOS.recv 2:DBOS.sleep 3:apply-the-answer
-sql-final-workflow-output-decoded: map[answer:approved decision:issue=INFRA-1546 answer=approved applied-by-pid=28531 question:issue=INFRA-1546 question=approve-the-spec asked-by-pid=28524 waitedSeconds:1.675433472]
-decision-line-1: issue=INFRA-1546 answer=approved applied-by-pid=28531
+sql-final-workflow-output-decoded: map[answer:approved decision:issue=POMJU-1546 answer=approved applied-by-pid=28531 question:issue=POMJU-1546 question=approve-the-spec asked-by-pid=28524 waitedSeconds:1.675433472]
+decision-line-1: issue=POMJU-1546 answer=approved applied-by-pid=28531
 notifications-rows-after-the-answer: 1 row(s), 0 of them unconsumed: DBOS marks a delivered message consumed rather than deleting it
 timed: row-bytes-for-one-open-wait: 1015
 timed: row-bytes-source: sum(pg_column_size(row)) over workflow_status, workflow_input, workflow_output and operation_outputs for this workflow

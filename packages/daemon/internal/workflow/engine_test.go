@@ -327,7 +327,7 @@ func TestCapturedApprovedReviewFlowsThroughConsumeToAccepting(t *testing.T) {
 // architect once, as a pr-blocked notice. The message names both halves of what the cap read:
 // how many of the implementer's rounds were counted against it, and how many conflict rounds
 // were not, so an architect woken by it can tell a loop of rejected work from a base branch that
-// kept moving (dispatch://INFRA-1442). Here no round was a conflict round, so the second number
+// kept moving (dispatch://POMJU-1442). Here no round was a conflict round, so the second number
 // is none, and the third rejection reaches the cap on its own.
 func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	pool := migratedPool(t)
@@ -730,7 +730,7 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 
 // A move back into planning writes planning's own status, in_progress, over the one the issue
 // stood at: every row writes its target phase's (PhaseStatus), so Dispatch stops showing
-// needs_review while Legion plans the issue again (dispatch://INFRA-714/spec R4). The queued
+// needs_review while Legion plans the issue again (dispatch://POMJU-714/spec R4). The queued
 // write carries the status the record held as the status it was observed at, so a person's move
 // since is not written over.
 func TestAMoveBackIntoPlanningWritesInProgress(t *testing.T) {
@@ -1044,7 +1044,7 @@ func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
 
 // A round the record opened while it held the head conflicting with its base is a conflict round,
 // and review_round_cap does not count it: the implementer answers such a head with a forward merge
-// nobody asked for, and the base branch moving is no loop of rejected work (dispatch://INFRA-1442,
+// nobody asked for, and the base branch moving is no loop of rejected work (dispatch://POMJU-1442,
 // main's #2946). The counted rounds therefore stand where the round before left them, and the cap
 // posts nothing — a notice is itself a way of counting, and it would wake the architect to decide a
 // round nobody spent. This is the one case of main's conflict_round_test.go that outlived the merge

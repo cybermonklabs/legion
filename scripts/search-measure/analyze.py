@@ -37,10 +37,10 @@ BASELINE = {
 BASELINE_SERIAL = {"p50": 1034, "p95": 1522, "n": 120}
 
 # FLOORS, ABSENT_CEILING and the defect ceiling below are the numbers this tree measured on the
-# committed cases. They are nobody's target: they were read off the runs this tree made, so
-# those runs pass them by construction. What makes them a check is the run after a change - a
-# floor missed there is a regression, where without the floors the same regression would have
-# printed as one more row of a table nobody diffed.
+# descriptor set (cases.json, README.md). They are nobody's target: they were read off the runs
+# this tree made, so those runs pass them by construction. What makes them a check is the run
+# after a change - a floor missed there is a regression, where without the floors the same
+# regression would have printed as one more row of a table nobody diffed.
 #
 # Each is set where the next harvest cannot cross it for a reason that is not the code, which
 # is a lesson this tree paid for. They were first read to a tenth of a point off one harvest of
@@ -90,15 +90,16 @@ LATENCY_REPORTED = ("p95", "p99")
 # exactly zero at every one of them, because the fix is that an issue carries its spec's words in
 # its own vector, and a single case defecting means that is no longer true.
 DEFECT_DEPTHS = (1, 3, 10, 20, 50)
-# COMMITTED is how many descriptors of each kind cases.json carries, which is the most a run can
-# measure, and what MINIMUM_N is a share of.
-COMMITTED = {1: 278, 3: 435}
+# DESCRIBED is how many descriptors of each kind the descriptor set carries (cases.json, kept in
+# the deployment's own Dispatch: README.md), which is the most a run can measure, and what
+# MINIMUM_N is a share of.
+DESCRIBED = {1: 278, 3: 435}
 # MINIMUM_N is how many cases of a kind a run must have measured for its rates to mean anything:
-# nine tenths of the committed descriptors of that kind. A run refuses a case whose text has
-# moved since the descriptors were built, and a few such refusals are normal; a run that measured
-# a handful measured a broken fixture, a half-loaded corpus or a server that stopped answering,
-# and its rates are void rather than a pass.
-MINIMUM_N = {kind: count * 9 // 10 for kind, count in COMMITTED.items()}
+# nine tenths of the descriptor set's descriptors of that kind. A run refuses a case whose text
+# has moved since the descriptors were built, and a few such refusals are normal; a run that
+# measured a handful measured a broken fixture, a half-loaded corpus or a server that stopped
+# answering, and its rates are void rather than a pass.
+MINIMUM_N = {kind: count * 9 // 10 for kind, count in DESCRIBED.items()}
 
 
 def main():
@@ -166,7 +167,7 @@ def check(rows, serial=None):
         if len(kind_rows) < MINIMUM_N[kind]:
             missed.append(f"VOID kind {kind}: {len(kind_rows)} cases measured, below the minimum of"
                           f" {MINIMUM_N[kind]}. A run this small says nothing and is no pass:"
-                          f" the committed set holds {COMMITTED[kind]} descriptors of this kind.")
+                          f" the descriptor set holds {DESCRIBED[kind]} descriptors of this kind.")
             print(f"  kind {kind}  n={len(kind_rows)}  VOID: below the minimum of {MINIMUM_N[kind]}")
             continue
         for depth in (1, 3, 10, 20):

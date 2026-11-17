@@ -508,7 +508,7 @@ test("a sign-out in another tab drops that person's writes here", async () => {
   }
 });
 
-// INFRA-292's precondition. The event feed's first subscription resumes from the sign-in check's
+// POMJU-292's precondition. The event feed's first subscription resumes from the sign-in check's
 // `event_head`, which is sound only while every read the page makes, and its socket, wait for that
 // answer: a read made before it could miss an event committed between the read and the head, and
 // the replay from the head would not bring that event back.

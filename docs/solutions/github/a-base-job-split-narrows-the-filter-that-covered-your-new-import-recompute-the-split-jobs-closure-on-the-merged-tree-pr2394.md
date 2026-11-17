@@ -33,7 +33,7 @@ for the case where main splits a job out of a broad filter.
 ## Evidence
 
 - Merge `6b29d18f` of main `e018f1d3` in sjawhar/legion#2394 brought main's split of the race job.
-  `envoy_go_race` keeps `'packages/envoy/**'`, and the new pmdoc race job, which INFRA-1408 later
+  `envoy_go_race` keeps `'packages/envoy/**'`, and the new pmdoc race job, which POMJU-1408 later
   removed, lists packages in a filter of its own (`.github/workflows/ci.yaml`).
 - This pull request makes pmdoc import `internal/dispatch/text` (`pmdoc/pointers.go`,
   `pmdoc/schema.go`) and `internal/dispatch/model` (`pmdoc/schema.go`). Main's pmdoc imports

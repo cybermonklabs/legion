@@ -1,6 +1,6 @@
 -- 0052_dispatch_issues.up.sql -- the daemon's mirror of what Dispatch says about every issue of
 -- its project: the status it stands at, the keys it waits on, and the Dispatch sequence the row
--- was observed at (INFRA-225).
+-- was observed at (POMJU-225).
 --
 -- Admission decides whether to admit a root, and the workflow whether to start a child's first
 -- phase, inside one transaction that does no I/O, so neither can ask Dispatch what an issue is

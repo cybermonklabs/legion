@@ -1632,7 +1632,7 @@ func (s *Server) watchExit(ctx context.Context, sess *Session) {
 // the moment its process goes, exactly as before, since nothing could claim it.
 //
 // Three minutes is well under the broker's own 15-minute lease, so a session that never comes
-// back has its enrollment ended here rather than left to lapse (dispatch://INFRA-1167).
+// back has its enrollment ended here rather than left to lapse (dispatch://POMJU-1167).
 //
 // It belongs to the Server, not to a package variable, so a test can choose it without writing
 // a global that the Server's own goroutines read — which is a data race, and was one: `go test

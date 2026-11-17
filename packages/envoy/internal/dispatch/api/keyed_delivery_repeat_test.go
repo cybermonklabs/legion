@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// INFRA-258. An issue message aimed at a session delivers inside its request, so a process that
+// POMJU-258. An issue message aimed at a session delivers inside its request, so a process that
 // died between its commit and its answer owes that delivery and must never make the message twice.
 // Its key holds the message, so the repeat past the lease neither runs the write again nor answers
 // KEY_COMMITTED: it sends what is owed, once, and answers the message with its deliveries.

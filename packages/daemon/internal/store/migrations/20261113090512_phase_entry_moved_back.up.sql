@@ -1,6 +1,6 @@
 -- 20261113090512_phase_entry_moved_back.up.sql — one value beside the phase entry that
 -- 20261111225552_phase_entry added: whether the start that raised the entry a role's phases row
--- names was a move back to an earlier phase (INFRA-3146).
+-- names was a move back to an earlier phase (POMJU-3146).
 --
 -- The completion route takes a completion of an earlier entry when the commit it names is the
 -- head the record holds, because a verdict is a fact about a head: the phase was entered again at
@@ -53,7 +53,7 @@
 -- column: its upsert names no such column, so a row it raises an entry on keeps what the column
 -- held, and its insert takes the default, false. Store.Migrate does not run an applied migration
 -- again, so after the roll forward an entry that release raised by a move back can read false,
--- and a behind completion at the head the move back left unmoved is then taken (INFRA-3146's R4,
+-- and a behind completion at the head the move back left unmoved is then taken (POMJU-3146's R4,
 -- the case this column exists to refuse). So before the roll forward, with the older daemon
 -- stopped and this release not yet serving (the column is already there: this migration ran when
 -- this release first booted), run `update phases set entry_moved_back = true;`. Every row then

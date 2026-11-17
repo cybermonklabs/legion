@@ -73,7 +73,7 @@ export function UnreachableRouteMarker({
  * it is silent, so this is not the warning `UnreachableRouteMarker` paints, and it is not the
  * `unknown` of a listener that could not judge the route either - the listener judged it and
  * said the session is stalled. It therefore shares the warning chip's shape, to sit in the same
- * row, in the muted tone a state that needs no action wears (dispatch://INFRA-392).
+ * row, in the muted tone a state that needs no action wears (dispatch://POMJU-392).
  */
 export function UnresponsiveRouteMarker({
   issue,

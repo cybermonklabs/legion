@@ -3,7 +3,7 @@ import { boxesApart } from "./layout";
 import { type BrowserContext, expect, type Locator, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 
-// The iPhone 13 viewport INFRA-95 measured the landing fault at. At the `phone` layout
+// The iPhone 13 viewport POMJU-95 measured the landing fault at. At the `phone` layout
 // `phone-conversation.e2e.ts` uses (390x844) the composer's top sits near y603, below a newest
 // turn left at y≈515 at the top of the page, so a landing row could not fail there.
 const iphone = { height: 664, width: 390 };
@@ -172,7 +172,7 @@ async function openWithReadLast(
   return page;
 }
 
-// INFRA-303: the Conversation's list is built from three reads, asks, comments and messages, and
+// POMJU-303: the Conversation's list is built from three reads, asks, comments and messages, and
 // shows nothing until all three answer. The first placement on the newest turn must not be spent
 // while one of them is still pending: a newest message known from the messages read before the
 // asks read answers otherwise lands the reader at the top of the page, the newest message under
@@ -214,7 +214,7 @@ test("on a phone, the Conversation opens with its newest message in view whichev
   }
 });
 
-// INFRA-303's second path: a read that fails shows "Could not load the conversation." in the
+// POMJU-303's second path: a read that fails shows "Could not load the conversation." in the
 // list's place, and the first placement must not be spent on that text either. When a later
 // refetch brings the list without changing which conversation is newest, nothing else would
 // bring the reader to it. The refetch here is TanStack Query's own refetch on focus: the
@@ -270,7 +270,7 @@ test("on a phone, a Conversation whose read failed opens on its newest message o
   }
 });
 
-// INFRA-303: a reader who leaves the Conversation while it shows only "Loading conversation…"
+// POMJU-303: a reader who leaves the Conversation while it shows only "Loading conversation…"
 // was never in the list, so coming back is a first open, not a return to a place: they land on
 // the newest conversation. Returning to a tab they had scrolled still restores that scroll;
 // `doc.e2e.ts` 'tab round-trips keep one document connection, the typed text, and the

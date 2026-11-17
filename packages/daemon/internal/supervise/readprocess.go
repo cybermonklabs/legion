@@ -80,7 +80,7 @@ const processReadBound = 5 * time.Second
 // Held in memory alone, the clear would be lost at a restart, the sweep's next report of the live
 // process would find nothing to clear, and the process's next real death would go uncounted
 // toward the deaths limit. The read is not the refusal a caller gives on its answer
-// (dispatch://INFRA-3161 R3): that refusal stops, suspends, forgets, takes back and starts
+// (dispatch://POMJU-3161 R3): that refusal stops, suspends, forgets, takes back and starts
 // nothing (api's refuseWorkingClaim). Nothing else is judged: no death, no displacement, no
 // repoint, no relaunch and no timer armed. What the answer means is the caller's — the
 // recovery it is read for suspends the claim and starts it again — and a read that relaunched

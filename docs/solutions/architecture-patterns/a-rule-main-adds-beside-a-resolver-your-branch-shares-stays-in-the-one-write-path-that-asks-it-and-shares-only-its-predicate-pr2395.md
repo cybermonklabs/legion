@@ -49,5 +49,5 @@ forward merge brings a new rule main wrote next to the old copy.
 - Nearest documents:
   `docs/solutions/legion/a-forward-merge-into-a-branch-that-moved-files-ports-mains-edits-to-the-new-paths-LEGION-247.md`
   ports main's edits to moved files, which here would have pushed the rule into the resolver;
-  `docs/solutions/architecture-patterns/read-display-only-data-in-the-handler-that-shows-it-not-in-a-query-helper-other-callers-share-INFRA-569.md`
+  `docs/solutions/architecture-patterns/read-display-only-data-in-the-handler-that-shows-it-not-in-a-query-helper-other-callers-share-POMJU-569.md`
   weighs callers on cost, not on which write they may make.

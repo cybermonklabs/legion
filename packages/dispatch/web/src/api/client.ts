@@ -332,7 +332,7 @@ export function isCapExceeded(error: unknown): error is ApiError {
 }
 
 // The server refusing a write because its text holds a decision block, which nobody can answer
-// where it stands (`itemblocks.DecisionBlock`, INFRA-1201). The refusal names the block and says
+// where it stands (`itemblocks.DecisionBlock`, POMJU-1201). The refusal names the block and says
 // where the question belongs, so a page shows those words rather than wording of its own; a
 // retry of the same text is refused again, as it is for a bound.
 export function isDecisionBlockInBody(error: unknown): error is ApiError {

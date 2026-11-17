@@ -307,7 +307,7 @@ test("a pane the layout the window is drawn from does not name is still one of t
   // Each session reports the layout it last read, so the report heard from most recently can
   // carry a layout older than the window: here the three-pane string, read before the split
   // that made `%7`. The window is drawn from that string, and the model still holds `%7`, so
-  // the page has the session to name (dispatch://INFRA-883, k11).
+  // the page has the session to name (dispatch://POMJU-883, k11).
   const model = machineGrouping(
     [
       session({

@@ -106,7 +106,7 @@ type Kubernetes struct {
 	// into a volume of the pod's own, read-only in the pod's launcher container, and every role's
 	// start wrapper installs from that directory before Oh My Pi starts — so a pod's skills are the
 	// repository's default branch as GitHub names it, as of the pod's start, with no image rebuild,
-	// and no role's launch ever clones or fetches anything (dispatch://INFRA-1300). The clone takes
+	// and no role's launch ever clones or fetches anything (dispatch://POMJU-1300). The clone takes
 	// that default branch and no other: a deployment whose skills must come from a branch of
 	// another name needs a repository whose default branch is that one. The zero repository when
 	// the file names no skills repository, in which case a pod runs two init containers and no
@@ -195,7 +195,7 @@ func DefaultIdleRelease() IdleReleaseConfig { return defaultIdleRelease }
 
 // MemoryGuardConfig is `runtime.kubernetes.memory_guard`: the memory guard's settings, by the
 // kind of pod a launcher's guard runs in. IssuePods is every issue pod's; the mapping is keyed by
-// pod kind so the project controller's pod can have a block of its own beside it (INFRA-3531).
+// pod kind so the project controller's pod can have a block of its own beside it (POMJU-3531).
 type MemoryGuardConfig struct {
 	IssuePods MemoryGuardPodConfig
 }
@@ -349,7 +349,7 @@ func below(request, limit string) bool {
 // defaultResources is the two pods' reservations when the file sets none. An issue pod gets 3 CPU
 // and 19Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request. Under gVisor
 // every process of a pod uses whatever the pod has free, so the pod's peak must fit its one
-// number: an INFRA issue pod measured at 1-minute resolution used its whole 19Gi for minutes while
+// number: an POMJU issue pod measured at 1-minute resolution used its whole 19Gi for minutes while
 // its reviewer ran a review (2026-10-21). The disk limit bounds what the pod writes to the node's
 // disk; the request, which the scheduler fits to the node's allocatable ephemeral storage — its
 // root volume, which nobody has sized for these pods — binds scheduling to little. An operator who
@@ -1054,7 +1054,7 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 // readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind, of which
 // this release knows `issue_pods` alone (readMemoryGuardPod), and the default (DefaultMemoryGuard)
 // for every member the file leaves out, so the guard runs wherever the file says nothing. Any
-// other member is refused by name: `controller_pod` is INFRA-3531's to add, and a loader that
+// other member is refused by name: `controller_pod` is POMJU-3531's to add, and a loader that
 // accepted it unread would let an operator believe the controller's pod guarded.
 func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 	const key = kubernetesKey + ".memory_guard"
@@ -1774,7 +1774,7 @@ const (
 // login, under `cloudsql-iam`. Each kind names its own key and refuses the other's: an inert key is
 // refused, never ignored. The store is required, and must keep sessions in a database: `pvc`,
 // which an omitted `session_store` also settles to, is refused rather than taken as a silent default
-// (INFRA-80). It kept each session as a file on the issue's disk, and that disk is now the pod's
+// (POMJU-80). It kept each session as a file on the issue's disk, and that disk is now the pod's
 // own generic ephemeral volume, deleted with it: the file would die with the pod, the next
 // launch's resume would fail on the missing file (internal/launcher's sessionWritten), and three
 // such failures retire the claim.
@@ -1790,7 +1790,7 @@ func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store,
 	switch kind {
 	case ompsessions.StorePostgres, ompsessions.StoreCloudSQLIAM:
 	case ompsessions.StoreVolume:
-		return ompsessions.Store{}, errors.New(sessionStoreKey + " must name a store that keeps sessions in a database, and is required (INFRA-80):" +
+		return ompsessions.Store{}, errors.New(sessionStoreKey + " must name a store that keeps sessions in a database, and is required (POMJU-80):" +
 			" an issue pod's disk is the pod's own ephemeral volume, deleted with the pod, so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it," +
 			" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures retire the claim")
 	default:

@@ -1,4 +1,4 @@
-// write_advice_declined_asks_test.go proves INFRA-1282's R6: a session that opens a question on
+// write_advice_declined_asks_test.go proves POMJU-1282's R6: a session that opens a question on
 // an issue holding a declined ask is told so by the write itself - which question a person
 // declined, and what they wrote - so the same question is not put to them again. Only a write
 // that opens a question carries it - the ask route, and an edit that adds an ask block - and it

@@ -328,7 +328,7 @@ func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
 	}
 }
 
-// TestAttributionTakesTheHeadBranchOverTheTitle: the first of the two moves R8 of INFRA-1522
+// TestAttributionTakesTheHeadBranchOverTheTitle: the first of the two moves R8 of POMJU-1522
 // makes. A branch name is an act that names the issue — someone branched for it — while a key
 // in a title is a mention, which a pull request that follows or reverts another issue's work
 // carries as readily as one that does it. Rule 1 credited this pull request to the issue its

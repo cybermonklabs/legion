@@ -306,7 +306,7 @@ type artifactClear struct {
 // (refs.ForgetDocument). document_search_backfill's one row is not cleared, though it carries an
 // artifact_id: that id is the search fill's keyset cursor, a position in the fill and not a row of
 // the document, and the boot's fill reads that row every time, so deleting it when the cursor
-// named the removed document left no Dispatch process able to start (dispatch://INFRA-4018).
+// named the removed document left no Dispatch process able to start (dispatch://POMJU-4018).
 //
 // Five more keys to artifacts(id) carry no cascade - asks.artifact_id, asks.block_artifact_id,
 // comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement

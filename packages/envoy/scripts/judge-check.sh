@@ -2,7 +2,7 @@
 # packages/envoy/scripts/judge-check.sh
 #
 # Runs one before_merge check of the model judge's verification document
-# (dispatch://INFRA-1353/artifact/verification-md) end to end and says whether it passed, so
+# (dispatch://POMJU-1353/artifact/verification-md) end to end and says whether it passed, so
 # that the implementer and the tester run the same command and read the same evidence. It is
 # scripts/airlock-check.sh for the judge's own seven checks - k10, k10b, k10c, k10d, k10e,
 # k10f and k10g - and copies that script's shape: the same stack, the same helpers, the same
@@ -75,7 +75,7 @@ usage() {
 	cat <<'EOF'
 usage: judge-check.sh <id> [--keep-stack]
 
-Runs one before_merge check of dispatch://INFRA-1353/artifact/verification-md and prints, for
+Runs one before_merge check of dispatch://POMJU-1353/artifact/verification-md and prints, for
 each property the check's outcome sentence names, what it expected beside what it got.
 
   <id>           k10, k10b, k10c, k10d, k10e, k10f or k10g

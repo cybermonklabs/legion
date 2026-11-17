@@ -25,7 +25,7 @@
 # latest of those at or before it.
 #
 # The queries are every create inside the window, and each pair named with --pair, whose query
-# issue is replayed whatever its creation time: the four pairs INFRA-1160's Verification document
+# issue is replayed whatever its creation time: the four pairs POMJU-1160's Verification document
 # names were filed before the window.
 #
 # The file is production data: it is written with mode 600, and nothing from it is committed.

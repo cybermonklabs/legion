@@ -86,7 +86,7 @@ func (s *supervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 // prompt that starts that turn is on its way and the adoption it goes behind may be rewriting the
 // shared working copy at this moment, which is the very thing this answer guards. Without it two
 // phase tasks to two roles of one issue each read the other as idle and adopt together
-// (dispatch://INFRA-314), and a turn's end wakes a held claim whose own next send has already
+// (dispatch://POMJU-314), and a turn's end wakes a held claim whose own next send has already
 // started.
 //
 // It reads each machine's published claim rather than any record of turns kept beside them, and

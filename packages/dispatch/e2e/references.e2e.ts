@@ -83,7 +83,7 @@ test("an issue and its ask show a cross-project message and structural backlinks
   });
 
   // The card is drawn where its width draws it: in the row below 1280 px, and in the Inbox's
-  // reading column from there (INFRA-575). So the resize unmounts the node resolved at 390 px
+  // reading column from there (POMJU-575). So the resize unmounts the node resolved at 390 px
   // and draws a fresh card in the column, with its own collapsed backlink panel: resolve the
   // card again, and open that panel again, before the shot.
   await page.setViewportSize({ height: 900, width: 1440 });
@@ -160,7 +160,7 @@ test("Inbox cards gain and move their backlink control as writes elsewhere cite 
   await page.clock.install();
   await page.goto("/");
   // The backlink control is the card's. From 1280 px the Inbox draws the card of the row the
-  // reader has selected (INFRA-575), so each question is read on its own card, in turn.
+  // reader has selected (POMJU-575), so each question is read on its own card, in turn.
   const openCard = async (askId: string) => {
     const card = await askCard(page, askId);
     await expect(card).toBeVisible();
@@ -422,7 +422,7 @@ test("an Inbox of twenty asks reads no backlinks until a card is opened", async 
 
   await page.goto("/");
   // Twenty questions, twenty rows. From 1280 px one of them is also the card the reading pane
-  // draws (INFRA-575): that card is part of the Inbox's first paint and still reads no
+  // draws (POMJU-575): that card is part of the Inbox's first paint and still reads no
   // backlinks - it shows its count, which the Inbox response carried, behind a closed control.
   await expect(inboxList(page).locator("[data-inbox-row]")).toHaveCount(20);
   await expect(inboxList(page).getByText("Decision 20?")).toBeVisible();

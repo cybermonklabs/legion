@@ -14,7 +14,7 @@ import (
 // the comment's body whole rather than a summary of it, so one anchored comment can spend a
 // quarter of a record's budget in ASCII and up to three times that outside it. This test holds
 // the anchored path at a body of six 20,000-unit paragraphs: the comment is accepted, and the
-// margin record read back carries it whole (INFRA-370).
+// margin record read back carries it whole (POMJU-370).
 func TestAnchoredCommentOfManyBlocksReachesTheMarginWhole(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Anchored body bounds", "The quick brown fox")

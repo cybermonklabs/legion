@@ -5,7 +5,7 @@ package supervise
 // kept whole — the id and the resume path both — because a done issue is reopened, a person moving
 // it back or a production check failing, and its roles are then started again on the same issue; a
 // session dropped here would start each as a fresh agent that has read none of the work it is
-// continuing (dispatch://INFRA-714 R8, A10). The id is what the Sandbox-volume reap guard reads as
+// continuing (dispatch://POMJU-714 R8, A10). The id is what the Sandbox-volume reap guard reads as
 // its evidence, and the path is the only handle either runtime resumes by, so dropping the path
 // would drop the resume whatever the id said.
 //
@@ -134,7 +134,7 @@ func TestAnIssueCloseOfARetiredClaimKeepsItsSessionAndWritesNothing(t *testing.T
 
 // A closed claim the workflow starts again — the child set back to todo, a production check
 // reopening it — comes back as the worker that did the work, not as a fresh agent that has read
-// none of it (dispatch://INFRA-714 A10). The resume path the close kept is what decides it: the
+// none of it (dispatch://POMJU-714 A10). The resume path the close kept is what decides it: the
 // session id reaches no runtime as a resume handle, so a close that cleared the path would spawn
 // however carefully the id was kept.
 func TestAReopenedClaimResumesTheSessionItKept(t *testing.T) {
@@ -159,7 +159,7 @@ func TestAReopenedClaimResumesTheSessionItKept(t *testing.T) {
 // that wrote it to the issue pod's own disk, which the close deletes with the pod — the reopen
 // still asks for the resume, and the answer is what reports the loss. The claim starts a fresh
 // agent in the same try, charged nothing, with the issue, its architect and the controller told
-// and the agent itself told in its own prompt (dispatch://INFRA-714 R8). That is the whole reason
+// and the agent itself told in its own prompt (dispatch://POMJU-714 R8). That is the whole reason
 // the close keeps a path it cannot be sure of: clearing it would reach this same fresh agent in
 // silence, and nothing would ever say that work had been left behind.
 func TestAReopenedClaimWhoseSessionTheStoreLostStartsFreshAndReportsIt(t *testing.T) {

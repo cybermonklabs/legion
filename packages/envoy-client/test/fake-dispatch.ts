@@ -1,5 +1,5 @@
 // One stand-in Dispatch for every test that needs one, in place of the copy each package grew of
-// its own (INFRA-1414). Two entry points share one route table and one request recorder:
+// its own (POMJU-1414). Two entry points share one route table and one request recorder:
 //
 //   * `fakeDispatchFetch` — a `fetch`-shaped handler for an injected `fetchImpl` or a
 //     `globalThis.fetch` override, recording every call;

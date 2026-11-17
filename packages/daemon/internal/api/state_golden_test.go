@@ -1030,10 +1030,10 @@ func TestStateGolden(t *testing.T) {
 }
 
 // Every plugin parses the state with the schema of the contract it was built at, and a
-// Kubernetes deployment relaunches no stale session (INFRA-945 spec R10), so a session on the
+// Kubernetes deployment relaunches no stale session (POMJU-945 spec R10), so a session on the
 // contract before this one reads this daemon's state for as long as its pod lives: a key added
 // to a session-facing body refuses the whole of it at every plugin whose answer side predates
-// INFRA-1048, and is dropped at every plugin after it, which loses the field rather than the
+// POMJU-1048, and is dropped at every plugin after it, which loses the field rather than the
 // state. `suspendedBy` is the key this change was tempted to add, and it belongs to the
 // operator claim routes alone; the guard beside `legion-api.test.ts`'s schema tests holds the
 // same property on the schema side.
@@ -1177,7 +1177,7 @@ func TestRegisterResponseGolden(t *testing.T) {
 
 // The ready request is what the plugin posts once its session can be prompted, and again carrying
 // the capability report the session measured at an idle tick of the 5 s interval it already runs
-// (LEGION-663, INFRA-927): the one request body of the claim routes the contract pins, since the
+// (LEGION-663, POMJU-927): the one request body of the claim routes the contract pins, since the
 // report is the one with a shape of its own.
 func TestReadyRequestGolden(t *testing.T) {
 	golden(t, "ready.json", claim.ReadyRequest{

@@ -16,7 +16,7 @@ related_issues:
 
 # A pinned step text proves no partition: prove a two-step package split by set equality
 
-Extends docs/solutions/testing/a-race-lane-counts-only-once-it-covers-the-new-goroutines-a-canary-fails-it-and-a-race-injected-into-the-covered-code-fails-it-INFRA-271.md.
+Extends docs/solutions/testing/a-race-lane-counts-only-once-it-covers-the-new-goroutines-a-canary-fails-it-and-a-race-injected-into-the-covered-code-fails-it-POMJU-271.md.
 
 That note's step 1 says where to edit when you add a package to the daemon's race lane
 — `DAEMON_RACE_PACKAGES` in `.github/scripts/ci_job_reads.py` and both daemon steps of
@@ -66,7 +66,7 @@ Two mechanics of the checker, for whoever runs it:
 
 ## Evidence
 
-sjawhar/legion#2726 (dispatch://INFRA-1052) stopped the `test` job running `packages/daemon`'s
+sjawhar/legion#2726 (dispatch://POMJU-1052) stopped the `test` job running `packages/daemon`'s
 four concurrent packages twice.
 The plain step became
 `go list ./... | grep -Ev '/(internal/daemon|internal/record|internal/sessionproxy|internal/launcher)$' | xargs go test -count=1 -timeout 15m`

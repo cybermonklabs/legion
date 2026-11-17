@@ -42,7 +42,7 @@ const HISTORY: PriorityAct[] = [
     at: "2026-11-11T09:00:00Z",
     field: "owner",
     issue: "",
-    value: "INFRA controller",
+    value: "POMJU controller",
   },
   {
     actor: bob,
@@ -125,7 +125,7 @@ test("everything lists the priority's own history, newest first, with each actor
     { at: "2026-11-12T12:00:00Z", who: "bob", words: "retracted the relation to the issue CORE-4" },
     { at: "2026-11-12T11:00:00Z", who: "alice", words: "related the issue CORE-4" },
     { at: "2026-11-12T10:00:00Z", who: "alice", words: "moved the order" },
-    { at: "2026-11-11T09:00:00Z", who: "bob", words: "wrote the owner “INFRA controller”" },
+    { at: "2026-11-11T09:00:00Z", who: "bob", words: "wrote the owner “POMJU controller”" },
     {
       at: "2026-11-11T08:00:00Z",
       who: "bob",

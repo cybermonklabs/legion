@@ -17,7 +17,7 @@ import (
 
 // The resume of a root a person answered raises the architect's entry in the same run
 // (workflow.Engine.ResumeAwaitedRoot), and its task is what the architect owes now: which ask was
-// answered and where to read it (dispatch://INFRA-2614 R3, R4). Here the architect's claim still
+// answered and where to read it (dispatch://POMJU-2614 R3, R4). Here the architect's claim still
 // holds the root's first task, entry 1, unconfirmed: it was sent and acknowledged, and the
 // architect's process ended before any turn took it, which ends the wait for that prompt's result
 // with the process (supervise's letGo). The root's record is put in its wait directly, as

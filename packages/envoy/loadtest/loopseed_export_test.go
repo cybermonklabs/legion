@@ -504,7 +504,7 @@ func loopSeedExportResolve(t *testing.T, args ...string) (loopSeedExportFlags, e
 
 // TestLoopSeedExportReadsItsPostgresURLFromAFile: this phase runs on the pod that drives the
 // deployment, so a -pg value is an argument anything that can list processes there reads for as
-// long as the export runs (dispatch://INFRA-988). The file's content with its trailing white
+// long as the export runs (dispatch://POMJU-988). The file's content with its trailing white
 // space trimmed is the URL, and the four refusals are the ones every credential of this package
 // is read with (readCredentials).
 func TestLoopSeedExportReadsItsPostgresURLFromAFile(t *testing.T) {

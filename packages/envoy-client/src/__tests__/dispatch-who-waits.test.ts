@@ -16,7 +16,7 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 // question without a second command.
 //
 // The rows read either a printed line or a text a person reads, and their titles carry the words
-// the checks of dispatch://INFRA-3090 filter on: `prints the person`, `states the rule`, and
+// the checks of dispatch://POMJU-3090 filter on: `prints the person`, `states the rule`, and
 // `no text states the old rule` for the one row that reads the whole tree.
 // The shape is `dispatch-asked-of.test.ts`'s: one stub Dispatch server answering as the server
 // answers, driven through `runDispatchCli`, with a temporary state directory per row.
@@ -464,7 +464,7 @@ test.each([
 // its assignee), and its questions reach the project's default assignee, so none of these texts
 // may say they reach nobody, reach only the Inbox's Unassigned filter, or that a project's default
 // exists only where a person set one. Each phrase below is the false claim one of these texts made
-// before INFRA-3090, read over the text with its whitespace collapsed as the dispatch pages above
+// before POMJU-3090, read over the text with its whitespace collapsed as the dispatch pages above
 // are.
 const UNASSIGNED_REACHES_NOBODY_PHRASES = [
   "reach nobody's Inbox",
@@ -494,7 +494,7 @@ test.each([
 // A sentence is read as prose: each line loses its comment marker and the quotes of a string
 // concatenated across lines, so a phrase wrapped over two lines of a comment or a tool description
 // is still one phrase. The two-step wordings below are the ones this repository used before
-// INFRA-3090; each is a step list that a sentence naming the project's default (`default`) carries
+// POMJU-3090; each is a step list that a sentence naming the project's default (`default`) carries
 // to its third step, so only a sentence without one is a hit. The no-person wordings count only in
 // a sentence about a question (an ask, a question, an approval request), since `reaches nobody`
 // is also what this repository says of a frame published to an empty room.
@@ -633,12 +633,12 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
   [
     "packages/envoy/internal/dispatch/store/migrations/20261109221325_asks_asked_of.up.sql",
     "Null means the ask waits on the assignee of its issue.",
-    "the rule as it stood when INFRA-1576 added asked_of",
+    "the rule as it stood when POMJU-1576 added asked_of",
   ],
   [
     "packages/envoy/internal/dispatch/store/migrations/20261109221325_asks_asked_of.up.sql",
     "One expression in the server, coalesce(a.asked_of, i.assignee), gives the person",
-    "the rule as it stood when INFRA-1576 added asked_of",
+    "the rule as it stood when POMJU-1576 added asked_of",
   ],
   // Tests that name the old rule to catch it.
   [

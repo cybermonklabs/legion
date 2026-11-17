@@ -31,7 +31,7 @@ boundBlockNesting();
  * micromark-extension-directive's flow construct, which tokenized a block's content once per block
  * around it. It tokenizes the content once, and blocks nest at most `maxDirectiveNesting` (32)
  * deep, an opener inside that many reading as the text it is, which bounds what each line costs
- * (INFRA-581). It emits the package's token types, so `mdast-util-directive` builds the nodes from
+ * (POMJU-581). It emits the package's token types, so `mdast-util-directive` builds the nodes from
  * them as before.
  *
  * Loading this module also holds micromark's own lists and quotes to the document service's block

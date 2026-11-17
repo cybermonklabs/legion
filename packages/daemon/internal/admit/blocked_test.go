@@ -724,7 +724,7 @@ func TestATreeThatRanAndCameBackIsAdmittedOnTheMarkItsRunEarned(t *testing.T) {
 // never opened is its architect writing the design, the whole of that tree's work, so its links
 // hold it at nothing: `blocked` does not name it and it keeps its row. Once that gate opens its
 // own first phase is what waits, and an unfinished blocker holds that phase like any other
-// (INFRA-3036): the root gives its row back, `blocked` names it, and it starts when the blocker
+// (POMJU-3036): the root gives its row back, `blocked` names it, and it starts when the blocker
 // is done. A waiting root and a held child with exactly the same links are held throughout, and
 // both are named, before the gate opens and after.
 func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {

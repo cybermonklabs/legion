@@ -148,7 +148,7 @@ test("a mention receipt says whether the mention reached its target", () => {
   expect(activityDescription(commentDelivery({ state: "failed" }))).toEqual([
     "could not deliver a comment mention to session:planner",
   ]);
-  // INFRA-626: the listener holds a queued mention for a session that is not running, which is
+  // POMJU-626: the listener holds a queued mention for a session that is not running, which is
   // neither a delivery nor a refusal, and the line says so as every queued attempt does.
   expect(activityDescription(commentDelivery({ state: "queued" }))).toEqual([
     "queued a comment mention for session:planner, which is stopped; it gets the message if it runs again within 72 hours",

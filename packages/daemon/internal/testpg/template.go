@@ -164,7 +164,7 @@ func dropInBackground(name string) {
 		// member of pg_signal_backend as soon as one session belongs to another role — an
 		// autovacuum worker, which attaches to a database a test has just filled. Every Legion
 		// pod shares one server whose test login holds neither privilege, so without the wait
-		// this drop fails the package (dispatch://INFRA-714 round six).
+		// this drop fails the package (dispatch://POMJU-714 round six).
 		if err := testdb.Drop(context.Background(), shared.admin, name); err != nil {
 			shared.dropMu.Lock()
 			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))

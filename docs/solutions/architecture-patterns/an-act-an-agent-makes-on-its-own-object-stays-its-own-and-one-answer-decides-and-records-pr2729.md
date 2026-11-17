@@ -40,7 +40,7 @@ only an act the actor could not make on its own becomes the person's.
 
 ## Evidence
 
-INFRA-1017 let an agent holding its person's Dispatch token act for them. Review round 1's one
+POMJU-1017 let an agent holding its person's Dispatch token act for them. Review round 1's one
 correctness finding: `editAsk` and `changeAskFollower` took the person path for every credential
 holding `person`, so an agent rewording its own ask wrote `ask.edited` with `actor.kind: user`,
 and `events.Broker.Notify` sent the asking session its own reword back as the person's.

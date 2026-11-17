@@ -14,7 +14,7 @@ module: packages/envoy
 
 # A forward to a captured subject is stored too, and its retries share one MsgId per recipient
 
-**Written before dispatch://INFRA-771, when a forward also drew a receipt.** Since that change a
+**Written before dispatch://POMJU-771, when a forward also drew a receipt.** Since that change a
 forward is stored only: the listener waits for the stream's acknowledgement alone and no session
 answers a receipt (`packages/envoy/AGENTS.md`, "Session consumers"). Everything below about the
 stored copy — one `Nats-Msg-Id` per message and recipient, the topic/subject mismatch as the

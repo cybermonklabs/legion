@@ -12,7 +12,7 @@ date: 2026-10-25
 status: active
 module: scripts/e2e
 related_issues:
-  - "INFRA-251"
+  - "POMJU-251"
   - "sjawhar/legion#2163"
 ---
 
@@ -44,11 +44,11 @@ than the whole budget, the wait is a single attempt wearing a deadline's clothes
 - **A test that drives a wall-clock bound needs its runner's own timeout raised.** Bun's default
   per-test timeout is 5 s and applies even while a synchronous `Bun.spawnSync` blocks.
 
-Related: `docs/solutions/testing/a-test-only-knob-widens-the-value-production-runs-pin-it-at-the-construction-a-deployment-reaches-INFRA-56.md`
+Related: `docs/solutions/testing/a-test-only-knob-widens-the-value-production-runs-pin-it-at-the-construction-a-deployment-reaches-POMJU-56.md`
 states the sibling rule for a bound a test fights — make it an input, never widen it — and this is
 what to make the input when the poll itself is the expensive part.
 
-## Evidence (INFRA-251, sjawhar/legion#2163)
+## Evidence (POMJU-251, sjawhar/legion#2163)
 
 The devbox proof `scripts/e2e/parked-decision-devbox.sh` ended
 `parked decision devbox e2e: FAIL (check cleanup-is-complete)` on a developer machine after every

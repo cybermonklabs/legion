@@ -40,7 +40,7 @@ describe("a `--project` that is no project of the run", () => {
     // the output directory - it wrote its artifacts into a folder of that name - and the run
     // selects every project. A reader that took it for a project answered "the stubbed layer
     // alone", `globalSetup` started no stack, and the chromium row died of ECONNREFUSED
-    // (dispatch://INFRA-1410).
+    // (dispatch://POMJU-1410).
     expect(projectsOnCommandLine(["--output", "--project=stub", "e2e/smoke.e2e.ts"])).toEqual([]);
     expect(projectsOnCommandLine(["--grep", "--project", "chromium"])).toEqual([]);
     // An optional-value option leaves a dash token alone, so this `--project` is the run's own.

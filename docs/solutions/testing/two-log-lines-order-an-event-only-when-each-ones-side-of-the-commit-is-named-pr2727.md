@@ -26,7 +26,7 @@ which is what makes the order evidence rather than timing.
   the ordering assertion is folklore, and the next reader deletes it or inverts it.
 - **Let the state assertion carry the claim and the log carry only the order.** This does not
   contradict
-  docs/solutions/testing/measure-the-mechanism-not-the-symptom-count-the-work-the-system-does-not-do-INFRA-228.md,
+  docs/solutions/testing/measure-the-mechanism-not-the-symptom-count-the-work-the-system-does-not-do-POMJU-228.md,
   which says a log line is a proxy that drifts: the proxy here is anchored to a code fact rather
   than to a duration, and the thing it proves — the order — is not available from the state at
   all, which is read separately in the same test.

@@ -6,7 +6,7 @@
 // of its own tuples, and one transaction moves both
 // (store/migrations/20261112024320_priority_nodes.up.sql).
 //
-// The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
+// The vocabulary is the node and tuple store's, which legion/POMJU-1149 is to add and this tree
 // does not hold yet, so these rows copy into that store's tables column for column the day it
 // lands: a state is StateLive or StateGone, a visibility is VisibilityProject, an attribute is a
 // tuple whose ToKind is KindValue and whose ToID is the value itself, and a write no event

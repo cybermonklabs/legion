@@ -18,8 +18,8 @@
     },
     {
       "probe": "a code span inside the link text, which binds tighter than the brackets",
-      "answer": "Read [x`](/issues/INFRA-1279)`](//evil.example) now.",
-      "filtered": "Read \\[x\\`\\]\\(\\/issues\\/INFRA\\-1279\\)\\`\\]\\(\\/\\/evil\\.example\\) now\\."
+      "answer": "Read [x`](/issues/POMJU-1279)`](//evil.example) now.",
+      "filtered": "Read \\[x\\`\\]\\(\\/issues\\/POMJU\\-1279\\)\\`\\]\\(\\/\\/evil\\.example\\) now\\."
     },
     {
       "probe": "a definition inside a block quote, which gives the whole document a target",
@@ -63,12 +63,12 @@
     },
     {
       "probe": "an inline link to a target the model was never given",
-      "answer": "Read [some other issue](/issues/INFRA-9999) instead.",
+      "answer": "Read [some other issue](/issues/POMJU-9999) instead.",
       "filtered": "Read some other issue instead\\."
     },
     {
       "probe": "an inline image, even of an item the model was given",
-      "answer": "Look at ![the chart](/issues/INFRA-1279) now.",
+      "answer": "Look at ![the chart](/issues/POMJU-1279) now.",
       "filtered": "Look at the chart now\\."
     },
     {
@@ -128,12 +128,12 @@
     },
     {
       "probe": "a link the server reduced, whose text joins a www host",
-      "answer": "Read [ww](/issues/INFRA-9999)w.evil.com now.",
+      "answer": "Read [ww](/issues/POMJU-9999)w.evil.com now.",
       "filtered": "Read  now\\."
     },
     {
       "probe": "a cited link the server reduced, whose text joins a www host",
-      "answer": "Read [ww](/issues/INFRA-1279)w.evil.com now.",
+      "answer": "Read [ww](/issues/POMJU-1279)w.evil.com now.",
       "filtered": "Read  now\\."
     },
     {

@@ -68,7 +68,7 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
     await expect(navigation.getByRole("link", { name: "Settings" })).toBeVisible();
     await expect(navigation.getByRole("link", { name: /^(CORE|OPS)-\d+/ })).toHaveCount(0);
     // The Inbox makes no per-issue read of its own either: the list is one `GET /inbox`, and
-    // the reading pane (INFRA-575) draws the selected question from the row it already holds.
+    // the reading pane (POMJU-575) draws the selected question from the row it already holds.
     // Only a question written as a decision block has its issue read, for the one field the
     // live document is handed - whether the issue is closed (`DecisionBody` in
     // `ReadingPane.tsx`). These three are ordinary questions, so the pane reads no issue and

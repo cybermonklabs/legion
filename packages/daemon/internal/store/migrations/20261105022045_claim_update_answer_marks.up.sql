@@ -1,5 +1,5 @@
 -- 20261105022045_claim_update_answer_marks.up.sql — how a claim answered its update round, which
--- the daemon reads in place of the plugin contract the claim records (INFRA-1116). A worker
+-- the daemon reads in place of the plugin contract the claim records (POMJU-1116). A worker
 -- registered at the contract that introduced ready_for_update can still run a `legion` tool with
 -- no such operation, and the daemon cannot tell it from one that has it: read by the contract, the
 -- end of its task's turn recorded no answer at all, and the round stayed open for hours while the

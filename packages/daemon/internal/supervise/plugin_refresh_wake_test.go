@@ -6,7 +6,7 @@ package supervise
 // claim where it starts the replacement — and the kind exists for one reader, outside the
 // daemon: an operator reading `GET /legion/v1/state` through a plugin wave tells the lane's
 // wakes from the launches that start a tree's work by it, which no reading of the wave of
-// 2026-11-10 could do while the two were one kind (dispatch://INFRA-2712 R4).
+// 2026-11-10 could do while the two were one kind (dispatch://POMJU-2712 R4).
 //
 // So these tests come in two halves. The first two say which lane parks which kind: the refresh
 // pass's relaunch parks the lane's own, and the relaunch a stale registration raises keeps the
@@ -307,7 +307,7 @@ func TestAnOperatorsDeliveryOverTheRefreshsParkedRelaunchRunsItNow(t *testing.T)
 // exists — a lane that lost its refreshes to `launch` there would under-count exactly the
 // claims whose refresh is in trouble, while the count of what the lane has left still named
 // them, and the two numbers an operator reads a wave by would disagree in the one case they are
-// read for (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh). The mark follows the intent
+// read for (dispatch://POMJU-2712 R4, api.State.ClaimsToRefresh). The mark follows the intent
 // and is written by the launch that starts the process replacing the stale one, and by nothing
 // before it: the refusal marks nothing, and the retry's own launch marks the claim as it starts
 // (launchNow, commitPluginRelaunch).
@@ -439,7 +439,7 @@ func refreshRetryArmed(t *testing.T) (*harness, runtime.Locator) {
 // (retryHolding, reserveWake). Counted by its kind, a refresh that lost its wake to `launch`
 // here is a claim the lane is still working through that an operator reading the wave cannot
 // see it working through, which is the one disagreement the kind exists to prevent
-// (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh).
+// (dispatch://POMJU-2712 R4, api.State.ClaimsToRefresh).
 //
 // The wake that retry parks waits over a claim that records no process, which is the window
 // the case above can only put a claim in: this one reaches it from a stale idle claim and the
@@ -467,7 +467,7 @@ func TestTheRetryOfARefreshWhoseLaunchWriteFailedWaitsUnderTheLanesOwnKind(t *te
 // Machine.unlock). So the next launch of this claim is counted as the launch it is, and not as
 // one of the lane's. An intent left standing would mark that launch for a contract no relaunch
 // of it was made for and count it into the lane an operator reads the wave by
-// (commitPluginRelaunch, dispatch://INFRA-2712 R4), and the relaunch the lane still owes is not
+// (commitPluginRelaunch, dispatch://POMJU-2712 R4), and the relaunch the lane still owes is not
 // lost by that: the next sweep reads the claim stale and posts it again (refreshStalePlugins).
 //
 // The refusal here is the tree's cleanup reserved, which suspends the claim for the daemon
@@ -532,7 +532,7 @@ func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *t
 // twice over: the line that wake writes and the kind a reader counts the lane by both say
 // `launch`, while the lane's own count still names the claim, and the correction the sweep
 // makes of the gate is taken from the refresh wakes the machines publish, so a wake parked
-// under `launch` is never counted against the gate either (dispatch://INFRA-2712 R4,
+// under `launch` is never counted against the gate either (dispatch://POMJU-2712 R4,
 // api.State.ClaimsToRefresh, refreshStalePlugins in internal/daemon).
 //
 // The negative control is the wrapping reverted (relaunchRefused arming the bare relaunch it

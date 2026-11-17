@@ -53,7 +53,7 @@ var markedItems = []markedItem{{
 // What an index of the item's blocks leaves is read here too, since it is the whole of this
 // change: the index writes the blocks, clears the block arm's owed_at and leaves this marker
 // standing with no window written, so the item it indexed is the window arm's to window a
-// tick later (recordItemIndexed, INFRA-988). Before it, the index wrote the windows in its
+// tick later (recordItemIndexed, POMJU-988). Before it, the index wrote the windows in its
 // own transaction and cleared the marker in the same statement, and the two steps below that
 // read an indexed item as owed and unwindowed read it as windowed and owing nothing.
 func TestTheTriggerOwesAnItemItsWindowsAndWritingThemClearsIt(t *testing.T) {
@@ -148,7 +148,7 @@ func TestTheTriggerOwesAnItemItsWindowsAndWritingThemClearsIt(t *testing.T) {
 // dropped it while the index went on marking it, and WriteItemWindows, the only statement that
 // clears the marker, runs only for an item the arm listed: the row stayed marked for ever, an
 // entry in the partial index every later pass paid a probe for and no pass could ever remove.
-// It is the item side of the hole INFRA-988 measured on documents.
+// It is the item side of the hole POMJU-988 measured on documents.
 //
 // Both halves are read as behaviour: the arm lists the item once the index has reached it -
 // and not before, since an item no block-aware build has indexed is the block arm's - and the

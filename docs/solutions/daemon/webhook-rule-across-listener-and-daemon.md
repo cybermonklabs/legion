@@ -32,7 +32,7 @@ LEGION-33 (PR sjawhar/legion#993) made a fix attempt mean "a new head on a red P
 changed something outside `.legion/`". That rule was one sentence. Landing it needed a change in
 the Go listener, three new state fields, a two-webhook convergence pattern, and a deliberate
 degradation mode. Since sjawhar/legion#2354 a handoff is a record on the Dispatch issue, so every
-pushed head is a code head and the path rule is gone, and dispatch://INFRA-609 has since taken
+pushed head is a code head and the path rule is gone, and dispatch://POMJU-609 has since taken
 the three fields that rule needed back out of the push envelope. Each of the four patterns below
 is still reusable the next time a rule needs a fact the daemon does not yet receive.
 
@@ -66,7 +66,7 @@ daemon's `classifyPush` owned `HANDOFF_PATH_PREFIX` and the every-path rule. Env
 redeploy of the listener.
 
 Both halves are gone. sjawhar/legion#2354 deleted the classifier with the mechanism it read, and
-the listener went on sending the paths to nobody; dispatch://INFRA-609 then removed
+the listener went on sending the paths to nobody; dispatch://POMJU-609 then removed
 `changed_paths`, `changed_paths_truncated` and `forced` from the normalizer. A push envelope is
 now exactly ten keys — `kind`, `repo`, `ref`, `after`, `before`, `pusher`, `sender`,
 `head_subject`, `commit_count`, `compare_url`. A forwarded fact outlives the policy that asked
@@ -121,10 +121,10 @@ not quietly stop firing) and never to the new behaviour (a handoff push could no
 on a guess).
 
 Taking the fields out runs the same order from the other end: sjawhar/legion#2354 deleted the last
-reader first, and dispatch://INFRA-609 stopped the listener sending them only afterwards. The merge
+reader first, and dispatch://POMJU-609 stopped the listener sending them only afterwards. The merge
 order alone does not close the skew window, since the listener and the daemon still deploy
 separately: a daemon from before sjawhar/legion#2354 reads a push with no `changed_paths_truncated`
-as unclassified and one with no `forced` as forced. So the listener image carrying INFRA-609 is
+as unclassified and one with no `forced` as forced. So the listener image carrying POMJU-609 is
 deployed only once every daemon reports `daemon.schemaVersion` 20261101144900 or later.
 
 The `log` effect itself was the cheapest way to get a reducer — pure, no logger — to say why:

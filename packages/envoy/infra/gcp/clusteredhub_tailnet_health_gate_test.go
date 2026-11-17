@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The advertiser's health gate goes with this change (dispatch://INFRA-2739/artifact/open-items-md,
+// The advertiser's health gate goes with this change (dispatch://POMJU-2739/artifact/open-items-md,
 // decision 17). After the split no component sets tailnetServiceHost.health: the front door never
 // did, and the clustered hub was the last, so the gate's script variables, its healthy() function
 // and the two constants they read are dead code that only a test rig still reaches. The rendered

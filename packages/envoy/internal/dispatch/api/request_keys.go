@@ -29,7 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// One keyed path for every write (INFRA-258). A caller names the intent behind a POST or PATCH with
+// One keyed path for every write (POMJU-258). A caller names the intent behind a POST or PATCH with
 // an Idempotency-Key header, the same on every retry of that intent (the IETF Idempotency-Key
 // draft; Google AIP-155): the dashboard mints one per press and the agents' client one per command,
 // and both retry a failed fetch, a timeout, a 5xx, a 429 and a 409 KEY_IN_FLIGHT under it, none of

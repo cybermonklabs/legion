@@ -15,7 +15,7 @@ const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
 // What Claude Code sees over MCP, with Dispatch configured: the Envoy tools and nothing else, since
 // agents reach Dispatch through the `dispatch` command the plugin's bin/ puts on the Bash tool's
-// PATH. A terminal session reaches the model only through its mod (INFRA-1026), so it advertises
+// PATH. A terminal session reaches the model only through its mod (POMJU-1026), so it advertises
 // no delivery mode until the mod connects, and Aside, BTW and Send once one has.
 test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, points at the dispatch command, and advertises nothing until its mod connects", async () => {
   const broker = new FakeNatsServer()
@@ -130,7 +130,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
 // A mod says hello once per Claude Code process, so a server Claude Code starts again inside
 // that process hears none, and neither does a listener added after the hello landed: the session
 // then advertised nothing until the next heartbeat, up to 90 s later, and Dispatch showed it as
-// taking no messages (INFRA-1026 review). A poll says a mod is there just as well.
+// taking no messages (POMJU-1026 review). A poll says a mod is there just as well.
 test("the session advertises its delivery modes for a mod that polls and never says hello", async () => {
   const broker = new FakeNatsServer()
   const advertised: unknown[] = []

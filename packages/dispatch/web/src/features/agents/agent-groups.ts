@@ -19,7 +19,7 @@ export const QUIET_AFTER_MS = 10 * 60_000;
 export type AgentGroup = "needs-you" | "active" | "idle" | "quiet";
 
 /** The four groups in the order a person reads them, which is also the order `agentGroup` tries
- *  their tests in. The Agents page draws its groups in this order (INFRA-812, R7). */
+ *  their tests in. The Agents page draws its groups in this order (POMJU-812, R7). */
 export const AGENT_GROUPS: readonly AgentGroup[] = ["needs-you", "active", "idle", "quiet"];
 
 /** What each group is called wherever it is shown: the Agents page's group headings and the

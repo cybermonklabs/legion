@@ -694,7 +694,7 @@ projects:
 gates:
   design: off
 admission_cap: 1
-# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# The wake pacing off (POMJU-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
 worker_wakes_per_minute: 0
 instructions: $work/instructions.md
@@ -1527,7 +1527,7 @@ note "its Claude Code is $installed, installed at launch from $claude_code_pin: 
 note "its MCP document is the launcher file $mcp, written into this generation's private directory"
 pass
 
-# Check 3. The endless phase reminder on the Claude Code backend (INFRA-220), which runs while the
+# Check 3. The endless phase reminder on the Claude Code backend (POMJU-220), which runs while the
 # implementer still holds its phase, before Check 4 completes it, as the tmux proof runs it. The
 # phase is open since the daemon's start task, which reached the session as an assignment
 # (packages/claude-envoy/src/legion-phase-hook.ts), and nothing has completed it. So a turn of the

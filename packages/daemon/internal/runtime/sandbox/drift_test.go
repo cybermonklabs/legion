@@ -808,7 +808,7 @@ func TestPodDriftTellsTheRoundsOwnReplacementFromALaunchs(t *testing.T) {
 			// two seconds: the row's reading has to finish inside that or the wait it must end
 			// gives up first. Bounded by the test's own deadline instead, as suspendDelay below
 			// already is, those waits end on their events and only a hang reaches the bound
-			// (INFRA-985). Both runtimes get it: the replacement runs on the second one, which
+			// (POMJU-985). Both runtimes get it: the replacement runs on the second one, which
 			// builds its own Options.
 			longBoot := func(o *Options) { o.BootTimeout = time.Minute }
 			g := newRig(t, nil, withOptions(longBoot))
@@ -855,7 +855,7 @@ func TestPodDriftTellsTheRoundsOwnReplacementFromALaunchs(t *testing.T) {
 			// next write of the deletion timestamp, because the fake tracker's Update adds an
 			// object it does not find rather than refusing. The pod came back microseconds after
 			// the row deleted it, awaitPodGone's own read of the API then found it, and the
-			// replacement waited the whole minute out (INFRA-985).
+			// replacement waited the whole minute out (POMJU-985).
 			g.suspendDelay.Store(0)
 			g.eventually("the pod the replacement is waiting out to end", func() bool {
 				return g.pod(sandboxName) == nil

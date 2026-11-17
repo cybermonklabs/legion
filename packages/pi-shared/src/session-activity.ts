@@ -6,7 +6,7 @@ import type {
 import type { ClaimCapability } from "./legion-phase-ops";
 
 /**
- * What a live role's session reports of what it is doing (INFRA-945), so the daemon can decide
+ * What a live role's session reports of what it is doing (POMJU-945), so the daemon can decide
  * whether the session's pod may be released: work of the session's own still running in the
  * background, and the phase reminder's armed wake.
  *

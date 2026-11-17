@@ -1,6 +1,6 @@
 -- 20261105152945_going_requests.up.sql — one answer run and the frames of its stream.
 --
--- INFRA-1279: a reader asks a question (POST) and reads its answer (GET), two HTTP requests a
+-- POMJU-1279: a reader asks a question (POST) and reads its answer (GET), two HTTP requests a
 -- deployment of more than one pod spreads across pods (cmd/dispatch/conn_age.go: kube-proxy and
 -- the front door spread load per connection, not per request). So a run's state and its frames
 -- are rows rather than process memory, and any pod answers any reader's stream from them

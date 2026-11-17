@@ -1,4 +1,4 @@
-/** The Inbox's one list as the **View** menu and the **Filter** bar describe it (INFRA-450):
+/** The Inbox's one list as the **View** menu and the **Filter** bar describe it (POMJU-450):
  *  the eleven rows the fields are read over, what each value is called, the order each field
  *  puts them in, how a band folds, how the reading pane is sized, and the controls a row opens.
  *  Shared by `inbox-view.e2e.ts`, by the rows of that family which run against a recording

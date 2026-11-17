@@ -13,7 +13,7 @@ module: packages/envoy/cmd/listener
 
 # Work only an event starts strands its backlog when that event fires only in the state the work removes
 
-Extends docs/solutions/daemon/a-hold-is-computed-with-the-check-the-action-that-releases-it-uses-INFRA-252.md.
+Extends docs/solutions/daemon/a-hold-is-computed-with-the-check-the-action-that-releases-it-uses-POMJU-252.md.
 
 - When you bound a unit of background work - a forward budget, a scan cap, a time window, a retry
   count - write the bounds down as exits, and name for each one what runs the work again.

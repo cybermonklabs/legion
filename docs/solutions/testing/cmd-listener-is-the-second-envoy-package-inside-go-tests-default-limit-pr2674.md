@@ -15,7 +15,7 @@ related_issues:
 
 # cmd/listener is the second envoy package inside go test's default limit
 
-Extends docs/solutions/testing/an-envoy-go-timeout-at-10m0s-in-dispatch-api-is-the-whole-package-near-go-tests-default-limit-on-ci-too-not-the-test-it-names-INFRA-391.md.
+Extends docs/solutions/testing/an-envoy-go-timeout-at-10m0s-in-dispatch-api-is-the-whole-package-near-go-tests-default-limit-on-ci-too-not-the-test-it-names-POMJU-391.md.
 
 That document names `internal/dispatch/api` as the package that sits against `go test`'s default
 600 s limit.
@@ -24,7 +24,7 @@ listener's tests start real listener processes and real NATS servers, so the pac
 with the number of them, not with any one test.
 
 Pass `-timeout 25m` to every local run that includes `./cmd/listener`.
-Read a `panic: test timed out after 10m0s` there the way INFRA-391 says: the package ran out of
+Read a `panic: test timed out after 10m0s` there the way POMJU-391 says: the package ran out of
 time, the test named under `running tests:` is only the one running at that moment, and the run
 prints **zero** `--- FAIL` lines.
 

@@ -3,7 +3,7 @@ package supervise
 // The stale-plugin refresh gate as a machine meets it: one credit for one relaunch, taken before
 // the relaunch was decided and given back at the end of the decision that holds it unless a
 // refresh wake of this claim's is waiting (RefreshGate, admitRefresh, endRefreshLane,
-// dispatch://INFRA-2712 R1). The gate itself is counted in gate_test.go; what these tests hold
+// dispatch://POMJU-2712 R1). The gate itself is counted in gate_test.go; what these tests hold
 // is the machine's half of it — that every path out of refreshPlugin which raises no relaunch
 // returns its credit at once, that a relaunch the pacing holds keeps its credit for exactly as
 // long as it waits, that a claim whose turn ends with a relaunch held asks the gate for one of
@@ -191,7 +191,7 @@ func TestARefreshAdmittedWhileIdleIsRelaunchedAtItsWakeAndGivesItsCreditBackTher
 // The wake is spent, the claim keeps the turn and the task that turn is working, the credit goes
 // back, and the next sweep admits the claim again once it is idle — which is the whole of what
 // the wait for a turn protects, carried into a wake that can be tens of minutes late
-// (refreshOverturned, runWake, dispatch://INFRA-2712 R2).
+// (refreshOverturned, runWake, dispatch://POMJU-2712 R2).
 //
 // The negative control is the re-read taken out of runWake: the turn is then cut by a relaunch
 // raised while the claim was idle, and this test reads it at the state, at the starts and at the
@@ -296,7 +296,7 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 // A branch that leaves a wake of this claim's waiting is run on to that wake's turn (settle),
 // because the credit that wake holds is half of what such a row says: every row ends with the
 // gate back at the count of wakes this claim has waiting, which is the whole of what a credit
-// may ever be held for (endRefreshLane, dispatch://INFRA-2712 R1).
+// may ever be held for (endRefreshLane, dispatch://POMJU-2712 R1).
 //
 // The negative control is the credit check removed from the end of a decision (endRefreshLane):
 // each case then ends with a credit out and nothing holding it, which this test reads at the
@@ -385,7 +385,7 @@ func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 // turn ended between that read and this decision. The relaunch is reached with no credit, asks
 // the gate itself, and relaunches nothing where the gate is full — the claim is left idle and
 // stale for the next sweep, which reads it idle and admits it like any other (plugin.go's
-// refreshPlugin, dispatch://INFRA-2712 R1).
+// refreshPlugin, dispatch://POMJU-2712 R1).
 //
 // The disagreement is between the State in the pass's snapshot and the State this machine holds,
 // and both are values this test sets: the post carries no credit, which is what the pass writes
@@ -454,7 +454,7 @@ func TestARefreshOverAClaimWithNoProcessToReplaceGivesItsCreditBack(t *testing.T
 
 // The relaunch a claim's turn held is the gate's second asker: it took no credit while the turn
 // ran, so the relaunch its end runs asks for one at refreshPlugin's own guard and relaunches on
-// it (afterTurn, holdStaleRelaunch, dispatch://INFRA-2712 R1). The pass here posts a credit with
+// it (afterTurn, holdStaleRelaunch, dispatch://POMJU-2712 R1). The pass here posts a credit with
 // it, which is the window where the pass's snapshot and the machine disagree (refreshPass): the
 // credit is given back where the relaunch is held, and the one the turn's end asks for is a
 // second of its own, which is what this case counts.
@@ -541,7 +541,7 @@ func TestAHeldRelaunchTheGateRefusesAtTheTurnsEndWaitsForTheNextSweep(t *testing
 // A refresh whose wake is let go with the claim's process gives its credit back there. Every
 // suspension, failure and retirement of a claim ends with that one call (letGo), which drops the
 // wake parked over the process together with the process itself: nothing of the refresh waits in
-// the pacing after it, so the credit is owed back at once (dispatch://INFRA-2712 R1).
+// the pacing after it, so the credit is owed back at once (dispatch://POMJU-2712 R1).
 //
 // A credit kept here would cost the lane more than a credit. The sweep's own correction takes it
 // back a minute later, but the machine goes on reading it as held until then, so the next post
@@ -632,7 +632,7 @@ func (s *cleanupReservedAfterFirstCheckStore) CheckLaunch(ctx context.Context, c
 }
 
 // A refused launch gives the credit back wherever the refusal came from, because the one release
-// sits in the refusal of every launch there is (relaunchRefused, dispatch://INFRA-2712 R1). The
+// sits in the refusal of every launch there is (relaunchRefused, dispatch://POMJU-2712 R1). The
 // refusal driven here is the one that reaches that refusal's first branch over a claim which
 // still records its process: the error goes back to whoever asked for it and no retry is armed,
 // so the credit would otherwise be held by a machine with no wake behind it until the sweep's
@@ -718,7 +718,7 @@ func (h *harness) turnEndsWithItsResultToCome(sent string) {
 
 // wantTakeBackRefused is the tail both doors of a refused take-back end in: one claim standing
 // exactly as the refusal found it, and the credit of the relaunch that met it back at the gate
-// (endRefreshLane, dispatch://INFRA-2712 R1). The claim is idle over the process it still runs
+// (endRefreshLane, dispatch://POMJU-2712 R1). The claim is idle over the process it still runs
 // (kept), nothing was started and nothing resumed, no wake waits — the relaunch raised none, or
 // spent the one it had at the turn that met the refusal — and the task is still confirmed,
 // because the take-back's write did not land: the task stands exactly as the store holds it,
@@ -766,7 +766,7 @@ func (h *harness) wantTakeBackRefused(gate *fakeAdmitter, kept runtime.Locator, 
 // A take-back the store refuses at a refresh wake's turn gives the credit back. The wake is off
 // the machine before the take-back is tried (wakeNow), so a decision that ends there holds a
 // credit no wake of this lane waits for, and the end of it is where that credit goes back
-// (runWake, endRefreshLane, dispatch://INFRA-2712 R1).
+// (runWake, endRefreshLane, dispatch://POMJU-2712 R1).
 //
 // The window is driven rather than placed. The agent is handed its task and prompted with it
 // before this daemon's contract moves, so the relaunch's own take-back finds it unconfirmed and
@@ -797,7 +797,7 @@ func TestATakeBackTheStoreRefusesAtTheRefreshsTurnGivesTheCreditBack(t *testing.
 // The other door is the same take-back at the relaunch's own decision (replaceNow): the
 // relaunch replaces the claim's process where it is decided, and the take-back it makes first is
 // refused, so it returns having raised no wake at all — with the credit it was admitted on, which
-// the end of that decision gives back (endRefreshLane, dispatch://INFRA-2712 R1).
+// the end of that decision gives back (endRefreshLane, dispatch://POMJU-2712 R1).
 //
 // Here the task is confirmed before the refresh is posted, which is what puts the take-back in
 // the relaunch's own decision rather than at a wake's turn (taskTheAgentTook,

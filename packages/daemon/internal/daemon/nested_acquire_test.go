@@ -1,6 +1,6 @@
 package daemon
 
-// A whole daemon over a pool of one connection (INFRA-3169): the two paths that judge the
+// A whole daemon over a pool of one connection (POMJU-3169): the two paths that judge the
 // released-claim rule — the state route and the boot's stranded report — each read the pod
 // resumes from inside a transaction they already hold, so neither asks the pool for a second
 // connection while holding its only one. On the deployment where this was measured all 32

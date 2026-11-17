@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The session windows a Legion daemon's own wakes cause, for the production reading of
-dispatch://INFRA-976: `gateway-uncached-by-organization.py --sessions` takes the windows, and the
+dispatch://POMJU-976: `gateway-uncached-by-organization.py --sessions` takes the windows, and the
 second mode counts the paced wakes of each minute against the rate and burst the lines name.
 
 Two modes, because the windows are read by another program and a second section on standard
@@ -30,7 +30,7 @@ STATE_JSON is a saved body of `GET /legion/v1/state`. It maps each claim token t
 `architect` and `workers.<role>`, each of those a claim with `session` and, while it holds a
 process, `locator.claim`. A `locator.claim` is preferred where the state gives one; otherwise the
 token is composed as `legion-<project token>-<issue key, lower-cased>-<role>` (project `infra`,
-issue `INFRA-976`, role `implementer` gives `legion-infra-infra-976-implementer`). The project
+issue `POMJU-976`, role `implementer` gives `legion-pomju-pomju-976-implementer`). The project
 controller's own claim, `legion-<project token>-controller`, maps to `controllerLocator.sessionId`:
 its wake takes no token and never waits, but the session it starts reads its context like any
 other.

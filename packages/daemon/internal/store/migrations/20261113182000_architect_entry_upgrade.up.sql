@@ -1,6 +1,6 @@
 -- 20261113182000_architect_entry_upgrade.up.sql — the entry every root architect of the release
 -- before this one is settled at, so this release starts nothing that is already running
--- (INFRA-2614).
+-- (POMJU-2614).
 --
 -- This release sends each role of an issue that holds a slot or stands past its review the work
 -- of the entry its phases row names, and a root's own architect is now one of those roles
@@ -12,12 +12,12 @@
 --
 -- The record cannot tell that architect from a stuck one. Both stand at admitted with no
 -- design-gate rows and hold no delivery, and nothing in the record says whether a task ever
--- reached the claim. The set this leaves unrepaired is measured: INFRA's controller read the
+-- reached the claim. The set this leaves unrepaired is measured: POMJU's controller read the
 -- daemon state at 2026-11-11T23:45:01Z and found 31 roots at admitted, 16 of them with no design
 -- gate recorded. Those 16 are the upper bound, since the state says nothing about whether a task
 -- reached a claim. A root admitted, re-admitted or carried over after this release is handed
 -- its work by the rule itself, so the fill is for the roots standing when it runs and no other
--- (dispatch://INFRA-2614, R8).
+-- (dispatch://POMJU-2614, R8).
 --
 -- The fill is the entry 1, on the architect's phases row and on its claim: the row is created
 -- where the record holds none, with no task on it and no moment raised, and the claim is recorded

@@ -1,6 +1,6 @@
 //go:build e2e
 
-// The live proof of the two operations dispatch://INFRA-956 R3 gives an operator and a project's
+// The live proof of the two operations dispatch://POMJU-956 R3 gives an operator and a project's
 // controller over a claim whose provider keeps refusing its session: `legion claims compact` and
 // the controller's `compact`, and `legion claims retry --fresh-session` and the controller's
 // `fresh_session`. Each is driven through both of its doors against real `omp --mode rpc` panes

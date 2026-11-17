@@ -126,7 +126,7 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // reviewer's own approval of the head on this read and on every read after it. The fact carries
 // intake.PullRequestReview.ReadFromList, which is what has a person's listed review refused
 // here: the list's commit_id is no evidence of the head a review read, since GitHub moves it to
-// the pull request's current head (dispatch://INFRA-1557). That same person's review by webhook
+// the pull request's current head (dispatch://POMJU-1557). That same person's review by webhook
 // decides as it always has, on the commit_id the event carried.
 //
 // Nothing is applied for a review this passes over, so no event id of it is marked applied and

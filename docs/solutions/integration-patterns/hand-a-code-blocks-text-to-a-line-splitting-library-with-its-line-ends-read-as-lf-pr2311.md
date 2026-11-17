@@ -13,7 +13,7 @@ module: packages/dispatch/web
 
 # Hand a code block's text to a line-splitting library with its line ends read as LF, and key the cache on that text
 
-Extends docs/solutions/integration-patterns/cut-source-text-by-mdast-offsets-from-the-text-micromark-counted-INFRA-529.md.
+Extends docs/solutions/integration-patterns/cut-source-text-by-mdast-offsets-from-the-text-micromark-counted-POMJU-529.md.
 
 - A parsed code block keeps its author's line ends: a lone CR or a CRLF stays in the node's text.
   Where that text leaves for a library that splits lines at LF alone, replace `\r\n?` with `\n`

@@ -20,7 +20,7 @@ function dispatchCode(error: Error): string | undefined {
  * A refusal Dispatch decided reads `<CODE>: <message>`, because `skill://dispatch` has every agent
  * branch on an error's code rather than on its words, and the code was in no line the command
  * printed: a reader had to run the same call through curl to see it (reported by the tree of
- * dispatch://INFRA-1523). A message that already opens with its own code is left as it is, and
+ * dispatch://POMJU-1523). A message that already opens with its own code is left as it is, and
  * every other thrown value prints as it always did.
  */
 export function messageFor(error: unknown): string {

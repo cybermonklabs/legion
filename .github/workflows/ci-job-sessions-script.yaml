@@ -12,7 +12,7 @@ name: CI job sessions-script
 # fixture into it, spawns the script, and drops the database again
 # (scripts/sessions/__tests__/message-wait.test.ts). It refuses without that variable and never
 # skips, which is what turned the `test` job red at run 42443071997 once the Postgres service
-# and the variable left that job with the daemon's Go suite (dispatch://INFRA-1413).
+# and the variable left that job with the daemon's Go suite (dispatch://POMJU-1413).
 #
 # A job rather than the service put back on `test`: this was the one step of those thirty-odd
 # that needs a database, and a service on `test` starts Postgres for every change that selects

@@ -173,7 +173,7 @@ func TestTheRefreshGateCountsAdmissionsOnlySinceTheLastCorrection(t *testing.T) 
 // gives those wakes their turns inside the minute, each turn gives its credit back, and the sweep
 // a minute later reads a lane holding nothing and grants the rate again — so a fleet of N stale
 // sessions drains in about N ÷ rate minutes, which is what requirement R1 and the sizing in
-// dispatch://INFRA-2712's design both state.
+// dispatch://POMJU-2712's design both state.
 //
 // It is pinned on its own because the shape that breaks it is invisible in a single correction: a
 // floor counting every admission of the window, releases included, reads correctly at the first

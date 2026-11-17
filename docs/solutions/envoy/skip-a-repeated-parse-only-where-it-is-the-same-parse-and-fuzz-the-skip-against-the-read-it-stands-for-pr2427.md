@@ -49,5 +49,5 @@ related_issues:
 - The first design assumed two readers. Main's #2360 made them three and forced a redesign: the
   equal open/close pair no longer implied an equal parse once `~` runs paired in a pass of their
   own (commit 7edefc89).
-- Read-back CPU inside a render fell from 30.6 s to 9.8 s over 10 renders of the LINUX corpus
+- Read-back CPU inside a render fell from 30.6 s to 9.8 s over 10 renders of the HAFJJ corpus
   (PR body, "Render cost").

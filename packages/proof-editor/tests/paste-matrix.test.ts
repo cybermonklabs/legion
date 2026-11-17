@@ -15,7 +15,7 @@ import { type PasteCase, type PasteTarget, pasteCases } from "./paste-matrix-cas
 
 /**
  * The clipboard matrix that used to run in a browser, against a server and Postgres, once per row
- * (INFRA-1415): the same clipboards, the same carets and cell selections, and the same expected
+ * (POMJU-1415): the same clipboards, the same carets and cell selections, and the same expected
  * markdown, verbatim in paste-matrix-cases.ts. Only the rows whose claim is the server's - Go's
  * reading back of what the editor stored, and the reload - stayed in the browser.
  *

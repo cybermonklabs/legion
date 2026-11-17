@@ -327,7 +327,7 @@ METADATA_SCRIPT="$WORK_DIR/dev-metadata.py"
 # call names for itself. Its records file is its own for a reason of the shell rather than of the
 # broker: the start line below is `env`, not `env -i`, so a caller with the first box's
 # AGENT_SECRETS_STATE_FILE exported would have this box's helper write the first box's records,
-# which hold the first box's named sessions' signing keys (dispatch://INFRA-1167).
+# which hold the first box's named sessions' signing keys (dispatch://POMJU-1167).
 BOX2_DIR="$WORK_DIR/box-two"
 BOX2_HOME="$BOX2_DIR/home"
 BOX2_RUNTIME_DIR="$BOX2_DIR/run"

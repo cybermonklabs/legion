@@ -56,7 +56,7 @@ import (
 // deployment's login is loadtest - and Postgres's default search_path is "$user", public, so
 // that schema would stand in front of public for every unqualified statement the server itself
 // runs afterwards, Dispatch's own create table if not exists among them: that is how one
-// deployment came to hold a second, empty copy of Dispatch's schema (dispatch://INFRA-988). A
+// deployment came to hold a second, empty copy of Dispatch's schema (dispatch://POMJU-988). A
 // tool that creates no schema at all can shadow none, and public is there before this tool
 // connects, so nothing of this map has to be created outside it.
 const loopIDsDDL = `create table if not exists public.loadtest_loop_ids (
@@ -660,7 +660,7 @@ func (w *loopWriter) proposal(ctx context.Context, index int) error {
 // proposal the id map does not hold already. It expands the proposal's threads to count them one
 // at a time, as the write path does, because an object an earlier run wrote is written whatever
 // this run's issue write met: a skip of the whole proposal would say a seed lacks what it holds,
-// and a resumed run would report a plan as missing objects that are there (dispatch://INFRA-988).
+// and a resumed run would report a plan as missing objects that are there (dispatch://POMJU-988).
 func (w *loopWriter) skipProposal(index int, pr *loopProposal) {
 	parts := 0
 	for part := range pr.Parts {
@@ -976,7 +976,7 @@ func runLoopSeedWrite(args []string) error {
 	}
 	// The refused writes, not the classes they fall into: 453 issues refused under one code are
 	// one refusal row and 453 objects nobody wrote, and a run that said "1 refusals" read as a
-	// run that wrote the plan (dispatch://INFRA-988). Unwritten is what those refusals left,
+	// run that wrote the plan (dispatch://POMJU-988). Unwritten is what those refusals left,
 	// which after this run is what the plan still lacks.
 	refused, unwritten := 0, 0
 	for _, r := range meta.Refusals {

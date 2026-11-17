@@ -25,7 +25,7 @@ import {
 // LEGION_TEST_OMP names the binary: the fork pin in the repository's .omp-pin, which
 // CI's pi-legion job installs; on the devbox, `mise where <pin>`/bin/omp. LEGION_TEST_NATS_URL
 // names the NATS server the pane's Envoy extension connects to: a session is given no consumer
-// without one, and its claim boot then ends the session (INFRA-771). A run without both skips,
+// without one, and its claim boot then ends the session (POMJU-771). A run without both skips,
 // except on GitHub Actions, where a skip would hide the only run of the check on the host that
 // ships it (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
@@ -44,7 +44,7 @@ const PROVIDERS: readonly StandinProvider[] = [
 ];
 
 /**
- * The pane's overlay, in the shape INFRA's own operator overlay carries
+ * The pane's overlay, in the shape POMJU's own operator overlay carries
  * (deploy/kubernetes/operator-route/overlay.yml, docs/kubernetes.md "Operator configuration"):
  * the model fallback on, the chain the case runs under, and no revert of the host's own — the
  * return is the plugin's.

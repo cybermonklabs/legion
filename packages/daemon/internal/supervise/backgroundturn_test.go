@@ -291,7 +291,7 @@ func TestAnAgentWhoseResultsRunNoTurnAndNameNoTurnOfItsOwnIsStillRetired(t *test
 
 // A turn whose work ended in a provider error is still that prompt's turn: Oh My Pi reports the
 // failure in the prompt_result (`status: "error"` and its error object, shimwire.PromptError).
-// The task is not retired on it (dispatch://INFRA-956 R2): the work the turn was given is still
+// The task is not retired on it (dispatch://POMJU-956 R2): the work the turn was given is still
 // owed, so the task goes back to waiting and the same session is prompted with it again. The
 // claim used to go idle holding nothing, and only an edit of the daemon's store gave the work
 // back. providererror_test.go holds the ladder, the decision and the controller's notice; this

@@ -23,7 +23,7 @@ import (
 // The issue every case of this file stands on, the role that works its phase, and the phase
 // entry its phase row already names with the work that entry was raised with. The role is the
 // tester of an issue in testing, which is the shape the incident this work was filed for was
-// read in (dispatch://INFRA-3163). The entry is above 1 so that a start that wrote some other
+// read in (dispatch://POMJU-3163). The entry is above 1 so that a start that wrote some other
 // number than the row's reads as a failure.
 const (
 	silenceIssue     = "LEGION-209"
@@ -308,7 +308,7 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T
 
 // Every reading that says there is nothing to do leaves the record exactly as it stood: no
 // supervise row of the handler's and no notice at all. Each row changes one term of the told
-// case above, and together they are R6 of dispatch://INFRA-3163, the workers the daemon must
+// case above, and together they are R6 of dispatch://POMJU-3163, the workers the daemon must
 // not prompt.
 func TestASilenceTheRecordAnswersForChangesNothing(t *testing.T) {
 	for _, tc := range []struct {
@@ -491,7 +491,7 @@ func TestAStartRowTheStoreRefusesWritesNoNoticeAndLeavesTheFactUnapplied(t *test
 // its architect, once, and sent nothing at all: no start row, no task, nothing. The notice
 // carries the record the daemon read — the issue, the role, the phase, the kinds the session
 // named and how long its report has stood — and says plainly that nothing was sent and nothing
-// will be. That is R6 of dispatch://INFRA-3163: nothing can tell a background job that hung
+// will be. That is R6 of dispatch://POMJU-3163: nothing can tell a background job that hung
 // from a long one, so the daemon tells and the architect decides.
 func TestAStalledBackgroundWorkerIsToldToItsArchitectAndSentNothing(t *testing.T) {
 	pool := migratedPool(t)

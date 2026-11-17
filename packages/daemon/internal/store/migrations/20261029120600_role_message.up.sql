@@ -1,5 +1,5 @@
 -- 20261029120600_role_message.up.sql — the role message's outbox kind. A CI settlement moves no issue
--- (dispatch://INFRA-714's R1); what it names is told to the roles that work the issue - the
+-- (dispatch://POMJU-714's R1); what it names is told to the roles that work the issue - the
 -- worker holding the phase, the implementer and the tree's architect - as one message per role
 -- published to that role's topic (record.RoleMessage, workflow's tellChecks, daemon's
 -- roleMessage), which is a durable row so the telling survives a restart and carries the outbox's

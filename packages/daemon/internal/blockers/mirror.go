@@ -62,7 +62,7 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		// An adopted root is recorded already, so no observation of it reaches a handler
 		// (intake's settleObserved) and nothing else would bring the release's read here. Without
 		// it the adoption's own promotion, judging by a row written before the person's edit,
-		// starts a root that edit blocked (dispatch://INFRA-714/spec R3).
+		// starts a root that edit blocked (dispatch://POMJU-714/spec R3).
 		for _, child := range fact.Children {
 			if child.Seq == 0 {
 				continue

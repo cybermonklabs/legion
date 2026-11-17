@@ -7,7 +7,7 @@ import (
 )
 
 // The session listener's startup and liveness probes read /livez, and only its readiness probe
-// reads /healthz (dispatch://INFRA-2739/artifact/open-items-md, decision 15). /healthz flushes to
+// reads /healthz (dispatch://POMJU-2739/artifact/open-items-md, decision 15). /healthz flushes to
 // NATS, pings each key-value cache and reads the durable consumer's state under a three-second
 // budget, while startup and liveness are status-blind: none of that work can change their
 // outcome, so each run of them is bus traffic that decides nothing. gcp:Dispatch's listener

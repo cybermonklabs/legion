@@ -20,7 +20,7 @@ import { devices, expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * One agent component draws every agent the app shows (dispatch://INFRA-440). What is left here
+ * One agent component draws every agent the app shows (dispatch://POMJU-440). What is left here
  * is the rows a recording cannot answer: the margin thread on the live document, the registry's
  * own read count, and a rename and a stop arriving while the page watches. What the component
  * draws over one fixed answer is in `agent-name.stub.e2e.ts`, and the three sessions both files
@@ -66,7 +66,7 @@ test("Claimed by, a Conversation turn, an Inbox ask card and a margin comment sh
     });
 
     // Inbox ask cards: the asker's copy-handles button stays, and the live link sits beside it,
-    // never inside it. From 1280 px the card is the reading pane's (INFRA-575), so each
+    // never inside it. From 1280 px the card is the reading pane's (POMJU-575), so each
     // question is read on the card that width draws for it.
     await page.goto("/");
     for (const [askId, id, name, running] of [

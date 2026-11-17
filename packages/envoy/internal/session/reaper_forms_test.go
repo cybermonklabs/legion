@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// A session's agent subject has two forms while every reader takes both (dispatch://INFRA-3862):
+// A session's agent subject has two forms while every reader takes both (dispatch://POMJU-3862):
 // the session alone and the session under a project (`_` for none). The count on a reaped
 // session's log line is every message stored for it after its last registration, in either form,
 // since its consumer filters on both; a message for another session in either form is not counted.
@@ -39,8 +39,8 @@ func TestAReapedSessionsStoredCountTakesEitherFormOfItsSubject(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	publish("old-form", contracts.LegacyAgentSubject(sessionID))
 	publish("no-project", contracts.AgentSubject(contracts.NoProject, sessionID))
-	publish("a-project", contracts.AgentSubject("INFRA", sessionID))
-	publish("another-session", contracts.AgentSubject("INFRA", "ses_other"))
+	publish("a-project", contracts.AgentSubject("POMJU", sessionID))
+	publish("another-session", contracts.AgentSubject("POMJU", "ses_other"))
 	now.advance(3 * time.Minute)
 
 	met := metrics.New()

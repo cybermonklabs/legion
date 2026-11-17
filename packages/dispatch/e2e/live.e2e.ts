@@ -90,7 +90,7 @@ test("live: bob's ask updates alice's Inbox and project badges without reload @p
   expect(issuePage.url()).toContain(readingIssue.key);
 
   // The question arrives as a row of the list, carrying its first line; from 1280 px the
-  // reading column beside it is showing that same row's card (INFRA-575).
+  // reading column beside it is showing that same row's card (POMJU-575).
   const arrived = inboxRow(inboxPage, ask.id);
   await expect(arrived).toBeVisible();
   await expect(arrived.getByText("Ship it?")).toBeVisible();

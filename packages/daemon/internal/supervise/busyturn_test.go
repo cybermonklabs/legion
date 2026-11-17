@@ -45,7 +45,7 @@ func (h *harness) busyRecorded() {
 // the shim's hello, and not the send's own acknowledgement when it lands behind its busy answer
 // (fenceOutcome). The next send is the one the turn's end makes. Before, the claim stayed ready,
 // and every sweep, hello and fenced acknowledgement sent the task into the busy agent again, about
-// every 2.5 seconds for the length of the turn (dispatch://INFRA-3276 R4).
+// every 2.5 seconds for the length of the turn (dispatch://POMJU-3276 R4).
 //
 // The daemon learns of the busy answer at three places, and each is driven: the send refused
 // outright (refused), and the acknowledged prompt answered busy, by a late refusal (lateRefused) or

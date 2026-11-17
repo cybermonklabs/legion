@@ -333,7 +333,7 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		// (exclusive_test.go), holds its format rather than that need. Neither line is
 		// written at the moment its tick was due - this one after the lease and the period
 		// read, the line below after the whole pass - so the moment the line carries is not
-		// that stagger either (INFRA-1492).
+		// that stagger either (POMJU-1492).
 		slog.Info("dispatch duty: leased pass skipped", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 		return false
 	}
@@ -364,7 +364,7 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 	// between them is what a person comparing two processes' logs needs. The test over this
 	// attribute, TestTheLinesAboutATickNameItsDueAndItsPeriod (exclusive_test.go), holds its
 	// format rather than that need. This line is written when the pass ends rather than when
-	// the tick was due, so its own moment does not say that stagger either (INFRA-1492).
+	// the tick was due, so its own moment does not say that stagger either (POMJU-1492).
 	slog.Info("dispatch duty: leased pass ran", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 	return true
 }
@@ -419,7 +419,7 @@ func periodServed(ctx context.Context, conn *pgxpool.Conn, name string, due time
 // It runs on the lease's own connection and before the lease is given back, on a context of its
 // own because the pass's own may already be cancelled - a context that is cancelled is also the
 // one case this is never called in, since a pass shutdown cut short serves no period (Exclusive).
-// This comment said the opposite until INFRA-66's second round: that a pass cut short by shutdown
+// This comment said the opposite until POMJU-66's second round: that a pass cut short by shutdown
 // still ran and still served its period, which was the behaviour and was wrong both times it was
 // written. A record that never lands only costs one early pass, which is why its failure is
 // logged and not returned - and why it runs under LeaseCall, bounded as well as detached,

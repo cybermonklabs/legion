@@ -1,5 +1,5 @@
 // openapi.go emits the OpenAPI 3.1 document of the Dispatch HTTP API from the route table and the
-// Go types routeShapes gives each of its rows (INFRA-1406). It is the one generator between the
+// Go types routeShapes gives each of its rows (POMJU-1406). It is the one generator between the
 // server and its clients: the dashboard's and the CLI's TypeScript types are rendered from the
 // document this file writes, so a route the table grows reaches them without anyone hand-writing a
 // type for it, and a shape that changes cannot quietly disagree with the handler that answers it.

@@ -104,7 +104,7 @@ test("a paragraph that only lost words draws them where they stood", () => {
   });
 });
 
-// INFRA-575: a paragraph the version replaced by a rule pairs as a changed block, and the block
+// POMJU-575: a paragraph the version replaced by a rule pairs as a changed block, and the block
 // that replaced it holds no text for the lost words to stand inside. The approver is shown the
 // changed-block bar, so the words must reach the page too; this row runs them through the real
 // editor, which is what draws the decoration set the marks name.

@@ -29,7 +29,7 @@ related_issues:
   diff over it is `.legion/` alone — say so in the `CI` line, naming both heads and the cancelled
   run ids, so a reader does not take "cancelled at the code head" for a red.
 
-  **Superseded 2026-10-23 (dispatch://INFRA-83):** only the clause that has you say so in the `CI`
+  **Superseded 2026-10-23 (dispatch://POMJU-83):** only the clause that has you say so in the `CI`
   line, naming both heads and the cancelled run ids, is gone: the PR body has no `CI:` line
   (`skills/legion-worker/references/pr-body.md`), and no role records run ids for a later step to
   trust — the tester and the reviewer each read CI on GitHub at the head they are judging and record
@@ -50,7 +50,7 @@ related_issues:
   and the tip's digest beside them in case its scripts hold the image's revision against the
   branch tip.
 
-  **Superseded 2026-10-27 (INFRA-520, the CI router, and dispatch://INFRA-600):** a pull request's
+  **Superseded 2026-10-27 (POMJU-520, the CI router, and dispatch://POMJU-600):** a pull request's
   image build is now the `worker-image` job of `.github/workflows/ci.yaml`, which calls
   `worker-image.yaml`, and that file has a per-PR group with `cancel-in-progress` on
   `pull_request`; ci.yaml's own group (`ci-<PR number>`, `cancel-in-progress` on `pull_request`)

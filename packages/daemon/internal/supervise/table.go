@@ -195,7 +195,7 @@ type StalePlugin struct {
 	Trigger string
 	// Admitted is whether the pass that posted this took a credit of the stale-plugin refresh
 	// gate for this claim, which bounds how much of the wake pacing the lane holds at once
-	// (RefreshGate, dispatch://INFRA-2712 R1). The pass posts no refused claim at all — it
+	// (RefreshGate, dispatch://POMJU-2712 R1). The pass posts no refused claim at all — it
 	// re-reads every stale claim at the next sweep, so nothing is lost by the refusal — so what
 	// arrives here is admitted but three: the project controller's claim, whose relaunch is
 	// exempt from the pacing and takes no credit (reserveWake); a claim the pass read in a
@@ -210,7 +210,7 @@ type StalePlugin struct {
 
 // StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
 // a turn whose recorded last step (StepRecord) is older than its role's backstop bound, and the
-// daemon ends that turn itself (internal/daemon's backstopStalledTurns, INFRA-1274's R5). The
+// daemon ends that turn itself (internal/daemon's backstopStalledTurns, POMJU-1274's R5). The
 // sweep posts it at every tick that finds the claim still stalled, so a stop the runtime refuses
 // is tried again without a timer of its own, exactly as StalePlugin is re-posted.
 //
@@ -475,7 +475,7 @@ type RequestRetry struct {
 // It reaches a retired claim as well as a failed one. `legion claims stop` retires a claim, and
 // while the operator's retry refused that state an operator who stopped a worker could start it
 // again only by editing the claims store with the daemon stopped; that is the recovery
-// dispatch://INFRA-956 R3 asked to be made of `legion` commands alone. The claim's tree lifecycle
+// dispatch://POMJU-956 R3 asked to be made of `legion` commands alone. The claim's tree lifecycle
 // still decides whether the relaunch runs at all: a tree whose cleanup is reserved refuses the
 // launch (revive, Store.AdmitClaim), as it refuses the workflow's own retry of a retired claim.
 type RequestOperatorRetry struct {
@@ -908,8 +908,8 @@ func fillTable(t *builder) {
 	// A turn the daemon never saw begin ends here: a claim registered while the agent's own turn
 	// was already running is ready rather than working, and the end is the only stream event of
 	// that turn it will ever get. The task it holds unread is sent now, which is what left three
-	// workers idle holding a task for 35 to 75 minutes (dispatch://INFRA-1691, INFRA-1545,
-	// INFRA-722, A9) — a send reached only through a turn the daemon watched begin waits on an
+	// workers idle holding a task for 35 to 75 minutes (dispatch://POMJU-1691, POMJU-1545,
+	// POMJU-722, A9) — a send reached only through a turn the daemon watched begin waits on an
 	// event that has already happened.
 	t.row(onTurnEnd, "a turn the daemon never saw begin ended: send the task it holds", blindTurnEnded,
 		[]ClaimState{StateReady, StateIdle, StateWorking}, prompted...)
@@ -1102,7 +1102,7 @@ func fillTable(t *builder) {
 
 	// A retired claim is retried here as the workflow's own retry retries one: `legion claims stop`
 	// retires a claim, and while this row refused that state the only way to start a stopped worker
-	// again was an edit of the claims store with the daemon stopped (dispatch://INFRA-956 R3).
+	// again was an edit of the claims store with the daemon stopped (dispatch://POMJU-956 R3).
 	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", operatorRetry,
 		[]ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onOperatorRetry, "a queued claim is spawned, not retried", StateQueued)
@@ -1401,7 +1401,7 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // working copy. Every `ok: false` the shim gives the adoption counts, its own command timeout
 // included — a jj wedged on a stale lock reports as exactly that — and the refusal's text is never
 // read to classify it, only carried into the log, where the shim's words already name the stale
-// lock's path and its age (INFRA-1480: unbounded re-sends of a refused adoption held two planning
+// lock's path and its age (POMJU-1480: unbounded re-sends of a refused adoption held two planning
 // tasks 31 and 33 hours, logged at warning level and charged nothing). With the shipped budgets
 // (prompt_failure_limit 3, prompt_retire_limit 2) the sixth consecutive charge fails the claim,
 // which workflow.Stranded and `legion state` report.
@@ -1644,7 +1644,7 @@ func agentBusy(reason string) bool {
 // guard holds the task for that turn's end rather than sending it again at every trigger. Left
 // ready, the claim was sent the task again at every sweep, hello and fenced acknowledgement, and
 // answered busy each time, about every 2.5 seconds for the length of the turn
-// (dispatch://INFRA-3276 R4). A claim already working is in the turn the stream showed it, and
+// (dispatch://POMJU-3276 R4). A claim already working is in the turn the stream showed it, and
 // nothing is recorded.
 //
 // An answer that comes while another prompt of the task is still outstanding (Machine.outstanding)
@@ -1726,7 +1726,7 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 // the Claude Code bridge takes one prompt at a time too (internal/claudebridge's Busy and
 // promptRun). Without it, a start after the five-second wait confirmed nothing: the worker's
 // completion in that turn was refused as the earlier task's, and the task was sent again as
-// the turn ended (dispatch://INFRA-3276).
+// the turn ended (dispatch://POMJU-3276).
 // A start taken this way that was in fact another input's turn is corrected by the prompt's own
 // result when it comes back not invoked: the task goes back to waiting and that turn's end sends
 // it (promptResulted).
@@ -2012,7 +2012,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // the task whose turn just ended is still unsettled. The send runs last, as it does from every
 // other decision.
 //
-// The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
+// The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://POMJU-2712 R1):
 // the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
 // reaches refreshPlugin with none and asks the gate at that guard, which is where every
 // uncredited relaunch of this lane asks and which states why the ask lives there rather than
@@ -2091,7 +2091,7 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // nothing, for that turn's end to send again. Charged, this was the third path's own loop: a
 // relaunch resumes the session, the resume starts a turn, the task that follows meets it, three
 // such answers retire the claim, and the retirement launches again, at a full session resume a
-// cycle (dispatch://INFRA-3103). A ready or idle claim is recorded working for that turn
+// cycle (dispatch://POMJU-3103). A ready or idle claim is recorded working for that turn
 // (recordBusyTurn), so the task waits for its end — its agent_end, or the sweep's answer that the
 // agent is in no prompt (askTurnOver) — rather than going into it again at the next sweep. While an
 // earlier prompt of the task is still outstanding, the turn it is in is that prompt's: the task
@@ -2103,7 +2103,7 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 //
 // A turn that ended in a provider error does not retire its task (providerErrored): the work is
 // still owed, and the daemon owes the worker another prompt of it rather than an idle claim
-// (dispatch://INFRA-956 R2). A turn that ended with no error is the one that clears the claim's
+// (dispatch://POMJU-956 R2). A turn that ended with no error is the one that clears the claim's
 // run of provider-error turns.
 //
 // A turn already ended is over for its delivery here, so this is where what was held for that
@@ -2515,7 +2515,7 @@ func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ct
 // The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person
 // moves it back, a production check fails — and its roles are started again on the same issue,
 // where a session forgotten here would start each as a fresh agent that has read none of the work
-// it is continuing (dispatch://INFRA-714 A10). The session id is what the Sandbox volume reaping
+// it is continuing (dispatch://POMJU-714 A10). The session id is what the Sandbox volume reaping
 // reads as its evidence, and the resume path is the only handle either runtime resumes by, so
 // dropping the path would be dropping the resume whatever the id said.
 //
@@ -2523,7 +2523,7 @@ func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ct
 // costs one resume when the session is gone: the runtime answers runtime.ErrSessionFileMissing,
 // the same try forgets the session and spawns a fresh agent, the claim is charged nothing, and
 // the loss is reported to the issue, its architect and the controller, with the fresh agent told
-// in its own prompt (Machine.start, startFresh, Deps.SessionLost; dispatch://INFRA-714 R8).
+// in its own prompt (Machine.start, startFresh, Deps.SessionLost; dispatch://POMJU-714 R8).
 // Clearing the path here instead would reach that same fresh agent silently, which is the one
 // outcome R8 forbids. Nothing of the workspace is recovered either way: a later start of the
 // issue runs on a pod and a disk of its own, resuming the agent's session on it.
@@ -2699,7 +2699,7 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // A round the claim is not in yet starts its clock here — UpdateOpenedAt — with the reasons the
 // post carries, and clears what an earlier round left: the ask it published, the signal it got,
 // the head that signal reported, and the notice it wrote. The same round again changes nothing,
-// its reasons included: the round's terms are fixed when it opens (dispatch://INFRA-2981 R9), so
+// its reasons included: the round's terms are fixed when it opens (dispatch://POMJU-2981 R9), so
 // the ask the sweep publishes and the record an operator reads name the same reasons for one
 // round id, however the drift the sweep reads moves while the round runs.
 //

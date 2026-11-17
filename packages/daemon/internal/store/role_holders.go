@@ -24,7 +24,7 @@ import (
 // makes it good lands, whichever decision makes it. An end whose failed write is not owed is
 // written again only when a later decision retires a task the claim still holds, which writes the
 // claim with it; until then the store, and so Dispatch's set, keeps the claim live
-// (dispatch://INFRA-4099).
+// (dispatch://POMJU-4099).
 
 // roleHoldersPublishKind is record.OutboxKindRoleHoldersPublish. This package cannot import record,
 // whose tests import this package, so the name is written here once, and role_holders_test.go reads

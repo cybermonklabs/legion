@@ -228,7 +228,7 @@ A value above a timer's longest wait, 2147483647 ms, is refused, because the run
 a delay to 1 ms and the probe would reopen at once: the opposite of what the option says. That
 reason rests on a measurement of the runtime rather than on a row or a code reading: on Bun
 1.4.4, `setTimeout` at 2147483648 ms warned `Timeout duration was set to 1` and fired after
-118 ms, measured by the tester of dispatch://INFRA-1571 under six busy loops on two CPUs. That
+118 ms, measured by the tester of dispatch://POMJU-1571 under six busy loops on two CPUs. That
 delay is the scheduler's, not the clamp's: the same call fired after 71-110 ms in five more runs
 under that load and after 28-42 ms in three idle runs, against the 24.9 days the delay asked for.
 A negative value is refused, and so is one that is not a number, and a blank or whitespace one,

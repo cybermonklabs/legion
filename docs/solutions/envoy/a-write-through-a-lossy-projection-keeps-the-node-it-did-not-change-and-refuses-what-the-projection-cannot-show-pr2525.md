@@ -16,7 +16,7 @@ related_issues:
 
 # A write through a lossy projection keeps the node it did not change and refuses what the projection cannot show
 
-Extends docs/solutions/envoy/a-refusal-of-a-shape-stored-data-may-hold-refuses-only-what-the-write-adds-counted-by-content-INFRA-172.md.
+Extends docs/solutions/envoy/a-refusal-of-a-shape-stored-data-may-hold-refuses-only-what-the-write-adds-counted-by-content-POMJU-172.md.
 
 A route that writes rich stored nodes from a caller's flat projection of them - an ask row's
 `Label: Description` for a list item that may hold a sub-list, a second paragraph, a link and

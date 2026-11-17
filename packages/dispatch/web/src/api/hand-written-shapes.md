@@ -4,7 +4,7 @@ The Dispatch HTTP API's request and response shapes are generated: `envoy-dispat
 reflects the Go route table and the Go types each row takes and answers into
 `packages/contracts/schemas/dispatch-openapi.json`, and `bun run gen:api` renders that into
 `packages/contracts/src/dispatch-api.generated.ts`, which `@legion/contracts` re-exports
-(dispatch://INFRA-1406).
+(dispatch://POMJU-1406).
 
 So a request or response shape written by hand here is a finding. This file is the list of what
 is left and why each one is not a shape of that kind, so a reader checks the grep's answer rather
@@ -120,7 +120,7 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
 ## What is not generated, and is not an exception either
 
 The error **code** strings. The route table records a route's codes only in its prose, so making
-them machine-readable is a change to the table's own content, which dispatch://INFRA-1406 puts
+them machine-readable is a change to the table's own content, which dispatch://POMJU-1406 puts
 out of scope. The error **bodies** are generated, the six refusals richer than `{error, code}`
 included.
 

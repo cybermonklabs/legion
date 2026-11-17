@@ -22,7 +22,7 @@ import (
 
 // A comment's write records its blocks and writes no embedding window: the windows of those
 // blocks are the block-index tick's window arm's to write, in a transaction of its own
-// (refs.recordItemIndexed, docs.windowItem, INFRA-988). So the write answers with the comment
+// (refs.recordItemIndexed, docs.windowItem, POMJU-988). So the write answers with the comment
 // holding no window and listed as owed them (refs.ItemsOwedWindows), one pass of the
 // reconciliation writes them, and once the embed queue has run every block of the comment is
 // embedded - the comment is found by meaning search one tick after it is written rather than
@@ -92,7 +92,7 @@ func TestACommentLeavesItsWindowsToTheBlockIndexTick(t *testing.T) {
 // of it writes an embedding window. That lock is `select status, closed_at is null from issues
 // where key = $1 for no key update` (issueOpenStatus under ownerRowLock), the statement every
 // other writer of the issue waits on, and the window write held it for 114.3 ms in the mean on
-// the load-test deployment (INFRA-988). The work is not dropped with it: the comment is left
+// the load-test deployment (POMJU-988). The work is not dropped with it: the comment is left
 // owed its windows for the tick's window arm.
 //
 // It reads the statements rather than the time, so it fails for the shape and not for a slow

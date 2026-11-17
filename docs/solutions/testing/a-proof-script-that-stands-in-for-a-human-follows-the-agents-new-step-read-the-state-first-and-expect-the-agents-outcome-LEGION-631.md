@@ -8,7 +8,7 @@ tags:
   - prompt-change
   - fake-gh
 date: 2026-10-10
-status: superseded by INFRA-714 — the merge is the merger agent's, not the daemon's, so a proof reads the pull request until the merger's own merge lands (`await_merger_merge` in `scripts/e2e/lib/workflow.sh`) and fails naming GitHub's state when none does, since a hand merge there would hide a merge the agent never made. Reading the state first and expecting the agent's outcome stands, and `merge_when_clean`'s hand merge is only for a pull request the merger does not merge (one merged before the issue reaches merging, one whose merger is held)
+status: superseded by POMJU-714 — the merge is the merger agent's, not the daemon's, so a proof reads the pull request until the merger's own merge lands (`await_merger_merge` in `scripts/e2e/lib/workflow.sh`) and fails naming GitHub's state when none does, since a hand merge there would hide a merge the agent never made. Reading the state first and expecting the agent's outcome stands, and `merge_when_clean`'s hand merge is only for a pull request the merger does not merge (one merged before the issue reaches merging, one whose merger is held)
 module: scripts/e2e
 related_issues:
   - "LEGION-631"

@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Run the cases against a Dispatch search route and record where the right answer landed.
 
-usage: run_search.py --cases cases.json --fixture-dsn <dsn> --url http://127.0.0.1:8799 \\
+usage: run_search.py --cases $TMPDIR/cases.json --fixture-dsn <dsn> --url http://127.0.0.1:8799 \\
          --token <bearer> --out $TMPDIR/out.jsonl [--only serial120.json] [--workers 1]
+
+--cases is the descriptor set, and this tree holds no copy of it: its descriptors name the
+deployment's own issues, projects, documents and asks, and this repository is public. It is the
+file cases.json in the deployment's own Dispatch, which README.md says how to download. So the
+argument has no default, and a run refuses, naming what is missing, a path that holds no
+descriptor set.
 
 Each case's query is read back out of the fixture the server is serving (case_text.py) and
 checked against the descriptor's SHA-256: a case whose text has moved is refused, never guessed
@@ -27,7 +33,9 @@ from dispatch_read import ReadOnlyDispatch, pmap
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cases", required=True)
+    parser.add_argument("--cases", required=True,
+                        help="the descriptor set: the file cases.json downloaded from the "
+                             "deployment's own Dispatch, as README.md says")
     parser.add_argument("--fixture-dsn", required=True)
     parser.add_argument("--url", required=True, help="the search server, built from this tree")
     parser.add_argument("--token", default="", help="bearer; else DISPATCH_TOKEN_FILE's contents")
@@ -43,8 +51,7 @@ def main():
                         help="run every case once, unrecorded, before the run that is recorded")
     arguments = parser.parse_args()
 
-    with open(arguments.cases) as handle:
-        cases = json.load(handle)
+    cases = load_cases(parser, arguments.cases)
     if arguments.only:
         with open(arguments.only) as handle:
             wanted = set(json.load(handle))
@@ -87,6 +94,39 @@ def main():
         handle.write(json.dumps({"case_id": case_id, "refused": why}) + "\n")
     handle.close()
     print(f"{written[0]} runs -> {arguments.out}", file=sys.stderr)
+
+
+# What resolve and measure read of every descriptor.
+DESCRIPTOR_FIELDS = ("case_id", "kind", "answer_kind", "answer_id", "sha256", "source")
+
+
+def load_cases(parser, path):
+    """The descriptor set at path, refused whole unless each descriptor holds what a run reads.
+
+    `dispatch doc-read` prints a line about a file before the file's own bytes, so its output
+    saved as it is reads as no JSON here, which is why README.md downloads the bytes alone.
+    """
+    where = ("this tree holds no descriptor set: download the file cases.json from the "
+             "deployment's own Dispatch as README.md says, and give its path to --cases")
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as error:
+        parser.error(f"--cases {path}: {error.strerror}; {where}")
+    try:
+        cases = json.loads(raw)
+    except ValueError as error:
+        parser.error(f"--cases {path} is not JSON ({error}); {where}")
+    if not isinstance(cases, list) or not cases:
+        parser.error(f"--cases {path} holds no descriptor; {where}")
+    for index, case in enumerate(cases):
+        missing = [field for field in DESCRIPTOR_FIELDS
+                   if not isinstance(case, dict) or field not in case]
+        if not missing and not (isinstance(case["source"], dict) and "kind" in case["source"]):
+            missing = ["source.kind"]
+        if missing:
+            parser.error(f"--cases {path}: descriptor {index} has no {', '.join(missing)}; {where}")
+    return cases
 
 
 def resolve(cases, dsn):

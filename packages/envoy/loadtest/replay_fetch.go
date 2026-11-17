@@ -39,7 +39,7 @@ const (
 
 func runReplayFetch(args []string) error {
 	fl := flag.NewFlagSet("replay-fetch", flag.ContinueOnError)
-	project := fl.String("project", "", "project key, e.g. LINUX")
+	project := fl.String("project", "", "project key, e.g. HAFJJ")
 	atFlag := fl.String("at", "", "the state instant (RFC 3339)")
 	untilFlag := fl.String("until", "", "the window's end, exclusive (RFC 3339)")
 	out := fl.String("out", "", "bundle directory; its raw/ is the response cache")

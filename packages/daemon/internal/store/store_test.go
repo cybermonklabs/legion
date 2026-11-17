@@ -780,8 +780,8 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // build the database shapes a deployment really has: one that recorded the other release's
 // versions and none of this one's. The list is what
 // `jj diff --from main@origin --to @ --name-only packages/daemon/internal/store/migrations`
-// named on dispatch://INFRA-714's branch. A migration a later branch adds that rewrites
-// outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
+// named on dispatch://POMJU-714's branch. A migration a later branch adds that rewrites
+// outbox_kind_check with a kind of its own belongs in it too, as dispatch://POMJU-3274's
 // 20261114031356 and the role-holders publication's 20261116165926 do: the case of a database main
 // migrated applies a version left out of the list before the list's own rewrites of that check,
 // which do not name the later kind, so the row seeded of that kind fails the upgrade. Any other

@@ -15,7 +15,7 @@ import (
 )
 
 // cutoverMergerTold is the Dispatch message the cutover's repair posts on each issue whose merger
-// it owed a start (cutoverMergerRepair): the message dispatch://INFRA-3274/spec R2 asks for, which
+// it owed a start (cutoverMergerRepair): the message dispatch://POMJU-3274/spec R2 asks for, which
 // says in plain words that the cutover left the merger stopped and owed the merger its merging
 // task. It says the daemon queued that task, not that it gave it: the start takes the slot mark
 // the slot rule gives `merging` (StartOrOwe), which is none, since merging is past the issue's
@@ -30,7 +30,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 	"The merger starts when the design gate of its tree allows it."
 
 // cutoverMergerRepair is the boot's one-time repair of the mergers the `awaiting_merge` cutover
-// left stopped (intake.CutoverMergerRepair, dispatch://INFRA-3274/spec R2). A build with that
+// left stopped (intake.CutoverMergerRepair, dispatch://POMJU-3274/spec R2). A build with that
 // phase moved an issue there when its merger completed merging with a READY head, since the
 // daemon merged then, and no role worked the phase, so the idle release stopped the merger's pod
 // while the issue waited and armed no backstop for it. Migration 20261029120700 moved each such

@@ -6,7 +6,7 @@ import (
 	"github.com/sjawhar/envoy/infra/gcp"
 )
 
-// name takes a DNS-1035 label (dispatch://INFRA-2739/artifact/open-items-md, decision 16). The
+// name takes a DNS-1035 label (dispatch://POMJU-2739/artifact/open-items-md, decision 16). The
 // resolver used to check it with namespaceRule, which is DNS-1123 and admits a leading digit,
 // while the chart renders <name>-headless and this change adds <name>-listener, each a Service
 // name Kubernetes validates as a DNS-1035 label. So a hub named 9nats was accepted there and

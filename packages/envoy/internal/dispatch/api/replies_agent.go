@@ -43,7 +43,7 @@ import (
 // its login/dismissed_at index when the marks are what is read), the session's marks and the
 // replies read by id. The shape this replaces built one recursive CTE over every one-off message
 // the person had ever sent and then scanned that whole CTE once per root, which cost the Dismissed
-// view's page read 433 ms and its count 7.4 s at 10,000 dismissed Agent threads (INFRA-450's a14).
+// view's page read 433 ms and its count 7.4 s at 10,000 dismissed Agent threads (POMJU-450's a14).
 //
 // The definition of "a reply this login has not read in this session" is unread_replies.go's
 // (unreadDirectRepliesCTE), which the Agents page's New replies badge and the conversation window
@@ -158,7 +158,7 @@ var myAgentRootIsOneOff = `
 //
 // The set is read once and hashed rather than probed per root, which is the difference between
 // reading the person's marks and reading one index entry for every thread they have ever
-// dismissed: the probe was 66 ms of the Inbox read's 69 at 10,000 of them (INFRA-450's a14), and
+// dismissed: the probe was 66 ms of the Inbox read's 69 at 10,000 of them (POMJU-450's a14), and
 // the set is one index-only scan of the same marks. `not in` over a materialized set is what asks
 // the planner for the hash; a correlated `not exists` leaves it free to loop, and with the roots
 // estimated at one row it does.

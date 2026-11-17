@@ -213,7 +213,7 @@ test("a send whose notification failed is delivered when it is sent again", asyn
   }
 })
 
-// What replaces the server's record of the cards it has (INFRA-1026 review, round eleven): the
+// What replaces the server's record of the cards it has (POMJU-1026 review, round eleven): the
 // server is at-least-once and re-hands the event, and the mod's write is idempotent by the
 // Envoy event id, so the engine sees the one message once. Both copies are therefore handed
 // over, each carrying `evt-42`, and the inbox names the message once. The mod's own half of
@@ -234,7 +234,7 @@ test("a card Envoy sends again is handed over again, under the one event id", as
   expect(delivery.inbox().map(({ event_id }) => event_id)).toEqual(["evt-42"])
 })
 
-// Repro `R-A` (INFRA-1026 review, round eleven) at the server: a mod that never answers — a
+// Repro `R-A` (POMJU-1026 review, round eleven) at the server: a mod that never answers — a
 // SIGSTOPped Claude Code, one that polls for nothing, one that is gone — leaves the frame
 // unanswered, so Envoy sends the card again and this server writes it to the session again. The
 // message is never lost to keep it from arriving twice, and what keeps it from arriving twice is
@@ -353,7 +353,7 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
 })
 
 // A frame with no `event_id` names no event, so the inbox cannot read one as a copy of another:
-// two of them are two messages, and both are written to the session (INFRA-1026 review). The
+// two of them are two messages, and both are written to the session (POMJU-1026 review). The
 // rule before this one keyed every such frame by the word the entry shows — `unknown` — so the
 // inbox named the first and silently dropped the rest while the session read all of them.
 test("every frame with no event id is listed, since none of them names a copy", async () => {

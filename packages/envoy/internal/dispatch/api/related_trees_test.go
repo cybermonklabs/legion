@@ -98,7 +98,7 @@ func relatedTreesFixture(t *testing.T, asking, other string) (http.Handler, stri
 // asked for the trees, on both legs of the check: the one-project items, whose answers the ask
 // states bring (attachAskStates), and the answered questions of the other projects, whose
 // answers the cross-project statement brings (relatedOtherProjects). Each leg reads its answer
-// from a different place, and before INFRA-635 each passed no reader at all, so the panel that
+// from a different place, and before POMJU-635 each passed no reader at all, so the panel that
 // draws a check's result parsed the markdown in the browser - which R6 leaves to the editor, to
 // a paste and to text Dispatch does not store.
 //

@@ -1,4 +1,4 @@
--- 20261101222956_issue_idle_release.up.sql — the idle release of an issue pod (INFRA-945).
+-- 20261101222956_issue_idle_release.up.sql — the idle release of an issue pod (POMJU-945).
 --
 -- Two kinds join the outbox, the release's first and last acts. `issue_bundle` saves the
 -- workspace's unpushed work as a git bundle, asked of a role's shim while that role's process is

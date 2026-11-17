@@ -1,5 +1,5 @@
 /**
- * What this server does with a card in a Claude Code session (`ModSession.show`, INFRA-1026):
+ * What this server does with a card in a Claude Code session (`ModSession.show`, POMJU-1026):
  * an Envoy delivery that is not the person's own message — an ask answer, a teammate's or an
  * architect's message, an issue event — is handed to the mod as one message, and the row the mod
  * answers with is the proof the session has it.
@@ -77,7 +77,7 @@ test("a card is handed to the mod as one message, under its own Envoy event id",
   ])
 })
 
-// Repro `R-A` (INFRA-1026 review, round eleven): a request handed to a poll is a write into a
+// Repro `R-A` (POMJU-1026 review, round eleven): a request handed to a poll is a write into a
 // socket buffer, which a SIGSTOPped Claude Code never reads, so the hand-out proved nothing
 // about the session and a card it counted as entered was lost at the next SIGKILL. The row the
 // mod answers with is the proof, and a mod that answers nothing leaves the frame unanswered —
@@ -115,7 +115,7 @@ test("a card with no Envoy event of its own is handed over without one", async (
 // a message became. Both are answered from the stamp the mod puts on the row's own event, never
 // from what the row says: read off the wording, a card carrying that prompt's words was drawn
 // for nobody, and read off the origin, another mod's appended context was drawn as the person's
-// (INFRA-1026 review, round ten).
+// (POMJU-1026 review, round ten).
 test("the rows the mod stamped are claimed by their uuids", () => {
   const mod = driven(() => ({ as: "row", uuid: "row-card" }))
 

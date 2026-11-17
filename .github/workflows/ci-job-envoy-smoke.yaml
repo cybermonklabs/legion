@@ -158,7 +158,7 @@ jobs:
       # available and the one-minute load, one line per second; `report` stops the sampler and
       # prints the worst each of them reached, with the free space the step began with, the
       # least it ever had and the difference, and `margin short` when the step used more than
-      # half of what it started with (dispatch://INFRA-1085, dispatch://INFRA-2605). The report
+      # half of what it started with (dispatch://POMJU-1085, dispatch://POMJU-2605). The report
       # prints and never fails the job: this is the measurement, not a new gate. The two steps
       # share their state through a file under $RUNNER_TEMP rather than $GITHUB_ENV, which every
       # later step of the job would inherit and check-ci-filters.sh treats as reaching the job's

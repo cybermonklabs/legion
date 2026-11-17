@@ -1162,7 +1162,7 @@ test("an ask part's card names the ask and its author, its pin a revision, and t
   }
 });
 
-// INFRA-440 (exclusion E1). The card is a tooltip inside one link to the reference, so the
+// POMJU-440 (exclusion E1). The card is a tooltip inside one link to the reference, so the
 // comment's agent is named by its current registry title and marked running, with no link of
 // its own: the reference link stays the card's only anchor.
 test("a comment card names its agent by its current title and state, without a second link", async () => {

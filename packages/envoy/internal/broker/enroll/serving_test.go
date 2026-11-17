@@ -452,7 +452,7 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	// broker's beats with them, which turns the guard on and makes the lapsed lease below read
 	// live. Both were seen in 50 runs under eight busy loops on two cores. A second of interval
 	// and four of threshold keep every relation this row reads and give that machine room
-	// (INFRA-985).
+	// (POMJU-985).
 	const interval, threshold = time.Second, 4 * time.Second
 	stuck := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold}
 	serving := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold}
@@ -514,7 +514,7 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	// says the beat timed out: the stuck row is held for the whole of Run, so every beat of that
 	// clock times out and warns, and how many of them a machine fits into the window is the
 	// machine's business, not this test's. Holding it to exactly one failed under load, which
-	// is a count of beats rather than the behaviour (INFRA-985).
+	// is a count of beats rather than the behaviour (POMJU-985).
 	warnings := []string{}
 	for line := range strings.Lines(logged.String()) {
 		if strings.Contains(line, "level=WARN") && strings.Contains(line, "process="+stuck.processID()) {

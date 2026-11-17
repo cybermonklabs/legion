@@ -3,7 +3,7 @@ import { embeddedQueries, forgetEmbedCalls, setEmbedMarkers } from "./fake-embed
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// The bar's two tiers, read from the embeddings each costs (dispatch://INFRA-1042): a keystroke
+// The bar's two tiers, read from the embeddings each costs (dispatch://POMJU-1042): a keystroke
 // searches the words alone and embeds nothing, and only a pause pays for an embedding and gets
 // the search by meaning. The fake embedder counts the calls the server makes
 // (`e2e/fake-embedder.ts`), so each claim here is a number the row reads back rather than a

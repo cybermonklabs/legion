@@ -16,7 +16,7 @@ import (
 
 // priorityPlan is one priority: the id every address of it carries, the three attributes a person
 // writes, the key its place in the one order is drawn with, and the moment it was written. It
-// holds no project, because a priority belongs to none (INFRA-2947).
+// holds no project, because a priority belongs to none (POMJU-2947).
 type priorityPlan struct {
 	ID          string
 	Title       string

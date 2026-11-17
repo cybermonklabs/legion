@@ -1,6 +1,6 @@
 -- 20261110214252_issue_design_gates.up.sql — the document each design-gate step records on an issue.
 --
--- INFRA-1727: a project's row names the steps the Legion deployment that serves it gates, in the
+-- POMJU-1727: a project's row names the steps the Legion deployment that serves it gates, in the
 -- order it gates them (projects.gated_steps, 20261105204141_project_gated_steps.up.sql). This
 -- table names, issue by issue, which document each of those steps records there: `decisions` the
 -- issue's decisions document, `criteria` its Verification document, `spec` its primary document.

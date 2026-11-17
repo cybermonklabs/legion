@@ -21,7 +21,7 @@ import (
 // closed by the words of C4 (closedTreesMember), which the tree that takes it adopts. Every
 // refusal is a 409 whose message names the issue and why.
 //
-// C4 of dispatch://INFRA-3107 is the one clause that takes a member rather than a root: a member
+// C4 of dispatch://POMJU-3107 is the one clause that takes a member rather than a root: a member
 // of a closed tree that never started a phase joins the tree whose architect releases it
 // (AdoptMember), and nothing else about a member is adoptable. A member of a tree that is live is
 // another architect's work and keeps its refusal, as does one of a parked tree, one of a tree
@@ -52,7 +52,7 @@ func (e *Engine) AdoptionRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 	return nil, nil
 }
 
-// closedTreesMember says whether member is the member C4 of dispatch://INFRA-3107 lets another
+// closedTreesMember says whether member is the member C4 of dispatch://POMJU-3107 lets another
 // tree take: it stands at phase.Admitted, so it never started a phase, and its own tree's root is
 // recorded, finished (record.DoneStatus) and has no linger left to run (record.Lingering, read
 // against the engine's clock). Those are the records the held list reads tree_closed over
@@ -280,7 +280,7 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 // walk starts at that issue's parent, so the architect that owns the parent reads that the issue
 // joined and where it came from. Both routes send it, each naming its own from: a queued root with
 // its own tree's members (Adopt) comes from the admission queue, and the one member of a closed
-// tree a release takes (AdoptMember, C4 of dispatch://INFRA-3107) comes from the closed tree of its
+// tree a release takes (AdoptMember, C4 of dispatch://POMJU-3107) comes from the closed tree of its
 // old root.
 func joinedTheTree(issue, root, from string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect,
@@ -313,7 +313,7 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 // (closedTreesMember) and holding no admission slot, which its caller read (admit's
 // adoptChildren), into root's live tree under the Dispatch parent child names and held on the
 // blockers it names (intake.AdoptedChild, the release's own read of Dispatch), as Adopt holds the
-// root a release names: C4 of dispatch://INFRA-3107, the route a member of a tree nobody runs
+// root a release names: C4 of dispatch://POMJU-3107, the route a member of a tree nobody runs
 // again takes into the tree whose architect releases it. It is Adopt's own write for the one
 // issue the release names (moveIntoTree), and moves no other member of the old tree: the route
 // takes the issue the architect released, and each other member stands in admission.held with

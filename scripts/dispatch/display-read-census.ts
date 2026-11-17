@@ -7,8 +7,8 @@
 // the browser's reading said, over every text Dispatch holds, and above all whether Go's reading
 // ever drops text the browser showed.
 //
-// The recipe is INFRA-172's, recorded in docs/solutions/envoy/a-change-to-how-dispatch-reads-
-// stored-markdown-censuses-every-stored-version-and-rewrites-the-hits-before-the-merge-INFRA-172.md:
+// The recipe is POMJU-172's, recorded in docs/solutions/envoy/a-change-to-how-dispatch-reads-
+// stored-markdown-censuses-every-stored-version-and-rewrites-the-hits-before-the-merge-POMJU-172.md:
 // a version is read with `GET /api/v1/artifacts/{id}/versions/{n}`, never `/text`, which renders
 // the live tree again; each project's issues come from one unpaged `GET /api/v1/issues?project=`,
 // because offset paging repeats and skips issues while others write; a network failure or a 5xx
@@ -69,7 +69,7 @@
 //
 // The corpus doubles as the resume file: each unit of work (one list, one version) is appended as
 // one JSONL line as it lands, and a pass that dies after an hour skips every unit already in it.
-// INFRA-172's first pass lost 689 requests to an outage and was discarded; this one continues.
+// POMJU-172's first pass lost 689 requests to an outage and was discarded; this one continues.
 import {
   appendFileSync,
   closeSync,
@@ -425,7 +425,7 @@ function projectUnits(project: string): Unit[] {
       unit: `project-issues/${project}`,
       async read(config, rate, spend) {
         // Deliberately unpaged: without limit or offset the route answers every issue in one
-        // array, where offset paging repeats and skips issues while others write (INFRA-172).
+        // array, where offset paging repeats and skips issues while others write (POMJU-172).
         const issues = await get<{ key: string }[]>(
           config,
           `/api/v1/issues?project=${encoded}`,
@@ -530,7 +530,7 @@ function versionUnit(version: VersionRef): Unit {
   return {
     unit: `version/${version.artifact}/${version.number}`,
     async read(config, rate, spend) {
-      // /versions/{n} is the stored markdown; /text renders the live tree again (INFRA-172).
+      // /versions/{n} is the stored markdown; /text renders the live tree again (POMJU-172).
       const read = await get<{ markdown?: string }>(
         config,
         `/api/v1/artifacts/${version.artifact}/versions/${version.number}`,
@@ -698,7 +698,7 @@ function recordedVersions(corpus: Corpus): VersionRef[] {
  * The order a pass should read versions in: every document's newest version, then every
  * document's next newest, and so on. A pass cut short has then read the version of each document
  * a reader is shown now rather than the whole history of the first few documents, and one
- * document of 4,802 versions cannot eat the pass. INFRA-172's recipe counts the latest version of
+ * document of 4,802 versions cannot eat the pass. POMJU-172's recipe counts the latest version of
  * every document first for the same reason.
  */
 export function versionOrder(versions: readonly VersionRef[]): VersionRef[] {

@@ -123,8 +123,8 @@ const AffirmativeCacheSize = 4096
 // meets it; a stranger presenting tokens the broker has never issued meets it at once, before
 // anything of Dispatch's reaches the broker.
 //
-// That ordering is the rule INFRA-228 wrote down
-// (docs/solutions/best-practices/a-route-that-verifies-before-it-limits-lets-a-stranger-spend-your-upstream-INFRA-228.md):
+// That ordering is the rule POMJU-228 wrote down
+// (docs/solutions/best-practices/a-route-that-verifies-before-it-limits-lets-a-stranger-spend-your-upstream-POMJU-228.md):
 // a check that costs an upstream call is work an unauthenticated caller can make you do, so the
 // bucket is spent before the call and not inside the handler after it. The budget being guarded
 // is the broker's account-class bucket, which a person's approval relay shares.

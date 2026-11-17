@@ -157,7 +157,7 @@ describe("envoyToolSpecs", () => {
     );
     // 202: no live session holds the role, so the listener keeps the message. This is not a
     // refusal, and a holder that stopped answering is one of the two cases: it keeps its role,
-    // and the message waits for it or for the next live holder (dispatch://INFRA-2846, R4).
+    // and the message waits for it or for the next live holder (dispatch://POMJU-2846, R4).
     expect(publish?.description).toContain(
       "Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success."
     );
@@ -191,7 +191,7 @@ describe("envoyToolSpecs", () => {
 describe("publishConfirmationText", () => {
   // The listener keeps a role message that no live session holds for one hour, and names the end
   // of that hour as kept_until. At that end it drops a copy no session took and sends the
-  // publish's source session a message that names it (dispatch://INFRA-2846, R3). A listener of
+  // publish's source session a message that names it (dispatch://POMJU-2846, R3). A listener of
   // an earlier release keeps for a time it does not name and sends no such message.
   test("a kept publish says until when it is kept", async () => {
     const keptUntil = Date.UTC(2026, 10, 15, 10, 30);
@@ -329,7 +329,7 @@ describe("publishConfirmationText", () => {
 
   // The description is what an agent reads at the moment it decides whether a peer is alive. The
   // old wording ("all live sessions", "up to 5 minutes") said a quiet session was a dead one, and
-  // agents acted on it: role claims taken, replacements started (dispatch://INFRA-392).
+  // agents acted on it: role claims taken, replacements started (dispatch://POMJU-392).
   test("every tool that names another session carries the three states and the unresponsive rule", () => {
     const named = ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"];
 
@@ -385,7 +385,7 @@ describe("sendConfirmationText", () => {
 
   // The listener sends the recipient's last registration beside an unresponsive state, and a
   // sender deciding whether to wait reads how long the peer has been silent, not only that it is
-  // (dispatch://INFRA-392, R7).
+  // (dispatch://POMJU-392, R7).
   test("says since when an unresponsive recipient has been silent, from the listener's last_seen", () => {
     expect(
       sendConfirmationText({

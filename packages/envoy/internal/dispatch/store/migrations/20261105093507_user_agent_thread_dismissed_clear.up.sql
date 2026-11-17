@@ -1,12 +1,12 @@
 -- 20261105093507_user_agent_thread_dismissed_clear.up.sql
 --
--- INFRA-450: the Agent half's own "a write by somebody else brings the thread back", as a trigger,
+-- POMJU-450: the Agent half's own "a write by somebody else brings the thread back", as a trigger,
 -- which is what user_threads_record does for a Reply thread (20261105093501). Until this migration
 -- the Agent half had no trigger at all, so "dismissed" was a comparison every read had to make -
 -- is this mark at or after the newest reply the session wrote - and the Inbox's reads had to ask it
 -- of every thread the person had ever dismissed: one index read a thread, 66 ms of the Inbox read's
 -- 69 at 10,000 dismissed Agent threads, growing with the pile for as long as it grows
--- (INFRA-450's a14). With the mark cleared in the reply's own transaction, "dismissed" on this half
+-- (POMJU-450's a14). With the mark cleared in the reply's own transaction, "dismissed" on this half
 -- is what it is on the other one - a mark exists - and no read compares two times or visits a
 -- dismissed root at all.
 --

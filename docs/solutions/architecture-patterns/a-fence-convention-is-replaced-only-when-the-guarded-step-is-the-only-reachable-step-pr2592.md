@@ -16,7 +16,7 @@ related_issues:
 
 # A fence convention is replaced only when the guarded step is the only reachable step
 
-Extends docs/solutions/architecture-patterns/a-deadline-that-abandons-without-cancelling-makes-a-serial-queue-concurrent-INFRA-246.md.
+Extends docs/solutions/architecture-patterns/a-deadline-that-abandons-without-cancelling-makes-a-serial-queue-concurrent-POMJU-246.md.
 
 That document prices the hand-written guard a deadline costs and says to make it one named
 predicate per scope with the rule in a comment. This is what happened when the guard was taken
@@ -79,7 +79,7 @@ review round. Its site count, "about twenty", is 29 on the release this change r
 
 ## Evidence
 
-sjawhar/legion#2592 (dispatch://INFRA-404) moved two serial queues, each task's deadline, the
+sjawhar/legion#2592 (dispatch://POMJU-404) moved two serial queues, each task's deadline, the
 fence and fifteen pieces of shared state out of a 4,172-line extension into
 `packages/pi-envoy/src/registration-state.ts`, whose queue hands each task a handle.
 

@@ -4,7 +4,7 @@ import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// Check k18 of dispatch://INFRA-1042/artifact/verification-md, serving R16: the operator forms
+// Check k18 of dispatch://POMJU-1042/artifact/verification-md, serving R16: the operator forms
 // the query already reads are offered in the bar as a person types, each narrowing the list it
 // is typed into, and a project, a status, an author and a date are chips the person adds, each
 // narrowing that list and each reading back in the words they chose.
@@ -52,10 +52,10 @@ test("the operator forms are offered as the words are typed, and each narrows th
   // Every check here carries the suite's own 15 s deadline, and a run where the bar shows none
   // of this reports each miss, which takes longer than one row's default budget.
   test.setTimeout(120_000);
-  await createProject({ key: "INFRA", name: "INFRA work" });
+  await createProject({ key: "POMJU", name: "POMJU work" });
   for (const title of operatorTitles) {
     // These titles share their words on purpose, which is what the related-item check refuses.
-    await createIssue({ force: true, project: "INFRA", title });
+    await createIssue({ force: true, project: "POMJU", title });
   }
   const context = await asUser(browser, "alice");
 
@@ -122,11 +122,11 @@ test("the operator forms are offered as the words are typed, and each narrows th
 test("each chip narrows the same list and reads back in the words the person chose", async ({
   browser,
 }) => {
-  await createProject({ key: "INFRA", name: "INFRA work" });
-  await createProject({ key: "LINUX", name: "LINUX work" });
-  const kept = await createIssue({ project: "INFRA", title: "Instrument log" });
-  const elsewhere = await createIssue({ project: "LINUX", title: "Kernel log" });
-  const started = await createIssue({ project: "INFRA", title: "Retired notes" });
+  await createProject({ key: "POMJU", name: "POMJU work" });
+  await createProject({ key: "HAFJJ", name: "HAFJJ work" });
+  const kept = await createIssue({ project: "POMJU", title: "Instrument log" });
+  const elsewhere = await createIssue({ project: "HAFJJ", title: "Kernel log" });
+  const started = await createIssue({ project: "POMJU", title: "Retired notes" });
   await patchIssue(kept.key, { status: "todo" });
   await patchIssue(elsewhere.key, { status: "todo" });
   await patchIssue(started.key, { status: "in_progress" });
@@ -156,7 +156,7 @@ test("each chip narrows the same list and reads back in the words the person cho
     await expect(options).toHaveCount(5);
 
     await dialog.getByRole("button", { name: "Project" }).click();
-    await dialog.getByRole("button", { name: "INFRA" }).click();
+    await dialog.getByRole("button", { name: "POMJU" }).click();
     await expect(options).toHaveCount(4);
 
     await dialog.getByRole("button", { name: "Status" }).click();
@@ -173,11 +173,11 @@ test("each chip narrows the same list and reads back in the words the person cho
 
     // Each chip says what it narrowed by in the words it was chosen with, and none of them was
     // written into the words the person typed.
-    await expect(chips).toContainText("Project INFRA");
+    await expect(chips).toContainText("Project POMJU");
     await expect(chips).toContainText("Status Todo");
     await expect(chips).toContainText("Author alice");
     await expect(chips).toContainText(`Updated since ${since.text}`);
-    await expect(chips).not.toContainText("project:INFRA");
+    await expect(chips).not.toContainText("project:POMJU");
     await expect(search).toHaveValue("astrolabe");
 
     // A chip comes off on its own, and the rows it was holding back come back.

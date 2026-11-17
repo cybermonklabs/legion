@@ -19,7 +19,7 @@ import (
 //
 // One caller, one connection, is the rule this pool cannot survive without. A transaction holds
 // its connection until it commits, and a caller that asks for a second one while it holds the
-// first waits for a connection only the callers queued behind it can give back. INFRA-3169 is
+// first waits for a connection only the callers queued behind it can give back. POMJU-3169 is
 // that cycle measured: three call sites asked the pool for a connection while holding one of
 // their own — the boot's report of stranded claims, the mapping refresh and the state route —
 // and one of them held the global fact serializer (intake.ApplyFact's advisory lock) while it

@@ -1,4 +1,4 @@
--- INFRA-66: when each leased maintenance loop's pass last began, one row per lease. The lease the
+-- POMJU-66: when each leased maintenance loop's pass last began, one row per lease. The lease the
 -- loops take (duty.Exclusive) is a session advisory lock, which excludes only passes that overlap:
 -- two processes whose tickers are out of phase - the ordinary case, since each draws its phase at
 -- boot (duty.RunJittered) and a rolling update starts the second process minutes after the first -
@@ -8,7 +8,7 @@
 --
 -- This row is what the second process's tick reads instead: a pass is due only once the loop's own
 -- period has run out since the last one began, whichever process ran it, so one period costs one
--- pass however many processes tick. A departure from INFRA-66's plan, which promised "no new NATS
+-- pass however many processes tick. A departure from POMJU-66's plan, which promised "no new NATS
 -- subject, durable, consumer or KV bucket, and no new table" (plan §6.2); the architect took it,
 -- because a pass another process ran is what has to count, and nothing a process keeps to itself
 -- can say so. No existing row is every leased loop's.

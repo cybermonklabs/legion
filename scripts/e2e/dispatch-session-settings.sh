@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# INFRA-195's local-stack proof: Dispatch's live view shows an Oh My Pi session's current model and
+# POMJU-195's local-stack proof: Dispatch's live view shows an Oh My Pi session's current model and
 # thinking level and switches them, on a real session. Oh My Pi runs in `--mode rpc`, as a Legion
 # pane runs it, with this checkout's Envoy plugin in an isolated agent directory
 # (PI_CODING_AGENT_DIR) under the run's own HOME; it registers with a real Envoy listener and a real
@@ -131,7 +131,7 @@ trap 'exit 143' TERM
 # ---- inputs ------------------------------------------------------------------------------------------
 echo "== setup"
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
-  fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates its own database in. This script starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
+  fail "LEGION_TEST_PG_DSN is required: a loopback PostgreSQL with pgvector (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable) the run creates its own database in. This script starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-POMJU-42.md starts one without root."
 for tool in go bun jq curl psql tar python3; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done

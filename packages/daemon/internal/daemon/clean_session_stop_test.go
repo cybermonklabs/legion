@@ -162,7 +162,7 @@ func bufferedLogger(buf *bytes.Buffer) *slog.Logger {
 // heartbeat lands moments before the probe says the process is gone. Here it lands 500 ms
 // before, and the stop deletes it. A stop that dated its moment before the probe's by any
 // margin wider than that gap would read this heartbeat as a registration written since and
-// leave it standing, which is the whole of the defect (dispatch://INFRA-2064).
+// leave it standing, which is the whole of the defect (dispatch://POMJU-2064).
 func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *testing.T) {
 	listener := &listenerRecorder{
 		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-500 * time.Millisecond)},

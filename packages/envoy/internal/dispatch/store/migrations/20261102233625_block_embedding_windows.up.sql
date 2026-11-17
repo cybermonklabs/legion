@@ -1,6 +1,6 @@
 -- 20261102233625_block_embedding_windows.up.sql
 -- Meaning search moves from one vector per whole item to one vector per window of neighbouring
--- blocks (INFRA-370). A whole-text row carries only the first embed.MaxInputRunes runes of its
+-- blocks (POMJU-370). A whole-text row carries only the first embed.MaxInputRunes runes of its
 -- item, so a passage at the end of a long document has no vector and no query reaches it; a
 -- window holds at most embed.windowTextChars characters of block text, so every passage of
 -- every item is embedded. embed.Windows builds an owner's windows and each indexer writes them

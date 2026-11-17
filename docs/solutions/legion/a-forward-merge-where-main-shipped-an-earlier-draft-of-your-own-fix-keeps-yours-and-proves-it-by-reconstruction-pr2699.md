@@ -45,7 +45,7 @@ already corrected — so keeping main's would put the measured defects back.
 
 ## Evidence
 
-sjawhar/legion#2699 (INFRA-436) was returned CONFLICTING at its approved head: `main` had merged
+sjawhar/legion#2699 (POMJU-436) was returned CONFLICTING at its approved head: `main` had merged
 sjawhar/legion#2625, the same cause fixed by another tree in the shape #2699 carried at round 1
 (an `unconfirmed` map, a `confirmPending` pass, the bound paid per open). The architect decided to
 keep #2699's shape, since #2625's carries the defects rounds 1 to 5 measured.

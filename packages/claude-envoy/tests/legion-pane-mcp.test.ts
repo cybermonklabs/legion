@@ -121,7 +121,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       LEGION_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
       LEGION_CLAUDE_INBOX: inboxPath,
       // Ten minutes, so the role below can only have been claimed by the turn this case
-      // submits and never by the claim's own bound (INFRA-1573).
+      // submits and never by the claim's own bound (POMJU-1573).
       LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000",
     },
     stderr: "pipe",
@@ -141,7 +141,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
 
     // The bridge's /rename seed, as a fresh pane's Claude Code submits it: a prompt before any
     // claim exists, since the seed is what writes the transcript the pane registers with. It
-    // says a turn started, and the server has no step to run for it yet (INFRA-1573).
+    // says a turn started, and the server has no step to run for it yet (POMJU-1573).
     const seed = await client.callTool({
       name: PHASE_HOOK_TOOL_NAME,
       arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
@@ -178,7 +178,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     // The seed is behind the pane and it holds no name: the registration and its ready have
     // run, and only a turn after them takes the Envoy name, so a message the listener kept for
     // the role is handed over inside a running turn rather than ahead of the daemon's task
-    // (INFRA-1573).
+    // (POMJU-1573).
     expect(roles).toEqual([])
     const turn = await client.callTool({
       name: PHASE_HOOK_TOOL_NAME,
@@ -187,7 +187,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect(turn.content).toEqual([{ type: "text", text: "{}" }])
     await waitFor(async () => roles.length > 0, "the pane to claim its role at its first turn")
     // The claim names the process that made it — the one id this server minted and registers
-    // with — so the listener holds the role for this `claude` alone (dispatch://INFRA-783).
+    // with — so the listener holds the role for this `claude` alone (dispatch://POMJU-783).
     const instance = instances[0]
     expect(instance).toMatch(/^[0-9a-f]{32}$/)
     expect([...new Set(instances)]).toEqual([instance])

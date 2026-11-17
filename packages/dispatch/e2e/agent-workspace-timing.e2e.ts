@@ -12,7 +12,7 @@ import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * What the agent surfaces cost in time (INFRA-812). Every row here reads a wall clock - a
+ * What the agent surfaces cost in time (POMJU-812). Every row here reads a wall clock - a
  * sleeping live view of an ordinary conversation comes back inside half a second on the
  * fastest of up to five wakes, a sleeping view at the stream's limit comes back inside 1.2 s
  * on the fastest of up to eight wakes, and the Agents page paints six hundred sessions inside

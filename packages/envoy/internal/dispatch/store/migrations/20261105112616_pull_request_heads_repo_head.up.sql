@@ -6,7 +6,7 @@
 --
 -- A `before_merge` result whose commit heads no row attributed to the check's own issue is read
 -- through GitHub once every delivery.CommitPullReadStaleAfter, which is how a result recorded
--- before its pull request opened stops reading `older` (INFRA-1240). That read can repair nothing
+-- before its pull request opened stops reading `older` (POMJU-1240). That read can repair nothing
 -- for a commit Dispatch already holds an open or merged pull request for, whatever issue that row
 -- is attributed to: the reconcile re-reads an open row every five minutes and offers a merged one
 -- once per attribution rule (ListStalePullRequestHeads), so asking GitHub again from a read

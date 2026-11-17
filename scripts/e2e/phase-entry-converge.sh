@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The live proof that the work of a phase entry reaches the worker that entry names
-# (dispatch://INFRA-2800's R3, R4, R5, R6 and R9). The driver
+# (dispatch://POMJU-2800's R3, R4, R5, R6 and R9). The driver
 # (packages/daemon/internal/daemon/phase_entry_converge_live_test.go, which this script builds with
 # `-tags e2e`) boots the whole daemon on the PostgreSQL LEGION_TEST_PG_DSN names and the
 # nats-server this run starts, holds it to six wakes a minute in bursts of one, and drives each

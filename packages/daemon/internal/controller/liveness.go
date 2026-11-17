@@ -87,7 +87,7 @@ type roleHolder struct {
 // is that holder's state, `unresponsive` or `gone`. A listener of an earlier release names
 // neither. A holder the listener calls unresponsive is stalled, not dead — it keeps its role
 // claim, nothing is released for it, and it answers for itself once its heartbeats land — so a
-// probe of one is never a death verdict (dispatch://INFRA-392).
+// probe of one is never a death verdict (dispatch://POMJU-392).
 
 // Probe says whether session — the one registered with the current controller capability — is
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,

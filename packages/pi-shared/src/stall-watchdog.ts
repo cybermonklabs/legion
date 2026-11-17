@@ -8,7 +8,7 @@ import type {
 import type { StallLimits } from "./stall-limits";
 
 /**
- * The worker's watch on its own tool calls (INFRA-1274), and the ladder it drives when one of them
+ * The worker's watch on its own tool calls (POMJU-1274), and the ladder it drives when one of them
  * stops. Legion has five stall detectors already, each with a threshold convention of its own —
  * the phase reminder, the daemon's ask of a restored claim, the NATS pull heartbeat, the warm
  * lease's missed-beat budget and the pod update round's notice — and this is the sixth detector
@@ -60,7 +60,7 @@ import type { StallLimits } from "./stall-limits";
  *    170 s with a builtin command and 100 s with one that forks: no end, no `turn_end`, no
  *    `agent_end` — and that is this issue's own shape. The shell branch therefore serves the PTY
  *    route and the two foreground fall-backs this deployment has on record
- *    (dispatch://INFRA-763's wedged shell and dispatch://INFRA-515's starved scheduler pool),
+ *    (dispatch://POMJU-763's wedged shell and dispatch://POMJU-515's starved scheduler pool),
  *    and not the ordinary one.
  * 2. **`/proc/self/environ` reads empty under this pod's gVisor** (2026-11-07), while `env` from
  *    inside a process and `/proc/<other pid>/environ` from outside both read correctly

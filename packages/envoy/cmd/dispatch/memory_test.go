@@ -230,7 +230,7 @@ func cloneColdReadArtifact(t *testing.T, memory *memoryHarness, sourceID string,
 // Read at once after /healthz, that was 240 to 256 MiB of heap not yet collected, or 125 to 185 MiB
 // of free pages, over six runs, so a cache holding the same 252 MiB left 148 to 312 MiB above idle
 // over eleven runs on one 4-CPU machine, and 127 MiB on CI (run 43990897490), under the floor of
-// half the budget this test held it to before (INFRA-3904).
+// half the budget this test held it to before (POMJU-3904).
 func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 	memory := newMemoryHarness(t)
 	markdown := heaviestAdmitted(t, func(units int) string { return strings.Repeat("# a\n", units) })
@@ -561,7 +561,7 @@ func refusedWithAdvice(answer response) bool {
 // has no room for kept on its ask and left out of its block. Either way the document stays within
 // the cap, still reads, and a one-word edit on a server that has not loaded it holds at most the
 // bound. The 900 KB description this test grew a document with before is refused outright now,
-// for the 32,000 characters an ask's question and options may hold together (INFRA-370), so the
+// for the 32,000 characters an ask's question and options may hold together (POMJU-370), so the
 // growth is written here in texts that bound holds.
 func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	memory := newMemoryHarness(t)
@@ -642,7 +642,7 @@ func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testin
 // one write may make, and an option description beside it - 6,000 characters of `)_`, or 3,000
 // lines - passes that, and is refused with 413 CAP_EXCEEDED naming the text's weight, within the
 // bound and in seconds. The whole wording is 31,999 characters, inside the 32,000 an ask's
-// question and options may hold together (INFRA-370), which refuses a longer description - the
+// question and options may hold together (POMJU-370), which refuses a longer description - the
 // 920 KB one this test took before - before any of this.
 func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	memory := newMemoryHarness(t)
@@ -683,7 +683,7 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 // An answer is stored on its ask as well as in its block, and settlement writes it back into a block
 // that returns to the document, so returning blocks cannot grow a document past what one upload may
 // hold on a real Dispatch process either: forty answers of 32,000 characters, the most an answer
-// may hold (INFRA-370), each taken against a document their deleted blocks had left small, then all
+// may hold (POMJU-370), each taken against a document their deleted blocks had left small, then all
 // forty blocks returned in one edit, leave the document within 1 MiB, the edit and its settlement
 // hold at most the bound, and so does each cold read of the document. An answer of 900,000
 // characters, which this test took before that bound, is refused with 400 CAP_EXCEEDED saying how

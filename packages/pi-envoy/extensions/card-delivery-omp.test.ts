@@ -25,7 +25,7 @@ import { readCardLines } from "../test/card-entries";
 // How an Envoy card and a person's Send reach the real Oh My Pi (extensions/envoy.ts's card send,
 // and src/card-wake.ts's delivery choice and its wake for a card the host folds): both come over a
 // real NATS server on the one path a session receives on, its own consumer's relay subject
-// (`notifications.envoy.deliver.<session id>`, INFRA-771), each frame carrying the subject the
+// (`notifications.envoy.deliver.<session id>`, POMJU-771), each frame carrying the subject the
 // stream stored the message on — a role lane the listener forwarded to the session's agent
 // subject, and Dispatch's delivery frame, which the session accepts through the stand-in. What
 // reached the model is read off the requests the binary sends the stand-in gateway, each held
@@ -294,7 +294,7 @@ async function startSession(
         await held;
       }
       // Every registration the listener accepts is answered the consumer it gave the session,
-      // and one it can give none is refused (INFRA-771): a session receives only what its own
+      // and one it can give none is refused (POMJU-771): a session receives only what its own
       // consumer holds, and the plugin fails a registration answered no delivery.
       return Response.json({
         ...interest,
@@ -500,7 +500,7 @@ async function startSession(
     async cardEntries() {
       // The pane's state is read before the file and never after: a read that caught half a
       // line while the pane then exited would be marked "gone" and parsed, and that parse error
-      // would stand in for the real failure, which is that omp exited (dispatch://INFRA-2188).
+      // would stand in for the real failure, which is that omp exited (dispatch://POMJU-2188).
       const writer = running ? "alive" : "gone";
       const file = (await session.state()).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");

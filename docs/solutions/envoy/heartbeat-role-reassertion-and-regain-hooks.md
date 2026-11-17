@@ -178,7 +178,7 @@ one code path (plan R3; see
 [unsubscribe-resurrection](unsubscribe-resurrection.md) for the same authoritative-write
 principle). A 409 drops only `claimedRoleTopic` — no `envoy-role-claim` release entry — so a
 later `omp --resume` soft-reclaims from the transcript and the listener arbitrates again (R2).
-Recording a release would make that resume give up a role nobody holds. Since INFRA-404 that
+Recording a release would make that resume give up a role nobody holds. Since POMJU-404 that
 later reclaim names the session it continues as `previous_session_id`, and the listener moves
 the role off that predecessor only when the predecessor has no live registry entry, when its
 live entry carries the reclaiming client instance's own id, or when either side carries no

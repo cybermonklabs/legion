@@ -151,7 +151,7 @@ jobs:
       # that element's text differs between the two runs. Each file carries its set's seed
       # instant and its own capture instant too, which is the elapsed time every relative label
       # is a function of. Download this artifact from two runs and compare
-      # (dispatch://INFRA-1443, which took Playwright's `tools` fonts off this runner).
+      # (dispatch://POMJU-1443, which took Playwright's `tools` fonts off this runner).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docs-screenshots-${{ github.run_attempt }}

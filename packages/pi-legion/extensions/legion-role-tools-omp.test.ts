@@ -24,7 +24,7 @@ import {
 // the devbox, `mise where <pin>`/bin/omp. LEGION_TEST_NATS_URL names the NATS server each pane
 // runs against: a session's only inbound is the consumer the listener builds for it, relayed on
 // its own relay subject, so a pane with no NATS server registers nothing and claims nothing
-// (INFRA-771). A run without both skips, except on GitHub Actions, where a skip would hide the
+// (POMJU-771). A run without both skips, except on GitHub Actions, where a skip would hide the
 // only run of the check on the host that ships it (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
 

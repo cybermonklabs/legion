@@ -41,7 +41,7 @@ holds the defect for every later change.
    is what shows the real resource untouched. Splitting them was deliberate here, and both lines
    are in the pull request body.
 
-## Evidence (sjawhar/legion#2600, INFRA-623)
+## Evidence (sjawhar/legion#2600, POMJU-623)
 
 - The one difference: in a Legion issue pod the Go test binary stands inside `$LEGION_WORKSPACE`, a
   jj workspace of the pod's real shared clone; a GitHub runner's checkout is git-only with no `.jj`

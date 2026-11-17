@@ -823,7 +823,7 @@ func TestAMessagePutsItsDocumentOnTheIssueOnceBeforeItPosts(t *testing.T) {
 // A document Dispatch refuses the same way on every run costs the message nothing: the message is
 // posted with one more sentence, which says Dispatch refused the full list and gives its status
 // and code, and the refusal is logged. The message may be the issue's one word on what its
-// document lists, so it always posts (dispatch://INFRA-2704).
+// document lists, so it always posts (dispatch://POMJU-2704).
 func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
 	const line = "outbox Dispatch message's document refused by Dispatch; the message is posted and says so"
 	row, _ := rescueListRow(t)
@@ -1163,7 +1163,7 @@ func TestOutboxNoticeReturnsPublisherFailure(t *testing.T) {
 
 // A role holder the listener calls unresponsive still holds the role: its session is past the live
 // window and inside the gone horizon, so the message is kept and retried on the row's backoff
-// rather than dropped as a message to a role nobody holds (dispatch://INFRA-392). The refusal comes
+// rather than dropped as a message to a role nobody holds (dispatch://POMJU-392). The refusal comes
 // from a listener answering as the real one does, since what the message's fate turns on is how
 // that body is read.
 func TestOutboxRoleMessageKeptForAnUnresponsiveHolder(t *testing.T) {

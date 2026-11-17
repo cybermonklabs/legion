@@ -1,4 +1,4 @@
--- INFRA-258: one row per write a caller named with an Idempotency-Key header, which every POST and
+-- POMJU-258: one row per write a caller named with an Idempotency-Key header, which every POST and
 -- PATCH route takes (api/request_keys.go). The dashboard and the agents' client mint one key per
 -- intent and retry under it after a failed fetch, a timeout, a 5xx or a 429, none of which says
 -- whether the first attempt ran; this row is what makes that retry safe. A repeat of the key with

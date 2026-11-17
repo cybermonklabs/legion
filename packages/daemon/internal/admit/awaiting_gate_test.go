@@ -294,7 +294,7 @@ func applyThroughMirror(t *testing.T, pool *pgxpool.Pool, admission *Admission, 
 // and keeps through the wait (record.KeepsSlot), beside LEGION-RUN holding one of its own. Its
 // tree lifecycle stands open under the workflow, as a tree whose architect has run must: that
 // is what says the tree is live now that a row counts one issue the daemon has started, and a
-// root of no live tree recorded at a running status is one the INFRA-129 net takes out of the
+// root of no live tree recorded at a running status is one the POMJU-129 net takes out of the
 // workflow (admit's unslotted).
 func awaitingRoot(t *testing.T, pool *pgxpool.Pool, waiting record.Awaiting) {
 	t.Helper()

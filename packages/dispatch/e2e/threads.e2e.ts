@@ -100,7 +100,7 @@ test("an ask is a thread: replies before and after answering, then a live agent 
   await threadAfterAnswer.getByRole("button", { name: "Reply" }).click();
   await expect(threadAfterAnswer.getByText("Shipping now.")).toBeVisible();
 
-  // The thread reads oldest first, the order every surface shares (INFRA-450).
+  // The thread reads oldest first, the order every surface shares (POMJU-450).
   const replies = threadAfterAnswer.locator("li");
   await expect(replies).toHaveCount(2);
   await expect(replies.nth(0)).toContainText("Any blockers first?");
@@ -459,7 +459,7 @@ test("a session retraction leaves its reason on the card and removes the human's
   await expect(inboxPage.getByText(/^Blocked on you:/)).toHaveCount(0);
   // The row itself: a question the server withdraws leaves the list at once, at every width and
   // with no reload - a withdrawn question with a live answer form invites an answer the server
-  // refuses, and nothing holds a row the reader has not touched (INFRA-575).
+  // refuses, and nothing holds a row the reader has not touched (POMJU-575).
   await expect(inboxRow(inboxPage, ask.id)).toHaveCount(0);
   await expect(inboxPage.getByText("Nothing needs you")).toBeVisible();
   // A retracted ask is withdrawn history: hidden by default, behind the same toggle as

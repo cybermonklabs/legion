@@ -145,7 +145,7 @@ func openFillTestStore(t *testing.T, issues int) (*Store, int64) {
 // pass walks past, counts as nothing and must not write at all, since
 // embeddings_owner_project_key answers null for it and the only write there is to make is null
 // over null. A comment window whose comment was never stored is the cheapest of the nine shapes
-// that resolve to nothing (INFRA-988).
+// that resolve to nothing (POMJU-988).
 func seedOwnerlessWindow(t *testing.T, database *Store) string {
 	t.Helper()
 	var id string
@@ -245,7 +245,7 @@ func TestTheEmbeddingProjectKeyFillLogsItsStartItsProgressAndItsFinish(t *testin
 	// Walked past and not written: a label it cannot work out is no reason to write the row, and
 	// a write of one costs a heap tuple and an entry in every index the row is in for nothing.
 	// Measured over the sixteen unlabellable rows this round read, eleven of them moved tuple
-	// for a null written over null (INFRA-988).
+	// for a null written over null (POMJU-988).
 	if movedTo := embeddingPhysicalRow(t, database, ownerless); movedTo != stillAt {
 		t.Errorf("the row whose owner is gone moved from tuple %s to %s, so the batch wrote null over its null", stillAt, movedTo)
 	}

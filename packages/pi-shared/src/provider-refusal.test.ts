@@ -181,7 +181,7 @@ describe("an error text on its own", () => {
   });
 
   test("reads a filter text the host wrapped as the reason it walked its chain for", () => {
-    // What `retry_fallback_applied` carried in the live pane proof of INFRA-956 R1.
+    // What `retry_fallback_applied` carried in the live pane proof of POMJU-956 R1.
     expect(classifyProviderError("Request failed: Refusal (cyber): Declined")).toEqual({
       kind: "content-filter",
       category: "cyber",

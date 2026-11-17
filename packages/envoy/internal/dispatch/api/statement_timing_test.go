@@ -158,7 +158,7 @@ func TestStatementTimings(t *testing.T) {
 	// The check's two statements each have a second shape, the one whose kinds CTE drops the
 	// owners the check leaves out (relatedExcludedOwners), and that shape is the one every
 	// write runs: relatedSearch runs it whenever the check excludes anything, and every
-	// recording source names an owner (INFRA-1160). It is measured with the subject issue
+	// recording source names an owner (POMJU-1160). It is measured with the subject issue
 	// excluded, as a create excludes the issue it is filing, and the owners are a non-empty
 	// list of their own rather than nil: over a NULL array the filter is null of every row, and
 	// `where not` would then drop the lot and measure a statement that reads nothing.

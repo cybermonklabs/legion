@@ -21,7 +21,7 @@ import type {
 import { classifyProviderError, classifyTurnEnd } from "@legion/pi-shared/provider-refusal";
 
 /**
- * The session's model across a provider's refusal (INFRA-956 R1): a content filter that refuses a
+ * The session's model across a provider's refusal (POMJU-956 R1): a content filter that refuses a
  * Legion role's turn sends the next request to the next model of Oh My Pi's fallback chain, in
  * the same session, and the session comes back to its own model after a cooldown that grows each
  * time that model is refused again.
@@ -435,7 +435,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         if (state.arming !== undefined) return;
         // No record of an arming, and the session is sitting on a fallback: one written before
         // this build ran, or a host walk `ownFallback` did not claim. Nothing else will ever arm
-        // it, so it is armed here from the entry's own time (dispatch://INFRA-956 R1, answer 5)
+        // it, so it is armed here from the entry's own time (dispatch://POMJU-956 R1, answer 5)
         // and the session comes back when the wait from that moment is over.
         const change = newestModelChange(ctx);
         if (change === undefined) return;

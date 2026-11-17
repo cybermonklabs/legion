@@ -415,7 +415,7 @@ type PriorityWorkParked struct {
 // `status` and whose status is one of those two. Both are null on a row of the first fault, and
 // on an issue whose events do not reach back to the move — that issue stays in the list, since
 // the fault is the work standing there and not the record of how it arrived. No reason is
-// answered: a status change records none (dispatch://INFRA-2934).
+// answered: a status change records none (dispatch://POMJU-2934).
 type PriorityIssue struct {
 	Key       string         `json:"key"`
 	Title     string         `json:"title"`
@@ -601,7 +601,7 @@ const (
 	// listener's live window and inside its gone horizon: it has missed heartbeats, it has not
 	// ended, and it still holds its role and its claims. The route reaches it - a message is
 	// stored for it and waits - so it is told apart from RouteLive, never folded into
-	// RouteNoHolder (dispatch://INFRA-392).
+	// RouteNoHolder (dispatch://POMJU-392).
 	RouteHolderUnresponsive = "holder_unresponsive"
 	// RouteNoHolder is a role nobody holds (unclaimed, or its holder gone), or a session the
 	// registry holds no live or unresponsive record of.
@@ -770,7 +770,7 @@ type SearchResult struct {
 	Artifact *SearchArtifact `json:"artifact,omitempty"`
 	ID       string          `json:"id"`
 	// BlockID is the block of the hit whose own text matched, read from the window of blocks the
-	// meaning leg found (INFRA-370): for a document the block of the document, for a comment or
+	// meaning leg found (POMJU-370): for a document the block of the document, for a comment or
 	// a message a block of its body, for an ask the part of its question, options or answer. It
 	// is nil on an issue hit, which has no blocks, and on a hit only the keyword list found,
 	// which matched the item's whole text rather than one of its windows.
@@ -833,7 +833,7 @@ type SearchResponse struct {
 }
 
 // SearchCoverage is how much of what meaning search covers has a current vector from the
-// configured embedder (INFRA-393, GET /api/v1/search/coverage). Identity is the embedder's
+// configured embedder (POMJU-393, GET /api/v1/search/coverage). Identity is the embedder's
 // identity (embed.Embedder.Identity), Place ("bedrock", "azure", or "dev" for the local
 // harness's own embedder, which no deployment runs) and Model are read from it; all three are
 // null when no embedder is configured, and then nothing is current.
@@ -1968,7 +1968,7 @@ type AskAnsweredEventPayload struct {
 // Forced is on an `issue.created` alone, and only when the create went in with `force` and the
 // near-copy refusal would have stopped it: Past names the issues that refusal named, and is the
 // empty list when the check did not answer. A forced create the refusal would not have stopped
-// carries no Forced at all, so the three states are told apart (dispatch://INFRA-1160/spec#b-r3).
+// carries no Forced at all, so the three states are told apart (dispatch://POMJU-1160/spec#b-r3).
 type IssueEventPayload struct {
 	Issue
 	ReferenceChangesPayload
@@ -2221,7 +2221,7 @@ type MyReplyRow struct {
 // MyRepliesResponse is the caller's Inbox threads in one state's own order, and how many there are
 // in all - except under state=dismissed, where Total is the page it answers: that view reads 200
 // rows at a time from a cursor and nothing reads a total of it, and counting every thread a person
-// has ever dismissed is the most expensive read the Inbox has (INFRA-450's a14). AsOf is the
+// has ever dismissed is the most expensive read the Inbox has (POMJU-450's a14). AsOf is the
 // database time of the one snapshot every row was read in, which is what a mark-all passes back as
 // its read mark. NextCursor is where the next state=dismissed page resumes, empty when the page
 // that answered it was the last.

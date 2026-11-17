@@ -111,7 +111,7 @@ function storedAnswer(
 }
 
 /**
- * The live view's one switch at a time (INFRA-195). A switch is a person's Send of `/model` or
+ * The live view's one switch at a time (POMJU-195). A switch is a person's Send of `/model` or
  * `/effort`, so it ends when the session answers that message, which `stored` (the session's
  * stored thread, refetched on each message event) carries:
  *

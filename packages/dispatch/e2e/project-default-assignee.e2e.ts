@@ -14,7 +14,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * dispatch://INFRA-3090 from the browser: every project names a default assignee, and the person
+ * dispatch://POMJU-3090 from the browser: every project names a default assignee, and the person
  * a question reaches is three steps resolved as the question is read - the person it was handed
  * to, the assignee of its issue, then the default assignee of its project
  * (`askedOfPersonExpression`, `packages/envoy/internal/dispatch/api/ask_rows.go`). So no question

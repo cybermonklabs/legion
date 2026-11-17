@@ -1,6 +1,6 @@
 -- 20261111214351_issue_released_for_wait.up.sql — an issue the daemon started and that now waits
 -- on another issue gives its admission slot back, and this column is the mark of that
--- (INFRA-3036).
+-- (POMJU-3036).
 --
 -- released_for_wait_at is the moment the daemon took the issue's slots row away because the issue
 -- waits on another issue: a Dispatch blocker of it that is not done, or an open child its own

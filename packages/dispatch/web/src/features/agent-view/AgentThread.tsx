@@ -342,7 +342,7 @@ function CommandItem({ index, item }: { index: number; item: Unstable_TriggerIte
         ) : null}
       </span>
       {item.description === undefined ? null : (
-        // Whole, on as many lines as it takes (INFRA-812, R5): a row of this list is read to
+        // Whole, on as many lines as it takes (POMJU-812, R5): a row of this list is read to
         // learn what the command does, and an ellipsis there hides the half that says it.
         <span className={`self-stretch text-xs ${textOptionDescription}`}>{item.description}</span>
       )}
@@ -454,14 +454,14 @@ export function AgentThread({
     replayCount,
     viewport,
   });
-  // An empty box is the one thing that refuses Send (INFRA-442): a message still out, late or
+  // An empty box is the one thing that refuses Send (POMJU-442): a message still out, late or
   // refused is a turn of its own, and the next message goes out behind it. A pending switch
   // disables Send and names why instead. A turn still streaming does not refuse: the session
   // decides what a message does mid-turn by its delivery mode, as at its terminal.
   const boxEmpty = useAuiState((state) => state.composer.isEmpty);
   const refusal = boxEmpty && !held ? "Type a message first." : null;
   // The line under the box reads nothing until a person presses Send and the press is refused
-  // (INFRA-812, R6): an empty box is where this view rests, and a reason printed there before
+  // (POMJU-812, R6): an empty box is where this view rests, and a reason printed there before
   // anybody tries is rule text on the page, which the question mark under the box now holds.
   // The reason reaches a screen reader all the same, on the button's own hidden line and its
   // title, and the next thing typed clears the press.
@@ -568,7 +568,7 @@ export function AgentThread({
               says what the box's placeholder says, which the text typed may hide, and once a
               person has pressed Send with nothing typed it says why that press was refused. At
               rest it reads nothing - how to send is a rule of the page, which the question mark
-              under the box now holds (INFRA-812, R6), not a word about this press. */}
+              under the box now holds (POMJU-812, R6), not a word about this press. */}
           <p
             className={`text-xs ${textMutedOnCanvas}`}
             data-testid="agent-composer-hint"

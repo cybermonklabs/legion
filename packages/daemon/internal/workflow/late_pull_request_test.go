@@ -21,7 +21,7 @@ var lateApplied = time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 
 // pullRequestView is the pull request state and reviewer-round decision a lifecycle event must
 // preserve or update. It carries no CI verdict: a CI result moves nothing and the daemon keeps
-// no verdict of its own (dispatch://INFRA-714/spec R1).
+// no verdict of its own (dispatch://POMJU-714/spec R1).
 type pullRequestView struct {
 	head, decision string
 	state          record.PullRequestState

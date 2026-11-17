@@ -140,7 +140,7 @@ function isFile(file: string): Promise<boolean> {
  * naming this very session are.
  *
  * The wait runs after `claims/ready`, not before it: the role is claimed last, at the session's
- * first turn or at the bound (INFRA-1573), so the daemon's registration deadline —
+ * first turn or at the bound (POMJU-1573), so the daemon's registration deadline —
  * `worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`, 120 s × 3 = 360
  * s with the shipped defaults (`packages/daemon/internal/config/config.go`, armed by `register`
  * through `armRegistration` in `packages/daemon/internal/supervise`) — is already met when the

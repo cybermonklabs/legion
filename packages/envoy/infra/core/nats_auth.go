@@ -48,7 +48,7 @@ type Authorization struct {
 	// Callout is nil for a server with no auth service, which renders exactly today's text.
 	Callout *AuthCallout `json:"callout"`
 	// PrivateProjects says the deployment may make a project private (R12 of
-	// dispatch://INFRA-3862): it needs Callout and no user but the auth service's.
+	// dispatch://POMJU-3862): it needs Callout and no user but the auth service's.
 	PrivateProjects bool `json:"privateProjects"`
 }
 

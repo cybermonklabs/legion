@@ -1,6 +1,6 @@
 package main
 
-// Every `legion claims` command answers within its --wait bound: dispatch://INFRA-714 R10. A
+// Every `legion claims` command answers within its --wait bound: dispatch://POMJU-714 R10. A
 // suspend and a retry of a starting worker did not answer in 120 s and 300 s, and an operator with
 // no answer at all cannot tell a daemon that is working from one that is wedged.
 

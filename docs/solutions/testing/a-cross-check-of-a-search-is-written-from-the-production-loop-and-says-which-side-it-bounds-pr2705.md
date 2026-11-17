@@ -32,7 +32,7 @@ from the code the model predicts.
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454). Round 2's tester verdict rested on a search that
+`sjawhar/legion#2705` (dispatch://POMJU-454). Round 2's tester verdict rested on a search that
 took each refused renewal to fail at one of the two ends of its client timeout — the same blind
 spot as the round-2 model it was checking — so it confirmed a model that accepted leases which
 lapse, and the review, not the tester, found the defect.

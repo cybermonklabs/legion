@@ -1,5 +1,5 @@
 -- 20261102183000_issue_release_wake.up.sql — a release's mark records the newest wake its pod had
--- when the mark was written, so a wake taken after it cancels the release (INFRA-945).
+-- when the mark was written, so a wake taken after it cancels the release (POMJU-945).
 --
 -- wake_row is max(pod_resumes.id) of the issue at the moment the release was marked, and a
 -- pod_resumes row above it is a wake this release did not see. Every wake writes one, in the

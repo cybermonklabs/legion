@@ -29,7 +29,7 @@ which bucket it measured. Measure the wrong one and the row goes green at any si
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454). The broker's reread route is held to a per-address
+`sjawhar/legion#2705` (dispatch://POMJU-454). The broker's reread route is held to a per-address
 bucket and a shared fleet-wide bucket, both answering `429` with the same body.
 `cmd/broker/multiprocess_test.go`'s `rereadCaller` records the reason: "the `Retry-After` is the
 one thing in a refusal that says WHICH of the two reread buckets refused it: the shared bucket's

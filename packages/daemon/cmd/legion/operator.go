@@ -42,7 +42,7 @@ type operatorCall struct {
 // withWait gives the command a --wait flag bounding its whole call, which every `legion claims`
 // subcommand takes: a command that does not answer is worse than one that refuses, and an
 // operator waiting on a worker whose pod is coming up has waited minutes for a suspend with no
-// answer at all (dispatch://INFRA-714 R10). The daemon's own work is bounded by the daemon's own
+// answer at all (dispatch://POMJU-714 R10). The daemon's own work is bounded by the daemon's own
 // deadlines: a call this bound ends says what it asked for and that the daemon goes on with it,
 // and never cancels the decision the daemon is making.
 func (c *operatorCall) withWait(usage string) {

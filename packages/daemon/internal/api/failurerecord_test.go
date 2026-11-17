@@ -203,7 +203,7 @@ func startedTask(t *testing.T, h *harness, issue string, role claim.Role) string
 
 // A claim the daemon holds a cause for says why beside the sentence it already kept, on every
 // surface an agent reads, and a held issue says which phase its hold took it out of
-// (dispatch://INFRA-3083). This is the one test of that record over the routes: the rows below
+// (dispatch://POMJU-3083). This is the one test of that record over the routes: the rows below
 // read `GET /legion/v1/state`, the operator's claim list, the architect's retry, which carries
 // why the release was made, and the status route, whose todo on a held root releases it with a
 // reason of the daemon's own, so a build that serves the record on one surface and not another

@@ -1,5 +1,5 @@
 // Package startup announces on the bus the build the whole Dispatch server fleet serves
-// (LEGION-781, INFRA-555): one server.started envelope each time the commit every live server
+// (LEGION-781, POMJU-555): one server.started envelope each time the commit every live server
 // process serves changes. The Legion daemon no longer reads it, since nothing a deployment
 // publishes starts a production check's look. "Every live process" is
 // the registry's (internal/dispatch/processes): a rolling update that has replaced some pods but

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The live proof that a worker in a turn is sent its task once and again only after that turn, that
 # the turn which serves a task settles it, and that a relaunched process reads what the relaunch
-# ended in the first prompt it is sent (dispatch://INFRA-3276 R4 and R3). The whole daemon is
+# ended in the first prompt it is sent (dispatch://POMJU-3276 R4 and R3). The whole daemon is
 # booted by the function `legion start` calls, over a real PostgreSQL and a real nats-server, and
 # five real `omp --mode rpc` panes run under it — the real `legion worker-shim`, this checkout's
 # `legion`, and this checkout's @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi profile of

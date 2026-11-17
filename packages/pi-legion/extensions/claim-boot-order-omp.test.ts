@@ -19,7 +19,7 @@ import {
 import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
 
-// INFRA-1573 on the real binary: a phase worker takes its Envoy name once its first turn has
+// POMJU-1573 on the real binary: a phase worker takes its Envoy name once its first turn has
 // started, so a message the listener kept for a role no session held is handed over inside a turn
 // that is already running rather than ahead of the daemon's task.
 //
@@ -58,13 +58,13 @@ const WORKER_EXTENSIONS = [
 /** The claim the stand-in daemon registers: a phase worker of one issue, whose Envoy role is its
  * claim token. */
 const ROLE = "implementer";
-const TREE = "INFRA-1573";
-const ISSUE = "INFRA-1573";
+const TREE = "POMJU-1573";
+const ISSUE = "POMJU-1573";
 const CLAIM_TOKEN = "legion-claim-boot-order-infra-1573-implementer";
 
 /** The daemon's assignment, written to the worker as one RPC `prompt`, as the shim writes it
  * (packages/daemon/internal/shimwire `Prompt`). */
-const TASK = "Legion task: implement INFRA-1573 and report.";
+const TASK = "Legion task: implement POMJU-1573 and report.";
 
 /**
  * How long after the spawn a wait may last: Oh My Pi's startup, which loads both extensions
@@ -161,7 +161,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   );
 
   // The message the listener kept while no session held the role, and the connection it is handed
-  // over on. A session takes its messages from its own consumer alone (dispatch://INFRA-771), so
+  // over on. A session takes its messages from its own consumer alone (dispatch://POMJU-771), so
   // the hand-over is a relay frame of that consumer on the session's deliver subject, as the
   // listener's relay sends it; the session answers the frame, which is the receipt a case waits
   // for.
@@ -265,7 +265,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     }
     // Every registration asks for a consumer and is refused without one in the client
     // (`parseSubscribeAnswer`), which would leave this session deaf and end its claim boot
-    // (dispatch://INFRA-771), so the stand-in answers the consumer the client asked for.
+    // (dispatch://POMJU-771), so the stand-in answers the consumer the client asked for.
     return Response.json({
       session_id: sid === "" ? roleHolder : sid,
       machine_id: "claim-boot-order-machine",

@@ -230,7 +230,7 @@ test("every answer schema the module exports is the schema of a golden", () => {
 });
 
 // What that equality catches, and the one place it is blind. A key no schema names is dropped
-// wherever an object names its keys, at the top level and at the depth INFRA-1048's incident
+// wherever an object names its keys, at the top level and at the depth POMJU-1048's incident
 // took, and the gate names its path. Under `settings` (a `z.looseObject`) and under a pending
 // status write's `payload` (a `z.record`) nothing is dropped, so the gate sees nothing there:
 // both blocks are loose by design — legion.yaml's keys and the workflow's payload are not this
@@ -1631,7 +1631,7 @@ test("the state golden carries the deployment's capability report", () => {
     detail: "checked by the daemon's probe of the worker image, which passed",
   });
   // A capability `name` is a plain non-empty string, so a row the daemon adds — claude-code at
-  // dispatch://INFRA-220 — parses against the schema already published; the golden carries it.
+  // dispatch://POMJU-220 — parses against the schema already published; the golden carries it.
   expect(rows["claude-code"]).toEqual({
     name: "claude-code",
     status: "present",
@@ -1864,7 +1864,7 @@ test("the release records are read with the claim credential in the body", () =>
 
 // `legionStrandedClaim` exactly as contract 45 holds it (`legion-v19.0.0`, this branch's base on
 // main): three keys, strict. Every plugin parses the state with the schema of the contract it
-// was built at, and a Kubernetes deployment relaunches no stale session (INFRA-945 spec R10),
+// was built at, and a Kubernetes deployment relaunches no stale session (POMJU-945 spec R10),
 // so this reader is live in every pod still on the previous image.
 const strandedClaimAt45 = z.strictObject({
   issue: z.string().regex(DISPATCH_KEY_PATTERN),
@@ -1956,9 +1956,9 @@ function schemaKeys(
   return found;
 }
 
-// The guard the INFRA-945 plan's departure 1 chose in place of serving two shapes of one body: a
+// The guard the POMJU-945 plan's departure 1 chose in place of serving two shapes of one body: a
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
-// older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
+// older contract knows refuses the whole body at a plugin whose answer side predates POMJU-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
 // `suspendedBy` is served to the operator's bearer and nowhere else, and this holds that for every
 // schema the module exports, present and future.

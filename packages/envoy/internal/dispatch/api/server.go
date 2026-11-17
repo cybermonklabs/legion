@@ -47,7 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
-// issueKeyShape is a Dispatch issue key, `INFRA-431`, unanchored. Go's regular expressions and
+// issueKeyShape is a Dispatch issue key, `POMJU-431`, unanchored. Go's regular expressions and
 // Postgres's read it alike, so issueKeyPattern and the near-copy gate's title rule
 // (duplicateTitleKeyPattern) take the same shape from it.
 const issueKeyShape = `[A-Z][A-Z0-9]{1,9}-[0-9]+`
@@ -92,11 +92,11 @@ type Deps struct {
 	ServerURL       string
 	Docs            docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
-	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
+	// is the only one search compares queries with (POMJU-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
 	// SearchResponse.Degraded.
 	Embedder embed.Embedder
-	// Answerer answers one question from what Dispatch holds (INFRA-1279), for the three going
+	// Answerer answers one question from what Dispatch holds (POMJU-1279), for the three going
 	// routes; nil means the deployment configured no model, where a run is still recorded and
 	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
 	// capability route says no model is configured.
@@ -211,7 +211,7 @@ type DepsInput struct {
 	Docs         docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
-	// Answerer answers a going request's question (INFRA-1279); nil means no model is
+	// Answerer answers a going request's question (POMJU-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
 	Events   *events.Broker
@@ -405,13 +405,13 @@ type server struct {
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
 	// reaches past the meaning deadline is the test's choice rather than a race between the
-	// meaning query and 300 ms of wall clock (INFRA-3904).
+	// meaning query and 300 ms of wall clock (POMJU-3904).
 	crossProjectWait time.Duration
 	// meaningBound overrides the meaning allowance of the related-item check
 	// (relatedMeaningAllowance), which the check's own allowance still caps; zero, which every
 	// server the deployment builds leaves it, means relatedMeaningAllowance. Only a test sets it,
 	// so a meaning deadline no load reaches is the test's choice, and what ends a wait before it
-	// can be told from that deadline without a clock (INFRA-3904).
+	// can be told from that deadline without a clock (POMJU-3904).
 	meaningBound time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it: a
@@ -431,7 +431,7 @@ type server struct {
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
 	// Only a test sets it, so a budget that ends before every selected session is read is the
-	// test's choice rather than a race against five seconds of wall clock (INFRA-249).
+	// test's choice rather than a race against five seconds of wall clock (POMJU-249).
 	broadcastResolveBudget time.Duration
 	// rosters is how this process reads and refreshes the stored listener answer every process's
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
@@ -457,7 +457,7 @@ type server struct {
 	// agentWatchInterval is how often an agent view re-arms its session: agentStreamWatchInterval,
 	// which a test replaces.
 	agentWatchInterval time.Duration
-	// eventRelay is the live feed every events subscription and the delivery hub read (INFRA-66),
+	// eventRelay is the live feed every events subscription and the delivery hub read (POMJU-66),
 	// on every server register mounts: it starts its listening connection on the first of them to
 	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
@@ -590,7 +590,7 @@ type queryer interface {
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
 // websocket. The live socket takes a bearer as well as a cookie, so it runs under
 // decideBrokerToken; the document websocket takes a cookie alone and does not. It also holds the
-// event stream relay (INFRA-66), which every events subscription reads and which starts its own
+// event stream relay (POMJU-66), which every events subscription reads and which starts its own
 // listening connection on the first of them, also on lifetime. lifetime is the process's own
 // context, cancelled when the server is shutting down (server.lifetime says what else it ends).
 // With Deps.TestHooksEnabled and a Store, the server also holds the test hooks' listening

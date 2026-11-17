@@ -449,7 +449,7 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // and recorded as left out (appauth's mintBundle and LeftOut), so appauth.GitHubDirs leaves it
 // out of this answer too, and a pod without it is no pod to replace. Were it named here, the
 // pod would be replaced at every sweep and its replacement's bundle would lack the directory
-// again, for ever (INFRA-513). A mint that answers for it again clears the record, and the pod
+// again, for ever (POMJU-513). A mint that answers for it again clears the record, and the pod
 // is then replaced once, which is right.
 //
 // That record is read for the Apps this pod runs and no others: the roles of the kind the role
@@ -660,7 +660,7 @@ func (r *Runtime) heldRoleOverlays(pod corev1.PodSpec, role claim.Role) (own, va
 //
 // It is the pod's half of the one enrollment decision, and is read through that decision alone
 // (Runtime.enrollsIn), never on its own: a caller that read it beside r.agentSecrets would be
-// free to disagree with the generation's argv, which is the split INFRA-484 closed.
+// free to disagree with the generation's argv, which is the split POMJU-484 closed.
 func carriesEnrollment(pod corev1.PodSpec, role claim.Role) bool {
 	token, key := false, false
 	for _, volume := range pod.Volumes {

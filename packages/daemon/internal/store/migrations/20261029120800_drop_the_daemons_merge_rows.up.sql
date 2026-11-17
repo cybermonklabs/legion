@@ -1,5 +1,5 @@
 -- 20261029120800_drop_the_daemons_merge_rows.up.sql — the rows of the merge the daemon no longer makes
--- (dispatch://INFRA-714 R2).
+-- (dispatch://POMJU-714 R2).
 --
 -- The daemon submits no merge and changes no merge setting, so three outbox kinds have no executor
 -- left: ready_merge (its submission), auto_merge_disable (its disarm) and merge_queue_publish (the

@@ -3209,7 +3209,7 @@ func (s *Service) invalidateForEviction(room string) *roomState {
 // is loaded or joined), the room that replaces the closed one loads onto it, and an edit made in
 // that room is credited and recorded on it. Dropping the record outright lost all of that: the
 // person's keystrokes were credited to nobody, the document forgot its issue was closed, and the
-// settlement the new load armed was left to a timer that found its record gone (INFRA-352).
+// settlement the new load armed was left to a timer that found its record gone (POMJU-352).
 //
 // ctx bounds retries while a caller is inside the room, but cannot interrupt a ygo close once
 // started (roomServer.closeRoom).

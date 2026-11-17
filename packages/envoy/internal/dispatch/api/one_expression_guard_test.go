@@ -7,7 +7,7 @@
 // packages/envoy a second time to run it (lock_level_test.go's header weighs that walk).
 //
 // The tag is also what puts this check in the job its subject asks for. R15 of
-// dispatch://INFRA-1066's spec has a test whose subject is a file's words run in a text-check job
+// dispatch://POMJU-1066's spec has a test whose subject is a file's words run in a text-check job
 // with a filter of its own, never inside a product suite; this one holds one SQL rule to one
 // spelling in the module's source, which is words. It arrived from main inside who_waits_test.go,
 // a behaviour file of this package's Postgres-backed tests, as a subtest of
@@ -20,7 +20,7 @@
 // per run of the router, under a filter that names the whole module - the read
 // ci_job_reads.py's MODULE_SOURCES declares for this file.
 //
-// What it holds is one of the two tests the Go half of dispatch://INFRA-1576's
+// What it holds is one of the two tests the Go half of dispatch://POMJU-1576's
 // c-one-expression-decides is written as: TestOneExpressionDecidesWhoWaitsInOneSpelling here,
 // which holds that no read keeps a copy of the rule for which person an ask waits on, and
 // TestOneExpressionDecidesWhoWaits in who_waits_test.go, which reads every answer for the same

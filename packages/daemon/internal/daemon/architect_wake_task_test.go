@@ -107,7 +107,7 @@ func (r *mainPathRig) architectStartPending() (string, bool) {
 
 // A wake's task reaches the architect even when the resume of a person's answer raises its entry
 // while that task is still on its claim: a task of no entry is superseded by nothing
-// (supervise.Delivery.SupersededBy). Before dispatch://INFRA-2614 no held task was superseded,
+// (supervise.Delivery.SupersededBy). Before dispatch://POMJU-2614 no held task was superseded,
 // and its R2 keeps that for every task the change does not name. These steps put the two on one
 // claim in the order the daemon gives them:
 //
@@ -246,7 +246,7 @@ func TestAReleasesResumeLeavesTheTaskOfAnEntryTheClaimHolds(t *testing.T) {
 // retires it. It runs, brings the claim back and delivers nothing, and the pass after it sends the
 // entry's work.
 //
-// The root is one whose resume's start was lost after a person answered it (dispatch://INFRA-2614
+// The root is one whose resume's start was lost after a person answered it (dispatch://POMJU-2614
 // R4), which is what leaves the sweep a start to write: its architect took entry 1's task, a
 // person answered its question, the resume raised entry 2, and that start is lost before any
 // lane runs it. Four steps are fixtures: the root's record is put in its wait directly, as

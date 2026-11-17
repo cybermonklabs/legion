@@ -15,7 +15,7 @@ func subArchitectClaim() Claim {
 	return c
 }
 
-// `legion claims stop` retires a claim, and until dispatch://INFRA-956 R3 the operator's retry
+// `legion claims stop` retires a claim, and until dispatch://POMJU-956 R3 the operator's retry
 // refused that state, so a stopped claim could be started again only by editing the claims store
 // with the daemon stopped. The retry now relaunches it on the session it recorded, with fresh
 // budgets, for a phase worker and for an architect alike.

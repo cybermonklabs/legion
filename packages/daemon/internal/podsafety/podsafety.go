@@ -46,7 +46,7 @@ import (
 
 // placesSessions is why an operator's pod may not set a variable that decides where Oh My Pi keeps
 // a session: Legion places a pod's sessions where a resume reads them, which under the Kubernetes
-// runtime is the session database and nothing else, a pod's disk dying with the pod (INFRA-80).
+// runtime is the session database and nothing else, a pod's disk dying with the pod (POMJU-80).
 const placesSessions = "it decides where Oh My Pi keeps the session a resume reads"
 
 // baseline are the variables Apply sets where the pod's environment leaves them unset or empty,

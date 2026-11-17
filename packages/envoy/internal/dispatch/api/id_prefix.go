@@ -225,7 +225,7 @@ func (s *server) writeIDPrefixError(w http.ResponseWriter, err error) {
 // A value text.IsIDPrefix accepts can still be no prefix of any id: one longer than a uuid, or
 // one writing a hyphen where a uuid has a hex digit — `a061-e3f2-…`, the spelling with a hyphen
 // after every four digits, which Postgres reads as a whole uuid and every handler behind this
-// reads as the row it names (project_scope.go, INFRA-264). Such a value matches nothing because
+// reads as the row it names (project_scope.go, POMJU-264). Such a value matches nothing because
 // it can start no id, not because no item carries it, so it is left as written and the route
 // reads it as it always did; refs.ResolvePrefix answers both as no match, and refs.CanStartUUID
 // is the rule its uuidRange tells the two apart by.

@@ -224,7 +224,7 @@ describe("a user message a person's Dispatch message became", () => {
 // and any bus client can publish that row, so it may say no more than the body and what the
 // stream names of the blocks the message carried: the `[image]` an image block becomes, only
 // after every line of the body is matched, and at most one per picture the body embeds, which
-// is what `conversationParts` (`@legion/pi-shared/agent-stream`) writes for it (INFRA-1026).
+// is what `conversationParts` (`@legion/pi-shared/agent-stream`) writes for it (POMJU-1026).
 describe("a streamed row read against the body it says it delivered", () => {
   const picture = (name: string) => `![${name}](dispatch://agent/s1/artifact/i3-${name}96-png@v1)`;
   const row = (text: string) => ({ dispatchMessageId: "m-1", text });
@@ -235,7 +235,7 @@ describe("a streamed row read against the body it says it delivered", () => {
 
   // The stream names a picture `[image]` and nothing else of a person's message, so any other
   // bracketed word after the body's lines is the row's own: taking one would put it under the
-  // person's name in place of their stored copy (INFRA-1026, reviewer).
+  // person's name in place of their stored copy (POMJU-1026, reviewer).
   test("a bracketed word of the row's own is no block the stream named, picture or not", () => {
     const body = `Look at this ${picture("blue")}`;
     expect(turnSaysBody(row("Look at this\n[approved-by-me]"), body)).toBe(false);
@@ -270,7 +270,7 @@ describe("a streamed row read against the body it says it delivered", () => {
   // indenting and blank lines says the body still. Were the page to keep a copy of the step,
   // a later change to the shared rule - dropping no empty line, collapsing the spaces inside a
   // line as `pictureCaption` does - would reach the body's side alone, no honest row would
-  // match, and every message would show twice (INFRA-1026, reviewer).
+  // match, and every message would show twice (POMJU-1026, reviewer).
   test("the row's lines are read by the shared step, so its own spacing says the body", () => {
     const body = "  Look at  this  \n\n\tand this\n";
     expect(turnSaysBody(row("Look at  this\r\n\r\n   and this\r\n"), body)).toBe(true);
@@ -278,7 +278,7 @@ describe("a streamed row read against the body it says it delivered", () => {
 
   // The row is rendered as markdown under the person's name, so a picture in it that the body
   // never held is a picture the person never sent: it must not hide their stored copy behind a
-  // row that shows it (INFRA-1026).
+  // row that shows it (POMJU-1026).
   test("a picture the body never wrote is the row's own, and hides nothing", () => {
     expect(turnSaysBody(row(`Ship it? ${picture("red")}`), "Ship it?")).toBe(false);
     const body = `Look at this ${picture("blue")}`;
@@ -308,7 +308,7 @@ describe("a streamed row read against the body it says it delivered", () => {
   // that joining writes may be picture markdown of its own: the row's leftover is therefore
   // compared as text, never stripped a second time (`rowLines`). Measured at this head with the
   // second strip in place, this row said the body, so the page hid the person's stored copy and
-  // drew "I approve deleting prod" under their name (INFRA-1026, reviewer's repro).
+  // drew "I approve deleting prod" under their name (POMJU-1026, reviewer's repro).
   test("a picture rebuilt around the body's own is the row's own", () => {
     const body = "look at this ![cat.png](dispatch://agent/a1/artifact/cat-png@v1)";
     const forged =
@@ -562,7 +562,7 @@ const SWITCHES: readonly AgentStreamCommand[] = [
   { name: "effort", source: "builtin" },
 ];
 
-// The model and thinking level the session runs now (INFRA-195) arrive as one `settings` frame
+// The model and thinking level the session runs now (POMJU-195) arrive as one `settings` frame
 // holding the whole state. The header shows the newest, never a turn of the transcript.
 describe("the session's settings", () => {
   test("are the newest frame by seq, kept through later messages and command lists", () => {
@@ -651,7 +651,7 @@ function contextFrame(seq: number, fields: Record<string, unknown> = {}): AgentS
   } as AgentStreamContextFrame;
 }
 
-// How full the session's context window is (INFRA-812) arrives as its own frame, so a figure
+// How full the session's context window is (POMJU-812) arrives as its own frame, so a figure
 // this build cannot read costs the view its ring alone and never the model picker beside it.
 describe("the session's context figures", () => {
   test("are the newest frame by seq, kept through later messages and command lists", () => {
@@ -708,7 +708,7 @@ describe("the session's context figures", () => {
 });
 
 // Each row of what the header shows of the session's model and thinking level, and the notice
-// that says why a session shows less (INFRA-195, decision 7).
+// that says why a session shows less (POMJU-195, decision 7).
 describe("what the header shows of the session's settings", () => {
   const lastTurn = message(1, "a10", 10, "Done.", false, "anthropic/old-model");
 

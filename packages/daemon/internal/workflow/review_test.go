@@ -22,7 +22,7 @@ import (
 )
 
 // The review event decides the round, and the reviewer's handoff records its findings
-// (dispatch://INFRA-714/spec R1): a request for changes on the current head returns the issue to
+// (dispatch://POMJU-714/spec R1): a request for changes on the current head returns the issue to
 // implementing the moment GitHub reports it, counting the round, and an approval of a head GitHub
 // reports clean moves it to accepting. The reviewer is still mid-turn when either happens, so the
 // completion that follows is recorded on its own row with the issue where the review left it -
@@ -235,7 +235,7 @@ func TestAnApprovalOnABlockedHeadGitHubLaterReportsCleanMovesOnAndTellsOnce(t *t
 
 // The notice of a head GitHub will not merge from is read by a person deciding what to push next,
 // so it names GitHub's state and every check GitHub reported on that head with its conclusion.
-// The daemon reads no repository ruleset (dispatch://INFRA-714/spec R1), so it cannot name the
+// The daemon reads no repository ruleset (dispatch://POMJU-714/spec R1), so it cannot name the
 // checks the base requires: a required check that never ran has no check run at all and is simply
 // absent from what it names, which the notice says in words, so a short list reads as the finding
 // rather than as the daemon leaving something out. The reviewer is told as well as the architect,
@@ -403,7 +403,7 @@ func stuckRoleMessages(t *testing.T, pool *pgxpool.Pool) []string {
 // head the branch has left says nothing about the one it arrives at while no recorded push says
 // what the move changed. An approval of the new head stands at once - no push can change what an
 // approval of the head itself approves - so a verdict kept across that move would move the issue
-// to accepting on the old head's `clean` (dispatch://INFRA-714 R2). The verdict goes with the
+// to accepting on the old head's `clean` (dispatch://POMJU-714 R2). The verdict goes with the
 // move instead: the round waits for GitHub's answer about the head it now stands at, and the read
 // that lands is what moves it.
 func TestASynchronizeBeforeItsPushLeavesNoVerdictToMoveAnApprovalOn(t *testing.T) {
@@ -437,7 +437,7 @@ func TestASynchronizeBeforeItsPushLeavesNoVerdictToMoveAnApprovalOn(t *testing.T
 // The read of GitHub's merge state is asked for once, after the fact's handler (Apply), for each
 // fact that can change the answer: the pull request's own events, a push to it, a review, a CI
 // settlement, and a push to the base it sits on. Keyed on the fact rather than called from the
-// handlers, a handler's own early return cannot drop it (dispatch://INFRA-714 R3). GitHub's own
+// handlers, a handler's own early return cannot drop it (dispatch://POMJU-714 R3). GitHub's own
 // answer asks for nothing: a read that asked for another would read the same head for as long as
 // GitHub kept answering the same way.
 func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T) {
@@ -690,7 +690,7 @@ func TestAnApprovalEndsTheRoundWhateverCISays(t *testing.T) {
 }
 
 // seedReviewUndecided is seedReviewOf with a settlement in that reports one check, lint, and
-// names none failing: the round reads none of it either way (dispatch://INFRA-714/spec R1).
+// names none failing: the round reads none of it either way (dispatch://POMJU-714/spec R1).
 func seedReviewUndecided(t *testing.T, pool *pgxpool.Pool, head string) {
 	t.Helper()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
@@ -757,7 +757,7 @@ var stepHeads = map[string]string{"head": headOne, "head-2": headTwo, "head-3": 
 // may change code, so a push since the approved head leaves the approval standing for nothing,
 // whichever of the approval, the new head and its push is processed first, and a push still on its
 // way from the approved head keeps the round open until its head arrives. The review event moves
-// the issue as it lands (dispatch://INFRA-714/spec R1), so an approval that stands ends the round
+// the issue as it lands (dispatch://POMJU-714/spec R1), so an approval that stands ends the round
 // there and a push after it finds the issue already in accepting, while a second deciding review,
 // however it is ordered, finds the phase the first sent the issue to and decides nothing. Deciding
 // reviews are ordered by when they were submitted, then by GitHub's review id, so the newest one
@@ -1165,7 +1165,7 @@ func TestARetryOfAStuckRoundTellsTheReviewerWhy(t *testing.T) {
 
 // The retry restores the phase the hold came from and starts its worker. It re-decides no CI
 // result: a settlement that reached the issue while it was held moved nothing, as it would have
-// moved nothing had it arrived with the issue in its phase (dispatch://INFRA-714/spec R1), so the
+// moved nothing had it arrived with the issue in its phase (dispatch://POMJU-714/spec R1), so the
 // restored worker reads the head's checks itself. Nothing goes back to implementing and the
 // architect hears no checks-red, from whatever phase the hold was taken.
 func TestARetryOfAHoldWithASettledHeadRestoresThePhase(t *testing.T) {
@@ -1390,7 +1390,7 @@ func TestOnlyTheReviewAppOrAWriterDecidesARound(t *testing.T) {
 // approved head a push is still on its way from is open, not stuck, and tells nobody: the
 // push's new head decides whether the approval stands. Each round's push comes before its
 // approval, since an approval of the head the pull request stands at ends the round as it lands
-// (dispatch://INFRA-714/spec R1). No CI verdict is read anywhere here
+// (dispatch://POMJU-714/spec R1). No CI verdict is read anywhere here
 // (TestAnApprovalEndsTheRoundWhateverCISays).
 func TestARoundItsApprovalCannotEndTellsTheArchitect(t *testing.T) {
 	approve := func(head string) intake.Fact {
@@ -1545,7 +1545,7 @@ func TestAHeadArrivingReasksAStuckRoundInEitherOrder(t *testing.T) {
 // there, and the same approval read again once the record holds the head its footer names -
 // which the daemon's read of the pull request's reviews does within its two minutes (daemon's
 // readReviews) - ends the round on the read the arrival asked for, GitHub's verdict having gone
-// with the move (dispatch://INFRA-714 R2). An approval of a head the branch never reached decides
+// with the move (dispatch://POMJU-714 R2). An approval of a head the branch never reached decides
 // nothing however often it is read.
 func TestAnApprovalOfAHeadTheRecordHasNotReachedDecidesOnlyOnceItArrives(t *testing.T) {
 	complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
@@ -1811,7 +1811,7 @@ func TestATruncatedReviewWithNoFooterIsSetAsideAndLogsTruncation(t *testing.T) {
 
 // A review the review App submits decides a round only when the Legion footer it was written
 // with names the pull request's current head (refusesRound): GitHub rewrites a review's
-// commit_id to that current head (dispatch://INFRA-1557), so the footer is the one thing that
+// commit_id to that current head (dispatch://POMJU-1557), so the footer is the one thing that
 // says which code the review read, and a force push back to a head the review never saw cannot
 // forge it. An approval whose footer names the head decides; one naming another head, and one
 // with no head in its footer, decide nothing and leave the issue in reviewing with the refusal
@@ -1864,7 +1864,7 @@ func TestAReviewAppReviewDecidesOnlyTheHeadItsFooterNames(t *testing.T) {
 // The head the round records for a review is the head the review says it read, not the one
 // GitHub lists the review under (reviewHead): a review-App review names the head it read in its
 // Legion footer, where GitHub's commit_id for it is the pull request's head as GitHub holds it,
-// which GitHub moves onto each later head (dispatch://INFRA-1557). Here the reviewer approves
+// which GitHub moves onto each later head (dispatch://POMJU-1557). Here the reviewer approves
 // the head the record holds while the implementer's push to the next head is on its way, so the
 // approval arrives with its footer naming the head it read and a commit_id naming the head after
 // it. Recorded from the commit_id, the approval would stand the moment that next head arrived
@@ -1928,7 +1928,7 @@ func TestARequestForChangesNamingAnOlderHeadLeavesTheRoundStuck(t *testing.T) {
 // commit_id its webhook carried, with no footer to read; the same person's review read from
 // GitHub's list of the pull request's reviews decides nothing, since the list answers with
 // GitHub's own commit_id for every review it holds and that id moves with the pull request
-// (intake.PullRequestReview.ReadFromList, dispatch://INFRA-1557). That refusal stands at every
+// (intake.PullRequestReview.ReadFromList, dispatch://POMJU-1557). That refusal stands at every
 // head the record can come to hold (RoundRefusal.AtEveryHead), so the reviewer's row keeps
 // nothing of it: the row carries a refusal a later head could have spared the round, and the
 // stuck notice of a round only a listed review was refused in carries its base reason alone.

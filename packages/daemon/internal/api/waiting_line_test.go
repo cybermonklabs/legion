@@ -321,7 +321,7 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 // lane. The copy holds those windows in their own bytes, so the scan below reads a section as
 // it read the file, and internal/textcheck's
 // TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts is what keeps the copy the
-// texts', in the job whose subject is a file's words (INFRA-1413).
+// texts', in the job whose subject is a file's words (POMJU-1413).
 //
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
@@ -406,7 +406,7 @@ type contractDeclaration struct{ file, declares string }
 // Either may be wrapped: the word and its number stand apart by spaces, or by the one line break
 // a wrap puts between them, with the indent and the one `//`, `*` or `#` comment marker the next
 // line opens with, since the repository's semantic line breaks let a sentence break there, in a
-// comment as in prose (INFRA-4004); a blank line between the two is a paragraph break, and no
+// comment as in prose (POMJU-4004); a blank line between the two is a paragraph break, and no
 // mention. It is the scanner's one regex, for its windows and its declarations' comments alike,
 // and a test that renumbers a comment in memory finds the numbers to change by it, so that the
 // numbers it changes are the ones the scanner reads. internal/textcheck's waitingLineNamed is this
@@ -579,7 +579,7 @@ func declarationComment(text, declares string) (start, end int, err error) {
 // reads the windows the copy carries in the shipped texts' own bytes, and the comments of
 // packages/daemon in theirs, and the repository's semantic line breaks let a sentence break
 // between "contract" and its number; a scanner that read only a space between the two passed
-// every such mention over without a word, whatever number it said (INFRA-4004). Each case is a
+// every such mention over without a word, whatever number it said (POMJU-4004). Each case is a
 // shape the scanned texts are written in, names the field beside a number wrapped onto the line
 // after its word, and says a contract that is not the field's, so the scanner must refuse that
 // phrase; a blank line between the word and a number is a paragraph break, and is read as no

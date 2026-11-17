@@ -499,7 +499,7 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
 // A route whose holder has missed its heartbeats is neither unreachable nor unjudged: the
 // listener judged it and said the session is stalled, and what is sent to the issue waits for
 // it. Folding that into either of the other two markers tells a reader to re-staff a role that
-// is still held, or hides that anything is wrong at all (dispatch://INFRA-392).
+// is still held, or hides that anything is wrong at all (dispatch://POMJU-392).
 test("IssuePage's header marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
   const stateRow = async () => {
     const rail = await screen.findByTestId("issue-metadata-rail");
@@ -2341,7 +2341,7 @@ test("IssuePage reports a failed issue read on an item deep link instead of load
   }
 });
 
-// INFRA-869. An address may write an item's id short; the page resolves it, opens the item
+// POMJU-869. An address may write an item's id short; the page resolves it, opens the item
 // under the whole id, and rewrites the address to it.
 const WHOLE_ID = "4c9f3e12-1111-4222-8333-444444444444";
 const OTHER_ID = "4c9f3e12-5555-4666-8777-888888888888";

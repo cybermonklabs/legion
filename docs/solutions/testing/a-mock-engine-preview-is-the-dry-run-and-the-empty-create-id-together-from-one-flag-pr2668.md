@@ -59,4 +59,4 @@ what `Mocks.Preview` reproduces.
 
 The negative control for such a test — running the unchanged test files over the tree the branch
 started from — is this repository's standing practice and is written up already; see
-docs/solutions/testing/prove-a-go-acceptance-test-fails-on-base-by-running-the-unchanged-file-in-a-git-archive-export-INFRA-487.md.
+docs/solutions/testing/prove-a-go-acceptance-test-fails-on-base-by-running-the-unchanged-file-in-a-git-archive-export-POMJU-487.md.

@@ -12,12 +12,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The second arm names a failure no further send can cure (dispatch://INFRA-2614, R7), and an
+// The second arm names a failure no further send can cure (dispatch://POMJU-2614, R7), and an
 // architect whose every launch fails is that failure. On a running daemon the start that
 // launches it is the one row that stays queued for it: the start's launches fail, the claim goes
 // to failed, the start row fails with it, and the outbox runs that row again on its backoff,
 // which relaunches the claim and fails it again, for as long as the launches fail. Measured by
-// INFRA-2614's tester on the whole daemon at cca3313b237a, with every spawn of one root's
+// POMJU-2614's tester on the whole daemon at cca3313b237a, with every spawn of one root's
 // architect failing: the claim stood failed for three minutes, its start row ran eight times
 // (attempts 4, 5, 6, 7, 8, next run 64 s apart), the state named no arm for the root, and no
 // controller wake was queued, before or after a controller registered.

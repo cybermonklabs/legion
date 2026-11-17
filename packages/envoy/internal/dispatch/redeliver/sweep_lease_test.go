@@ -38,7 +38,7 @@ const webhookRedeliveryLease = "webhook-redelivery"
 // database holding a snapshot older than the build's (PostgreSQL's WaitForOlderSnapshots). In CI
 // and on a shared machine that database is the server's postgres, where every other package's
 // harness creates and drops its databases, so another package's create database held the build
-// past its lock bound and failed this test (dispatch://INFRA-3904). No session outside this test
+// past its lock bound and failed this test (dispatch://POMJU-3904). No session outside this test
 // process connects to the template or to a clone.
 func redeliverTestLeases(t *testing.T) duty.Leases {
 	t.Helper()

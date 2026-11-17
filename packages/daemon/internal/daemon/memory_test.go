@@ -214,8 +214,8 @@ func TestMemoryReachesOnlyTheRolesOfAMemoryTree(t *testing.T) {
 // `mode: off` draws no new tree into the memory group and takes memory from no tree already
 // drawn into it: the launch follows the record, so a tree the daemon recorded `memory` keeps its
 // overlays and its instructions while the file still names that arm, whatever the mode is now.
-// Only taking the arm out of the file takes the files away (dispatch://INFRA-990's spec: every
-// tree keeps its group for its life; INFRA-1101's R3 and R6).
+// Only taking the arm out of the file takes the files away (dispatch://POMJU-990's spec: every
+// tree keeps its group for its life; POMJU-1101's R3 and R6).
 func TestAMemoryTreeKeepsItsFilesAfterTheProjectMovesToModeOff(t *testing.T) {
 	const instructions = "/state/memory-instructions.md"
 	// The mode reaches no launch at all, so the one builder serves every mode; what the tmux and

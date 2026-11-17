@@ -30,16 +30,20 @@
 # charged to the CPU the step measures (README.md, "Why the harness reads no heap profile in the
 # window"); without it the heap columns of the tables show -.
 #
-# A --replay step replays the LINUX bundle (README.md, The replay) instead: stack.sh setup
-# (incremental; with --dispatch-commit, envoy-dispatch from that commit, a rev that names no commit
-# refused before anything starts), start, replay-get (the manifest's parts, default
-# replay-2026-10-26.json; nothing to do once done; LOADTEST_REPLAY_ISSUE names the issue they are
-# file artifacts of and is required, refused here before anything starts), replay-prepare (this
-# build's template, once per build) and reset --replay, then `loadgen run -source replay` with the
-# -replay-* flags: --rate, --reads, --read-mix, --uploads, --from, --to, --roster and --keys-file
-# are -replay-rate, -replay-reads, -replay-read-mix, -replay-uploads, -replay-from, -replay-to,
-# -replay-roster and -replay-keys-file. --events, --sessions, --requests and the other flags of
-# the generated load are refused; the synthetic seed and its migration check are not used.
+# A --replay step replays the HAFJJ bundle (README.md, The replay) instead. LOADTEST_REPLAY_ISSUE
+# names the issue the bundle's parts are file artifacts of and is required, refused here before
+# anything starts. Without --manifest FILE, the manifest is replay-2026-10-26.json, a project file
+# of that issue's project, fetched here into $LOADTEST_ROOT/replay/parts and checked against its
+# pinned sha256 (common.sh replay_fetch_manifest) before the step touches the stack: a step that can
+# have no manifest is refused naming what is missing. Then stack.sh setup (incremental; with
+# --dispatch-commit, envoy-dispatch from that commit, a rev that names no commit refused before
+# anything starts), start, replay-get (the manifest's parts; nothing to do once done),
+# replay-prepare (this build's template, once per build) and reset --replay, then `loadgen run
+# -source replay` with the -replay-* flags: --rate, --reads, --read-mix, --uploads, --from, --to,
+# --roster and --keys-file are -replay-rate, -replay-reads, -replay-read-mix, -replay-uploads,
+# -replay-from, -replay-to, -replay-roster and -replay-keys-file. --events, --sessions, --requests
+# and the other flags of the generated load are refused; the synthetic seed and its migration check
+# are not used.
 # Dispatch reaches Postgres directly (LOADTEST_PG_DIRECT=1) unless the environment sets
 # LOADTEST_PG_DIRECT; --gomaxprocs sets LOADTEST_GOMAXPROCS. The reset's replay/last-reset.json is
 # copied into the step directory.
@@ -174,6 +178,10 @@ lock_root "$ROOT"
 out=$(realpath -m -- "$out")
 if [ -e "$out" ] && [ -n "$(ls -A -- "$out")" ]; then
   die "$out already holds a step; remove it or name another step"
+fi
+if $replay && [ -z "$manifest" ]; then
+  # replay-get keeps the manifest fetched here, beside the parts, since its sha256 matches.
+  replay_fetch_manifest "$ROOT/replay/parts" ""
 fi
 
 started=$SECONDS

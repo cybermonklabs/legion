@@ -50,7 +50,7 @@ const resolveSessionTitlesQuery = `
 // events row, and events_session_actor_created_at_idx (migration 0026) makes this one indexed
 // read per id. The name is the newest title the session stamped, not the title on its newest
 // event: a later write carrying none -- a delivery reply stamps no origin at all
-// (postDeliveryReply) -- does not take the name away (INFRA-1368). It is durable -- it survives
+// (postDeliveryReply) -- does not take the name away (POMJU-1368). It is durable -- it survives
 // the session ending, unlike Envoy's live, TTL-expiring session registry -- for any session that
 // ever claimed an issue, posted a message/comment/ask, or wrote a document under a title. A
 // session that never stamped one is simply absent from the returned map, and nothing here

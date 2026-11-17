@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The live proof that a provider error keeps a worker's task and that the operator can retry what
-# it leaves (dispatch://INFRA-956 R2 and R3). The whole daemon is booted by the function `legion
+# it leaves (dispatch://POMJU-956 R2 and R3). The whole daemon is booted by the function `legion
 # start` calls, over a real PostgreSQL and a real nats-server, and three real `omp --mode rpc`
 # panes run under it — the real `legion worker-shim`, this checkout's `legion`, and this checkout's
 # @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi profile of the run's own — against three

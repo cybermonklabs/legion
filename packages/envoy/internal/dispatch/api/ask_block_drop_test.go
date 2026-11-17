@@ -30,7 +30,7 @@ func refuseEdit(t *testing.T, handler http.Handler, artifactID string, ops []map
 // R5: a question a person can still answer is not lost to an edit. The batch is refused whatever
 // operation drops the block, with nothing of the batch written and the ask still open. A `delete`
 // drives it, since no `replace` reaches this refusal (measured 2026-11-10, named in the
-// Verification document of dispatch://INFRA-1520): a quote-anchored match stays inside one
+// Verification document of dispatch://POMJU-1520): a quote-anchored match stays inside one
 // textblock, a list written over an ask's question lands inside the ask, a `with` that rewrites
 // the ask under its own id keeps it, a `with` that rewrites the block holding it writes that id
 // twice and is refused by the repeated-id guard, and blockReplacement refuses the lift-out of a

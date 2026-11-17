@@ -12,7 +12,7 @@ date: 2026-10-27
 status: active
 module: ci
 related_issues:
-  - "INFRA-520"
+  - "POMJU-520"
 symptoms:
   - "a change merged without a job that reads one of its files, and nothing re-ran the job"
   - "a new job never runs on a pull request, or runs on every pull request"
@@ -119,7 +119,7 @@ run's longest wait among jobs that are created with the run and queue together, 
 another question.
 A job gated on every other job is created then too, but starts only once the last of them ends,
 which is when the pool is busiest with the next wave of runs.
-Three readings of that wait have been taken for dispatch://INFRA-1066, and they do not agree:
+Three readings of that wait have been taken for dispatch://POMJU-1066, and they do not agree:
 26 minutes 37 seconds on the k27 probe of 2026-11-06, whose `ci-ok` job was created at 10:16:21Z
 with every other job of its run already finished; 4 minutes 3 seconds on the tester's run of the
 same issue; and about 50 minutes on this change's own head.
@@ -142,7 +142,7 @@ then re-run green would stay blocked by it.
 A `ci-ok` whose `external_id` is a UUID is a job's own check run, possibly another workflow
 run's — the bypass check dispatches `ci.yaml` on main's tip, which carries its merge group's
 green `ci-ok` — and GitHub refuses a PATCH of one under `GITHUB_TOKEN` with "Check run status
-and conclusions can only be updated internally by GitHub Actions" (measured on INFRA-1066's k28
+and conclusions can only be updated internally by GitHub Actions" (measured on POMJU-1066's k28
 probe, 2026-11-06), so the step leaves it alone rather than spend its retry ladder on a call
 that cannot succeed; and a re-run of the same job supersedes its earlier attempt by itself,
 since `statusCheckRollup` and the default `latest` filter read the newest alone.

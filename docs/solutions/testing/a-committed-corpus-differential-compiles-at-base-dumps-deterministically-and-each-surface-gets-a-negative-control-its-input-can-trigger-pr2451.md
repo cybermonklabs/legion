@@ -35,7 +35,7 @@ own code run by one test file at both revisions.
   test adds anchor marks to every fifth text node.
 - Pick each surface's negative control from what that surface's input contains. A mutant that
   breaks a case the input never reaches proves nothing: the HTML-escape mutant changed 851 of
-  1,200 LINUX dump lines and none of the 2,000 API answers on the load-test seed, which holds no
+  1,200 HAFJJ dump lines and none of the 2,000 API answers on the load-test seed, which holds no
   `<`, `>` or `&`. Before you claim a control, confirm that it changes the output.
 
 ## Evidence

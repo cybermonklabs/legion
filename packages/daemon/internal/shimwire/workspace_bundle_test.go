@@ -27,7 +27,7 @@ func TestAFortyMebibyteBundleResultCrossesTheShimsChunkLane(t *testing.T) {
 		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x02"), maxWorkspaceBundleBytes/8),
 		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f", "f2f134541b30dfa5160a5d1ce5e17b76c967c661"},
-		Bookmarks: map[string]string{"legion/INFRA-945": "dffe88ae2f793e13436cef3921adc988433fbd4e"},
+		Bookmarks: map[string]string{"legion/POMJU-945": "dffe88ae2f793e13436cef3921adc988433fbd4e"},
 		At:        time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC),
 	}
 	if len(saved.Bundle) != maxWorkspaceBundleBytes {
@@ -140,17 +140,17 @@ func TestABundleResultRefusalNamesTheSizeAndCarriesNoBundle(t *testing.T) {
 	}
 	// So is a request the shim cannot act on: the daemon is its only sender.
 	for name, request := range map[string]BundleWorkspace{
-		"no id":         {Issue: "INFRA-945", MaxBytes: 1, TimeoutMs: 1},
-		"no issue key":  {ID: "x", Issue: "legion/INFRA-945\") | all()", MaxBytes: 1, TimeoutMs: 1},
-		"no bound":      {ID: "x", Issue: "INFRA-945", TimeoutMs: 1},
-		"no budget":     {ID: "x", Issue: "INFRA-945", MaxBytes: 1},
+		"no id":         {Issue: "POMJU-945", MaxBytes: 1, TimeoutMs: 1},
+		"no issue key":  {ID: "x", Issue: "legion/POMJU-945\") | all()", MaxBytes: 1, TimeoutMs: 1},
+		"no bound":      {ID: "x", Issue: "POMJU-945", TimeoutMs: 1},
+		"no budget":     {ID: "x", Issue: "POMJU-945", MaxBytes: 1},
 		"a lowered key": {ID: "x", Issue: "infra-945", MaxBytes: 1, TimeoutMs: 1},
 	} {
 		if err := request.Validate(); err == nil {
 			t.Errorf("a bundle-workspace with %s was accepted", name)
 		}
 	}
-	if err := (BundleWorkspace{ID: "x", Issue: "INFRA-945", MaxBytes: maxWorkspaceBundleBytes, TimeoutMs: 1000}).Validate(); err != nil {
+	if err := (BundleWorkspace{ID: "x", Issue: "POMJU-945", MaxBytes: maxWorkspaceBundleBytes, TimeoutMs: 1000}).Validate(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -165,7 +165,7 @@ func TestAWorkspaceBundleSlicesIntoFramesUnderTheLineLimit(t *testing.T) {
 		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x02"), (3<<20)/8),
 		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f", "f2f134541b30dfa5160a5d1ce5e17b76c967c661"},
-		Bookmarks: map[string]string{"legion/INFRA-945": "dffe88ae2f793e13436cef3921adc988433fbd4e", "side": "da4f9f492e9f8349389c243743e0a000cd1c676f"},
+		Bookmarks: map[string]string{"legion/POMJU-945": "dffe88ae2f793e13436cef3921adc988433fbd4e", "side": "da4f9f492e9f8349389c243743e0a000cd1c676f"},
 		At:        time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC),
 	}
 	frames, err := SplitWorkspaceBundle("restore-1", 7, saved)

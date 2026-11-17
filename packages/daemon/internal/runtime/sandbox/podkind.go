@@ -106,7 +106,7 @@ func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token,
 
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
 // the workspace's place on the issue's disk. It runs at every launch and expects nothing of that
-// disk, which is created with the pod and deleted with it (INFRA-80): only a new or replacement pod
+// disk, which is created with the pod and deleted with it (POMJU-80): only a new or replacement pod
 // provisions its workspace (provision, which relaunch runs only when it replaces the pod), and a
 // role launched into the live pod finds the workspace the roles before it left. docs/kubernetes.md,
 // "The disk dies with its pod", states which launch is which.
@@ -134,7 +134,7 @@ func (issuePod) labels(project string, l launch) map[string]string {
 }
 
 // disk has no claim template: an issue's Sandbox owns no volume, so nothing of the issue's disk
-// outlives a pod (INFRA-80). The disk itself is the pod's own, a generic ephemeral volume: the
+// outlives a pod (POMJU-80). The disk itself is the pod's own, a generic ephemeral volume: the
 // kubelet creates its claim when the pod starts and deletes it when the pod goes, so a suspended,
 // relaunched or swept issue leaves no volume behind and every pod starts on a workspace its init
 // containers provision afresh. Its claim is on the launch's class (diskSpec: a microVM pod's is
@@ -164,7 +164,7 @@ func (issuePod) secretAnnotations(l launch) map[string]string {
 // alone; skills-fetch mounts the provisioning Secret, a TMPDIR of its own and the skills volume
 // (read-write, and read-only in the one container that follows), and clones the deployment's
 // skills marketplace into it, so every role installs its skills from a directory no agent of the
-// issue can write and no role's launch clones anything (dispatch://INFRA-1300); workspace-init
+// issue can write and no role's launch clones anything (dispatch://POMJU-1300); workspace-init
 // mounts the issue's volume, the feed over it read-only, and the config home, and does all the
 // volume's work from the feed, with no credential, making the issue's clone shared with the feed
 // and starting an issue with no branch at the repository's default branch the spec names. Each

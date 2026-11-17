@@ -201,7 +201,7 @@ func TestACheckReportIsRefusedWhereNoLookIsOpenToIt(t *testing.T) {
 	}
 	rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "nothing in production yet"})
 	// A second report of look 1 is not refused here: the look it names is still the check's own,
-	// and a report of the current look counts however that look ended (dispatch://INFRA-714 R12,
+	// and a report of the current look counts however that look ended (dispatch://POMJU-714 R12,
 	// TestALateReportOfTheCurrentLookIsRecorded). What this case holds is the look that is not the
 	// check's, above and below.
 	rig.clock.now = checkOpened.Add(checkBound)

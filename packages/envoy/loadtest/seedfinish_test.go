@@ -379,7 +379,7 @@ func TestSeedFinishEmbeddingGateRefusesADeploymentWithNoEmbedderAtTheFirstPoll(t
 // TestSeedFinishEmbeddingGateRefusesADatabaseHoldingNoneOfTheSeed: the gate waits until no kind
 // lacks a vector, which is true of a deployment that holds nothing, so against an empty database
 // it logged "meaning search covers the seed: 0 items current" and let the seed finish 0
-// (dispatch://INFRA-988). The gate is the only step of seed-finish that reads the deployment
+// (dispatch://POMJU-988). The gate is the only step of seed-finish that reads the deployment
 // -url names rather than the database -pg names, so a seed written to one database while -url
 // reads another shows up here or nowhere. The deployment's report has to count at least one
 // issue before the gate reports coverage of the seed; a kind the seed left empty is no refusal,
@@ -529,7 +529,7 @@ func seedFinishResolve(t *testing.T, args ...string) (seedFinishFlags, error) {
 // TestSeedFinishReadsItsCredentialsFromFiles: seed-finish runs on the pod that drives the
 // deployment, so its two credentials -- the Postgres URL with its password and the Dispatch
 // agent bearer -- would be arguments anything that can list processes there reads for the whole
-// embedding gate, which waits hours (dispatch://INFRA-988). Each file's content with its
+// embedding gate, which waits hours (dispatch://POMJU-988). Each file's content with its
 // trailing white space trimmed is the value, and the four refusals are the ones every credential
 // of this package is read with (readCredentials).
 func TestSeedFinishReadsItsCredentialsFromFiles(t *testing.T) {

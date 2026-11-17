@@ -1,5 +1,5 @@
 // Command dispatch-seed fills an empty, migrated Dispatch database with the large, deterministic
-// data set INFRA-325's measurements are taken on: ten times production's row counts at --scale 1,
+// data set POMJU-325's measurements are taken on: ten times production's row counts at --scale 1,
 // and that shape times --scale at any other. Every key, uuid and timestamp comes from one fixed
 // base time and one fixed random seed, and the block ids come from a fixed generator
 // (pmdoc.SetBlockIDGenerator), so two runs at one scale write the same rows: a measurement taken

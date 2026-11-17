@@ -138,7 +138,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 		PromptFailures: record.FailureBudget{Limit: limit.PromptFailures},
 		PromptRetires:  record.FailureBudget{Limit: limit.PromptRetires},
 		// The two causes the claim recorded, which the controller reading this line has no other
-		// way to learn (dispatch://INFRA-714 R6).
+		// way to learn (dispatch://POMJU-714 R6).
 		StartFailure: "pane launch failed",
 	}}
 	if !reflect.DeepEqual(payload, want) {

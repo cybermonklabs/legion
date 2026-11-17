@@ -1,6 +1,6 @@
 /**
  * The `:::name[label]{attributes}` container directive as a micromark document construct: a
- * container, as micromark's block quote and list item are (INFRA-581).
+ * container, as micromark's block quote and list item are (POMJU-581).
  *
  * micromark-extension-directive's own container is a flow construct whose content is a
  * sub-document, so the content of a block nested D deep was tokenized D + 1 times, and a body

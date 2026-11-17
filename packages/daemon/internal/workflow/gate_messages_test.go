@@ -17,7 +17,7 @@ import (
 // A new version of an approved spec closes the tree's design gate under the workers already
 // running on it, and its approval opens it again. Each move sends one message naming the version
 // to every worker holding a phase in the tree and to the root architect, so nobody goes on
-// building to a design the person is being asked about again (dispatch://INFRA-714/spec R5).
+// building to a design the person is being asked about again (dispatch://POMJU-714/spec R5).
 func TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -72,8 +72,8 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 // gates, not of the one row the event names. The merger merges on it, and the merger's own start
 // is held while any required step is closed (the outbox's designGateClosed over
 // classify.StandingGate), so an "opened" message sent while another document is still under
-// review would merge a head whose design nobody has approved (dispatch://INFRA-714/spec R5,
-// under the steps INFRA-1272 gates).
+// review would merge a head whose design nobody has approved (dispatch://POMJU-714/spec R5,
+// under the steps POMJU-1272 gates).
 func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
@@ -111,7 +111,7 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 // (classify.StandingGate, the outbox's designGateClosed). A step the deployment gates that
 // nothing has registered names no document, so the hold passes it over; a message decided over a
 // predicate that let such a step hold the work would say nothing at all while the hold moved,
-// which is what a step list that grew left behind (dispatch://INFRA-714/spec R5).
+// which is what a step list that grew left behind (dispatch://POMJU-714/spec R5).
 func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)

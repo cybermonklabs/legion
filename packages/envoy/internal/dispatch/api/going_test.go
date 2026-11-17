@@ -105,9 +105,9 @@ func TestAGoingRequestRecordsItsWindowAndReadsBack(t *testing.T) {
 // Last-Event-ID is answered the frames past the one it holds, in order.
 func TestGoingEventsAppendInSequenceAndReadAfterOne(t *testing.T) {
 	rig := newGoingRig(t)
-	run := rig.record(t, "who closed INFRA-1?")
+	run := rig.record(t, "who closed POMJU-1?")
 	ctx := context.Background()
-	for number, event := range []going.Event{going.Text("Nobody "), going.Text("has."), going.Item(going.Hit{Kind: "issue", ID: "INFRA-1", Title: "One", Href: "/issues/INFRA-1"})} {
+	for number, event := range []going.Event{going.Text("Nobody "), going.Text("has."), going.Item(going.Hit{Kind: "issue", ID: "POMJU-1", Title: "One", Href: "/issues/POMJU-1"})} {
 		sequence, err := rig.server.appendGoingEvent(ctx, run.ID, event)
 		if err != nil {
 			t.Fatalf("append %s: %v", event.Name, err)
@@ -136,7 +136,7 @@ func TestGoingEventsAppendInSequenceAndReadAfterOne(t *testing.T) {
 	if !ok {
 		t.Fatalf("the item's payload is %T, want the JSON the row holds", after[0].Event.Data)
 	}
-	if !jsonEqual(t, data, `{"kind":"issue","id":"INFRA-1","title":"One","href":"/issues/INFRA-1"}`) {
+	if !jsonEqual(t, data, `{"kind":"issue","id":"POMJU-1","title":"One","href":"/issues/POMJU-1"}`) {
 		t.Fatalf("the item frame carries %s, want the hit it named", data)
 	}
 	if frames := rig.frames(t, run.ID); len(frames) != 4 {

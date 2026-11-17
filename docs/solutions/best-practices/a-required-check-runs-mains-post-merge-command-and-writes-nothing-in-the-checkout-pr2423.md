@@ -16,7 +16,7 @@ related_issues:
 
 # A required check runs main's post-merge command, and that command writes nothing in the checkout
 
-Extends docs/solutions/legion/a-red-lane-outside-the-required-set-merges-unread-read-every-lane-that-builds-the-changed-package-INFRA-379.md.
+Extends docs/solutions/legion/a-red-lane-outside-the-required-set-merges-unread-read-every-lane-that-builds-the-changed-package-POMJU-379.md.
 
 ## The rule
 

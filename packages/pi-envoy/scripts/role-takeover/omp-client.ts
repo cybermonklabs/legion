@@ -12,7 +12,7 @@
  * with what the smoke drives. Nothing else is faked: the extension dials the smoke's
  * natsd, and every listener call goes over HTTP to the smoke's recording proxy (`envoy.url` in
  * the `ENVOY_CONFIG_FILE` the smoke writes). One process is one client instance, which is what
- * the listener's rule turns on (R5, R6 of dispatch://INFRA-404/spec).
+ * the listener's rule turns on (R5, R6 of dispatch://POMJU-404/spec).
  *
  * Run it as `bun --preload <dir>/host-stub.ts <dir>/omp-client.ts`: the preload supplies the host
  * package the extension imports.

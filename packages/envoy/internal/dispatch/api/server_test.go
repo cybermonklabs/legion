@@ -103,7 +103,7 @@ type testServerOptions struct {
 	// embedder wires meaning search (LEGION-549); nil (every test but the meaning search tests'
 	// own) is the deployment with no embedder configured, where search answers keyword-only.
 	embedder embed.Embedder
-	// answerer answers a going request's question (INFRA-1279); nil (every test but the going
+	// answerer answers a going request's question (POMJU-1279); nil (every test but the going
 	// routes' own) is the deployment with no model configured, where a run is recorded and its
 	// stream carries the no-model-configured error.
 	answerer Answerer
@@ -2070,7 +2070,7 @@ func TestRevokedCookieIsRejectedAcrossDispatchSurfaces(t *testing.T) {
 	}
 }
 
-// The document socket takes a signed-in person's cookie and nothing else (INFRA-264). The shared
+// The document socket takes a signed-in person's cookie and nothing else (POMJU-264). The shared
 // agent token the HTTP API accepts is no credential for it: the handshake is refused, where the
 // same room admits the cookie. A bearer once named its own session in a header the socket read,
 // which made it a second, weaker door into Dispatch.

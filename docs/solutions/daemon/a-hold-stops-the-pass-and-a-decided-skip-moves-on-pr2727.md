@@ -15,7 +15,7 @@ related_issues:
 
 # A hold stops the pass and a decided skip moves on, and the last hold released is the one that admits
 
-Extends docs/solutions/daemon/a-hold-is-computed-with-the-check-the-action-that-releases-it-uses-INFRA-252.md.
+Extends docs/solutions/daemon/a-hold-is-computed-with-the-check-the-action-that-releases-it-uses-POMJU-252.md.
 
 That document says how a hold is computed and that every way it can end needs a test. This adds
 what the pass does with the candidates *behind* the held one, and how a test of two overlapping
@@ -50,7 +50,7 @@ holds is written.
 
 On sjawhar/legion#2727 the Legion daemon's admission pass skipped a root the boot held for the
 Dispatch consumer (`continue`) and went on down the waiting line, so a lower-ranked root took the
-one free slot and kept it until its tree ended. Every INFRA boot hit it: `record.Waiting` puts
+one free slot and kept it until its tree ended. Every POMJU boot hit it: `record.Waiting` puts
 answered roots first and the boot holds them, so the head of the line was the held root by
 construction.
 

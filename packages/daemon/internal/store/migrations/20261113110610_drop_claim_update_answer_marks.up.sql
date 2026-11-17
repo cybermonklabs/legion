@@ -1,5 +1,5 @@
 -- 20261113110610_drop_claim_update_answer_marks.up.sql -- the two marks of how a claim answered
--- its update round go, with the rules that read them (dispatch://INFRA-2981 R7, R9), and every
+-- its update round go, with the rules that read them (dispatch://POMJU-2981 R7, R9), and every
 -- pod round open at the deploy starts its clock and its ask again.
 --
 -- What this takes out: the columns claims.update_answered_by_turn_end and

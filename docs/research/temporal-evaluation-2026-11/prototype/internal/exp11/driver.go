@@ -23,7 +23,7 @@ const (
 	// readings of the process holding nothing are of a wait that is really open.
 	idleObserve = 3 * time.Second
 	// issueID is the Legion issue the gate in this experiment stands for.
-	issueID = "INFRA-1546"
+	issueID = "POMJU-1546"
 )
 
 // waitDays are the lengths of a wait for a person that the reasoned lines price.

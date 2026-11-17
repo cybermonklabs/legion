@@ -52,7 +52,7 @@ var holdings = []holding{
 		h.launch()
 		h.must(task)
 	}},
-	// The defect's own shape (dispatch://INFRA-2614): the task was sent and acknowledged, no turn
+	// The defect's own shape (dispatch://POMJU-2614): the task was sent and acknowledged, no turn
 	// took it, and the daemon's suspension of the lingering tree let the process go, and with it
 	// the wait for that prompt's result (letGo).
 	{"sent and acknowledged, then suspended before any turn", func(h *harness, task RequestDeliver) {
@@ -93,7 +93,7 @@ func heldUnconfirmed(h *harness, task RequestDeliver) {
 // task of a newer entry: the newer task is pending in its place, written with its entry and that
 // entry's handshake as any delivery is, the older one is retired, and the first prompt the agent
 // is sent once it comes up is the newer task. Refusing it instead, as the claim did before
-// dispatch://INFRA-2614, sent a re-admitted architect the generation-1 task that told it the tree
+// dispatch://POMJU-2614, sent a re-admitted architect the generation-1 task that told it the tree
 // was open at generation 1 and that no message was coming, while the tree's children ran.
 func TestANewerEntrysTaskSupersedesARootArchitectsUnconfirmedTask(t *testing.T) {
 	for _, held := range holdings {

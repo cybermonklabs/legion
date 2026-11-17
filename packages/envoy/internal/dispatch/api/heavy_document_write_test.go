@@ -42,7 +42,7 @@ func heavyWrites() []heavyWrite {
 // The browser suite used to make this claim, writing the same bodies through this same route and
 // holding each to a second of wall clock as well (heavy-document-writes.e2e.ts,
 // nested-directive.e2e.ts). Nothing here reads a clock: two wall times a shared CI runner took
-// cannot separate a regression from the runner's own noise (INFRA-1013, INFRA-985). What the
+// cannot separate a regression from the runner's own noise (POMJU-1013, POMJU-985). What the
 // bodies cost is measured in pmdoc's own CPU time
 // (TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime) and by BenchmarkHeavyDocumentWrite
 // beside this file; what a writer is answered is gated here.

@@ -26,7 +26,7 @@ type DecisionCard struct {
 // its parser makes, whatever else in the body the server's parse refuses: a body refused for a link
 // reference definition, an HTML comment, an unknown directive, a malformed table or a deep nesting
 // draws its card in full - header, urgency pill and both option rows - and nobody can answer it
-// where it stands (INFRA-1201). The parse answers its refusal and throws that tree away; this reads
+// where it stands (POMJU-1201). The parse answers its refusal and throws that tree away; this reads
 // the same tree and keeps what it says, so the rule over a refused body reads what the reader
 // reads (itemblocks.Check).
 //

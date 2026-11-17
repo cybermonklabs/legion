@@ -44,5 +44,5 @@ related_issues:
   two runs, as the old pipeline left them. With the replacement moved before the merge, the oracle
   test `TestAsWrittenIsTheOldPipelineOnEveryBranch/nul_and_replacement` fails.
 - Oracle and locks: `render_written_test.go:302`, `:310`, `:324`, `:344`, `:393`.
-- On every LINUX spec (1,204), render time fell to 0.514 of base and allocations to 0.265 of base,
+- On every HAFJJ spec (1,204), render time fell to 0.514 of base and allocations to 0.265 of base,
   with output `cmp` identical (PR body, "Render cost" and "E2E (implementer)").

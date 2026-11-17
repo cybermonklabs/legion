@@ -4,7 +4,7 @@
 -- A provider that refuses a session refuses it again every turn, and nothing the daemon counted
 -- said so: an implementer's every turn was refused at about 226k tokens of context, its claim never
 -- failed, and only a hand edit of the claims store moved its issue to a new session
--- (dispatch://INFRA-714). Each turn's end is now reported by the one producer that sees it —
+-- (dispatch://POMJU-714). Each turn's end is now reported by the one producer that sees it —
 -- pi-legion's agent_end hook for Oh My Pi, the Claude bridge for Claude Code — with the producer's
 -- own sequence within the launch generation, and the daemon fails the claim once the run of
 -- refusals reaches launch_failure_limit.

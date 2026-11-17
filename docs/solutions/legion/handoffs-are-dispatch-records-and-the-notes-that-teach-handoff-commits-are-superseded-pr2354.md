@@ -13,12 +13,12 @@ module: skills/legion-worker
 supersedes:
   - docs/solutions/legion/a-handoff-only-push-runs-no-check-so-check-private-names-over-a-handoff-fires-only-at-the-next-code-push-LEGION-698.md
   - docs/solutions/legion/a-round-that-changes-no-code-writes-its-handoff-again-so-its-completion-keys-to-a-fresh-commit-and-strips-the-four-keys-the-cli-stamps-LEGION-629.md
-  - docs/solutions/legion/a-trailered-head-is-missing-the-checks-a-push-starts-not-every-check-run-INFRA-149.md
+  - docs/solutions/legion/a-trailered-head-is-missing-the-checks-a-push-starts-not-every-check-run-POMJU-149.md
   - docs/solutions/legion/an-implement-handoff-push-runs-ci-in-full-and-cancels-the-code-heads-runs-cite-the-tips-runs-and-give-the-lane-the-code-heads-image-LEGION-631.md
   - docs/solutions/legion/lint-the-handoffs-you-inherit-before-your-first-code-push-a-redaction-commit-answers-another-roles-private-name-LEGION-791.md
   - docs/solutions/legion/handoff-file-conflicts-during-rebases.md
-  - docs/solutions/legion/handoff-complete-checks-the-handoff-commits-app-and-nothing-checks-a-code-commits-INFRA-92.md
-  - docs/solutions/legion/a-solutions-note-cannot-cite-a-legion-handoff-because-retro-removes-it-before-the-merge-INFRA-69.md
+  - docs/solutions/legion/handoff-complete-checks-the-handoff-commits-app-and-nothing-checks-a-code-commits-POMJU-92.md
+  - docs/solutions/legion/a-solutions-note-cannot-cite-a-legion-handoff-because-retro-removes-it-before-the-merge-POMJU-69.md
   - docs/solutions/skill-patterns/workflow-ordering-and-stale-workspace-data.md
   - docs/solutions/legion/tree-recovers-from-lost-wakes-by-reading-state-and-handoffs.md
 ---

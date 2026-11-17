@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// The other half of decision 15 (dispatch://INFRA-2739/artifact/open-items-md): a probe path has
+// The other half of decision 15 (dispatch://POMJU-2739/artifact/open-items-md): a probe path has
 // to be a path the listener's own binary serves. Before this change the listener mounted
 // /metrics, /healthz, each webhook and /v1 and nothing else, so GET /livez answered 404; a
 // startup or liveness probe of this pod is curl -sS with no -f, which exits 0 on a 404, so the

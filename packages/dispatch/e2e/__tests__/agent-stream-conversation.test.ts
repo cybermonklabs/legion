@@ -3,7 +3,7 @@ import { AGENT_STREAM_LIMITS } from "@legion/contracts";
 
 import { agentStreamConversationAtLimit } from "../api";
 
-// The seed behind every session a check of what an open live view costs opens (INFRA-812): the
+// The seed behind every session a check of what an open live view costs opens (POMJU-812): the
 // heaviest transcript a session will ever answer a replay request with. Both of the publisher's
 // caps bound it, so the arithmetic that sizes a turn is held here rather than discovered as a
 // refused publish in the browser suite.

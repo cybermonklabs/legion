@@ -1,6 +1,6 @@
 /** The priority, read and written in a browser against the real stack: the list page and its two
  *  fault lists, a priority's own page and its margin, the line an issue's header carries, and the
- *  rail's count. Five checks of dispatch://INFRA-2947 are this one file - the page's order, the
+ *  rail's count. Five checks of dispatch://POMJU-2947 are this one file - the page's order, the
  *  writes a person makes, the margin, the issue's line and the two absences - so a row that fails
  *  fails all five, and each row below is one of their sentences.
  *
@@ -109,7 +109,7 @@ async function seedPriorities(): Promise<Seeded> {
   const ledger = await createIssue({ project: "WEB", title: "Ledger read path" });
   const cutover = await createIssue({ project: "WEB", title: "Ledger cut-over" });
   // The child states nothing of its own: it advances `P3` because the issue above it does
-  // (INFRA-2947, R4), which is what the parked list's row and the rail's second count read.
+  // (POMJU-2947, R4), which is what the parked list's row and the rail's second count read.
   const child = await createIssue({
     parent: cutover.key,
     project: "WEB",
@@ -259,7 +259,7 @@ test("the priorities page draws the order first and the two fault lists under it
     await expect(firstRow.getByRole("cell").nth(3)).toHaveText("1");
     await expect(firstRow.getByRole("cell").nth(4)).toHaveText("1");
 
-    // The agreed picture (dispatch://INFRA-2947/artifact/priorities-round10-png): the
+    // The agreed picture (dispatch://POMJU-2947/artifact/priorities-round10-png): the
     // priorities, then the work in flight under none, then the priority work parked.
     const unplaced = section(page, "In flight under no priority");
     const parked = section(page, "Priority work in backlog or icebox");
@@ -339,13 +339,13 @@ test("the priorities page draws the order first and the two fault lists under it
     const moved = await childCell("Moved there");
     await expect(moved.locator("time")).toHaveCount(1);
     await expect(moved).toContainText("alice");
-    // Reason: why it was moved there, which nothing records until dispatch://INFRA-2934 does,
+    // Reason: why it was moved there, which nothing records until dispatch://POMJU-2934 does,
     // and the cell says so with a link to that work.
     const reason = await childCell("Reason");
-    await expect(reason).toHaveText("Not recorded until INFRA-2934");
-    await expect(reason.getByRole("link", { name: "INFRA-2934" })).toHaveAttribute(
+    await expect(reason).toHaveText("Not recorded until POMJU-2934");
+    await expect(reason.getByRole("link", { name: "POMJU-2934" })).toHaveAttribute(
       "href",
-      "/issues/INFRA-2934"
+      "/issues/POMJU-2934"
     );
   } finally {
     await context.close();
@@ -475,7 +475,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
     await expect(rendered).toContainText(described);
     await expect(rendered).not.toContainText("It is finished when no machine is left");
 
-    // What the page does not say about a priority (INFRA-2947, R10): no date it is wanted by,
+    // What the page does not say about a priority (POMJU-2947, R10): no date it is wanted by,
     // no portion of it done, and no word judging how it is going. Every `<time>` the page draws
     // is a moment that has passed, and no relative label reads forwards.
     const future = await page
@@ -624,7 +624,7 @@ test("a priority's own page writes its title and description and lists only its 
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(seed.titles[0]);
     await expect(page.getByRole("combobox", { name: "Owner" })).toHaveValue("alice");
     // One page and no tab strip: a tab and a margin state are the same object, and the margin
-    // holds the states (dispatch://INFRA-1196).
+    // holds the states (dispatch://POMJU-1196).
     await expect(page.getByRole("tablist")).toHaveCount(0);
     await expect(page.getByRole("tab")).toHaveCount(0);
 
@@ -939,7 +939,7 @@ test("a priority's page offers no versions and no delete, and the parked rule sa
     await expect(main.getByRole("link", { name: /delete/i })).toHaveCount(0);
 
     // And the second fault's rule says the one thing it cannot say about a parked issue: why it
-    // was moved. Nothing records a reason until dispatch://INFRA-2934 does.
+    // was moved. Nothing records a reason until dispatch://POMJU-2934 does.
     await page.goto(PRIORITIES_PATH);
     const parked = section(page, "Priority work in backlog or icebox");
     await expect(parked.getByText(PARKED_RULE)).toBeVisible();

@@ -299,7 +299,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// INFRA-555: every NATS client of the server connects in the background (serverBus), so a bus
+	// POMJU-555: every NATS client of the server connects in the background (serverBus), so a bus
 	// that is down or refuses the credential at boot leaves the process serving everything that
 	// does not need the bus, and connected once the bus answers; only a configuration error (an
 	// unusable seed or proxy setting, a server that is not this machine's) ends the boot here.
@@ -411,7 +411,7 @@ func main() {
 		slog.Info("dispatch: storing uploaded files in a bucket", "bucket", boot.FileStoreBucket)
 	}
 
-	// INFRA-555: neither issuer is read at boot. The sign-in issuer's code flow and the
+	// POMJU-555: neither issuer is read at boot. The sign-in issuer's code flow and the
 	// service-account token verifier each discover their issuer in the background from here, and
 	// until then what needs one answers 503 (SIGNIN_UNAVAILABLE, OIDC_ISSUER_UNAVAILABLE) while
 	// everything else serves; /healthz reports each as `signin` and `service_tokens`.
@@ -786,7 +786,7 @@ func main() {
 	//
 	// In the background, where the document_search fill above blocks the boot: a label costs
 	// about 253 bytes of heap and 4.9 KiB of growth in the vector index, and the pass is one to
-	// two hours on a deployment of a million rows (INFRA-988, store.EmbeddingProjectKeyBatch), so
+	// two hours on a deployment of a million rows (POMJU-988, store.EmbeddingProjectKeyBatch), so
 	// a boot that waited for it would outlast any rollout. What waiting would buy is nothing a
 	// search needs: an unlabelled row is invisible to the column's own predicate, which is worse
 	// than the release before this one, so a project-scoped meaning search is answered by the
@@ -837,9 +837,9 @@ func main() {
 	go documentService.RunReferenceExcerptReconciliation(ctx, referenceExcerptLeases, excerptsWake)
 	// Documents the compaction queues let go - every room a restart, a Shutdown or a Quiesce
 	// dropped from one - fold within an hour of coming due, whether or not NATS is configured
-	// (INFRA-593).
+	// (POMJU-593).
 	go documentService.RunCompactionSweep(ctx, documentCompactionLeases)
-	// Every stored text written before INFRA-635 stored display trees, and every stored text at
+	// Every stored text written before POMJU-635 stored display trees, and every stored text at
 	// all after a deploy raises pmdoc.DisplayTreeVersion, gets its tree without waiting for a
 	// reader to open it; the same pass drops the trees of every version before the two newest,
 	// which is what lets a rolling deploy and a rollback read each other's rows.
@@ -871,7 +871,7 @@ func main() {
 		slog.Info("dispatch: webhook redelivery off: it needs NATS and the GitHub App private key")
 	}
 
-	// INFRA-1211: a webhook that never arrived leaves a head short of a check, and a head short
+	// POMJU-1211: a webhook that never arrived leaves a head short of a check, and a head short
 	// of a check never settles, so every interval one process reads each open pull request's head
 	// from GitHub and records the completed checks Envoy's record of that head lacks. It is a
 	// timer that stays, as the webhook redelivery sweep and the delivery reconcile beside it are:
@@ -954,7 +954,7 @@ func main() {
 		slog.Info("dispatch delivery: no NATS client — intake is idle; the reconcile alone still runs")
 	}
 
-	// LEGION-781, INFRA-555: the announcer publishes server.started once each time every live
+	// LEGION-781, POMJU-555: the announcer publishes server.started once each time every live
 	// server process comes to serve one build (startup.Announcer), and /healthz reports the latest
 	// announcement's commit as fleet_commit. It runs once this process is registered, below
 	// (joinRegistry, registry.go). A process without NATS announces into the database and leaves
@@ -1893,7 +1893,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // by, lost the hold, or runs with NATS disabled (publisher nil). One process of a deployment
 // publishes at a time, so a healthy process may well report false, and it never decides `ok`.
 //
-// `idempotency_keys` is true on every build that judges a write's Idempotency-Key (INFRA-258,
+// `idempotency_keys` is true on every build that judges a write's Idempotency-Key (POMJU-258,
 // api/request_keys.go): the agents' client reads it before it retries a write under its key, since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
@@ -2021,7 +2021,7 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 // compiled windows calls a holder gone whose horizon the deployment raised, counts its role
 // route reached and marks the event published with nothing sent (forwardOf), while the
 // listener, carrying the raise, still calls that holder unresponsive and keeps its claim: the
-// event reaches it never (dispatch://INFRA-392).
+// event reaches it never (dispatch://POMJU-392).
 func roleHolderWindows(env settingValues) (roles.Windows, error) {
 	live, horizon, err := envconf.SessionWindows(slog.Default(), env.lookup)
 	if err != nil {

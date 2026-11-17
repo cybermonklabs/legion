@@ -1,7 +1,7 @@
 package daemon
 
 // Every way a phase holder's claim comes back to ready ends in its phase's task, within two
-// minutes of that ready: dispatch://INFRA-714 R7, acceptance A9. An operator's resume on
+// minutes of that ready: dispatch://POMJU-714 R7, acceptance A9. An operator's resume on
 // 2026-10-30 brought about eight phase holders back ready with no task, and each sat idle for two
 // to five hours. The three come-backs here are the ones a claim has — an operator's suspend and
 // resume, a relaunch after a death, and a resume after the daemon replaced the pod (the displaced
@@ -28,7 +28,7 @@ import (
 )
 
 // taskWithinOfReady is how long a phase holder may stand ready with no task before the daemon has
-// failed it (dispatch://INFRA-714 acceptance A9). It is measured where an operator reads it, over
+// failed it (dispatch://POMJU-714 acceptance A9). It is measured where an operator reads it, over
 // the two times the claim view carries: the claim's last ready (supervise.Claim.LastReady) and the
 // acknowledgement of the task's prompt (supervise.Delivery.DeliveredAt).
 const taskWithinOfReady = 2 * time.Minute

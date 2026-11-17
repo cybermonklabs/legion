@@ -39,7 +39,7 @@ the happy path reaches.
 
 ## Evidence
 
-sjawhar/legion#2541 (INFRA-264). Round 1 found a machine login's own access token admitted, with
+sjawhar/legion#2541 (POMJU-264). Round 1 found a machine login's own access token admitted, with
 the request body then choosing the session it wrote as; round 2 found an unknown `project_scope`
 read as unscoped; round 3 found `named` with an empty `project` read the same way. The fixes are
 `02b80896`, `a1f34c47` and `98f089a9`, each one clause of `live`. Round 1 also found the

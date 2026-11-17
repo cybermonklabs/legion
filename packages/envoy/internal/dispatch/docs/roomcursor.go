@@ -232,7 +232,7 @@ func (s *Service) keepInstance(room string, live *crdt.Doc, counted *residentLoa
 	// is gone has no map to delete from, and a load that is gone is one no entry of s.roomLoads
 	// holds, since the map holds a load strongly for as long as the entry this cleanup would
 	// delete exists - a load stored for the room since would not match CompareAndDelete anyway
-	// (dispatch://INFRA-1085).
+	// (dispatch://POMJU-1085).
 	owner, record := weak.Make(s), weak.Make(load)
 	runtime.AddCleanup(live, func(struct{}) {
 		if s, l := owner.Value(), record.Value(); s != nil && l != nil {

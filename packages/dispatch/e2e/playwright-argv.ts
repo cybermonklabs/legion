@@ -8,7 +8,7 @@
  *  option's value. A flat `argv.some()` answers either question wrongly, because a flat argv
  *  cannot tell an option from an option's VALUE: `--output --project=stub` hands Playwright
  *  `--project=stub` as the output directory and names no project at all, and `--grep --ui`
- *  hands it `--ui` as `--grep`'s value and the run is an ordinary one (dispatch://INFRA-1410).
+ *  hands it `--ui` as `--grep`'s value and the run is an ordinary one (dispatch://POMJU-1410).
  *  Both readers take the classification below and `valuesTakenAt` rather than carrying a rule
  *  of their own.
  *
@@ -50,7 +50,7 @@
  *  A NON-DASH target, measured in this tree, where the target is a spec path and the reading is
  *  the listing it produced. These two rows are the evidence for the other half of the OPTIONAL
  *  rule - what such an option does with a token that does NOT begin with a dash
- *  (dispatch://INFRA-1280) - which is the half `clockFileOnCommandLine` rests on, and
+ *  (dispatch://POMJU-1280) - which is the half `clockFileOnCommandLine` rests on, and
  *  `e2e/__tests__/clock-selection.test.ts` holds a row of its own for each of them, "a
  *  wall-clock path behind `--shuffle`, which Playwright takes as the seed" and "a wall-clock
  *  path behind `--only-changed`, which Playwright takes as a git ref".

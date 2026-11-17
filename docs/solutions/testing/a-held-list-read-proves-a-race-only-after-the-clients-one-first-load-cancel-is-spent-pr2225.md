@@ -13,7 +13,7 @@ module: packages/dispatch/e2e
 
 # A held list read proves a race only after the client's one first-load cancel is spent
 
-Extends docs/solutions/testing/a-browser-race-with-no-in-page-signal-is-proven-by-a-held-read-a-margin-a-red-run-justifies-a-sampled-settle-and-one-shot-assertions-INFRA-303.md.
+Extends docs/solutions/testing/a-browser-race-with-no-in-page-signal-is-proven-by-a-held-read-a-margin-a-red-run-justifies-a-sampled-settle-and-one-shot-assertions-POMJU-303.md.
 
 - **Before you trust a held-read race test, turn the guard off and watch it fail. Then list every
   client mechanism that would rescue the stale body without the guard.** In the Dispatch web app,

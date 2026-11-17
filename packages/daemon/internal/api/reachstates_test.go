@@ -333,10 +333,10 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 		{
 			name:  "a compaction over the project's own controller, still launching",
 			op:    compactOp,
-			token: "INFRA-controller",
+			token: "POMJU-controller",
 			state: supervise.StateLaunching,
 			role:  claim.RoleController,
-			want: "INFRA-controller has a suspension held over it, and a compaction reaches no claim a suspension " +
+			want: "POMJU-controller has a suspension held over it, and a compaction reaches no claim a suspension " +
 				"waits over, whatever state it is in. Of the claims with no suspension held over them, the daemon's " +
 				"controller keeper (whose resume an operator's own suspension holds) reaches those that are " +
 				"suspended, failed or retired, and a compaction reaches those whose agent is ready or idle. Ask " +

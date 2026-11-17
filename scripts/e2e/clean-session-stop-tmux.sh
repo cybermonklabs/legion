@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The daemon's clean stop, measured end to end (dispatch://INFRA-392): a Legion role whose agent
+# The daemon's clean stop, measured end to end (dispatch://POMJU-392): a Legion role whose agent
 # process is SIGKILLed under its worker shim is `gone` to the Envoy listener within ten seconds,
 # because the daemon deletes that session's registration the moment its probe finds the process
 # gone (supervise.Deps.SessionGone -> cleanSessionStop's DELETE /v1/sessions/<id>), rather than the
@@ -90,7 +90,7 @@
 #
 # The heartbeat is an input because it decides how often a kill lands just after a registration,
 # which is the window a clean stop dated before the moment its probe judged refuses a stop that
-# is owed in (dispatch://INFRA-2064). A small value makes a kill inside that window likely —
+# is owed in (dispatch://POMJU-2064). A small value makes a kill inside that window likely —
 # 3 of 4 runs at main with 500 — so the defect's reproduction is a command rather than an edit,
 # and 5000, the value before this input existed, leaves every run as it was. It moves nothing
 # else: the live window, the gone horizon, the reap interval and the ten-second acceptance are
@@ -170,7 +170,7 @@ checks=(
 
 usage() {
   cat <<'EOF'
-clean-session-stop-tmux.sh — the daemon's clean stop, measured (dispatch://INFRA-392)
+clean-session-stop-tmux.sh — the daemon's clean stop, measured (dispatch://POMJU-392)
 
   bash scripts/e2e/clean-session-stop-tmux.sh [--checks <name,name,…>] [--list]
 
@@ -534,7 +534,7 @@ daemon_said_at_least() { [ "$(daemon_said "$1")" -ge "$2" ]; }
 # Claude arm claude-envoy's own deregistration can land first, and a record already gone is the
 # outcome the stop asked for.
 #
-# The line this does NOT accept is the stop the listener kept. Until dispatch://INFRA-2064 it
+# The line this does NOT accept is the stop the listener kept. Until dispatch://POMJU-2064 it
 # did, on the ground that the session's own plugin would deregister it instead — which is false
 # for a SIGKILL of the process that plugin runs in (packages/pi-envoy/src/registration-state.ts,
 # unregisterSession is an explicit call). The listener keeps a registration for three reasons
@@ -549,7 +549,7 @@ daemon_said_at_least() { [ "$(daemon_said "$1")" -ge "$2" ]; }
 #
 # What the clause claims is that the session is gone well inside the horizon, and gone_within
 # above is what measures that; this asks that the daemon's own stop is why, which is what keeps
-# the measurement from passing on the reaper (dispatch://INFRA-392).
+# the measurement from passing on the reaper (dispatch://POMJU-392).
 stop_record=
 clean_stop_recorded() {
   local session=$1 line

@@ -231,7 +231,7 @@ wait_for_dispatch_healthz() {
 }
 
 echo "== dispatch serves against an issuer that does not answer"
-# INFRA-555: Dispatch reads no issuer at boot. It migrates, binds and serves, discovers the issuer
+# POMJU-555: Dispatch reads no issuer at boot. It migrates, binds and serves, discovers the issuer
 # in the background, and until it has, /healthz reports service_tokens false and a JWT-shaped
 # bearer is 503 OIDC_ISSUER_UNAVAILABLE — never a 401, since the token was not judged.
 python3 "$held_port" exec --port-file "$work/dispatch-absent-issuer.port" --fd-env DISPATCH_LISTEN_FD -- \

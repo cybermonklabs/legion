@@ -10,7 +10,7 @@
 // `CHECK <name>: PASS`. The first check that does not hold prints `CHECK <name>: FAIL: <why>` and
 // ends the run. The agent every pod runs is a stub (decision 7): the Go shim bridges it as it would
 // Oh My Pi, and it appends its own role, pod uid and generation to a marker file on the issue pod's
-// own disk, and sleeps. That disk is the pod's own ephemeral volume and dies with it (INFRA-80), so
+// own disk, and sleeps. That disk is the pod's own ephemeral volume and dies with it (POMJU-80), so
 // the marker proves a role's identity within one pod and nothing across pods. Within the pod it is
 // shared: SandboxName (see names.go) is one name for all six of an issue's role claims, so one issue
 // pod's resident roles each append their own launches to the same file, and a check reads only its
@@ -1169,7 +1169,7 @@ func (r *liveRig) execPod(c *liveClaim, command ...string) (string, error) {
 // and the pinned Sandbox CRD declares that template's metadata a bare object, so the API server
 // prunes any label set there — an issue's disk carries none, and is found by its name alone. owner
 // is the claim's controlling owner as `<kind>/<name>`: a Pod, never the Sandbox that owned the
-// issue's volume before INFRA-80.
+// issue's volume before POMJU-80.
 type liveDisk struct {
 	name, phase, uid, owner string
 }

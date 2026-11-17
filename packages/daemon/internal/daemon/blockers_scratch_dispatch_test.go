@@ -30,7 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// INFRA-225's proof that the daemon itself, and not only its handlers under a unit test, passes a
+// POMJU-225's proof that the daemon itself, and not only its handlers under a unit test, passes a
 // blocked issue over: the real Dispatch server with its events on, a real Postgres, a real NATS,
 // and a real daemon process-in-process reading Dispatch's events off that bus. Everything the
 // test does to Dispatch it does through Dispatch's own API — the issues, their `blocked_by`
@@ -83,7 +83,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	cfg.Project = "B" + randomSuffix(t)[:9]
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
 	cfg.PostgresDSN = blockersDatabase(t)
-	// The cap counts the issues the daemon has started, not the trees (dispatch://INFRA-980), and
+	// The cap counts the issues the daemon has started, not the trees (dispatch://POMJU-980), and
 	// this run puts ten issues of one project through the workflow, a tree's children among them.
 	// It is set above every count this run reaches so that no step here is ever the cap's doing:
 	// the slot the blocked root of step 1 does not take stands free because its link holds it,
@@ -134,7 +134,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// behind the events after it (intake's consumeMessage), so the two roots nothing blocks being
 	// in their slots says nothing about whether Legion has taken in the blocked root's todo yet.
 	// In CI run 41511158832 it had not, and the state judged here held both of them admitted and
-	// no record of the blocked root at all (INFRA-1022).
+	// no record of the blocked root at all (POMJU-1022).
 	//
 	// The wait weakens no judgement below: admission records every root whose todo it has taken
 	// in, the ones it starts under `active` and the ones it passes over under `waiting`

@@ -1,6 +1,6 @@
 // session_adoption_test.go is the carry's second half: the next enrollment of a session name
 // under the same principal takes what the box the session left still holds, and nothing else
-// takes anything (dispatch://INFRA-1167). The first half, what an end leaves standing, is
+// takes anything (dispatch://POMJU-1167). The first half, what an end leaves standing, is
 // session_carry_test.go, whose fixtures these tests build on.
 package enroll
 

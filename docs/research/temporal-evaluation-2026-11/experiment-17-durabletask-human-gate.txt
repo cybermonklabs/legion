@@ -1,6 +1,6 @@
 Experiment 17, durabletask-go: a wait for a person.
 Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
-from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+from the branch of dispatch://POMJU-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
 in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------
@@ -15,7 +15,7 @@ gate1-pid: 28979
 [gate1] dtworker: goroutines-before-the-workflow=9
 [gate1] dtworker: workflow-started=exp17-gate-1794091132468179216
 [gate1] dtworker: goroutines-while-waiting=10
-sql-while-waiting-instances: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28979,54048c10-fe12-42cc-aecd-4a04dea015c8 LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+sql-while-waiting-instances: RuntimeStatus=RUNNING Version=none LockedBy=legion-pomju-pomju-1546,28979,54048c10-fe12-42cc-aecd-4a04dea015c8 LockExpiration=null CompletedTime=null Output=none FailureDetails=none
 sql-while-waiting-history: 6: WorkflowStarted ExecutionStarted TaskScheduled(ask-the-person) WorkflowStarted TaskCompleted TimerCreated
 sql-while-waiting-newevents: newevents seq=3 event=TimerFired DequeueCount=0 LockedBy=none LockExpiration=null VisibleTime=9999-12-31T23:59:59.999999Z
 sql-while-waiting-newtasks: no rows
@@ -34,7 +34,7 @@ held-while-waiting-row-bytes: 1826
 connection-model-read-from-the-library: durabletask-go holds one pgx pool per process, whose default size is one connection, and polls it with a backoff; there is no connection, no transaction and no listener per waiting instance
 killed-pid: 28979
 kill-signal: SIGKILL
-sql-after-the-waiting-process-died: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28979,54048c10-fe12-42cc-aecd-4a04dea015c8 LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+sql-after-the-waiting-process-died: RuntimeStatus=RUNNING Version=none LockedBy=legion-pomju-pomju-1546,28979,54048c10-fe12-42cc-aecd-4a04dea015c8 LockExpiration=null CompletedTime=null Output=none FailureDetails=none
 sql-after-the-waiting-process-died-history: 6: WorkflowStarted ExecutionStarted TaskScheduled(ask-the-person) WorkflowStarted TaskCompleted TimerCreated
 what-the-death-cost-the-wait: nothing in the database changed: the wait was already only rows, so there was nothing in the dead process to lose
 [gate2] dtworker: pid=28988
@@ -42,12 +42,12 @@ replacement-pid: 28988
 replacement-started-after-seconds: 0.074
 answer-sent: approved
 seconds-from-answer-to-completed: 0.258
-sql-final-instances: RuntimeStatus=COMPLETED Version=none LockedBy=legion-infra-infra-1546,28988,1919b116-08a6-4ae9-bf3f-3932dd992507 LockExpiration=null CompletedTime=2026-11-07T22:39:02.497987Z Output="issue=INFRA-1546 answer=approved applied-by-pid=28988" FailureDetails=none
+sql-final-instances: RuntimeStatus=COMPLETED Version=none LockedBy=legion-pomju-pomju-1546,28988,1919b116-08a6-4ae9-bf3f-3932dd992507 LockExpiration=null CompletedTime=2026-11-07T22:39:02.497987Z Output="issue=POMJU-1546 answer=approved applied-by-pid=28988" FailureDetails=none
 sql-final-history: 12: WorkflowStarted ExecutionStarted TaskScheduled(ask-the-person) WorkflowStarted TaskCompleted TimerCreated WorkflowStarted EventRaised(approval) TaskScheduled(apply-the-answer) WorkflowStarted TaskCompleted ExecutionCompleted
 sql-final-newevents: newevents seq=3 event=TimerFired DequeueCount=0 LockedBy=none LockExpiration=null VisibleTime=9999-12-31T23:59:59.999999Z
 sql-final-eventraised-events: 1
-question-line-1: issue=INFRA-1546 question=approve-the-spec asked-by-pid=28979
-decision-line-1: issue=INFRA-1546 answer=approved applied-by-pid=28988
+question-line-1: issue=POMJU-1546 question=approve-the-spec asked-by-pid=28979
+decision-line-1: issue=POMJU-1546 answer=approved applied-by-pid=28988
 question-asked-times: 1
 work-before-the-wait-re-run-after-the-restart: false
 wait-resumed-in-the-replacement: true

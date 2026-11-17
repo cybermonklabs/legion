@@ -161,7 +161,7 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 // The record of this task's sends that never reached a turn round-trips with the delivery: how
 // many failed, when the last of them failed and the error it failed with. A restart rebuilds
 // every claim from this table, so a record lost here is a claim that has waited days on a send
-// which never lands and says nothing of it after the next restart (INFRA-1480). The last
+// which never lands and says nothing of it after the next restart (POMJU-1480). The last
 // failure's time is compared as an instant: Postgres hands a timestamptz back in the session's
 // zone, not the one it was written in.
 func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T) {
@@ -214,7 +214,7 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 //
 // Both halves of that are pinned here, against the real server. The raw text is refused outright,
 // which is what made the record's write fail; that failure used to return before the refused
-// adoption was charged, so the send was re-sent with no bound (INFRA-1480). The same words
+// adoption was charged, so the send was re-sent with no bound (POMJU-1480). The same words
 // without the NUL — the text the daemon stores — round-trip whole, so the diagnosis an operator
 // reads survives a restart.
 func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
@@ -309,7 +309,7 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 
 // The ladder a provider error puts a task on outlives the daemon that armed it: the count says
 // which step the next send waits, and the sentence is what that send puts in front of the task
-// (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
+// (dispatch://POMJU-956 R2). The claim's own run of such turns is beside them, because that is
 // what the controller's notice is counted from, and neither a restart nor a re-put of the
 // delivery under a new id may lose either.
 func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
@@ -435,7 +435,7 @@ func TestAClaimsTurnTimesRoundTrip(t *testing.T) {
 // What the daemon charged for the death of the process a claim records round-trips: a restart
 // builds every claim from this table and has charged nothing of its own, so a claim restored
 // without this is charged a second death for the one dead process it stands over, which costs
-// that claim what supervise.Claim.DeathCharged states (INFRA-956). It round-trips with the
+// that claim what supervise.Claim.DeathCharged states (POMJU-956). It round-trips with the
 // deaths it charged, which the same write carries.
 func TestWhatAClaimsDeathWasChargedRoundTrips(t *testing.T) {
 	ctx := context.Background()
@@ -459,7 +459,7 @@ func TestWhatAClaimsDeathWasChargedRoundTrips(t *testing.T) {
 
 // The round a claim left is a column of its own, and it is read back exactly as it was written:
 // the daemon decides from it what the pod of a round took with it when it went, and a restart
-// has nothing else to read that from (INFRA-484). It round-trips independently of the round the
+// has nothing else to read that from (POMJU-484). It round-trips independently of the round the
 // claim records, which a claim that leaves keeps.
 func TestTheRoundAClaimLeftRoundTrips(t *testing.T) {
 	ctx := context.Background()

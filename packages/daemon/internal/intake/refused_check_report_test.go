@@ -24,7 +24,7 @@ func (h *decidingHandler) Apply(context.Context, pgx.Tx, Fact) (Result, error) {
 // refusal recorded under it would answer the implementer's next send of the same report as one
 // already received, and the report of the deploy it drove would never be recorded. A refused
 // report leaves its event unmarked instead, and applies when it is sent again
-// (dispatch://INFRA-714/spec R12). Every other refusal stands: an unmarked one would make a
+// (dispatch://POMJU-714/spec R12). Every other refusal stands: an unmarked one would make a
 // refused handoff apply on its next delivery.
 func TestARefusedCheckReportAppliesWhenItIsSentAgain(t *testing.T) {
 	pool := migratedPool(t)

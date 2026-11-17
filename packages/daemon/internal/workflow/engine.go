@@ -176,7 +176,7 @@ func (e *Engine) sameRepository(a, b string) bool { return e.cfg.RepositoryRenam
 // GitHub's merge state when the fact is one of those that can change it and the round it left
 // waits on the answer. It is here rather than in the handlers so that a handler's early return
 // cannot silently stop the ladder, and so the facts that ask are one list the compiler checks
-// rather than nine calls and a comment (dispatch://INFRA-714 R3).
+// rather than nine calls and a comment (dispatch://POMJU-714 R3).
 func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	result, err := e.apply(ctx, tx, fact)
 	if err != nil {
@@ -357,7 +357,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	//
 	// Here the mark goes past the sequence fence above and before the status fence below, because
 	// a movement is every Dispatch event of the issue that is new to the record, and not only one
-	// that moves its status (dispatch://INFRA-2560, R3: a Dispatch event of the issue). An event
+	// that moves its status (dispatch://POMJU-2560, R3: a Dispatch event of the issue). An event
 	// the record has already applied stopped at that sequence fence and moves nothing; every event
 	// past it changes the record, whatever this handler then does with it. Where its status is new
 	// to the record the handler's own write is that change: an observation kept over the daemon's
@@ -1330,7 +1330,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // retryPhase gives issue the phase from back — a held issue leaves its hold — and starts that
 // phase's worker, told why it runs again. It re-decides no CI
 // result: a settlement that reached the issue while it was held moved nothing, as it would
-// have moved nothing had it arrived with the issue in its phase (dispatch://INFRA-714/spec
+// have moved nothing had it arrived with the issue in its phase (dispatch://POMJU-714/spec
 // R1), so there is no standing red left for the retry to act on, and the restored worker reads
 // the head's checks itself. From
 // reviewing a review round held open may already have both of its halves - the reviewer
@@ -1466,7 +1466,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 
-// parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,
+// parkRule is the condition dispatch://POMJU-2971 sets on each move of an issue to backlog,
 // icebox or triage. Each refusal and notice of this package that names such a move (park_child,
 // or icebox for a children-first wait) carries it word for word, as the skills and the prompts do,
 // so that an architect reads one rule wherever it reads of a park.
@@ -1479,8 +1479,8 @@ const parkRule = "only when a person asked for that move, or when the work is do
 // It is refused while any issue beneath the one being accepted is still in the workflow
 // (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
 // that carries its children's merges: accepted first, it would reach retro and the merge
-// with their work not in it, which is what dispatch://INFRA-980 forbids. The acceptance
-// was held this way once before (dispatch://INFRA-229) and the hold was taken off because a
+// with their work not in it, which is what dispatch://POMJU-980 forbids. The acceptance
+// was held this way once before (dispatch://POMJU-229) and the hold was taken off because a
 // parent's approved pull request then waited outside the merge queue and went stale against its
 // base; under children-first a parent starts its own phases only after its children have left,
 // so by the time it is accepted there is nothing left to wait for, and the refusal is the
@@ -1665,7 +1665,7 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 // completion or backward move, which that role made and so already knows of, and the approval and
 // the merge the daemon raises of its own leave a role that has just finished the work they report,
 // with no reason of the kind this message carries. A CI result moves no issue
-// (dispatch://INFRA-714 R1), so the trigger is a head that starts conflicting with its base.
+// (dispatch://POMJU-714 R1), so the trigger is a head that starts conflicting with its base.
 // The recipient is phase.RoleFor(from) whenever that is a role other than the architect, read from
 // the transition alone rather than from what the role had done: the tester in testing, the reviewer
 // in reviewing whether or not it completed its round, the merger in merging, and the implementer in

@@ -655,7 +655,7 @@ func TestLoopSeedWriteRefusedIssue(t *testing.T) {
 // row that records it leaves. The deployment refuses the issue this run writes again, so the
 // proposal is unwritable; what the run reports as skipped is what the map lacks of it and no
 // more, so a resumed run never says a proposal is missing objects that are written
-// (dispatch://INFRA-988).
+// (dispatch://POMJU-988).
 func TestLoopSeedWriteSkipsOnlyWhatTheMapLacks(t *testing.T) {
 	ctx := context.Background()
 	p := loopTestPlanOf(t, 31, loopTestRows(), map[int]int{0: 2})

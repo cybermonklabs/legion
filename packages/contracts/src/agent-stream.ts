@@ -141,7 +141,7 @@ export function isTypableCommandName(name: string): boolean {
 
 /**
  * The model and thinking level the session runs now, as its own `/model` and `/effort` report them
- * (INFRA-195): the whole state each time it changes, kept in every replay just before the
+ * (POMJU-195): the whole state each time it changes, kept in every replay just before the
  * `commands` frame. A person switches either by sending `/model <provider/id>` or `/effort <level>`,
  * which the session runs as typed input; this frame only shows the result.
  */
@@ -219,7 +219,7 @@ export type AgentStreamFrame =
     }
   /**
    * How much of its context window the session fills now, as the host's own `getContextUsage()`
-   * reports it (INFRA-812). The publisher sends it after each message of a turn, at each turn
+   * reports it (POMJU-812). The publisher sends it after each message of a turn, at each turn
    * start and after a compaction, at most one time in each of its own intervals, and keeps the
    * newest one in every replay. The frame carries the two figures alone; the share they make is
    * the viewer's to draw.
@@ -277,7 +277,7 @@ export function capAgentStreamText(text: string, limit: number): string {
 
 /**
  * What a `!command`'s report puts between the person's own line and the rest of it: the output,
- * fenced, and how the command ended (dispatch://INFRA-812, R4). The session writes the report
+ * fenced, and how the command ended (dispatch://POMJU-812, R4). The session writes the report
  * (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`) and publishes it as the
  * person's own user message, because they ran the line and the host wrote nothing; the Agents
  * page reads it back to show the pair once rather than one under the other. The rule is spelt

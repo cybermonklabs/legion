@@ -476,7 +476,7 @@ func TestTheRealShimReadsItsProjectedTokenAgainForTheRealListener(t *testing.T) 
 // behind wedges every jj in that workspace until the pod is replaced. The daemon side reads that
 // answer as the typed refusal the supervisor charges a prompt budget for, carrying the shim's own
 // words — which name the lock's path and its age — so the claim walks to failed with the reason
-// on its record instead of re-sending for ever (INFRA-1480).
+// on its record instead of re-sending for ever (POMJU-1480).
 func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	legion := buildLegion(t)
 	jj, err := exec.LookPath("jj")

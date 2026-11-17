@@ -898,7 +898,7 @@ func readSettlementRowFacts(ctx context.Context, q Queryer, room string) (settle
 // went on reading closed at the same credit sequence, since a settlement moves neither the flag
 // nor that sequence and the close's own generation bump had already told that settlement's
 // commit to leave the record's source standing, and the row read after both found the newer
-// row, which is what this transaction found too, so the older source went over it (INFRA-1470).
+// row, which is what this transaction found too, so the older source went over it (POMJU-1470).
 //
 // The two closes write at different points. The append gate's close reads the row and snapshots
 // the source under the room's close gate and writes after the close and outside that gate

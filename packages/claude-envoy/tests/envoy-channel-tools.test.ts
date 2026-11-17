@@ -106,7 +106,7 @@ test("sends Envoy messages through the shared transport", async () => {
 
 // The list is what the model reads before it decides a peer is dead: a session past its live
 // window is still running, so it must be asked for and must arrive with the state and the
-// heartbeat that say so (dispatch://INFRA-392).
+// heartbeat that say so (dispatch://POMJU-392).
 test("lists the unresponsive sessions too, each with its state and last_seen", async () => {
   let requested = ""
   const client = createEnvoyClient({
@@ -148,7 +148,7 @@ test("lists the unresponsive sessions too, each with its state and last_seen", a
 })
 
 // No live session holds the role, so the listener kept the message for one hour and answered 202
-// with kept_until, the end of that hour (dispatch://INFRA-2846, R3). The tool says until when the
+// with kept_until, the end of that hour (dispatch://POMJU-2846, R3). The tool says until when the
 // copy waits and, since this server always names its own session as the source, that a message
 // comes if no session takes it by then, in the same line the Oh My Pi plugin shows. A holder that
 // is not live is named with its state, and a listener of an earlier release names no time.
@@ -256,7 +256,7 @@ test("a kept publish says until when it is kept", async () => {
 test("the role a tool claims names the process claiming it on the wire", async () => {
   // The listener records the claim's process as the role's holder, and frees a claim only for
   // the process that made it, so a role this `claude` takes cannot be released or taken by a
-  // second one that resumed its session id (dispatch://INFRA-783).
+  // second one that resumed its session id (dispatch://POMJU-783).
   let body = ""
   const client = createEnvoyClient({
     baseUrl: "http://envoy.test",

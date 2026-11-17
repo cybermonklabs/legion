@@ -1,5 +1,5 @@
 -- 0135_server_processes.up.sql
--- INFRA-555: the registry of live envoy-dispatch server processes (internal/dispatch/processes),
+-- POMJU-555: the registry of live envoy-dispatch server processes (internal/dispatch/processes),
 -- one row per process, written by the process itself once it has bound its port and before it
 -- serves its first request, kept alive by a heartbeat every few seconds and deleted once its HTTP
 -- drain has ended. A row whose heartbeat_at is within the live window of the database's now() is a
@@ -13,7 +13,7 @@
 -- anyone out. commit and dashboard_build name the build each process serves, '' when the binary
 -- carries no stamp or the process serves no dashboard. The announcement of a fleet-wide build reads
 -- commit; nothing reads dashboard_build yet (it is written, and scanned into
--- processes.Process.DashboardBuild), and INFRA-559's dashboard "new version" notice will read it.
+-- processes.Process.DashboardBuild), and POMJU-559's dashboard "new version" notice will read it.
 --
 -- server_build_announcements is the record of each fleet-wide build the server fleet has announced
 -- on the bus (notifications.dispatch.server.started): one row each time every live process serves

@@ -43,7 +43,7 @@ Every rule below is about the directory you name instead.
 - **A refusal that names a resolved path names the configured one too**, so an operator reading a
   symlinked directory sees the path it wrote and the path the child stands in as one fact.
 
-## Evidence (sjawhar/legion#2600, INFRA-623)
+## Evidence (sjawhar/legion#2600, POMJU-623)
 
 - The choice of directory, each with its reason in the code: `fetch.go`'s `feedTransfer.dir` is
   never `destination`, because `transferWithRetries` removes that between attempts and a child

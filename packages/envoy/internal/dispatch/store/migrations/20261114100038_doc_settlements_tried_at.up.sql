@@ -1,6 +1,6 @@
 -- 20261114100038_doc_settlements_tried_at.up.sql
 --
--- INFRA-1138: when the settlement resumption last armed a document's owed settlement
+-- POMJU-1138: when the settlement resumption last armed a document's owed settlement
 -- (docs.Service.resumeOwedSettlements).
 --
 --   tried_at   the database's now() at the resumption pass that last armed the document's

@@ -1,6 +1,6 @@
 /**
  * What reading a thread in the Inbox does: the mark it writes, and the row it leaves exactly where
- * it was, drawn as read (INFRA-450). Only a dismiss takes a row out of the list.
+ * it was, drawn as read (POMJU-450). Only a dismiss takes a row out of the list.
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";

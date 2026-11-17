@@ -471,7 +471,7 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 // one named, no gh shim and no tmux pane's `legion` launcher on the volume (a pod's PATH names the
 // image's gh and legion, and its credential is the gh files its role Secret projects), one log
 // line naming the workspace, and no sessions directory: no container of the pod mounts one, every
-// session being a row in the database the deployment names (INFRA-80). The permanent
+// session being a row in the database the deployment names (POMJU-80). The permanent
 // guard on the pod path: a recording `codegraph` stub is first on PATH throughout, and this
 // container must never call it (#1647) — only a synchronous warm-up regressing back onto the init
 // container's launch path would.
@@ -546,7 +546,7 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 // under workspace.CheckoutTimeout rather than provisionBudget (workspace.Provision,
 // Request.CheckoutBound; workspace.CommandTimeout names which commands carry a bound of their
 // own): a pod whose checkout outlasts that budget provisions all the same, rather than exiting 1
-// on a killed checkout and spending one of the claim's launches (INFRA-1265). Here the volume's
+// on a killed checkout and spending one of the claim's launches (POMJU-1265). Here the volume's
 // jj holds the checkout eight seconds and the budget is five, which no other command of the run
 // comes near.
 func TestWorkspaceInitProvisionsThroughACheckoutLongerThanTheBudget(t *testing.T) {

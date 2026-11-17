@@ -31,7 +31,7 @@ const bobLaptop: FakeSignIn = {
   thumbprint: "wwwwxxxxyyyyzzzz0000111122223333444455556",
 };
 
-// R4 of dispatch://INFRA-958: "Dispatch lists each person's sign-ins, by machine, on a page a
+// R4 of dispatch://POMJU-958: "Dispatch lists each person's sign-ins, by machine, on a page a
 // person reads, and the person revokes one there." A sign-in is a person's standing permission
 // for one machine to act as them, so the page that ends one has to work in a browser: alice
 // reads her own two machines, revokes one, and that row is gone — from the page and from the

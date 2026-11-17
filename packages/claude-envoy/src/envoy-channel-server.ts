@@ -193,7 +193,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Pr
  * exist yet: `undefined` on the listener's 404 — no such role, no such entry —
  * and a rethrow for everything else, so a transport failure is never read as an
  * absence. These are reads: only the publish route keeps a message it cannot
- * deliver and answers 202 (INFRA-839), and `GET /v1/roles/<role>` still refuses
+ * deliver and answers 202 (POMJU-839), and `GET /v1/roles/<role>` still refuses
  * an unheld role, so a 404 here is the absence it always was.
  */
 function undefinedOnNotFound(error: unknown): undefined {
@@ -223,7 +223,7 @@ export function sessionCapabilities(session: {
 
 /**
  * One line this server writes into the session: a rendered Envoy delivery, a replayed one, or a
- * notice of Envoy's own. Claude Code took these as `<channel>` messages until INFRA-1026 removed
+ * notice of Envoy's own. Claude Code took these as `<channel>` messages until POMJU-1026 removed
  * that channel; what writes them now is the session's own conversation, through the mod
  * (`./mod-session`) or, in a Legion pane, the bridge's inbox (`./legion-inbox`).
  */
@@ -515,7 +515,7 @@ export function createChannelDelivery(input: {
    *  A frame with no `event_id` names no event, so it is always listed: two such frames are two
    *  messages. A record that keyed them all by the word the entry shows instead — `unknown` —
    *  listed the first and dropped every later one, while the session was written all of them
-   *  (INFRA-1026 review). The inbox is its own record now: a frame is skipped only where its
+   *  (POMJU-1026 review). The inbox is its own record now: a frame is skipped only where its
    *  real id is already in it, which takes the insertions and the bound that record took. */
   const list = (rendered: RenderInboundResult): void => {
     const envelope = rendered.envelope
@@ -667,7 +667,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * `DELETE /v1/sessions/<id>` that overtakes one is undone when it lands: the listener writes the
    * record again, and a session nothing heartbeats stays registered — live for the live window,
    * then unresponsive for the gone horizon — so peers keep sending to a server that has stopped
-   * (dispatch://INFRA-392). Every deregistration waits it out first.
+   * (dispatch://POMJU-392). Every deregistration waits it out first.
    */
   let registrationInFlight: Promise<void> | undefined
 
@@ -1169,7 +1169,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * (`mayActOnRoleRecord`, the one rule both clients read). One state directory is read by two
    * processes whenever a second `claude` resumes a live session's id, and a record is keyed by
    * session id alone, so the record found here can be the other process's claim rather than a
-   * predecessor of this one's (dispatch://INFRA-783). With no role of its own this process has
+   * predecessor of this one's (dispatch://POMJU-783). With no role of its own this process has
    * nothing to lose by asking, and the listener decides between the two; holding one, it leaves
    * that record where its writer can still use it. A record written before the writer was named
    * is nobody's in particular and is pressed as it always was.
@@ -1274,7 +1274,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * (`roleHeldBy`, the one rule both clients read): a claim standing under this very session id
    * that another process made is not this one's to renew, and reading it as confirmation is how
    * a lane kept heartbeating while a continuation's claim held the role and then lapsed
-   * (dispatch://INFRA-783). Anything else is claimed again, soft.
+   * (dispatch://POMJU-783). Anything else is claimed again, soft.
    *
    * A refusal naming a different session ends the role here: that session holds it, and this
    * one's record is the only thing that would claim otherwise, so it goes. A refusal naming this
@@ -2059,7 +2059,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
     fetch: globalThis.fetch,
     credential: envoy.credential,
   })
-  // INFRA-404: this process, as the listener knows it. Minted once here and sent on every
+  // POMJU-404: this process, as the listener knows it. Minted once here and sent on every
   // registration and every deregistration, so the listener can tell the entry this process made
   // from one another process made under the same session id: a soft role claim against a live
   // predecessor goes only to the instance that registered it, and a deregistration removes only
@@ -2069,7 +2069,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   let runtime: ChannelToolRuntime | undefined
   let claim: LegionClaim | undefined
   const daemon = pane === undefined ? undefined : createLegionDaemonClient(pane.daemonUrl)
-  // INFRA-220: the phase reminder's Claude Code host (`./legion-phase-hook`), which Claude Code's
+  // POMJU-220: the phase reminder's Claude Code host (`./legion-phase-hook`), which Claude Code's
   // own hooks drive through the `legion_phase_hook` tool. It is started here, beside the claim it
   // gates on, and restores this session's record as it starts, before any hook can be answered.
   const phaseLog = paneReminderLog(logLegion)
@@ -2080,7 +2080,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // first-turn signal fills this slot. The endpoint calls it at every `UserPromptSubmit`, this
   // process's only sight of a turn starting; the call reports that turn and claims nothing, and
   // the boot's own claim step, which runs after `claims/ready`, is what takes the Envoy name —
-  // inside a running turn rather than ahead of the daemon's task (INFRA-1573).
+  // inside a running turn rather than ahead of the daemon's task (POMJU-1573).
   //
   // A slot, rather than a promise that remembers every prompt this process ever saw, because on
   // this host the first prompt is always the bridge's seeding `/rename`
@@ -2147,7 +2147,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
     if (runtime === undefined) throw new Error("Envoy channel server is still starting")
     return mcpResult(await executeEnvoyTool(runtime, request.params.name, request.params.arguments))
   })
-  // INFRA-1026: the link to this session's Claude Code mod, bound below once the MCP transport is
+  // POMJU-1026: the link to this session's Claude Code mod, bound below once the MCP transport is
   // up. It is this process's own socket, closed with the server. `linked` resolves with it for
   // the live view, which also needs the NATS connection this function opens further down.
   let modLink: ModLink | undefined
@@ -2318,7 +2318,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
       })
-      // INFRA-1026: the Agents page's live view, once this session's mod has a link to bind to.
+      // POMJU-1026: the Agents page's live view, once this session's mod has a link to bind to.
       // It needs the bus as well as the link, so it starts here rather than beside the bind; a
       // session whose link never binds never starts one, and runs as it did before.
       const bus = connection
@@ -2364,7 +2364,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         // not enough to hear it by: the mod sends one per Claude Code process, so a server
         // Claude Code starts again inside that process gets none, and a hello that landed
         // before this listener existed is gone. So the link's own word that a mod is talking to
-        // it says so too - now, if one already is (INFRA-1026 review).
+        // it says so too - now, if one already is (POMJU-1026 review).
         link.onSessionId(() => live.capabilitiesChanged())
         link.onConnected(() => live.capabilitiesChanged())
         if (link.connected()) live.capabilitiesChanged()

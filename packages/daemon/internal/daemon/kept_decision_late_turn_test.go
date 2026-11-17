@@ -38,9 +38,9 @@ func heldTaskClock(clock *heldClock) heldTaskOption {
 // turn's end, nor the catch-up of the architect's next launch, nor the next start sent to it.
 //
 // Before, the late start confirmed nothing, the row stayed held by the delivery, and the task was
-// sent again at the turn's end, naming the decision once more: dispatch://INFRA-3135 measured the
+// sent again at the turn's end, naming the decision once more: dispatch://POMJU-3135 measured the
 // same `decided` notice four times from 05:52Z, and again in a catch-up at 05:55:02Z
-// (dispatch://INFRA-3276, spec version 26).
+// (dispatch://POMJU-3276, spec version 26).
 func TestAKeptDecisionToldInALateTurnIsToldOnce(t *testing.T) {
 	clock := &heldClock{}
 	r := newHeldTaskRig(t, heldTaskClock(clock))

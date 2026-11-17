@@ -30,7 +30,7 @@ import (
 // makes that schedule while its lease is live (record's
 // TestDroppingCatchUpsLeavesTheRowALaneIsLeasing guards the lock); the model now leases every row
 // of a step before any of them runs (runTogether), so it no longer makes that schedule either
-// (dispatch://INFRA-2836); 701 spent a catch-up's re-holds while
+// (dispatch://POMJU-2836); 701 spent a catch-up's re-holds while
 // its architect held its launch, and the row's deletion left the decision with nothing to name it
 // (reholdNotice now hands it to a fresh catch-up, spentKept); 41 published a catch-up (row 112)
 // whose own telling write then failed, so the decision stood kept and a later catch-up (row 115)

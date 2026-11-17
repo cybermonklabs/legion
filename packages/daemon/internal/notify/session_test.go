@@ -67,7 +67,7 @@ func TestDeleteSessionLeavesOutAnInstanceTheEntryDoesNotName(t *testing.T) {
 
 // A listener that kept the registration says so, and the caller is told which it was: that answer
 // is the one that stops a slow stop deleting the registration a relaunched process wrote under
-// the same session id (dispatch://INFRA-392).
+// the same session id (dispatch://POMJU-392).
 func TestDeleteSessionReportsARegistrationTheListenerKept(t *testing.T) {
 	const reason = "the registration belongs to another client instance"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

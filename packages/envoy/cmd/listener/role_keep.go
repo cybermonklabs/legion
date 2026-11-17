@@ -411,7 +411,7 @@ func (g *roleKeepGuards) tryHold(role string) (func(), bool) {
 // roleKeepable reports whether a resolution that found no live holder for a role is one the
 // listener keeps a copy for: a role nobody claims, and a claim whose holder is not live
 // (roles.Lapsed: unresponsive, or gone), on the publish route and the role lane alike. No
-// resolution releases a lapsed claim (dispatch://INFRA-392), and the copy kept for it still
+// resolution releases a lapsed claim (dispatch://POMJU-392), and the copy kept for it still
 // reaches a live holder: a released Legion session claims its role again when it comes back, and
 // the role route starts a handover of the lane for a claim it grants (runKeptRoleDrain); a holder
 // that answers again with its claim still standing registers and claims nothing, and the

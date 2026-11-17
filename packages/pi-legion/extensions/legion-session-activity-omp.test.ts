@@ -21,7 +21,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 
-// What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
+// What the pinned Oh My Pi reports of a role session's own background work (POMJU-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
 // and one that reports none is released once no turn is in progress and none is due. The report
 // is built from `ctx.getAsyncJobSnapshot()` (`asyncJobKinds` in packages/pi-shared/src/
@@ -46,7 +46,7 @@ import {
 // LEGION_* environment against a stand-in daemon, and no `--config` overlay and no `async` or
 // `bash` settings in the profile, so the pin's own `--mode rpc` defaults decide. The pane takes no NATS
 // delivery of its own here, but it is given a real server all the same: a session receives only
-// what its own consumer holds (dispatch://INFRA-771), so one that can open no relay subject is
+// what its own consumer holds (dispatch://POMJU-771), so one that can open no relay subject is
 // given no consumer, and its claim boot ends the session rather than running on deaf.
 // LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the server, as in
 // legion-background-subagent-omp.test.ts; a run without them skips, except on GitHub Actions,
@@ -238,7 +238,7 @@ async function startRolePane(): Promise<RolePane> {
     }
     // The Envoy listener: registration, the role claim, and any read answer with an interest. A
     // registration is answered a consumer on the session's own relay subject, the one path a
-    // message reaches a session by (dispatch://INFRA-771); an answer without one leaves the pane
+    // message reaches a session by (dispatch://POMJU-771); an answer without one leaves the pane
     // deaf and its claim boot fails.
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",

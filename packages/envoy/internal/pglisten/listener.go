@@ -1,6 +1,6 @@
 // Package pglisten holds one Postgres LISTEN connection that redials: the loop every feature that
 // learns of another process's commits from the database runs. Two envoy-dispatch processes serve
-// one Postgres (INFRA-66), and the secrets broker now runs two pods over one database of its own,
+// one Postgres (POMJU-66), and the secrets broker now runs two pods over one database of its own,
 // so what one process commits reaches the others only through the database, and a connection
 // waiting for a notification must outlive every failure between it and the server. Its Dispatch
 // users are the delivery hub, the event stream relay and, under DISPATCH_TEST_HOOKS alone, the

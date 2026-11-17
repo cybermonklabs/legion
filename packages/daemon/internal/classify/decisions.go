@@ -124,11 +124,11 @@ func inWindow(named record.Named, start string, since time.Time) bool {
 // The alternative was to record the head GitHub answered for beside the answer and read a verdict
 // of another head as unread; this is the same rule with no second field to keep true, and a kept
 // verdict of another head is exactly what moved an approval of a new head on the old head's
-// `clean` (dispatch://INFRA-714 R2). It costs at most one read: the arrival opens a head run
+// `clean` (dispatch://POMJU-714 R2). It costs at most one read: the arrival opens a head run
 // whose anchor keeps the verdict (record.Judgement), and the arrival is itself a fact that asks
 // GitHub for the new head's state (workflow's askMergeState). The move and the chain's pushes
 // join the moves made (madeMoves), and the pushes they spend go (unspentPushes). Nothing here
-// judges the settlement: a CI result moves no issue (dispatch://INFRA-714/spec R1), so a head
+// judges the settlement: a CI result moves no issue (dispatch://POMJU-714/spec R1), so a head
 // arrives counting nothing.
 func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []record.Named) (record.PullRequest, bool, []record.Named) {
 	read := arrivalPushes(pr, arrival, headSHA, names)
@@ -1182,7 +1182,7 @@ func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *re
 // for whatever head GitHub last computed it on, and the daemon's own read is the only path to it,
 // so there is no older read to prefer. GitHub runs no checks at all on a conflicting head - there
 // is no merge ref to run them against - and no CI result moves an issue in any case
-// (dispatch://INFRA-714/spec R1), so a conflict is the one thing a pull request's own state still
+// (dispatch://POMJU-714/spec R1), so a conflict is the one thing a pull request's own state still
 // moves an issue for (workflow's mergeability handler).
 func HeadConflicts(pr record.PullRequest) bool {
 	return pr.State == record.PullRequestOpen && pr.Mergeability == record.MergeabilityConflicting

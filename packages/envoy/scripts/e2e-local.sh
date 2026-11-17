@@ -41,7 +41,7 @@
 # with the delay the no-cursor window's frame is offered again exactly once and the ledger drops
 # it, and a dedupe that dropped nothing would show two frames written. Without the ledger the
 # delayed run fails on the tallies the frames file pins, both lanes counting above the 2 and 3
-# that are wanted (dispatch://INFRA-771, the red at b76508ae).
+# that are wanted (dispatch://POMJU-771, the red at b76508ae).
 #
 # The delay is 0 or a value from 1000 to 2500, and the run refuses anything else by name. The two
 # ends are measured rather than chosen: below 1000 the ack can reach the server before the clean
@@ -579,7 +579,7 @@ fi
 
 # Every registration below asks for the session's own consumer, as a plugin does: a registration
 # that asks for none is refused 409 not_requested, and nothing at all is written for it
-# (dispatch://INFRA-771). None of them names a port, since one above 0 is refused below. The epoch
+# (dispatch://POMJU-771). None of them names a port, since one above 0 is refused below. The epoch
 # is the random string a plugin mints for one NATS connection, and one run of this script is one
 # such connection, so both registrations send the same one: the second is the first session's
 # heartbeat, not another connection's.
@@ -932,7 +932,7 @@ wait_for_listener_record 'refused send' \
 # The one question a caller holding a session id asks before it addresses that session: is this
 # session live? The per-session registry read answers with the row GET /v1/sessions would carry,
 # and an id that never registered is refused with the exact reason Dispatch classifies on.
-# dispatch://INFRA-392 gives that refusal the state it was decided on beside the kept "no live
+# dispatch://POMJU-392 gives that refusal the state it was decided on beside the kept "no live
 # session <id>" prefix (noLiveSessionRefusal, cmd/listener/api.go), and a last_seen only when the
 # listener still remembers a registration: an id nothing ever registered is "gone" with none, so
 # the whole body is the error and that state.
@@ -1120,7 +1120,7 @@ fi
 # to go stale. A registration and a role claim are separate records, and removing the first
 # leaves the second naming a session nothing can reach: the role has a holder on paper and none
 # to deliver to. That claim stands - no resolution of this build releases one, and the role-claim
-# reaper is the one caller that ever does (dispatch://INFRA-392) - and the message is kept for the
+# reaper is the one caller that ever does (dispatch://POMJU-392) - and the message is kept for the
 # next session that holds the role live, as it is for a role nobody holds: the publish is answered
 # 202 with kept_reason holder_lapsed, naming the holder and its state as the 404 the sender gets
 # with keep false would, and the end of the copy's hour as kept_until.
@@ -1558,7 +1558,7 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
 # What the session had NOT taken is not lost by that start: the floor is the old consumer's ack
 # floor, so everything stored above it is still delivered when the session comes back. The live
 # delivery proof drives that half (scripts/e2e/envoy-session-delivery.sh, window g,
-# dispatch://INFRA-2365): a cleanly stopped session takes, once, on its return, everything the
+# dispatch://POMJU-2365): a cleanly stopped session takes, once, on its return, everything the
 # stream held for it while it was down.
 #
 # A session whose client keeps a ledger sends a cursor instead - ConsumerDeliverySnapshotSchema in
@@ -1664,7 +1664,7 @@ fi
 # ignored acks would stand below it and this run would see a second offer. Under
 # E2E_SESSION_ACK_DELAY_MS the stop lands before the ack, so the floor stands one below and the
 # frame is offered again, exactly once, which is what keeps a session that comes back from losing
-# what it had not acked (dispatch://INFRA-2365); the ledger drops that repeat, which is why the
+# what it had not acked (dispatch://POMJU-2365); the ledger drops that repeat, which is why the
 # frames file still holds one line.
 nocursor_taken_stream="$(jq -r '.stream_id' "$nocursor_cursor_file")"
 nocursor_taken_seq="$(jq -r '.seq' "$nocursor_cursor_file")"

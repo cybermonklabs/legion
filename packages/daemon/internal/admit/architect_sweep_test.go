@@ -153,11 +153,11 @@ func architectSweepStarts(t *testing.T, pool *pgxpool.Pool, root string) []conve
 // one field changed, and the refusals below are the same fixture again, so each answer turns on
 // the one thing its case names.
 //
-// The second is the measured defect (dispatch://INFRA-2614): record.AtWork answers false for a
+// The second is the measured defect (dispatch://POMJU-2614): record.AtWork answers false for a
 // root at admitted whose design gate has opened, while the root's own architect is the only role
 // at work on the root itself. The fourth is the first root again, its claim holding the task of
 // the entry before unconfirmed: a task the row has moved past is no start on its way, so it holds
-// nothing back (dispatch://INFRA-2614 R4).
+// nothing back (dispatch://POMJU-2614 R4).
 func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -568,7 +568,7 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 
 // A root a hand-over carried in is inside the reach in every phase of the run that carried it,
 // and the task the sweep sends it names the phase it stands in now and the run that hand-over
-// carried it into (dispatch://INFRA-2614 R3, R5). The record holds no fact that says the root
+// carried it into (dispatch://POMJU-2614 R3, R5). The record holds no fact that says the root
 // still stands in the phase that came with it — the hand-over row names no phase
 // (workflow.ArchitectCarried) — so the task says what holds of a root in its carried phase and
 // of one that has moved on in that same run, and never that the phase it stands in is the one

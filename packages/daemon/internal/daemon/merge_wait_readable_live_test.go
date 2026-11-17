@@ -303,7 +303,7 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 // else for that reason: the head stands, the round stands, GitHub's answer stands and the base has
 // not moved under the head, which is the read a daemon that applied only changing answers would
 // drop. A head read a minute ago would then be indistinguishable from one nothing had read for a
-// day (dispatch://INFRA-3027).
+// day (dispatch://POMJU-3027).
 //
 // A moved stamp alone would not say which read moved it: a read step 1 asked for can reach the
 // record after this step samples the stamp, and the move would then be that older read's. So the

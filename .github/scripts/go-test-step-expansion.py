@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The test functions each `go test` step of ci.yaml's router runs, which two run and which none.
 
-This is the tool check k1 of dispatch://INFRA-1408 asks for (its A1): it expands every `go test`
+This is the tool check k1 of dispatch://POMJU-1408 asks for (its A1): it expands every `go test`
 step of `.github/workflows/ci.yaml`, and of every workflow a job of it calls, whose working
 directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test
 functions the step really runs - through the step's own packages, `-tags`, `-race`, `-run` and
@@ -166,7 +166,7 @@ EXCEPTIONS = (
         package="github.com/sjawhar/envoy/infra/host",
         functions=None,
         requirement=(
-            "R3 (dispatch://INFRA-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
+            "R3 (dispatch://POMJU-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
             "running the whole package, untagged tests included, because envoy-smoke runs on a "
             "Dispatch-only change where envoy-infra-go does not, and in such a run those untagged "
             "tests would otherwise run nowhere."
@@ -184,7 +184,7 @@ EXCEPTIONS = (
             "TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly",
         ),
         requirement=(
-            "R2 (dispatch://INFRA-1408/spec): the two render-reuse storms run fewer seeds and "
+            "R2 (dispatch://POMJU-1408/spec): the two render-reuse storms run fewer seeds and "
             "fewer edits under the race detector (raceEnabled), so envoy-go's plain step is their "
             "full-size run and envoy-go-race-docs is the detector's run of the shrunk one. The "
             "third step is the cleanup detector's, declared with the rest of the package below."
@@ -198,7 +198,7 @@ EXCEPTIONS = (
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=None,
         requirement=(
-            "A3 (dispatch://INFRA-1413/artifact/verification-md#b-k3): envoy-go-docs-finalizers "
+            "A3 (dispatch://POMJU-1413/artifact/verification-md#b-k3): envoy-go-docs-finalizers "
             "runs this package in a Go mode no other step runs it in, GODEBUG=checkfinalizers=1, "
             "and with -v, because the package's own count of the services its tests left alive is "
             "printed from TestMain after they have run and a package-list run drops it. The mode "
@@ -218,7 +218,7 @@ EXCEPTIONS = (
             "TestUploadsToARoomInUseKeepMemoryWithinTheBound",
         ),
         requirement=(
-            "R2 (dispatch://INFRA-1408/spec) and A3 (dispatch://INFRA-1413): these three bound a "
+            "R2 (dispatch://POMJU-1408/spec) and A3 (dispatch://POMJU-1413): these three bound a "
             "room's memory, which the race build cannot measure, so the race listing does not "
             "hold them and envoy-go's plain step is their one measured run. The finalizers lane "
             "runs them as part of the package under its own mode, for the reason above."
@@ -232,7 +232,7 @@ EXCEPTIONS = (
         package="github.com/sjawhar/envoy/internal/broker/airlock",
         functions=("FuzzAirlock",),
         requirement=(
-            "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
+            "R3 (dispatch://POMJU-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
             "and its filter takes files envoy_go's does not - its own job file, "
             ".github/actions/install-elan/** and packages/envoy/scripts/airlock-lean-axioms.sh - "
             "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
@@ -683,7 +683,7 @@ def main() -> int:
     print("# Run it at two commits and compare the pair sets:")
     print("#   grep '^PAIR' head.txt > head.pairs; grep '^PAIR' base.txt > base.pairs")
     print("#   diff base.pairs head.pairs      (empty: the two commits run the same functions)")
-    print("# Check k1 of dispatch://INFRA-1408. No CI job runs this script; the module header")
+    print("# Check k1 of dispatch://POMJU-1408. No CI job runs this script; the module header")
     print("# says why, and what it needs (CGO_ENABLED=1 for the -race steps, no service).")
     print()
     print(f"== steps expanded ({len(steps)}) ==")

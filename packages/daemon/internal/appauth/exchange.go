@@ -5,7 +5,7 @@ package appauth
 // repository at all, and the answer is held against those permissions before a lease is served
 // (narrowedTo). What a token reaches is the App installation's own business: the account that
 // installs the App chooses the repositories, and no body the daemon sends narrows them further
-// (INFRA-2543).
+// (POMJU-2543).
 
 import (
 	"bytes"

@@ -228,7 +228,7 @@ func assertPhase(t *testing.T, pool *pgxpool.Pool, want phase.Phase) {
 
 // The reviewer usually approves the head it was just shown, before CI settles on it. The approval
 // ends the round all the same, and the settlement that follows finds the issue in accepting and
-// moves nothing (dispatch://INFRA-714/spec R1).
+// moves nothing (dispatch://POMJU-714/spec R1).
 func TestAnApprovalBeforeTheChecksSettleAdvancesWithoutThem(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()

@@ -159,7 +159,7 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 // posts nothing for them and writes one Error line each at boot, and the count is what that gap
 // costs, standing at the claims the lane cannot act on beside those lines. A count zeroed there
 // would read as a lane with nothing left, which is the one thing such a daemon is not
-// (dispatch://INFRA-2712 R4). Driven through the supervision option, as
+// (dispatch://POMJU-2712 R4). Driven through the supervision option, as
 // TestAKubernetesDaemonWithNoPluginSourceRelaunchesNothing is: a real Kubernetes runtime needs a
 // cluster this pod has none of.
 func TestTheStateCountsWhatADegradedDaemonCannotRefresh(t *testing.T) {

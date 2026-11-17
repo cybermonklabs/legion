@@ -10,7 +10,7 @@ date: 2026-11-02
 status: active
 module: packages/daemon/internal/supervise
 related_issues:
-  - "INFRA-484"
+  - "POMJU-484"
   - "sjawhar/legion#2538"
 ---
 
@@ -29,7 +29,7 @@ related_issues:
   re-read every predicate the caller evaluated before it**. A guard that ran before the fold may
   now be stale by the time it matters.
 
-## Evidence (INFRA-484, sjawhar/legion#2538)
+## Evidence (POMJU-484, sjawhar/legion#2538)
 
 `askFirst` is armed on a daemon restart and means "the agent may be in a turn, and I do not know
 whether that turn is the pending delivery's". It is answered once. Left armed with **nothing

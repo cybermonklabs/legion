@@ -122,7 +122,7 @@ func TestMirrorWritesNothingForATickThatObservedNothing(t *testing.T) {
 // status, the keys the child waits on and the parent that read showed. The parent column is
 // replaced by every write that lands, at an equal sequence as well, so an adoption that left the
 // parent out would erase it and the children-first rule (record.ChildWaitsOf) would stop seeing
-// the child under its parent (dispatch://INFRA-714/spec R3).
+// the child under its parent (dispatch://POMJU-714/spec R3).
 func TestMirrorWritesTheParentAnAdoptionRead(t *testing.T) {
 	pool := migratedPool(t)
 	records := record.NewStore()

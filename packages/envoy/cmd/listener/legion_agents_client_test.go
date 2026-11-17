@@ -22,9 +22,9 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	server := httptest.NewServer(l.mux)
 	t.Cleanup(server.Close)
 	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents", `{"entries":[`+
-		legionEntry("ses-old-reviewer", "INFRA-448", "reviewer", "2026-10-26T01:00:00Z")+`,`+
-		legionEntry("ses-new-reviewer", "INFRA-448", "reviewer", "2026-10-26T02:00:00Z")+`,`+
-		legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T00:30:00Z")+`]}`)
+		legionEntry("ses-old-reviewer", "POMJU-448", "reviewer", "2026-10-26T01:00:00Z")+`,`+
+		legionEntry("ses-new-reviewer", "POMJU-448", "reviewer", "2026-10-26T02:00:00Z")+`,`+
+		legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T00:30:00Z")+`]}`)
 	if err := l.deps.sessions.Put("ses-new-reviewer", session.SessionEntry{Port: 1, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register ses-new-reviewer: %v", err)
 	}
@@ -35,8 +35,8 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent: %v", err)
 	}
-	if old.LegionProject != "infra" || old.Issue != "INFRA-448" || old.Role != "reviewer" ||
-		old.RoleToken != "legion-infra-infra-448-reviewer" || old.Title != "Legion reviewer · INFRA-448" ||
+	if old.LegionProject != "infra" || old.Issue != "POMJU-448" || old.Role != "reviewer" ||
+		old.RoleToken != "legion-pomju-pomju-448-reviewer" || old.Title != "Legion reviewer · POMJU-448" ||
 		old.Harness != "omp" || old.StartedAt != "2026-10-26T01:00:00Z" || old.RecordedAt == "" || old.Live ||
 		deref(old.ReplacedBy) != "ses-new-reviewer" || deref(old.ReplacedAt) != "2026-10-26T02:00:00Z" {
 		t.Fatalf("agent = %#v", old)
@@ -45,7 +45,7 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 		t.Fatalf("an unknown session: %v, want ErrNotFound", err)
 	}
 
-	reviewers, err := client.RoleAgents(ctx, "legion-infra-infra-448-reviewer")
+	reviewers, err := client.RoleAgents(ctx, "legion-pomju-pomju-448-reviewer")
 	if err != nil || len(reviewers) != 2 {
 		t.Fatalf("role agents = %#v, %v", reviewers, err)
 	}
@@ -56,7 +56,7 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 		t.Fatalf("the replaced reviewer = %#v", reviewers[1])
 	}
 
-	agents, err := client.IssueAgents(ctx, "INFRA-448")
+	agents, err := client.IssueAgents(ctx, "POMJU-448")
 	if err != nil {
 		t.Fatalf("issue agents: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	if len(ids) != 3 || ids[0] != "ses-tester" || ids[1] != "ses-new-reviewer" || ids[2] != "ses-old-reviewer" {
 		t.Fatalf("issue agents = %v, want the tester, then the reviewers newest first", ids)
 	}
-	if none, err := client.IssueAgents(ctx, "INFRA-1"); err != nil || none == nil || len(none) != 0 {
+	if none, err := client.IssueAgents(ctx, "POMJU-1"); err != nil || none == nil || len(none) != 0 {
 		t.Fatalf("an issue with no agents = %#v, %v; want none", none, err)
 	}
 	if _, err := client.IssueAgents(ctx, "infra-448"); !errors.Is(err, dispatchenvoy.ErrUnavailable) {
@@ -130,7 +130,7 @@ func TestDispatchIssueCollaboratorsReadTheListenersLegionAgentRegistry(t *testin
 		t.Fatalf("agents = %s, want the two reviewers", response.Body.String())
 	}
 	current, replaced := answer.Agents[0], answer.Agents[1]
-	token := "legion-infra-" + strings.ToLower(key) + "-reviewer"
+	token := "legion-pomju-" + strings.ToLower(key) + "-reviewer"
 	if current.SessionID != "ses-new-reviewer" || current.Legion == nil || current.Legion.Role != "reviewer" ||
 		current.Legion.RoleToken != token || current.Legion.StartedAt != "2026-10-26T02:00:00Z" ||
 		current.Legion.ReplacedBy != nil || current.Legion.ReplacedAt != nil ||

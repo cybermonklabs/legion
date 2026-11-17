@@ -51,7 +51,7 @@ also runs the broker's.
 
 ## Evidence
 
-sjawhar/legion#2541 (INFRA-264), round 5. The pod's harness was rebuilt from nothing after the
+sjawhar/legion#2541 (POMJU-264), round 5. The pod's harness was rebuilt from nothing after the
 workspace was recreated; with `initdb`'s defaults,
 `TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken` failed `the test proves nothing`, and
 the whole `internal/broker/store` package was green at once after the `pg_hba` change and a

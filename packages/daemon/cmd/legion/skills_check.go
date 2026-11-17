@@ -72,7 +72,7 @@ func installedSkills(ctx context.Context, ompPath, marketplace string) (map[stri
 
 // skillsCheck is what a role's start wrapper runs after it has installed the pod's skills: it
 // compares the files Oh My Pi installed with the digests the pod's skills init container recorded
-// from the clone at the commit it recorded (`workspace.CheckSkillsInstalled`, dispatch://INFRA-1300
+// from the clone at the commit it recorded (`workspace.CheckSkillsInstalled`, dispatch://POMJU-1300
 // R4). A difference, a plugin the install left nowhere, and a plugin installed that the records do
 // not name are each a refusal, with one line on stderr naming the plugin and what differed, and the
 // role's launch then fails before Oh My Pi starts rather than an agent running with skills nobody

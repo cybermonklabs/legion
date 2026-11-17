@@ -43,7 +43,7 @@ var embeddingProjectKeyFillRetry = 5 * time.Minute
 //
 // Why it tries again rather than making one attempt. duty.Exclusive makes exactly one: a
 // process that finds the lease held logs duty's own "leased pass skipped" line and is done with
-// the fill for the life of that process. This code made that one attempt until INFRA-988's
+// the fill for the life of that process. This code made that one attempt until POMJU-988's
 // second round measured what it costs. Two processes were raced at a database of unlabelled
 // rows: the loser skipped and never looked again, the winner was killed mid-pass, and three rows
 // stayed unlabelled with a live process beside them that would have labelled them - until
@@ -142,7 +142,7 @@ func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leas
 // does not bring either back: the pass cannot read the cursor it starts from and the loop's own
 // check cannot read its done, so both of them fail every time. Left to try again, this process
 // logged two errors and took the lease every embeddingProjectKeyFillRetry for the rest of its
-// life (INFRA-988). It says so once and stops; a project-scoped meaning search answers by the
+// life (POMJU-988). It says so once and stops; a project-scoped meaning search answers by the
 // owner each arm joins meanwhile, as it does whenever that row cannot be read (api/search.go,
 // embeddingProjectKeysFilled).
 func progressRowGone(err error) bool {

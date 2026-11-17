@@ -191,7 +191,7 @@ func TestAMalformedRequestFailsTheClaim(t *testing.T) {
 // content-filter refusal ends in — keeps the task and sends it again. 401 and 403 are a
 // credential, which is the fleet's and not this claim's work: failing every claim whose turn
 // hits one is worse than sending the task again, and the controller is told at six such turns
-// in a row (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3).
+// in a row (dispatch://POMJU-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3).
 func TestOnlyAClientErrorThatIsNoCredentialNoTimeoutAndNoRateLimitHoldsTheIssue(t *testing.T) {
 	for _, tc := range []struct {
 		status int
@@ -443,7 +443,7 @@ func TestAWaitLeftArmedForAnOlderTaskHoldsNothing(t *testing.T) {
 
 // The sentence the re-sent prompt carries is built from structured fields alone. A refusal's own
 // explanation is itself refused when it is sent back
-// (dispatch://INFRA-956/artifact/cause-evidence-md), so none of the provider's words are in it.
+// (dispatch://POMJU-956/artifact/cause-evidence-md), so none of the provider's words are in it.
 func TestTheResentPromptNamesTheStatusAndNoProviderText(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

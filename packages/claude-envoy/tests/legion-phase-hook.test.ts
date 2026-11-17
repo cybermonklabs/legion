@@ -224,7 +224,7 @@ test("a turn settling on an open phase is blocked once, with the reminder, and t
   }
 })
 
-// INFRA-945: every settle tells the daemon what this session is doing, so the idle rule can
+// POMJU-945: every settle tells the daemon what this session is doing, so the idle rule can
 // decide whether the pane's pod may be released. A turn ending with a background task of the
 // worker's own still running names it; a report the daemon refuses costs the worker nothing.
 test("the Stop hook reports what this session is doing to the daemon", async () => {
@@ -325,7 +325,7 @@ test("a settle that says what it waits on buys the quiet wait, and is reminded o
 // `${last_assistant_message}` is the error text rather than anything the worker said ("Hooks
 // reference", code.claude.com/docs/en/hooks). That is the provider refusing the turn, so the
 // answer carries no continuation: the host would turn one into another turn at once and the
-// provider would refuse that one the same way, as it did for dispatch://INFRA-264's implementer.
+// provider would refuse that one the same way, as it did for dispatch://POMJU-264's implementer.
 // One timer is armed all the same, because the task that refused turn carried ended with it and
 // nothing else would wake this worker: a single transient refusal would otherwise leave the issue
 // idle. What stops the reminding of a session the provider refuses for ever is the daemon failing
@@ -427,7 +427,7 @@ test("a successful handoff_complete closes the phase, and the next settle blocks
   }
 })
 
-// INFRA-484: the update message reaches Claude Code while the phase is open, and
+// POMJU-484: the update message reaches Claude Code while the phase is open, and
 // `ready_for_update` closes no phase. The `Stop` of the turn the worker answers in must still
 // block nothing: a blocked `Stop` continues that same turn, so the work it did would go with the
 // pod, and before the round's bound the daemon waits for every turn to end.
@@ -454,7 +454,7 @@ test("a ready_for_update answer blocks no Stop: the answering turn ends, with th
     // Nothing is written into the wait the answer created, and nothing ever will be: it arms no
     // timer at all. The daemon's update round is its watchdog, and a reminder fired here would be
     // a prompt, which starts a turn the daemon reads as the answer retracted — the round would
-    // restart at every wait and never converge (INFRA-484, the `awaiting-update` state of
+    // restart at every wait and never converge (POMJU-484, the `awaiting-update` state of
     // `@legion/pi-shared/phase-stall`, which a record holds as the plain `waiting`). A case
     // asserting that nothing happens has no condition to wait for, so this is one of the file's
     // fixed waits, over the quiet wait itself and so over every wait this endpoint arms, and the
@@ -555,7 +555,7 @@ test("a prompt carrying anything else is the daemon's assignment and opens the p
   })
   try {
     expect(
-      await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement INFRA-220." }),
+      await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement POMJU-220." }),
     ).toEqual({})
     expect(await record()).toEqual({ state: "open", count: 0, reported: false })
   } finally {
@@ -664,7 +664,7 @@ test("a timer whose turn has started again writes nothing", async () => {
       {},
     )
     expect(
-      await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with INFRA-220." }),
+      await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with POMJU-220." }),
     ).toEqual({})
     // Three times the 20 ms the armed reminder was waiting for.
     await Bun.sleep(60)
@@ -707,7 +707,7 @@ test("a resumed session whose task arrives first is not reminded on top of it", 
     // The daemon re-sending an interrupted task arrives as a prompt, and drops the resume
     // reminder through the same generation guard.
     expect(
-      await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with INFRA-220." }),
+      await endpoint.handle({ event: "UserPromptSubmit", prompt: "Carry on with POMJU-220." }),
     ).toEqual({})
     boot()
     await Bun.sleep(60)

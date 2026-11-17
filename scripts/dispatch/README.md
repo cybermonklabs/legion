@@ -68,8 +68,8 @@ for the stage 4b proof.
 
 `display-read-census.ts` reads every stored text of a Dispatch deployment through its API and
 asks, text by text, whether Go's display read (`pmdoc.ReadForDisplay`) says what the browser's own
-engine says. It is the measurement INFRA-635 rests on, and the recipe is INFRA-172's
-(`docs/solutions/envoy/a-change-to-how-dispatch-reads-stored-markdown-censuses-every-stored-version-and-rewrites-the-hits-before-the-merge-INFRA-172.md`).
+engine says. It is the measurement POMJU-635 rests on, and the recipe is POMJU-172's
+(`docs/solutions/envoy/a-change-to-how-dispatch-reads-stored-markdown-censuses-every-stored-version-and-rewrites-the-hits-before-the-merge-POMJU-172.md`).
 
 ```bash
 bun scripts/dispatch/display-read-census.ts --fetch-only   # hours: read production
@@ -92,7 +92,7 @@ thousand issues takes between one and a half and two hours.
 The corpus is written under `$TMPDIR` (`--work`, `--corpus`) and **is never committed**: it is
 production's prose. It doubles as the resume file. Each unit of work - one list, one version - is
 appended as one JSONL line as it lands, and a pass started again skips every unit already in it,
-so an outage an hour in costs the hour and not the pass. INFRA-172's first pass lost 689 requests
+so an outage an hour in costs the hour and not the pass. POMJU-172's first pass lost 689 requests
 to an outage and was discarded.
 
 Both readings come from the readers themselves, through the pmdoc differential's harnesses
@@ -491,7 +491,7 @@ bun scripts/dispatch/moved-approval-production-check.ts --project ACME
 project that key names: it makes a scratch issue of its own with a spec, uploads
 `verification.md` and `notes.md` to it, requests approval of the spec with its Verification
 document, writes the versions that move that request, and closes the scratch issue in a
-`finally`, with a reason naming INFRA-3096, so a step that fails leaves no open approval request
+`finally`, with a reason naming POMJU-3096, so a step that fails leaves no open approval request
 in production. It touches no issue it did not itself create: an answer that is not the 201 of an
 issue of the named project stops the run before a request is opened. Dispatch is resolved as for
 the census above (`sessionDispatchSettings` over the envoy.json `command` reads, `DISPATCH_URL`

@@ -137,7 +137,7 @@ func processAllPending(t *testing.T, database *store.Store, embedder embed.Embed
 // and maps the text it finds to the vector the fake embedder should answer for it.
 //
 // It windows every item the block-index tick's window arm is owed first (windowOwedItems): a
-// write records an item's blocks and leaves their windows to that tick (INFRA-988), so a test
+// write records an item's blocks and leaves their windows to that tick (POMJU-988), so a test
 // reading an item's windows straight after the write stands where the tick has not yet run.
 func windowTexts(t *testing.T, database *store.Store, kind, ownerKey string) map[string]string {
 	t.Helper()
@@ -168,7 +168,7 @@ func windowTexts(t *testing.T, database *store.Store, kind, ownerKey string) map
 // windowOwedItems writes the windows of every comment, message and ask the block-index tick's
 // window arm is owed, as that arm writes them (docs.windowItem, refs.WriteItemWindows), each
 // in a transaction of its own. A write of an item records its blocks alone and leaves the
-// windows that stand for them to the tick (INFRA-988); a test that reads those windows is
+// windows that stand for them to the tick (POMJU-988); a test that reads those windows is
 // standing after a tick, and this is that tick's window arm over the items.
 func windowOwedItems(t *testing.T, database *store.Store) {
 	t.Helper()
@@ -199,7 +199,7 @@ func windowOwedItems(t *testing.T, database *store.Store) {
 }
 
 // windowOwedOwners runs the block-index tick until its window arm is owed nothing, which is
-// what gives every owner the windows no write writes any more (INFRA-988): an item's and a
+// what gives every owner the windows no write writes any more (POMJU-988): an item's and a
 // document's alike, the latter needing the document service the arm reads the stored version
 // through (docs.windowDocument). A test whose subject is what meaning search finds after a
 // write stands one tick after that write, and this is the tick.
@@ -551,7 +551,7 @@ func issueKeywordRank(t *testing.T, database *store.Store, query, key string) fl
 	return float64(rank)
 }
 
-// TestSearchNeverRanksAVectorOfAnotherIdentity is INFRA-393's "search never compares a query with
+// TestSearchNeverRanksAVectorOfAnotherIdentity is POMJU-393's "search never compares a query with
 // a vector of another identity": an issue whose vector another model or place made scores closer
 // to the query than the issue embedded by the query's own embedder, and still never appears as a
 // meaning hit, while the right-identity issue does. Recording the same vector under the query
@@ -664,7 +664,7 @@ func TestACommentAndMessageOfOneLongestBlockReachTheEmbedderWhole(t *testing.T) 
 		t.Fatalf("create message: status=%d body=%s", message.Code, message.Body.String())
 	}
 	// The writes record the blocks; the tick's window arm writes the windows the embedder is
-	// given (INFRA-988).
+	// given (POMJU-988).
 	windowOwedOwners(t, deps)
 	processAllPending(t, database, embedder)
 
@@ -779,7 +779,7 @@ func TestSearchAndWritesRideOutAnAzureOutage(t *testing.T) {
 
 	ctx := context.Background()
 	// The comment's windows are the tick's to write, and it writes them while Azure is down:
-	// a window is a row, not a vector (INFRA-988).
+	// a window is a row, not a vector (POMJU-988).
 	windowOwedOwners(t, deps)
 	processAllPending(t, database, client)
 	var embeddedDuringOutage, dead bool
@@ -1078,7 +1078,7 @@ func crowdCommentWindows(t *testing.T, database *store.Store, embedder embed.Emb
 	}
 }
 
-// TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes is INFRA-988's
+// TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes is POMJU-988's
 // defect, held as a test. The comment arm takes searchWindowCandidates windows through the
 // index; while its project filter stood above that limit, the windows of every project filled
 // the candidate set and the filter then kept whichever of them happened to belong to the
@@ -1153,7 +1153,7 @@ func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes
 // searchWindowCandidates+1 real comment windows of another project at cosine 1.000: the joined
 // shape answered 4 hits - ask, document, issue, message - with the comment gone, where the
 // scoped shape and a build of main both answered 5. The crowd is exactly the threshold: 1,001
-// windows lose it, 999 do not (INFRA-988).
+// windows lose it, 999 do not (POMJU-988).
 //
 // The fixture is the one above with the progress row left as a migrated database leaves it. Its
 // sibling records the fill done, which is what keeps that test green and is the honest state for
@@ -1340,7 +1340,7 @@ func searchResultKeys(results []model.SearchResult) []string {
 	return keys
 }
 
-// TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling is the second half of INFRA-988's
+// TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling is the second half of POMJU-988's
 // defect. project_key is nullable, every row stored before migration 20261109120000 carries
 // null until store.FillEmbeddingProjectKeys labels it - 31 m 41 s for 1,109,536 rows on a clone
 // of the load-test database, longer in production - and `null = $2` is unknown in SQL, so while
@@ -1466,7 +1466,7 @@ func unlabelledFillWindow(t *testing.T, project string) (http.Handler, *store.St
 // server migrates before it serves and a database somebody repaired by hand has whatever it
 // has. Measured at this change's head, every project-scoped meaning search answered 500 for as
 // long as that lasted, where the release before it answered from the owner each arm joins
-// (INFRA-988).
+// (POMJU-988).
 func TestAProjectScopedSearchAnswersWhenTheFillsProgressTableIsMissing(t *testing.T) {
 	const project = "NOTB"
 	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
@@ -1528,7 +1528,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // behind an ACCESS EXCLUSIVE one it waited out the whole bound the server holds on a meaning
 // statement (searchMeaningStatementBound, 15 s) before degrading to the joined statement -
 // 15,002 ms measured at this change's head against 202 ms with a lock_timeout of 200 ms
-// (INFRA-988). A search whose answer is the same either way must not spend a quarter of a
+// (POMJU-988). A search whose answer is the same either way must not spend a quarter of a
 // minute learning that, so the savepoint bounds its own wait
 // (embeddingProjectKeysFilledLockWait).
 //

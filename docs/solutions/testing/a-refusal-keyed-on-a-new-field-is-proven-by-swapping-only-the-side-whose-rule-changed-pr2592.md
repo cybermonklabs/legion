@@ -18,10 +18,10 @@ related_issues:
 
 A change that makes a server refuse what it used to allow is proven by a surface that fails
 against the base and passes on the branch; that much is already written
-(`docs/solutions/testing/a-real-binary-refusal-proof-seeds-past-every-earlier-branch-and-the-proof-is-the-pair-INFRA-797.md`,
-`docs/solutions/github/prove-a-path-filter-change-with-the-pinned-actions-own-code-and-a-skip-and-run-pair-of-scratch-pull-requests-based-on-the-branch-INFRA-583.md`, and the `git archive`
+(`docs/solutions/testing/a-real-binary-refusal-proof-seeds-past-every-earlier-branch-and-the-proof-is-the-pair-POMJU-797.md`,
+`docs/solutions/github/prove-a-path-filter-change-with-the-pinned-actions-own-code-and-a-skip-and-run-pair-of-scratch-pull-requests-based-on-the-branch-POMJU-583.md`, and the `git archive`
 mechanics in
-`docs/solutions/testing/prove-a-go-acceptance-test-fails-on-base-by-running-the-unchanged-file-in-a-git-archive-export-INFRA-487.md`).
+`docs/solutions/testing/prove-a-go-acceptance-test-fails-on-base-by-running-the-unchanged-file-in-a-git-archive-export-POMJU-487.md`).
 What that advice does not say is which side to swap, and for a rule keyed on a field the clients
 only now send, swapping the wrong one proves nothing.
 
@@ -57,7 +57,7 @@ only now send, swapping the wrong one proves nothing.
 
 ## Evidence
 
-sjawhar/legion#2592 (dispatch://INFRA-404) made the Envoy listener refuse a soft role claim that
+sjawhar/legion#2592 (dispatch://POMJU-404) made the Envoy listener refuse a soft role claim that
 names a live predecessor belonging to another client instance, where it had granted it. The
 acceptance criterion asked for a listener built from the branch, on a real NATS server, with real
 client processes, showing each row of the issue's table and failing two named scenarios against

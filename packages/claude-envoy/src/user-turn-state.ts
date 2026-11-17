@@ -1,5 +1,5 @@
 // What this session did with the direct messages Dispatch sent it, in one file per session id
-// under `CLAUDE_PLUGIN_DATA` (INFRA-1026), beside the `replay-*.json` files and the `roles/`
+// under `CLAUDE_PLUGIN_DATA` (POMJU-1026), beside the `replay-*.json` files and the `roles/`
 // records.
 //
 // The Oh My Pi plugin keeps both of these in its host's transcript

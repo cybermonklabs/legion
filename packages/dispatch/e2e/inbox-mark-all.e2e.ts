@@ -22,7 +22,7 @@ import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The Inbox's **Mark all read** (INFRA-450): one click over a list of six hundred and twenty
+ * The Inbox's **Mark all read** (POMJU-450): one click over a list of six hundred and twenty
  * unread threads, what it takes off the counts before the server answers, what it leaves in the
  * list, and what comes back when it refuses.
  *

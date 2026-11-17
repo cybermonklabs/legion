@@ -36,7 +36,7 @@ var ErrNoHolder = errors.New("no live session holds the role")
 // whose `holder_state` is `unresponsive`: its last registration is past the listener's live window
 // but still inside its gone horizon, so the session is not dead. It keeps its role claim and its
 // issue claims, nothing is released for it and no replacement is started, and a box under load is
-// the ordinary cause (dispatch://INFRA-392). The caller holds what it published and sends it
+// the ordinary cause (dispatch://POMJU-392). The caller holds what it published and sends it
 // again rather than acting on a death: the session answers for itself once its heartbeats land.
 var ErrHolderUnresponsive = errors.New("the role's holder is unresponsive")
 
@@ -210,7 +210,7 @@ func New(baseURL, token string) *HTTPPublisher {
 // as neither success nor ErrNoHolder: its outbox row is held and keeps retrying while Envoy also
 // hands the message to the role's next holder, so the role gets it twice. Deploying this binary
 // first leaves no window in which two keepers hold one message. Measured on a live listener by
-// INFRA-839's tester on 2026-10-31: the old publisher got `listener returned 202 Accepted` with
+// POMJU-839's tester on 2026-10-31: the old publisher got `listener returned 202 Accepted` with
 // errors.Is(err, ErrNoHolder) false, and the kept lane then held that message.
 func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
 	// The listener carries a payload as a JSON document in a string (its messageBody,
@@ -405,7 +405,7 @@ type DeleteConditions struct {
 // /v1/sessions/<session>), the clean stop the daemon sends for a Legion role whose agent process
 // is gone. The listener then reads the session `gone` at once rather than at the end of its live
 // window, so the role claim it held is released and its issue claims are free without the wait a
-// stopped process would otherwise cost (dispatch://INFRA-392). A registry that holds no record
+// stopped process would otherwise cost (dispatch://POMJU-392). A registry that holds no record
 // for the session answers 404: it is already gone, which is the outcome asked for, so that is no
 // failure.
 //

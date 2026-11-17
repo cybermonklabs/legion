@@ -1,6 +1,6 @@
 /**
  * What a person's message from Dispatch's Agents page becomes in a Claude Code session
- * (INFRA-1026): the session's own user turn, a command, a pick or a side turn, and the card every
+ * (POMJU-1026): the session's own user turn, a command, a pick or a side turn, and the card every
  * refusal keeps.
  */
 import { expect, test } from "bun:test"
@@ -410,7 +410,7 @@ test("the body goes to the mod as the person's own message, and its row is recor
   }
 })
 
-// The reviewer's "one time" (INFRA-1026 review, round twelve): the mod's answer is late, so the
+// The reviewer's "one time" (POMJU-1026 review, round twelve): the mod's answer is late, so the
 // frame is left unanswered and Envoy sends it again — and the resend is a *card*, because the
 // accept refuses an attempt this session has already handled. Both writes carry the frame's own
 // Envoy event id, so the mod writes the person's words once and answers the card with the row
@@ -506,7 +506,7 @@ test("a slash message runs as the command it is and its output is the reply", as
 // Measured on 2.1.310 in a terminal session: `$.command.run("context")` resolves
 // `{context: ["## Context Usage\n\n**Model:** …"]}` with no `text` field at all
 // (`/legion/scratch/tmp/infra-1026-spike/logs/mod3-q7-int.jsonl:70-73`). Answering `text ?? ""`
-// left the person who sent `/context` from the live view with no reply at all (INFRA-1026).
+// left the person who sent `/context` from the live view with no reply at all (POMJU-1026).
 test("a command whose result puts its output in `context` reaches the person as the reply", async () => {
   const table = "## Context Usage\n\n**Model:** claude-haiku-4-5  \n**Tokens:** 32k / 200k (16%)"
   const mod = fakeMod({ "command.run": () => ({ context: [table] }) })
@@ -549,7 +549,7 @@ test("a command whose result carries no output is answered from the row Claude C
 })
 
 // `typedInputReply` answers undefined for an empty output, which posted nothing: a person who
-// sent a command that printed nothing was left with silence (INFRA-1026).
+// sent a command that printed nothing was left with silence (POMJU-1026).
 test("a command that printed nothing is answered saying so rather than with silence", async () => {
   const mod = fakeMod({ "command.run": () => ({}) })
   const session = await harness({
@@ -574,7 +574,7 @@ test("a command that printed nothing is answered saying so rather than with sile
 
 // A command does not run under the name the person sent it with: measured live on 2.1.310, a
 // `/cost` from Dispatch was run and echoed by Claude Code as `/usage`, and a
-// `/model anthropic/haiku` as `/model haiku` (INFRA-1026). So what ties the rows to the run is
+// `/model anthropic/haiku` as `/model haiku` (POMJU-1026). So what ties the rows to the run is
 // that they arrived just after its call answered, never the command the rows name.
 test("a command Claude Code runs under another name is still answered from that run's output", async () => {
   const mod = fakeMod({ "command.run": () => ({}) })
@@ -600,7 +600,7 @@ test("a command Claude Code runs under another name is still answered from that 
 
 // A run whose command opened a dialog at the terminal has written no row of its own while the
 // person answers it, and the rows that arrive meanwhile are the person's own typing. Measured
-// on live Claude Code 2.1.310 (INFRA-1026): a Dispatch `/cost` asked at 08:09:56.390 was still
+// on live Claude Code 2.1.310 (POMJU-1026): a Dispatch `/cost` asked at 08:09:56.390 was still
 // unanswered when the person typed `/config` at that terminal 36 seconds later, and the rule
 // before this one answered their `/cost` with `Config dialog dismissed` - the other command's
 // output, posted to Dispatch as the reply to theirs.
@@ -674,7 +674,7 @@ test("a command that has not ended in time is answered that it is waiting, and i
 // for it, or the person is left with the waiting reply and never gets the output. Driven live on
 // a Claude Code 2.1.310 pane: `/context` inside a turn got the waiting reply, the mod's POST of
 // the table was answered 200 with nothing inserted, and the conversation holds one reply
-// (INFRA-1026).
+// (POMJU-1026).
 test("the answer that follows a waiting reply asks Dispatch to post it", async () => {
   const held = Promise.withResolvers<void>()
   const mod = fakeMod({
@@ -794,7 +794,7 @@ test("in a Legion pane the person's message goes to the bridge's inbox and its r
 // pane (Claude Code 2.1.310), with the picture's markdown gone from it, the picture having become
 // a block of its own. Read against the stored body as it stands, that row is recognised as no
 // message at all, so nothing records which Dispatch message it is and the Agents page draws its
-// stored copy beside it (INFRA-1026).
+// stored copy beside it (POMJU-1026).
 test("in a Legion pane the row of a message embedding a picture is recognised without its markdown", async () => {
   const body =
     "What colour is this picture? ![blue](dispatch://agent/ses_claude/artifact/i3-blue96-png@v1)"

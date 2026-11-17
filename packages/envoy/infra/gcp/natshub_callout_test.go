@@ -84,7 +84,7 @@ func TestAHubWithoutTheCalloutRendersNoCalloutLine(t *testing.T) {
 }
 
 // A hub behind the auth service runs no listener of its own until the listener has a service
-// identity to connect through the auth service with, which arrives with dispatch://INFRA-840's
+// identity to connect through the auth service with, which arrives with dispatch://POMJU-840's
 // t-e-13: today the listener connects as a NATS user whose seed the hub stores. So listener
 // (gcp:NatsHub) and tailnet.listener (gcp:ClusteredNatsHub, whose tailnet always runs one) beside
 // authCallout are refused, naming both inputs, and nothing registers. The refusal is this slice's
@@ -99,7 +99,7 @@ func TestAHubBehindTheAuthServiceRunsNoListenerOfItsOwn(t *testing.T) {
 		require.ErrorAs(t, err, &input)
 		require.Equal(t, "listener", input.Input)
 		require.ErrorContains(t, err, "listener and authCallout:")
-		require.ErrorContains(t, err, "its service identity arrives with dispatch://INFRA-840 (t-e-13)")
+		require.ErrorContains(t, err, "its service identity arrives with dispatch://POMJU-840 (t-e-13)")
 		m, err := run(t, args, nil, true)
 		require.ErrorContains(t, err, "listener and authCallout:")
 		require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
@@ -113,7 +113,7 @@ func TestAHubBehindTheAuthServiceRunsNoListenerOfItsOwn(t *testing.T) {
 		require.ErrorAs(t, err, &input)
 		require.Equal(t, "tailnet.listener", input.Input)
 		require.ErrorContains(t, err, "tailnet.listener and authCallout:")
-		require.ErrorContains(t, err, "its service identity arrives with dispatch://INFRA-840 (t-e-13)")
+		require.ErrorContains(t, err, "its service identity arrives with dispatch://POMJU-840 (t-e-13)")
 		m, err := runClustered(t, "example-clustered-hub", args, nil)
 		require.ErrorContains(t, err, "tailnet.listener and authCallout:")
 		require.Empty(t, m.Registrations(), "nothing registered")

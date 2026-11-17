@@ -142,7 +142,7 @@ func (r *liveRig) checkCacheSecondPod() error {
 // that commit adds, on top of the default branch's head — and checks inside the cache's pod that
 // its clone lacks that commit (deleted when the harness ends).
 // cache-b's Sandbox is then deleted while no runtime runs, which takes its pod and, with the pod,
-// the disk its workspace was on — what every stop of an issue now leaves (INFRA-80). Relaunched,
+// the disk its workspace was on — what every stop of an issue now leaves (POMJU-80). Relaunched,
 // the new pod fills its new feed from the cache again, and, while the cache still lacks the
 // commit, GitHub's delta brings it (more than no bytes); the workspace is provisioned on the
 // branch the issue pushed, which is where its work survived: its @- is that commit, and the file

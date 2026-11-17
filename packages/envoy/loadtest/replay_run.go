@@ -48,7 +48,7 @@ type replaySetup struct {
 	bundle *replayBundle
 	// roster is the session ids registered with the listener: the bundle's roster ids the listener
 	// accepts as keys (natsKey), then synthetic ones; rosterSkipped counts the roster ids it would
-	// refuse (an actor id such as legion-daemon:LINUX is no session id); homes maps a roster session
+	// refuse (an actor id such as legion-daemon:HAFJJ is no session id); homes maps a roster session
 	// to the kept issue its claim holds at the instant.
 	roster        []string
 	rosterSkipped int

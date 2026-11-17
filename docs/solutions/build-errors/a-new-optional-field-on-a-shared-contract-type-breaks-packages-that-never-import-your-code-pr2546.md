@@ -16,7 +16,7 @@ related_issues:
 
 # A new optional field on a shared contract type breaks packages that never import your code
 
-Extends docs/solutions/legion/a-type-census-also-searches-the-types-that-contain-it-their-re-exports-and-indexed-access-types-INFRA-367.md.
+Extends docs/solutions/legion/a-type-census-also-searches-the-types-that-contain-it-their-re-exports-and-indexed-access-types-POMJU-367.md.
 
 That note censuses the types that *hold* yours. A field added as optional needs three more rows,
 and each one fails in a package whose source you never opened.

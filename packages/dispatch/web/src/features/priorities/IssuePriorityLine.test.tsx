@@ -11,7 +11,7 @@ import type { Issue, Priorities, PriorityRow } from "../../api/types";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
 /**
- * The issue header's `Advances` item (INFRA-2947, R16 and R3): what it draws for a priority of
+ * The issue header's `Advances` item (POMJU-2947, R16 and R3): what it draws for a priority of
  * the issue's own and for one it inherits, what it draws for an issue that advances none, and
  * the two writes the control makes.
  */
@@ -22,7 +22,7 @@ function priority(id: string, title: string): PriorityRow {
     id,
     made_at: "2026-11-01T00:00:00Z",
     made_by: { id: "alice", kind: "user" },
-    owner: "INFRA controller",
+    owner: "POMJU controller",
     rank: id,
     state: "live",
     title,

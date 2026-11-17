@@ -66,7 +66,7 @@ export const DEFAULT_STALL_LIMITS: StallLimits = {
   // subagent, 1 hour for a reviewer and under 22 minutes for every other role.
   callBoundMs: 3_600_000,
   // 2 minutes between the ladder's steps. An ordinary foreground shell call takes 60.0 seconds to
-  // close its own record on this binary (measured four times, dispatch://INFRA-1274's plan), so a
+  // close its own record on this binary (measured four times, dispatch://POMJU-1274's plan), so a
   // shorter gap would run the next step while the step before it was still landing; and two gaps
   // add four minutes to the ladder the daemon's own backstop bound must stay above. The second
   // step's own wait on the host's `abort()` is bounded by this same number and adds nothing to

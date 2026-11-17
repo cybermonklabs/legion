@@ -17,7 +17,7 @@ import (
 // catalog carrying both `source` and `Source` is read as two different things by the two readers: a
 // check that admitted the local `"./one"` would let the installer clone the `github` one it never
 // saw — and that clone runs in the role's launch, before any check of what was installed
-// (dispatch://INFRA-1300, found by review of pull request 2806). The same holds for a repeated key,
+// (dispatch://POMJU-1300, found by review of pull request 2806). The same holds for a repeated key,
 // which JavaScript resolves to the last and Go to the last as well, but which no reader of the file
 // can see. A catalog whose keys cannot mean one thing to both readers is refused rather than
 // guessed at.

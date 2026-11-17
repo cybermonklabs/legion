@@ -15,7 +15,7 @@ related_issues:
 
 # A coverage check scores what it cannot reduce as reading everything, and reduces only a whole step under an allowlisted environment
 
-Extends docs/solutions/github/a-required-check-asserts-only-what-it-can-decide-without-parsing-the-language-and-refuses-what-it-cannot-classify-INFRA-110.md.
+Extends docs/solutions/github/a-required-check-asserts-only-what-it-can-decide-without-parsing-the-language-and-refuses-what-it-cannot-classify-POMJU-110.md.
 
 When a check proves that a declaration (a paths filter) covers everything a job reads, its answer
 to an input it cannot fully read is not "refuse" but "the job reads everything":

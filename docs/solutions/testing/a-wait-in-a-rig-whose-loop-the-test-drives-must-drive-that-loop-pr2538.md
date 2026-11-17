@@ -11,7 +11,7 @@ date: 2026-11-02
 status: active
 module: packages/daemon/internal/daemon
 related_issues:
-  - "INFRA-484"
+  - "POMJU-484"
   - "sjawhar/legion#2538"
 ---
 
@@ -38,7 +38,7 @@ real I/O. This is about a loop the test itself owns.
 - **Record a rejected alternative with a measurement, not an opinion.** The next reader will
   propose it again.
 
-## Evidence (INFRA-484, sjawhar/legion#2538)
+## Evidence (POMJU-484, sjawhar/legion#2538)
 
 The daemon's orphan sweep decides update rounds. In the test rig the clock is held and the sweep
 runs only through `rig.tick()`, so a wait that polls without ticking can only time out.

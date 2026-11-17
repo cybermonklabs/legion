@@ -395,7 +395,7 @@ test("a late BTW is passed over and answered done, and the frame after it is sho
   }
 })
 
-// The acceptance line of dispatch://INFRA-771: no Envoy session receives from a plain NATS
+// The acceptance line of dispatch://POMJU-771: no Envoy session receives from a plain NATS
 // subscription. The whole subscription set is asserted, never the presence of the relay subject,
 // so a core subscription added back on any followed subject fails here. Oh My Pi's plugin holds
 // one more, its agent-stream control subject, and so does this server once a mod links to it:
@@ -437,7 +437,7 @@ test("holds exactly its relay subject after registration, and no other subscript
   }
 })
 
-// The listener's connection check (INFRA-626) is a core request on the session's own relay
+// The listener's connection check (POMJU-626) is a core request on the session's own relay
 // subject that carries `Envoy-Probe: 1` and nothing else: an answer, or a second of silence,
 // reads connected, and the no-responders a server gives a subject nothing subscribes reads
 // stopped. The probe is no frame, so it reaches no conversation and moves no resume point, and

@@ -354,11 +354,11 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 // task was queued as having been retired, which left the row KEPT for the catch-up to name. A
 // write of that delivery afterwards must leave the row gone: the architect has been told, and a
 // row standing again is one the tree's next start or catch-up names and tells a second time
-// (dispatch://INFRA-2339). It is not what made seed 24 of the daemon's
+// (dispatch://POMJU-2339). It is not what made seed 24 of the daemon's
 // TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild tell a decision twice at
 // random: in that schedule the put-back inserts no row, and the second telling came from the
 // kept-decision model's own lease, written inside a drop of the root's catch-ups, so the drop
-// deleted a row it had read unleased (dispatch://INFRA-2836). The put-back is for one case alone,
+// deleted a row it had read unleased (dispatch://POMJU-2836). The put-back is for one case alone,
 // which the first test of this file holds: this delivery's own confirmation told the row and the
 // machine took that confirmation back.
 //

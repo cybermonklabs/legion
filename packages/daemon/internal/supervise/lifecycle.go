@@ -64,7 +64,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 //
 // The credit of the refresh gate a machine may hold goes back at the end of the decision this
 // refusal belongs to, which is where every credit of this lane goes back (endRefreshLane,
-// dispatch://INFRA-2712 R1). This is the refusal of every launch there is, so a refused launch
+// dispatch://POMJU-2712 R1). This is the refusal of every launch there is, so a refused launch
 // of the stale-plugin lane loses its credit wherever the refusal came from — the launch path's
 // own pre-check, the recheck the wake's turn makes and the relaunch a failure raises
 // (launchAfter, runWake, relaunchAfterFailure) — and the one shape the reader has to hold is
@@ -80,7 +80,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
 // retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
 // makes then waits under the lane that raised it rather than under the launch kind every other
-// launch takes (reserveWake, dispatch://INFRA-2712 R4). A retry armed here with the bare
+// launch takes (reserveWake, dispatch://POMJU-2712 R4). A retry armed here with the bare
 // relaunch would park under `launch`, where the reader this kind exists for counts no refresh of
 // a claim the lane is still working through, and where the correction the sweep makes from the
 // lane's own parked wakes never counts it at all (api.State.ClaimsToRefresh,

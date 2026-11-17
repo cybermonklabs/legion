@@ -1,7 +1,7 @@
 /**
  * The issue page's structural vocabulary: what it calls each property of an issue, what it calls
  * each section of its panel, the sentences it draws where a tooltip used to hold the meaning,
- * and the two marks it divides its own words from an author's with (dispatch://INFRA-1196 R11,
+ * and the two marks it divides its own words from an author's with (dispatch://POMJU-1196 R11,
  * R21).
  *
  * It sits beside `page-words.ts`, which names the things the page draws - a node's type, its
@@ -56,8 +56,8 @@ export const authorText: Readonly<Record<string, string>> = freeze({
  */
 export const PROPERTY_LABELS = freeze({
   /** The priorities the issue advances, its own and those an issue above it states
-   *  (dispatch://INFRA-2947 R4, R16), which the panel's Development section draws with the
-   *  control that adds and removes one (dispatch://INFRA-1196 R13). */
+   *  (dispatch://POMJU-2947 R4, R16), which the panel's Development section draws with the
+   *  control that adds and removes one (dispatch://POMJU-1196 R13). */
   advances: "Advances",
   /** The documents of the issue a reviewer approves, each with how it stands and why a
    *  reviewer sent it back (R13, R31): Details' row of the approval steps and their reasons. */

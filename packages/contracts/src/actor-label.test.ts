@@ -36,7 +36,7 @@ test("a bare session id is labelled by the title given, else its short id", () =
 });
 
 test("the Legion daemon's write identity reads whole, not as a short session id", () => {
-  expect(actorLabel({ id: "legion-daemon:INFRA", kind: "session" })).toBe("legion-daemon:INFRA");
+  expect(actorLabel({ id: "legion-daemon:POMJU", kind: "session" })).toBe("legion-daemon:POMJU");
   expect(actorLabel({ id: "legion-daemonic-session", kind: "session" })).toBe("session:legion-d…");
 });
 

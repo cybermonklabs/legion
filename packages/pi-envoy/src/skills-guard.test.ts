@@ -93,7 +93,7 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // an operator's own proxy skill into `dispatch-writing-specs` and the research-before-you-ask
 // test into `dispatch-first`, which took those rules out of two other skills.
 //
-// It was raised to 2,326 on 2026-11-12, when dispatch://INFRA-2971 put one rule into
+// It was raised to 2,326 on 2026-11-12, when dispatch://POMJU-2971 put one rule into
 // skills/dispatch/SKILL.md for when an agent may move an issue to `backlog`, `icebox` or
 // `triage`: the two sentences it deleted sent a waiting issue and every issue past the third to
 // `backlog`, and the rule that replaces them holds such a move to one a person asked for, or to
@@ -152,7 +152,7 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // above it, as 2,300 was above 2,297. The 23 words over 2,300 are a raise and not a cut because,
 // measured on 2026-11-12 line by line, each cut left in the three skills deletes a rule or a fact
 // an agent needs to apply one: the refusal code of the `blocked_by` bullet and "board rank" in
-// the stop-work bullets are the words of INFRA-2971's R4 (the code is `PROJECT_SCOPE` since a
+// the stop-work bullets are the words of POMJU-2971's R4 (the code is `PROJECT_SCOPE` since a
 // link may name an issue of any project, which kept the bullet's word count), and "`todo` for an
 // issue from the queue" is its
 // decision on R4; "one agent keeps each project's order" is R3's owner of the board, whom the
@@ -166,7 +166,7 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // session with Dispatch reads.
 //
 // It also moves when an approved requirement puts in the skill every session loads a rule that no
-// other skill holds, and only by what that rule costs: R11 of dispatch://INFRA-2947 puts one line
+// other skill holds, and only by what that rule costs: R11 of dispatch://POMJU-2947 puts one line
 // in `dispatch` (an issue names the priority it advances), which check `c0cd78f8` of that issue
 // reads there, so it cannot live elsewhere. The line is 14 words, the shortest that carries the
 // two strings the check reads, so the three skills, 2,325 words on main, stand at 2,325 + 14 =
@@ -192,7 +192,7 @@ test("the staged decisions rule separates material choices from spec details", (
   expect(skill).not.toContain("Each choice you made alone, and each a person made");
 });
 
-// dispatch://INFRA-3204: a check may name the CI check run that proves it, and then carries no
+// dispatch://POMJU-3204: a check may name the CI check run that proves it, and then carries no
 // command. Every spec writer reads the check's attributes here, so the list names `ci_check` and
 // its rule, in the phrase the Legion skills and prompts carry once each.
 test("the spec writer's check attributes name `ci_check`, which takes no `run`", () => {
@@ -264,7 +264,7 @@ test("a heading inside a code fence is no anchor, since a Markdown reader render
 });
 
 // Every role of an issue writes into one $TMPDIR on the issue's volume, so a glob sweep deletes
-// another role's open directory (dispatch://INFRA-654). The reviewer's pair carries the rule once,
+// another role's open directory (dispatch://POMJU-654). The reviewer's pair carries the rule once,
 // in the maintainability rubric, and the correctness rubric names that skill rather than repeating
 // it, so the two can never drift apart.
 test("the reviewer's pair states the shared scratch rule once and names it from the other", () => {

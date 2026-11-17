@@ -31,7 +31,7 @@ name: Dispatch browser suite
 # review read the two together. Two more stood beside them, the Playwright install and the key
 # its apt archive cache was restored under: those two jobs run in the image this repository
 # builds now, which carries the three browsers and every host package they need, so both of
-# those scripts are gone with the steps that called them (dispatch://INFRA-1443).
+# those scripts are gone with the steps that called them (dispatch://POMJU-1443).
 #
 # The budget rule every job and step below follows, this file being where it is written down now
 # that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
@@ -196,7 +196,7 @@ jobs:
     # runs before any browser step here - flock, a C/C++ toolchain for the dependency whose
     # install falls back to a source build, and a DejaVu core font added. So this job downloads
     # no browser and installs no browser host package from Ubuntu's mirror pool at run time
-    # (dispatch://INFRA-1443). The digest is written out as a literal rather than through an
+    # (dispatch://POMJU-1443). The digest is written out as a literal rather than through an
     # expression because .github/scripts/check-ci-images.sh reads a `container:` image out of
     # the parsed YAML and refuses one holding a `${{ }}`, which it cannot resolve to a row.
     #
@@ -265,7 +265,7 @@ jobs:
     # build-essential added real bytes to it. A measured table carries the head it was measured at,
     # which is worth saying plainly rather than claiming an identity that does not hold.
     # The figures it replaces were read at 99bdf09cf435, which pinned the image from before
-    # build-essential was added to it (dispatch://INFRA-1443), over eight legs of two runs: not one
+    # build-essential was added to it (dispatch://POMJU-1443), over eight legs of two runs: not one
     # of them ran a build carrying build-essential, and none is a leg of the reading below.
     # Three steps the job budget carries are higher here - `Initialize containers` 39 -> 45 s,
     # which is the larger image to pull, `./.github/actions/setup-bun` 3 -> 19 s and
@@ -321,7 +321,7 @@ jobs:
     # The rows behind those seconds were the suite of the head those runs measured. Listed
     # again at this change's head, the suite holds 1,427 rows in 194 files, which is two
     # listings rather than one: the three `-alone` projects are out of the default selection
-    # since dispatch://INFRA-1280, so a command that names no project lists 1,373 rows in 191
+    # since dispatch://POMJU-1280, so a command that names no project lists 1,373 rows in 191
     # files and one that names those three lists the other 54, in 3 files. The ten projects
     # this job's shard command names below hold 1,353 rows in 190 files; the four of those the
     # pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282. The two
@@ -391,7 +391,7 @@ jobs:
       # One script, called from here and from the alone job's step of this name, as this file's
       # head says a body the two jobs share must be: it stood as a copy in each job's step
       # list, the two differing in nothing but the number of copies they made, until a review
-      # read them together (dispatch://INFRA-1443).
+      # read them together (dispatch://POMJU-1443).
       # Its head says what each line it prints is for. The argument is this job's stack count,
       # the `--workers 4` the browser step below passes Playwright, so the copy time it prints
       # is this job's own.
@@ -550,7 +550,7 @@ jobs:
           # Every row without the tag runs on the full lane, which `ci.yaml` runs for every
           # merge group and the nightly runs daily, so `main` is gated exactly as it was and what
           # a displaced row loses is feedback on the pull request itself
-          # (dispatch://INFRA-1407, departure 1). `e2e/__tests__/pull-request-lane.test.ts` holds
+          # (dispatch://POMJU-1407, departure 1). `e2e/__tests__/pull-request-lane.test.ts` holds
           # the lane to its budget by listing the config with this same grep.
           case "${{ inputs.lane }}" in
             pull-request)
@@ -710,7 +710,7 @@ jobs:
     runs-on: ubuntu-24.04
     # The three projects whose rows are read from the wall clock, one machine each. Each leg runs
     # one worker and names one project, and a wall-clock project takes nothing else with it - it
-    # names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
+    # names no `dependencies` since dispatch://POMJU-1280 - so nothing else is on the machine
     # while it measures. The full lane alone: a pull request runs no clock row, since a shard
     # job's machine cannot hold one still enough to measure.
     #
@@ -727,7 +727,7 @@ jobs:
     # This job takes the container because its matrix holds webkit-alone and firefox-alone,
     # which launch the two engines the image exists for; chromium-alone is a leg of a container
     # job and rides in it, which is what keeps one job list and not two
-    # (dispatch://INFRA-1443). The shard job's head says what each option is for and why the
+    # (dispatch://POMJU-1443). The shard job's head says what each option is for and why the
     # digest is a literal.
     #
     # The browser step's budget below is measured, on the full-lane run of the head that sharded
@@ -748,7 +748,7 @@ jobs:
     # digest this file pins, for the reason the shard job's head gives, which also says why a
     # reading taken on that build carries across the rebuilds after it: the figures it replaces
     # were read at 99bdf09cf435, which pinned the image from before build-essential was added to it
-    # (dispatch://INFRA-1443), over three legs of one run. The two steps that moved most are
+    # (dispatch://POMJU-1443), over three legs of one run. The two steps that moved most are
     # `./.github/actions/setup-bun`, 2 -> 20 s, and `Initialize containers`, 38 -> 45 s, the
     # larger image to pull; neither carries a budget of its own, so both land in the sum that
     # is this job's whole margin, and the old one left it below what the rule gives.
@@ -914,7 +914,7 @@ jobs:
           export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
           export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone-${{ matrix.project }}.zip"
           # `--project` and `--workers=1` are the whole selection, and the first of them selects
-          # this leg's rows and nothing else. Until dispatch://INFRA-1280 it did not: each
+          # this leg's rows and nothing else. Until dispatch://POMJU-1280 it did not: each
           # `-alone` project named every parallel project in its `dependencies`, so this command
           # carried `--no-deps`, without which Playwright would have run the whole suite here
           # before this leg's own rows, and the shard jobs had run it already. Those
@@ -1125,7 +1125,7 @@ jobs:
         # playwright-Linux- entry is 481 MiB. There is no browser cache anywhere in this
         # workflow to join: the shard and alone jobs restored one until they moved into the
         # image that carries the browsers, which took their restores and ci-caches.yaml's
-        # browsers job with them (dispatch://INFRA-1443). This job stays on the runner, because
+        # browsers job with them (dispatch://POMJU-1443). This job stays on the runner, because
         # nothing can make it launch another engine, and so keeps this one download.
         timeout-minutes: 4
         run: bunx playwright install chromium
@@ -1163,7 +1163,7 @@ jobs:
   #
   # On both lanes, where the alone and multiprocess jobs above run on `full` alone: this is one
   # Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
-  # on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
+  # on (check k2 of dispatch://POMJU-1042) rather than a clock reading or a second server shape.
   # A lane that skipped it would leave the claim unread until the merge queue.
   #
   # Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
@@ -1824,7 +1824,7 @@ jobs:
           done < "$unhappy"
       # Reading four. What a row of each layer costs, which nothing published before: the merge
       # job printed rows and the flake rate and no duration statistic at all, so
-      # dispatch://INFRA-1407's k1 and dispatch://INFRA-983's R13 had no repeatable command to
+      # dispatch://POMJU-1407's k1 and dispatch://POMJU-983's R13 had no repeatable command to
       # read. The two classes are the `stub` and `stub-phone` projects' rows and every other
       # row, which is what "the project or tag the configuration gives them" names after that
       # change.

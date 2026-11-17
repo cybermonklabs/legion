@@ -23,7 +23,7 @@ import (
 //
 // The corpus is what scripts/near-copy-replay.sh exported, and it is frozen: a second export
 // holds more issues and gives another false-refusal rate, which would no longer match the
-// threshold in code. The corpus this tree calibrated on is attached to dispatch://INFRA-1160.
+// threshold in code. The corpus this tree calibrated on is attached to dispatch://POMJU-1160.
 //
 // DISPATCH_NEARCOPY_CORPUS   the corpus file (required; without it the test skips)
 // DISPATCH_TEST_DATABASE_URL a Postgres of the run's own (required by every store test)
@@ -35,9 +35,9 @@ import (
 // The project's term statistics are refreshed on the corpus's own clock, every
 // SearchTermStatsInterval of replayed time, which is the cadence a live server keeps
 // (RunSearchTermStatsRefresh). Refreshing by a count of creates instead lets the statistics lag
-// a create meets in production: INFRA's window holds about one create every twenty minutes,
+// a create meets in production: POMJU's window holds about one create every twenty minutes,
 // so a create there meets current statistics, and a replay that lags refuses a pair the
-// current statistics do not (dispatch://INFRA-1160 test handoff version 1, k4).
+// current statistics do not (dispatch://POMJU-1160 test handoff version 1, k4).
 
 // nearCopyRecord is one line of the corpus: an issue, a query (a create to replay) or a pair.
 type nearCopyRecord struct {
@@ -224,18 +224,18 @@ type nearCopyScore struct {
 const nearCopyGateBound = time.Minute
 
 // nearCopyMarkedDuplicates are the replayed creates the implementer read and marked real
-// duplicates of the issue the gate named, on 2026-11-05 over the INFRA corpus. k4's 5% ceiling
+// duplicates of the issue the gate named, on 2026-11-05 over the POMJU corpus. k4's 5% ceiling
 // is of the creates that are not duplicates, so these are left out of it, and
-// dispatch://INFRA-1160/artifact/near-copy-replay-md carries the reason for each. The four
+// dispatch://POMJU-1160/artifact/near-copy-replay-md carries the reason for each. The four
 // pairs the corpus names are marked by their own record and are not repeated here.
 //
 // Each is a create whose text restates an open issue's work, judged by reading both titles and
-// both specs: an identical title (INFRA-782, INFRA-375, INFRA-452, INFRA-451, INFRA-756,
-// INFRA-454, INFRA-453), or the same defect in other words (INFRA-806, INFRA-442, INFRA-757,
-// INFRA-70).
+// both specs: an identical title (POMJU-782, POMJU-375, POMJU-452, POMJU-451, POMJU-756,
+// POMJU-454, POMJU-453), or the same defect in other words (POMJU-806, POMJU-442, POMJU-757,
+// POMJU-70).
 var nearCopyMarkedDuplicates = []string{
-	"INFRA-806", "INFRA-782", "INFRA-375", "INFRA-452", "INFRA-442",
-	"INFRA-451", "INFRA-756", "INFRA-454", "INFRA-757", "INFRA-70", "INFRA-453",
+	"POMJU-806", "POMJU-782", "POMJU-375", "POMJU-452", "POMJU-442",
+	"POMJU-451", "POMJU-756", "POMJU-454", "POMJU-757", "POMJU-70", "POMJU-453",
 }
 
 func TestNearCopyRefusalReplay(t *testing.T) {

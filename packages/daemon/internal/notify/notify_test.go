@@ -120,7 +120,7 @@ func TestHTTPPublisherTellsANoHolderRefusalFromAnyOther(t *testing.T) {
 }
 
 // A listener that carries the session's state in its refusal tells an unresponsive holder from a
-// dead one (dispatch://INFRA-392): `holder_lapsed` with `holder_state` `unresponsive` is a session
+// dead one (dispatch://POMJU-392): `holder_lapsed` with `holder_state` `unresponsive` is a session
 // past its live window but inside its gone horizon, which still holds the role, so the publish is
 // held and sent again (ErrHolderUnresponsive) rather than read as a role nobody holds. A holder
 // already `gone`, a role nobody claimed, and a `holder_lapsed` from a listener that names no state

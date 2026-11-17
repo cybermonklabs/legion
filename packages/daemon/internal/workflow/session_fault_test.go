@@ -1,7 +1,7 @@
 package workflow
 
 // A worker that lost its session, and a worker no start can reach because the session store
-// cannot be asked, are both reported to the people who can act on them: dispatch://INFRA-714 R8.
+// cannot be asked, are both reported to the people who can act on them: dispatch://POMJU-714 R8.
 
 import (
 	"strings"

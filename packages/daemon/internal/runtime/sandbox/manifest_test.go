@@ -469,7 +469,7 @@ func containerNamed(t *testing.T, pod corev1.PodSpec, name string) corev1.Contai
 
 // podDisk is the claim template of an issue pod's own disk: its issue volume is a generic
 // ephemeral volume, which Kubernetes creates with the pod and deletes with the pod, never a claim
-// that outlived an earlier pod (INFRA-80).
+// that outlived an earlier pod (POMJU-80).
 func podDisk(t *testing.T, pod corev1.PodSpec) *corev1.PersistentVolumeClaimTemplate {
 	t.Helper()
 	at := slices.IndexFunc(pod.Volumes, func(v corev1.Volume) bool { return v.Name == issueVolume })
@@ -992,7 +992,7 @@ func TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes(t *testing.T) {
 // mount (no other mount covering them) and outside the workspace, whose tree is the project's, so
 // every role of the pod runs the .venv as it is and reuses what another role of the pod
 // downloaded. No later pod reuses any of it: the disk is the pod's own and dies with it
-// (INFRA-80), so a second pod of the issue downloads afresh. The cache is at the same path in
+// (POMJU-80), so a second pod of the issue downloads afresh. The cache is at the same path in
 // every pod, and the interpreter directory is the issue's, so two pods of one issue name the same
 // paths on disks of their own, and a second issue of the tree names another.
 func TestUvKeepsItsPythonsAndCacheOnTheIssueVolume(t *testing.T) {
@@ -1061,7 +1061,7 @@ func TestTheManifestCarriesADNSNamedStreamAndDaemonURL(t *testing.T) {
 
 // The provisioning token never shares a process with anything a tree agent can write (Stage 4b
 // Task 4b.6b), and it reaches the containers that hold it as a file, never as an environment
-// value (INFRA-1254). Two rules, counted apart:
+// value (POMJU-1254). Two rules, counted apart:
 //
 //   - The volume route — the claim's Secret as a Secret volume, or projected — belongs to the
 //     pod's token-holding init containers alone: workspace-fetch, and skills-fetch where the
@@ -1088,7 +1088,7 @@ func TestTheManifestCarriesADNSNamedStreamAndDaemonURL(t *testing.T) {
 // What the boundary protects is identity, not a repository-write token kept off the tree volume:
 // an implement role now holds the implement App's token — for the issue's owner the App's own
 // installation token, which writes, where the provisioning token is that same App narrowed to
-// reading, so the two are no longer one lease (INFRA-1254) — read-only in its own gh directory
+// reading, so the two are no longer one lease (POMJU-1254) — read-only in its own gh directory
 // (GHConfigDir), and a review role the review App's. What the fetch container's boundary still
 // keeps is that no review role ever holds the implement App's token, which is what lets the
 // daemon read a push's App from the App that made it, and so tell the review App's red tests
@@ -2270,7 +2270,7 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 
 // An issue's Sandbox owns no volume at all: its pod's disk is a generic ephemeral volume declared
 // in the pod template, which Kubernetes creates with the pod and deletes with the pod, so an
-// issue's work never outlives the pod that did it (INFRA-80). The claim it is made from is the
+// issue's work never outlives the pod that did it (POMJU-80). The claim it is made from is the
 // operator's StorageClass, a microVM pod's the microVM block's, at the operator's size, and
 // carries no metadata: the pinned CRD declares ephemeral.volumeClaimTemplate.metadata a bare object
 // with no properties, so a label set there would be pruned by the API server without a word

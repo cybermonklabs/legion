@@ -36,7 +36,7 @@ func keyedPost(server *httptest.Server, path, body, key string, timeout time.Dur
 	return response.StatusCode, string(answer), response.Header, err
 }
 
-// INFRA-258. A write the server takes longer to finish than its client waits still lands, once:
+// POMJU-258. A write the server takes longer to finish than its client waits still lands, once:
 // the handler runs on past the client's giving up, and the client's repeat under its key is told
 // the first run is still going (409 KEY_IN_FLIGHT), then answered the first run's own stored
 // answer. A handler bound to its client's cancellation rolled back at the client's deadline, and
@@ -338,7 +338,7 @@ func (b *countingBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// INFRA-258. A repeat of a keyed write whose first request still
+// POMJU-258. A repeat of a keyed write whose first request still
 // runs is never spooled: the key is looked up by its login and key before the body is read, so a
 // slow upload's repeats - the page asks again about once a second - are never written to disk again
 // only to be told to wait. Its body is read to its end, discarded and written only to the digest it

@@ -198,7 +198,7 @@ The build's toolchain step reads `go env CGO_ENABLED` with the variable removed 
 and `runtime.kubernetes.pod.env` refuses `CGO_ENABLED`, as it refuses every variable the image's `ENV` sets.
 Two cases get Go's own default, cgo on: a scrubbed environment that also switches toolchain (the switched toolchain's `go.env` lacks the line), and a `go/build` reader under a scrubbed environment (it never reads `go.env`).
 With `gcc` present both work: the switched toolchain's builds succeed, linked dynamically, and the reader's cgo processing runs.
-A deployment still pinning an older image digest has no `gcc` and needs zig as `CC` (`docs/solutions/testing/the-race-detector-runs-in-a-worker-pod-with-zig-as-the-c-compiler-and-a-library-callback-from-an-earlier-test-writes-your-log-sink-INFRA-182.md`).
+A deployment still pinning an older image digest has no `gcc` and needs zig as `CC` (`docs/solutions/testing/the-race-detector-runs-in-a-worker-pod-with-zig-as-the-c-compiler-and-a-library-callback-from-an-earlier-test-writes-your-log-sink-POMJU-182.md`).
 
 The image also carries the Go module cache of the two modules `go.work` binds, so a role's first Go build in this repository reads no package registry.
 The build fills it in the Dockerfile's `go` stage, in the layer that copies `go.work`, `go.work.sum` and each module's `go.mod` and `go.sum` and runs `go mod download`, above every source `COPY`, so a commit never rebuilds it.
@@ -877,7 +877,7 @@ the loader gives both the same line and its reason (`readSessionStore`, `interna
 
 ```
 runtime.kubernetes.session_store must name a store that keeps sessions in a database, and is
-required (INFRA-80): an issue pod's disk is the pod's own ephemeral volume, deleted with the pod,
+required (POMJU-80): an issue pod's disk is the pod's own ephemeral volume, deleted with the pod,
 so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it,
 the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three
 such failures retire the claim
@@ -977,13 +977,13 @@ this store removes the password, not that trade, and the rights the login has in
 Under `pvc` a session was a file on a disk only its own issue's pod could mount, so no issue could reach another's at all, and this release widens that boundary rather than keeping it.
 That is the trade LEGION-654's spec accepts for sessions that outlive their pods, and it is a trade to weigh before the rollout rather than after:
 a deployment that cannot accept one agent reaching another's transcript has no setting in this release that stops it.
-Where it is closed properly is `dispatch://INFRA-228` — a credential per issue, or a row-level policy the database itself enforces
+Where it is closed properly is `dispatch://POMJU-228` — a credential per issue, or a row-level policy the database itself enforces
 — and nothing in this release anticipates that work.
 
 The login is not narrowed here, and narrowing it would buy nothing.
 A login restricted to `omp_session_files` and `omp_session_files_parts` still reads and writes every row of both, which is the whole of the exposure above;
 isolation has to be per issue — a credential of its own, or a policy the rows are checked against — and no table-level grant is that.
-The project also declined the same narrowing on this same store on `dispatch://INFRA-244`, so deciding the other way here would put two contradictory postures on one credential in one deployment.
+The project also declined the same narrowing on this same store on `dispatch://POMJU-244`, so deciding the other way here would put two contradictory postures on one credential in one deployment.
 What this release does ask of the login is unchanged:
 give it no rights beyond the database of those two tables, and treat its URL as a credential every agent holds.
 
@@ -1699,7 +1699,7 @@ the controller's working root and the caches' clones, which hold no issue's work
 
 #### Rolling back below the release that guards an issue pod's memory
 
-The release that added the memory guard in an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3557`.
+The release that added the memory guard in an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://POMJU-3557`.
 Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
 A rollback below it has one step of its own, and one effect on the pods that still run.
 
@@ -1876,7 +1876,7 @@ With the cap full, which is the normal state, that strands every root waiting in
 
 **The outbox rows the earlier release refuses must go, with or without a dump.**
 This release writes one mark into a phase worker's start — `needsSlot`, on the one row that start is (`record.SuperviseRequest`, written by `workflow.StartOrOwe`) — and two notice kinds, `children-first` and `waiting-for-slot`.
-A start a daemon that ran before INFRA-1573 wrote carries a second mark, `relaunch`, on the task-less row of the pair a start was then;
+A start a daemon that ran before POMJU-1573 wrote carries a second mark, `relaunch`, on the task-less row of the pair a start was then;
 this release writes that mark nowhere and acts on it nowhere, but such a row can still be queued when the rollback runs, so the statement below strips it too.
 The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), its `validNoticeKind` knows neither kind, and its `execute` returns the decode error, which is a permanent refusal for neither kind of row: every such row still queued fails and is retried on its backoff for ever, so the worker it was written for is never started again and the notice reaches nobody.
 A notice row left there costs that daemon more than its own notice: while it waits on its backoff it is one of the rows `WaitingNotices` returns, the state source reads every one of them through `pacedCatchUps`, and the decode fails there too, so `GET /legion/v1/state` fails for the whole project — `legion state`, every role's `read_record` and the controller's state reads with it — and the release of an architect's waiting notices (`releaseWaiting`) fails the same way.
@@ -1894,7 +1894,7 @@ delete from outbox where kind = 'notice' and payload->>'kind' = 'waiting-for-slo
 
 A start that was waiting for its issue's slot loses the mark that held it unclaimable, so the earlier release claims it as soon as it is due and delivers its task: that worker starts under the earlier release's own cap, which counts the trees holding a slot and not the issues at work, and the slot statements above are what keep that cap honest.
 A phase worker's start is one row, so nothing stands beside it to bring the session back on its own: the row the earlier release claims starts the worker and delivers that worker's task.
-A row still carrying `relaunch` is the task-less half of a pair a daemon that ran before INFRA-1573 wrote, and stripped of both marks it is an ordinary start of the same role carrying no task, which brings the claim back and delivers nothing, so for a claim that holds no task of its own that pair starts one worker and hands it one task between them.
+A row still carrying `relaunch` is the task-less half of a pair a daemon that ran before POMJU-1573 wrote, and stripped of both marks it is an ordinary start of the same role carrying no task, which brings the claim back and delivers nothing, so for a claim that holds no task of its own that pair starts one worker and hands it one task between them.
 One case hands that worker the same task twice: the architect's or the operator's retry of a held phase, whose start carries `ResumeTask` nowhere (`restart` → `started`, `internal/workflow/effects.go`), where the claim failed still holding the task of the phase being retried.
 The earlier release retries that failed claim as a plain start does, and the retry sends it the task it kept.
 The start row then fails the earlier release's guard against a second copy, which holds only for a row marked `ResumeTask` or a claim still failed (`internal/daemon/outbox.go` on that release), so the row's own copy waits while the kept task is pending and is delivered after it, a second prompt for the phase the worker is already on.
@@ -1990,7 +1990,7 @@ It keeps its role until the daemon's publication of the end lands.
 The claim write that ends the claim queues that publication in its own transaction, so the end and its publication commit together or not at all.
 An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published only when the daemon makes that write again, at the claim's next decision, because until then the store still holds the claim live.
 In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
-An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://POMJU-4099).
 A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
 Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
@@ -2140,7 +2140,7 @@ The daemon-launched controller's pod is in scope for both warnings, and for the 
 An unset `service_account` is read as the namespace's `default` on both sides, so a pod running as `default` under a deployment that names none has not drifted at all.
 The boot action is the log line alone: refusing to adopt a drifted pod would stop observing a live pod and trigger nothing.
 
-An issue pod on another image is replaced by its own update round (INFRA-484, [The disk dies with its pod](#the-disk-dies-with-its-pod)):
+An issue pod on another image is replaced by its own update round (POMJU-484, [The disk dies with its pod](#the-disk-dies-with-its-pod)):
 the orphan sweep reads the image as drift and publishes one message to each role's own topic, which asks the role to push its work and answer `ready_for_update`.
 The daemon ends the pod once every role has answered and no turn runs, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered.
 So pinning such a release reaches a running issue pod by itself, without stopping a tree.
@@ -2191,7 +2191,7 @@ an install refreshes no binary, so only a new image carries that change, and the
 **Moving from one container per role to one `roles` container (daemon API contract 39).**
 A release at contract 39 builds an issue pod with one container, `roles`, whose launcher runs every role in multi-role mode, which only an image of that release's `legion` has:
 pin the worker image with the daemon release, since the image probe refuses an image whose `pi-legion` declares another contract.
-The release before it is contract 38, the blocked issues (INFRA-225), whose issue pods run the six role containers of contract 37, the pod-owned disk ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk)), and this section is written against it:
+The release before it is contract 38, the blocked issues (POMJU-225), whose issue pods run the six role containers of contract 37, the pod-owned disk ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk)), and this section is written against it:
 a deployment still on a release before contract 37 cuts over to the pod-owned disk first.
 A rollback rewrites the database in place and needs no dump (below);
 a safety copy taken with the daemon stopped does no harm, as `pg_dump -Fc -T omp_session_files -T
@@ -2522,12 +2522,12 @@ The earlier release reads no such table, and the delete makes the store report t
 The drop is owed to the roll-forward, which cannot create the table again while it stands.
 `Migrate` makes the table again, empty, and the re-armed upgrade marks it again.
 The SQL was run on 2026-11-15 at 17:51Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500, leaving 143 versions recorded, and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
-`Migrate` then applied the upgrade, the claim handshake, dispatch://INFRA-3274's 20261114031356_merge_queue_removal and the mark, and left 147 versions recorded, the highest 20261114061900, with the architect's row and claim at entry 1, the row unmarked, and two marks.
+`Migrate` then applied the upgrade, the claim handshake, dispatch://POMJU-3274's 20261114031356_merge_queue_removal and the mark, and left 147 versions recorded, the highest 20261114061900, with the architect's row and claim at entry 1, the row unmarked, and two marks.
 After it the architect's claim was written given entry 2 with a handshake of that entry, queued and confirmed, the architect's row was written at entry 2 carrying a resume's task marked to be sent as written, and one unsent `architect-stalled` wake was written into the outbox.
 This block's first run printed `BEGIN`, `ALTER TABLE`, `DELETE 1`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE 1`, `DROP TABLE`, `DELETE 1` and `COMMIT`.
 Its rerun printed `BEGIN`, `NOTICE:  column "entry_verbatim" of relation "phases" does not exist, skipping`, `ALTER TABLE`, `DELETE 0`, `NOTICE:  column "handshake_entry" of relation "claims" does not exist, skipping` and the same `NOTICE` for each of the other three handshake columns, each followed by `ALTER TABLE`, then `DELETE 0`, `DELETE 0`, `DELETE 0`, `NOTICE:  table "architect_stalled_notices" does not exist, skipping`, `DROP TABLE`, `DELETE 0` and `COMMIT`.
 The phase entry's block then printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 0`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and all three runs exited 0.
-After them the store reported 20261114031356 with 142 versions recorded: that is dispatch://INFRA-3274's 20261114031356_merge_queue_removal, the highest row neither block touches (`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward`).
+After them the store reported 20261114031356 with 142 versions recorded: that is dispatch://POMJU-3274's 20261114031356_merge_queue_removal, the highest row neither block touches (`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward`).
 Neither `architect_stalled_notices` nor the wake stood, the claims table held no `handshake_` column, and the architect's `phases` row stood without `entry_verbatim` and the entry columns and its claim without `given_entry` and `served_entry`.
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
@@ -2579,7 +2579,7 @@ Such a migration keeps its own row through the `delete`, so it never runs again,
 reverse such a migration by its own way back first, and run this block after it.
 Eleven migrations are recorded above this one at contract 146.
 20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
-20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, and 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touch none of the six either, so the block holds over them too, and a rollback to a release before them reverses them by their own steps.
+20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, and 20261114031356_merge_queue_removal, of dispatch://POMJU-3274, touch none of the six either, so the block holds over them too, and a rollback to a release before them reverses them by their own steps.
 20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
 20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
@@ -2649,7 +2649,7 @@ a registered claim whose recorded contract differs from the daemon's own, or is 
 
 The lane asks its worker nothing and opens no round (`refreshPlugin` in `packages/daemon/internal/supervise/plugin.go`).
 A stale claim costs one paced wake, the relaunch itself, which keeps the pod and the disk, so what a worker loses is the turn in flight and no workspace with it.
-Until this release the daemon asked first — a claim whose plugin had `ready_for_update` was given an update round of its own, `plugin:<daemon contract>`, and kept running until its worker had pushed and answered — and that ask cost a second paced wake and a model turn for every live session, which took INFRA's wake queue 6 h 23 min to drain at the boot of 2026-11-10 (dispatch://INFRA-2712).
+Until this release the daemon asked first — a claim whose plugin had `ready_for_update` was given an update round of its own, `plugin:<daemon contract>`, and kept running until its worker had pushed and answered — and that ask cost a second paced wake and a model turn for every live session, which took POMJU's wake queue 6 h 23 min to drain at the boot of 2026-11-10 (dispatch://POMJU-2712).
 Nothing opens such a round now, and a boot takes every claim an earlier daemon left in one out of it (`endPluginRounds` in `packages/daemon/internal/daemon/daemon.go`), which releases the task that round was holding back.
 The pod update round is untouched by all this: it replaces a pod and its disk, so it still asks every role in that pod to push first, and it ends at its bound whatever the roles answer ("Pinning a release that drops what a running pod still uses" above).
 
@@ -2733,7 +2733,7 @@ A relaunched process that registers still on the old contract is charged as a la
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.
 `legion claims list` also prints one line of its own under the claims, what the daemon's last pod-update sweep decided about the project's two limits on opening rounds ("The disk dies with its pod" below, `podUpdateRoundsLine` in `packages/daemon/cmd/legion/claims.go`):
-`pod update rounds: max open 2, 1 a minute; in a round: 2 — INFRA-10, INFRA-1000; waiting on the open-round limit: 25 — <keys>; waiting on the limit a minute: none`, with `no limit` in place of a limit the file does not set, at most 20 keys of a list and then `and <n> more`, and `pod update rounds: the daemon has not swept yet` before the first sweep.
+`pod update rounds: max open 2, 1 a minute; in a round: 2 — POMJU-10, POMJU-1000; waiting on the open-round limit: 25 — <keys>; waiting on the limit a minute: none`, with `no limit` in place of a limit the file does not set, at most 20 keys of a list and then `and <n> more`, and `pod update rounds: the daemon has not swept yet` before the first sweep.
 It is that sweep's own word, written whole when the sweep decided it, and it is printed whenever the command prints at all, over no claims as over many:
 an operator served no line cannot tell a daemon that held no issue back from a binary too old to know the limits.
 A `legion` of this release against a daemon of an earlier one, which serves no such record, prints `pod update rounds: this daemon does not report them; it is older than this binary` rather than the line of a daemon that has not swept.
@@ -2744,7 +2744,7 @@ the launcher, the shim and `workspace-init` keep running the generation they wer
 A release that changes what a producer writes **into an envelope** is rolled in one order, which the contract number above does not cover:
 that number holds a process to the daemon's API, while an envelope is written by one process and read by another, and the two are pinned separately.
 **Roll the listener Deployment, then the plugin pair, then the Dispatch Deployment**, and expect the loss the middle step leaves.
-Each of the other orders was traced on INFRA-1225, which replaced the string `none` with the literal `false`:
+Each of the other orders was traced on POMJU-1225, which replaced the string `none` with the literal `false`:
 
 - **Plugins before the listener breaks sends.**
   The new skills tell an agent to write the new value, and the listener of the previous image decodes the field as a `*string`, so it answers `400` and the message is never sent.
@@ -2754,7 +2754,7 @@ Each of the other orders was traced on INFRA-1225, which replaced the string `no
 
 - **Plugins last costs a replay window, and nothing else.**
   A `@sjawhar/pi-envoy` from before the change declares the field as the three words it knew, and its replay reads a stored frame against that strict schema, so a frame carrying the new value fails the parse and is logged and settled as "not an Envoy envelope".
-  A session on such a pair keeps every live delivery, because its card renderer reads the field leniently and drops a value it does not know, and loses from its 72-hour replay window **every message the new value marks** — on INFRA-1225 the Dispatch deliveries that carry it, an answered ask, an approved artifact and a plain comment mention, and every agent message sent as wanting no reply, including one an un-rolled sender sent itself, since a rolled listener writes each of those to the bus in the new spelling too.
+  A session on such a pair keeps every live delivery, because its card renderer reads the field leniently and drops a value it does not know, and loses from its 72-hour replay window **every message the new value marks** — on POMJU-1225 the Dispatch deliveries that carry it, an answered ask, an approved artifact and a plain comment mention, and every agent message sent as wanting no reply, including one an un-rolled sender sent itself, since a rolled listener writes each of those to the bus in the new spelling too.
 
 That last loss is the one this order accepts, so the window between the listener and the plugin pair is the window to keep short.
 
@@ -3055,7 +3055,7 @@ runtime:
 On a container's first start the `update` finds no such marketplace, so the role's log shows one `Failed to update marketplace … not found` line before the `add` succeeds; that line is expected.
 
 **Under this runtime a role's `setup` may install nothing from GitHub.**
-A clone in a role's launch context ends the pod's gVisor sandbox about four seconds after it starts, on every launch observed, and the pod's `roles` container exits 128 (the deployment repository's issue INFRA-1262).
+A clone in a role's launch context ends the pod's gVisor sandbox about four seconds after it starts, on every launch observed, and the pod's `roles` container exits 128 (the deployment repository's issue POMJU-1262).
 The same command run by `kubectl exec` in the same pod exits 0, and why the launch-time clone ends the sandbox is not known.
 So the example above is what `skills_repository` replaces, and a `setup` that still fetches is a `setup` that kills its pod.
 What a deployment should run in `setup` instead is a check that the install the pod already made is there:
@@ -3447,7 +3447,7 @@ A daemon of this release does not start on a file it refuses, so run this releas
 Where the check refuses the name, give that volume another name, in `volumes` and in each `volume_mounts` entry whose `volume` names it.
 
 **Rolling back.**
-The release that adds the block is daemon API contract 151, whose entry in `packages/daemon/internal/api/version.go` is for `dispatch://INFRA-3729`.
+The release that adds the block is daemon API contract 151, whose entry in `packages/daemon/internal/api/version.go` is for `dispatch://POMJU-3729`.
 A daemon below contract 151 refuses the key at boot (`unknown key runtime.kubernetes.sandbox`), so a rollback below that contract removes the `sandbox` block from `legion.yaml` before it pins the earlier release.
 `legion start --check-config` of that release shows the refusal first.
 An earlier daemon reads no `sandbox` member in a pod's recorded shape, so it replaces a microVM pod only for another drift.
@@ -3613,7 +3613,7 @@ The kubelet sets a container's starting score by its pod's QoS class, so the sha
   The kernel then stops a protected process before a command where that process is larger than the command by more than that share.
   Such a process can be an agent.
 
-The tester measured both starting scores, `-997` and 992, on runc nodes, where a container runs on the node's own kernel, and not in a microVM (the result at `aae5e969`, dispatch://INFRA-3729).
+The tester measured both starting scores, `-997` and 992, on runc nodes, where a container runs on the node's own kernel, and not in a microVM (the result at `aae5e969`, dispatch://POMJU-3729).
 A microVM pod's own starting score is the `score=` of its watch's `start` line ("The lines", below).
 
 An issue pod is `Guaranteed` while each `cpu` and `memory` request of `runtime.kubernetes.resources.issue` equals its limit.
@@ -3759,7 +3759,7 @@ When the wait ends, the kills that the watch named no process for have one `kill
 - A victim whose parent reaps it before the watch reads its `status`, at the wake or at the next scan, shows no sign, and its kill has the `killed unnamed` line, unless a pass names another process in its place (the first item above).
   On a real kernel (runc, Linux 6.12.110, with a test counter raised in place just before a real SIGKILL), the watch named a 1 GiB process that its parent reaps at once 10 times of 10, and a `sleep` reaped at once 5 times of 5, in a run on 2026-11-16 at `9ac8e5a8`, the head the review approved (pull request #4106).
   With the wake off it named the 1 GiB process 8 times of 10, and the `sleep` 0 times of 5.
-  A real out-of-memory kill in a microVM has not been measured; dispatch://INFRA-3735's canary is the first pod where it can be read.
+  A real out-of-memory kill in a microVM has not been measured; dispatch://POMJU-3735's canary is the first pod where it can be read.
 
 The kernel can also stop a process that the classifier protects ("The score", above), and the watch names it as it names a command.
 Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
@@ -3899,7 +3899,7 @@ The watch reads the usage at every scan, and `memory.stat` and the limit every 5
 - `raised` counts the hour's score writes that took, a raise or a setting back, and `unraised` counts the writes that failed.
   Both are `-` once the watch is off.
 
-A day's highest working set, the figure dispatch://INFRA-3735's canary compares with the node's, is the highest `working_set_high` of that day's lines.
+A day's highest working set, the figure dispatch://POMJU-3735's canary compares with the node's, is the highest `working_set_high` of that day's lines.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: guest memory: hour '`.
 
 ### The deployment's capability report
@@ -3907,7 +3907,7 @@ Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: g
 `packages/daemon/internal/capabilities` is the one list of what a Legion worker can do (LEGION-578:
 every worker is a full agent), 21 rows, each checked at one site.
 The image rows (`eval-js`, `eval-python`, `browser`, `lsp`, `codegraph`, `skills`, `toolchain`, `claude-code`) are `legion probe-image`'s ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), `present` once the probe passed;
-the live rows (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) are measured by each claimed session while it runs, inside its own Oh My Pi, and reported on a `claims/ready` of its own, and the daemon renders each from what its live sessions reported (LEGION-663, INFRA-927;
+the live rows (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) are measured by each claimed session while it runs, inside its own Oh My Pi, and reported on a `claims/ready` of its own, and the daemon renders each from what its live sessions reported (LEGION-663, POMJU-927;
 the paragraphs after the deployment rows);
 the withheld rows carry the decision that keeps them from every worker (`network`:
 dispatch://LEGION-5, the pod is the boundary, except a workload a role starts where its deployment's cluster admits it and the Service fronting it ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
@@ -3954,7 +3954,7 @@ it sends each report on a `claims/ready` of its own (`capabilities`:
 `measuredAt`, `elapsedMs` and `rows[{name, ok, detail}]`), each check within 8 s and the whole report within 10 s, the budgets unchanged.
 A measurement whose rows are not all present, a report the daemon refuses and a call that fails are each followed by another attempt five ticks later, for at most three measurements in the life of the process;
 a session whose accepted report had every row present measures no more, and a report measured while a turn starts is held and sent at the next idle tick.
-So a role's rows read `unchecked` from its ready until its first idle measurement (30 s to 55 s for a role that is not prompted, and until the first idle tick after its turn for one that is), where before this change a check that lost the boot race read `open` for the session's life (INFRA-927).
+So a role's rows read `unchecked` from its ready until its first idle measurement (30 s to 55 s for a role that is not prompted, and until the first idle tick after its turn for one that is), where before this change a check that lost the boot race read `open` for the session's life (POMJU-927).
 A check that fails, throws or runs past its budget is a failing row carrying the reason, never a stopped session, and the daemon normalises what arrives (a live row the session left out reads `not
 reported by this session`, a name the table has no live row for is dropped, a detail is one line with every credential it quotes redacted, cut at 1024 bytes) and never refuses a ready for what it reports.
 The state route answers without authentication, so the extension cleans each detail the same way before it sends it, and the daemon cleans a report it reads back from the store at boot too.
@@ -4195,7 +4195,7 @@ a link an earlier generation of the role left there (a `~/.cache` linked elsewhe
 a link, which role-init does not follow on the way to a mount point: replaced it with the mount
 point's place`, and anything else in the way that is neither a link nor a directory fails the generation.
 role-init then starts the shim's argv unchanged as its child, cloned into a nested user namespace that maps uid and gid 1000 with no capabilities, and stays the PID namespace's init, so when a generation ends every process it started ends with it and a role's `kill -9 -1` reaches none of its siblings'.
-The isolation rests on ownership and private mounts, not on a read-only root, which a nested user namespace could undo (`docs/solutions/legion/namespace-isolation-under-gvisor-holds-on-locked-mounts-and-ownership-not-a-read-only-root-INFRA-208.md`).
+The isolation rests on ownership and private mounts, not on a read-only root, which a nested user namespace could undo (`docs/solutions/legion/namespace-isolation-under-gvisor-holds-on-locked-mounts-and-ownership-not-a-read-only-root-POMJU-208.md`).
 An operator mount (`runtime.kubernetes.pod.volume_mounts`) at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or at or above the image's other spellings of them (`/var/run/lock`, `/run/shm`, `/var/run/shm`), is refused:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p> is at or above <dir>, which every role's namespace in an issue pod covers with its own: mount under it instead`.
 A mount under `/tmp` and the like is allowed, and role-init carries it back.
@@ -4286,7 +4286,7 @@ A bearer the controller is given is presented as it is at main: the token `dispa
 That client alone reads the setting, and its name lies outside `AGENT_SECRETS_*` because `agent-secrets NAME -- <cmd>` strips that prefix's variables from its child but for a few (`sessionIdentityVars`, `packages/envoy/cmd/agent-secrets/main.go`), so a `dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
 The setting does not change the controller's own `agent-secrets` secret reads: they are signed exactly as they would be without it.
 What the broker can already issue is [The Dispatch identity the broker can issue](#the-dispatch-identity-the-broker-can-issue).
-`dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and Dispatch already accepts one, as that section says.
+`dispatch://POMJU-267` is where Legion's pods and its daemon get tokens of their own, and Dispatch already accepts one, as that section says.
 
 Every role is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh`, the bundle's root (its own, bound there in its namespaces), `GH_CONFIG_DIR` at the issue's repository's owner's directory under it (the table above), and `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
 The `gh` first on its PATH is `/opt/legion/bin/gh`, which runs `legion gh`:
@@ -4327,7 +4327,7 @@ The namespaces keep a role's tokens and private files out of a sibling's own rea
 One credential is the pod's and not a role's: the exchange token of `runtime.kubernetes.agent_secrets.exchange_audience` ([Operator configuration](#operator-configuration)), which every role of the pod reads at the same path, and every role's session is registered for that one pod.
 Each role's session is registered bound to that role's own key: the thumbprint of the key the role's shim names at its hello, which the daemon sends with every write of the registration.
 The broker refuses a trade for a session proved with any other key, so a sibling role that holds the pod's exchange token and its own key is refused another role's session.
-Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
+Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://POMJU-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
 That closes a direct mint only: the roles of one issue are no boundary against code a sibling plants in another role's process, which then runs with that role's key as it runs with that role's tokens ([Trust model](#trust-model-the-provisioning-token) lists what a plant reaches).
 Through the helper, every git a role runs, the setup command's ([Configuration](#configuration)) and an agent's own clone of another repository included, answers `https://github.com/<owner>/…` from the role's own files when `<owner>` is an owner the bundle holds a directory for (one of the project's) and the role's App is installed on that repository;
 git in the shared clone asks the same helper it asked before, and every other host is left to the configuration files.
@@ -4854,9 +4854,9 @@ A role sometimes needs something *running* rather than installed — a database 
 Its own pod holds a server only as a test harness's own rootless install at the pod's fixed reservation, which is how the Dispatch browser suite's Postgres runs today ([The tools a role's own work needs](#the-tools-a-roles-own-work-needs));
 a server image, or more processors than the pod reserves, it cannot hold, and the worker image cannot carry a running server, so a role starts one in the cluster as a Job and reaches it by a Service name.
 What makes that possible is the deployment's, not Legion's:
-the ingress rule that admits connections from the namespace Legion's pods run in, the grant on Services and the admission rule that holds them, and the quota that counts them are declared in the deployment's own repository and applied by a person (dispatch://INFRA-206).
+the ingress rule that admits connections from the namespace Legion's pods run in, the grant on Services and the admission rule that holds them, and the quota that counts them are declared in the deployment's own repository and applied by a person (dispatch://POMJU-206).
 This section is what a role does where they exist.
-Every rule below is that issue's and this issue's specification (dispatch://INFRA-71), each one stated as the condition the namespace's admission enforces;
+Every rule below is that issue's and this issue's specification (dispatch://POMJU-71), each one stated as the condition the namespace's admission enforces;
 a workload that breaks one is refused at submission with a message naming the rule it broke, so nothing here has to be taken on trust
 — with the one exception this section marks where it arises, the reachability label, which admission does not check and whose absence is a workload that starts, costs its quota and answers nothing.
 
@@ -4877,7 +4877,7 @@ when retrieving current configuration of: … cannot get resource "services"` an
 Both verbs are needed for the sequence as written, which is why the gate asks for both.
 A deployment that granted the create without the read would still admit a `kubectl create` of the same file;
 this section publishes no second form for that case, and no deployment answering that way has been measured
-— in this one, before dispatch://INFRA-206's declarations were applied, both Service answers were `no`.
+— in this one, before dispatch://POMJU-206's declarations were applied, both Service answers were `no`.
 
 None of the three is the answer a role with no credential gets.
 The image ships no kubeconfig and sets no `KUBECONFIG`, so without a projected token `kubectl` builds no in-cluster configuration at all:
@@ -4941,14 +4941,14 @@ the last is enforced by nothing, which is why it is marked where it stands:
 Name the workload for the issue **and for the run**, as everything else on this cluster is named for what owns it (`issue-legion-<project>-<issue key lowercased>`, `legion-<project>-<issue key lowercased>` above).
 The issue is the name's prefix, `<issue key lowercased>-<what it is>-`, which the Job's manifest carries as `metadata.generateName`;
 the run is the API server's part, five random characters it appends at each create, answering with the whole name
-— for instance `infra-71-postgres-` followed by five such characters — which the sequence reads from that answer and writes into its Service.
+— for instance `pomju-71-postgres-` followed by five such characters — which the sequence reads from that answer and writes into its Service.
 The issue key carries its project, so the name cannot collide with another project's.
 The rest is the server's for a reason: a name a role picks itself can be one that something else in the namespace already holds or will declare, and a Service takes its Job's name, so the Job's name is taken among the Services too, and the first anyone knows of it is another stack's apply failing `AlreadyExists`.
 A name the API server generates is not one any declaration chose: it exists from the create that made it.
 `kubectl apply` refuses `generateName` before it sends anything (`error: from <prefix>: cannot use generate name with apply`), which is why the sequence creates its Job with `kubectl create` and applies only its Service.
 
 A name a role reuses is a name something else is using, as was measured here before the server named the run.
-A bare `postgres`, or even `infra-71-postgres`, is shared by six roles of one issue under one identity, and every step after the Job's acts on whatever holds that name:
+A bare `postgres`, or even `pomju-71-postgres`, is shared by six roles of one issue under one identity, and every step after the Job's acts on whatever holds that name:
 both waits select its pod, the reachability check reaches its database, and the trap's `kubectl delete job` takes it and its Service away mid-test.
 And a role that re-ran the sequence after any failure met a worse version of the same thing, because a pod keeps its `job-name` label while it terminates:
 measured here, the second run's `--for=create` returned 0 in **1 s on the previous run's dying pod**, and the Ready wait reported `condition met` for one pod and `NotFound` for the other while the workload that would actually serve was still `Pending`.
@@ -5129,7 +5129,7 @@ That trap prints `cleanup: no Job name was read; deleting
 by label sequence-run=<value>`, deletes every Job the server lists with that label, with `--cascade=foreground`, lists the Jobs carrying it, and exits with its status.
 After a refused create, or a stop before the create's request left, there is no Job, and the delete finds nothing.
 Otherwise the delete finds the Job only if the API server has stored it by the time the delete lists the Jobs.
-In every run measured on 2026-10-25 for dispatch://INFRA-232 whose label delete found a Job
+In every run measured on 2026-10-25 for dispatch://POMJU-232 whose label delete found a Job
 — the stop placed between the create's answer and the line that reads it, and two of the twenty-six stops in the bullet below, sent 0.33 s and 0.35 s after the first line (that issue's tester measured two more, at 0.318 s and 0.320 s, sjawhar/legion#2195)
 — the delete removed it, and none of the twenty-six left a Job.
 Nothing the 0.33 s and 0.35 s runs printed shows whether their stop landed while the create was in flight or after its answer.
@@ -5194,7 +5194,7 @@ Each printed its label first, and `kubectl delete job -l sequence-run=<the print
 
 That check is `python3`, which the image carries, because **the role container had no client for any of these servers** when it was written ([Worker image](#worker-image)), a role may not `exec` into the workload's pod, and installing one in its own pod is the withheld `operator-setup` capability.
 The first of those three reasons has since changed, and only the first:
-the image this repository builds carries `psql`, `redis-cli`, `sqlite3`, `nc` and `dig` from dispatch://INFRA-221's merge on 2026-10-25 onward, and a role has them once its deployment pins a digest built from that merge or a later commit of `main` ([Pin by digest, never by tag](#pin-by-digest-never-by-tag))
+the image this repository builds carries `psql`, `redis-cli`, `sqlite3`, `nc` and `dig` from dispatch://POMJU-221's merge on 2026-10-25 onward, and a role has them once its deployment pins a digest built from that merge or a later commit of `main` ([Pin by digest, never by tag](#pin-by-digest-never-by-tag))
 — a role on an older digest still has none of them, and `python3` runs on both.
 The role container the runs of 2026-10-25 below came from was one of those: `command -v psql redis-cli sqlite3 nc dig` found none of the five.
 What the check proves is what a role needs first, that the address resolves and the port answers, and when it does not, it names the class of the failure, which is what the readings below key on.
@@ -5227,13 +5227,13 @@ The Service's endpoints are still out of reach (`kubectl auth can-i get endpoint
 
 **What of this has been run, where, and when.**
 This section is written from commands executed in the deployment it describes, and that deployment's grants change under it:
-the apply of dispatch://INFRA-206's declarations on 2026-10-25 turned two of the gate's three answers from `no` to `yes`.
+the apply of dispatch://POMJU-206's declarations on 2026-10-25 turned two of the gate's three answers from `no` to `yes`.
 So each bullet below carries the date of the run behind it, and a reader runs the three gate commands itself rather than trusting the answers recorded here:
 
-- *Executed from a role container on 2026-10-25, for dispatch://INFRA-232, with the sequence as this page published it then, through the role's own bash tool* (dispatch://INFRA-386 has since added the trap's ignore line, put `setsid -w` in front of the trap's `kubectl` commands and changed comments in the block):
+- *Executed from a role container on 2026-10-25, for dispatch://POMJU-232, with the sequence as this page published it then, through the role's own bash tool* (dispatch://POMJU-386 has since added the trap's ignore line, put `setsid -w` in front of the trap's `kubectl` commands and changed comments in the block):
   the block taken from this page with only its three bracketed lines filled in, each run under the name the API server gave it and a run label of its own, and a fixture changing one line of it where named.
   As published, with reads of the workload pod's labels and of the Jobs carrying the run label added:
-  `run: sequence-run=` and eight characters printed first, `workload: infra-232-postgres-` and five characters printed after the create, the Job admitted with its run label and listed by it, the pod carrying its Job's `batch.kubernetes.io/controller-uid` at the uid the create returned and not the run label, the Service created under the Job's name, `answered`, the trap's listing empty, `sequence: exit 0` about 90 s after the start, and no Job of that name left.
+  `run: sequence-run=` and eight characters printed first, `workload: pomju-232-postgres-` and five characters printed after the create, the Job admitted with its run label and listed by it, the pod carrying its Job's `batch.kubernetes.io/controller-uid` at the uid the create returned and not the run label, the Service created under the Job's name, `answered`, the trap's listing empty, `sequence: exit 0` about 90 s after the start, and no Job of that name left.
   While that run was under way, a second run stopped by a `kill -TERM -- -$$` placed right after the create, before the line that reads its answer:
   the trap printed `cleanup: no Job name was read; deleting
   by label sequence-run=<value>`, deleted that run's Job, listed none and ended `sequence: exit 143`, while the first run's Job stayed `Running` beside it and went on to `sequence: exit 0`.
@@ -5255,11 +5255,11 @@ So each bullet below carries the date of the run behind it, and a reader runs th
   the call ended at its timeout, the log showed `answered`, and `kill -KILL -- -<process>` then left the Job, its Service and its running pod and printed no `sequence: exit` line;
   the two recovery lines, given the printed name, removed them in 1 s.
   And the two facts the naming paragraphs rest on, run before the label was added:
-  `kubectl apply` of the Job's manifest, run in the block in place of the create, refused it before sending anything, `error: from infra-232-postgres-: cannot use generate name with apply`, and the trap removed nothing;
+  `kubectl apply` of the Job's manifest, run in the block in place of the create, refused it before sending anything, `error: from pomju-232-postgres-: cannot use generate name with apply`, and the trap removed nothing;
   and `kubectl create --dry-run=server` admitted a Job with a generated name, a Job whose name the client chose, and one setting both a name and a one-letter `generateName` under the client's name
-  — on that date the namespace's admission did not require a generated name, which dispatch://INFRA-383 adds.
+  — on that date the namespace's admission did not require a generated name, which dispatch://POMJU-383 adds.
 
-- *Executed from a role container on 2026-10-25, for dispatch://INFRA-215, with the sequence as published then (before dispatch://INFRA-232 moved the Job to a generated name), through the role's own bash tool*:
+- *Executed from a role container on 2026-10-25, for dispatch://POMJU-215, with the sequence as published then (before dispatch://POMJU-232 moved the Job to a generated name), through the role's own bash tool*:
   the block taken from this page with only its three bracketed lines filled in and pasted into a tool call, each run under its own suffix, and a fixture changing one line of it where named.
   As published: `answered`, the trap's listing empty, `sequence: exit 0`, the call returning 92 s after it started.
   With the Service's `targetPort` changed:
@@ -5275,7 +5275,7 @@ So each bullet below carries the date of the run behind it, and a reader runs th
   the call ended at its timeout and the Job, its Service and its running pod were left, until the recovery lines removed them.
   None of this issue's Jobs was left after the runs.
 
-- *Executed from a role container on 2026-10-25, for dispatch://INFRA-215, with the sequence run in the foreground of a process of its own, before it detached*:
+- *Executed from a role container on 2026-10-25, for dispatch://POMJU-215, with the sequence run in the foreground of a process of its own, before it detached*:
   the steps from the Job to the trap were as published then.
   The three gate commands answering `yes`, and `get endpoints`, `get endpointslices` and `patch jobs` answering `no`;
   `POD_NAMESPACE` unset, and none of `psql`, `redis-cli`, `sqlite3`, `nc` and `dig` on the `PATH`.
@@ -5289,7 +5289,7 @@ So each bullet below carries the date of the run behind it, and a reader runs th
   And the credential-less gate again, with the in-cluster environment removed: exit 1, `The connection to
   the server localhost:8080 was refused …`.
 
-- *Executed from a role container on 2026-10-25, for dispatch://INFRA-234*:
+- *Executed from a role container on 2026-10-25, for dispatch://POMJU-234*:
   the three gate commands, **all three answering `yes`**, and the grant matrix behind them (`create`/`delete`/`get`/`list`/`watch jobs`, `get`/`list pods`, `get pods/log`, `delete pods` and `create`/`get`/`list`/`watch`/`delete services` `yes`;
   `patch`/`update jobs`, `create pods` and `get`/`list` of `endpoints` and of `endpointslices` `no`);
   and **the whole sequence for real**, as published then under a fresh suffix
@@ -5297,17 +5297,17 @@ So each bullet below carries the date of the run behind it, and a reader runs th
   — the same block with one print per attempt added saw its first connection refused and the retry answer, the listener opening a second or so after Ready, which is the starting-up case the paragraph under the sequence describes
   — the Job's log ending `database system is ready to accept connections`, `kubectl delete job` run, and the closing listing showing the Job and its Service gone at once and its pod `Terminating`, then nothing of it twenty seconds later.
 
-- *Executed from a role container on 2026-10-24, for dispatch://INFRA-71*:
+- *Executed from a role container on 2026-10-24, for dispatch://POMJU-71*:
   the sequence's Job half (87 s to Ready on a cold machine, 10 s on a warm one), which is where the two waits come from:
   the single `wait` this section published before exited 1 at once with `error: no matching
   resources found`, because the Job's pod does not exist the instant the apply returns;
   and the reachability block, run as published then against a listener and against a port that refuses and then listens.
   And, *not run again since*: one deliberate breakage of each **enforced** rule above, put through the namespace's own admission server-side with nothing created, each refused naming the rule
   — the reachability label has no breakage to record, since admission does not check it, which is the whole of why that bullet is marked.
-  (The credential-less gate and the reachability block against an address whose packets are dropped, on this list until then, were run again for dispatch://INFRA-215, above.)
+  (The credential-less gate and the reachability block against an address whose packets are dropped, on this list until then, were run again for dispatch://POMJU-215, above.)
 
 - *Refused as published, and corrected on 2026-10-25*:
-  until dispatch://INFRA-234 the Service manifest above selected the Job's pods by `job-name`, and the namespace's admission refuses that, naming the rule that a Service there selects by `batch.kubernetes.io/controller-uid` at its owning Job's uid and by nothing else.
+  until dispatch://POMJU-234 the Service manifest above selected the Job's pods by `job-name`, and the namespace's admission refuses that, naming the rule that a Service there selects by `batch.kubernetes.io/controller-uid` at its owning Job's uid and by nothing else.
   Both forms were put through `kubectl create --dry-run=server` with nothing created: the old one refused, the one above admitted.
 
 What a workload there cannot do, so nobody plans around it:
@@ -5326,7 +5326,7 @@ And every project's pods run as the account that project's configuration names (
 The other half is reach: the ingress rule admits the namespace Legion's pods run in rather than an identity, naming no pod and no port, so every pod there
 — every project's agents, with a Kubernetes credential or without one
 — reaches a labelled workload at its Service name, and the password in the Job, which every holder of the identity can read, is the only lock on it.
-Narrowing the identity to a per-project one is dispatch://INFRA-153's work, not something to design around here.
+Narrowing the identity to a per-project one is dispatch://POMJU-153's work, not something to design around here.
 
 ### Issue sizing: one reservation per pod
 
@@ -5385,19 +5385,19 @@ a 3 CPU / 19 GiB issue pod fits, two per node (7.9 / 3 by cpu, where 60.8 / 19 w
 On GKE Autopilot each issue and controller pod tends to get a node of its own instead ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so node count there tracks pod count rather than this two-per-node packing.
 The **controller's** pod, whose Sandbox owns its claim, is the one that waits on a volume when it is relaunched onto another node:
 its `ReadWriteOnce` volume must detach from the old node first, which shows as transient `FailedAttachVolume` or `Multi-Attach` events until the old pod is gone; then it runs on.
-An **issue** pod waits on neither: its disk is the pod's own generic ephemeral volume, so a replacement takes no predecessor's claim and nothing detaches (INFRA-80).
+An **issue** pod waits on neither: its disk is the pod's own generic ephemeral volume, so a replacement takes no predecessor's claim and nothing detaches (POMJU-80).
 What it may wait on instead is the predecessor's claim being *reaped*
 — the kubelet and the garbage collector removing it with its pod
 — which is a different mechanism with different events, and which [The disk dies with its pod](#the-disk-dies-with-its-pod) covers.
 
 Under gVisor the container cgroup changes nothing inside the sandbox:
 `runsc` sizes the sandbox from the pod's cgroup, so inside a pod `nproc` is max(2, ⌈Σ cpu limits⌉)
-— except on GKE Autopilot's container-optimized compute platform, where a sandboxed pod reads `nproc` 2 whatever it reserves and whatever its host holds (measured 2026-11-05 at 2, 2.5, 3, 4 and 6 CPU, each on an 8-vCPU node, dispatch://INFRA-928/artifact/measurements-2026-11-05-md):
+— except on GKE Autopilot's container-optimized compute platform, where a sandboxed pod reads `nproc` 2 whatever it reserves and whatever its host holds (measured 2026-11-05 at 2, 2.5, 3, 4 and 6 CPU, each on an 8-vCPU node, dispatch://POMJU-928/artifact/measurements-2026-11-05-md):
 there the pod's own cgroup cpu quota (`cpu.cfs_quota_us`/`cpu.cfs_period_us`) read Σ cpu limits exactly at each of those sizes, which is why that quota, not `nproc`, is what [the live proof](../scripts/e2e/README.md) asserts there,
 while a pod of the same cluster placed on a node of a named machine series (`cloud.google.com/machine-family`) read 3 at a 3-CPU limit, its whole reservation, where the rule above holds
 — and `/proc/meminfo`'s `MemTotal` is about Σ memory limits of the pod's containers, and an active role may use the pod's whole reservation while its siblings idle.
 The reservation is the pod's working set, and its request is what the scheduler counts.
-Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform reached about 1.3 to 1.9 cores whether the pod reserved 2, 2.5 or 3 CPU (1.321, 1.367 and 1.392 cores over 300-second runs on one node, and 1.8227 cores in a running issue pod at a 3-CPU limit), so reserving more cpu there bought that workload little more work ([kubernetes/kubernetes#91665](https://github.com/kubernetes/kubernetes/issues/91665), "Actual CPU capacity is lower than assigned CPU capacity when gVisor sandbox is enabled").
+Measured on POMJU's pool on 2026-11-05, a pod's own processes on that platform reached about 1.3 to 1.9 cores whether the pod reserved 2, 2.5 or 3 CPU (1.321, 1.367 and 1.392 cores over 300-second runs on one node, and 1.8227 cores in a running issue pod at a 3-CPU limit), so reserving more cpu there bought that workload little more work ([kubernetes/kubernetes#91665](https://github.com/kubernetes/kubernetes/issues/91665), "Actual CPU capacity is lower than assigned CPU capacity when gVisor sandbox is enabled").
 
 **The bound.**
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
@@ -5465,7 +5465,7 @@ When the pod's anonymous memory reaches a share of the limit, the guard ends wit
 The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 
-Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB, in the tester's `wc-gvisor` result at `bebc420b` (dispatch://INFRA-3557, from the Jobs of dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md):
+Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB, in the tester's `wc-gvisor` result at `bebc420b` (dispatch://POMJU-3557, from the Jobs of dispatch://POMJU-3557/artifact/wc-gvisor-jobs-md):
 with the guard off, the kernel stopped the sandbox when `AnonPages` was 95.5% to 99.4% of the limit;
 with the guard on at the defaults, each growing process — 64 MiB every 0.25 s, 256 MiB every 0.25 s, shared anonymous memory, a memfd written and never mapped, and a grower beside an unwritten 16 GiB memfd or with about 1 MiB of arguments — was ended when the reading was 85.0% to 90.0% of the limit, 8.8 to 14.7 ms after the guard's first reading at the mark, and the pod went on.
 The earlier runs of those Jobs, recorded in the same issue's `wc-gvisor` results, put the kernel's lowest kill point at 95.4% (the tester's run at `bde5a751`) and took up to 36.9 ms to decide (the implementer's 8 GiB run of shared anonymous memory at `d6f81bbf`).
@@ -5479,10 +5479,10 @@ A microVM issue pod's launcher runs no guard: the pod's own kernel stops one pro
 
 **What it reads.**
 Each interval, `interval_milliseconds` (100 ms by default), the guard reads two files: `AnonPages` of `/proc/meminfo`, the pod's anonymous memory, which is its reading, and the cgroup's `memory.limit_in_bytes`, the container's limit.
-Each of the two reads took 0.025 to 0.044 ms at the median in the read-cost Job of dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md (`infra-3557-19g-readcost-fbf6z`, 2026-11-14).
+Each of the two reads took 0.025 to 0.044 ms at the median in the read-cost Job of dispatch://POMJU-3557/artifact/wc-gvisor-jobs-md (`pomju-3557-19g-readcost-fbf6z`, 2026-11-14).
 The guard never acts on the cgroup's counter, `memory.usage_in_bytes`, because the counter also counts the pages of the files a process maps, which the kernel can take back:
 in the tester's `wc-gvisor` result at `bebc420b` a file mapped and read raised the counter to 97.2% to 105.4% of the limit, and an LMDB map larger than the limit raised it to 107.4% to 134.9%, while `AnonPages` stayed under 11% and the guard ended neither process.
-One read of the counter took about 18 ms at the median in a running INFRA issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
+One read of the counter took about 18 ms at the median in a running POMJU issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
 Where `AnonPages` or the limit cannot be read, where the limit reads as no limit (2^62 bytes or more), where the system has no `pidfd_open`, through which the guard ends a process, or where the guard cannot list the processes of `/proc`, the guard writes one `off` line and does nothing more while the launcher runs.
 
 **What it ends.**
@@ -5561,7 +5561,7 @@ runtime:
 Those are the defaults, and the guard is on under `runtime: kubernetes` wherever the file says nothing.
 The block configures the guard of gVisor issue pods alone, and does not turn off the guest watch of a microVM issue pod ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 The ranges are 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds`, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`).
-`issue_pods` is the one member this release reads: the mapping is keyed by the kind of pod so that dispatch://INFRA-3531 can add the controller's pod beside it, and until then the loader refuses `controller_pod` as it refuses any other unknown key.
+`issue_pods` is the one member this release reads: the mapping is keyed by the kind of pod so that dispatch://POMJU-3531 can add the controller's pod beside it, and until then the loader refuses `controller_pod` as it refuses any other unknown key.
 The launcher checks the settings against the same ranges on its own side, and settings outside them change nothing and write one `settings refused` line.
 
 The daemon hands the settings to the guard on its answer to each role's hello (`memoryGuard` in `launcher_hello_ack`), so a change reaches a running pod at its next connection, which every daemon restart gives it, and replaces no pod.
@@ -5684,7 +5684,7 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
   On Linux, though, its `exe` and its `smaps`, read through the exited main thread, answer nothing, so the guard counts it as ended or as unread and never ends it.
 
-- It does not run in the controller's pod: a guard there is the work of dispatch://INFRA-3531.
+- It does not run in the controller's pod: a guard there is the work of dispatch://POMJU-3531.
 
 ### The disk dies with its pod
 
@@ -5737,7 +5737,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   the same name, a new uid, the new pod as its owner.
   Nothing waits for a detach, since the replacement mounts no volume the pod it replaces held, so the `FailedAttachVolume` and `Multi-Attach` events a reattached `ReadWriteOnce` volume used to produce do not arise for an issue's disk.
 
-The update round is how a configuration change reaches a running issue pod without taking the disk out from under it (INFRA-484).
+The update round is how a configuration change reaches a running issue pod without taking the disk out from under it (POMJU-484).
 Every launch records the configuration its pod was built from on the pod template, as the `legion.dev/pod-shape` annotation (`podShape` in `internal/runtime/sandbox/drift.go`, written where the template is built):
 the image every container runs, the pod kind's one reservation, the operator's `runtime.kubernetes.pod` volumes and mounts, and the size of the pod's disk.
 A microVM issue pod's record also holds the sandbox it runs in, and a gVisor pod's holds none ([Issue pods in microVMs](#issue-pods-in-microvms)).
@@ -5779,7 +5779,7 @@ the daemon reads the issue's claims from the store again — which is how a clai
 An operator's suspension aborts it at any moment, and before the bound so does a claim that has not answered or a turn that started while the replacement waited for the pod's launch turn:
 nothing is suspended, the round stays open, and the next sweep decides again.
 
-The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, is lost with the disk, so the agent does it again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
+The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, is lost with the disk, so the agent does it again in the new pod, by the decision recorded at dispatch://POMJU-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
 An earlier release checked the disk first, from the shim, and pushed what the remote lacked; that check and the frame that asked for it are gone.
 A daemon of an earlier release that sends that frame still sends it to a shim of this image, which passes it to its agent unchanged, and the agent refuses a command it does not know, which that daemon reads as a shim that predates the check, so it replaces the pod with no check of the disk.
 A `legion-v20.14.0` daemon then replaces the pod as this release does: once every role it asked has answered, or at the round's bound, and it asks no role a second time.
@@ -6175,11 +6175,11 @@ and, for a death the stream never reported, on the next resync tick, which probe
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon reads that session's registration from the Envoy listener (`GET /v1/registry/<the session the claim registered>?include=unresponsive&view=registration`) and then sends `DELETE /v1/sessions/<that session>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>&client_instance_id=<the client instance that read named>`.
 `view=registration` is the registration-only answer: the session bucket's own entry, with neither the role claims nor the session's interest record joined to it, so a claims view still refilling and an interest record this build cannot decode — neither of which the stop uses — cannot refuse the read and leave the dead session's claims standing.
 `include=unresponsive` rides with it for a listener that predates the selector, which answers the full row instead, and that row carries no `client_instance_id`, so against such a listener the stop rests on the moment alone: deploy the listener before the daemon.
-That clean stop makes the listener read the session `gone` at once, rather than `unresponsive` until the gone horizon ends, so the role claim that session held is released at the role reaper's next pass instead of an hour later, and the issue claims it held become another agent's to take at once instead of 20 minutes after it last registered (dispatch://INFRA-392).
-The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://INFRA-783, which left that rule as it was).
+That clean stop makes the listener read the session `gone` at once, rather than `unresponsive` until the gone horizon ends, so the role claim that session held is released at the role reaper's next pass instead of an hour later, and the issue claims it held become another agent's to take at once instead of 20 minutes after it last registered (dispatch://POMJU-392).
+The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://POMJU-783, which left that rule as it was).
 The delete names the dead process's own registration rather than a moment alone, because the very decision that asks for the stop goes on to relaunch the claim under the same session id:
 the listener deletes only while the stored entry carries that client instance id, or none, and was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept, with the listener's own reason — rather than taking a working session's registration away.
-Each condition is there to make the other's weakness bearable, and the listener keeps the entry whenever either refuses it (dispatch://INFRA-2064).
+Each condition is there to make the other's weakness bearable, and the listener keeps the entry whenever either refuses it (dispatch://POMJU-2064).
 A registration's `UpdatedAt` is stamped by the listener's own clock at every write, not by the registering process, so on clocks that agree the dead pane's last heartbeat is stamped before the probe; a stop dated earlier than the probe's own moment reads that heartbeat as a registration written since and refuses the stop that is owed, and carrying the probe's moment undated is what deletes it.
 The instance id, minted once per client process, is what makes carrying it undated safe: where the read answered the dead process's own entry, a relaunch's registration is refused by its own identity whatever the two clocks say.
 Where the read was answered so late that the entry it handed back was already the successor's, the id names that successor and only the moment keeps the registration.
@@ -6227,7 +6227,7 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
   It mounts no other part of the issue's volume and no config home, and it takes an existing feed repository only in the shape it writes (no symlink, gitfile, hook, alternates, configuration key of anyone else's, or configuration line outside git's own form;
   see "Anatomy of a Sandbox pod"), so nothing an earlier release's agents wrote at `/legion/feed` runs in it.
   No volume is ever carried over, so there is no earlier release's `feed` to meet:
-  an issue pod's disk is created with the pod and deleted with it (INFRA-80), and every feed a fetch meets is one this pod's own init container wrote, which that same check
+  an issue pod's disk is created with the pod and deleted with it (POMJU-80), and every feed a fetch meets is one this pod's own init container wrote, which that same check
   — run before any git, in an init container no agent runs beside — is what keeps the fetch from running anything an agent of this pod planted.
 
 - Every other provisioning command is bounded by `workspace.CommandTimeout` (5 minutes, fixed), the commands that hold a bound of their own excepted — `workspace.CommandTimeout` names them where it is declared (`internal/workspace/config.go`), and the `workspace-init` bullet below states each one that runs there — but a transfer's duration follows the repository's size and the network's speed, not a fixed step in provisioning:
@@ -6654,7 +6654,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The rate is a ceiling and not the rate a wave keeps:
   each wake waits its turn and then a random part of up to one interval more, so a long wave sustains about two thirds of the rate, which is about 5 a minute at the default of 8.
   The defaults' arithmetic: 8 a minute with a burst of 1 holds any minute to 9 paced wakes, which at the mean is 5.2M tokens, split over the two Anthropic organizations one gateway key reaches, against an acceptance bar of 8M an organization a minute.
-  They also leave room beside the pod-update round rate of INFRA-1116:
+  They also leave room beside the pod-update round rate of POMJU-1116:
   one round opening a minute costs up to about 3.4M, which with 5.2M of wakes and a median minute of about 0.55M is about 9.2M over two organizations.
   The rate is per daemon, so an operator whose contexts grow, and one who runs two deployments against one Anthropic organization, divides it.
   A rate of 0 turns the pacing off:
@@ -6989,7 +6989,7 @@ each issue's pod (every role of it alike) and the image probe's.
   To end it at once, anyone signed in to Dispatch revokes the daemon's login on Dispatch's machine-login page (`/credentials/machine`), the row `legion-daemon on <namespace>/<account>` whose **Approved by** reads `No one:` and the daemon's ServiceAccount, which ends every session it enrolled;
   the daemon logs in again with its token under a new credential, which enrolls the pods it launches next, and a pod already running stays without secrets until it is replaced (`docs/site/src/content/docs/broker/guides/revoke-a-session.md`, "End a machine's login").
 
-- **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://INFRA-840).
+- **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://POMJU-840).
   Each pod then also carries a projected token of its ServiceAccount for that audience, an hour long, in a volume of its own (`agent-secrets-exchange`), mounted read-only at `/var/run/legion/agent-secrets-exchange/token` in the container its roles run in, and every role is told `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE` naming that file, beside the enrollment it already holds.
   The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (agent-infra `shared/broker.ExchangeAudience`).
   The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
@@ -7007,7 +7007,7 @@ each issue's pod (every role of it alike) and the image probe's.
   - A registration's thumbprint is the one its process's first hello names: a later hello of the same process that names another key is logged, and the registration keeps the first key.
 
   - The registration needs a broker that binds it to the key and orders it by generation: a broker before this release refuses the `thumbprint` and `generation` fields as `400 INVALID_REQUEST`, which the daemon logs and does not write again.
-    Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
+    Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://POMJU-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
 
   - An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
     a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
@@ -7163,7 +7163,7 @@ Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the 
 A `person` token's list of projects limits no Dispatch write at this release.
 It serves a read entry's token on the routes its read list names (`readScopeRoutes` in `packages/envoy/internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 The Envoy listener answers that token `401`, because a verifier accepts it only where its service asks for it (`brokertoken.Options.ServesReadOnly`), and the listener does not ask.
-`dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
+`dispatch://POMJU-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### Network shares
 
@@ -7249,7 +7249,7 @@ the Go tmux daemon takes over the Kubernetes daemon's claims once every pod of t
 **`--resume` keeps the same-agent invariant, and the table is what keeps it.**
 The tmux runtime looks for the recorded session file on the daemon host, in the other folders of the same sessions directory and of the pane's own sessions directory too.
 A session found nowhere is a session no store holds, whether or not `take_over` is set:
-the claim starts a fresh agent, charged nothing, and the loss is posted on the issue and told to its architect, to the controller and to the new agent in its own prompt (dispatch://INFRA-714 R8), so a lost session is loud rather than silent.
+the claim starts a fresh agent, charged nothing, and the loss is posted on the issue and told to its architect, to the controller and to the new agent in its own prompt (dispatch://POMJU-714 R8), so a lost session is loud rather than silent.
 Oh My Pi itself does not refuse: verified against the pinned build (`omp --resume=<missing path> --mode rpc`), it exits 0, answers `ready`, and runs as a fresh agent, with no error frame and no mention of the file.
 Under Kubernetes there is no file to look for and no init container that looks for one:
 every session is a row in the session database, and the pod's disk, which dies with the pod, never holds a transcript.

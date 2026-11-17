@@ -54,7 +54,7 @@ function liveHolderOf(
  * one row among the actions the bar lists rather than a surface of its own.
  *
  * It always asks: the row is what sends, whatever any confidence in the words would be, because
- * a send spends that agent a turn (dispatch://INFRA-1042/ask/4310b2c0-df6f-424b-b0b6-b75e23a60fb6).
+ * a send spends that agent a turn (dispatch://POMJU-1042/ask/4310b2c0-df6f-424b-b0b6-b75e23a60fb6).
  * Nothing is sent until the person presses it, and one press sends one message.
  *
  * The issue and the block are the chip's rather than the page's (`barTargets` in

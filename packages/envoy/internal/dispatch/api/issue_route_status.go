@@ -50,7 +50,7 @@ import (
 // model.RouteReasonRefilling for the listener's refilling answer, whose Retry-After rides in
 // retryAfter, model.RouteReasonUnreachable for anything else. Both ride on the stored row with
 // the answer they came with, so a refill one process met is a refill on every process
-// (dispatch://INFRA-261). Its maps and its session slice are read-only once built, since every
+// (dispatch://POMJU-261). Its maps and its session slice are read-only once built, since every
 // read in this process served from one stored answer shares them (rosterCache.built): a reader
 // that sorts or edits the sessions copies them first, and never writes a session's Roles or
 // Capabilities, which every copy shares too.

@@ -238,7 +238,7 @@ func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing
 // TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure: a release whose mint finds no
 // installation of the App on the account the narrowing names answers 502 MINT_FAILED with the
 // minter's words, as the release always has, and not the 422 NARROWING_REFUSED the request route
-// answers for the same cause before the approval (R2 of dispatch://INFRA-3099). The release wraps
+// answers for the same cause before the approval (R2 of dispatch://POMJU-3099). The release wraps
 // that refusal in requests.ErrMintFailed and still carries secrets.ErrMintNoInstallation. Only
 // createRequest answers that sentinel 422, in an arm of its own. writeNarrowingRefusal, which
 // grantValues shares, does not answer it, so the release stays at 502 whatever order grantValues'

@@ -290,7 +290,7 @@ func TestCorpusErrorsOfItemSpreadReadOtherwiseAreRefused(t *testing.T) {
 // typed block. A document write either refuses it or reads the item spread, so the blank line the
 // writer put there is kept; storing the item tight drops it, which the writer before
 // sjawhar/legion#2403 avoided by refusing every
-// footnote definition in a typed block (INFRA-581).
+// footnote definition in a typed block (POMJU-581).
 // All three are refused today, each as a definition holding a block other than a paragraph
 // (typedDefinitionHoldingBlock), so the refusal is pinned by its
 // reason: a reader that lifted it for another reason would still pass. The spread branch stands for

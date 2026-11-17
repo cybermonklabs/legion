@@ -763,7 +763,7 @@ func TestAnAnswerAfterABlockHeApprovedWasRemovedDoesNotCarry(t *testing.T) {
 	asks := insertDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, waveAsk, 2, map[string]string{"wave": "How many regions take the first wave?"})
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
 	// A batch whose result drops a block an open ask points at is refused (R5 of
-	// dispatch://INFRA-1520), so the agent closes the question before it cuts the block.
+	// dispatch://POMJU-1520), so the agent closes the question before it cuts the block.
 	resolved := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+region["region"]+"/resolve", map[string]any{
 		"kind": "resolved", "reason": "Decided in the kickoff.", "actor": sessionActor(),
 	})

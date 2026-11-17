@@ -26,12 +26,12 @@ related_issues:
   - "LEGION-108"
   - "sjawhar/legion#1079"
   - "LEGION-101"
-  - "INFRA-594"
+  - "POMJU-594"
 ---
 
 # Receipt-Backed Core NATS Delivery to Current Holders
 
-**This page records the design before dispatch://INFRA-771, not how Envoy works now.** Since that
+**This page records the design before dispatch://POMJU-771, not how Envoy works now.** Since that
 change a role forward is stored only: the listener publishes it to the holder's agent subject,
 which `ENVOY_NOTIFICATIONS` captures, and waits for the stream's acknowledgement alone
 (`bus.Client.StartRequestStoredTo`, `startRoleForward`). No session answers a receipt, and
@@ -143,7 +143,7 @@ if (reply !== "" && subject === agentSubject(sessionID)) {
 
 This makes a fresh-but-deaf holder observable as `receipt_timeout` and a holder whose registration has gone stale as `delivery_failed`, while a live holder returns one receipt. The receipt comes from the direct agent receiver, not from JetStream persistence of the forwarded copy; the next section says why the forward must be persisted as well.
 
-## The stored forward (INFRA-594)
+## The stored forward (POMJU-594)
 
 The receipt still proves only that a live receiver decoded the forward. The forward's lasting copy is the stream's: `ENVOY_NOTIFICATIONS` captures agent subjects, so the forward is stored on the holder's inbox, under a `Nats-Msg-Id` of the forward's dedupe key and the subject, one copy however often it is sent. The holder's session consumer delivers that stored copy across a restart or a dropped connection, and the consumer's message is acknowledged only once the session wrote it (`packages/envoy/AGENTS.md`, "Session consumers"). A receipt alone therefore no longer counts: `RequestCoreTo` counts a forward as delivered only when both replies arrived, the stream's acknowledgement and the receipt. A receipt without the acknowledgement is `bus.ErrForwardNotStored`, reported `delivery_failed`, because the copy that survives a break is missing.
 

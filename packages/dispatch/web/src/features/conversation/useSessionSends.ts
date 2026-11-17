@@ -35,7 +35,7 @@ export const NO_SESSION_SENDS: SessionSends = {
  * its live view and its Agents row. The session is the write's target: each message is a write of
  * its own in the app's write store, ordered on the session (`session:<id>`) in press order, a later
  * one waiting only behind an earlier one still being tried, and either surface's Retry, Discard or
- * Stop trying acts on the same write. Send is pressable whenever the box holds text (INFRA-442): a
+ * Stop trying acts on the same write. Send is pressable whenever the box holds text (POMJU-442): a
  * press never waits on, refuses or replaces an earlier one. A message belongs to its session, not
  * to the surface that made it: leaving either leaves it being tried under its key, and both show
  * it until Dispatch answers, the reader stops it, or the reader discards its refusal. `landed`

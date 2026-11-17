@@ -9,7 +9,7 @@ tags:
   - READY
   - merger
 date: 2026-10-10
-status: superseded by INFRA-714 — the daemon arms, submits and disarms no merge at all: the `ready_merge` outbox row, `ghautomerge.Submit` and the disarm are deleted with the whole READY route, and the merger merges the pull request itself at the head it read, never turning auto-merge on. The `gh pr merge --auto`, `--disable-auto` and `dequeuePullRequest` facts this note measured stand as GitHub facts; nothing in Legion acts on them any more
+status: superseded by POMJU-714 — the daemon arms, submits and disarms no merge at all: the `ready_merge` outbox row, `ghautomerge.Submit` and the disarm are deleted with the whole READY route, and the merger merges the pull request itself at the head it read, never turning auto-merge on. The `gh pr merge --auto`, `--disable-auto` and `dequeuePullRequest` facts this note measured stand as GitHub facts; nothing in Legion acts on them any more
 module: packages/daemon/internal/prompts
 related_issues:
   - "LEGION-631"

@@ -17,7 +17,7 @@
 -- to no window, which deletes whatever windows a version that did hold blocks left behind and
 -- clears the marker in the one statement (refs.WriteDocumentWindows). A backfill that required a
 -- block would mark no such document, and nothing else ever marks one, so its stale windows would
--- outlive this upgrade for ever: measured as UPDATE 0 for a document in that state (INFRA-988).
+-- outlive this upgrade for ever: measured as UPDATE 0 for a document in that state (POMJU-988).
 --
 -- A migration of its own, because it is the only statement of the pair whose cost grows with
 -- the deployment and a migration is one transaction. Run beside the column it would hold
@@ -29,7 +29,7 @@
 --
 -- It is written as the anti-joins and the semi-join rather than as correlated `exists` and `not
 -- exists` probes under an `or`, as the items' backfill is and for the same reason: that is the
--- cheaper of the two readings of one predicate (INFRA-988). The table is small - 9,881 rows on
+-- cheaper of the two readings of one predicate (POMJU-988). The table is small - 9,881 rows on
 -- the load-test deployment, fewer in production - so this is one pass of it with three hash
 -- joins.
 --

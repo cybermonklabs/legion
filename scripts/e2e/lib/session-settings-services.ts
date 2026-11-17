@@ -10,7 +10,7 @@ import { expect, PERSON, type Rig, sleep, until } from "./session-settings-commo
  *  delivered through, under one epoch for this driver process, as a plugin mints one per NATS
  *  connection (packages/pi-envoy/extensions/envoy.ts). A registration that asks for no consumer and
  *  names no serving port is refused `409 {"reason":"not_requested"}`, with nothing written for it
- *  (dispatch://INFRA-771). */
+ *  (dispatch://POMJU-771). */
 const DELIVERY_REQUEST = { consumer: true, epoch: crypto.randomUUID() } as const;
 
 export interface StoredMessage {
@@ -135,7 +135,7 @@ export class Services {
       dir: this.#rig.work,
       self_subscribed: true,
       session_id: session,
-      title: "INFRA-195 rig sender",
+      title: "POMJU-195 rig sender",
       topics: [`notifications.agent.${session}`],
     });
   }

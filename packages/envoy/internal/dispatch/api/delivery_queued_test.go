@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// INFRA-626: a session the Envoy listener knows and that is not running is a recipient, not a
+// POMJU-626: a session the Envoy listener knows and that is not running is a recipient, not a
 // refusal. The listener stores the message for it and hands it over when it runs again, and
 // Dispatch records that attempt `queued`. A session the listener knows nothing about is refused
 // with "no live session <id>".
@@ -602,7 +602,7 @@ func TestARetryOfARefusedSwitchIsRefusedAgainAndQueuesNothing(t *testing.T) {
 }
 
 // TestTheSwitchRuleCaseByCase is plan D9's switch rule, one subtest per row of its table ("The
-// switch rule, case by case", dispatch://INFRA-626/artifact/plan-md), every row sent to s1, a
+// switch rule, case by case", dispatch://POMJU-626/artifact/plan-md), every row sent to s1, a
 // session the listener knows and that is not running. A switch is a person's own Send or Aside
 // (not one an agent wrote for them) on no issue, no broadcast's copy, whose whole body is one
 // /model or /effort line: the one shape a session runs as its own turn (isUserTurnCandidate in

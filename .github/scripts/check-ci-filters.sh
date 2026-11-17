@@ -294,7 +294,7 @@
 #      string at MAX_ARG_STRLEN, 131,072 bytes: a block above that does not make the action
 #      filter badly, it stops the job from starting at all, with `An error occurred trying to
 #      start process '.../node24/bin/node' ... Argument list too long` and no filter output for
-#      any job of the run. That is what one run gave (dispatch://INFRA-1413, pull request
+#      any job of the run. That is what one run gave (dispatch://POMJU-1413, pull request
 #      #2945): the whole block in one step measured 137,498 bytes of this branch's text once the
 #      520 generated `!` patterns rule 17 wrote at that measurement were in it (137,494 when
 #      that issue measured it), against 76,669 bytes on main. The cure is that the changes job

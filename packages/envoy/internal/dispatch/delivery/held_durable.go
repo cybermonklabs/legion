@@ -107,7 +107,7 @@ type intakeLeases interface {
 //
 // The name carries the durable because that, and only that, is what the exclusion is about: two
 // processes over one durable. One name over both delivery durables coupled two independent
-// reconciliations, and INFRA-66 measured what that cost against a real nats-server and the real
+// reconciliations, and POMJU-66 measured what that cost against a real nats-server and the real
 // envoy-dispatch binary, with the Dispatch user denied exactly
 // $JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.delivery-events.> (envoy-infra's live row "without
 // the delivery consumer create Dispatch leaves only that intake unbound"). A denied AddConsumer

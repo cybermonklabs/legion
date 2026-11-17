@@ -16,7 +16,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // A message the listener stored for a session that is not running (state 'queued') is a person's
 // words the session owes an answer for exactly as a sent one is: it reaches that session when it
-// runs again, so both delivery arms read the two states alike (INFRA-626). An attempt that
+// runs again, so both delivery arms read the two states alike (POMJU-626). An attempt that
 // failed, and one still pending, reach nobody and are left out.
 func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 	database := storetest.Open(t)

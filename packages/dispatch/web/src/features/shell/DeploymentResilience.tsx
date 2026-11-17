@@ -80,7 +80,7 @@ function runningIndexAsset(): string {
 // `bun run dev` every focus would offer a reload.
 //
 // The request is held to the read deadline, its body included, so a check Dispatch never answers
-// gives up rather than holding one of the browser's few connections to it for good (INFRA-258).
+// gives up rather than holding one of the browser's few connections to it for good (POMJU-258).
 async function deploymentChanged(): Promise<boolean> {
   const response = await fetch(DASHBOARD_BUILDS_PATH, {
     cache: "no-store",

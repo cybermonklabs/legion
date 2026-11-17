@@ -1,6 +1,6 @@
 /**
  * The accept step both Envoy plugins take before a frame becomes a person's own turn
- * (INFRA-1026): what it asks Dispatch, in what order it records the attempt, and every frame it
+ * (POMJU-1026): what it asks Dispatch, in what order it records the attempt, and every frame it
  * leaves as the card it was.
  */
 import { expect, test } from "bun:test";

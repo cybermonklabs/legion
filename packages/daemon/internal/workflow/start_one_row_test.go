@@ -76,7 +76,7 @@ func oneStartRowsOf(t *testing.T, pool *pgxpool.Pool, issue string, now time.Tim
 // relaunch row that was claimable the moment it was written and a second row that carried the
 // task and waited for the slot. The third assertion reads the same fault from the other side —
 // with no slot for the issue, the task-less row of the pair was claimable, so the implementer's
-// process started, and its whole first turn could run with no task to do (INFRA-1573).
+// process started, and its whole first turn could run with no task to do (POMJU-1573).
 func TestAStartIsOneRowThatCarriesItsTask(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: oneStartIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",

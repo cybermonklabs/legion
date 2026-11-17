@@ -597,7 +597,7 @@ func TestLoadRefusesProjectSlackChannels(t *testing.T) {
 // `deploys` is still a known key of a project and nothing is read from it: a file that sets it
 // loads, and every project that names it raises one warning, in file order, naming the key,
 // saying the daemon no longer wakes a production check from a deploy run and asking for the
-// key's removal. INFRA's own deployment file still writes it, and a reader that refused it
+// key's removal. POMJU's own deployment file still writes it, and a reader that refused it
 // would make this release that deployment's outage, on a schedule this repository does not
 // control (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
 func TestLoadWarnsOncePerProjectThatStillSetsDeploys(t *testing.T) {
@@ -1749,15 +1749,15 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "worker_background_hours", line: "worker_background_hours: 6", class: modelled},
 		{
 			key: "max_fix_attempts", line: "max_fix_attempts: 3", class: warned,
-			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://POMJU-956 R4)",
 		},
 		{
 			key: "pod_update_retask_hours", line: "pod_update_retask_hours: 1", class: warned,
-			want: "setting pod_update_retask_hours changes nothing: no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
+			want: "setting pod_update_retask_hours changes nothing: no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://POMJU-2981 R7)",
 		},
 		{
 			key: "pod_update_notice_hours", line: "pod_update_notice_hours: 4", class: warned,
-			want: "setting pod_update_notice_hours changes nothing: the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
+			want: "setting pod_update_notice_hours changes nothing: the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://POMJU-2981 R6)",
 		},
 		{key: "capabilities", line: `capabilities: {decided: {secrets: "dispatch://LEGION-205 enrolls pods later"}}`, class: modelled},
 		{key: "hooks", line: "hooks: [{name: stuck, on: work_back, every: 5, roles: [implementer], prompt: Say what is in your way.}]", class: modelled},
@@ -1768,7 +1768,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		},
 		{
 			key: "worker_idle_retire_seconds", line: "worker_idle_retire_seconds: 600", class: tossed,
-			want: "unknown key worker_idle_retire_seconds: an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (INFRA-945)",
+			want: "unknown key worker_idle_retire_seconds: an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (POMJU-945)",
 		},
 		{
 			key: "resync_interval_seconds", line: "resync_interval_seconds: 600", class: tossed,

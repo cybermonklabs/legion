@@ -272,7 +272,7 @@ func TestSessionConsumerFollowAddedBySecondRegistrationIsInTheFilterWhenItAnswer
 // session holding legion-<project>-controller carries notifications.legion.<project>.controller
 // into the consumer's filter, so a notice published while the controller was away between
 // registrations is pending for it when it comes back, and another project's lane is not. Until
-// INFRA-771 that lane reached the session as a live core subscription alone, which handed it
+// POMJU-771 that lane reached the session as a live core subscription alone, which handed it
 // nothing published while it was gone.
 func TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds(t *testing.T) {
 	rig := newSessionConsumerRig(t)
@@ -582,7 +582,7 @@ func TestSessionConsumerResumePointAtZeroOfTheCurrentStreamDeliversFromTheFirstS
 // registered is delivered rather than lost: one registration with no resume point, one whose
 // resume point carries no seq, and one whose resume point at 0 names another stream. An agent
 // subject is one session's alone, so that start is never older than the session
-// (dispatch://INFRA-771, the half of sjawhar/legion#2720's sweep that the consumer carries now).
+// (dispatch://POMJU-771, the half of sjawhar/legion#2720's sweep that the consumer carries now).
 func TestSessionConsumerRegistrationWithoutAUsableResumePointStartsAtWhatIsStoredForTheSession(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	sessions := []struct{ sessionID, resume string }{

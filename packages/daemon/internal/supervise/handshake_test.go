@@ -35,7 +35,7 @@ func sameHandshake(a, b EntryHandshake) bool {
 // that end, through a daemon restart that reads the claim back from the store, and through a task
 // of no entry, which is no part of it. A later entry's task replaces it at that task's queued
 // time, a retirement of that task unconfirmed leaves it, and the sweep's second task of the same
-// entry keeps the moment the first was queued (dispatch://INFRA-2614, k5 of the Verification
+// entry keeps the moment the first was queued (dispatch://POMJU-2614, k5 of the Verification
 // document at version 10).
 func TestAClaimsEntryHandshakeOutlastsItsTaskAndMovesOnlyWithALaterEntry(t *testing.T) {
 	h := newHarness(t)

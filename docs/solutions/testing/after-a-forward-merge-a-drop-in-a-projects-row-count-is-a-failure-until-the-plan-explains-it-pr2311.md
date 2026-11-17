@@ -21,7 +21,7 @@ Extends docs/solutions/legion/at-a-forward-merge-hold-your-branchs-readers-of-th
   runs none of your rows passes the run without a word.
 - A count that dropped is a failure of the merge until it is checked against the plan: if the plan
   proves those rows on that project, restore them (for Dispatch's `iphone` project, ` @phone` at the
-  end of each title, docs/solutions/testing/a-playwright-project-selected-by-tag-takes-the-tag-in-the-title-matches-it-as-a-whole-word-and-is-proven-by-an-exact-list-INFRA-521.md)
+  end of each title, docs/solutions/testing/a-playwright-project-selected-by-tag-takes-the-tag-in-the-title-matches-it-as-a-whole-word-and-is-proven-by-an-exact-list-POMJU-521.md)
   in the same merge round. Explaining the drop in the handoff is not restoring it.
 
 ## Evidence

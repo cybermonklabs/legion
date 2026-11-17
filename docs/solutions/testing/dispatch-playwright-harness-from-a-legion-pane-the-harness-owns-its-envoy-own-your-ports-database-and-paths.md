@@ -28,7 +28,7 @@ symptoms:
 
 # Dispatch Playwright Harness from a Legion Pane
 
-**Update (2026-10-26, INFRA-253): the Playwright config no longer starts the harness, and its
+**Update (2026-10-26, POMJU-253): the Playwright config no longer starts the harness, and its
 servers have no fixed ports.** `bun run e2e` runs Playwright through
 `packages/dispatch/e2e/run.ts`, which starts the fakes, the server and the plain-HTTP proxy
 through `e2e/harness-start.ts` on ports the OS chooses, and exports them; the defaults
@@ -37,7 +37,7 @@ automatic. A port variable set by hand is used as given and fails with `address 
 when taken. `packages/dispatch/AGENTS.md` (the harness-port paragraphs) is current; the rest of
 this entry is the record as it was written.
 
-**Update (2026-11-01, INFRA-317): the database is no longer one per run either; it is one per
+**Update (2026-11-01, POMJU-317): the database is no longer one per run either; it is one per
 lane.** `DISPATCH_E2E_WORKERS` is how many Playwright workers a run has (unset or empty: one),
 and `e2e/run.ts` starts one lane per worker: a whole harness — server, the three fakes, the
 plain-HTTP proxy, a file-store bucket, ports the OS chose — and a Postgres of its own, because
@@ -52,7 +52,7 @@ lane would share. Every other mode stays one lane and one worker, and a one-lane
 `DATABASE_URL` set is the run section 2 below describes. `packages/dispatch/AGENTS.md`'s
 end-to-end section is the whole model.
 
-**Update (2026-11-10, dispatch://INFRA-1410): Playwright starts the stacks itself, and the
+**Update (2026-11-10, dispatch://POMJU-1410): Playwright starts the stacks itself, and the
 wrapper is deleted.** `e2e/run.ts` and `e2e/preflight.ts` are gone; `e2e/global-setup.ts`, the
 config's `globalSetup`, starts one stack per worker through `e2e/harness-pool.ts`, checks each of
 them against its own fake Envoy, and `e2e/global-teardown.ts` stops them. A lane is called a

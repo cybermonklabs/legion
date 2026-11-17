@@ -1,7 +1,7 @@
 // routes_shapes.go is the side map that gives every row of the route table its Go types: what it
 // takes, what it answers, and with which status. The table itself carries paths, auth and prose
 // and no shapes (routeRow), so a document emitted from the table alone would describe no body;
-// this file is the data that document is reflected out of (INFRA-1406). Nothing here changes
+// this file is the data that document is reflected out of (POMJU-1406). Nothing here changes
 // behaviour: no handler reads a type declared below, and the query structs are declarations
 // alone - `r.URL.Query().Get` and `.Has` differ on an absent key, so moving forty handlers'
 // reads onto a struct would be a behaviour change, and is not this file's business.
@@ -27,7 +27,7 @@ type routeAnswer struct {
 }
 
 // routeShape is what one row of the table takes and answers, in Go types an OpenAPI document is
-// reflected out of (INFRA-1406). It stands beside the table for the reason writeClasses and
+// reflected out of (POMJU-1406). It stands beside the table for the reason writeClasses and
 // routeScopes do: routeRow is a positional literal, Go leaves no field out of one, and a sixth
 // column would have to be written on every row of the table, GET rows included. No row carries
 // its shape: routes() stamps the write class and the OAuth scopes onto the row it builds, and

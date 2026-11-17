@@ -163,7 +163,7 @@ type RoleClaimSweep struct {
 // for it less than liveWindow ago (RoleClaim.LastAnsweredAt, through
 // Registry.ClaimRenewedWithin) is kept, and one whose renewal has lapsed is kept while isAlive
 // reports its holder session alive and freed once that session is gone. That is the rule
-// dispatch://INFRA-392 settled, and it stands here unchanged for a claim that names a process
+// dispatch://POMJU-392 settled, and it stands here unchanged for a claim that names a process
 // (RoleClaim.ClientInstanceID) and a claim that names none alike: a holder that has stopped
 // answering keeps its role, and the paths that need a live holder report an unresponsive one
 // rather than taking the role from it.

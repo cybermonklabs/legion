@@ -13,7 +13,7 @@ module: packages/proof-editor
 
 # Replacing a micromark construct fuzzes old against new with every construct its lines meet
 
-Extends docs/solutions/envoy/goldmark-insertafter-of-a-last-child-counts-it-twice-and-a-parser-harness-counts-panics-apart-and-varies-endings-INFRA-172.md.
+Extends docs/solutions/envoy/goldmark-insertafter-of-a-last-child-counts-it-twice-and-a-parser-harness-counts-panics-apart-and-varies-endings-POMJU-172.md.
 
 - When you replace a construct, use the old one as the oracle. Compare the mdast of the old and new
   engines over generated documents, and count throws separately from differences.

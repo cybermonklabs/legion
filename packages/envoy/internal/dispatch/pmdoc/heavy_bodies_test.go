@@ -25,7 +25,7 @@ import (
 //
 // The shapes themselves are heavybodies.Shapes (pmdoc/heavybodies), not this file: the API's own
 // test of the verdict each write gets reads the same bodies from there, and a _test.go file of
-// this package cannot be imported (INFRA-1404).
+// this package cannot be imported (POMJU-1404).
 //
 // Each shape is asserted four ways: the verdict a write of it gets; the CPU time the parse spends
 // on it, under heavyBodyCPUBudget (below); and, for every stored shape, growth in
@@ -36,7 +36,7 @@ import (
 // The Playwright spec that wrote eight of these nine shapes through the API held each write to a
 // second and to nothing about its growth: a ratio between two wall times a shared CI runner took,
 // a doubling of the body apart, cannot separate a regression from the runner's own noise, which
-// is what made that bound fail at random (INFRA-985). The growth claim is made here instead, in
+// is what made that bound fail at random (POMJU-985). The growth claim is made here instead, in
 // this process's own CPU time and at an eightfold step, and the verdict each write gets is gated
 // in internal/dispatch/api (TestHeavyDocumentWriteVerdicts).
 //
@@ -123,7 +123,7 @@ func TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength(t *testing
 // (parseReplacing and encodeDocumentTree, internal/dispatch/docs/tree.go). The parse is the part
 // that has grown quadratically before (linear_test.go holds the shapes that did), and the encode
 // is measured beside it because it is the rest of the time an API write spends on a body, which
-// the end-to-end bound this test replaced used to cover (INFRA-985).
+// the end-to-end bound this test replaced used to cover (POMJU-985).
 //
 // Each run gets a document of its own, since a write changes the document it writes into, and the
 // body it writes is built before the window opens (cpuTimeOf).

@@ -19,7 +19,7 @@ import (
 //
 // A replica is a snapshot to build, deltas to apply, a cursor to keep and a per-actor cache to
 // invalidate, and it is instant only for what the browser already holds; the keyword path is 28
-// ms over the whole graph (dispatch://INFRA-1042, R2, "Keep the server keyword path"). This test
+// ms over the whole graph (dispatch://POMJU-1042, R2, "Keep the server keyword path"). This test
 // is what makes that decision visible to whoever adds the first of those routes: a route added
 // for some other reason that matches one of these names has to be read against R2 and either
 // renamed or argued for, which is exactly the conversation the decision is owed.
@@ -43,7 +43,7 @@ func TestTheBarAddsNoReplicaRoute(t *testing.T) {
 		for _, segment := range strings.Split(route.Path, "/") {
 			if segment == "delta" || segment == "deltas" || segment == "store" || segment == "items" {
 				t.Errorf("%s %s: the bar holds no replica of the issues and documents, so no delta,"+
-					" snapshot-store or bulk-item route serves one (dispatch://INFRA-1042, R2)",
+					" snapshot-store or bulk-item route serves one (dispatch://POMJU-1042, R2)",
 					route.Method, route.Path)
 			}
 		}
@@ -54,7 +54,7 @@ func TestTheBarAddsNoReplicaRoute(t *testing.T) {
 		}
 		if strings.Contains(route.Description, "cursor") {
 			t.Errorf("%s %s names a cursor: the bar pages search by ?offset=, and a cursor is what"+
-				" a replica walks a snapshot with (dispatch://INFRA-1042, R2)", route.Method, route.Path)
+				" a replica walks a snapshot with (dispatch://POMJU-1042, R2)", route.Method, route.Path)
 		}
 	}
 }

@@ -12,7 +12,7 @@ import (
 )
 
 // A forward counts once the stream stores it: no session subscribes to its agent subject any more
-// (INFRA-771), so StartRequestStoredTo's wait returns nil on the stream's acknowledgement, well
+// (POMJU-771), so StartRequestStoredTo's wait returns nil on the stream's acknowledgement, well
 // inside the window, and stores the forward once however often it is sent (its Nats-Msg-Id). On a
 // subject no stream captures and nobody subscribes it returns ErrForwardNotStored.
 func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) {

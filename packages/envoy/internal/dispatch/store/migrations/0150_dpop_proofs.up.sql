@@ -1,4 +1,4 @@
--- INFRA-264: one row per RFC 9449 DPoP proof Dispatch has accepted, the replay record the
+-- POMJU-264: one row per RFC 9449 DPoP proof Dispatch has accepted, the replay record the
 -- library's own resource check writes through rfc9449.DPoPReplayStorage (store.DPoPProofs). A
 -- caller presenting an access token the secrets broker issued signs a fresh proof of the key that
 -- token is bound to for every request (internal/brokertoken); a proof presented a second time is a

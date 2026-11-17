@@ -29,7 +29,7 @@
 -- of it would fail, and its single-row read could answer a non-default branch's yes as the
 -- default branch's. Nothing in this release reads or writes default_branch_commits, which is
 -- left exactly as it is; its drop is a contracting migration of a later release
--- (dispatch://INFRA-1700).
+-- (dispatch://POMJU-1700).
 --
 -- This table starts empty, with no backfill: the rows default_branch_commits holds carry no
 -- branch name, and the default branch they were asked about may since have been renamed, so no

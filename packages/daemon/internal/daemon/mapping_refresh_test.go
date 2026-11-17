@@ -327,7 +327,7 @@ func (h *heldSubscription) await(t *testing.T) {
 // on, so a read that waited on it inside a transaction asked that pool for a second connection
 // while holding one; worse, the transaction holds the fact serializer, so a NATS that answered
 // slowly stopped every fact of the project for as long as the call took, and the production pool
-// sat idle in transaction to its last connection (INFRA-3169). A stand-in holds the call, and
+// sat idle in transaction to its last connection (POMJU-3169). A stand-in holds the call, and
 // while it is held a fact's transaction, which takes the same serializer, still commits — within
 // a deadline of its own, so a refresh that holds a transaction again fails this instead of
 // hanging.

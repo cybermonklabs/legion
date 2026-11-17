@@ -19,7 +19,7 @@ package appauth
 //
 // The release reaches every repository the account's installation holds, here as in key mode: the
 // account that installs the App chooses them, and the daemon asks for no narrowing of them
-// (INFRA-2543). A read-only token holds what the command's read-only release gives: the broker's
+// (POMJU-2543). A read-only token holds what the command's read-only release gives: the broker's
 // holds contents, metadata, pull requests and Actions read, which is key mode's ReadToken set
 // less its issues read, and less the Actions read an installation that is not granted it does not
 // hold. What a release leaves out is the command's own business: the daemon reads what an
@@ -573,7 +573,7 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // longer honours.
 //
 // The listing is the whole answer. No token request names a repository any longer
-// (INFRA-2543), so neither GitHub nor the broker refuses one, and the one thing that says
+// (POMJU-2543), so neither GitHub nor the broker refuses one, and the one thing that says
 // whether the App reaches this repository is the installation's own list of them, read page by
 // page under the owner's read release. An owner the App has no installation on mints nothing
 // and is not installed (ErrNotInstalled); every other failure is a failure, a refused narrowing
@@ -583,7 +583,7 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // scope's refusal first (ForgetNarrowingRefusal) and mints: the mapping's check is made
 // precisely when an operator has changed something — the App's installation above all — and a
 // refusal served from the five minutes one is remembered for would fail the check for an
-// account the App was just installed on (lease, narrowingRefusalWindow, INFRA-513). A refusal
+// account the App was just installed on (lease, narrowingRefusalWindow, POMJU-513). A refusal
 // the mint itself meets is remembered as any mint's is: it is GitHub's answer of this moment,
 // which the bundles refreshing behind the check would otherwise ask for again at once, and the
 // next mapping read drops it again as this one did.

@@ -68,7 +68,7 @@ func TestTheBlocksRoutesSayWhereMeaningSearchStands(t *testing.T) {
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta."}, "alice")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "One.\n\nTwo."}, "alice")
 	// The writes record the blocks and leave their windows to the block-index tick, which is
-	// where every window read below comes from (INFRA-988).
+	// where every window read below comes from (POMJU-988).
 	windowOwedOwners(t, deps)
 	documentBlocks := func(step string) []model.ArtifactBlock {
 		t.Helper()

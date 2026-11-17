@@ -15,7 +15,7 @@ related_issues:
 
 # A tolerance is measured by setting it to zero, and ships with its separation stated
 
-Extends docs/solutions/testing/a-visual-check-measures-each-element-against-its-own-surroundings-never-two-shots-against-each-other-INFRA-527.md.
+Extends docs/solutions/testing/a-visual-check-measures-each-element-against-its-own-surroundings-never-two-shots-against-each-other-POMJU-527.md.
 That document says to pick a threshold from logged values on both sides and set it well inside the
 gap. The delta is how to get the legitimate side's value when the quantity is not a pixel share,
 and what to do when the gap is not there.

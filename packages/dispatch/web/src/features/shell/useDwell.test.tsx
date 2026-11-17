@@ -122,7 +122,7 @@ test("an element taller than the screen dwells once it fills three-quarters of t
 // The Inbox's reading pane is an inner scroller shorter than the window, so a reply taller than
 // it fills the pane and still covers only part of the window. The rule reads the box the element
 // is in rather than the window, or such a reply could never be marked read however long it was
-// read (INFRA-450).
+// read (POMJU-450).
 test("an element taller than its own scroller dwells once it fills that scroller", async () => {
   jest.useFakeTimers();
   const screen = installIntersectionObserver();

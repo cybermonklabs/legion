@@ -1,5 +1,5 @@
 -- 20261114061900_phase_entry_verbatim.up.sql — the mark that a root architect's phase entry is
--- sent again as written (INFRA-2614).
+-- sent again as written (POMJU-2614).
 --
 -- phases.entry_verbatim is record.PhaseRow.EntryVerbatim. The resume of a root a person answered
 -- sets it where it raises its architect's entry (workflow's ResumeAwaitedRoot): that task names the

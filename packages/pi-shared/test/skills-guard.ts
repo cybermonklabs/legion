@@ -353,7 +353,7 @@ function prosePinFaults(
 }
 
 /**
- * The claim the idle release retired (INFRA-945): that a role, or the pane it runs in, stays live
+ * The claim the idle release retired (POMJU-945): that a role, or the pane it runs in, stays live
  * for as long as its issue is in the workflow. Under `runtime: kubernetes` the daemon now releases
  * an issue pod that has had no turn in progress and no turn due for the idle period, which ends
  * every role process of it and deletes the pod, its disk and its Sandbox. What outlives that is
@@ -391,7 +391,7 @@ export function retiredWorkerLifecycleClaims(markdown: string): string[] {
 }
 
 /**
- * The claim INFRA-1315 retired: that a login, or the URL that carries one, can create and drop
+ * The claim POMJU-1315 retired: that a login, or the URL that carries one, can create and drop
  * databases on the shared server. The skill ships to every deployment and cannot know what a
  * deployment's session login may do, so it claims no power for it: a deployment that splits that
  * login gives its roles one that owns nothing, and a role that read the old claim there would

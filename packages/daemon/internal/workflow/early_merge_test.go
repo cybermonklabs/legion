@@ -54,7 +54,7 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 
 // A reviewer's approval that stands on the head of a pull request that has already merged ends the
 // review round and moves the issue to accepting, in either order of the approval and the merge
-// (dispatch://INFRA-3738 R7). A merged pull request leaves the round nothing to wait on: GitHub
+// (dispatch://POMJU-3738 R7). A merged pull request leaves the round nothing to wait on: GitHub
 // answers `unknown` for it for good, and the daemon never reads its state after the merge. So
 // each of those rows holds the merge state the record held before the merge, `blocked`, with no
 // check run on the head concluded, on which an open pull request's round would wait: only the

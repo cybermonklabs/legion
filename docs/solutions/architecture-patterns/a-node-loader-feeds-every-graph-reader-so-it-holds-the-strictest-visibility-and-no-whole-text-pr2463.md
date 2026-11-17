@@ -12,12 +12,12 @@ module: packages/envoy/internal/dispatch/refs
 
 # A node loader feeds every graph reader, so it holds the strictest visibility rule and no whole text
 
-Extends docs/solutions/architecture-patterns/a-graph-read-skips-a-node-kind-its-build-cannot-address-and-one-registry-drives-lists-and-counts-INFRA-364.md.
+Extends docs/solutions/architecture-patterns/a-graph-read-skips-a-node-kind-its-build-cannot-address-and-one-registry-drives-lists-and-counts-POMJU-364.md.
 
 One registry entry makes a kind resolve, list and count everywhere; it also exposes the kind everywhere.
 
 - When a new node kind sits under a parent whose reads are restricted, put the parent's visibility rule in the loader's own query. The references route resolves a node by its id whatever owner key the reference spells, so a route-level read check elsewhere does not cover it.
-- A loader gives a node its facts and the edge its excerpt; only the handler of a single-node read adds whole text (as docs/solutions/architecture-patterns/read-display-only-data-in-the-handler-that-shows-it-not-in-a-query-helper-other-callers-share-INFRA-569.md says for display-only data).
+- A loader gives a node its facts and the edge its excerpt; only the handler of a single-node read adds whole text (as docs/solutions/architecture-patterns/read-display-only-data-in-the-handler-that-shows-it-not-in-a-query-helper-other-callers-share-POMJU-569.md says for display-only data).
 - Test a plan's "reachable only through route X" by reading the node through every other route, with an unrelated owner key and with one that does not exist.
 
 ## Evidence

@@ -1,7 +1,7 @@
 /**
  * The Inbox's **Dismiss**: what one press sends, what it takes off the page before the server
  * answers, what it puts back when the server refuses, and the `e` and the bulk bar that press it
- * (INFRA-450).
+ * (POMJU-450).
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";

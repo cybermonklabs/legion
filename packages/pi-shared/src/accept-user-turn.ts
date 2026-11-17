@@ -5,7 +5,7 @@ import { type AcceptedUserTurn, handledAttemptKey } from "./dispatch-user-turn";
 
 /**
  * The accept step every Envoy plugin takes before a frame becomes a person's own user turn
- * (INFRA-1026), written once so a fix to the rule lands in every host: the Oh My Pi extension
+ * (POMJU-1026), written once so a fix to the rule lands in every host: the Oh My Pi extension
  * (`acceptedUserTurn`, `packages/pi-envoy/extensions/envoy.ts`) and the Claude Code plugin
  * (`accepted`, `packages/claude-envoy/src/user-turn-router.ts`) both call it, and each supplies
  * the record of handled attempts its host keeps, its Dispatch client, the session id it accepts

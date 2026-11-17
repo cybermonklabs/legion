@@ -20,7 +20,7 @@ import (
 //   - a root standing at phase.Admitted, whatever its design gate. record.AtWork answers false
 //     for such a root once its gate has opened, because no phase worker of it works there; its
 //     own architect still does, since it is the only role at work on the root itself, and the
-//     measured defect is a relaunched architect of such a root (dispatch://INFRA-2614).
+//     measured defect is a relaunched architect of such a root (dispatch://POMJU-2614).
 //   - a root a hand-over carried in, in every phase that carries a run (record.Issue.CarriesRun)
 //     at the generation the hand-over opened, which the record states as the hand-over row of
 //     this generation (ArchitectCarried, the reading the catch-up makes). R5 names a root a
@@ -47,7 +47,7 @@ import (
 //     below that entry, 0 where no claim stands). The resume puts the root back at admitted, and
 //     where the answer opened the design gate the same admission pass promotes it to its first
 //     phase, so a start row of that resume that reaches no claim would otherwise leave the answer
-//     with nothing to send it: a lost row must lose none of it (dispatch://INFRA-2614 R4). It
+//     with nothing to send it: a lost row must lose none of it (dispatch://POMJU-2614 R4). It
 //     widens nothing by phase, since it holds only until the claim is given that entry. A root
 //     waiting on a person is left out: it stands there because its architect handed the work back
 //     after that resume, and the answer to the new wait raises an entry of its own and queues the
@@ -139,7 +139,7 @@ func ArchitectCarried(ctx context.Context, tx pgx.Tx, store record.Store, root r
 // (supervise's Delivery.SupersededBy, the comparison the claim's machine makes when that start's
 // task arrives). Held back by it, the sweep would write nothing on every pass while a lost start
 // of the row's entry left the claim with only that task, and the relaunch of the claim would send
-// it first (dispatch://INFRA-2614 R4, R5). A task of no run or of no entry is superseded by
+// it first (dispatch://POMJU-2614 R4, R5). A task of no run or of no entry is superseded by
 // nothing: an operator's own, and a wake's (wakeRow), which says why the pod came back and is no
 // entry's work. The machine refuses the start's task behind it and sends it first, so it holds
 // the row back as owed answers. owed's other arms hold as they are: a start still queued, and a
@@ -210,7 +210,7 @@ const (
 // Stranded asks whether nothing will start the claim again, and a failing start will, since the
 // outbox runs it again on its backoff, so Stranded leaves such a claim out. The arm asks whether a
 // start can still cure the claim, and a start that has run against it and left it as it was cannot
-// (the architect's reading of R7 at dispatch://INFRA-2614).
+// (the architect's reading of R7 at dispatch://POMJU-2614).
 func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunch {
 	stop := actingStop(run, root)
 	lastStart := lastStartRow(run)
@@ -258,7 +258,7 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 // entry owes, and the derivation cannot give it: its shapes are a tree's first act, which is false
 // of a root whose architect has run in this generation, none of them names the answer, and the
 // fresh tree's closes on "no message is coming", which is false of a root whose person's answer
-// stands (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e). The sweep sends it
+// stands (dispatch://POMJU-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e). The sweep sends it
 // while the claim has not been given it, whether the root stands at admitted or in a phase past
 // admitted that the pass of the answer promoted it to (ArchitectAtWork).
 func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseRow) error {

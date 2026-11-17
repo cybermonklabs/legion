@@ -682,7 +682,7 @@ func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state superv
 // kind, because what the refusal says is that a launch is in flight, and every lane that parks
 // one in a machine says so: the ordinary launch and the relaunch the stale-plugin refresh lane
 // raises, which is told apart on the wire for a reader counting that lane's work and nowhere
-// else (supervise.WakePluginRefresh, dispatch://INFRA-2712 R4). A wake of a kind that starts no
+// else (supervise.WakePluginRefresh, dispatch://POMJU-2712 R4). A wake of a kind that starts no
 // process would leave the claim to the two windows below, which is where such a claim belongs.
 //
 // A turn that started under a launch parked over a process that is still alive reads the same

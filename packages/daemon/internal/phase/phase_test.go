@@ -22,7 +22,7 @@ func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 
 // BackwardPairs is the whole vocabulary of moves back: the triangle over the seven working
 // phases of Order, 21 pairs. There is no pair beyond them, since no phase of this workflow waits
-// for a merge somebody else makes (dispatch://INFRA-714).
+// for a merge somebody else makes (dispatch://POMJU-714).
 func TestBackwardPairsHoldsEveryMoveBack(t *testing.T) {
 	pairs := BackwardPairs()
 	if len(pairs) != 21 {

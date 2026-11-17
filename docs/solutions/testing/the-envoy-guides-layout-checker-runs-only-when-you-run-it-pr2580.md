@@ -11,7 +11,7 @@ date: 2026-10-31
 status: active
 module: scripts
 related_issues:
-  - "INFRA-841"
+  - "POMJU-841"
   - "sjawhar/legion#2580"
 ---
 
@@ -42,7 +42,7 @@ related_issues:
 
 ## Evidence
 
-sjawhar/legion#2580, INFRA-841. The branch changed one sentence of `packages/envoy/AGENTS.md`;
+sjawhar/legion#2580, POMJU-841. The branch changed one sentence of `packages/envoy/AGENTS.md`;
 main then reflowed both guides to one sentence per line and added `scripts/semantic-line-breaks.ts`
 with its own tests. The first line of `scripts/semantic-line-breaks.guides.test.ts` says the guides
 test "runs on demand … and is deliberately not in CI: the deployment's rule is an instruction

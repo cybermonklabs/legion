@@ -133,13 +133,13 @@ representatives=(
   docs/solutions/legion/a-record.md
   docs/superpowers/specs/a-spec.md
   packages/pi-envoy/CHANGELOG.md
-  packages/pi-envoy/.changes/unreleased/INFRA-1-rename.yaml
+  packages/pi-envoy/.changes/unreleased/POMJU-1-rename.yaml
   packages/pi-legion/CHANGELOG.md
-  packages/pi-legion/.changes/unreleased/INFRA-1-split.yaml
+  packages/pi-legion/.changes/unreleased/POMJU-1-split.yaml
   packages/claude-envoy/CHANGELOG.md
-  packages/claude-envoy/.changes/unreleased/INFRA-1-note.yaml
+  packages/claude-envoy/.changes/unreleased/POMJU-1-note.yaml
   packages/envoy/CHANGELOG.md
-  packages/envoy/.changes/unreleased/INFRA-1-note.yaml
+  packages/envoy/.changes/unreleased/POMJU-1-note.yaml
   packages/contracts/src/dispatch-api-search.ts
   packages/contracts/AGENTS.md
   packages/envoy/internal/dispatch/model/model.go

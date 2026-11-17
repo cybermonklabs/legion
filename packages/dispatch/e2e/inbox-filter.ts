@@ -2,7 +2,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 /**
  * The Inbox's `?assignee=` control (`features/inbox/AssigneeFilter.tsx`), one of the five fields
- * the bar's **Filter** button opens (INFRA-450; before it, the control stood in the bar itself).
+ * the bar's **Filter** button opens (POMJU-450; before it, the control stood in the bar itself).
  * Driving it, rather than opening a filtered address, is what a test needs when the Inbox must
  * stay mounted across the change: a pick is a client-side `replace`, so the marks, drafts and
  * held responses the page is carrying survive it, where `page.goto` would lose them.

@@ -13,7 +13,7 @@ import (
 
 // testExchangeAudience is the audience production's broker trades a pod's identity at: agent-infra
 // shared/broker.ExchangeAudience, which the broker sets as BROKER_EXCHANGE_K8S_AUDIENCE
-// (dispatch://INFRA-748's R1) and legion.yaml renders as agent_secrets.exchange_audience.
+// (dispatch://POMJU-748's R1) and legion.yaml renders as agent_secrets.exchange_audience.
 const testExchangeAudience = "legion-broker-exchange"
 
 // The two variables a pod's broker clients read to decide which identity the machine proves and

@@ -14,7 +14,7 @@ module: packages/dispatch/e2e
 
 # A cache under a read the browser suite drives needs an off switch, not TTL zero
 
-Extends docs/solutions/testing/a-test-only-knob-widens-the-value-production-runs-pin-it-at-the-construction-a-deployment-reaches-INFRA-56.md.
+Extends docs/solutions/testing/a-test-only-knob-widens-the-value-production-runs-pin-it-at-the-construction-a-deployment-reaches-POMJU-56.md.
 
 ## Rules
 

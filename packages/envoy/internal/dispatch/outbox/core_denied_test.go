@@ -326,10 +326,10 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 		t.Fatalf("the issue subscriber received %q through a denied publish", message.Data)
 	default:
 	}
-	// The deployment's alert on a denied publish (dispatch://INFRA-749) matches this line and
+	// The deployment's alert on a denied publish (dispatch://POMJU-749) matches this line and
 	// nothing else, so each part of it is asserted as the literal text that alert greps for: the
 	// level, the message, the event the line names, the subject that was refused, and
-	// bus.ErrPublishDenied's own words. A reword or a lowered level is a change INFRA-749 depends
+	// bus.ErrPublishDenied's own words. A reword or a lowered level is a change POMJU-749 depends
 	// on, and fails here rather than silently stopping the alert.
 	lines := 0
 	for _, line := range strings.Split(logged.String(), "\n") {

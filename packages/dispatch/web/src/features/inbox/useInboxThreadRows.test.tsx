@@ -1,5 +1,5 @@
 /**
- * `useInboxThreadRows` over the Dismissed view's paged read (INFRA-450): the pages are flattened
+ * `useInboxThreadRows` over the Dismissed view's paged read (POMJU-450): the pages are flattened
  * once per set of pages, so the rows the hook hands the motion hold keep their identity between
  * renders.
  *

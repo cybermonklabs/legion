@@ -46,7 +46,7 @@ func reachConsumer(t *testing.T, pool *pgxpool.Pool, admission *Admission, event
 	}
 }
 
-// dispatch://INFRA-1067's rule, read where only the issue-level cap can put it: the candidate
+// dispatch://POMJU-1067's rule, read where only the issue-level cap can put it: the candidate
 // behind the held one is a child of another tree. TestAHeldRootKeepsItsPlaceAndNothingBehindIt
 // TakesTheSlot proves the rule over two roots, which is the case that existed before a child
 // could hold a slot; this one proves that the stop is positional over the whole line and not

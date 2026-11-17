@@ -573,7 +573,7 @@ const SHELL_REPORT =
 
 // R4. A person's `!command` is run by the session, which publishes the person's line, what the
 // command printed and how it ended as one user message tagged with that message's Dispatch id
-// (INFRA-812's D12), and posts that same report as its Dispatch reply to the message, which
+// (POMJU-812's D12), and posts that same report as its Dispatch reply to the message, which
 // every message to a session gets. The line is theirs, so the report takes the stored copy's
 // place rather than standing under it, the pair is one turn under Dispatch's own key, and the
 // stored reply saying it all over again as something the agent said is drawn nowhere.
@@ -646,7 +646,7 @@ test("the session's reply to a message the stream took over is still drawn", asy
 // it: a reader would otherwise meet those words as the person's, with the person's own copy
 // hidden. Measured at this head: turnSaysBody answers true for body "Should I deploy?" against
 // the rows "Should I deploy?\n[yes]", "Should I deploy?\n[approved]\n[signed-off]" and
-// "[yes]\nShould I deploy?" (INFRA-1026).
+// "[yes]\nShould I deploy?" (POMJU-1026).
 test("a streamed turn that adds a bracketed word of its own hides nothing", async () => {
   const at = Date.parse("2026-09-27T21:16:16Z");
   renderLiveView({
@@ -670,7 +670,7 @@ test("a streamed turn that adds a bracketed word of its own hides nothing", asyn
 // stored copy and show that picture, with a caption of its own, under the person's name. Any
 // client of the bus can publish the row, so a picture in it counts only where the body wrote
 // that very markdown (`rowLines`, `features/agent-view/conversation.ts`); otherwise the row
-// says something the person did not, and the stored copy keeps showing beside it (INFRA-1026).
+// says something the person did not, and the stored copy keeps showing beside it (POMJU-1026).
 test("a streamed turn that adds a picture of its own hides nothing", async () => {
   const at = Date.parse("2026-09-27T21:16:16Z");
   const forged = "dispatch://agent/f376a3a9-6e75-461b-806b-22dea4e83ddf/artifact/i3-red96-png@v1";
@@ -709,7 +709,7 @@ test("a streamed turn that adds a picture of its own hides nothing", async () =>
 // streams it back as the one text part it is. The placeholder rule reads that part as the stream
 // naming a block it did not render, drops it, and leaves the turn saying nothing, so Dispatch's
 // stored copy no longer matches and the person's message shows twice. Driven live on a Claude
-// Code 2.1.310 session: a Send of `[ack]` drew two `agent-message-user` rows (INFRA-1026).
+// Code 2.1.310 session: a Send of `[ack]` drew two `agent-message-user` rows (POMJU-1026).
 test("a person's message that is a bracketed word of their own shows once", async () => {
   const at = Date.parse("2026-09-27T21:16:16Z");
   renderLiveView({
@@ -734,7 +734,7 @@ test("a person's message that is a bracketed word of their own shows once", asyn
 // and the stream's own `[image]` beside it. Driven live on a Claude Code 2.1.310 session, where
 // it drew two `agent-message-user` rows like the plain `[ack]` did; the body's own lines say
 // which of the two `[...]` lines the person wrote, and the picture it embeds is what accounts
-// for the other (INFRA-1026).
+// for the other (POMJU-1026).
 test("a person's message that is a bracketed word with a picture shows once", async () => {
   const at = Date.parse("2026-09-27T21:16:16Z");
   const picture = "dispatch://agent/f376a3a9-6e75-461b-806b-22dea4e83ddf/artifact/i3-blue96-png@v1";
@@ -781,7 +781,7 @@ function pictureTurn(seq: number, at: number, dispatchMessageId: string, text: s
 // `What colour is this picture? ![blue](dispatch://agent/<id>/artifact/i3-blue96-png@v1)` drew the
 // stored copy beside the streamed row, the body's markdown having nothing in the row to match.
 // A row that carries the markdown as the person wrote it says the same body, which is how a
-// terminal session's row records it (INFRA-1026).
+// terminal session's row records it (POMJU-1026).
 test("a person's message embedding a picture shows once, with or without the markdown in the row", async () => {
   const at = Date.parse("2026-09-27T21:16:16Z");
   const picture = "dispatch://agent/f376a3a9-6e75-461b-806b-22dea4e83ddf/artifact/i3-blue96-png@v1";
@@ -975,7 +975,7 @@ async function renderSendingView(): Promise<void> {
   await waitFor(() => expect(mode.value).toBe("steer"));
 }
 
-// W25 / INFRA-442. Send is pressable whenever the box holds text: each press is its own write under
+// W25 / POMJU-442. Send is pressable whenever the box holds text: each press is its own write under
 // its own key, shown as its own pending turn until Dispatch confirms it, and a later press waits
 // only behind an earlier one still being tried - so they reach the session in press order, each
 // once. Past a send's deadline its turn says it is still being tried, with Stop trying, and Send
@@ -1704,7 +1704,7 @@ test("a row shows its whole description rather than cutting it", async () => {
  *  provider's id holding an `@` and a trailing `:<level>`, which a pick must send unchanged. */
 const MODELS = ["anthropic/model-a", "openai/model-c", "anthropic/model-b", "custom/model@v2:high"];
 
-/** A reported settings frame (INFRA-195): model-a at thinking `auto`, unless `fields` say
+/** A reported settings frame (POMJU-195): model-a at thinking `auto`, unless `fields` say
  *  otherwise. */
 function settingsFrame(
   seq: number,
@@ -1771,7 +1771,7 @@ function sessionReply(id: string, body: string): Message {
 }
 
 // The header shows the model and thinking level the session's newest settings frame reports
-// (INFRA-195), over the last turn's model, before any turn runs on them, and a change made
+// (POMJU-195), over the last turn's model, before any turn runs on them, and a change made
 // anywhere else (the terminal, a fallback) as its frame arrives. What the header renders of a
 // view, the pickers' options and keys included, is `SessionSettings.test.tsx`'s.
 test("the header shows the model and thinking level each settings frame reports, as it arrives", async () => {
@@ -1817,7 +1817,7 @@ test("a session not answering the live view keeps the empty transcript's explana
 // Send, since a BTW is a side question the session does not run, and the id exactly as the
 // session listed it, even one `/model` could read a role or a level into. It asks for a session
 // that is running now (`connected_only`): a line stored for one that is not would change its
-// model at an unknown later time (INFRA-626).
+// model at an unknown later time (POMJU-626).
 test("a pick sends /model or /effort as a Send for a running session, whatever Send as says, the id unchanged", async () => {
   const user = userEvent.setup();
   const createAgentMessage = spyOnSwitchSends();
@@ -1987,7 +1987,7 @@ function composer(): HTMLElement {
 }
 
 /** What the one line under the message box reads: the Send control's own words about the next
- *  press, and nothing at rest (INFRA-812, R6). */
+ *  press, and nothing at rest (POMJU-812, R6). */
 function composerHint(): string {
   return within(composer()).getByTestId("agent-composer-hint").textContent ?? "";
 }
@@ -2111,7 +2111,7 @@ test("Enter sends while the session is mid-turn", async () => {
 // accessible description, and on a line in the composer a reader without a pointer can see. It
 // stays focusable (aria-disabled, not disabled), and neither a click nor Enter sends. With text
 // the line reads nothing: how to send is a rule of the page, which the question mark under the
-// box holds (INFRA-812, R6), not a word about this press.
+// box holds (POMJU-812, R6), not a word about this press.
 test("with an empty box Send is refused, says why on screen, and sends nothing", async () => {
   const user = userEvent.setup();
   const createAgentMessage = acceptSends();
@@ -2132,7 +2132,7 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
     .join(" ");
   expect(description).toBe("Type a message first.");
   // At rest the reason is the button's own, where a screen reader reaches it; the line under the
-  // box prints nothing until a person tries (INFRA-812, R6).
+  // box prints nothing until a person tries (POMJU-812, R6).
   expect(
     within(composer())
       .getAllByText("Type a message first.")
@@ -2331,7 +2331,7 @@ test("a draft stays with its session across a switch to another", async () => {
   expect(back.value).toBe("draft for the planner");
 });
 
-// A view that sleeps is unmounted altogether (INFRA-812, D6), so what the person was writing
+// A view that sleeps is unmounted altogether (POMJU-812, D6), so what the person was writing
 // belongs to the session's entry in the live-view store, not to the composer: the view that
 // wakes puts it back in the box. Before this the draft died with the view.
 test("a draft outlives the view it was written in and comes back when it wakes", async () => {
@@ -2475,7 +2475,7 @@ function answerPinWrites(): Mock<typeof api.putAgentState> {
 }
 
 // A person pins an agent from its live view as well as from its row on the Agents page
-// (INFRA-812, R1): the pin is theirs, so it is written to Dispatch and the rail lists the
+// (POMJU-812, R1): the pin is theirs, so it is written to Dispatch and the rail lists the
 // session at once.
 test("the live view's header pins the session, and the rail lists it", async () => {
   const user = userEvent.setup();
@@ -2528,12 +2528,12 @@ test("the live view's header unpins the session, and the rail's row goes", async
   expect(putAgentState).toHaveBeenCalledWith(SESSION, { pinned: false }, keyedAttempt);
 });
 
-/** A `context` frame (INFRA-812): the two figures a session publishes about its window. */
+/** A `context` frame (POMJU-812): the two figures a session publishes about its window. */
 function contextFrame(seq: number, tokens: number, contextWindow: number): AgentStreamFrame {
   return { contextWindow, kind: "context", seq, tokens, v: 1 };
 }
 
-/** The seven parts the one row under the message box carries (INFRA-812, R6), in the order a
+/** The seven parts the one row under the message box carries (POMJU-812, R6), in the order a
  *  reader meets them. */
 const FOOTER_PARTS = [
   "agent-delivery-picker",

@@ -19,7 +19,7 @@ import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCode
 import { z } from "zod";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 
-// What the live view's two session-side surfaces do on the real Oh My Pi (dispatch://INFRA-812,
+// What the live view's two session-side surfaces do on the real Oh My Pi (dispatch://POMJU-812,
 // R3 and R4): the `context` frame the session publishes about how full its context window is
 // (extensions/envoy.ts's `refreshAgentStreamContext` over `@legion/pi-shared/agent-stream`'s
 // `setContext`), and a person's `!command`, which the session runs itself before the host is
@@ -386,7 +386,7 @@ async function startSession(
         trace_id: label,
       });
       // The one path a session receives on: a frame of its own consumer's relay, carrying the
-      // subject the stream stored the message on (INFRA-771). The session subscribes that
+      // subject the stream stored the message on (POMJU-771). The session subscribes that
       // subject after it registers, so until it does the server reports no responder and the
       // frame goes again, as the one frame it is; the word it answers is what says it took it.
       streamSeq += 1;
@@ -887,7 +887,7 @@ test.skipIf(skip)(
 // The person's line is theirs as they sent it: the space after the mark is in every answer,
 // though `printf hi` is what ran. The live view reads a report back against the message's
 // stored body (`isShellCommandReport` in `@legion/contracts`), so a reply opening with the
-// trimmed command is drawn as a second copy of the line (dispatch://INFRA-812, round 2).
+// trimmed command is drawn as a second copy of the line (dispatch://POMJU-812, round 2).
 test.skipIf(skip)(
   "a Send of `! printf hi` keeps the space after the mark in the reply and in the frame",
   async () => {

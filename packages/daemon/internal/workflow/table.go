@@ -100,7 +100,7 @@ func backwardRows() []Row {
 		// Every pair comes from BackwardPairs, so ParsePair reads each one, and every pair of
 		// that list earns a row here: the phases of this workflow are the seven of phase.Order,
 		// and none of them waits for a merge somebody else makes, so there is no pair the table
-		// above carries as a row of its own (dispatch://INFRA-714).
+		// above carries as a row of its own (dispatch://POMJU-714).
 		rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to,
 			Effects: []EffectKind{EffectStart, EffectNotice}})
 	}

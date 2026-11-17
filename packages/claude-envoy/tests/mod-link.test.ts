@@ -158,7 +158,7 @@ test("binds the path the mod computes, answers the liveness marker, and keeps th
   })
   expect((await stat(link.socketPath)).mode & 0o777).toBe(0o600)
   // The socket is only as private as the directory it sits in: another user who can write that
-  // directory binds the path first and reads the conversation (INFRA-1026 review).
+  // directory binds the path first and reads the conversation (POMJU-1026 review).
   expect((await stat(dirname(link.socketPath))).mode & 0o777).toBe(0o700)
 })
 
@@ -351,7 +351,7 @@ test("a body that is not JSON is refused, and a route the mod does not speak is 
 
 // Two Claude Code processes can boot on one session id - `claude -c`, and `claude --resume <id>`
 // in a second terminal - and one server serving both would put two conversations in one live
-// view and hand a person's Send to whichever mod polled first (INFRA-1026 review).
+// view and hand a person's Send to whichever mod polled first (POMJU-1026 review).
 test("one link serves one mod: a second instance is refused and said so, and the first goes on", async () => {
   const dir = await directory()
   const refusals: string[] = []
@@ -397,7 +397,7 @@ test("one link serves one mod: a second instance is refused and said so, and the
 
 // A request waits in the queue while no mod polls, which is exactly where one that timed out was
 // left: a mod that connected later ran it, so an old `session.message` the listener had already
-// sent again reached the agent twice (INFRA-1026 review).
+// sent again reached the agent twice (POMJU-1026 review).
 test("a request that timed out is not handed to a mod that polls afterwards", async () => {
   const dir = await directory()
   const link = await start(dir, "s15")
@@ -422,7 +422,7 @@ test("a request that timed out is not handed to a mod that polls afterwards", as
 
 // The mod says hello once per Claude Code process, so a server started again inside that process
 // hears only the poll, and a session that waited for a hello advertised nothing for up to a
-// heartbeat (INFRA-1026 review).
+// heartbeat (POMJU-1026 review).
 test("the link reports the first poll of a mod that never said hello, and only the first", async () => {
   const dir = await directory()
   const link = await start(dir, "s16")
@@ -453,7 +453,7 @@ test("the link reports the first poll of a mod that never said hello, and only t
 })
 
 // The link drops what its queue holds when it closes: a mod of the next server to bind this
-// socket is handed nothing of the session that went (INFRA-1026 review, round ten).
+// socket is handed nothing of the session that went (POMJU-1026 review, round ten).
 test("the queue goes with the link, so nothing of it waits for a later mod", async () => {
   const dir = await directory()
   const link = await start(dir, "s22")
@@ -499,7 +499,7 @@ function wrote(request: ModRequest): ModResult {
   return { id: request.id, ok: true, value: { as: "prompt" } }
 }
 
-// Repro `R-A` (INFRA-1026 review, round eleven): a mod that is not polling - stopped,
+// Repro `R-A` (POMJU-1026 review, round eleven): a mod that is not polling - stopped,
 // reconnecting after a server restart, or never started at all - answers nothing, so the card's
 // frame goes unanswered and Envoy sends the card again. Nothing of the first attempt may be left
 // for a later poll: the mod that polls next would be handed both it and the resend's, and the
@@ -542,7 +542,7 @@ test("a card no mod answered is written once, by its resend, when the mod finall
 
 // A session whose mod never connects - Claude Code before 2.1.310, or a mod that gave up its
 // connect backoff - takes nothing, and every frame must come again: a card answered as delivered
-// here would be a message lost, where R12 allows only a message shown twice (INFRA-1026, check
+// here would be a message lost, where R12 allows only a message shown twice (POMJU-1026, check
 // k7's second clause).
 test("no card is answered as delivered while no mod has ever connected", async () => {
   const dir = await directory()

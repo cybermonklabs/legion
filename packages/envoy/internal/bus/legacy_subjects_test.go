@@ -18,7 +18,7 @@ func TestASessionConsumerFiltersOnBothFormsOfEachTopic(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_forms"
-	legacyIssue := contracts.DispatchIssueTopicPrefix + "INFRA-12.>"
+	legacyIssue := contracts.DispatchIssueTopicPrefix + "POMJU-12.>"
 	if _, err := consumers.Ensure(ctx, session, []string{contracts.LegacyAgentSubject(session), legacyIssue}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -29,8 +29,8 @@ func TestASessionConsumerFiltersOnBothFormsOfEachTopic(t *testing.T) {
 	want := []string{
 		"notifications.agent.*.ses_forms",
 		"notifications.agent.ses_forms",
-		"notifications.dispatch.issue.INFRA-12.>",
-		"notifications.dispatch.issue.INFRA.INFRA-12.>",
+		"notifications.dispatch.issue.POMJU-12.>",
+		"notifications.dispatch.issue.POMJU.POMJU-12.>",
 	}
 	if !slices.Equal(info.Config.FilterSubjects, want) {
 		t.Fatalf("filters = %q, want %q", info.Config.FilterSubjects, want)
@@ -38,14 +38,14 @@ func TestASessionConsumerFiltersOnBothFormsOfEachTopic(t *testing.T) {
 
 	pull := pullSession(t, consumers, session)
 	publishStored(t, owner, contracts.LegacyAgentSubject("ses_other"), "another session's, old form")
-	publishStored(t, owner, contracts.AgentSubject("INFRA", "ses_other"), "another session's, new form")
+	publishStored(t, owner, contracts.AgentSubject("POMJU", "ses_other"), "another session's, new form")
 	var delivered []uint64
 	for _, subject := range []string{
 		contracts.LegacyAgentSubject(session),
 		contracts.AgentSubject("PRIV", session),
 		contracts.AgentSubject(contracts.NoProject, session),
-		"notifications.dispatch.issue.INFRA-12.comment.created",
-		contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"),
+		"notifications.dispatch.issue.POMJU-12.comment.created",
+		contracts.DispatchIssueSubject("POMJU", "POMJU-12", "comment.created"),
 	} {
 		delivered = append(delivered, publishStored(t, owner, subject, subject))
 	}
@@ -64,12 +64,12 @@ func TestANewFormTopicTakesTheOldFormToo(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_new_form"
-	follow := contracts.DispatchIssueSubject("INFRA", "INFRA-12", ">")
-	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject("INFRA", session), follow}, 0); err != nil {
+	follow := contracts.DispatchIssueSubject("POMJU", "POMJU-12", ">")
+	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject("POMJU", session), follow}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	pull := pullSession(t, consumers, session)
-	old := publishStored(t, owner, "notifications.dispatch.issue.INFRA-12.issue.updated", "old form")
+	old := publishStored(t, owner, "notifications.dispatch.issue.POMJU-12.issue.updated", "old form")
 	if msg := next(t, pull); msg.StreamSeq != old {
 		t.Fatalf("delivered %d on %s, want the old form's %d", msg.StreamSeq, msg.Subject, old)
 	}
@@ -105,7 +105,7 @@ func TestTopicsOfAFamilyTheRenameLeavesKeepTheirFilters(t *testing.T) {
 	topics := []string{
 		"notifications.github.o.r.>",
 		"notifications.team.deploy-squad",
-		"notifications.dispatch.document.INFRA.spec.>",
+		"notifications.dispatch.document.POMJU.spec.>",
 		"notifications.slack.T1.C1.>",
 	}
 	_, filters, err := sessionConsumerTarget("ses_same", topics)
@@ -132,11 +132,11 @@ func TestTopicsOfAFamilyTheRenameLeavesKeepTheirFilters(t *testing.T) {
 // one filter, as at the merge base, and the session's consumer reaches no other issue. The control
 // is the issue's topic in either form under its own project, which keeps its two disjoint forms.
 func TestAWildcardProjectIssueTopicKeepsItsOneFilter(t *testing.T) {
-	const wildcard = "notifications.dispatch.issue.*.INFRA-12.>"
+	const wildcard = "notifications.dispatch.issue.*.POMJU-12.>"
 	if filters := SessionConsumerFilters([]string{wildcard}); !slices.Equal(filters, []string{wildcard}) {
 		t.Fatalf("filters of %s = %q, want the topic alone", wildcard, filters)
 	}
-	both := []string{"notifications.dispatch.issue.INFRA-12.>", "notifications.dispatch.issue.INFRA.INFRA-12.>"}
+	both := []string{"notifications.dispatch.issue.POMJU-12.>", "notifications.dispatch.issue.POMJU.POMJU-12.>"}
 	for _, topic := range both {
 		if filters := SessionConsumerFilters([]string{topic}); !slices.Equal(filters, ReduceFilterSubjects(both)) {
 			t.Fatalf("filters of %s = %q, want both forms %q", topic, filters, ReduceFilterSubjects(both))

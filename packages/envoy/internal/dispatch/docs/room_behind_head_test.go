@@ -1068,7 +1068,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 // A named version on a process whose room stands behind the head records the stored document,
 // which holds the other process's paragraph, at the head it records. Rendered from the room it
 // recorded text missing Bob's paragraph at a cursor saying it held it, so no later settlement saw
-// those words past that cursor (INFRA-218; corruption 1 of INFRA-66, on the version path).
+// those words past that cursor (POMJU-218; corruption 1 of POMJU-66, on the version path).
 func TestANamedVersionFromARoomBehindTheHeadRecordsTheStoredDocument(t *testing.T) {
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
@@ -1220,7 +1220,7 @@ func askState(t *testing.T, database *store.Store, artifactID, blockID string) s
 // leaves is the one its version records. Without the gate the replacement is computed on the stale
 // fork, which never held task B's paragraph: the replacement deletes what the fork held and the
 // paragraph survives the merge, so the stored document holds text the version does not
-// (corruption 6 of INFRA-66).
+// (corruption 6 of POMJU-66).
 func TestAnUploadFromARoomBehindTheHeadReplacesTheStoredDocument(t *testing.T) {
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
@@ -1240,7 +1240,7 @@ func TestAnUploadFromARoomBehindTheHeadReplacesTheStoredDocument(t *testing.T) {
 // An agent's edit whose room is behind the head is made on the stored document and succeeds: the
 // cold path is what keeps the gate from answering 503 for a write this process can still make
 // correctly. The edit lands beside task B's paragraph, which the room it would otherwise have
-// forked never held (corruption 7 of INFRA-66: a write made over text its writer never saw).
+// forked never held (corruption 7 of POMJU-66: a write made over text its writer never saw).
 func TestAnEditFromARoomBehindTheHeadTakesTheColdPathAndSucceeds(t *testing.T) {
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
@@ -1655,7 +1655,7 @@ type recordedClasses struct {
 // forked document (liveWriteOrigin.shadow.doc), and a documentUpdateClass kept would keep two
 // *UpdateCredit values, each of which holds a *Service, along with a cursor and the update's
 // bytes. The slice grows for the whole life of each side's flows, so every pointer in it is
-// memory the test binary never gives back (dispatch://INFRA-1085).
+// memory the test binary never gives back (dispatch://POMJU-1085).
 type recordedClass struct {
 	origin         string
 	marginOnly     bool

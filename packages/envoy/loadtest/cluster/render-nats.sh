@@ -7,7 +7,7 @@
 # It renders chart nats/nats 2.15.1 from nats-2.15.1.tgz, the chart's archive vendored beside it,
 # and refuses that archive, naming it, before helm reads it when its sha256 is not b209c627…58cc1,
 # the digest the chart index at https://nats-io.github.io/k8s/helm/charts/ and the GitHub release
-# both publish (the value INFRA-549 records). It renders it with `helm template --skip-tests` (helm
+# both publish (the value POMJU-549 records). It renders it with `helm template --skip-tests` (helm
 # v3.20.2 through go run) and nats-values.yaml, with each image pinned to the digest a registry
 # manifest read gives its tag, and refuses a render that holds a kind the load-test Role cannot
 # write or an image not pinned by digest. The output keeps the placeholders __NAMESPACE__,

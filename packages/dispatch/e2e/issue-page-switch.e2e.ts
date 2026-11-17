@@ -6,7 +6,7 @@ import { assertPageFits } from "./unclipped";
 import { asUser, signIn, withAlice } from "./users";
 
 /**
- * The reader's switch between today's issue page and the new one (dispatch://INFRA-3903): the
+ * The reader's switch between today's issue page and the new one (dispatch://POMJU-3903): the
  * checkbox "New issue page" under "Preview" on Settings, the store that every tab of one login
  * reads, the chooser at an issue's address, and `withIssuePage` (e2e/issue-page-option.ts),
  * which later rows turn the new page on with. Each row reads the page at 1440 px and again at

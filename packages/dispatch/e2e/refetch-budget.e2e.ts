@@ -15,7 +15,7 @@ import { inboxCountBadge, inboxCountText } from "./inbox-threads";
 import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
-// INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
+// POMJU-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
 // file ran unchanged at the commit before the change (16e4bb0f758e) and at the change, where the
 // budget and sidebar tests failed and passed on their counts. This copy is ported to the live
 // socket (`/ws/live`), which that commit did not serve, so it runs only from the live socket on.
@@ -205,7 +205,7 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     await page.clock.install();
     await page.goto(`/issues/${source.key}/conversation`);
     const turns = page.getByRole("list", { name: "Conversation turns" });
-    // INFRA-869's R4: "A `dispatch://` reference reads as its target's title ... an issue as
+    // POMJU-869's R4: "A `dispatch://` reference reads as its target's title ... an issue as
     // its key and title", so each of the 50 links reads `CORE-<n> Budget reference <nn>` where
     // it read the title alone before.
     await expect(turns.getByRole("link", { name: /^CORE-\d+ Budget reference \d\d$/ })).toHaveCount(

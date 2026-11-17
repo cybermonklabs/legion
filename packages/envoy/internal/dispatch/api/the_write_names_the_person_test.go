@@ -11,7 +11,7 @@ import (
 // every read of it resolves (askedOfPersonExpression): the person it was handed to, then the
 // assignee of its issue, then the default assignee of its project. The caller then knows whose
 // Inbox its question landed in without reading the ask again, and an issue nobody holds no
-// longer answers nobody. This file is the write half of dispatch://INFRA-3090's chain;
+// longer answers nobody. This file is the write half of dispatch://POMJU-3090's chain;
 // TestEveryQuestionReachesAPerson holds that every question reaches somebody, and
 // TestOneExpressionDecidesWhoWaits that every read of one question names the same person.
 

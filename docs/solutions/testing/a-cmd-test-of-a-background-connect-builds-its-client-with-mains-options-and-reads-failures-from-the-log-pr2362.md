@@ -33,7 +33,7 @@ helper `startDispatchStream` in `cmd/dispatch/stream_replicas_test.go` still con
 synchronously, and a reviewer's mutation of the background branch (plain stream config, no keeper)
 passed every test. Commit 8ec4e3643684 builds the helper with `serverClient(...)`, waits for the
 background reconcile, and returns the error from the record the bus logs for a failed run of the
-reconnect hooks (`reconcileFailure`); the same mutation now fails three tests. Since INFRA-743
+reconnect hooks (`reconcileFailure`); the same mutation now fails three tests. Since POMJU-743
 that record is the WARN `envoy nats reconnect hook failed; it is retried` under `bus.RepairGrace`
 and the ERROR `envoy nats reconnect hooks have not succeeded` at or past it, and the helper reads
 either. Since sjawhar/legion#2580 a logged failure no longer ends `startDispatchStream`: the bus

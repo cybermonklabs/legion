@@ -53,10 +53,13 @@
 # ("<commit> <dirty>"). run-step.sh calls it before a step that is not part of a series;
 # run-series.sh calls it once, before its first step.
 #
-# The replay's inputs (README.md, The replay): stack.sh replay-get and cluster.sh replay-prepare
-# both download and verify the manifest's parts with replay_fetch_parts and replay_get_bundle
-# below. The manifest names no issue; LOADTEST_REPLAY_ISSUE names the one the parts are file
-# artifacts of, and nothing is read or downloaded without it.
+# The replay's inputs (README.md, The replay) are file artifacts of the deployment's own Dispatch,
+# and nothing is read or downloaded without LOADTEST_REPLAY_ISSUE, the issue the operator names:
+# the manifest, replay-2026-10-26.json, a project file of that issue's project, at the version and
+# sha256 pinned below (replay_fetch_manifest), and the bundle's and the seed dump's parts that it
+# names, file artifacts of the issue itself (replay_fetch_parts, replay_get_bundle). stack.sh
+# replay-get, run-step.sh --replay and cluster.sh replay-prepare and all fetch the manifest unless
+# the operator gives one with --manifest FILE.
 
 die() {
   printf '%s: %s\n' "${0##*/}" "$*" >&2
@@ -364,7 +367,7 @@ random_hex() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
 # stack.sh seed and cluster.sh seed, so the record tells a seed with the reference documents
 # (loadgen seed-refs) from one without them. Every table names public, as every statement of this
 # package does: the default search_path is "$user", public, so an unqualified name counts a schema
-# of the login's name first wherever one exists (dispatch://INFRA-988).
+# of the login's name first wherever one exists (dispatch://POMJU-988).
 SEED_COUNTS_SQL="select json_build_object(
   'projects', (select count(*) from public.projects),
   'issues', (select count(*) from public.issues),
@@ -380,8 +383,17 @@ export SEED_COUNTS_SQL
 
 # ---- the replay's inputs ------------------------------------------------------------------------------
 
-# replay_download OUT ISSUE SLUG VERSION: one version of a Dispatch file artifact into OUT, with
-# the caller's DISPATCH_URL and the bearer token in DISPATCH_TOKEN_FILE. The scripts run in the
+# The replay manifest: a project file of the project of the issue LOADTEST_REPLAY_ISSUE names (the
+# key before its '-'), read at REPLAY_MANIFEST_VERSION and refused unless its sha256 is
+# REPLAY_MANIFEST_SHA256. LOADTEST_REPLAY_MANIFEST_VERSION and LOADTEST_REPLAY_MANIFEST_SHA256 name
+# another version of it, as a new manifest's upload makes (README.md, Rebuilding the bundle and the
+# seed).
+REPLAY_MANIFEST_FILE=replay-2026-10-26.json
+REPLAY_MANIFEST_VERSION=${LOADTEST_REPLAY_MANIFEST_VERSION:-1}
+REPLAY_MANIFEST_SHA256=${LOADTEST_REPLAY_MANIFEST_SHA256:-7e7f1fd2067024ed1bcfa0193127299ae5df1997284bde1adf1280fe20c95bc3}
+
+# replay_download OUT ROUTE: GET $DISPATCH_URL/api/v1/ROUTE, one version of a Dispatch file
+# artifact, into OUT, with the bearer token in DISPATCH_TOKEN_FILE. The scripts run in the
 # caller's environment (stack.sh starts only its stack processes under env -i), and the token
 # reaches curl on its standard input, never on a command line or in the script's output.
 replay_download() {
@@ -390,43 +402,77 @@ replay_download() {
   local token
   token=$(<"$DISPATCH_TOKEN_FILE")
   token=${token//[$'\r\n\t ']/}
-  note "downloading dispatch://$2/artifact/$3 version $4"
+  note "downloading /api/v1/$2"
   printf 'Authorization: Bearer %s\n' "$token" |
-    curl -q -fsSL --retry 3 --max-time 900 -H @- -o "$1" "${DISPATCH_URL%/}/api/v1/issues/$2/artifacts/$3/versions/$4"
+    curl -q -fsSL --retry 3 --max-time 900 -H @- -o "$1" "${DISPATCH_URL%/}/api/v1/$2"
 }
 
-# replay_fetch_part ENTRY ISSUE FROM_DIR PARTS_DIR: put a manifest part (its JSON) at
-# PARTS_DIR/<file>: kept when its sha256 matches, else copied from FROM_DIR (when not empty) or
-# downloaded, and refused, deleted, when its sha256 differs from the manifest's.
+# replay_fetch_part ENTRY OWNER FROM_DIR PARTS_DIR [WHAT]: put a file artifact (ENTRY, its JSON
+# {file, slug, version, sha256}) at PARTS_DIR/<file>: kept when its sha256 matches, else copied
+# from FROM_DIR (when not empty) or downloaded from OWNER (issues/<key> or projects/<key>), and
+# refused, deleted, when its sha256 differs from ENTRY's. WHAT names it in what this prints
+# (default: part, a manifest part).
 replay_fetch_part() {
-  local entry=$1 issue=$2 from_dir=$3 parts_dir=$4 file slug version want
+  local entry=$1 owner=$2 from_dir=$3 parts_dir=$4 what=${5:-part} file slug version want
   file=$(jq -er .file <<<"$entry")
   slug=$(jq -er .slug <<<"$entry")
   version=$(jq -er .version <<<"$entry")
   want=$(jq -er .sha256 <<<"$entry")
-  [[ $file =~ ^[A-Za-z0-9._-]+$ ]] || die "the manifest's part file '$file' is not a plain file name"
+  [[ $file =~ ^[A-Za-z0-9._-]+$ ]] || die "$what file '$file' is not a plain file name"
   local dst=$parts_dir/$file
   if [ -f "$dst" ] && [ "$(sha256_of "$dst")" = "$want" ]; then
-    note "part $file: kept (sha256 matches)"
+    note "$what $file: kept (sha256 matches)"
     return 0
   fi
-  local tmp=$dst.tmp
+  local tmp=$dst.tmp route=$owner/artifacts/$slug/versions/$version
   rm -f -- "$tmp"
   if [ -n "$from_dir" ]; then
-    [ -f "$from_dir/$file" ] || die "part $file: not in --from-dir $from_dir"
+    [ -f "$from_dir/$file" ] || die "$what $file: not in --from-dir $from_dir"
     cp -- "$from_dir/$file" "$tmp"
-  elif ! replay_download "$tmp" "$issue" "$slug" "$version"; then
+  elif ! replay_download "$tmp" "$route"; then
     rm -f -- "$tmp"
-    die "part $file: the download of dispatch://$issue/artifact/$slug version $version failed"
+    die "$what $file: the download of /api/v1/$route failed"
   fi
   local got
   got=$(sha256_of "$tmp")
   if [ "$got" != "$want" ]; then
     rm -f -- "$tmp" "$dst"
-    die "part $file: sha256 $got, the manifest says $want; deleted it"
+    die "$what $file: sha256 $got, not the $want it must have; deleted it"
   fi
   mv -f -- "$tmp" "$dst"
-  note "part $file: $(stat -c %s -- "$dst") bytes, sha256 matches"
+  note "$what $file: $(stat -c %s -- "$dst") bytes, sha256 matches"
+}
+
+# replay_fetch_manifest DIR FROM_DIR: the replay manifest at DIR/$REPLAY_MANIFEST_FILE, its path in
+# REPLAY_MANIFEST_PATH (replay_fetch_part): kept when its sha256 is REPLAY_MANIFEST_SHA256, else
+# copied from FROM_DIR (when not empty) or downloaded, version REPLAY_MANIFEST_VERSION, from the
+# project of the issue LOADTEST_REPLAY_ISSUE names. Before it writes anything it refuses, naming
+# what is missing, a manifest that is not kept and that it can neither copy nor download; a
+# caller's --manifest FILE is the other way to give one.
+replay_fetch_manifest() {
+  local dir=$1 from_dir=$2 file=$REPLAY_MANIFEST_FILE slug
+  [ -n "${LOADTEST_REPLAY_ISSUE:-}" ] ||
+    die "LOADTEST_REPLAY_ISSUE is not set: set it to the issue the replay's parts are file artifacts of; the manifest is a file of its project"
+  [[ $LOADTEST_REPLAY_ISSUE =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] ||
+    die "LOADTEST_REPLAY_ISSUE '$LOADTEST_REPLAY_ISSUE' is not an issue key (PROJECT-N), whose project holds the replay manifest"
+  [[ $REPLAY_MANIFEST_VERSION =~ ^[1-9][0-9]*$ ]] ||
+    die "LOADTEST_REPLAY_MANIFEST_VERSION '$REPLAY_MANIFEST_VERSION' is not a positive integer"
+  [[ $REPLAY_MANIFEST_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
+    die "LOADTEST_REPLAY_MANIFEST_SHA256 '$REPLAY_MANIFEST_SHA256' is not a sha256 (64 lower-case hex digits)"
+  REPLAY_MANIFEST_PATH=$dir/$file
+  if ! { [ -f "$REPLAY_MANIFEST_PATH" ] && [ "$(sha256_of "$REPLAY_MANIFEST_PATH")" = "$REPLAY_MANIFEST_SHA256" ]; }; then
+    if [ -n "$from_dir" ]; then
+      [ -f "$from_dir/$file" ] || die "no replay manifest: $file is not in --from-dir $from_dir; put it there, or give --manifest FILE"
+    elif [ -z "${DISPATCH_URL:-}" ] || [ ! -r "${DISPATCH_TOKEN_FILE:-}" ]; then
+      die "no replay manifest: give --manifest FILE, or set DISPATCH_URL and DISPATCH_TOKEN_FILE (a readable file) to download $file, a project file of the project of the issue LOADTEST_REPLAY_ISSUE names"
+    fi
+  fi
+  slug=${file,,}
+  slug=${slug//[^a-z0-9]/-}
+  mkdir -p -- "$dir"
+  replay_fetch_part "$(jq -nc --arg file "$file" --arg slug "$slug" --argjson version "$REPLAY_MANIFEST_VERSION" \
+    --arg sha256 "$REPLAY_MANIFEST_SHA256" '{$file, $slug, $version, $sha256}')" \
+    "projects/${LOADTEST_REPLAY_ISSUE%%-*}" "$from_dir" "$dir" "the replay manifest"
 }
 
 # replay_fetch_parts MANIFEST WHICH PARTS_DIR FROM_DIR: every part of the manifest's WHICH (bundle
@@ -448,7 +494,7 @@ replay_fetch_parts() {
   mkdir -p -- "$parts_dir"
   REPLAY_PARTS=()
   while IFS= read -r entry; do
-    replay_fetch_part "$entry" "$issue" "$from_dir" "$parts_dir"
+    replay_fetch_part "$entry" "issues/$issue" "$from_dir" "$parts_dir"
     REPLAY_PARTS+=("$parts_dir/$(jq -r .file <<<"$entry")")
   done < <(jq -c --arg w "$which" '.[$w].parts[]' "$manifest")
   ((${#REPLAY_PARTS[@]} > 0)) || die "$manifest lists no $which parts"

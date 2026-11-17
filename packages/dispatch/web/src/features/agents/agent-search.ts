@@ -8,7 +8,7 @@ import type { AgentGroup } from "./agent-groups";
 /**
  * What narrows the agent list: any number of groups, machines and roles, and a free-text
  * search. An empty list matches every session, as an empty search box does, and a list of two
- * keeps the rows of either (INFRA-812, R7: each of the three is a multi-select).
+ * keeps the rows of either (POMJU-812, R7: each of the three is a multi-select).
  */
 export interface AgentFilters {
   readonly groups: readonly AgentGroup[];

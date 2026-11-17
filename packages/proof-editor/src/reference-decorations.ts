@@ -466,7 +466,7 @@ export const referenceDecorationsPlugin = $prose(
  *  before; `null` draws none. A value saying what the current one says changes nothing. */
 export function setReferences(view: EditorView, references: EditorReferences | null): void {
   // A host writes its references from an effect, and an effect of a child runs after the effect
-  // of the parent that tore this editor down (INFRA-2409), so the write can arrive here after
+  // of the parent that tore this editor down (POMJU-2409), so the write can arrive here after
   // the view is gone; `dispatchReferenceChange` reads the same flag.
   if (view.isDestroyed) return;
   const current = referencesKey.getState(view.state);

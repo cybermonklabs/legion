@@ -129,7 +129,7 @@ type FetchReport struct {
 // one. The stream from the cache holds no clock: it ends when it falls below the low-speed bound
 // (CacheStreamLowSpeedBytes, CacheStreamLowSpeedTime) and otherwise runs as long as the repository
 // needs, so a download that is still receiving is never thrown away and begun again from nothing
-// (INFRA-495). So an issue pod's fetch ends its waits and its clocked stages within FetchBudget,
+// (POMJU-495). So an issue pod's fetch ends its waits and its clocked stages within FetchBudget,
 // however long it waited on the cache, and a slow stream never leaves the verification or the
 // delta minutes to run in: nine of one deployment's issue pods died in the delta on 2026-10-26,
 // the stream and its verification having used most of the one bound they then shared

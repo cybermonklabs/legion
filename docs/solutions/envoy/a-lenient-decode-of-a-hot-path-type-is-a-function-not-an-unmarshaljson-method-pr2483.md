@@ -35,5 +35,5 @@ related_issues:
   2.340 µs, `~ (p=0.105)`; settlement's `recordedMarkRefs` over every replay document `~ (p=0.796)`.
 - Other reasons against such a method are in
   `docs/solutions/envoy/embedded-struct-unmarshal-promotion.md` (promotion through embedding) and
-  `docs/solutions/envoy/a-wire-shape-fix-in-a-types-unmarshaljson-misses-every-route-that-serves-the-stored-json-raw-INFRA-569.md`
+  `docs/solutions/envoy/a-wire-shape-fix-in-a-types-unmarshaljson-misses-every-route-that-serves-the-stored-json-raw-POMJU-569.md`
   (routes that serve the stored JSON raw).

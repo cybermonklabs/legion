@@ -124,7 +124,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		cfg.KeyDir = filepath.Dir(helper.DefaultSocket(getenv))
 	}
 	// The records hold a named session's signing key, so they must survive a reboot and they
-	// must be this helper's alone (dispatch://INFRA-1167). Both follow from the files this
+	// must be this helper's alone (dispatch://POMJU-1167). Both follow from the files this
 	// helper is configured with rather than from the defaults: durable beside its own machine
 	// login, which no second helper may hold at once (claimMachineFile), rather than in the
 	// runtime directory the socket is in, which is tmpfs; and migrated from beside its own

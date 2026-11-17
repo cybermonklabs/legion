@@ -691,7 +691,7 @@ func (w *Watcher) closed(sub *subscription, generation uint64) {
 	// listener's self-health rebuild on the monitor's tick (cmd/listener/main.go,
 	// rewatchListenerKVWatchers, called from rebuildListenerDependencies), so one attempt that
 	// failed says only that the outage is still running. That refines, and does not drop, what
-	// INFRA-182 settled - an ERROR when nothing has repaired the watcher within a minute - by
+	// POMJU-182 settled - an ERROR when nothing has repaired the watcher within a minute - by
 	// making unrepairedDelay the single point it is reported at.
 	w.repairTimer = w.after(unrepairedDelay, func() { w.reportUnrepaired(generation) })
 	w.mu.Unlock()

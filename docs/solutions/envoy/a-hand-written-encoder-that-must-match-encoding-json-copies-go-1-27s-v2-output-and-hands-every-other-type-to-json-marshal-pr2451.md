@@ -49,5 +49,5 @@ related_issues:
 - `pmdoc/token_test.go:304` `TestAppendTokenJSONEncodesEveryValueAsEncodingJSON` puts each value
   in a node attribute and in a mark attribute. `:378` `FuzzTokenJSON` ran 1.14 M times. Both
   compare against `tokenRepresentation` (`pmdoc/node_token_test.go:101`).
-- Tokens of all 1,200 LINUX specs were byte-identical at base and head (PR body,
+- Tokens of all 1,200 HAFJJ specs were byte-identical at base and head (PR body,
   `E2E (implementer)`).

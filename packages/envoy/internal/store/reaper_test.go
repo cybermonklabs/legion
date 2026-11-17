@@ -122,7 +122,7 @@ func clockedColdRegistry(t *testing.T) (reg *Registry, roles natsgo.KeyValue, st
 // that names the process holding it, whose renewal has lapsed, and whose holder session is
 // still answering. It is kept. A session id is not the process that holds a role, but a holder
 // that has stopped answering losing its role is a behaviour change of its own, and what this
-// reaper frees and when is the rule dispatch://INFRA-392 settled - every reader of a session's
+// reaper frees and when is the rule dispatch://POMJU-392 settled - every reader of a session's
 // state tells an unresponsive holder from a gone one, and so does this pass.
 //
 // Once that holder session is gone the same lapsed claim is freed, which is the other half of

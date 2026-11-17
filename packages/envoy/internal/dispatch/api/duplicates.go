@@ -25,9 +25,9 @@ const duplicateCandidateLimit = 5
 // The two bars the near-copy score is read against. A score is the share of the new text's picked
 // rarest-word weight that a candidate holds, so both are fractions of one.
 //
-// TestNearCopyRefusalReplay measures them: it replays every create of INFRA from 2026-10-20 to
+// TestNearCopyRefusalReplay measures them: it replays every create of POMJU from 2026-10-20 to
 // 2026-11-04 against the project as it stood at each create, over the corpus
-// `near-copy-corpus.jsonl` attached to dispatch://INFRA-1160, and reports the false-refusal and
+// `near-copy-corpus.jsonl` attached to dispatch://POMJU-1160, and reports the false-refusal and
 // nudge rates at each bar. It holds the two constants to the ceilings the spec gives them, but
 // it is env-gated and CI never runs it (near_copy_replay_test.go), so nothing fails when the
 // numbers below go stale. A change to the term picker, to the project's term statistics or to
@@ -36,9 +36,9 @@ const duplicateCandidateLimit = 5
 const (
 	// duplicateRefuseScore is the score at or above which a create is refused 409
 	// POSSIBLE_DUPLICATE. At most 5% of the creates the replay judges not duplicates may reach it
-	// (dispatch://INFRA-1160/spec#b-r2). Measured over 1,159 INFRA creates, with the project's
+	// (dispatch://POMJU-1160/spec#b-r2). Measured over 1,159 POMJU creates, with the project's
 	// term statistics refreshed every ten minutes of replayed time as a live server refreshes
-	// them (dispatch://INFRA-1160/artifact/near-copy-replay-md, version 3): 55 refused, 43 of
+	// them (dispatch://POMJU-1160/artifact/near-copy-replay-md, version 3): 55 refused, 43 of
 	// them not duplicates, 3.76% of the 1,144 creates not marked. It is not the lowest bar under
 	// that ceiling - the next bar down, 0.75, refuses 57 that are not duplicates, 4.98%, which
 	// holds too - and the architect kept 0.80 for the margin 3.76% leaves: the two creates 0.75
@@ -47,7 +47,7 @@ const (
 	duplicateRefuseScore = 0.80
 	// duplicateNudgeScore is the score at or above which the closest open issue is named to the
 	// filer as a likely duplicate, without refusing the create. At most 15% of the replay's
-	// creates may reach it (dispatch://INFRA-1160/spec#b-r4). Measured on the same replay: 131
+	// creates may reach it (dispatch://POMJU-1160/spec#b-r4). Measured on the same replay: 131
 	// creates nudged, 11.30%. The next bar down, 0.55, nudges 15.53%, over that ceiling.
 	duplicateNudgeScore = 0.60
 	// duplicateMinTerms is how many terms the new text must carry before the gate scores it at
@@ -120,11 +120,11 @@ const duplicateKeyLexemesQuery = `select array(select l.lexeme from unnest(to_ts
 //
 // Every such lexeme is dropped from the picked terms before the gate scores anything, so neither
 // the score nor its denominator counts one, and neither does duplicateMinTerms. `issues.search`
-// holds the issue's own key, so `infra-431` is a lexeme with the rarest weight in the project,
+// holds the issue's own key, so `pomju-431` is a lexeme with the rarest weight in the project,
 // and `skill://dispatch-first` tells a filer to cite the nearest issue it ruled out, so a new
 // spec routinely holds the key of the issue most like it: left in, that one citation would hand
 // the cited issue the heaviest term of the query and the gate would refuse the create for citing
-// its neighbour. Postgres parses `infra-431` into the compound and its two parts, so the
+// its neighbour. Postgres parses `pomju-431` into the compound and its two parts, so the
 // project's own word goes with it, and the number is noise the picker already drops. The
 // project's own word is in every issue of the project, so in a project of more than
 // relatedCommonFloor items the picker drops it as too common anyway; dropping it here makes the
@@ -232,7 +232,7 @@ select s.key, i.title, i.status, s.shared, s.score,
 // A title that yields no lexemes at all, every word of it a stopword, matches nothing: there is
 // no text to be a copy of. Without that guard it would name every other such issue in the
 // project. It needs no title-key rule of duplicateScoreQuery's kind (duplicateNamesAnotherIssue):
-// a title's lexemes hold each key it names as a compound lexeme (`infra-431`), so two titles that
+// a title's lexemes hold each key it names as a compound lexeme (`pomju-431`), so two titles that
 // name different keys hold the same lexemes only when each also writes the other's key.
 //
 // Parameters: $1 project, $2 the new title, $3 the new spec as it would be stored, $4 the new

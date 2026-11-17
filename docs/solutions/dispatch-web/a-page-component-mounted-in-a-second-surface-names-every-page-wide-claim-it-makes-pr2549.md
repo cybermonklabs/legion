@@ -45,6 +45,6 @@ claim the component had made unconditionally:
 The invariant is written where the flag is read (`:269`-`:273`): `surface` is fixed for the life of
 a mount, so every effect lists it and none is rebuilt for it.
 
-The enumeration came before the code: `.legion/INFRA-575/plan.json`'s gap analysis 1.8, 1.10, 1.11
+The enumeration came before the code: `.legion/POMJU-575/plan.json`'s gap analysis 1.8, 1.10, 1.11
 and 4.1 are the four claims found by reading the component rather than by running it, and each is a
 line in the list above.

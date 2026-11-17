@@ -198,7 +198,7 @@ func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
 // the candidate answer for ever. Deciding it inside a transaction would cost one
 // store.ReleaseIdleIssue a minute for ever, and that transaction opens by taking the daemon's
 // global fact serializer (treelifecycle.Serialize) — the same lock the intake takes for every
-// fact, which is the very cost the candidate filter exists to avoid. On the INFRA deployment at
+// fact, which is the very cost the candidate filter exists to avoid. On the POMJU deployment at
 // 2026-11-10 21:23Z, 33 of the project's issues stood in that state.
 //
 // Such a pass still ends an open hold streak of the pod, and reads whether there is one first

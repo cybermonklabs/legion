@@ -37,7 +37,7 @@ command folds it in, giving the commit a new id while the remote keeps the old o
 
 Two rounds of sjawhar/legion#2519, both forward merges. Each pushed a merge commit, reported its
 sha in a pull request comment carrying the merge fingerprint, and then wrote
-`.legion/INFRA-625/implement.json` while `@` was still that merge commit. The next `jj` command
+`.legion/POMJU-625/implement.json` while `@` was still that merge commit. The next `jj` command
 snapshotted the handoff into the merge: `2898fcf0` became `1569be81` and `9125d44d` became a
 commit of its own, in each case with the comment on the pull request naming a sha the branch no
 longer held.

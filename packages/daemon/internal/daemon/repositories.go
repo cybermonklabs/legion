@@ -967,7 +967,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	// this pool: a missing durable consumer has it create one, which reads the same pool for the
 	// stream's stored position (storedStreamTime), so a transaction waiting on it asks the pool
 	// for a second connection while holding one, and every connection of the pool sat idle in a
-	// transaction of that shape once the stream answered slowly (INFRA-3169). Holding the fact
+	// transaction of that shape once the stream answered slowly (POMJU-3169). Holding the fact
 	// serializer across it is worse still: a slow NATS stops every fact of the project for as
 	// long as the call takes. So the read publishes in three steps.
 	//
@@ -1086,7 +1086,7 @@ func sameRepositories(current, next []ghrepo.Repository) bool {
 // intake's SetRepositories by, so no caller escapes the stand-in a test puts in its place
 // (setRepositories, which the boot leaves nil because the daemon's own answer is the consumers
 // it opened). It is called under no transaction of the pool: the call reaches JetStream and, for
-// a durable consumer that is missing, the pool itself (INFRA-3169).
+// a durable consumer that is missing, the pool itself (POMJU-3169).
 func (w *workflowRuntime) updateSubscription(ctx context.Context, repositories []ghrepo.Repository) error {
 	if w.setRepositories != nil {
 		return w.setRepositories(ctx, repositories)

@@ -1,6 +1,6 @@
 -- 20261110225246_backward_moves_and_cap_told.up.sql — the daemon counts every backward move of an
 -- issue by its kind, tells the review_round_cap message once for each value of the cap, and puts a
--- hook's prompt in front of a role through the outbox (INFRA-2551).
+-- hook's prompt in front of a role through the outbox (POMJU-2551).
 --
 -- backward_moves is one count for each kind of move, keyed "<from>-<to>" with the phase words of
 -- the daemon's forward line, "testing-implementing" and "reviewing-implementing" among them
@@ -32,7 +32,7 @@
 -- hook's prompt to one role of the issue, beside this release's own eighteen from
 -- 20261108152000 — role_message among them, and the three merge-lane kinds
 -- (merge_queue_publish, auto_merge_disable, ready_merge) left out, since the merger merges the
--- head it read and the daemon arms no auto-merge (dispatch://INFRA-714). It drops the constraint
+-- head it read and the daemon arms no auto-merge (dispatch://POMJU-714). It drops the constraint
 -- if it exists before adding it, so it is safe on a database ending at either branch.
 --
 -- There is no down file: migrations here are forward-only.

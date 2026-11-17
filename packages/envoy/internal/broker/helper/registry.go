@@ -34,7 +34,7 @@ import (
 // to them depends on who ends it: a person's revoke of the machine login or of the sign-in
 // cancels and revokes them at once, while a launcher's revoke and a lapsed lease leave a named
 // session's standing and mark the enrolment dormant, so the session has the carry window to
-// take them back somewhere else (enroll.endEnrollment, dispatch://INFRA-1167).
+// take them back somewhere else (enroll.endEnrollment, dispatch://POMJU-1167).
 type Session struct {
 	PID          int
 	StartTicks   uint64

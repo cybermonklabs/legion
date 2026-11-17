@@ -13,11 +13,11 @@ import (
 // The two hits a test's citation set holds, and one target no citation set holds: the filter
 // admits a link by its href alone, so the href is what each test names.
 var (
-	citedIssue   = Hit{Kind: "issue", ID: "INFRA-1279", Title: "Answer a question", Href: "/issues/INFRA-1279"}
-	citedComment = Hit{Kind: "comment", ID: "7", Title: "Who owns the order", Href: "/issues/INFRA-1279#c7"}
+	citedIssue   = Hit{Kind: "issue", ID: "POMJU-1279", Title: "Answer a question", Href: "/issues/POMJU-1279"}
+	citedComment = Hit{Kind: "comment", ID: "7", Title: "Who owns the order", Href: "/issues/POMJU-1279#c7"}
 )
 
-const outsideHref = "/issues/INFRA-9999"
+const outsideHref = "/issues/POMJU-9999"
 
 // stream is one filter and everything it emitted, so a test reads the stream as a reader does.
 type stream struct {
@@ -400,19 +400,19 @@ func TestFilterKeepsALinkInTheCitationSet(t *testing.T) {
 	}{
 		{
 			"linked once",
-			"See [Answer a question](/issues/INFRA-1279) for the order.",
+			"See [Answer a question](/issues/POMJU-1279) for the order.",
 			escaped("See Answer a question for the order."),
 			1,
 		},
 		{
 			"the same item linked twice",
-			"See [Answer a question](/issues/INFRA-1279) and [it again](/issues/INFRA-1279).",
+			"See [Answer a question](/issues/POMJU-1279) and [it again](/issues/POMJU-1279).",
 			escaped("See Answer a question and it again."),
 			1,
 		},
 		{
 			"two items",
-			"See [Answer a question](/issues/INFRA-1279) and [Who owns the order](/issues/INFRA-1279#c7).",
+			"See [Answer a question](/issues/POMJU-1279) and [Who owns the order](/issues/POMJU-1279#c7).",
 			escaped("See Answer a question and Who owns the order."),
 			2,
 		},
@@ -498,8 +498,8 @@ var linkProbes = []linkProbe{
 	},
 	{
 		name:    "a code span inside the link text, which binds tighter than the brackets",
-		answer:  "Read [x`](/issues/INFRA-1279)`](//evil.example) now.",
-		want:    escaped("Read [x`](/issues/INFRA-1279)`](//evil.example) now."),
+		answer:  "Read [x`](/issues/POMJU-1279)`](//evil.example) now.",
+		want:    escaped("Read [x`](/issues/POMJU-1279)`](//evil.example) now."),
 		linked:  "](//evil.example)",
 		dropped: 0,
 		items:   0,
@@ -572,9 +572,9 @@ var linkProbes = []linkProbe{
 	},
 	{
 		name:    "an inline image, even of an item the model was given",
-		answer:  "Look at ![the chart](/issues/INFRA-1279) now.",
+		answer:  "Look at ![the chart](/issues/POMJU-1279) now.",
 		want:    escaped("Look at the chart now."),
-		linked:  "](/issues/INFRA-1279)",
+		linked:  "](/issues/POMJU-1279)",
 		dropped: 1,
 	},
 	{
@@ -670,7 +670,7 @@ var linkProbes = []linkProbe{
 		// The link was cited, so the item frame arrives even though the word was dropped:
 		// it carries that hit's own href, and it is the one honest link such an answer has.
 		name:    "a cited link the server reduced, whose text joins a www host",
-		answer:  "Read [ww](/issues/INFRA-1279)w.evil.com now.",
+		answer:  "Read [ww](/issues/POMJU-1279)w.evil.com now.",
 		want:    escaped("Read ") + escaped(" now."),
 		linked:  "w.evil.com",
 		dropped: 1,
@@ -931,7 +931,7 @@ func TestFilterHoldsALinkSpanSplitAcrossDeltas(t *testing.T) {
 	}{
 		{
 			"a kept link",
-			[]string{"See ", "[Answ", "er a ques", "tion](/iss", "ues/INFRA-1279", ") now."},
+			[]string{"See ", "[Answ", "er a ques", "tion](/iss", "ues/POMJU-1279", ") now."},
 			escaped("See Answer a question now."),
 			1,
 		},
@@ -949,7 +949,7 @@ func TestFilterHoldsALinkSpanSplitAcrossDeltas(t *testing.T) {
 		},
 		{
 			"one byte at a time",
-			pieces("See [Answer a question](/issues/INFRA-1279) now.", 1),
+			pieces("See [Answer a question](/issues/POMJU-1279) now.", 1),
 			escaped("See Answer a question now."),
 			1,
 		},
@@ -1047,7 +1047,7 @@ func TestFilterBoundsTheTextItHolds(t *testing.T) {
 // answer ends at the cap, the item is never named - a link whose text a reader was not shown
 // cites nothing for them - and the drop is the cut's doing: it raises no changed.
 func TestFilterDropsAHeldLinkTheCutWouldSplit(t *testing.T) {
-	answer := words(contracts.GoingAnswerWordMax-1) + " [Answer a question](/issues/INFRA-1279) and more words after it."
+	answer := words(contracts.GoingAnswerWordMax-1) + " [Answer a question](/issues/POMJU-1279) and more words after it."
 	emitted := drive(t, citationsOf(citedIssue), pieces(answer, 9)...)
 	got := emitted.text()
 	plainText(t, got)
@@ -1107,10 +1107,10 @@ func TestFilterEmitsASpanThatIsNoLink(t *testing.T) {
 	}{
 		{"a bracket no target follows", "The order is [not a link] here.", escaped("The order is [not a link] here."), 0},
 		{"a newline inside the span", "The order is [not\na link either.", escaped("The order is [not\na link either."), 0},
-		{"a newline inside the target", "The order is [a](/issues/\nINFRA-1279) here.", escaped("The order is [a](/issues/\nINFRA-1279) here."), 0},
-		{"a link inside an unclosed bracket", "The order is [one [two](/issues/INFRA-1279) here.", escaped("The order is [one two here."), 1},
+		{"a newline inside the target", "The order is [a](/issues/\nPOMJU-1279) here.", escaped("The order is [a](/issues/\nPOMJU-1279) here."), 0},
+		{"a link inside an unclosed bracket", "The order is [one [two](/issues/POMJU-1279) here.", escaped("The order is [one two here."), 1},
 		{"a span still held at the end", "The order is [unterminated", escaped("The order is [unterminated"), 0},
-		{"a target still held at the end", "The order is [a](/issues/INFRA-1279", escaped("The order is [a](/issues/INFRA-1279"), 0},
+		{"a target still held at the end", "The order is [a](/issues/POMJU-1279", escaped("The order is [a](/issues/POMJU-1279"), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			emitted := drive(t, citationsOf(citedIssue), pieces(tc.answer, 4)...)
@@ -1137,7 +1137,7 @@ func TestFilterHandsTheWritersFailureToItsCaller(t *testing.T) {
 	t.Run("the text before an item", func(t *testing.T) {
 		emitted := &stream{failAt: 1}
 		filter := newAnswerFilter(citationsOf(citedIssue), emitted.emit)
-		err := filter.Write("See [Answer a question](/issues/INFRA-1279) and more. ")
+		err := filter.Write("See [Answer a question](/issues/POMJU-1279) and more. ")
 		if !errors.Is(err, emitted.fault) {
 			t.Fatalf("Write error = %v, want the writer's own failure %v", err, emitted.fault)
 		}
@@ -1165,7 +1165,7 @@ func TestFilterHandsTheWritersFailureToItsCaller(t *testing.T) {
 // adds no space, so the words the server counts are the words the reader reads.
 func TestFilterCountsTheWordsStringsFieldsCounts(t *testing.T) {
 	for _, size := range []int{1, 3, 7, 1000} {
-		answer := "Dispatch keeps the broadcast order on [Answer a question](/issues/INFRA-1279) itself, not on the comment."
+		answer := "Dispatch keeps the broadcast order on [Answer a question](/issues/POMJU-1279) itself, not on the comment."
 		emitted := drive(t, citationsOf(citedIssue), pieces(answer, size)...)
 		want := len(strings.Fields(emitted.text()))
 		if got := emitted.terminal(t).Data.(EndData).Words; got != want {

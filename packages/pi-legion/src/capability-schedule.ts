@@ -5,7 +5,7 @@ import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import { budgetLabel } from "./capability-report";
 
 /**
- * INFRA-927: a capability check that loses the boot-time race stayed reported open for the
+ * POMJU-927: a capability check that loses the boot-time race stayed reported open for the
  * session's whole life, so the measurement left the boot and rides the session's own 5 s interval
  * (`SESSION_ACTIVITY_PERIOD_MS`, extensions/legion.ts) while the session is idle, for at most
  * `CAPABILITY_ATTEMPTS` measurements, until every row of one report is present.

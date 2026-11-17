@@ -1115,7 +1115,7 @@ async function bootPane(options: Parameters<typeof claimPane>[0]): Promise<Claim
 }
 
 /**
- * The session's first turn, which is when the claim boot takes its Envoy name (INFRA-1573): the
+ * The session's first turn, which is when the claim boot takes its Envoy name (POMJU-1573): the
  * entry's own `agent_start` handler — the last registered for the event, the Envoy entry's
  * running before it — and then the claim that signal fires, which nothing of the host awaits,
  * having reached the listener.
@@ -1480,7 +1480,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         },
       },
     ]);
-    // INFRA-1573: the name is taken last, so nothing of this session holds the role until one of
+    // POMJU-1573: the name is taken last, so nothing of this session holds the role until one of
     // its turns has started. The boot is over and no role has been claimed.
     expect(pane.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
 
@@ -1789,7 +1789,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
   test("its tool_call hook refuses nothing and mints nothing for a call, in any role", async () => {
     // No pane rule and no grant mint (LEGION-631): the `legion` tool's own operations mint their
     // grants in-process, and the role prompts alone say who runs what. The hook this entry does
-    // register (INFRA-1274) records the call's arguments for the stall watch and answers nothing,
+    // register (POMJU-1274) records the call's arguments for the stall watch and answers nothing,
     // so it blocks no call and revises no arguments. The pane runs both extensions, as a Legion
     // pane does, and the fixture's handlers are shared: envoy.ts registers a `tool_call` hook of
     // its own, which writes the session's title for the `dispatch` command and answers nothing
@@ -2062,7 +2062,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       for (const tick of pane.intervals) await tick();
     };
 
-    // INFRA-945: the daemon releases no claim whose last report is older than its last turn, so
+    // POMJU-945: the daemon releases no claim whose last report is older than its last turn, so
     // every settle reports, and between turns only a change of what the report says does.
     test("every settle reports what this session is doing, and a tick reports only a change", async () => {
       let jobs: AsyncJobSnapshot | null = {
@@ -2158,7 +2158,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
     });
 
-    // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every
+    // dispatch://POMJU-264: every turn of that implementer was refused by its provider, and every
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One
     // timer is armed all the same: the task the refused turn carried ended with it, and below
@@ -2519,7 +2519,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(recorded(worker).at(-1)).toEqual({ state: "closed", count: 0, reported: false });
     });
 
-    // INFRA-484: the update message reaches the worker while its phase is open, and
+    // POMJU-484: the update message reaches the worker while its phase is open, and
     // `ready_for_update` closes no phase. The turn the worker answers in must still end: a
     // continuation would do work the pod's replacement throws away, and before the round's bound
     // the daemon waits for every turn to end before it replaces the pod.
@@ -2552,7 +2552,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // The wait the answer created arms no timer: the daemon's update round is its watchdog, and
       // a reminder fired here would steer a real `agent_start`, which the daemon reads as a new
       // turn and so as the answer retracted — the round would restart at every wait and never
-      // converge (INFRA-484, the `awaiting-update` state of `@legion/pi-shared/phase-stall`,
+      // converge (POMJU-484, the `awaiting-update` state of `@legion/pi-shared/phase-stall`,
       // which a record holds as the plain `waiting`). The WAITING reply's own wait keeps its
       // timer, which the case above holds.
       expect(worker.timers).toEqual([]);
@@ -3283,7 +3283,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
   });
 
   /**
-   * INFRA-927: the session measures its six rows on its own 5 s interval, while it is idle, up to
+   * POMJU-927: the session measures its six rows on its own 5 s interval, while it is idle, up to
    * three times, until every row is present — the boot measured once, so a check that lost that
    * race stayed reported open for the session's whole life. The machine is
    * `src/capability-schedule.ts`; these tests drive it through the interval the pane armed, as
@@ -4253,7 +4253,7 @@ async function startRefusedController(
 
 /**
  * Every topic the session follows now, as `envoy_whoami` reports them (`followed` in
- * `extensions/envoy.ts`). A session holds no NATS subscription per topic any more (INFRA-771):
+ * `extensions/envoy.ts`). A session holds no NATS subscription per topic any more (POMJU-771):
  * its one consumer relays them all, built from the topics it registered, so what it follows and
  * what its registration carries are the two places a notice lane shows.
  */
@@ -4594,7 +4594,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // The start message goes out once per process: a claim that throws after the start is sent
   // (here, the controller topic's registration) says so, and a retried claim sends nothing more.
   // The registration is the subscription: a session takes every topic it follows from the one
-  // consumer the listener builds for it out of the topics it registered (INFRA-771), so a
+  // consumer the listener builds for it out of the topics it registered (POMJU-771), so a
   // listener that refuses the registration carrying the topic is what makes the subscribe throw.
   // A failed dial is not: envoy.ts retries it quietly in the background, and nothing of it
   // reaches subscribeNotice.
@@ -5619,7 +5619,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
 
       // The listener later loses sight of the pane (a reaped claim, a listener restart). The pane
       // armed two managed intervals — its own Envoy heartbeat, and the stall watch's sweep
-      // (INFRA-1274) — and the subagent none, so only a topic the pane's instance holds is
+      // (POMJU-1274) — and the subagent none, so only a topic the pane's instance holds is
       // re-asserted: the claim must have reached the pane's instance, and it soft-claims for the
       // session the pane holds now. Both are fired, since which was armed first is the bind order
       // this case varies.
@@ -5729,7 +5729,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     await startOperatorController(controller, context);
 
     // The registration is the subscription: the listener builds the session's one consumer from
-    // the topics it registered, and nothing else is delivered to it (INFRA-771).
+    // the topics it registered, and nothing else is delivered to it (POMJU-771).
     expect(await followedTopics(controller, context)).toContain(topic);
     expect(registeredTopics(controller.requests, "ses_controller_notices")).toContain(topic);
   });
@@ -5846,7 +5846,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // LEGION_SLACK_CHANNELS, always set, empty for none. That session follows each channel's
   // mention topic for as long as it holds the controller role, and registers it with the listener
   // for that long: the listener builds the session's one consumer out of the topics it
-  // registered, so that registration is the only way a mention reaches it (INFRA-771). The end of
+  // registered, so that registration is the only way a mention reaches it (POMJU-771). The end of
   // the role hands every one of them back. A resume drops any Slack topic an earlier session
   // registered for a channel the list does not name before it restores the rest. So a resumed
   // controller hears the list it is launched with and no other: a channel taken off the project,
@@ -6150,7 +6150,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     }
   });
 
-  // The subscription is the registration that carries the lane (INFRA-771), and the registration
+  // The subscription is the registration that carries the lane (POMJU-771), and the registration
   // needs the connection the session's relay subject rides on: here that connection is still
   // being redialled when a later controller takes the role. What the role's end leaves behind is
   // what this proves: the lane handed back to the listener, and in no registration after it.
@@ -6211,7 +6211,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
 
   // A session that lost its role stops following its lane and hands it back. The machinery that
   // brings a session's inbound back after a dropped connection — the redial, and the
-  // registration that follows it — must not bring the lane back with it (INFRA-771).
+  // registration that follows it — must not bring the lane back with it (POMJU-771).
   test("a controller whose role ended does not take its lane back when its dropped connection reconnects", async () => {
     const topic = "notifications.legion.omp.controller";
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "1";
@@ -6273,7 +6273,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
 
   // The role ends first; then the session's connection dies and every redial fails for a while.
   // Neither the retries nor the resume that follows may bring the lane back into what the
-  // session registers, which is the one list its consumer is built from (INFRA-771).
+  // session registers, which is the one list its consumer is built from (POMJU-771).
   test("a controller whose role ended keeps its lane out of every later retry's registration, and a resume does not get it back", async () => {
     const topic = "notifications.legion.omp.controller";
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "1";
@@ -6986,7 +6986,7 @@ describe("the model fallback", () => {
   });
 
   // The seed reads the branch of whatever session the pane is on, so the claim check gates it
-  // too (dispatch://INFRA-956 R4): a person's own session that sits on a host fallback is no
+  // too (dispatch://POMJU-956 R4): a person's own session that sits on a host fallback is no
   // Legion role's, and an entry of this plugin's in its transcript is one nothing there asked
   // for.
   test("a person's own session on a fallback takes no arming of this plugin's", async () => {
@@ -7179,7 +7179,7 @@ describe("the model fallback", () => {
 });
 
 /**
- * The worker's watch on its own tool calls (INFRA-1274), as the entry wires it: which sessions
+ * The worker's watch on its own tool calls (POMJU-1274), as the entry wires it: which sessions
  * arm its sweep, what its `tool_call` handler does, and the whole ladder driven from the entry
  * against this faked host. The detector's own rules are `stall-watchdog.test.ts`'s, and each
  * collaborator's are its own test's; what is proven here is the wiring.

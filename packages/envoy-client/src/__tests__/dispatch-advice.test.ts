@@ -1205,21 +1205,21 @@ describe("a document write that superseded a person's approval", () => {
   });
 
   test("one gate names its issue and step", async () => {
-    const result = await editWithGates([{ issue: "INFRA-1503", step: "spec" }]);
+    const result = await editWithGates([{ issue: "POMJU-1503", step: "spec" }]);
 
     expect(result.text).toEndWith(
-      `${stored} A Legion design gate records this document, so every READY in its tree is refused until that approval comes back: INFRA-1503, step spec. ${nextStep}`
+      `${stored} A Legion design gate records this document, so every READY in its tree is refused until that approval comes back: POMJU-1503, step spec. ${nextStep}`
     );
   });
 
   test("two gates name both trees, in the order the server sent them", async () => {
     const result = await editWithGates([
-      { issue: "INFRA-1503", step: "spec" },
-      { issue: "INFRA-2200", step: "criteria" },
+      { issue: "POMJU-1503", step: "spec" },
+      { issue: "POMJU-2200", step: "criteria" },
     ]);
 
     expect(result.text).toEndWith(
-      `${stored} A Legion design gate records this document, so every READY in each tree is refused until that approval comes back: INFRA-1503, step spec; INFRA-2200, step criteria. ${nextStep}`
+      `${stored} A Legion design gate records this document, so every READY in each tree is refused until that approval comes back: POMJU-1503, step spec; POMJU-2200, step criteria. ${nextStep}`
     );
   });
 
@@ -1241,7 +1241,7 @@ describe("a document write that superseded a person's approval", () => {
   // plan alike (a person approves a plan from its document header: the reviews route has no plan
   // check). Each answer below says the document is a plan as Dispatch answers it, role `plan` and
   // slug `plan-md`, which is what the architect's ruling keys on
-  // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75). Each row also puts a
+  // (dispatch://POMJU-3327/comment/d19c71f5-6186-44f0-9017-858947155b75). Each row also puts a
   // review `kind` on `superseded_approval`, which Dispatch does not send, and it decides nothing.
   const planUpload = { issue: "DSP-42", name: "plan.md", content: "# Plan\n\nTwo.\n", force: true };
   const planEdit = {
@@ -1347,7 +1347,7 @@ describe("a document write that superseded a person's approval", () => {
 
   // A role belongs to an issue's documents alone, and the slug fallback that names a role-less
   // `plan-md` a plan exists for an issue document whose role column a rolling deploy left null
-  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf). So an issue's plan.md
+  // (dispatch://POMJU-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf). So an issue's plan.md
   // with no role is still a plan and names `dispatch plan-approve`, while a project document named
   // plan.md is a plain document: a person's approval of it comes back through a request, which
   // Dispatch then accepts, and `dispatch plan-approve`, which takes an issue alone, cannot reach

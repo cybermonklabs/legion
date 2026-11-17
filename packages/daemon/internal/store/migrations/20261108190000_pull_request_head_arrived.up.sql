@@ -5,7 +5,7 @@
 --
 -- The column held a listed review to the head it names by comparing times: a review decided the
 -- current head only if it was submitted after that head arrived. That rule is retired
--- (dispatch://INFRA-714/spec R12). A review names the head it read in the Legion footer of its
+-- (dispatch://POMJU-714/spec R12). A review names the head it read in the Legion footer of its
 -- own body, which the daemon reads from the review itself (internal/intake's PullRequestReview),
 -- so no arrival time is compared and nothing writes or reads this column.
 alter table pull_requests add column head_arrived_at timestamptz not null default '0001-01-01 00:00:00+00';

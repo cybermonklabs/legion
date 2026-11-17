@@ -143,7 +143,7 @@ check "says what it did" "$(contains "$out" '^set ci-ok check run 100 from failu
 echo "case: another workflow run's own ci-ok job check run on this head, whose external_id is a UUID"
 # main-bypass-check.yaml dispatches ci.yaml on main, so the dispatched run's github.sha is
 # main's tip, which the queue landed carrying its own group's green ci-ok. Its external_id is a
-# UUID rather than a ci-ok-post: marker or an absent one (measured on INFRA-1066's k28 probe
+# UUID rather than a ci-ok-post: marker or an absent one (measured on POMJU-1066's k28 probe
 # head), and GitHub refuses a PATCH of it under GITHUB_TOKEN with "Check run status and
 # conclusions can only be updated internally by GitHub Actions", measured on the same probe: an
 # unfiltered step spends its whole retry ladder on a call that cannot succeed and warns that a

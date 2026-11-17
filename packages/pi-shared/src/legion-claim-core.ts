@@ -179,7 +179,7 @@ function stopAfterRegistration(host: LegionClaimHost, role: string, error: unkno
  * It exists because the claim step comes after `claims/ready`, and that ready is retried (a 5xx,
  * a transport failure). The daemon's task can reach the session while those retries run — the
  * daemon took the first ready and its answer was lost — so the turn it starts would otherwise
- * find no step to run and the name would be taken only at the bound (INFRA-1573). A host may
+ * find no step to run and the name would be taken only at the bound (POMJU-1573). A host may
  * report the same turn more than once — pi-legion reports one it kept from before this call and
  * reports every later `agent_start` too — and each report after the first runs a step that has
  * already run, which does nothing.

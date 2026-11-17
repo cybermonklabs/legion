@@ -21,7 +21,7 @@ const searchRowShape = `select 1::int, 1::int, 'document'::text, 'issue'::text,
 
 // TestSearchScanTakesARowWithANullHeadline: scanSearchRows dereferenced the headline pointer, so
 // one row whose headline is null took the process down for every search on it - a nil-pointer
-// panic inside the scan, which no caller recovers (dispatch://INFRA-988). ts_headline answers
+// panic inside the scan, which no caller recovers (dispatch://POMJU-988). ts_headline answers
 // null when the text it is given is null, and the document arm of the search's text join reads
 // the latest artifact_versions row alone, so a document whose latest version carries no markdown
 // over an earlier one that holds the markdown the keyword leg matched is such a row. The write

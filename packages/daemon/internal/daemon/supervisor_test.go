@@ -691,7 +691,7 @@ func TestAPhaseTaskWaitsForTheTurnOfAnotherClaimOfItsIssue(t *testing.T) {
 // started only because the agent has not answered yet. Counting StateWorking alone read such a
 // claim as idle for the whole length of its send — an adoption and a prompt round trip — so two
 // phase tasks to two roles of one issue could each read the other as idle and adopt the working
-// copy they share at the same time (dispatch://INFRA-314). The held task goes at the end of the
+// copy they share at the same time (dispatch://POMJU-314). The held task goes at the end of the
 // turn that send started, as it does for a turn already running.
 func TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue(t *testing.T) {
 	rig := newIssueRig(t)

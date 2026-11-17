@@ -17,7 +17,7 @@ related_issues:
 
 # Measure a build cache by what a new commit invalidates, and a hit by single-job re-runs of the run that wrote it
 
-Extends docs/solutions/daemon/a-file-built-from-the-final-images-own-state-is-a-build-only-stage-from-a-named-base-INFRA-255.md.
+Extends docs/solutions/daemon/a-file-built-from-the-final-images-own-state-is-a-build-only-stage-from-a-named-base-POMJU-255.md.
 
 1. Before you add or keep a BuildKit layer cache for a workflow on `main`, read the Dockerfile
    for what changes on every commit: a build argument filled from `github.sha` (or any per-run

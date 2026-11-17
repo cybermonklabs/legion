@@ -66,7 +66,7 @@ import (
 // 403 with `X-Accepted-Github-Permissions: security_events=read` while the accounts' grants of
 // 2026-11-08 stood, because this file named the permission in neither set and GitHub mints a
 // token carrying what the request names. A deployment in token mode asks its command for no
-// permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
+// permissions at all (tokencommand.go), so this set decides nothing there (dispatch://POMJU-1639).
 var writePermissions = map[AppRole]map[string]string{
 	Implement: {"actions": "write", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
 	Review:    {"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},

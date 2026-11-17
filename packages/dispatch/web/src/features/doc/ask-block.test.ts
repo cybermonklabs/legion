@@ -172,7 +172,7 @@ test("a typed block's header shows the author's attributes and hides the schema'
 // A `check` block, whose `serves` points at the requirements it proves. The drawing printed
 // every array attribute with `JSON.stringify`, so driving the real page showed a reader
 // `serves ["dispatch://VER-1/spec#b-r1"]` - the value's JSON instead of the blocks it names
-// (INFRA-174).
+// (POMJU-174).
 const checkSchema = new Schema({
   nodes: {
     doc: { content: "block+" },

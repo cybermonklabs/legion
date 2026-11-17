@@ -15,7 +15,7 @@ related_issues:
 
 # A refusal names one edit the caller may make, and a test follows it over every input
 
-Extends docs/solutions/best-practices/a-scanner-refuses-every-entry-it-cannot-handle-and-the-remedy-its-error-names-is-tested-too-INFRA-629.md.
+Extends docs/solutions/best-practices/a-scanner-refuses-every-entry-it-cannot-handle-and-the-remedy-its-error-names-is-tested-too-POMJU-629.md.
 
 - Two readers can disagree about one structure: here the server reads it leniently (it joins
   every list) and the card reads it by position (first list). Then no write path may rebuild the

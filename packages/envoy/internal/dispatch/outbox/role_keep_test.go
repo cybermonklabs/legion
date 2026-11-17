@@ -170,7 +170,7 @@ func (p *keepRecorder) keeps() []keptPublish {
 // for a test that resolves a role without a NATS server: holder is the session the claim names,
 // empty for a role no session claims. Every session read answers "no record", which this build
 // judges session.Gone, so a claim this store names is always a lapsed one whose claim stands:
-// no resolution releases one (dispatch://INFRA-392).
+// no resolution releases one (dispatch://POMJU-392).
 type roleClaimStub struct {
 	holder string
 	// lastSeen, when it is not zero, is the holder's last registration: a stub that names one
@@ -339,7 +339,7 @@ func TestAKeptRoleRouteWhoseKeepFailedStaysPendingAndIsKeptOnTheRetry(t *testing
 
 // A holder that is only unresponsive is the one no-holder case that is not kept: it keeps its
 // claim and writes no new one, so a copy kept for it would wait for a claim that never comes,
-// and the stream holds the forward for the session itself (dispatch://INFRA-392). The event
+// and the stream holds the forward for the session itself (dispatch://POMJU-392). The event
 // stays pending with the error it had before the kept lane, and nothing is kept.
 func TestARoleRouteToAnUnresponsiveHolderErrsWithNothingKept(t *testing.T) {
 	const role = "kept-unresponsive"

@@ -31,7 +31,7 @@ func leasesOf(t *testing.T, database *store.Store) *pgxpool.Pool {
 // apart inside one period write the same period, and neither line is written at the moment its
 // tick was due - the skip after the lease and the period read, the ran line after the whole pass
 // - so the moment a line carries does not give that stagger either. Reading dispatch's
-// multiprocess rows cost a day for want of exactly this (INFRA-1492). A pass with no period is
+// multiprocess rows cost a day for want of exactly this (POMJU-1492). A pass with no period is
 // also a pass with no due, and names neither.
 func TestTheLinesAboutATickNameItsDueAndItsPeriod(t *testing.T) {
 	database := storetest.Open(t)

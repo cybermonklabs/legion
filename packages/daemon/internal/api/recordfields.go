@@ -10,7 +10,7 @@ package api
 // the operator column that route serves nowhere.
 // A field added to any of the three records later is therefore decided rather than forgotten,
 // and a field moved between the columns is a decision a reviewer sees in the diff, because each
-// entry carries its reason as data (dispatch://INFRA-3083, R3 and R4).
+// entry carries its reason as data (dispatch://POMJU-3083, R3 and R4).
 //
 // The columns are of the agent surfaces: `api.ClaimView`, which `read_record` and `read_state`
 // carry, `api.Issue`, and `api.AssignmentView`, one of which rides each issue's `assignments`

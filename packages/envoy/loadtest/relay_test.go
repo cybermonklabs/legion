@@ -81,7 +81,7 @@ func TestRelayAnswersCountTheSessionsOnConsumerDelivery(t *testing.T) {
 	}
 	r.answered(0, sessionDeliveryConsumer, "stream-a")
 	r.answered(1, sessionDeliveryConsumer, "stream-a")
-	// An answer that named no delivery field at all, which only a listener before INFRA-771 sends.
+	// An answer that named no delivery field at all, which only a listener before POMJU-771 sends.
 	r.answered(1, "", "")
 	r.answered(2, "core", "")
 	d := r.summary()

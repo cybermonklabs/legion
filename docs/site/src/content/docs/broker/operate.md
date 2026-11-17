@@ -269,7 +269,7 @@ are registered for one pod, so this is what keeps one role from trading for anot
 session; the Legion daemon names each role's key. A later write that names no key keeps the one
 the registration names, and a registration that names none, as a session pod's is, admits any key
 of that pod. Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53
-makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session
+makes a role trade with its own key (dispatch://POMJU-840), the daemon registers whatever session
 id a role's agent reports, so a role can still have its own claim registered under another
 claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in
 your daemon and its pods.

@@ -14,7 +14,7 @@ related_issues:
 
 # Timing a package on a box that cannot run all of it skips the unrunnable tests by name, or measures a truncated run
 
-Extends docs/solutions/testing/the-pod-only-skip-list-is-re-derived-against-a-main-extract-and-the-daemon-package-needs-a-longer-timeout-INFRA-225.md.
+Extends docs/solutions/testing/the-pod-only-skip-list-is-re-derived-against-a-main-extract-and-the-daemon-package-needs-a-longer-timeout-POMJU-225.md.
 
 - A test that panics ends the whole test binary, and Go runs top-level `t.Parallel()` tests only after every sequential top-level test has finished.
   So a panic anywhere in the package drops every parallel test, whatever its file's place in the order.

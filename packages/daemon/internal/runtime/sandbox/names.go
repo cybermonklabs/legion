@@ -24,7 +24,7 @@ import (
 // read-only over the whole volume's mount in every other container. The clone owns its object-store
 // entries, and no agent writes what the token-holding container reads. No volume is ever carried
 // over from an earlier release: an issue pod's disk is created with the pod and deleted with it
-// (INFRA-80), so every feed is one this pod's own workspace-fetch wrote, and the fetch's own check
+// (POMJU-80), so every feed is one this pod's own workspace-fetch wrote, and the fetch's own check
 // of it (workspace.Fetch takes a feed only in the shape it writes), run before any git and in an
 // init container no agent runs beside, is what keeps the token-holding container from running what
 // an agent of this pod wrote.

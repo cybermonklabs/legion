@@ -640,7 +640,7 @@ test("a view that wakes with a place starts on that turn, counting nothing new",
 
 // The waking view the shell really mounts (R2): its session's replay is a round trip away, so
 // the first commit draws no turn at all. An empty scroller is trivially at its live end, and
-// reading it as the reader following threw their place away - the browser case of INFRA-812's
+// reading it as the reader following threw their place away - the browser case of POMJU-812's
 // k2 found every woken view back at the live end with its draft intact and its place gone. The
 // place is kept until the turns are drawn, and settled in the commit that draws them.
 test("a view that wakes before its turns arrive still lands on the turn it was left on", async () => {
@@ -678,7 +678,7 @@ test("a view that wakes before its turns arrive still lands on the turn it was l
 // over the page rather than in it, so its scroller is suddenly another size and the browser
 // clamps a reader who had scrolled back. None of that is the reader, who is on another page -
 // before this, that clamp arrived as a scroll at the live end and the view forgot where they
-// were, which the browser case of INFRA-812's k2 found for a view left behind for a moment.
+// were, which the browser case of POMJU-812's k2 found for a view left behind for a moment.
 test("a view left behind the one in front keeps its place through the shell's own resize", () => {
   const live = startHarness([...SIX]);
 

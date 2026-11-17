@@ -191,7 +191,7 @@ export function reachesPrivateStreamSubject(
  * registration carrying one would draw that warning at every heartbeat, for as long as anything
  * still names it. A host cannot refuse it where a topic is first followed and be done: a topic
  * also comes back from the listener's own stored row and from the transcript the host restores
- * (INFRA-771 review), and a row written by an earlier build holds `notifications.team`, the bare
+ * (POMJU-771 review), and a row written by an earlier build holds `notifications.team`, the bare
  * base that build expanded `notifications.team.>` to, which this build's stream captures
  * nothing of. Filtering here is the one place every registration passes through. A caller that
  * names such a topic itself is refused by name instead, at the host's own subscribe tool

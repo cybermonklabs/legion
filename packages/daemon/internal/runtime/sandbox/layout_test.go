@@ -117,7 +117,7 @@ func TestTheBootCensusNamesEveryRefusedSandboxAndHowMany(t *testing.T) {
 	}
 }
 
-// An issue Sandbox owns no claim template at all — its disk is its own pod's (INFRA-80) — and the
+// An issue Sandbox owns no claim template at all — its disk is its own pod's (POMJU-80) — and the
 // controller's owns the one `issue` template its working root is on, which outlives its pods while
 // its session is a row in the session database; the census passes both as this runtime builds
 // them. It refuses, by name, every Sandbox of the tree-volume layout before

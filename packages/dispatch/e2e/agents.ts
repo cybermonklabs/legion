@@ -127,7 +127,7 @@ export type SessionState = "live" | "unresponsive";
  *  An `unresponsive` session is still listed, still holds its roles and claims and is still
  *  delivered to; every answer about it carries that state, and `GET /v1/sessions` and the
  *  per-session route answer for it only when the caller asks with `include=unresponsive`, as
- *  Dispatch's own listener client always does (dispatch://INFRA-392). Pair it with
+ *  Dispatch's own listener client always does (dispatch://POMJU-392). Pair it with
  *  `setSessionLastSeen` wherever the row's age matters: Dispatch dates the silence by that
  *  heartbeat and adds its claim grace to it. */
 export async function setSessionState(sessionID: string, state: SessionState): Promise<void> {
@@ -392,7 +392,7 @@ export function agentRow(page: Page, sessionID: string): Locator {
   return page.locator(`[data-agent-row="${sessionID}"]`);
 }
 
-/** One of the page's four group headings (INFRA-812, R7), whose accessible name is the group's
+/** One of the page's four group headings (POMJU-812, R7), whose accessible name is the group's
  *  name and its count: `Idle (3)`, or `Idle (3, 1 selected)` once a row of it is selected. */
 export function agentGroupToggle(page: Page, group: AgentGroup): Locator {
   return page.getByTestId(`agents-group-toggle-${group}`);

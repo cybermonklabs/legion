@@ -11,7 +11,7 @@ status: active
 module: packages/envoy/internal/broker/store/migrations
 related_issues:
   - "sjawhar/legion#2636"
-  - "INFRA-958"
+  - "POMJU-958"
 ---
 
 # A migration identifier scheme belongs to its store, and the broker's is still numbered 1 to N

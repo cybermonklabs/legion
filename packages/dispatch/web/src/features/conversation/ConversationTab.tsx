@@ -1080,7 +1080,7 @@ export function ConversationTab({
   // number is the newest activity's own millisecond, since the list is ordered by activity.
   // Passed while a read is still pending, the hook's first placement would find no card and
   // scroll to the top, and a read answering last without changing the newest time would leave
-  // the reader there (INFRA-303).
+  // the reader there (POMJU-303).
   const loading = asks.isPending || comments.isPending || messages.isPending || handoffs.isPending;
   const failed = asks.isError || comments.isError || messages.isError || handoffs.isError;
   const newestShown = loading || failed ? undefined : shown.at(0);

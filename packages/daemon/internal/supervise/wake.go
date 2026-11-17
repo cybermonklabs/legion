@@ -2,7 +2,7 @@ package supervise
 
 // The wake unit: the pacing that holds back the wakes this package causes, so that a restart or a
 // plugin wave starts a project's claims at the rate its operator set rather than all at once
-// (dispatch://INFRA-976). One wake is reserved at the gate (reserveWake), parked on the machine
+// (dispatch://POMJU-976). One wake is reserved at the gate (reserveWake), parked on the machine
 // until its turn (parkWake) and run when that turn comes (wakeNow); a request a person is waiting
 // on is let through unpaced (exemptWake). A request that reaches a claim a wake parked over no
 // process takes that wake off the machine first and gives it back if it launched nothing
@@ -29,7 +29,7 @@ import (
 // other decision of this package raises, and the relaunch the stale-plugin refresh lane raises,
 // which is a launch in every step it takes and is told apart only so that a reader of the
 // daemon's state can tell the refresh of a fleet from the work that refresh is holding up
-// (dispatch://INFRA-2712 R4). That is why no decision reads a kind of its own accord: one that
+// (dispatch://POMJU-2712 R4). That is why no decision reads a kind of its own accord: one that
 // means "this wake starts a process" asks StartsProcess, which both answer, and a kind itself is
 // read only to be written — into the view a reader of every claim takes and into the lines the
 // machine writes of a wake (WakeWaiting, wakeRan). The third is the outbox's own — a catch-up
@@ -58,7 +58,7 @@ const (
 	// starts a process answers the same of both (StartsProcess) — and it is a kind of its own
 	// for one reader: an operator reading `GET /legion/v1/state` through a plugin wave tells the
 	// lane's wakes from the launches that start a tree's work by it, which no reading of the
-	// wave of 2026-11-10 could do while the two were one kind (dispatch://INFRA-2712 R4).
+	// wave of 2026-11-10 could do while the two were one kind (dispatch://POMJU-2712 R4).
 	WakePluginRefresh WakeKind = "plugin-refresh"
 	// WakeCatchUp is the notice a start row writes to an architect already running in place of a
 	// launch, which waits on its own durable row rather than in a machine and is run by the
@@ -208,7 +208,7 @@ type wake struct {
 //
 // Those same two returns leave the credit of the refresh gate this machine may hold with no
 // wake waiting for it, so the end of the decision gives it back (endRefreshLane,
-// dispatch://INFRA-2712 R1): the work the credit was taken for runs here rather than waiting in
+// dispatch://POMJU-2712 R1): the work the credit was taken for runs here rather than waiting in
 // the pacing, which is the whole of what the gate counts. A wake of this lane that parks keeps
 // the credit on the machine for as long as it waits, and the turn that takes that wake off the
 // machine is what gives it back (parkWake, wakeNow, runWake).
@@ -264,7 +264,7 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 // the wake's turn does not run.
 //
 // The credit of the refresh gate this machine may hold outlives a park of this lane's own kind
-// and no other (endRefreshLane, dispatch://INFRA-2712 R1): that wake is the one the credit was
+// and no other (endRefreshLane, dispatch://POMJU-2712 R1): that wake is the one the credit was
 // taken for, whether it is parked for the first time or taken up again (reserveWake,
 // reparkWake), and a park of any other kind overwrites it — the second launch raised over a
 // claim whose refresh still waits, which reserveWake states — so the end of that decision gives
@@ -309,7 +309,7 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 //
 // Both ways out of a held suspension leave nothing of this refresh waiting in the pacing, so the
 // end of this decision gives the credit of the refresh gate this machine may hold back
-// (endRefreshLane, dispatch://INFRA-2712 R1): the wake that starts no process is spent where it
+// (endRefreshLane, dispatch://POMJU-2712 R1): the wake that starts no process is spent where it
 // is read, and the suspension that ends the claim's process lets that process go with the wake
 // it was parked over (endHeld, suspendedFor, letGo). The wake is off the machine either way,
 // which is what that end reads.
@@ -386,7 +386,7 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // is off the machine before either runs (wakeNow, runParkedLaunchNow), so a decision that ends at
 // the lifecycle refusal or at a take-back the store would not take holds a credit no wake of this
 // lane waits for, and gives it back there (endRefreshLane, relaunchRefused,
-// dispatch://INFRA-2712 R1). Neither step gives a plugin mark back, because a wake that is
+// dispatch://POMJU-2712 R1). Neither step gives a plugin mark back, because a wake that is
 // abandoned writes none: the intent is written by the launch that starts the process replacing
 // the stale one, and by nothing else (wake.pluginMark, holdPluginRelaunch, launchNow). A
 // relaunch abandoned at either step started nothing, so the claim keeps the mark of whatever
@@ -404,7 +404,7 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // The refresh lane's own wake reads its claim once more before either step, which is the only
 // order in which the claim still holds what those two steps would spend: a claim that is no
 // longer stale, or that has started a turn since, is relaunched by this wake not at all
-// (refreshOverturned, dispatch://INFRA-2712 R2). Such a claim keeps its turn and the task that
+// (refreshOverturned, dispatch://POMJU-2712 R2). Such a claim keeps its turn and the task that
 // turn is working, gives back at the end of this decision the credit the gate admitted it on,
 // and is left watched exactly as the lifecycle refusal below leaves one (watchAgain), its probe
 // left to the sweep's next observation. The wake is spent and the relaunch is owed again, which
@@ -468,7 +468,7 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 // kind: an operator reading the state through a wave would count the lane short by exactly the
 // claims whose refresh is in trouble, while the count of what the lane has left still names
 // them, and the two numbers would disagree in the one case the operator is reading them for
-// (dispatch://INFRA-2712 R4, api.State.ClaimsToRefresh).
+// (dispatch://POMJU-2712 R4, api.State.ClaimsToRefresh).
 //
 // It answers the three retries a stale-plugin relaunch can leave waiting: the one a refused turn
 // arms, holding the intent the turn took off the wake it was parked with (runWake,
@@ -614,7 +614,7 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // the task a provider error took back while the ladder's wait stands for it and nothing works it,
 // or the daemon's own delivery of a relaunch's record while no prompt of it waits on a result. A
 // newer task takes its place rather than waiting out a wait the next error only makes longer
-// (queue, dispatch://INFRA-956 R2), or behind a sentence it carries itself (Delivery.message).
+// (queue, dispatch://POMJU-956 R2), or behind a sentence it carries itself (Delivery.message).
 // The claim takes an operator's task over such a one, so a person is waiting on a task this claim
 // will work, and the launch runs for it. The replacement is made here, before that launch, and
 // not left to the row (replaceOwedTask, the one path both places a task replaces an owed one

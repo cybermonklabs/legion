@@ -6,7 +6,7 @@
 -- every other process read the same row as "unreachable": one issue page said the listener is
 -- refilling and the next said it is unreachable, and GET /api/v1/agents answered
 -- 503 ENVOY_REFILLING on one process and 503 ENVOY_UNAVAILABLE on the other, which
--- dispatch://INFRA-261's acceptance forbids.
+-- dispatch://POMJU-261's acceptance forbids.
 --
 --   reason          why the listener gave no list, as the fetching process saw it:
 --                   model.RouteReasonRefilling or model.RouteReasonUnreachable. '' for an

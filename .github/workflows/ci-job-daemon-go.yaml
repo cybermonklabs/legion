@@ -13,7 +13,7 @@ name: CI job daemon-go
 # had to cover everything the daemon's Go closure reads, so a change to a shell script or to
 # packages/claude-envoy ran
 # 1,083 s (median) of Go tests that could not see it, and 28 of the 66 commits that touched
-# .github/scripts since 2026-10-01 changed no Go file at all (dispatch://INFRA-1413). With the
+# .github/scripts since 2026-10-01 changed no Go file at all (dispatch://POMJU-1413). With the
 # two suites in jobs of their own each runs on its own inputs: this job's filter is the daemon's
 # Go closure (`daemon_go_tests`, which already stood for exactly this set and gated nothing),
 # and the `test` job's is what its remaining steps read.
@@ -41,7 +41,7 @@ name: CI job daemon-go
 # name. What is left here that names bun runs no pack: handoff_records_live_test.go's is behind
 # `//go:build e2e`, which no step here compiles. So this job's filter names no lockfile, no
 # workspace manifest and no skill, and a change to bun.lock or to one skill runs the plugin-pack
-# tests and no test of this job (dispatch://INFRA-1413, A4).
+# tests and no test of this job (dispatch://POMJU-1413, A4).
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -74,7 +74,7 @@ jobs:
     # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
     # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
     # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
-    # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
+    # steps (dispatch://POMJU-1052 measured them over the 30 newest counted test jobs of main
     # push runs).
     timeout-minutes: 70
     services:

@@ -1,6 +1,6 @@
 //go:build e2e
 
-// The live proof of dispatch://INFRA-3276 R4 and R3 on the binary that has them: a worker in a
+// The live proof of dispatch://POMJU-3276 R4 and R3 on the binary that has them: a worker in a
 // turn is sent its task once and again only after that turn, the turn that serves a task settles
 // it, a newer task takes its place, and a relaunched process reads, in the first prompt it is
 // sent, what the relaunch ended of its subagents, its background jobs and its turn.
@@ -23,7 +23,7 @@
 //     acknowledges a prompt at its admission and then waits on that recall before the turn's
 //     agent_start (session/agent-session.ts, #promptWithMessage then #prepareAgentStart), and the
 //     session counts as streaming the whole time, so a held recall is the measured wait between
-//     the acknowledgement and the turn (dispatch://INFRA-3276/artifact/r4-repeat-source-md). The
+//     the acknowledgement and the turn (dispatch://POMJU-3276/artifact/r4-repeat-source-md). The
 //     stand-in answers every recall 503, held or not: a recall that succeeds is committed to the
 //     session and the next prompt recalls nothing, and one that fails is not, which a run of the
 //     pin made for this proof read (a recall answered 200 made the next prompt start its turn at
@@ -1120,7 +1120,7 @@ func (r *busyRelaunchLive) writeOmpProfile() {
 // `retry.enabled` off so the host walks no chain of its own; the claim's own (writeRoleOverlay),
 // the one model its stand-in serves for every model role, `deep` — the model of the deep-worker
 // agent a step's subagent runs — among them; and for the late pane, the memory overlay a
-// deployment renders when Hindsight is on (dispatch://INFRA-3328): the backend, the run's
+// deployment renders when Hindsight is on (dispatch://POMJU-3328): the backend, the run's
 // stand-in as its API, and the two features that would call it beside the recall — the mental
 // models read at the session's start and the retain after a turn — off, so the recall is the one
 // call it is asked.

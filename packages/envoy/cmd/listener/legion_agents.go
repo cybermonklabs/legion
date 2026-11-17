@@ -206,7 +206,7 @@ const legionAgentBodyLimit = 1 << 20
 // (session.StateOf through SessionRegistry.Lookup, sessionIsLive): true only while that
 // registration is within the live window, never membership alone, of the session cache or of the
 // registry. So live false does not say the agent has ended: a session past the live window is
-// unresponsive and keeps everything of its own (dispatch://INFRA-392), and only a session the
+// unresponsive and keeps everything of its own (dispatch://POMJU-392), and only a session the
 // registry calls gone has stopped.
 type legionAgentAnswer struct {
 	legionagents.Agent

@@ -477,7 +477,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
 		// The band from quietTimeContract to below waitingOnIssueContract: the tree quiet time is
 		// served too, and every key a later row of stateNarrowings adds is held back. 123,
-		// INFRA-3146's contract, moves no shape of the state.
+		// POMJU-3146's contract, moves no shape of the state.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		// The band from waitingOnIssueContract to below mergeWaitContract: that contract's strip
 		// takes a word of the line's `kind` and no key, so this row and the one before it read

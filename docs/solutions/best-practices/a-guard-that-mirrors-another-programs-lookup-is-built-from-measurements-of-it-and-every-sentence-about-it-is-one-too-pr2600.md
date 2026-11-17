@@ -42,7 +42,7 @@ program's behaviour is the specification, and you do not know it until you have 
 - **A claim that holds only in one state says so.** "It writes X" and "it writes X when Y" are
   different claims, and the first is false the moment a reader meets a case without Y.
 
-## Evidence (sjawhar/legion#2600, INFRA-623)
+## Evidence (sjawhar/legion#2600, POMJU-623)
 
 The guard refuses a `jj` command that creates a repository when a `.jj` sits above the directory it
 would run in. Everything below was measured on jj 0.45.1.

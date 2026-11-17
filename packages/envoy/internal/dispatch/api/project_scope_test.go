@@ -219,7 +219,7 @@ type uuidSpelling struct {
 // is the path value as written. Postgres's uuid parser takes a hyphen after any group of four
 // digits, so `a061-e3f2-…` is the same id as `a061e3f2-…` to every query a handler makes, while
 // Go's uuid.Parse refuses it: a check that read ids with the second admitted a write to an
-// object it had resolved to nothing (INFRA-264). The prefix layer reads neither parser and
+// object it had resolved to nothing (POMJU-264). The prefix layer reads neither parser and
 // resolves nothing for such a spelling - no uuid starts with a hyphen after four digits - so it
 // leaves the two reading one value, exactly as they did.
 func uuidSpellings(write addressedWrite) []uuidSpelling {

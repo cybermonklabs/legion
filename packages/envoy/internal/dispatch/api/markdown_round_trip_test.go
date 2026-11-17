@@ -166,7 +166,7 @@ func TestMarkdownRoundTripNamesWhatTheStoreChanges(t *testing.T) {
 // A markdown document of maxDocumentMarkdownBytes is that largest text: the upload refuses one
 // byte more (artifacts.go). Its body is longer than the text, by the object around the string
 // and by a byte for every character JSON escapes, so a megabyte of body refuses it
-// (dispatch://INFRA-1522).
+// (dispatch://POMJU-1522).
 func TestMarkdownRoundTripTakesTheLargestTextAnInlineUploadStores(t *testing.T) {
 	handler := newTestHandler(t)
 	// One paragraph line of words is its own canonical rendering, so the answer is the text

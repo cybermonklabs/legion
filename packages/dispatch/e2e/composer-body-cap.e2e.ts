@@ -6,7 +6,7 @@ import { barAction, composer, openSpec, selectEditorText } from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
-// INFRA-370: no composer carries a length of its own. A comment field takes a body of 40,000
+// POMJU-370: no composer carries a length of its own. A comment field takes a body of 40,000
 // characters whole, a question field takes a question of 2,001 characters whole, and a body the
 // server refuses - one paragraph past the bound it holds each block to - shows the server's own
 // refusal under the composer, with the draft kept.

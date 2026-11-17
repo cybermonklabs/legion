@@ -5,7 +5,7 @@
 -- --fresh-session`, `legion claims forget-session`), or no session store holds it any more. The
 -- session itself is never deleted, so until now the only record of where it went was a line in the
 -- daemon's log: the claim's own session column was blanked and nothing said that an older session
--- existed (dispatch://INFRA-714, item 4 of the refusal section).
+-- existed (dispatch://POMJU-714, item 4 of the refusal section).
 --
 -- The fresh agent is told of it in the first task it is given (supervise's abandonedTask), which
 -- can be a launch, a registration and a daemon restart after the abandonment, so the record is

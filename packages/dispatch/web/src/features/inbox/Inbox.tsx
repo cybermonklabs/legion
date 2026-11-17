@@ -1765,7 +1765,7 @@ export function Inbox({
   // unmount it on the letter that leaves nothing listed and mount a fresh one, taking the
   // search box out from under the reader's hand and their focus to `document.body` with it, so
   // the rest of the word, and the Backspace that would correct it, would reach the Inbox's own
-  // single-key bindings instead of the box (INFRA-963).
+  // single-key bindings instead of the box (POMJU-963).
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch

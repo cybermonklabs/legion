@@ -56,7 +56,7 @@ type claimsCall struct {
 // newClaimsCall is one `legion claims` subcommand's flags: the operator's three, --json, and the
 // --wait that bounds the whole call. Every subcommand takes it, so every one of them answers —
 // done, held until when, or refused with a reason — inside a bound the operator set
-// (dispatch://INFRA-714 R10).
+// (dispatch://POMJU-714 R10).
 func newClaimsCall(sub string, stdout, stderr io.Writer) *claimsCall {
 	c := newOperatorCall("claims "+sub, "usage: legion claims "+sub+" [flags]", "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
 	c.withWait("how long the whole command may take before it refuses with what it was waiting for")

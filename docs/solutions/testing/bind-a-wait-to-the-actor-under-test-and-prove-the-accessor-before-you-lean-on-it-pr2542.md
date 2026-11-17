@@ -39,7 +39,7 @@ this client's own work has run, and the test's next assertion races.
 ## Coverage
 
 New. The nearest pages,
-`docs/solutions/testing/ask-the-thing-itself-at-the-moment-the-claim-is-about-INFRA-250.md` and the
+`docs/solutions/testing/ask-the-thing-itself-at-the-moment-the-claim-is-about-POMJU-250.md` and the
 negative-control pages beside it, say to read the system's state rather than the handle you hold;
 neither states the actor-binding rule, nor the step of proving a new accessor's meaning before
 using it as a gate.

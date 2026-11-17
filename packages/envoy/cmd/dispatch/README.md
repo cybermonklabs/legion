@@ -753,9 +753,9 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 ## The live socket behind a proxy
 
 A page's live updates ride one WebSocket per tab, `GET /ws/live`, over HTTP/1.1.
-A browser pools WebSockets apart from its six HTTP connections per host, so a socket that stays open for its whole age never holds one of the slots ordinary requests need (`docs/solutions/dispatch-web/a-never-ending-http-request-from-a-browser-page-pins-chromes-six-connections-once-its-cert-verifier-updates-INFRA-258.md`).
+A browser pools WebSockets apart from its six HTTP connections per host, so a socket that stays open for its whole age never holds one of the slots ordinary requests need (`docs/solutions/dispatch-web/a-never-ending-http-request-from-a-browser-page-pins-chromes-six-connections-once-its-cert-verifier-updates-POMJU-258.md`).
 That holds only while the front proxy the browser reaches (the load balancer or ingress) does not advertise HTTP/2 extended CONNECT (RFC 8441, `SETTINGS_ENABLE_CONNECT_PROTOCOL`).
-A browser that sees it runs the live socket as a stream of its HTTP/2 session instead, a session the browser marks going away stays open while that stream lasts, and the INFRA-258 hang can return.
+A browser that sees it runs the live socket as a stream of its HTTP/2 session instead, a session the browser marks going away stays open while that stream lasts, and the POMJU-258 hang can return.
 `bun scripts/e2e/lib/h2-settings.ts https://<dispatch>` checks it:
 it prints the HTTP/2 SETTINGS the proxy sends as one JSON line, and exits 1 when they advertise extended CONNECT, 0 when they do not or the proxy negotiates no HTTP/2, and 2 when it gets no answer (`scripts/e2e/README.md`).
 Run it after any change to the proxy.
@@ -779,7 +779,7 @@ Run the commands from a checkout of this repository with `bun install` run, each
 4. The same command with `--cli` has this checkout's `dispatch comment` post it, through a proxy on `127.0.0.1` that hands the command a gateway's `502` page in place of Dispatch's answer to its first POST, so the command asks again under its own key.
    It passes when it prints two `proxy` lines for that POST under one `key`, the first `"answered":502` and the second `"replayed":"?1"`, then `{"cli":{"code":0,…,"stdout":"Posted comment <id>"}}`, `{"comments_with_body":1}` and `{"ok":true}`, and exits 0.
 
-5. A page opened while a write commits shows it (INFRA-292).
+5. A page opened while a write commits shows it (POMJU-292).
    Save the `Cookie` request header a browser signed in to the deployment sends (the developer tools' Network panel, any request to `https://<dispatch>`) to `<cookie file>`, and run `bun scripts/e2e/lib/dispatch-live-events.ts --url https://<dispatch> --cookie-file <cookie file> --from-whoami --subscribe-after 30 --until <marker> --timeout 120`.
    It reads `GET /auth/whoami` as you, prints `{"whoami":{"event_head":"<id>","login":"<you>"}}` and `{"subscribing_in":30}`, and only then opens `/ws/live` from that `event_head`, as a page resumes its first subscription.
    Inside those 30 seconds, comment on `<scratch issue>` with `<marker>` in the body: the comment commits after whoami answered and before the socket opens.
@@ -830,7 +830,7 @@ A release is an exception to it only where this document says so, and each excep
 Each crossing before this rule is named where it happened rather than counted here:
 the migrations the Database migrations section below marks as deployed with no server of the earlier release running, which a deployment still on a release before them crosses with Dispatch stopped;
 the release that introduced the process registry (`server.started`, below), deployed with no process of the release before it serving beside it;
-and the release that moves live updates to `/ws/live` and keys every write (INFRA-258, immediately below), which deploys with no server of the earlier release running because of its API.
+and the release that moves live updates to `/ws/live` and keys every write (POMJU-258, immediately below), which deploys with no server of the earlier release running because of its API.
 An exception still to come rather than past is named where it belongs too: an upgrade of ygo that changes its update encoding (Two builds at once, Stored documents, below), which no build can roll through because the build that cannot read the new encoding is already serving when it arrives.
 
 **A build keeps the earlier build's requests answerable while both serve** (Two builds at once, below, states this surface by surface).
@@ -838,7 +838,7 @@ A route either build serves answers a body either build sends: a member one buil
 A route is added freely and removed only in the release after the one that stops calling it, and a page or command that reaches a build without a route it wants is answered `404 NOT_FOUND` with `no route for <METHOD> <path>`, which it retries so that the next attempt can reach the other build.
 So the two surfaces a client crosses a roll on, the body it sends and the route it sends it to, are the earlier build's as much as this one's for the length of the roll.
 
-**The release that moves live updates to `/ws/live` and keys every write (INFRA-258) deploys with no server of the earlier release running**, because of its API rather than its schema.
+**The release that moves live updates to `/ws/live` and keys every write (POMJU-258) deploys with no server of the earlier release running**, because of its API rather than its schema.
 An earlier server ignores the `Idempotency-Key` header and keeps no key, so while both serve one database a write can run twice:
 one an earlier server ran whose answer was lost is run again by its retry on a new server, which holds no key for it, and a retry of one a new server ran runs again on an earlier one.
 The page and the `dispatch` command both retry a write whose answer was lost, and the command's check that Dispatch keeps keys (the key echoed back, or `/healthz`) reads whichever server answered it.
@@ -855,7 +855,7 @@ the earlier build's broadcast send reads and writes the table `0141` drops, so e
 A tab opened before the deploy needs a reload:
 `GET /api/v1/events` is gone, so it shows `Live updates unavailable`, and its broadcast body still carries `idempotency_key`, which this release refuses by name (`400 INVALID_JSON`, "idempotency_key is the Idempotency-Key header, not a body member"), so that tab sends no broadcast until it reloads.
 
-**The release that stores a message for a stopped session (INFRA-626) rolls, so for the length of the update an earlier server and a new server both take a model or thinking switch.**
+**The release that stores a message for a stopped session (POMJU-626) rolls, so for the length of the update an earlier server and a new server both take a model or thinking switch.**
 A switch is the live view's one-line `/model <value>` or `/effort <value>` message, and a new server sends it with `connected_only` whatever its request says when it is a person's own Send or Aside, not one an agent wrote for them, on no issue and no broadcast's copy, the shape the session runs as its own turn (`isSessionSwitch`, `api/messages.go`), so a stopped session refuses it and its attempt records `the session is stopped`:
 stored for a stopped session, the line would change that session's model at an unknown later time.
 Every other message whose body is such a line - an issue message, a mention, a broadcast copy, a BTW, a session's message, one an agent wrote for its person - reaches the session as a card and changes no model, so a new server queues it for a stopped session like any other message.
@@ -2439,7 +2439,7 @@ Its census answers `0`.
 
 Migration `20261105075455_repo_projects_renamed_to` gives `repo_projects` a nullable `renamed_to`, the full `owner/name` that mapping's repository is called today, null for one that was never renamed, which is every row the migration leaves.
 One GitHub repository under two names was two repositories to Dispatch:
-`sjawhar/legion` was renamed to `cybermonklabs/legion`, both names map to project INFRA, and an issue recorded under the old name was held to no pull request on the new one (`attributionHeld`) while the App, asked about the old name, answered 404 for its installation, so Dispatch could say of no `before_merge` result of such an issue where its commit stood.
+`sjawhar/legion` was renamed to `cybermonklabs/legion`, both names map to project POMJU, and an issue recorded under the old name was held to no pull request on the new one (`attributionHeld`) while the App, asked about the old name, answered 404 for its installation, so Dispatch could say of no `before_merge` result of such an issue where its commit stood.
 The pair lives on this row because this row is where Dispatch already holds the old name, it is the operator's to set through `PUT /api/v1/settings/repo-projects/{owner}/{repo}` under the authority that already sets a mapping, and Dispatch asks GitHub nothing:
 a name a repository was renamed away from cannot be read at all, so a rename is declared, never discovered.
 The canonical name of a repository is what its row's `renamed_to` names, else the name itself, compared case-insensitively (`refs.CanonicalRepo`), and six sites read it:
@@ -2483,7 +2483,7 @@ Migration `0009_project_artifacts` deletes malformed derived artifact references
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
 On success it backfills each artifact's project and generated `ref_key`.
 
-Migration `20261111210103_projects_default_assignee_not_null` fills every project's `default_assignee` and then makes the column not null, so the last step of the chain that decides who a question reaches — the person the ask was handed to, then the issue's assignee, then the project's default — always lands on a person (INFRA-3090).
+Migration `20261111210103_projects_default_assignee_not_null` fills every project's `default_assignee` and then makes the column not null, so the last step of the chain that decides who a question reaches — the person the ask was handed to, then the issue's assignee, then the project's default — always lands on a person (POMJU-3090).
 `0116_project_default_assignee` added the column nullable and nothing ever filled it, so an ask on an unassigned issue of a project nobody had set a default on reached nobody's Inbox, which is the defect this change ends.
 The fill reads two sources and takes the first that names somebody who has signed in:
 the login holding most of that project's issues (`issues.project_key`, `issues.assignee`), a tie broken by the most recent issue among the tied logins (`issues.created_at`, then `issues.key`);
@@ -3105,7 +3105,7 @@ Each vector records its embedder's identity in `embeddings.model`, `us.cohere.em
 An issue's write enqueues its text through its table's trigger (0073, as 0140 replaced it) in the same transaction.
 Every other kind is embedded in windows of its blocks, written through `embeddings_enqueue_window`, which also deletes the owner's windows the new set does not name.
 No write writes them: a document's version write and a comment's, a message's or an ask's own write record the blocks and mark their owner owed its windows in the same transaction, and the block-index tick's window arm writes them within a tick, in a transaction of its own.
-So a write holds its issue row for its own rows alone, and a comment's and a document's windows, and so their meaning-search hits, appear one reconciliation tick after the write rather than within it (INFRA-988).
+So a write holds its issue row for its own rows alone, and a comment's and a document's windows, and so their meaning-search hits, appear one reconciliation tick after the write rather than within it (POMJU-988).
 A window holds at most 1,200 characters of block text, a heading starts a new one, and its text is the context that gives those blocks their meaning - the document's title and the heading above, the issue's title for a comment or a message, the question for an ask's part - and then the blocks themselves, so a passage at the end of a long document carries a vector of its own.
 The block-index tick (Background loops, above) writes the windows of every owner whose blocks a write recorded since it last windowed it, gives windows to every owner that holds blocks and no window of them, and, once an owner's window carries a vector of its current text, deletes that owner's whole-text embeddings row.
 An issue's text is its title and its spec, the latest version of its primary document (its title alone while that is blank), and a new version of the spec queues the issue again through `0140`'s trigger on `artifact_versions`, so meaning search, and the related-item check below, find an issue with a terse title by what its spec says.
@@ -3150,7 +3150,7 @@ A row both legs find scores the sum of both, which is above what either leg alon
 No kind is ranked ahead of another, in the legs or in the page: a kind leads only by scoring highest.
 Hits that score alike are ordered by recency and id, so the order is total and consecutive `offset`s walk it once while the corpus holds still.
 An issue the query names by key leads the page by `searchOwnKeyLead`, which is above every score the legs can reach together.
-A query that is one issue key is read in each form a person writes it (`searchKeyForms`): `INFRA-1042`, `infra-1042`, `INFRA 1042` with a space where the hyphen is, and the number alone.
+A query that is one issue key is read in each form a person writes it (`searchKeyForms`): `POMJU-1042`, `infra-1042`, `POMJU 1042` with a space where the hyphen is, and the number alone.
 Only the first two match an issue's own vector, which holds its key as one hyphenated lexeme (`'infra' <-> '-1042'`), so the statement is given the keys themselves (`q.own_keys`) and its issue arm matches an issue named by key as well as one its tsquery finds.
 The number alone names the issue of that number in the project the request reads it in, or in every project at once, and then every one of them heads the list, in project order, before any other row.
 That project is `project` when the request narrows by one, since an issue the filter leaves out cannot be on the page whatever else a request says, and otherwise `number_project`, the project of the page the search was made from.
@@ -4435,7 +4435,7 @@ Each item below names a path with its method and identity, then its purpose.
     The claim write queues the publication in its own transaction in the daemon's store, so the change and its publication commit together or not at all.
     An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published when the daemon makes that write again at the claim's next decision, and not before: until then the store still holds the claim live.
     The session of an ended claim keeps its role until the next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
-    An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+    An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://POMJU-4099).
     A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
     Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
     The boot publishes each issue with a live claim or a claim that changed in the last seven days, for the claims that an earlier release changed and did not publish.

@@ -105,7 +105,7 @@ test("a conversation the runtime cannot convert costs the thread, not the page a
   expect(screen.getByRole("link", { name: /Agents/ })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "Delivery mode" })).toBeTruthy();
   // The row under the box, with the one question mark that holds what this view keeps of the
-  // conversation (INFRA-812, R6), outlives the thread the same way.
+  // conversation (POMJU-812, R6), outlives the thread the same way.
   expect(screen.getByTestId("agent-composer-footer")).toBeTruthy();
   expect(screen.getByRole("button", { name: "What the message box does" })).toBeTruthy();
 });

@@ -856,7 +856,7 @@ func (g *rig) control() {
 				// such a pod is on its way out - then waited for a pod this controller was never
 				// going to create. That is what red this package's pod-drift row about 4 times in
 				// 100 under load, at every bound it was given, with the controller reading
-				// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
+				// `generation 3, Running, pod uid-pod-13 terminating` for ever (POMJU-985).
 				if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
 					_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
 				}

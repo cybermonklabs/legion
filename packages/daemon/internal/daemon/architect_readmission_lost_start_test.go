@@ -9,7 +9,7 @@ import (
 )
 
 // A re-admitted root whose re-admission start was lost is sent that start again, although its
-// architect's claim still holds the unconfirmed task of the run before (dispatch://INFRA-2614 R4,
+// architect's claim still holds the unconfirmed task of the run before (dispatch://POMJU-2614 R4,
 // R5). The root ran at generation 1 and its architect was sent that run's task and confirmed none
 // of it; a person parked the root and set it todo again, which re-admits it at generation 2 and
 // raises its architect's entry to 2 in the same pass. The start that pass wrote is lost before any

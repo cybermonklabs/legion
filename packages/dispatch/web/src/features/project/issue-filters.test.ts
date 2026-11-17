@@ -169,7 +169,7 @@ test("unclaimed keeps the issues nobody is working, a lapsed holder's included",
 // A holder that has only missed its heartbeats is still working the issue, and the server
 // refuses a second agent's take, so the filter keeps the issue out of the pickable list. Past
 // the claim's grace the server grants that take, and a filter that still hid the issue would
-// hide work anyone may pick up (dispatch://INFRA-392).
+// hide work anyone may pick up (dispatch://POMJU-392).
 test("unclaimed holds an unresponsive holder's issue back until its claim is takeable", async () => {
   const stalled: IssueClaim["actor"] = { kind: "session", id: "session-stalled" };
   const quiet = (lastSeen: number): Agent => ({

@@ -581,9 +581,9 @@ type nearCopyOutcome struct {
 	// a create the gate refuses is never written.
 	Refuse []model.DuplicateCandidate
 	// Forced is what the issue.created event stores about a create that went in with `force`, in
-	// the three states dispatch://INFRA-1160/spec#b-r3 names:
+	// the three states dispatch://POMJU-1160/spec#b-r3 names:
 	//
-	//	forced past a refusal       {"past": ["INFRA-724"]}
+	//	forced past a refusal       {"past": ["POMJU-724"]}
 	//	the check did not answer    {"past": []}
 	//	the refusal would not have stopped it, no force, or no check  nothing
 	//

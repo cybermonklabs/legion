@@ -328,7 +328,7 @@ func TestARoleClaimWithNoIfClaimRevisionIsUnchanged(t *testing.T) {
 }
 
 // The lapsed holder, which is what a scheduler meets after a session exits and its registration is
-// gone: the lookup takes nothing from it (dispatch://INFRA-392), so the claim still stands and the
+// gone: the lookup takes nothing from it (dispatch://POMJU-392), so the claim still stands and the
 // 404 reports the revision it stands at. A claim at that revision then takes the role, and one at
 // 0 - the revision a role with no claim record reports - is refused, because a record does stand.
 func TestALookupOfALapsedHolderReportsItsStandingClaimRevisionWhichThenClaims(t *testing.T) {

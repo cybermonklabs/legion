@@ -12,7 +12,7 @@ import (
 // generated vocabulary: the frame's name, the JSON its data is written as, and whether a reader
 // stops on it.
 func TestEventsAreTheContractsFramesAndEndOnlyOnEndAndError(t *testing.T) {
-	hit := going.Hit{Kind: "issue", ID: "INFRA-1279", Title: "Answer a question", Href: "/issues/INFRA-1279"}
+	hit := going.Hit{Kind: "issue", ID: "POMJU-1279", Title: "Answer a question", Href: "/issues/POMJU-1279"}
 	for _, tc := range []struct {
 		event    going.Event
 		wantName string
@@ -23,7 +23,7 @@ func TestEventsAreTheContractsFramesAndEndOnlyOnEndAndError(t *testing.T) {
 		{
 			going.Item(hit),
 			contracts.GoingEventItem,
-			`{"kind":"issue","id":"INFRA-1279","href":"/issues/INFRA-1279","title":"Answer a question"}`,
+			`{"kind":"issue","id":"POMJU-1279","href":"/issues/POMJU-1279","title":"Answer a question"}`,
 			false,
 		},
 		{going.Cut(120), contracts.GoingEventCut, `{"words":120}`, false},

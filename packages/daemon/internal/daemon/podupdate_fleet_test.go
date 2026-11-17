@@ -1,6 +1,6 @@
 package daemon
 
-// The fleet-wide update round (INFRA-419, folded into INFRA-484): one change to the pod template —
+// The fleet-wide update round (POMJU-419, folded into POMJU-484): one change to the pod template —
 // the deployment's session store here — drifts the pod of every issue of the project at once. Each
 // issue's pod is a round of its own: it is replaced only once its own workers have answered, and
 // an answer in one issue's pod replaces no other issue's. Nothing of the round suspends a root
@@ -766,9 +766,9 @@ func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
 // phase task made.
 //
 // The releases those projects' daemons ran, from before cybermonklabs/legion#2539, adopted before
-// every send and held none, which is the shape OSSV-343, OSSV-388, OSSV-400, BET-846 and
-// LINUX-1498 each recorded: a round opened while the implementer was mid-turn, and the other
-// roles' asks adopted the working copy under that turn (dispatch://INFRA-2695). The rig is wired
+// every send and held none, which is the shape HKUK-343, HKUK-388, HKUK-400, BJB-846 and
+// HAFJJ-1498 each recorded: a round opened while the implementer was mid-turn, and the other
+// roles' asks adopted the working copy under that turn (dispatch://POMJU-2695). The rig is wired
 // as the daemon wires its supervisor (adoptingAsTheDaemonDoes), so who is in a turn is the
 // daemon's own answer (claimInTurn), read from the machines the round posts to.
 func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testing.T) {

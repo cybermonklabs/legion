@@ -97,7 +97,7 @@ func Pair(from, to Phase) string {
 // phase of Order paired with every phase before it, 21 pairs. There is no pair beyond them,
 // since the merger merges the head it read and the daemon closes the issue from the merged pull
 // request: no phase of this workflow waits for a merge somebody else makes
-// (dispatch://INFRA-714).
+// (dispatch://POMJU-714).
 var backwardPairs = buildBackwardPairs()
 
 // backwardPairSet is backwardPairs keyed for the lookup ParsePair makes.

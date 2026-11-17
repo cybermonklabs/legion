@@ -2,7 +2,7 @@ package supervise
 
 import "testing"
 
-// R6 of dispatch://INFRA-1132 binds both turn lines alike: each carries the claim, its generation
+// R6 of dispatch://POMJU-1132 binds both turn lines alike: each carries the claim, its generation
 // and, where the turn is a task's, the delivery. A turn that is no task's names no delivery when
 // it starts, and so it names none when it ends either, whatever the claim holds pending then.
 //

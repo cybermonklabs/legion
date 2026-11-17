@@ -8,7 +8,7 @@ import (
 // projectsDefaultAssigneeNotNullVersion fills every project's default assignee from the login
 // holding most of its issues, else from the person who created it, and then makes
 // projects.default_assignee not null, so the last step of the chain that resolves who a question
-// reaches always lands on a person (INFRA-3090).
+// reaches always lands on a person (POMJU-3090).
 const projectsDefaultAssigneeNotNullVersion = 20261111210103
 
 // The migration fills a project of each kind the deployment holds: one with a majority assignee,

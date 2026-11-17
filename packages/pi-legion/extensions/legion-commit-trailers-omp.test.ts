@@ -219,7 +219,7 @@ async function startRolePane(role: Role): Promise<RolePane> {
     }
     // The Envoy listener: the registration, the role claim, and each read, answered with an
     // interest. The answer to a registration gives a consumer on the session's own relay subject.
-    // Without one the pane is deaf, and its claim boot fails (INFRA-771).
+    // Without one the pane is deaf, and its claim boot fails (POMJU-771).
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: "trailers-machine",

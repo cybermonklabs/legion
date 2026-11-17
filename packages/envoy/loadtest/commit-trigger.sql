@@ -20,7 +20,7 @@
 -- no schema. A schema named as the database's login is - the deployment's login is loadtest -
 -- stands in front of public in the default search_path ("$user", public), so creating one would
 -- shadow public for every unqualified statement the server itself runs afterwards, Dispatch's own
--- create table if not exists among them (dispatch://INFRA-988).
+-- create table if not exists among them (dispatch://POMJU-988).
 
 create table if not exists public.loadtest_event_commits (
   event_id bigint primary key,

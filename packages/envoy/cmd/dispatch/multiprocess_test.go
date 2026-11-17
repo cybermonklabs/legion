@@ -1,7 +1,7 @@
 //go:build multiprocess
 
 // Two envoy-dispatch processes serving one Postgres and one NATS, which is what production runs
-// and what INFRA-66 made correct. Every row here starts real binaries and drives the real surface
+// and what POMJU-66 made correct. Every row here starts real binaries and drives the real surface
 // - HTTP, the processes' own logs, NATS's own ConsumerInfo and stream reads - because each
 // mechanism the issue added is a property of two processes together and of nothing one process
 // can show on its own.
@@ -1023,7 +1023,7 @@ func (p *dispatchProcess) outboxLines(t *testing.T) []outboxLine {
 		// its end from both sides, because publishingAt reads those three and nothing else to
 		// decide a /healthz sample against the log - its doc comment says in full why the lines'
 		// own times will not do, the stop having been seen 1.09 s before the line that reports it
-		// (dispatch://INFRA-1568, job 42346322118). A binary that stops writing one of them is a
+		// (dispatch://POMJU-1568, job 42346322118). A binary that stops writing one of them is a
 		// regression, and it is caught here rather than left to turn into a /healthz
 		// disagreement whose reader has to work out where it came from.
 		line.started = moment("started", line.message == tookHold)
@@ -1574,7 +1574,7 @@ func startOutboxPair(t *testing.T) *dispatchPair {
 }
 
 // Two processes run an outbox each, and one of them at a time holds the publisher hold. What this
-// row proves is dispatch://INFRA-590's promise as the product makes it, read on /healthz every
+// row proves is dispatch://POMJU-590's promise as the product makes it, read on /healthz every
 // 100 ms on both and against each process's own outbox lines:
 //
 //   - never two publishers, at any sample and over the periods the lines show;
@@ -1593,7 +1593,7 @@ func startOutboxPair(t *testing.T) *dispatchPair {
 // What it does not assert is that a publisher exists at every sample from some moment on. A lease
 // cannot promise that: each time a renewal is late the holder must stop at its loss deadline, and
 // no other process may take the name until the row lapses, which is Margin later at the earliest.
-// The row asserted it until dispatch://INFRA-1568, and a 3 s stall of the runner shared by one
+// The row asserted it until dispatch://POMJU-1568, and a 3 s stall of the runner shared by one
 // process's write and its renewal took the job red with both the product and the hold behaving as
 // designed (job 128324773698, 2026-11-07). The take-over bound is what the product promises, and
 // it is what the first assertion holds the gap to.
@@ -1612,7 +1612,7 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	defer stop()
 	sampled := samples()
 	// The run ends with exactly one publisher, and the wait for it is the product's own bound: a
-	// renewal late over the final 100 ms of the span stops its holder there, and what INFRA-590
+	// renewal late over the final 100 ms of the span stops its holder there, and what POMJU-590
 	// promises then is a take-over within takeOverWithin, not a publisher at that one sample. The
 	// wait starts here, a step after the last read, and it is that bound and no more: when the
 	// last sample saw no publisher, the stretch that sample is inside is measured up to the
@@ -1622,7 +1622,7 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	//
 	// It comes before stop(), which waits for the writer goroutine and for the write it has in
 	// flight - the request measured at 3.1 s in the job this row was fixed from
-	// (dispatch://INFRA-1568) - because every moment between the last sample and the read that
+	// (dispatch://POMJU-1568) - because every moment between the last sample and the read that
 	// finds a publisher is counted as a stretch with no publisher. Stopping the writers first
 	// put that wait inside the stretch and failed a product that had a publisher back at once.
 	_, sawPublisher := waitForPublisher(t, pair, takeOverWithin)
@@ -1717,7 +1717,7 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	scene.requireOnceAndInOrder(t)
 }
 
-// requireOnePublisherOverTheSamples proves, over the samples alone, the two halves of INFRA-590's
+// requireOnePublisherOverTheSamples proves, over the samples alone, the two halves of POMJU-590's
 // promise that /healthz can show: that no sample found both processes publishing, and that no
 // stretch in which neither did reached takeOverWithin, the bound a take-over is held to. A read
 // that failed is a failure of its own and ends the stretch it falls in, since it says nothing
@@ -1736,7 +1736,7 @@ func requireOnePublisherOverTheSamples(t *testing.T, pair *dispatchPair,
 	// a run a later sample ended, and the row's wait after the sampling for the run the sampling
 	// left open. Measuring the open run to its last sample instead would end it where the
 	// sampling did and grant the wait's own takeOverWithin on top of it: a stretch of 6 s inside
-	// the sampling and 8 s after it passed that way (dispatch://INFRA-1568), and the promise this
+	// the sampling and 8 s after it passed that way (dispatch://POMJU-1568), and the promise this
 	// row holds the product to allows no such thing.
 	endRun := func(end time.Time) {
 		if len(run) == 0 {
@@ -2601,7 +2601,7 @@ func (f *githubFake) URL() string { return f.server.URL }
 // The standby's standing-by line says nothing here and is not waited for. It is written on the
 // standby's own poll of a durable it will not take, so it can come long after the durable is one
 // process's, or not at all while the hold does its work: waiting for it failed 13 of 1,066
-// dispatch-multiprocess job attempts on main (INFRA-1568). A pair holding a hold each would
+// dispatch-multiprocess job attempts on main (POMJU-1568). A pair holding a hold each would
 // write it too -- each process reads the other's binding as a previous build's and stands by for
 // it (delivery.heldDurable.boundElsewhere) -- so the line tells a shared hold from no hold at
 // all no better than it tells a healthy pair from a slow one. The holds themselves do:
@@ -3260,7 +3260,7 @@ func waitForDurableDrained(t *testing.T, pair *dispatchPair, js natsgo.JetStream
 // its hold, and a hold is Postgres's (delivery.intakeHoldName): a cut link takes nothing of it
 // away, the holder renews it throughout the outage, and the process standing by polls for a hold
 // another process holds live and takes nothing. So a process back from a NATS cut has no second
-// subscriber to deliver beside, which is what INFRA-1551 is about: nats.go re-sends a
+// subscriber to deliver beside, which is what POMJU-1551 is about: nats.go re-sends a
 // subscription inside its own reconnect, and the client binds its registration again on a
 // replacement connection, so a durable another process had taken meanwhile would be delivered to
 // both, with no bind of its own in any log to say so.
@@ -3674,7 +3674,7 @@ func boundBy(pair *dispatchPair, durable string) []*dispatchProcess {
 // The binding, and not the standing-by line of the process that did not bind it. That line is
 // written on the standby's own poll of a durable it will not take, so it can come long after the
 // durable is one process's, or not at all while the hold does its work: waiting for it is what
-// failed 13 of 1,066 dispatch-multiprocess job attempts on main (INFRA-1568), in a run where the
+// failed 13 of 1,066 dispatch-multiprocess job attempts on main (POMJU-1568), in a run where the
 // durable's holder had already been read.
 //
 // within is a hang guard and not a wait on a jittered event: both processes poll their durables
@@ -3938,7 +3938,7 @@ func requireLeasedOnce(t *testing.T, pair *dispatchPair, lease string) {
 // period breaks it honestly: the block index's period is 30 s (docs.BlockIndexReconcileInterval)
 // and the webhook redelivery's two minutes, so a pass that overruns leaves the next honest pass
 // in the next period and the count becomes two. Waiting out more boundaries cannot mend that,
-// since each boundary it waits for is another period a pass may serve (INFRA-985).
+// since each boundary it waits for is another period a pass may serve (POMJU-985).
 func requireLeasedOncePerPeriod(t *testing.T, pair *dispatchPair, lease string) {
 	t.Helper()
 	passes := map[string][]string{}
@@ -4149,7 +4149,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	// made. The other process's skip is no proof either, since a tick that lands in the next
 	// period passes rather than skipping, and waiting for a skip here failed for exactly that
 	// reason - two honest passes, each in its own two-minute period, and no skip at all
-	// (INFRA-985).
+	// (POMJU-985).
 	for deadline := time.Now().Add(60 * time.Second); fake.deliveryListings() == 0; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("no webhook delivery listing reached the fake within %v, so no redelivery pass is inside its GitHub call:\nA:\n%s\nB:\n%s",
@@ -4330,7 +4330,7 @@ const multiprocessServerURL = "http://dispatch.multiprocess.test"
 // balancer does when it sends the browser's two requests to different tasks. The sign-in in
 // flight rides the browser's state cookie, signed under the pair's key, so B completes it: the
 // callback answers 302 to the page the sign-in started from, with a session cookie, and both
-// processes name the person on that cookie. Before INFRA-555 the state was held by the process
+// processes name the person on that cookie. Before POMJU-555 the state was held by the process
 // that started the sign-in, and B answered 400 "invalid or expired state".
 func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 	issuer := oidctest.New(t)
@@ -4575,7 +4575,7 @@ const (
 // process. A person signed in on B holds a cookie signed and a refresh token sealed under K0, and
 // A answers that cookie. Once the confirmation lapses, A's request refreshes it, opening the K0
 // seal and sealing the token again under K1; once it lapses again, B's request refreshes it,
-// which opens that K1 seal. A cookie minted on A, under K1, is answered on B. Before INFRA-555 a
+// which opens that K1 seal. A cookie minted on A, under K1, is answered on B. Before POMJU-555 a
 // DISPATCH_SIGNING_KEY of two keys was one key, so each process refused the other's cookie.
 func TestAKeyRotationKeepsPeopleSignedInAcrossTwoProcesses(t *testing.T) {
 	issuer := oidctest.New(t)

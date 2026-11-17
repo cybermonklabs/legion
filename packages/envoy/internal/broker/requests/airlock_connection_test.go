@@ -44,7 +44,7 @@ func twoNameGrant(t *testing.T, reason string) (m *Machine, enrollmentID, grantI
 // grant's placeholders proves the whole grant — its ids, its expiry, the issue its request named,
 // and every airlock name with its slots and its type — so the proxy can swap any of them.
 func TestAirlockConnectionAnswersEverySlotOfALiveGrant(t *testing.T) {
-	m, enr, grantID, release := twoNameGrant(t, "deploy for INFRA-1352 today")
+	m, enr, grantID, release := twoNameGrant(t, "deploy for POMJU-1352 today")
 	for slot, placeholder := range maps.Clone(release.Airlock.Names["AWS_KEY"].Slots) {
 		conn, err := m.AirlockConnection(t.Context(), placeholder)
 		if err != nil {
@@ -53,8 +53,8 @@ func TestAirlockConnectionAnswersEverySlotOfALiveGrant(t *testing.T) {
 		if conn.GrantID != grantID || conn.EnrollmentID != enr {
 			t.Errorf("connection on the %s placeholder = grant %s of enrollment %s; want %s and %s", slot, conn.GrantID, conn.EnrollmentID, grantID, enr)
 		}
-		if conn.Issue != "INFRA-1352" {
-			t.Errorf("connection issue = %q, want INFRA-1352, which the request's reason named", conn.Issue)
+		if conn.Issue != "POMJU-1352" {
+			t.Errorf("connection issue = %q, want POMJU-1352, which the request's reason named", conn.Issue)
 		}
 		if conn.Expires == nil || release.Expires == nil || !conn.Expires.Equal(*release.Expires) {
 			t.Errorf("connection expires %v, want the grant's own %v", conn.Expires, release.Expires)

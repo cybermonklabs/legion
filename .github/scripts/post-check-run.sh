@@ -37,7 +37,7 @@
 #                      this release, which every ci-ok posted here carries. An empty field is a
 #                      post of the release before that marker existed. A UUID is a job's own
 #                      check run, which GitHub writes and GitHub alone concludes: measured on
-#                      both job check runs of INFRA-1066's k28 probe head and on
+#                      both job check runs of POMJU-1066's k28 probe head and on
 #                      4a53aeee-0d45-5854-8639-11c4a3f4d78f, the ci-ok job's own check run
 #                      127905818541 of the run that read them (2026-11-06). So the test is the
 #                      field's shape: a prefix or an empty field is a post, and a UUID is a job's

@@ -1084,7 +1084,7 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
-// queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
+// queuedStateCensus is the census of POMJU-626's three migrations - the widened state checks and
 // connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
 // and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
 // version before them, with the limit at one byte: every table they touch is over it, so a

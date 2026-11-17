@@ -146,7 +146,7 @@ func liveToken(jkt string, life time.Duration) brokertoken.Introspection {
 		Session:      "ses_a1b2c3",
 		Person:       "sjawhar",
 		ProjectScope: brokertoken.ProjectScopeNamed,
-		Projects:     []string{"INFRA"},
+		Projects:     []string{"POMJU"},
 		Scope:        "dispatch.write",
 		ExpiresAt:    time.Now().Add(life).Unix(),
 		ClientID:     brokertoken.ExchangeClientID,
@@ -222,7 +222,7 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	namedNoOne := liveToken(caller.jkt, time.Hour)
 	namedNoOne.Person, namedNoOne.Service, namedNoOne.Projects = "", "example-fleet", nil
 	namedTwo := liveToken(caller.jkt, time.Hour)
-	namedTwo.Projects = []string{"INFRA", "PRIV"}
+	namedTwo.Projects = []string{"POMJU", "PRIV"}
 	unsorted := liveToken(caller.jkt, time.Hour)
 	unsorted.ProjectScope, unsorted.Projects = brokertoken.ProjectScopePerson, []string{"PUB", "PRIV"}
 	for name, answer := range map[string]brokertoken.Introspection{
@@ -276,7 +276,7 @@ func TestLiveRefusesANamedAnswerItCannotRead(t *testing.T) {
 	for i := range tooMany {
 		tooMany[i] = fmt.Sprintf("P%02d", i)
 	}
-	for name, projects := range map[string][]string{"two": {"INFRA", "PRIV"}, "sixteen": tooMany[:16], "seventeen": tooMany} {
+	for name, projects := range map[string][]string{"two": {"POMJU", "PRIV"}, "sixteen": tooMany[:16], "seventeen": tooMany} {
 		answer := liveToken(caller.jkt, time.Hour)
 		answer.Projects = projects
 		token := "a-named-token-naming-" + name
@@ -299,7 +299,7 @@ func TestLiveRefusesANamedAnswerItCannotRead(t *testing.T) {
 func TestAnAnswerOfABrokerBeforeTheListIsRefused(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
-	legacy := fmt.Sprintf(`{"active":true,"session":"ses_a1b2c3","person":"sjawhar","project_scope":"named","project":"INFRA","scope":"dispatch.write","exp":%d,"client_id":%q,"jkt":%q}`,
+	legacy := fmt.Sprintf(`{"active":true,"session":"ses_a1b2c3","person":"sjawhar","project_scope":"named","project":"POMJU","scope":"dispatch.write","exp":%d,"client_id":%q,"jkt":%q}`,
 		time.Now().Add(time.Hour).Unix(), brokertoken.ExchangeClientID, caller.jkt)
 	const token = "a-token-an-older-broker-minted"
 	rig.broker.SaysRaw(token, legacy)
@@ -310,7 +310,7 @@ func TestAnAnswerOfABrokerBeforeTheListIsRefused(t *testing.T) {
 		t.Fatalf("Live of an older broker's named answer = %+v, %v; want no caller and ErrNotASession", decided, err)
 	}
 	const control = "the-same-answer-without-project"
-	rig.broker.SaysRaw(control, strings.Replace(legacy, `"project":"INFRA",`, "", 1))
+	rig.broker.SaysRaw(control, strings.Replace(legacy, `"project":"POMJU",`, "", 1))
 	if decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, control)); err != nil || decided.ProjectScope != brokertoken.ProjectScopeNamed || decided.Person != "sjawhar" {
 		t.Fatalf("Verify of the same answer without project = %+v, %v; want the named public-session caller", decided, err)
 	}
@@ -349,7 +349,7 @@ func TestLiveRefusesAServiceAnswerWithProjects(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
 	answer := serviceToken(caller.jkt, time.Hour)
-	answer.Projects = []string{"INFRA"}
+	answer.Projects = []string{"POMJU"}
 	const token = "a-service-token-naming-a-project"
 	rig.broker.Says(token, answer)
 	if _, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, brokertoken.ErrNotASession) {
@@ -368,7 +368,7 @@ func TestCallerCarriesTheProjects(t *testing.T) {
 		answer brokertoken.Introspection
 		want   brokertoken.Caller
 	}{
-		"named":  {liveToken(caller.jkt, time.Hour), brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: brokertoken.ProjectScopeNamed}},
+		"named":  {liveToken(caller.jkt, time.Hour), brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"POMJU"}, ProjectScope: brokertoken.ProjectScopeNamed}},
 		"person": {person, brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"PRIV", "PUB"}, ProjectScope: brokertoken.ProjectScopePerson}},
 	} {
 		token := "a-" + name + "-token-with-projects"
@@ -434,7 +434,7 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	withPerson := readOnlyToken(caller.jkt, time.Hour)
 	withPerson.Person = "sjawhar"
 	withProject := readOnlyToken(caller.jkt, time.Hour)
-	withProject.Projects = []string{"INFRA"}
+	withProject.Projects = []string{"POMJU"}
 	noService := readOnlyToken(caller.jkt, time.Hour)
 	noService.Service = ""
 	namedRead := liveToken(caller.jkt, time.Hour)
@@ -443,7 +443,7 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	personRead.ProjectScope, personRead.Projects = brokertoken.ProjectScopePerson, nil
 	personRead.Scope = "dispatch.write read"
 	named := liveToken(caller.jkt, time.Hour)
-	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: brokertoken.ProjectScopeNamed}
+	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"POMJU"}, ProjectScope: brokertoken.ProjectScopeNamed}
 
 	rows := []struct {
 		name   string
@@ -510,7 +510,7 @@ func TestALiveTokenWithASoundProofIsAccepted(t *testing.T) {
 	wantCaller := brokertoken.Caller{
 		Session:      "ses_a1b2c3",
 		Person:       "sjawhar",
-		Projects:     []string{"INFRA"},
+		Projects:     []string{"POMJU"},
 		ProjectScope: brokertoken.ProjectScopeNamed,
 	}
 	if !reflect.DeepEqual(decided, wantCaller) {
@@ -702,7 +702,7 @@ func TestTheProofIsCheckedAgainstDispatchsOwnOriginNotAForwardedHeader(t *testin
 }
 
 // TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker: the address bucket is
-// what stops a stranger spending the budget a person's approval needs (INFRA-228), so K requests
+// what stops a stranger spending the budget a person's approval needs (POMJU-228), so K requests
 // bearing K tokens the broker has never issued cost fewer than K introspections. With the bound
 // lifted and nothing else changed they cost K, which is what says the bucket did it.
 func TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker(t *testing.T) {

@@ -105,7 +105,7 @@ func narrowingsExpected(contract int) []string {
 	return dropped
 }
 
-// A narrowed answer is recorded as narrowed (dispatch://INFRA-3083, R12). The route serves a
+// A narrowed answer is recorded as narrowed (dispatch://POMJU-3083, R12). The route serves a
 // caller below the contract that carries a field a body without it, which is how a plugin older
 // than the one that strips unknown keys goes on reading the state; the body itself may say
 // nothing of that, since a key added to a narrowed body is exactly what the narrowing exists to
@@ -262,7 +262,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// because every other row of this file reads its expectation and its answer from that same
 	// table: take the row out, apply the strip beside the loop as an `if` of its own, and the
 	// expectation falls with the answer, so the body is still narrowed, no line is written and
-	// nothing fails. That is exactly the state R12 of dispatch://INFRA-3083 forbids. Measured
+	// nothing fails. That is exactly the state R12 of dispatch://POMJU-3083 forbids. Measured
 	// on 83073e209f96, the commit that adds this subtest, with the row removed and that `if`
 	// restored: every other test of internal/api passed, the subtest above included, and this
 	// one alone failed.

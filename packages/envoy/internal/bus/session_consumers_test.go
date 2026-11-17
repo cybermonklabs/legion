@@ -253,13 +253,13 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 // delivered is acked. nats-server v2.15.1 reports the ack floor of a consumer that has acked
 // nothing as the sequence before the consumer's start, the same value the start-sequence clause
 // of ackFloor answers (both logged below); nats-server 2.10.29 reported 0 there
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md),
+// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-POMJU-594.md),
 // and the clause is what keeps the floor right under either.
 //
 // What the stream holds before the consumer is on a topic the session follows, not on its own
 // agent subject: a create with no position starts at the first message stored on that agent
 // subject, since that message is the session's own and nothing else would ever deliver it
-// (Ensure, dispatch://INFRA-771). A followed topic's history from before the session is not the
+// (Ensure, dispatch://POMJU-771). A followed topic's history from before the session is not the
 // session's, and this is the test that it is never delivered.
 func TestRestartAtFloorNeverDeliversWhatTheStreamHeldBeforeTheConsumer(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
@@ -1400,7 +1400,7 @@ func TestAConsumerCreatedAgainStartsAtTheRecordedResumeFloor(t *testing.T) {
 // A resume record naming another stream's identity names sequences of a stream this one is not,
 // so it is ignored and the consumer is created where a session with no record at all is created:
 // at the first message this stream holds on the session's own agent subject, which is what hands
-// a session what was stored for it before it could register (create, dispatch://INFRA-771), and
+// a session what was stored for it before it could register (create, dispatch://POMJU-771), and
 // at the stream's end only where it holds none.
 func TestAResumeRecordOfAnotherStreamIsIgnored(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
@@ -1410,7 +1410,7 @@ func TestAResumeRecordOfAnotherStreamIsIgnored(t *testing.T) {
 	// Floor 7 is no sequence this fixture's start could be by accident: a trusted record would
 	// start the consumer at 8, while the agent-subject start is the second sequence the stream
 	// holds. With a floor of 1 the two were the same number, so the case passed whether the
-	// record was ignored or trusted (dispatch://INFRA-771, the tester's reading of this round).
+	// record was ignored or trusted (dispatch://POMJU-771, the tester's reading of this round).
 	record, err := json.Marshal(SessionResumeRecord{Floor: 7, StreamID: "a stream this is not"})
 	if err != nil {
 		t.Fatalf("marshal the resume record: %v", err)

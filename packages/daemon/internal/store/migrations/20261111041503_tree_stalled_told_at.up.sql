@@ -1,6 +1,6 @@
 -- 20261111041503_tree_stalled_told_at.up.sql — records, on a tree's root, the movement the
 -- daemon has already told that tree's controller the tree stopped for, so that one stall is one
--- notice (INFRA-2560).
+-- notice (POMJU-2560).
 --
 -- What the column holds. The admission pass tells the project's controller once of a tree of
 -- its own that has stopped: quiet for longer than `stalled_tree_notice_hours`, no claim of it

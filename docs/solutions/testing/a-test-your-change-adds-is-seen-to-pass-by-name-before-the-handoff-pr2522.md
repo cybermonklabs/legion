@@ -15,7 +15,7 @@ related_issues:
 
 # A test your change adds is seen to pass by name before the handoff
 
-`docs/solutions/testing/read-a-test-runners-counts-line-never-a-tail-of-its-failure-list-INFRA-95.md`
+`docs/solutions/testing/read-a-test-runners-counts-line-never-a-tail-of-its-failure-list-POMJU-95.md`
 says how to read a suite's verdict. This is the check to run before you read any suite at all.
 
 - **Run the tests this change adds by name, with `-run` and `-v`, and quote each `--- PASS` line

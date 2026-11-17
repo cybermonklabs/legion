@@ -51,7 +51,7 @@ test("a delivered attempt has no failure to retry", () => {
   expect(isSafeRetry(attempt({ state: "pending" }), now)).toBe(false);
 });
 
-// INFRA-626. The listener took a queued attempt and stored it for a session that is not running,
+// POMJU-626. The listener took a queued attempt and stored it for a session that is not running,
 // so there is nothing to retry: a repeat would store a second copy for the same session to read
 // when it comes back.
 test("a queued attempt is never offered a retry, and reads as stored for a stopped session", () => {

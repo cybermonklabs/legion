@@ -132,7 +132,7 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 	// after another on the loop's goroutine, so the pool's guard sees each sweep as it does in
 	// production: on an unmarked context the guard refuses nothing, so a sweep that asked the pool
 	// for a second connection while it held one would pass this test and be refused in production
-	// (INFRA-3169). The sweeps driven by hand below take a fresh mark each, which the guard reads
+	// (POMJU-3169). The sweeps driven by hand below take a fresh mark each, which the guard reads
 	// the same way: a sweep gives back every connection it took before it returns, so the loop's one
 	// mark is clear whenever its next sweep begins.
 	sweeping, stop := context.WithCancel(ctx)

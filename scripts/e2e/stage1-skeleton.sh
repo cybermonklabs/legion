@@ -247,7 +247,7 @@ postgres_dsn: $LEGION_E2E_PG_DSN
 state_dir: $work/state
 operator_token_file: $work/operator-token
 review_round_cap: 5
-# The wake pacing off (INFRA-976): this proof's waits are bounded, and at the default of 8 wakes a
+# The wake pacing off (POMJU-976): this proof's waits are bounded, and at the default of 8 wakes a
 # minute every wake after the first would spend those waits queueing for its turn.
 worker_wakes_per_minute: 0
 envoy_url: http://legion:fixture-envoy-password@127.0.0.1:9020
@@ -291,7 +291,7 @@ grep -q 'hunter2' "$work/refusal.log" && {
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
 pid=$daemon_pid
 wait_healthz
-# The daemon says it is ready, beside the /healthz above and the state read below (INFRA-3169).
+# The daemon says it is ready, beside the /healthz above and the state read below (POMJU-3169).
 # It is read here and after the restart both, never at one boot alone: the latch is one-way and
 # the booting process's own, so each start begins unlatched and this read says nothing about the
 # next process; /healthz is answered whether or not the latch was set, so a daemon that answers it
@@ -313,7 +313,7 @@ jq -e --arg p "$project" \
 # row present, since the tmux runtime runs no probe pod. Both carry `source` "configuration"
 # (contract 25): under tmux, resource-limits is what the runtime alone decides and pool-capacity
 # reads that tmux runs no probe pod, so neither is boot's measurement; and no live, image or
-# withheld row carries `source` at all. The twenty-first row is `claude-code` (INFRA-220): the
+# withheld row carries `source` at all. The twenty-first row is `claude-code` (POMJU-220): the
 # worker image carries Claude Code's pin and the Legion plugin unconditionally — the binary itself
 # a pod installs at launch — so every deployment's image is probed for the pin and the plugin,
 # this one included.

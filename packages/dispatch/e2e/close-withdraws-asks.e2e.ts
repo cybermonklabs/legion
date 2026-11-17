@@ -147,7 +147,7 @@ async function expectWithdrawn(
   await expect(page.getByRole("button", { name: "Awaiting approval" })).toHaveCount(0);
   // The close takes every one of the issue's questions out of the Inbox. From 1280 px the
   // reading column is showing one of them, and a row the reader is reading is held where they
-  // last saw it rather than taken from under them (INFRA-575, `heldRow`), so it is on the
+  // last saw it rather than taken from under them (POMJU-575, `heldRow`), so it is on the
   // reader's next look at the list that the Inbox has none of them left.
   await inbox.reload();
   await expect(inbox.getByText("Nothing needs you")).toBeVisible();

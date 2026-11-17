@@ -247,7 +247,7 @@ releases, one per `claude-envoy-v*` tag.
   consumer starts at the replay cursors its state file holds, so the messages stored while it was
   away are delivered instead of acked away.
   A BTW that arrives late is passed over, as a replayed one is. Answered `core`, or by
-  a listener of an earlier release, delivery works as before (INFRA-594).
+  a listener of an earlier release, delivery works as before (POMJU-594).
 
 ### Changed
 
@@ -256,20 +256,20 @@ releases, one per `claude-envoy-v*` tag.
   as the user message it took, no longer once the bridge queued it; a delivery Claude Code ended a
   step without taking, or had not taken when it exited, is answered with an error. The inbox reads
   a client's next deliveries while it waits and answers them in the order they came. So a relayed
-  frame is `done` only once Claude Code took the delivery (INFRA-594).
+  frame is `done` only once Claude Code took the delivery (POMJU-594).
 
 ### Fixed
 
 - `envoy_sessions`' `machine` filter finds a session by the listener it registered through as
   well as by the machine its process runs on: it matched only the latter, so a filter by a hub's
   machine id (`envoy-hub`, `gke`) listed nothing for the sessions registered through it
-  (INFRA-594).
+  (POMJU-594).
 - A message the session missed is no longer shown twice when its live copy arrives while the
   replayed one is being written. The replay engine's frame is now claimed in the same dedupe a
   live frame is, from before it is handed to the channel's write queue until the engine records it
   in the replay ledger, so whichever copy comes second is a repeat and is not shown; the claim is
   released when the frame was not shown after all, so a later copy still reaches the session
-  (INFRA-594).
+  (POMJU-594).
 
 ## [main@ed9113e7c092] - 2026-11-01
 
@@ -487,7 +487,7 @@ releases, one per `claude-envoy-v*` tag.
 
 ### Added
 
-- Every Dispatch write the bundled `dispatch` command and the channel server make carries one `Idempotency-Key` and is asked again under it after a transport failure, a 5xx, a 408, a 429, a `409 KEY_IN_FLIGHT` or an attempt that hears nothing for 20 s (INFRA-258, through `@sjawhar/envoy-client`'s `DispatchClient`), so a write whose answer was lost is made once. A session's reply to a delivery attempt goes through that client too, keyed and bounded by its deadline. The hooks read Dispatch and write nothing, so they carry no key. `dist/dispatch.js`, `dist/envoy-channel.js` and `dist/session-hook.js` are rebuilt.
+- Every Dispatch write the bundled `dispatch` command and the channel server make carries one `Idempotency-Key` and is asked again under it after a transport failure, a 5xx, a 408, a 429, a `409 KEY_IN_FLIGHT` or an attempt that hears nothing for 20 s (POMJU-258, through `@sjawhar/envoy-client`'s `DispatchClient`), so a write whose answer was lost is made once. A session's reply to a delivery attempt goes through that client too, keyed and bounded by its deadline. The hooks read Dispatch and write nothing, so they carry no key. `dist/dispatch.js`, `dist/envoy-channel.js` and `dist/session-hook.js` are rebuilt.
 
 ## [main@a09a2f257406] - 2026-10-29
 
@@ -590,7 +590,7 @@ releases, one per `claude-envoy-v*` tag.
   reaching a private stream subject, by the listener's own rule (another session's
   `notifications.agent.<id>`, a failed-delivery lane, a `notifications.legion.` controller lane, or
   a wildcard reaching one such as `notifications.agent.*`), is followed live but neither registered
-  nor replayed, since the listener refuses to store it. `dist/` was rebuilt (INFRA-439).
+  nor replayed, since the listener refuses to store it. `dist/` was rebuilt (POMJU-439).
 
 - A person's browser edit of a spec a session wrote reaches that session's channel as one card, 30
   seconds after the person stops editing: the card names the document, the two versions and each
@@ -614,7 +614,7 @@ releases, one per `claude-envoy-v*` tag.
   `--after <OTHER>` below, and both together land it between them, printed as `rank -> before KEY`
   or `rank -> after KEY`. The bundled tool descriptions carry the two arguments, and the plugin's
   own copy of the `legion-controller` skill carries the corrected backlog rule, since `dist/` and
-  `legion/` were regenerated (INFRA-188).
+  `legion/` were regenerated (POMJU-188).
 - The `dispatch` command (`dist/dispatch.js`) imports every architecture source of a project, one
   per repository: `dispatch architecture-sync --project <KEY>` prints a line for each source, and
   `--repo <owner/name>` imports that one alone. Against a Dispatch older than this release,
@@ -623,13 +623,13 @@ releases, one per `claude-envoy-v*` tag.
   issue's component ids may come from any of its project's source repositories, and the plugin's
   own copy of the `legion-architect` skill says a component file goes in the branch of the source
   repository that holds it, with an id no other source of the project uses, since `dist/` and
-  `legion/` were regenerated (INFRA-391).
+  `legion/` were regenerated (POMJU-391).
 - The `dispatch` command (`dist/dispatch.js`) prints, under each ask hit of `dispatch search`,
   where the ask stands: `Answered by …` with the options chosen and `Answer text: …`, `Closed with
   no answer: …`, `Closed after an answer: …` with `Last answer by …`, or `Open: no answer yet.`;
   against a Dispatch older than this release, which reports no state, `Answer state not reported
   by this Dispatch; open the link to read the ask.` The bundled `dispatch_search` description says
-  an ask hit says whether it is answered, since `dist/` was regenerated (INFRA-569).
+  an ask hit says whether it is answered, since `dist/` was regenerated (POMJU-569).
 
 ### Changed
 
@@ -676,7 +676,7 @@ releases, one per `claude-envoy-v*` tag.
   request; the generated `legion-controller` skill reads the `awaiting-person` wake and a waiting
   root as no reason to label or admit anything.
 - The plugin declares daemon API contract 38 in `package.json`'s `legion.daemonApiVersion`
-  (INFRA-225): `GET /legion/v1/state` carries `admission.blocked`, every root and child Legion is
+  (POMJU-225): `GET /legion/v1/state` carries `admission.blocked`, every root and child Legion is
   waiting to start behind an unfinished Dispatch issue, each `{issue, blockedBy}`, and
   `release_children` answers `started` and `held` beside `released`, all required, so the MCP
   server's strict readers admit the fields and a plugin built before it refuses them; a session of
@@ -687,7 +687,7 @@ releases, one per `claude-envoy-v*` tag.
   controller's free slots counted without the waiting roots in `admission.blocked`, and a root both
   waiting and blocked read in its admission reference.
 - The plugin declares daemon API contract 37 in `package.json`'s `legion.daemonApiVersion`
-  (INFRA-80): under the Kubernetes runtime an issue's disk is a generic ephemeral volume its pod
+  (POMJU-80): under the Kubernetes runtime an issue's disk is a generic ephemeral volume its pod
   owns, created with the pod and deleted with it, so the `workspace-init provision` container is
   no longer told `LEGION_EXPECT_ISSUE_VOLUME` and the lost-disk machinery it drove — the
   provisioning exit code 3, the recovery marker and the probe for an issue's retained sessions,
@@ -697,10 +697,10 @@ releases, one per `claude-envoy-v*` tag.
 - The plugin's regenerated `legion/` copy of the `legion-worker` skill's tools reference no longer
   tells a role to add a new image package to the licence file by hand: the worker image lists every
   Debian package it carries in `/usr/share/doc/legion/THIRD_PARTY_NOTICES` from its own dpkg
-  database (INFRA-255). The Dockerfile's comments and its toolchain smoke step stay hand-kept.
+  database (POMJU-255). The Dockerfile's comments and its toolchain smoke step stay hand-kept.
 
 - The plugin declares daemon API contract 36 in `package.json`'s `legion.daemonApiVersion`
-  (INFRA-229): `GET /legion/v1/state` carries `state` on an issue's pull request, its `open`,
+  (POMJU-229): `GET /legion/v1/state` carries `state` on an issue's pull request, its `open`,
   `merged` or `closed`, always emitted, so the MCP server's strict state reader admits the field
   and nothing this plugin reads or writes moved; a session of it registers with a daemon at 36.
 - The bundled `envoy_publish` description (`dist/` regenerated) and the `envoy` skill say a team
@@ -708,13 +708,13 @@ releases, one per `claude-envoy-v*` tag.
   through its machine's listener when that listener subscribes to every topic
   (`ENVOY_SUBSCRIBE_ALL_TOPICS=1`; the shared hub's listener does not), where they said such a
   session received none. A session of this plugin holds its own NATS connection and receives such
-  a topic as before (INFRA-122).
+  a topic as before (POMJU-122).
 
 - `scripts/smoke-session-title.sh` starts nats-server (`-p -1`) and the Envoy listener (`PORT=0`)
   on ports the kernel chooses and reads each back from the server's own log, instead of picking a
   port that was free a moment earlier, which another program could take before the server bound
   it; the Dispatch address its session is configured with, which nothing serves, is
-  `http://127.0.0.1:1` (INFRA-253).
+  `http://127.0.0.1:1` (POMJU-253).
 
 ### Fixed
 
@@ -731,7 +731,7 @@ releases, one per `claude-envoy-v*` tag.
   record every request you accept in Dispatch and read that record back before a turn ends.
 - The plugin's `legion/` copy of the `legion-architect` skill is regenerated with the same
   reference: its Wake routing table moves unchanged to
-  `skill://legion-architect/references/wake-routing.md` (INFRA-376).
+  `skill://legion-architect/references/wake-routing.md` (POMJU-376).
 
 - The session title's tmux query runs `tmux -u`, so its tab-separated answer no longer depends on
   the calling process's environment: tmux printed the tabs as `_` to a process with neither `TMUX`
@@ -834,7 +834,7 @@ releases, one per `claude-envoy-v*` tag.
   for a change to scope, acceptance, cost, risk or a person's decision, all in one version.
 
 - The bundled Dispatch tools (`dist/dispatch.js`, `dist/envoy-channel.js`, `dist/session-hook.js`)
-  carry the 32,000-character body limit, up from 2,000 (INFRA-45): the `comment`, `suggest` and
+  carry the 32,000-character body limit, up from 2,000 (POMJU-45): the `comment`, `suggest` and
   `message` bodies and `issue-update`'s closing `reason` accept that many characters, and their
   descriptions say so. Nothing gates the skew: a bundle of this release against a Dispatch server
   still on 2,000 lets an agent compose a longer body and take a `400 CAP_EXCEEDED` from the
@@ -901,7 +901,7 @@ releases, one per `claude-envoy-v*` tag.
 ### Changed
 
 - The plugin declares daemon API contract 39 in `package.json`'s `legion.daemonApiVersion`
-  (INFRA-208): under the Kubernetes runtime an issue pod runs one container, `roles`, whose
+  (POMJU-208): under the Kubernetes runtime an issue pod runs one container, `roles`, whose
   launcher runs every role, and `runtime.kubernetes.resources` in `GET /legion/v1/state`'s
   `settings` is `{issue, controller}`; nothing this plugin reads or writes moved, and
   `dist/envoy-channel.js`, which embeds the number, is rebuilt; a session of it registers with a
@@ -912,7 +912,7 @@ releases, one per `claude-envoy-v*` tag.
   as `xxxxx@`, required, so the MCP server's strict state reader admits the field and nothing this
   plugin reads or writes moved; a session of it registers with a daemon at 35.
 - The plugin declares daemon API contract 34 in `package.json`'s `legion.daemonApiVersion`
-  (INFRA-31): under the Kubernetes runtime the roles of an issue now share one scratch on the
+  (POMJU-31): under the Kubernetes runtime the roles of an issue now share one scratch on the
   issue's volume, and the daemon tells every role container of a pod the same temporary directory,
   cache home, data home and bun install cache under it (`/legion/scratch/tmp`,
   `/legion/scratch/cache`, `/legion/scratch/data` and `/legion/scratch/bun/install/cache`), and

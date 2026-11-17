@@ -12,7 +12,7 @@ import (
 // hold at most the bound above the idle memory of a server that has not loaded the document, on a
 // real Dispatch process (LEGION-504). Each document is edited once, on a fresh server of its own.
 //
-// The row failed at random in CI for two reasons, both of them repaired (INFRA-985). A measured
+// The row failed at random in CI for two reasons, both of them repaired (POMJU-985). A measured
 // server could start while a document was owed a block index or a settlement, so the block-index
 // pass - which reads another, far heavier document - ran inside the measured window and the peak
 // was that pass's memory and not the edit's; the harness now leaves nothing owed when it starts a

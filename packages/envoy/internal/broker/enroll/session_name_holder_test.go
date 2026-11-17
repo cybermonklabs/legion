@@ -1,5 +1,5 @@
 // session_name_holder_test.go is the rule a carry rests on: a grant follows a session name under
-// one principal, so the name belongs to one principal (dispatch://INFRA-1167). Create binds the
+// one principal, so the name belongs to one principal (dispatch://POMJU-1167). Create binds the
 // name it enrols to the principal its caller proved, in the enrollment's own transaction and on
 // the one table the token exchange binds every token's name in (oauth_session_bindings), and a
 // name another principal holds is refused outright. What the carry does once the name is one

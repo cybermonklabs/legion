@@ -406,7 +406,7 @@ func TestApplyOpsInsertsAtHeadingsAndEdgesAndReplacesInlineText(t *testing.T) {
 
 // A replacement the document cannot hold where the match sits is an INVALID_OP naming the field
 // the caller wrote, through the route, and the live document is left as it was: a list written
-// over a heading's text has nowhere to stand (INFRA-1520).
+// over a heading's text has nowhere to stand (POMJU-1520).
 func TestApplyOpsRejectsAReplaceTheDocumentCannotHold(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "# keep")
@@ -1020,7 +1020,7 @@ func TestApplyOperationRetypesATypedBlock(t *testing.T) {
 	}
 }
 
-// A `replace` writes the blocks its text names (INFRA-1520): `with` is read by the block parser
+// A `replace` writes the blocks its text names (POMJU-1520): `with` is read by the block parser
 // an insert's markdown is read by, and the result is fitted into the match by the rules the
 // editor a person reads the document in applies. A list written over a paragraph's whole text
 // stands in that paragraph's place; one written under a line of text inside a list item stands
@@ -1449,7 +1449,7 @@ func TestApplyOperationsInsertKeepsAnIDADeleteEarlierInTheBatchFreed(t *testing.
 	}
 }
 
-// A `with` of more than one paragraph is written whole. Before INFRA-1520 the inline parser
+// A `with` of more than one paragraph is written whole. Before POMJU-1520 the inline parser
 // could not hold it and the operation was refused, since writing what the parser read would have
 // dropped the indented code block after the first paragraph, and every paragraph after it, while
 // the batch reported itself changed. Each paragraph and each code block is now written.
@@ -2124,7 +2124,7 @@ func TestApplyOperationReplaceWritesBlocksInsideTheBlockThatHoldsThem(t *testing
 	}
 }
 
-// A `replace` that writes blocks settles what it wrote before anything stores it (INFRA-1520):
+// A `replace` that writes blocks settles what it wrote before anything stores it (POMJU-1520):
 // the whitespace the split left at the inner edge of each half of the textblock the match lay in
 // goes, since no text is left there to continue, and the blocks hold what their own markdown
 // reads back as - an empty half the renderer does not write is dropped, and a list and its items
@@ -2212,7 +2212,7 @@ func emptyParagraphCount(tree *pmdoc.Node) (empty int) {
 	return empty
 }
 
-// The block ids a `replace` that writes blocks carries (INFRA-1520): the id of the paragraph the
+// The block ids a `replace` that writes blocks carries (POMJU-1520): the id of the paragraph the
 // match lay in goes to the first block, in document order, that still holds that paragraph's
 // text, so an ask, a comment or a reference keyed on it still names the block its reader sees.
 // Every other block the write wrote or split off carries an id of its own, so no id names two
@@ -2359,7 +2359,7 @@ func TestApplyOperationReplaceKeepsTheBlockIDAPinnedCommentNames(t *testing.T) {
 }
 
 // A `with` that writes blocks is judged by the two guards an insert's markdown is judged by
-// (INFRA-1520). The id a typed block's markdown names must name one block of the document, so a
+// (POMJU-1520). The id a typed block's markdown names must name one block of the document, so a
 // `with` naming an id the document holds outside the text being replaced is refused as the same
 // markdown through an insert is, and one naming an id twice is refused by the parse of the
 // fragment, before it reaches the document. A `with` that rewrites the typed block the match
@@ -2469,7 +2469,7 @@ func TestApplyOperationReplaceRefusesAWriteTheDocumentReadsBackOtherwise(t *test
 }
 
 // A replace that writes blocks under an open comment or ask carries that anchor onto one block of
-// what it writes (INFRA-1520): the first paragraph or heading holding a run of text, which for a
+// what it writes (POMJU-1520): the first paragraph or heading holding a run of text, which for a
 // list is its first item's paragraph. The anchor quotes the words being rewritten, so it holds a
 // line of the new text, and no other block of the replacement carries the mark - not a code block
 // and not a table cell, which an anchor's quote cannot be read from. Each case prints what it
@@ -3464,7 +3464,7 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 }
 
 // A document edit may not take a block an open ask points at out of the document: the batch is
-// refused and the ask is left open (R5 of dispatch://INFRA-1520, refuseBatchDroppedAskBlocks). A
+// refused and the ask is left open (R5 of dispatch://POMJU-1520, refuseBatchDroppedAskBlocks). A
 // person's editor is what removes such a block, and settlement retracts the ask of the block
 // that left.
 func TestAnEditCannotDropAnOpenAskBlockAndTheEditorsRemovalRetractsIt(t *testing.T) {

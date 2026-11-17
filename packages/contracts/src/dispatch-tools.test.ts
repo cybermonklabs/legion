@@ -121,7 +121,7 @@ const characterCount = /\d[\d,]*[\s-]*characters?\b/iu;
  * The sentence `BODY_BLOCK_RULE` gives about a decision block in a body, written once in
  * `dispatch-tools.ts` and carried by every tool that writes one: Dispatch refuses such a body
  * (400 DECISION_BLOCK_IN_BODY), since the card it draws is one nobody can answer where it
- * stands (INFRA-1201).
+ * stands (POMJU-1201).
  */
 const DECISION_BLOCK_RULE =
   "A body holding a decision block (`:::ask`) is refused however short it is, since nobody can " +
@@ -932,7 +932,7 @@ describe("dispatchToolSpecs", () => {
         JSON.stringify(args)
       ).toEqual([refusal]);
     }
-    // The Dispatch server owns the bound on a body (INFRA-370), so the schema takes a reason the
+    // The Dispatch server owns the bound on a body (POMJU-370), so the schema takes a reason the
     // old client-side cap of 32,000 characters refused.
     expect(
       schema.safeParse({ issue: "DSP-1", status: "done", reason: "x".repeat(32001) }).success
@@ -949,7 +949,7 @@ describe("dispatchToolSpecs", () => {
   // Every instruction an agent reads about an ask gives one rule and no count: the server owns
   // the bound on a question and its options, names the bound in its refusal, and prints it
   // through `dispatch limits`, so a number written here would be a second source that drifts the
-  // day the server's changes (INFRA-370). The rule itself is what the instruction carries.
+  // day the server's changes (POMJU-370). The rule itself is what the instruction carries.
   test("every ask instruction gives one rule and states no character count", () => {
     for (const name of ["dispatch_ask", "dispatch_edit_ask"]) {
       const texts = [specFor(name).description, ...argumentDescriptions(name)];
@@ -1219,7 +1219,7 @@ describe("dispatchToolSpecs", () => {
     ).toBe(true);
   });
 
-  // INFRA-1522 R15: the refusal of inline text the store would change names --path only where
+  // POMJU-1522 R15: the refusal of inline text the store would change names --path only where
   // --path keeps the bytes, which is every name that is not Markdown. Dispatch parses and renders
   // a Markdown name whichever flag sends it, so --path is no way out of one.
   test("says which artifact names --path keeps the bytes of", () => {
@@ -1498,7 +1498,7 @@ describe("dispatchToolSpecs", () => {
       "it must be the version the review would record",
       "409 REVIEW_VERSION_MOVED",
       "A Dispatch build without the versioned review route answers no route and records nothing; the command then says so and names /healthz",
-      "every other browser action is dispatch://INFRA-910's",
+      "every other browser action is dispatch://POMJU-910's",
     ]) {
       expect(description).toContain(words);
     }
@@ -1539,14 +1539,14 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
-  // R4 (INFRA-1201): the rule stands where the writer reads it, before the write. The skill a
+  // R4 (POMJU-1201): the rule stands where the writer reads it, before the write. The skill a
   // session reads before its first `dispatch` command says it too, in the section the ask blocks
   // are defined in.
   test("the Dispatch skill says a body holding a decision block is refused", () => {
     expect(dispatchSkill(), "skills/dispatch/SKILL.md").toContain(SKILL_DECISION_BLOCK_RULE);
   });
 
-  // R4 (INFRA-1201): and at the write, each tool that writes a body says it, so
+  // R4 (POMJU-1201): and at the write, each tool that writes a body says it, so
   // `dispatch comment --help` and its four siblings print where the question belongs before a
   // writer puts one in a body. The names are asserted whole: an empty or shortened table would
   // make the rows below assert nothing.

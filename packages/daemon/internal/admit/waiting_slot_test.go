@@ -35,7 +35,7 @@ func seedStarted(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, s
 // review: an issue in testing and one held from its implementing each gives its row back, as one
 // in implementing does.
 //
-// Past the review the phase rule decides first (record.KeepsSlot, dispatch://INFRA-2560): an
+// Past the review the phase rule decides first (record.KeepsSlot, dispatch://POMJU-2560): an
 // issue in merging or in accepting holds no row however it waits, so the pass's ordinary release
 // takes the row it was seeded with (admit's releaseSlots), no mark of a release for a wait is
 // written, because such an issue waits on nothing (blockers.waitsOf), and the issue stands in no

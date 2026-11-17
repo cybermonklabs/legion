@@ -1,6 +1,6 @@
 package supervise
 
-// A10 of dispatch://INFRA-714/spec: "A reopened `done` child resumes each worker's old session."
+// A10 of dispatch://POMJU-714/spec: "A reopened `done` child resumes each worker's old session."
 // This file holds that requirement as its own test, because the rule the forward merge at
 // e2236b4e settled on — the close keeps the claim's session id and clears its resume path — does
 // not meet it. The claim's session id reaches no runtime as a resume handle: runtime.SpawnSpec

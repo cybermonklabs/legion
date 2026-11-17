@@ -4,7 +4,7 @@ import { type Browser, type BrowserContext, expect, type Page, test } from "./te
 import { asUser } from "./users";
 
 /**
- * The live view's header pickers switch an Oh My Pi session's model and thinking level (INFRA-195),
+ * The live view's header pickers switch an Oh My Pi session's model and thinking level (POMJU-195),
  * and each change of a picker is a switch the session runs, so they keep the Agents issue picker's
  * keyboard-step rule (`markKeyStep` in `AgentMessageComposer.tsx`, `keyboard-agents-picker.e2e.ts`):
  * a closed select's own keys (the arrows, `Home`/`End`, the page keys, type-ahead) only move its

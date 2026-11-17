@@ -483,7 +483,7 @@ push — the new head runs Tests against the new merge result — and cite that 
 cites the distinct Tests and PR Title run ids at the head
 ([text-only-skill-pr-mechanics](text-only-skill-pr-mechanics.md), §6).
 
-**Superseded 2026-10-23 (dispatch://INFRA-83):** there is no `CI:` line and no run to cite in the PR
+**Superseded 2026-10-23 (dispatch://POMJU-83):** there is no `CI:` line and no run to cite in the PR
 body — the template (`skills/legion-worker/references/pr-body.md`) carries none, and no role records
 a check result for a later step to trust: the tester and the reviewer each read CI on GitHub at the
 head they are judging and record none of it (the reviewer's own four GitHub reads are in

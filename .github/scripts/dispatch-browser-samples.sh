@@ -33,7 +33,7 @@
 # what the reading prints.
 #
 # Beside it, where the CPU goes, which is the bound a run of four workers on four vCPU hits
-# (INFRA-317): one line per process of a named group, with the CPU that process has used, read
+# (POMJU-317): one line per process of a named group, with the CPU that process has used, read
 # from /proc/<pid>/stat. `pidstat` is not on the runner image and `ps -o pcpu` is a process's
 # average over its whole life, not what it spent since the last tick, so neither answers this;
 # /proc costs one `ps` and one `awk` per tick. A group's total is the sum of its processes'

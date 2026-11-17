@@ -789,7 +789,7 @@ export interface OmpNatsGuard {
  * The guard every real-Oh-My-Pi pane test opens with: `LEGION_TEST_OMP` names the binary and
  * `LEGION_TEST_NATS_URL` the NATS server each pane runs against, which `LegionPaneOptions.nats`
  * requires — a session whose `ENVOY_NATS_URL` reaches no server is given no consumer, and its
- * claim boot then ends the session (INFRA-771), so a pane without a real server proves nothing.
+ * claim boot then ends the session (POMJU-771), so a pane without a real server proves nothing.
  *
  * A run without either variable skips, since neither a binary nor a server is on every host.
  * On GitHub Actions it throws naming the variable instead: Actions is the host that ships the
@@ -908,7 +908,7 @@ export interface LegionPane {
  * gateway that answers the pane's turns from `replies`. The server is real: a session's only
  * inbound is the consumer the listener builds for it, which it is relayed on its own relay
  * subject, so a pane with no NATS server holds no relay subject, every registration of its fails
- * saying so, and its Legion claim fails with it (INFRA-771). The daemon's assignment arrives as
+ * saying so, and its Legion claim fails with it (POMJU-771). The daemon's assignment arrives as
  * the RPC `prompt`. Nothing in a pane runs `legion` from bash (LEGION-631), so no stand-in
  * `legion` is on its PATH: `bin` holds what `prepare` put there.
  */
@@ -1004,7 +1004,7 @@ export async function runLegionPane(
     // The Envoy listener: registration, the role claim, and any read answer with an interest.
     // A session takes its messages from its own consumer, relayed on its own deliver subject: a
     // registration answered without one leaves the session deaf, which the plugin refuses rather
-    // than accept, and with it every claim the pane makes (INFRA-771).
+    // than accept, and with it every claim the pane makes (POMJU-771).
     const sessionID = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
       session_id: sessionID,
@@ -1146,7 +1146,7 @@ export async function runLegionPane(
     },
     // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
     // so nothing is still appending and a trailing fragment is a defect that must throw rather
-    // than be withheld (dispatch://INFRA-2188).
+    // than be withheld (dispatch://POMJU-2188).
     transcriptEntries: async (customType) => {
       const entries: unknown[] = [];
       for (const file of await transcripts()) {

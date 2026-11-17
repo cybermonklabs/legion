@@ -134,11 +134,11 @@ type NatsHubArgs struct {
 	Listener *HubListenerArgs `pulumi:"listener,optional"`
 	// The user a client presenting no credential becomes, granted core.SessionPermissions.
 	SessionUser *SessionUserArgs `pulumi:"sessionUser,optional"`
-	// The auth service's callout (dispatch://INFRA-840), which admits every client that is not one
+	// The auth service's callout (dispatch://POMJU-840), which admits every client that is not one
 	// of the hub's users; see docs/nats-hub.md, "The auth service". Unset, the hub renders exactly
 	// what it rendered before callouts existed.
 	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
-	// The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862): it needs
+	// The deployment may make a Dispatch project private (R12 of dispatch://POMJU-3862): it needs
 	// authCallout and no user but authCallout.serviceUser, so no session user and no listener.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
 }
@@ -470,10 +470,10 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value stri
 // listenerBesideCallout refuses input, the hub's own listener, beside authCallout. Today the
 // listener connects to NATS as a user whose seed the hub stores; behind the auth service it is to
 // connect through the service with a service identity of its own instead, which arrives with
-// dispatch://INFRA-840's task t-e-13. Until then a hub with authCallout runs no listener.
+// dispatch://POMJU-840's task t-e-13. Until then a hub with authCallout runs no listener.
 func listenerBesideCallout(input string) error {
 	return core.InputErrorf(input, "%s and authCallout: the hub's own listener connects to NATS as a user whose seed the hub stores (%s.nkey and its seed secret); "+
-		"behind the auth service it connects with a service identity instead, and its service identity arrives with dispatch://INFRA-840 (t-e-13), "+
+		"behind the auth service it connects with a service identity instead, and its service identity arrives with dispatch://POMJU-840 (t-e-13), "+
 		"so until then a hub with authCallout runs no listener of its own", input, input)
 }
 

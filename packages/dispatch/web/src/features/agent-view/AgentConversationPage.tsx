@@ -98,13 +98,13 @@ export function AgentConversationPage({
   // its registry title, else its short id. Only the view in front names the tab.
   const label = useAgentText().sessionText(sessionId, undefined);
   useDocumentTitle(label, front);
-  // The pin is the person's, not this browser's (INFRA-812): pinning here lists the session in
+  // The pin is the person's, not this browser's (POMJU-812): pinning here lists the session in
   // the rail, as pinning its row on the Agents page does, and either place unpins it.
   const pinned = usePinnedAgents().includes(sessionId);
   const writePin = useAgentPinWrite();
 
   const { conversation, replays, responding, status } = useAgentStream(sessionId);
-  // The model and thinking level the session runs now (INFRA-195), next to its title: what its
+  // The model and thinking level the session runs now (POMJU-195), next to its title: what its
   // newest `settings` frame reports, or, for a session that reports none, the most recent
   // assistant turn's own model (LEGION-548), nothing guessed for a client that never sends one.
   const settings = sessionSettingsView(conversation, responding, replays);

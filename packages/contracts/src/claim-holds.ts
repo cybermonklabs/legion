@@ -15,7 +15,7 @@ import {
  * - `unresponsive`: a session's claim whose holder is past the listener's live window and inside
  *   its gone horizon. It has missed heartbeats, it has not ended, and it keeps the issue: under
  *   box load a working session drops out of its heartbeats, and handing its issue to another
- *   agent is not a mistake the next read undoes (dispatch://INFRA-392). The server refuses
+ *   agent is not a mistake the next read undoes (dispatch://POMJU-392). The server refuses
  *   another agent's take until `takeable_at` (`claimTakeableAt`), which a surface showing this
  *   state names, so a reader knows whether to wait or to pick the issue up.
  * - `lapsed`: a session's claim whose holder is gone - the listener calls it `gone`, or the

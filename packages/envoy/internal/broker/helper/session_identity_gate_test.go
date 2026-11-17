@@ -2,7 +2,7 @@
 //go:build linux
 
 // The three defects a fresh-reviewer round found in the first cut of a session identity that
-// outlives its process (dispatch://INFRA-1167). Each is a way the durable record — which now
+// outlives its process (dispatch://POMJU-1167). Each is a way the durable record — which now
 // holds a private key and an enrollment that carries a person's grants — could be handed to the
 // wrong process or lost outright:
 //

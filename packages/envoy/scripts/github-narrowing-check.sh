@@ -2,8 +2,8 @@
 # packages/envoy/scripts/github-narrowing-check.sh
 #
 # Runs the four checks of agent-secrets' GitHub App narrowing that need a broker, a GitHub and a
-# session - k1, k2 and k4 of dispatch://INFRA-2687's verification document, and k1 of
-# dispatch://INFRA-3099's - end to end on a local stack this script starts, and says whether each
+# session - k1, k2 and k4 of dispatch://POMJU-2687's verification document, and k1 of
+# dispatch://POMJU-3099's - end to end on a local stack this script starts, and says whether each
 # one passed.
 #
 # It starts scripts/dev-broker.sh, which holds the three github-app secrets and the stand-in
@@ -32,7 +32,7 @@
 #     narrowing and --github-token narrowed to the account that still leaves two are each
 #     refused, with no child run and, for the first, no token request at the stand-in at all.
 #     Its negative control is the same two runs without the flag.
-#   - k1 of INFRA-3099: under the one github-app secret whose request reaches a person, a
+#   - k1 of POMJU-3099: under the one github-app secret whose request reaches a person, a
 #     read-only narrowing to a repository the stand-in refuses is refused before the approval
 #     request is opened. The command does not run, agent-secrets exits 1 naming the secret, that
 #     repository and the sentence the refusal carries, its stderr names no page to approve
@@ -49,7 +49,7 @@
 # The stand-in's answer to a token request is set while it runs, at the answer route the stack's
 # banner names (POST {"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|
 # "widen"|"fail-once", "repository": "<name>"}, the repository being the one refuse-repository
-# reads), since k2 and INFRA-3099's k1 drive four of those answers against one stack; fail-once
+# reads), since k2 and POMJU-3099's k1 drive four of those answers against one stack; fail-once
 # is the outage another check drives and this one never sets.
 #
 # The curl calls the child makes carry no --cacert and no --resolve, which the check's own text
@@ -70,7 +70,7 @@
 # anywhere in both streams together would call a correct run a failure.
 #
 # approve_record and approve_watch are copied from scripts/airlock-check.sh in the shape they
-# have there: the approval a person makes on the broker's own page, which INFRA-3099's control
+# have there: the approval a person makes on the broker's own page, which POMJU-3099's control
 # needs and which nothing else here does. They are copied rather than shared because each check
 # script of this directory stands alone.
 #
@@ -102,7 +102,7 @@ usage() {
 usage: DEV_BROKER_POSTGRES_URL=postgres://<user>@<host>:<port>/<database> \
          github-narrowing-check.sh [--keep-stack]
 
-Runs checks k1, k2 and k4 of dispatch://INFRA-2687 and k1 of dispatch://INFRA-3099 on a local
+Runs checks k1, k2 and k4 of dispatch://POMJU-2687 and k1 of dispatch://POMJU-3099 on a local
 stack of its own and prints one PASS or FAIL line for each property they name.
 
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
@@ -280,7 +280,7 @@ STACK_STARTED=$SECONDS
 # One wait for each of the stack's two phases, so a wait that ends names the phase it ended in.
 # The first holds dev-broker.sh's six go builds, with the bound of a cold build cache: on a pod
 # of two CPUs with an empty cache the build of cmd/broker alone ran for more than 367 seconds
-# (dispatch://INFRA-3099's tester, 2026-11-12), and the six together took 388 seconds in a cold
+# (dispatch://POMJU-3099's tester, 2026-11-12), and the six together took 388 seconds in a cold
 # run later that day, so 1800 leaves room for a pod slower or busier than either. dev-broker.sh
 # logs the line this waits for once all six have ended. The second holds the start of what they
 # built, and is longer than the 75 seconds dev-broker.sh's own waits after its builds add up to,
@@ -587,7 +587,7 @@ run_agent_secrets "$DEV_BROKER_GITHUB_CASE_SECRET" --github-owner "$DEV_BROKER_G
 judge "k4 control: the narrowed run without the flag prints ran and exits 0 (it exited $STATUS)" \
 	ran 0 "$STATUS" "$CHILD_OUT"
 
-# --- k1 of INFRA-3099: a narrowing the broker cannot serve is refused before anybody is asked ---
+# --- k1 of POMJU-3099: a narrowing the broker cannot serve is refused before anybody is asked ---
 #
 # Driven under the one github-app secret of this stack whose request reaches a person, with the
 # stand-in refusing every token request whose repositories name REFUSED_REPOSITORY and minting
@@ -602,39 +602,39 @@ answers refuse-repository "$REFUSED_REPOSITORY"
 n3099_records="$(pending_records)"
 n3099_mark="$(token_requests)"
 n3099_revokes="$(revokes)"
-run_agent_secrets "$DEV_BROKER_GITHUB_HUMAN_SECRET" --reason 'INFRA-3099 k1' --wait 0s \
+run_agent_secrets "$DEV_BROKER_GITHUB_HUMAN_SECRET" --reason 'POMJU-3099 k1' --wait 0s \
 	--github-owner "$DEV_BROKER_GITHUB_OWNER" --github-repo "$REFUSED_REPOSITORY" --github-read-only \
 	-- sh -c 'echo ran'
 n3099_status="$STATUS"
 n3099_output="$OUTPUT"
 n3099_err="$ERR_OUT"
 n3099_child="$CHILD_OUT"
-judge "INFRA-3099 k1 the narrowing to $REFUSED_REPOSITORY exits 1 and runs nothing (it exited $n3099_status and said: $n3099_output)" \
+judge "POMJU-3099 k1 the narrowing to $REFUSED_REPOSITORY exits 1 and runs nothing (it exited $n3099_status and said: $n3099_output)" \
 	refused 1 "$n3099_status" "$n3099_child"
-judge "INFRA-3099 k1 that refusal names the secret (agent-secrets exited $n3099_status)" \
+judge "POMJU-3099 k1 that refusal names the secret (agent-secrets exited $n3099_status)" \
 	holds "$DEV_BROKER_GITHUB_HUMAN_SECRET" "$n3099_output"
-judge "INFRA-3099 k1 that refusal names the repository $REFUSED_REPOSITORY (agent-secrets exited $n3099_status)" \
+judge "POMJU-3099 k1 that refusal names the repository $REFUSED_REPOSITORY (agent-secrets exited $n3099_status)" \
 	holds "$REFUSED_REPOSITORY" "$n3099_output"
-judge "INFRA-3099 k1 that refusal says the narrowing cannot be served (agent-secrets exited $n3099_status)" \
+judge "POMJU-3099 k1 that refusal says the narrowing cannot be served (agent-secrets exited $n3099_status)" \
 	holds "the narrowing cannot be served" "$n3099_output"
-judge "INFRA-3099 k1 that refusal names no page to approve anything on, as a pending request would (agent-secrets exited $n3099_status)" \
+judge "POMJU-3099 k1 that refusal names no page to approve anything on, as a pending request would (agent-secrets exited $n3099_status)" \
 	lacks "/approve/" "$n3099_err"
 n3099_records_after="$(pending_records)"
-judge "INFRA-3099 k1 the broker wrote no credential-request record for it (it held $n3099_records before the run and $n3099_records_after after it)" \
+judge "POMJU-3099 k1 the broker wrote no credential-request record for it (it held $n3099_records before the run and $n3099_records_after after it)" \
 	is "$n3099_records" "$n3099_records_after"
 n3099_without_repositories="$(asked_repositories "$n3099_mark" '[]')"
-judge "INFRA-3099 k1 the search for the cause asked GitHub again with the repositories left out ($n3099_without_repositories of its token requests named none)" \
+judge "POMJU-3099 k1 the search for the cause asked GitHub again with the repositories left out ($n3099_without_repositories of its token requests named none)" \
 	counted "$n3099_without_repositories"
 n3099_one_repository="$(asked_repositories "$n3099_mark" "[\"$REFUSED_REPOSITORY\"]")"
-judge "INFRA-3099 k1 GitHub was asked for $REFUSED_REPOSITORY alone, by the mint of the narrowing itself, which is why the search needs no probe for it ($n3099_one_repository of its token requests named it alone)" \
+judge "POMJU-3099 k1 GitHub was asked for $REFUSED_REPOSITORY alone, by the mint of the narrowing itself, which is why the search needs no probe for it ($n3099_one_repository of its token requests named it alone)" \
 	counted "$n3099_one_repository"
 n3099_minted="$(minted_tokens "$n3099_mark" "$REFUSED_REPOSITORY")"
 n3099_given_back="$(($(revokes) - n3099_revokes))"
-judge "INFRA-3099 k1 every token the stand-in minted for that run was given back (it minted $n3099_minted and was sent $n3099_given_back revokes)" \
+judge "POMJU-3099 k1 every token the stand-in minted for that run was given back (it minted $n3099_minted and was sent $n3099_given_back revokes)" \
 	is "$n3099_minted" "$n3099_given_back"
 n3099_token="$(revoked_token "$n3099_revokes")"
 n3099_read="$(standin_read "$n3099_token" "$DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY")"
-judge "INFRA-3099 k1 the token that run gave back reads nothing afterwards, a stand-in forgetting a token it revoked (the revoke carried a token of ${#n3099_token} characters, whose read of $DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY answered $n3099_read)" \
+judge "POMJU-3099 k1 the token that run gave back reads nothing afterwards, a stand-in forgetting a token it revoked (the revoke carried a token of ${#n3099_token} characters, whose read of $DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY answered $n3099_read)" \
 	revoked_read "$n3099_token" "$n3099_read"
 
 # Its control: the same request for a repository the stand-in reaches, with that same answer
@@ -645,13 +645,13 @@ judge "INFRA-3099 k1 the token that run gave back reads nothing afterwards, a st
 : >"$WORK_DIR/stderr"
 approve_watch "$WORK_DIR/stderr" &
 APPROVER_PID=$!
-run_agent_secrets "$DEV_BROKER_GITHUB_HUMAN_SECRET" --reason 'INFRA-3099 k1 control' --wait 2m \
+run_agent_secrets "$DEV_BROKER_GITHUB_HUMAN_SECRET" --reason 'POMJU-3099 k1 control' --wait 2m \
 	--github-owner "$DEV_BROKER_GITHUB_OWNER" --github-repo "$NAMED_REPOSITORY" --github-read-only \
 	-- sh -c 'echo ran'
 kill "$APPROVER_PID" 2>/dev/null || true
 wait "$APPROVER_PID" 2>/dev/null || true
 APPROVER_PID=""
-judge "INFRA-3099 k1 control: the same request for $NAMED_REPOSITORY is put to its approver, approved on the broker's page, and the command runs (agent-secrets exited $STATUS and said: $OUTPUT)" \
+judge "POMJU-3099 k1 control: the same request for $NAMED_REPOSITORY is put to its approver, approved on the broker's page, and the command runs (agent-secrets exited $STATUS and said: $OUTPUT)" \
 	ran 0 "$STATUS" "$CHILD_OUT"
 
 if [ "$PASSED" -eq "$TOTAL" ]; then

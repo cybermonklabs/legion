@@ -465,7 +465,7 @@ assert_instance_ready() {
   # directory: a named session's record holds that session's signing key, and the helper keeps
   # its records beside its machine login by default, so a run that exported only a socket would
   # have its helper overwrite the records of the helper installed under the caller's own HOME
-  # (dispatch://INFRA-1167).
+  # (dispatch://POMJU-1167).
   exported_value="$(exported "$log_file" AGENT_SECRETS_STATE_FILE)"
   [[ "$exported_value" == "${work_dir}/sessions.json" ]] ||
     fail "$label exported AGENT_SECRETS_STATE_FILE=$exported_value, not a records file of its own under its work directory"

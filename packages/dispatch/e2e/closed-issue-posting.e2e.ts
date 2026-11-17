@@ -22,7 +22,7 @@ import {
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// A closed issue still takes comments and messages (dispatch://INFRA-448), so a finished issue's
+// A closed issue still takes comments and messages (dispatch://POMJU-448), so a finished issue's
 // agents can be asked from its page: each row closes the issue, then a person, in the browser,
 // writes a comment, a message to an agent, a reply, a retry and a margin comment, and the API
 // reads each back.

@@ -8,7 +8,7 @@ posts signed public GitHub fixtures and a three-paragraph direct message,
 checks the one-warning response for a never-seen GitHub repository, reads the
 registered session back by id from `/v1/registry/<session_id>` and an id that
 never registered as `404 {"error":"no live session <id>; this listener does
-not know when it last registered","state":"gone"}` — dispatch://INFRA-392 puts
+not know when it last registered","state":"gone"}` — dispatch://POMJU-392 puts
 the state the refusal was decided on beside the kept `no live session <id>`
 prefix, with a `last_seen` only when this listener still remembers a
 registration, and, when it remembers none, those words in its place rather
@@ -62,7 +62,7 @@ listener and the two fake clients. CI runs it as the `envoy-e2e-local` job of
 Proves on the real listener and a NATS server of its own (`internal/testnats/cmd/natsd`, its file
 store under the output directory) that the listener keeps its copy of a bucket while it reads the
 bucket again, and that its two list routes refuse, with no active-sessions sample, while it cannot
-stand behind that copy (INFRA-261). `internal/testnats/cmd/refillrig` does the work a shell cannot
+stand behind that copy (POMJU-261). `internal/testnats/cmd/refillrig` does the work a shell cannot
 do quickly: it seeds the session and interest buckets, through the listener's
 `POST /v1/interests/subscribe` and straight into the buckets, deletes and recreates a bucket,
 polls `GET /v1/sessions`, `GET /v1/interests/` and `/metrics` as fast as they answer, and judges
@@ -177,7 +177,7 @@ it in the `envoy-go` job of `.github/workflows/ci.yaml`.
 ## airlock-check.sh
 
 Runs one `before_merge` check of the airlock's verification document
-(dispatch://INFRA-1352/artifact/verification-md) end to end and says whether it
+(dispatch://POMJU-1352/artifact/verification-md) end to end and says whether it
 passed, so the implementer who records the result and the tester who re-runs it read
 the same evidence. It starts the stack the check needs (`dev-airlock.sh`, with the
 options that check's negative control asks for), runs the check's steps, runs the
@@ -258,8 +258,8 @@ time.
 ## github-narrowing-check.sh
 
 Runs the four checks of `agent-secrets`' GitHub App narrowing that need a broker, a
-GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
-document, and `k1` of dispatch://INFRA-3099's — end to end on a local stack of its
+GitHub and a session — `k1`, `k2` and `k4` of dispatch://POMJU-2687's verification
+document, and `k1` of dispatch://POMJU-3099's — end to end on a local stack of its
 own, and prints one `PASS` or `FAIL` line for each property they name, then `all <n>
 assertions passed` when every one passed, so a reader tells a complete run from a
 cut-off one.
@@ -279,13 +279,13 @@ answer route the stack's banner names (`POST {"mode":
 "repository": "<name>"}`), since one stack drives every answer this check needs;
 `k4` drives the secret whose
 release holds two installations, which no one token can be handed over for; and `k1`
-of INFRA-3099 drives the third secret, the one whose request reaches a person, with
+of POMJU-3099 drives the third secret, the one whose request reaches a person, with
 the stand-in refusing one repository, so that narrowing is refused before the
 approval request is opened: the command does not run, the refusal names the secret,
 that repository and the sentence it carries, its stderr names no page to approve
 anything on, the broker's own `credential_requests` gains no record, and the
 stand-in's records hold the search for the refused part and a revoke for every token
-it minted. Each check runs its own negative control — INFRA-3099's is the same
+it minted. Each check runs its own negative control — POMJU-3099's is the same
 request for a repository the stand-in reaches, approved on the broker's page as the
 person does, by `approve_record` and `approve_watch` copied from `airlock-check.sh`
 because each check script here stands alone — and every line names the exit status it
@@ -538,7 +538,7 @@ cache warm-up that timed out opens `/v1` on a copy still being read), or once a
 re-read has not completed for longer than its bound (2 minutes, or half the
 bucket's `MaxAge` when that is shorter). Its `/healthz` answers 200 all the
 while, so the target fails: a client that reached it then was refused the list
-(INFRA-261).
+(POMJU-261).
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
@@ -549,7 +549,7 @@ whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
 
 Says whether every production reader of a message name runs a build of cybermonklabs/legion at or
 after a commit: the reading a pull request quotes before it moves a producer onto the new form of a
-name (dispatch://INFRA-3862). A Legion daemon whose image predates the both-forms reader takes an
+name (dispatch://POMJU-3862). A Legion daemon whose image predates the both-forms reader takes an
 issue event named in the new form for another project's and acknowledges it with no fact, so a
 producer that moves first stops the fleet's workflow in silence.
 
@@ -721,7 +721,7 @@ cd packages/envoy && DISPATCH_TEST_DATABASE_URL=<test database> DISPATCH_RECALL_
 
 ## Measuring Dispatch's statements and its write routes on the seeded database
 
-These are INFRA-325's own measurements: every changed statement's plan and time (A8), and the
+These are POMJU-325's own measurements: every changed statement's plan and time (A8), and the
 median wall time of the six write routes the new triggers slow (A9). Both run against the seeded
 measurement database `cmd/dispatch-seed` fills, never against a test database and never against
 production. `DISPATCH_BENCH_DATABASE_URL` is the one gate: CI leaves it unset, so CI runs no

@@ -141,7 +141,7 @@ function RouteReturner(): ReactNode {
 
 /** A link whose target is the address already shown. React Router makes that click a `replace`
  *  that moves nothing, and the reader has moved, so the palette closes: the Inbox drawer's owner
- *  links are these (dispatch://INFRA-2452). */
+ *  links are these (dispatch://POMJU-2452). */
 function SameAddressLink({ to }: { to: string }): ReactNode {
   return <Link to={to}>Open the issue</Link>;
 }
@@ -1114,7 +1114,7 @@ test("closes the palette when navigation changes", async () => {
 
 // A bare project path redirects to its board once its architecture sources have loaded, and a
 // `replace` mints a fresh `location.key` like any other navigation. The reader opened the bar
-// over that page and is still on it, so the bar stays open (dispatch://INFRA-2452).
+// over that page and is still on it, so the bar stays open (dispatch://POMJU-2452).
 test("leaves the palette open when the route settles itself with a replace", async () => {
   const user = userOnFakeClock();
   let closed = 0;
@@ -1141,7 +1141,7 @@ test("leaves the palette open when the route settles itself with a replace", asy
 
 // A pop is the reader leaving the page the bar was opened over, as a push is, so it closes the
 // bar; only a `replace` that moves the address is the page correcting itself under a reader who
-// has not moved (dispatch://INFRA-2452).
+// has not moved (dispatch://POMJU-2452).
 test("closes the palette when the reader goes back", async () => {
   const user = userOnFakeClock();
   let closed = 0;
@@ -1168,7 +1168,7 @@ test("closes the palette when the reader goes back", async () => {
 
 // React Router makes a `<Link>` click a `replace` whenever the link's target is the address
 // already shown, and that replace moves nothing. The reader followed a link, so the bar closes -
-// the Inbox drawer's owner link to the issue being read is this link (dispatch://INFRA-2452).
+// the Inbox drawer's owner link to the issue being read is this link (dispatch://POMJU-2452).
 test("closes the palette when a link points at the address already shown", async () => {
   const user = userOnFakeClock();
   let closed = 0;

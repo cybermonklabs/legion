@@ -730,7 +730,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 
 // A merged pull request whose stored row credits nobody is attributed by the next pass, whatever
 // the row's own history: the issue's requirement is that a wrongly attributed row is corrected by
-// the next pass (dispatch://INFRA-1240/spec#b-r3), and the rule that credits it has just changed,
+// the next pass (dispatch://POMJU-1240/spec#b-r3), and the rule that credits it has just changed,
 // so what an earlier pass concluded about a row is no answer for this one. The population is
 // every pull request merged before this change whose title or body named another repository's
 // issue first: the merge envelope read GitHub in full, which stamps the row read
@@ -741,7 +741,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 // reads through only for a commit no head Dispatch knows — so without this the row keeps no
 // issue for good and every `before_merge` result at that head stands at no basis for ever,
 // which is the defect this issue exists to fix (its own witness, theorem-labs/agent-infra#2131
-// for INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
+// for POMJU-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
 func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)

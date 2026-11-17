@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run a command and say how much memory the largest process of its tree used, failing when the
-peak passes a limit. It exists for envoy-go-race-docs (dispatch://INFRA-1085), the job that
+peak passes a limit. It exists for envoy-go-race-docs (dispatch://POMJU-1085), the job that
 race-tests the document service alone: the runner killed it three times for memory, and a job
 the kernel's out-of-memory killer takes leaves no number behind to argue with.
 

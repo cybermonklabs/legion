@@ -164,7 +164,7 @@ func boot(ctx context.Context, b brokerBoot) (booted, error) {
 		// from before the retag. That exposure is the store's rather than this ordering's - the
 		// alternative shapes of this fix all share it, since a retag committed before any
 		// subscription is only ever visible through a listing - and it is tracked, with the two
-		// ways to close it and their costs, at dispatch://INFRA-375.
+		// ways to close it and their costs, at dispatch://POMJU-375.
 		//
 		// It costs one extra namespace read per boot, and nothing after: the whole listing - on
 		// Secrets Manager its ListSecrets pages and at most one KMS alias lookup, on Secret

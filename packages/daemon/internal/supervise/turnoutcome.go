@@ -106,7 +106,7 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // refused turns from the window that leaves. At the launch failure limit the claim fails: the
 // provider has refused every turn since the last one it took, so nothing of the issue's work is
 // being done and every later turn of that session would be refused the same way
-// (dispatch://INFRA-714). A run short of the limit is the report written and nothing else.
+// (dispatch://POMJU-714). A run short of the limit is the report written and nothing else.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
@@ -122,7 +122,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 // refusalCause is the failure a spent run of refused turns names: what refused the claim, how many
 // turns in a row, and the provider's own words for the newest of them, which is the one fact a
 // person reading the failed claim can act on. The wording is the architect's own
-// (dispatch://INFRA-714/artifact/review-rounds-md, item 2 of the refusal section), and the
+// (dispatch://POMJU-714/artifact/review-rounds-md, item 2 of the refusal section), and the
 // architect's notice of the failure quotes it.
 func refusalCause(run int, message string) string {
 	if message == "" {

@@ -82,7 +82,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			name:      "the release's save",
 			workspace: bundleSkeleton,
 			request: shimwire.BundleWorkspace{
-				ID: "bundle-1", Issue: "INFRA-3098", MaxBytes: 40 << 20,
+				ID: "bundle-1", Issue: "POMJU-3098", MaxBytes: 40 << 20,
 				TimeoutMs: int(commandBudget.Milliseconds()),
 			},
 		},

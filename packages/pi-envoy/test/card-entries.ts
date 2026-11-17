@@ -1,7 +1,7 @@
 // Which lines of a live session file hold a card. The pane appends to that file while a case
 // reads it, so the selection goes through the shared withholding rule rather than a bare split:
 // a read landing between a card line's bytes and its newline would otherwise hand `JSON.parse`
-// half an object, or count a card the host has not finished writing (dispatch://INFRA-2188).
+// half an object, or count a card the host has not finished writing (dispatch://POMJU-2188).
 import { readFile } from "node:fs/promises";
 import { endsWhole, type Writer, writtenLines } from "@legion/test-fixtures/transcript-lines";
 
@@ -23,7 +23,7 @@ export function cardLines(text: string, writer: Writer): string[] {
  * Every case that reads cards asserts an exact count of them, and the rule above withholds a
  * line the host has not finished: without this wait such a read would count one card short
  * rather than throw on half an object, which is the same window with a different red
- * (dispatch://INFRA-2188). The wait lives in the reader rather than at each case, so a case
+ * (dispatch://POMJU-2188). The wait lives in the reader rather than at each case, so a case
  * cannot forget it, and the lines come from the very text that was found whole, so there is no
  * gap between the two. It is a hang guard: one line is one write, so a wait that reaches
  * `withinMs` is a file nothing is finishing, and it throws naming the file. A writer that is

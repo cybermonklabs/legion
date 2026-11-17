@@ -110,7 +110,7 @@ func hexSHA256(text string) string {
 // a credential exits 3, so the check opens the file a body option names (its own BODY_FILES, and
 // the `-F <key>=@<path>` form `gh api` takes). What it does not read is any of this repository's
 // four classes: with PUBLIC_LEAK_CHECK_REPO_NAMES and PUBLIC_LEAK_CHECK_INTERNAL off, which R6
-// of dispatch://INFRA-1527 keeps them, the same call over a file holding a Tailscale MagicDNS
+// of dispatch://POMJU-1527 keeps them, the same call over a file holding a Tailscale MagicDNS
 // host exits 0. So for those four classes the rule file is the whole of the cover, and a body
 // option's file is a hole in it: the same host inline in `--body` is refused.
 //

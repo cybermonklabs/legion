@@ -124,7 +124,7 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 // Claude Code ended with its own cap on the steps of one turn (error_max_turns) is the worker
 // having worked, not the provider refusing, and a turn whose newest step ran is the provider
 // having answered after all. Counting either would walk a working claim to the launch failure
-// limit, fail it, and abandon the session it is working in (dispatch://INFRA-714).
+// limit, fail it, and abandon the session it is working in (dispatch://POMJU-714).
 func TestOnlyTheStepsTheProviderRefusedAreReportedRefused(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 

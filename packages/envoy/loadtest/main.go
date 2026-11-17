@@ -47,7 +47,7 @@ commands:
                    over it, and write the step's pg-statements.json when the step ends (SIGTERM)
   pg-size          the database's size into the step's pg-size.json: -phase start, then -phase end
   curves           CURVES.md, curves.csv, KNEES.md, refine.txt and TREND.md from cluster step directories
-  step-check       one step directory judged against acceptance A3 of dispatch://INFRA-988: every
+  step-check       one step directory judged against acceptance A3 of dispatch://POMJU-988: every
                    offered rate of R5 and the unit sessions within 5% of the step's own targets,
                    no proposal past 30 unit sessions at once, every measurement of R6 present and
                    a pass or a fail for each criterion of R8; exit 1 on a failed clause

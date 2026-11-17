@@ -34,7 +34,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x02"), (768<<10)/8),
 		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
-		Bookmarks: map[string]string{"legion/INFRA-945": "dffe88ae2f793e13436cef3921adc988433fbd4e"},
+		Bookmarks: map[string]string{"legion/POMJU-945": "dffe88ae2f793e13436cef3921adc988433fbd4e"},
 		At:        time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC),
 	}
 	frames, err := shimwire.SplitWorkspaceBundle("restore-1", 11, saved)
@@ -396,7 +396,7 @@ func TestARestoreSkipsABookmarkNameJJWillNotTakeAndRestoresTheRest(t *testing.T)
 // the repository: the three name the directories a pod that replaces the released one is laid
 // out in (secondPod, workspace.Location).
 const (
-	bundleIssue = "INFRA-945"
+	bundleIssue = "POMJU-945"
 	bundleOwner = "acme"
 	bundleRepo  = "widgets"
 )

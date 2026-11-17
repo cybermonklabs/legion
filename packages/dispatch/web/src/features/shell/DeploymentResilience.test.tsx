@@ -659,7 +659,7 @@ test("waits one minute before checking for another deployment on focus", async (
 });
 
 // A check Dispatch never answers would hold one of the browser's few connections to it for good,
-// as an unbounded read did (INFRA-258): its request is given up at the read deadline, its body
+// as an unbounded read did (POMJU-258): its request is given up at the read deadline, its body
 // included, and the check then reports nothing.
 test("a deployment check Dispatch does not answer is given up at the read deadline", async () => {
   jest.useFakeTimers();

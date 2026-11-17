@@ -78,7 +78,7 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
     await page.goto("/agents");
     const agents = page.getByRole("region", { name: "Agents" });
     // Sessions Dispatch has never heard from sit under `Idle`, which is open with every other
-    // group when the page loads (INFRA-812, R7); broadcasting is mostly aimed at exactly those.
+    // group when the page loads (POMJU-812, R7); broadcasting is mostly aimed at exactly those.
     await expect(agents.getByTestId("agents-group-toggle-idle")).toHaveAccessibleName("Idle (4)");
 
     for (const title of ["Tester", "Observer", "Planner", "Reviewer"]) {
@@ -353,7 +353,7 @@ test("a session that goes away before the send is excluded by the server and nam
   }
 });
 
-// INFRA-249. The listener's live list is its in-memory cache, and a cache that is refilling -
+// POMJU-249. The listener's live list is its in-memory cache, and a cache that is refilling -
 // after the session bucket was recreated, or while another listener's registrations arrive -
 // names none of the sessions working behind it. The server resolves each selected session by id
 // against the store instead, so a broadcast the human already composed still reaches them.

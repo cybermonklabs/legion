@@ -230,7 +230,7 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 // workingUnderAParkedRefresh is the other wake a machine parks over a live process: the
 // relaunch the stale-plugin refresh lane raises, which carries a kind of its own so that a
 // reader of the daemon's state can tell a fleet's refresh from the work it holds up
-// (supervise.WakePluginRefresh, dispatch://INFRA-2712 R4). Everything else about it is a
+// (supervise.WakePluginRefresh, dispatch://POMJU-2712 R4). Everything else about it is a
 // launch, and the window it leaves is the one above: a claim stored working with a launch in
 // flight over the process it still records.
 //
@@ -697,7 +697,7 @@ func TestARecoveryRefusedOverALiveProcessNamesTheTurn(t *testing.T) {
 // is: both recoveries give the code of a claim with no state the daemon can act on, with the
 // read that did not happen named in it, and neither suspends, forgets nor starts anything —
 // the stored claim is exactly what the request found, for the caller to ask again when the
-// runtime answers (dispatch://INFRA-3161 R2, R3).
+// runtime answers (dispatch://POMJU-3161 R2, R3).
 func TestARecoveryRefusedWhenTheRuntimeCouldNotReadTheProcess(t *testing.T) {
 	for _, window := range deadProcessWindows() {
 		for _, verdict := range unreadableProcessVerdicts() {

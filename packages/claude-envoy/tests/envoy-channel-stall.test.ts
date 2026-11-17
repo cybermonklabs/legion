@@ -18,7 +18,7 @@ const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
 /** What one `session.message` the server made carries: the message's own words, which the mod
  *  writes into the session as the prompt of a new turn or as a row of the turn running
- *  (INFRA-1026). */
+ *  (POMJU-1026). */
 function shownText(args: ModCallArguments["session.message"]): string {
   return args.message.text
 }

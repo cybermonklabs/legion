@@ -294,7 +294,7 @@ func TestEnsureRepositoryCacheCreatesSuspendedWritesTheSecretThenSetsRunning(t *
 	}
 }
 
-// The cache pod takes its tokens from files the kubelet keeps current (INFRA-1254).
+// The cache pod takes its tokens from files the kubelet keeps current (POMJU-1254).
 // refreshCacheTokens rewrites the cache's Secret every minute, and the kubelet rewrites the files
 // of a Secret volume in place when that Secret changes — but only for a volume mounted whole: a
 // mount with a non-empty subPath is copied once when the container starts and never written

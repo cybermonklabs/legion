@@ -27,7 +27,7 @@ from the side of a branch that edited the file before main re-laid it out.
   whitespace ignored and anchored on the base's word order. The merged file, folded, must equal
   that merge exactly, with no overlaps. The base anchors every word's position, so this check also
   catches a sentence moved out of order, which a diff against each parent alone cannot see
-  (docs/solutions/best-practices/a-word-level-merge-of-prose-is-verified-by-reading-the-paragraph-INFRA-42.md).
+  (docs/solutions/best-practices/a-word-level-merge-of-prose-is-verified-by-reading-the-paragraph-POMJU-42.md).
 - A block where main also changed words is a real conflict: merge it by hand and read it as prose.
 
 ## Evidence

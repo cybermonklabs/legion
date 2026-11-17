@@ -119,7 +119,7 @@ tightens and the same files are not in conflict twice.
 
 ## CI line on a narrow diff
 
-**Superseded 2026-10-23 (dispatch://INFRA-83):** the PR body has no `CI:` line, so there is nothing
+**Superseded 2026-10-23 (dispatch://POMJU-83):** the PR body has no `CI:` line, so there is nothing
 to say a legitimately absent run id in. The template is
 `skills/legion-worker/references/pr-body.md` and carries no such line; no role records a check
 result for a later step to trust, because the tester and the reviewer each read CI on GitHub at the

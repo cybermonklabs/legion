@@ -14,7 +14,7 @@ related_issues:
 
 # A probe that samples with a product read checks that read's write effects
 
-Extends docs/solutions/testing/ask-the-thing-itself-at-the-moment-the-claim-is-about-INFRA-250.md.
+Extends docs/solutions/testing/ask-the-thing-itself-at-the-moment-the-claim-is-about-POMJU-250.md.
 
 That page says to ask the real object at the real moment. This one is its other half: a product
 read is a product call, and some product calls write.

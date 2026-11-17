@@ -59,7 +59,7 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
  *
  * One worker is what this can ask for, and it is less than quiet: a one-worker run started
  * beside another run, a build or a browser on the same machine reads that work in the gap just
- * the same. The `dependencies` that ordered these projects before dispatch://INFRA-1280 left
+ * the same. The `dependencies` that ordered these projects before dispatch://POMJU-1280 left
  * exactly the same hole, since they ordered this suite's own projects and nothing else on the
  * machine.
  */
@@ -79,7 +79,7 @@ function refuseASharedRun(): void {
   const commandLine = info.config.argv.join(" ");
   // The command comes first and alone, as the wall-clock refusal in `e2e/playwright.config.ts`
   // prints it, so the line a reader is shown beside the failed row is the one that fixes it. It
-  // names its own `--workers=1`, because dispatch://INFRA-1280/spec#b-r2 has every command
+  // names its own `--workers=1`, because dispatch://POMJU-1280/spec#b-r2 has every command
   // that measures a wall-clock row state the one worker its reading rests on, rather than
   // take it from the configuration's default (`workers: 1`, e2e/playwright.config.ts).
   const file = relative(packageRoot, info.file);

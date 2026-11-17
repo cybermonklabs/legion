@@ -178,7 +178,7 @@ func sameInstant(got, want *time.Time) bool {
 }
 
 // A tree's own root carries its architect's handshake of its current run in every phase it stands
-// in, and the entry numbers of the role of that phase beside it (dispatch://INFRA-2614, k5 of the
+// in, and the entry numbers of the role of that phase beside it (dispatch://POMJU-2614, k5 of the
 // Verification document at version 10). A real architect registers its design gate in its first
 // turn, so its root waits on a person and then stands in a phase a phase role works: the two
 // times are still the architect's handshake there, read as the architect's and never as that

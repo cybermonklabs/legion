@@ -13,7 +13,7 @@ import { liveViewsOf } from "../agent-view/live-views";
 import { Sidebar } from "./Sidebar";
 
 /**
- * The rail's Agents list (INFRA-812, R1): the heading that still opens the Agents page, the
+ * The rail's Agents list (POMJU-812, R1): the heading that still opens the Agents page, the
  * person's pinned agents under it, oldest pin first, and the controls that fold the list and
  * unpin a row.
  */

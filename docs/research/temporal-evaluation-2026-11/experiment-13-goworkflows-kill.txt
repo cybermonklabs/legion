@@ -1,6 +1,6 @@
 Experiment 13, go-workflows: an activity whose process is killed inside it.
 Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
-from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+from the branch of dispatch://POMJU-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
 in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------

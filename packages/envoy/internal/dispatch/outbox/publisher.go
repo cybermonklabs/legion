@@ -639,7 +639,7 @@ func backOff(result outcome, item pendingEvent, what string, cause error) outcom
 // resolution held pending, and backs it off exactly as backOff does. Nothing was sent and nothing
 // failed: the event is waiting for each holder to answer, so the line is below ERROR and names
 // the holders and the states they were held on, and an operator who greps ERROR or alerts on the
-// publish-failure counter is not paged for an agent that stopped typing (dispatch://INFRA-392).
+// publish-failure counter is not paged for an agent that stopped typing (dispatch://POMJU-392).
 // An event with one hold and one real failure is a failure and goes through backOff.
 func waitForHolders(result outcome, item pendingEvent, holds []*roleForward, cause error) outcome {
 	holders := make([]string, 0, len(holds))

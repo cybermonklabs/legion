@@ -15,7 +15,7 @@ import (
 // a copy by advancing the role's cursor past it and only then forwards it, so a drain that ends
 // between the two - a listener killed mid-drain, or a forward that failed - leaves the cursor past
 // a copy nothing ever delivered, and no later drain offers it again. Its sender was answered 202
-// kept. The rule this pins is the one the architect of dispatch://INFRA-514 set for this tree on
+// kept. The rule this pins is the one the architect of dispatch://POMJU-514 set for this tree on
 // 2026-10-31: a message answered 202 kept is never lost, and the accepted worst case is a
 // duplicate the holder drops by its key.
 //

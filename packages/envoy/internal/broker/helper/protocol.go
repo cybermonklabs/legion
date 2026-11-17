@@ -228,7 +228,7 @@ func UnitPath(getenv func(string) string) string {
 // THIS helper is configured to listen on, which is the one `install` wrote into its unit where
 // a machine names one (AGENT_SECRETS_HELPER_SOCK) and DefaultSocket otherwise. That directory
 // is the user's runtime dir, which is tmpfs and goes at a reboot — exactly the event a named
-// session's records must survive (dispatch://INFRA-1167) — so StatePath replaces it and
+// session's records must survive (dispatch://POMJU-1167) — so StatePath replaces it and
 // MigrateStateFile moves what it finds there. Reading the configured socket rather than the
 // default is what makes a helper installed with a socket of its own migrate its OWN old
 // records, and no other helper's.
@@ -360,7 +360,7 @@ const InstallRestartTimeout = DefaultBrokerCallBound + 10*time.Second
 // at the bound has a drain no install will end: the install that sent it died between the drain
 // and the restart, or its restart reached no process of this helper's (a test rig's systemctl, a
 // unit that runs another helper). Draining on, it would refuse every registration on the machine
-// until something restarts it, as one did for 36 minutes on 2026-11-16 (dispatch://INFRA-3950).
+// until something restarts it, as one did for 36 minutes on 2026-11-16 (dispatch://POMJU-3950).
 const DefaultDrainBound = 2 * InstallRestartTimeout
 
 // ErrNoReply is in every Call error that comes after the helper was sent the whole request: the

@@ -14,7 +14,7 @@ status: active
 module: envoy
 related_issues:
   - "#243"
-  - "INFRA-522"
+  - "POMJU-522"
 symptoms:
   - "docker push to ghcr.io fails silently"
   - "packages: write permission missing"

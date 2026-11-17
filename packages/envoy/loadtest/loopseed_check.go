@@ -23,7 +23,7 @@ import (
 // loopCheckTolerance is the tolerance a byte or row total is judged at: the seed's sizes are what
 // the plan drew, but a deployment's own rendering of a document and a refusal the run recorded
 // both move a total by a fraction of a percent, and a seed that is 1% light is still the seed
-// (acceptance criterion A2 of dispatch://INFRA-988). A count the plan fixes exactly - the issues,
+// (acceptance criterion A2 of dispatch://POMJU-988). A count the plan fixes exactly - the issues,
 // the review pages, the review indexes, the part documents - is judged exactly.
 const loopCheckTolerance = 0.01
 
@@ -53,7 +53,7 @@ type loopQuerier interface {
 //
 // Every table below names its schema, for the reason loopIDsDDL gives (loopseed_write.go): a
 // schema named as the database's login is shadows public for every unqualified name
-// (dispatch://INFRA-988).
+// (dispatch://POMJU-988).
 func readLoopFound(ctx context.Context, q loopQuerier, planID string) (loopFound, error) {
 	var f loopFound
 	// The issues of the seed that the database still holds, by the keys the id map recorded.

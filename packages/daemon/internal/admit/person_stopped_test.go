@@ -25,7 +25,7 @@ func rowsOf(t *testing.T, pool *pgxpool.Pool, key string) []effect {
 	return got
 }
 
-// The daemon starts nothing a person stopped: C5 of dispatch://INFRA-3107. A member of a tree
+// The daemon starts nothing a person stopped: C5 of dispatch://POMJU-3107. A member of a tree
 // parked to backlog, a root whose record says the Legion label is off and a member of a closed
 // tree no architect has released get no route out of where they stand — one admission pass writes
 // no Dispatch status for any of them, moves no record of them and makes a tree root of none of

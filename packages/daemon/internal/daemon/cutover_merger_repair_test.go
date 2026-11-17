@@ -99,7 +99,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 
 // TestTheCutoverStartsTheMergersTheOldBuildLeftStopped holds that the first boot of this release on
 // a record legion-v19.57.3 left gives a merging task to each merger nothing else would start
-// again, once, and that no later boot does it again (dispatch://INFRA-3274/spec R2). Under
+// again, once, and that no later boot does it again (dispatch://POMJU-3274/spec R2). Under
 // legion-v19.57.3 a merger's READY moved its issue to `awaiting_merge`, where the daemon merged and
 // no role worked, so the idle release stopped the merger's pod there and armed no backstop for it.
 // Migration 20261029120700 moves every such issue to `merging`, where the merger now merges, and
@@ -195,7 +195,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     workflow.StartOrOwe writes for a start of `merging`, read here from a start StartOrOwe
 //     writes for a control issue in `merging` inside a transaction the test rolls back. The start
 //     takes the mark the slot rule gives `merging` and no mark of the repair's own (decision D9
-//     of dispatch://INFRA-3274's plan), which is no mark, since `merging` holds no slot
+//     of dispatch://POMJU-3274's plan), which is no mark, since `merging` holds no slot
 //     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
 //   - E's merger is not started while its gate is closed, and gets exactly one task once the test
 //     opens the gate.
@@ -1252,7 +1252,7 @@ func (a *cutoverAgent) serve() {
 			// The daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch) is
 			// no task: it tells the relaunched process what its relaunch ended, and a merger
 			// relaunched onto the current plugin is given it at its ready, before any task
-			// (dispatch://INFRA-3276 R3). What this rig counts is the tasks a merger is given.
+			// (dispatch://POMJU-3276 R3). What this rig counts is the tasks a merger is given.
 			if !(supervise.Delivery{ID: f.DeliveryID}).Relaunch() {
 				a.tasks = append(a.tasks, f.Message)
 			}

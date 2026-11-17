@@ -62,7 +62,7 @@ func idleRoot() pods.IdleView {
 // The rule is pure, so each row is the view, the clock, the idle period, the image verdict and
 // the daemon's plugin contract and nothing else.
 //
-// The condition this branch left out until sjawhar/legion#2538 landed — "no INFRA-484 update
+// The condition this branch left out until sjawhar/legion#2538 landed — "no POMJU-484 update
 // round open on the pod" — is the two rows below the plugin contract's: #2538 is on main now,
 // and the rule reads supervise.Claim.UpdateRound with supervise.IsPodRound.
 func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {

@@ -163,7 +163,7 @@ export function createControllerSession(deps: {
    * session, send nothing more.
    *
    * The controller topic is no live wake: this session receives what its own JetStream consumer
-   * delivers and nothing else (INFRA-771), and the registration above puts the topic in that
+   * delivers and nothing else (POMJU-771), and the registration above puts the topic in that
    * consumer's filter, so a notice published while this session was away is delivered when it
    * registers again. A notice published before any session followed the topic reaches none — a
    * consumer new to it starts at the stream's end — and the controller skill reads the daemon's

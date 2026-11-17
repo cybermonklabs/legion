@@ -158,7 +158,7 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // durable is created with no start policy (deliveryConsumerConfig, so JetStream's DeliverAll), so
 // a first bind in a deployment that never had settings would deliver the stream's whole 72-hour
 // backlog
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-POMJU-594.md).
 func (r *Reconcile) runOnce(ctx context.Context) {
 	now := time.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)

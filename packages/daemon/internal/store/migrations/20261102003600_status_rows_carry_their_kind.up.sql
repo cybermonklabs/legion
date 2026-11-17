@@ -1,5 +1,5 @@
 -- 20261102003600_status_rows_carry_their_kind.up.sql — every queued Dispatch status write carries
--- the kind that decides the rule its retry is judged by (dispatch://INFRA-714).
+-- the kind that decides the rule its retry is judged by (dispatch://POMJU-714).
 --
 -- A status row's kind used to be read from three marks in its payload — personHandover, reassert
 -- and handOver — and a row carrying none of them read as the ordinary kind. So a kind added

@@ -278,7 +278,7 @@ type awaitDecision struct {
 //     architect is told of it where it stands (actTellInPlace); otherwise the root enters
 //     awaiting_person (actEnter).
 //
-// Rule 0 is the spec's own condition (dispatch://INFRA-980, "Which issue needs a slot"): a root
+// Rule 0 is the spec's own condition (dispatch://POMJU-980, "Which issue needs a slot"): a root
 // enters awaiting_person only while it holds a slot, which now says the daemon has started it
 // and its work is not yet past its review (record.KeepsSlot); a root at admitted whose gate has
 // never opened keeps that slot through a wait on another issue (blockers.waitsOf). It is read as
@@ -445,7 +445,7 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 // architect reads whether or not the root waits — entering the wait leaves the architect running.
 // So it holds neither the wait nor the telling of a person's act, which would otherwise wait
 // behind that sentence for as long as the agent's own turns kept it unread
-// (dispatch://INFRA-3276 R3).
+// (dispatch://POMJU-3276 R3).
 func owed(run record.RoleRun) (string, bool) {
 	if queuedStart(run) {
 		return "has a start still queued", true

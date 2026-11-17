@@ -74,7 +74,7 @@ func serveLeakCheckRepo(t *testing.T) *leakCheckRepo {
 
 // The check is read with a token of its own: the implement App's read lease on theorem-labs's
 // installation, at the reading permissions — one request, on that installation and no other, and
-// naming no repository, the installation deciding what it reaches (INFRA-2543) — and that token
+// naming no repository, the installation deciding what it reaches (POMJU-2543) — and that token
 // reads the tarball.
 func TestTheLeakCheckIsReadWithAReadLeaseOnItsOwner(t *testing.T) {
 	const checkInstallation, otherInstallation = "71", "72"

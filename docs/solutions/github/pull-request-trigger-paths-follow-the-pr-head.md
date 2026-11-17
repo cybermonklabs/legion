@@ -46,7 +46,7 @@ Two consequences for the built artifact under `pull_request`:
 - Concurrency should key on the PR number, not the ref: a merged PR's `closed` event carries
   `github.ref` = the base branch. `worker-image.yaml` uses `group:
   worker-image-${{ github.event_name == 'pull_request' && github.event.pull_request.number ||
-  github.sha }}`. Since 2026-10-27 (INFRA-520, the CI router, and dispatch://INFRA-600) it has
+  github.sha }}`. Since 2026-10-27 (POMJU-520, the CI router, and dispatch://POMJU-600) it has
   `cancel-in-progress` on `pull_request` only: a new head's run cancels the older head's build,
   so push the next commit only after the image run you need has completed, and closing the PR
   cancels it too (`tests-closed.yaml` joins ci.yaml's group, `ci-<PR number>`). Other events key
@@ -54,7 +54,7 @@ Two consequences for the built artifact under `pull_request`:
   github.event.pull_request.number || github.ref }}` with no cancel, which serialised two pushes to
   one PR.)
 
-**Changed 2026-10-27 (INFRA-520, the CI router):** `worker-image.yaml` has no `pull_request`
+**Changed 2026-10-27 (POMJU-520, the CI router):** `worker-image.yaml` has no `pull_request`
 trigger of its own any more. `.github/workflows/ci.yaml` runs on every pull request with no
 `paths:`, and its `changes` job selects the `worker-image` job, which calls `worker-image.yaml`,
 with a dorny/paths-filter filter (`worker_image`) evaluated against the pull request's file list,

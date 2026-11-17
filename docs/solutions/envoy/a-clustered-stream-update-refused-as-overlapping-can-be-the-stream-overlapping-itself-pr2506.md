@@ -32,7 +32,7 @@ Extends docs/solutions/envoy/a-jetstream-answer-is-not-the-outcome-a-sequence-ze
   outcome.** The verdict comes from the caller's own requirement predicate over the re-read state
   (`holds(*nats.StreamInfo)`), so a requirement that never holds returns the server's own refusal.
   That is the exception to
-  docs/solutions/architecture-patterns/derive-a-refusals-condition-from-what-the-caller-depends-on-not-from-the-mechanism-that-broke-it-INFRA-249.md,
+  docs/solutions/architecture-patterns/derive-a-refusals-condition-from-what-the-caller-depends-on-not-from-the-mechanism-that-broke-it-POMJU-249.md,
   which otherwise forbids conditioning on the mechanism that broke.
 - **State the bound in contenders, and state what it costs the path that legitimately fails.**
   Five sends outlast four concurrent updates landing in a row; a stream another stream does

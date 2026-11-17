@@ -462,7 +462,7 @@ func generatedDocument(t *testing.T, minBytes int) *Node {
 		}
 		return text.String()
 	}
-	// Each section writes 14 or 15 top-level blocks of about 1 KB on average, as LINUX-129's 390 KB
+	// Each section writes 14 or 15 top-level blocks of about 1 KB on average, as HAFJJ-129's 390 KB
 	// hold 422.
 	for section := 0; source.Len() < minBytes; section++ {
 		fmt.Fprintf(&source, "# Section %d with *emphasis* and `code`\n\n", section)

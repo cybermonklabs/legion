@@ -819,7 +819,7 @@ test("clicking a Markdown dispatch:// link in the live editor navigates in-app w
   }
 });
 
-// INFRA-536: `\&` is an escaped ampersand, so `\&amp;` is the text `&amp;`, not `&` - in the
+// POMJU-536: `\&` is an escaped ampersand, so `\&amp;` is the text `&amp;`, not `&` - in the
 // browser editor's engine (remark/micromark), in the server's Go reading of the document, and in
 // what an agent reads back from the command line.
 test("a backslash before a character reference reads as its text in a document, a comment and the command line", async ({

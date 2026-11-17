@@ -16,7 +16,7 @@ import (
 
 // A role is started in the pod it will actually run in, not in the pod the configuration now
 // describes. A launch into a live drifted pod keeps that pod, since the update round, not the
-// launch, is what ends the roles already working in it (INFRA-484), so the start command is built
+// launch, is what ends the roles already working in it (POMJU-484), so the start command is built
 // from what that pod was built with (keptPod): no agent-secrets flag the pod carries no volumes
 // for, no PI_CONFIG_FILES entry the pod does not hold, no session URL file the pod neither
 // projects nor writes.

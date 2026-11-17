@@ -409,7 +409,7 @@ test("the conversation view replays what the session held, streams its next turn
   try {
     await page.goto("/agents");
     // The session has no Dispatch activity, so its row is under `Idle`, and every group is open
-    // when the page loads (INFRA-812, R7).
+    // when the page loads (POMJU-812, R7).
     // The row's live link, which `AgentName` draws beside the row's toggle.
     await agentRow(page, planner.session_id)
       .getByRole("link", { name: "Open live conversation with Planner" })
@@ -466,7 +466,7 @@ test("the conversation view replays what the session held, streams its next turn
 
 // A turn that calls no tool is still a turn in progress: its tool cards would carry their own
 // `running…`, and prose has none, so the turn itself carries the mark while it streams
-// (INFRA-1026 R3).
+// (POMJU-1026 R3).
 test("a turn that only writes prose is marked while it streams, and the mark goes when it ends", async ({
   browser,
 }) => {
@@ -603,7 +603,7 @@ test("mid-turn, an empty box refuses Send, says why on screen once it is pressed
     await expect(send).toHaveAccessibleDescription("Type a message first.");
     await expect(send).toHaveAttribute("title", "Type a message first.");
     // At rest the line under the box reads nothing: how to send is a rule of the page, which
-    // the question mark under the box holds (INFRA-812, R6), and the reason belongs to a press
+    // the question mark under the box holds (POMJU-812, R6), and the reason belongs to a press
     // nobody has made yet.
     await expect(hint).toHaveText("");
 
@@ -810,7 +810,7 @@ test("a session that has published nothing renders as empty, not as a conversati
       "Nothing yet. This session's next turn appears here as it happens."
     );
     // What this view keeps of the conversation is no longer printed on the page: it is one of
-    // the three rules the question mark under the message box holds (INFRA-812, R6).
+    // the three rules the question mark under the message box holds (POMJU-812, R6).
     await frontLiveView(page).getByTestId("agent-help").click();
     await expect(frontLiveView(page).getByTestId("agent-help-popover")).toContainText(
       "relayed while this page is open"
@@ -877,7 +877,7 @@ test("a session nobody answers for is told so, and recovers when a responder app
 const NOT_ANSWERING =
   "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Nothing appears here until it answers.";
 
-/** What this page said about Claude Code until INFRA-1026, in the empty transcript ("Claude Code
+/** What this page said about Claude Code until POMJU-1026, in the empty transcript ("Claude Code
  *  sessions don't" stream) and beside the composer (a session "takes messages only when it was
  *  started with its Envoy channel"). A Claude Code session streams its conversation and takes a
  *  person's message now, so no sentence of this view may send its reader after a client or a
@@ -894,7 +894,7 @@ const CLAUDE_THINKING_HIDDEN_TEXT =
 
 // The reader of a session that answers nothing is told what is true of the session - its plugin
 // does not stream its conversation, or it has ended - and nothing about which client it runs.
-// Before INFRA-1026 the same view named Claude Code twice and sent its reader after an Envoy
+// Before POMJU-1026 the same view named Claude Code twice and sent its reader after an Envoy
 // channel, which is now neither true nor anything they can act on.
 test("a session that answers nothing is told what is true of the session, and the view names no client", async ({
   browser,

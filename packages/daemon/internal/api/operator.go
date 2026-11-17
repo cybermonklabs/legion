@@ -100,7 +100,7 @@ type OperatorClaim struct {
 	// released (its idle pod was released), or unknown (a suspension recorded before migration
 	// 0038); absent otherwise. These routes are the one surface that serves it: a session parses
 	// every body it reads with the schema of its own contract, so a key an older contract does not
-	// know refuses the whole body at a plugin whose answer side predates INFRA-1048, and is dropped
+	// know refuses the whole body at a plugin whose answer side predates POMJU-1048, and is dropped
 	// at every plugin after it (api.StrandedClaim).
 	SuspendedBy string `json:"suspendedBy,omitempty"`
 	// SuspensionHeld is a suspension the machine holds for the agent's turn (supervise's
@@ -483,7 +483,7 @@ func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.T
 // Both reads of the claim are the machine's published view (supervise.Machine.View), never
 // Machine.Claim: a claim whose launch is running holds its machine's lock for as long as the
 // runtime waits on its pod, and a route that read through that lock would not even reach the
-// machine with the suspension that stops that start (dispatch://INFRA-714 R10). The view is what
+// machine with the suspension that stops that start (dispatch://POMJU-714 R10). The view is what
 // the claim's latest decision left, which is what the answer reports.
 func (s *server) claimRequest(request string, event func(http.ResponseWriter, *http.Request, supervise.Claim) (supervise.Event, bool)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

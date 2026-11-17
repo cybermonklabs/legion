@@ -98,7 +98,7 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 // every launch into it, whatever moved, and the round PodDrift names the reasons of is what
 // replaces it. This is the direction that must never break — replacing an issue pod where it
 // stands ends every role's turn in it and deletes the disk they work on, with everything unpushed
-// (INFRA-484) — and the four keys beside the image reach a launch through nothing but shapeDrift,
+// (POMJU-484) — and the four keys beside the image reach a launch through nothing but shapeDrift,
 // which a pod a round covers is never read by (relaunch, roundCovers).
 func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 	for name, now := range map[string]func(*Options){

@@ -1,6 +1,6 @@
 -- 20261109191929_outbox_write_mark.up.sql — one number per write, drawn from one sequence, so
 -- that the repair of a start that can no longer act can tell a row the workflow wrote after an
--- operator's stop from one that stood in the outbox when the stop was recorded (INFRA-1573).
+-- operator's stop from one that stood in the outbox when the stop was recorded (POMJU-1573).
 --
 -- Why the rule needs a number per write and not a row id. A row's id is the moment the row
 -- entered the outbox, not the moment its payload was written, and the two part company on the

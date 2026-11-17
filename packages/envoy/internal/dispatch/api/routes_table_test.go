@@ -544,7 +544,7 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	}
 }
 
-// Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
+// Every route Dispatch refused a bearer token on before POMJU-1017 names the `person` scope now,
 // and the scope map names no route the table does not mount: the two halves register's panic
 // protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted.
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
@@ -620,7 +620,7 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/signins/{id}/revoke",
 		"GET /api/v1/credentials/capabilities",
 		"POST /api/v1/agents/{session_id}/stream/_test/publish",
-		// The scope edit is the one route that was no row at all before INFRA-1017: it is the
+		// The scope edit is the one route that was no row at all before POMJU-1017: it is the
 		// person's own, as the mint and the revoke beside it are.
 		"PATCH /api/v1/me/agent-tokens/{id}",
 	}

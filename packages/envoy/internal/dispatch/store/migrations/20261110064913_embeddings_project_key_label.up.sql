@@ -9,7 +9,7 @@
 -- change, and the row is one no project-scoped meaning search can return for as long as it
 -- lives.
 --
--- Every writer of embeddings, which is what this migration had to be decided from (INFRA-988,
+-- Every writer of embeddings, which is what this migration had to be decided from (POMJU-988,
 -- `insert into embeddings` and `update embeddings` across the tree and the migrations):
 --
 --   embeddings_enqueue (0072, 0118, 0151)              the one whole-text kind, the issue's;

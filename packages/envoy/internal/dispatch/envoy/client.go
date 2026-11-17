@@ -113,7 +113,7 @@ type Interest struct {
 // row's absence from a list is never what says so. StateUnresponsive is a session past the
 // listener's live window and inside its gone horizon: it is stalled, not dead, so it keeps its
 // role and issue claims, a message sent to it is stored for it, and nothing starts a
-// replacement for it (dispatch://INFRA-392).
+// replacement for it (dispatch://POMJU-392).
 //
 // StateStopped is a fourth answer, which only SessionIncludingStopped gives.
 const (
@@ -296,7 +296,7 @@ func (c *Client) authorize(request *http.Request) {
 // alike, each carrying its own State; ErrRefilling (a *RefillingError) while the listener
 // refuses the list as refilling, or ErrUnavailable. A caller tests each row's State, never its
 // membership of the list: a list without the unresponsive rows reads every stalled session as
-// ended, which is the whole of dispatch://INFRA-392.
+// ended, which is the whole of dispatch://POMJU-392.
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	const route = "/v1/sessions"
 	response, err := c.get(ctx, route, includeUnresponsive)
@@ -576,7 +576,7 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 //
 // Live is the registry's own reading of the session's state: true only while that session's last
 // registration is inside the listener's live window. A session past it is unresponsive and not
-// gone (dispatch://INFRA-392), so Live false is never read as "that agent has stopped".
+// gone (dispatch://POMJU-392), so Live false is never read as "that agent has stopped".
 type LegionAgent struct {
 	SessionID     string  `json:"session_id"`
 	LegionProject string  `json:"legion_project"`

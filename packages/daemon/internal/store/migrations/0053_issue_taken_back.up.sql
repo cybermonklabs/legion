@@ -1,5 +1,5 @@
 -- 0053_issue_taken_back.up.sql -- whether the issue has stood in a phase of its own as part of the
--- tree it now roots or belongs to, in this generation or an earlier one (INFRA-225).
+-- tree it now roots or belongs to, in this generation or an earlier one (POMJU-225).
 --
 -- A tree that ran, set back to todo while it lingers after its sign-off or after it closed,
 -- starts again whatever Dispatch says it waits on. A root that only stood on the waiting line, left

@@ -174,7 +174,7 @@ test("a widget whose offset the block's text does not reach draws nothing", asyn
   });
 });
 
-// INFRA-575: a paragraph a version replaced by a rule or an image pairs as a changed block, and
+// POMJU-575: a paragraph a version replaced by a rule or an image pairs as a changed block, and
 // its lost words arrive as a widget at an offset into a block whose text holds no run at all.
 // There is no position inside such a block to draw them at, so they are drawn before it rather
 // than dropped: an approver who is shown the changed-block bar must be shown what it lost.
@@ -231,7 +231,7 @@ test("both lists are drawn again after setMarkdown replaces the document", async
   );
 });
 
-// INFRA-575 asked whether a document `setMarkdown` builds carries a block id on an untyped block,
+// POMJU-575 asked whether a document `setMarkdown` builds carries a block id on an untyped block,
 // since an entry that named its block by id would need one. It does: the block-id plugin stamps
 // every identified block of a document it is given, a plain paragraph the import parser built
 // included, so the ids are fresh ones rather than the replaced document's. The two methods above

@@ -105,7 +105,7 @@ func StandsIn(issue Issue, phases ...phase.Phase) bool {
 // has not closed: it stands in its retro or in its merge, or is held from one of them
 // (StandsIn). Work entering the workflow beneath an issue in one of those phases
 // would let that issue merge first, which is the one thing a parent must not do
-// (dispatch://INFRA-980, "Children first"). The reviewed head of a root whose worker died in
+// (dispatch://POMJU-980, "Children first"). The reviewed head of a root whose worker died in
 // retro or merging is accepted still, so the hold must not let work in beneath
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
@@ -614,7 +614,7 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 // first set alone gave the tick the zero gate for a root it met only here, whose Open() is
 // false, and the member of that tree read design_gate where the state read the ladder's own
 // word. Read over both, one issue reads one word wherever it is read (C1 of
-// dispatch://INFRA-3107). It costs no further read: the keys join one Gates call.
+// dispatch://POMJU-3107). It costs no further read: the keys join one Gates call.
 func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep) (LineFacts, error) {
 	lifecycles, err := ReadLifecycles(ctx, tx, store, project, issues)
 	if err != nil {

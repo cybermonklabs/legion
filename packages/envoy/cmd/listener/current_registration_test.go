@@ -136,8 +136,8 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 	sessionID := "ses_current_registration_" + run
 	agent := contracts.LegacyAgentSubject(sessionID)
 	const firstDir, secondDir = "/work/first-registration", "/work/second-registration"
-	followed := "notifications.dispatch.issue.INFRA-889-" + run + ".>"
-	comment := "notifications.dispatch.issue.INFRA-889-" + run + ".comment"
+	followed := "notifications.dispatch.issue.POMJU-889-" + run + ".>"
+	comment := "notifications.dispatch.issue.POMJU-889-" + run + ".comment"
 	role := "current-registration-" + run
 	roleTopic := contracts.RoleTopicPrefix + role
 	ownTopic := "notifications.team.current-registration-" + run

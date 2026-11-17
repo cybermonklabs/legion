@@ -49,7 +49,7 @@ func TestLegionSessionFindsTheLastFooterInAReviewsBody(t *testing.T) {
 
 // The same footer names the head the review read, which is the only word a review has for the
 // code it saw: GitHub moves a review's commit_id to the pull request's current head
-// (dispatch://INFRA-1557), so the workflow holds a review-App review to its footer's head
+// (dispatch://POMJU-1557), so the workflow holds a review-App review to its footer's head
 // instead (workflow's refusesRound). Only a whole commit name counts - 40 lowercase hexadecimal
 // characters - since a prefix or a branch name names no commit to compare with the head.
 func TestLegionHeadReadsTheHeadTheReviewSaysItRead(t *testing.T) {

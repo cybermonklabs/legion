@@ -1174,7 +1174,7 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 // blocks the ids the index holds for them (windowDocument, closedVersionBlocks).
 //
 // This is what lets a version write leave its windows to the tick (refs.IndexBlocks,
-// INFRA-988). Before it the arm refused such a document - `case pending && markdown !=
+// POMJU-988). Before it the arm refused such a document - `case pending && markdown !=
 // stored: return false, nil` - which was safe only because the version write had written its
 // windows itself; with the write no longer writing them, that refusal would leave a document
 // under continuous editing with no window at all.
@@ -1407,7 +1407,7 @@ const retireVector = "array_fill(0.1::real, array[1536])::vector"
 // Both of the pass's statements are held to their plans as well: the delete reaches each row
 // through embeddings_pkey keyed on the row's own id, and the walk reads the owner keys through
 // embeddings_window_owner. A plan that reads every whole-text row of the kind instead is the
-// one INFRA-988 measured at 25 minutes a pass. Every kind of wholeTextOwners is checked, since
+// one POMJU-988 measured at 25 minutes a pass. Every kind of wholeTextOwners is checked, since
 // each reads an owner key prefix of its own.
 func TestRetirementReachesEachWholeTextRowThroughItsPrimaryKey(t *testing.T) {
 	database := storetest.Open(t)
@@ -1771,7 +1771,7 @@ func explainPlan(t *testing.T, database *store.Store, statement string, argument
 
 // requireRetireByPrimaryKey fails unless the delete reaches the whole-text rows of this kind
 // through embeddings_pkey under a condition naming the row's own id, given the ids one pass
-// hands it. An index scan narrowed on the kind alone, which is the read INFRA-988 measured at
+// hands it. An index scan narrowed on the kind alone, which is the read POMJU-988 measured at
 // 25 minutes a pass, fails here, and so does a sequential scan, which is no index scan at all
 // and so leaves no scan to keep.
 //
@@ -1845,7 +1845,7 @@ func requireOwnersReadTheWindowIndex(t *testing.T, database *store.Store, owner 
 // A document with no block is ordinary rather than contrived: an issue created with no spec
 // gets a spec.md whose markdown is empty. Driven against a Dispatch built from this head, two
 // such rows were left marked, the older for 57 minutes across the three ticks its log recorded
-// (INFRA-988).
+// (POMJU-988).
 //
 // The property this holds the index to is the one a marker must have, whichever way it is kept:
 // after the arm has run, no owner is left marked that the arm will not list. Either such a

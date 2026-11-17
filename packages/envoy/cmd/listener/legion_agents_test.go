@@ -73,7 +73,7 @@ func (l *legionListener) want(t *testing.T, status int, method, target, body str
 // project token infra, started at started.
 func legionEntry(id, issue, role, started string) string {
 	return fmt.Sprintf(`{"session_id":%q,"legion_project":"infra","issue":%q,"role":%q,"role_token":%q,"title":%q,"harness":"omp","started_at":%q}`,
-		id, issue, role, "legion-infra-"+strings.ToLower(issue)+"-"+role, "Legion "+role+" · "+issue, started)
+		id, issue, role, "legion-pomju-"+strings.ToLower(issue)+"-"+role, "Legion "+role+" · "+issue, started)
 }
 
 // legionAnswer is one entry as a read answers it.
@@ -123,8 +123,8 @@ func deref(value *string) string {
 func TestLegionAgentRoutesRoundTripAnEntry(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
 	stored := decodeLegion[legionAnswer](t, l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester",
-		legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z")))
-	if stored.RoleToken != "legion-infra-infra-448-tester" || stored.RecordedAt == "" || stored.Title != "Legion tester · INFRA-448" {
+		legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T03:15:00Z")))
+	if stored.RoleToken != "legion-pomju-pomju-448-tester" || stored.RecordedAt == "" || stored.Title != "Legion tester · POMJU-448" {
 		t.Fatalf("stored = %#v", stored)
 	}
 
@@ -138,11 +138,11 @@ func TestLegionAgentRoutesRoundTripAnEntry(t *testing.T) {
 	if got := decodeLegion[legionAnswer](t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/sessions/ses-tester", "")); !got.Live {
 		t.Fatalf("a registered session answered %#v, want live", got)
 	}
-	byRole := decodeLegion[struct{ Entries []legionAnswer }](t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/roles/legion-infra-infra-448-tester", ""))
+	byRole := decodeLegion[struct{ Entries []legionAnswer }](t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/roles/legion-pomju-pomju-448-tester", ""))
 	if len(byRole.Entries) != 1 || !byRole.Entries[0].Live || byRole.Entries[0].SessionID != "ses-tester" {
 		t.Fatalf("by role token = %#v", byRole)
 	}
-	byIssue := decodeLegion[struct{ Entries []legionAnswer }](t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", ""))
+	byIssue := decodeLegion[struct{ Entries []legionAnswer }](t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", ""))
 	if len(byIssue.Entries) != 1 || byIssue.Entries[0] != byRole.Entries[0] {
 		t.Fatalf("by issue = %#v, want %#v", byIssue, byRole)
 	}
@@ -153,19 +153,19 @@ func TestLegionAgentRoutesRoundTripAnEntry(t *testing.T) {
 func TestLegionAgentBatchRouteRecordsEveryEntry(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
 	body := `{"entries":[` + strings.Join([]string{
-		legionEntry("ses-old-reviewer", "INFRA-448", "reviewer", "2026-10-26T01:00:00Z"),
-		legionEntry("ses-new-reviewer", "INFRA-448", "reviewer", "2026-10-26T02:00:00Z"),
-		legionEntry("ses-impl", "INFRA-448", "implementer", "2026-10-26T00:30:00Z"),
-		legionEntry("ses-other", "INFRA-449", "reviewer", "2026-10-26T03:00:00Z"),
+		legionEntry("ses-old-reviewer", "POMJU-448", "reviewer", "2026-10-26T01:00:00Z"),
+		legionEntry("ses-new-reviewer", "POMJU-448", "reviewer", "2026-10-26T02:00:00Z"),
+		legionEntry("ses-impl", "POMJU-448", "implementer", "2026-10-26T00:30:00Z"),
+		legionEntry("ses-other", "POMJU-449", "reviewer", "2026-10-26T03:00:00Z"),
 	}, ",") + `]}`
 	stored := legionIDs(t, l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents", body))
 	if !slices.Equal(stored, []string{"ses-old-reviewer", "ses-new-reviewer", "ses-impl", "ses-other"}) {
 		t.Fatalf("stored %v, want the batch in order", stored)
 	}
-	if got := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")); !slices.Equal(got, []string{"ses-impl", "ses-new-reviewer", "ses-old-reviewer"}) {
+	if got := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", "")); !slices.Equal(got, []string{"ses-impl", "ses-new-reviewer", "ses-old-reviewer"}) {
 		t.Fatalf("by issue = %v, want the implementer, then the reviewers newest first", got)
 	}
-	byRole := decodeLegion[struct{ Entries []legionAnswer }](t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/roles/legion-infra-infra-448-reviewer", ""))
+	byRole := decodeLegion[struct{ Entries []legionAnswer }](t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/roles/legion-pomju-pomju-448-reviewer", ""))
 	if len(byRole.Entries) != 2 || byRole.Entries[0].SessionID != "ses-new-reviewer" || byRole.Entries[0].ReplacedBy != nil {
 		t.Fatalf("by role token = %#v, want the current reviewer first, not replaced", byRole)
 	}
@@ -176,8 +176,8 @@ func TestLegionAgentBatchRouteRecordsEveryEntry(t *testing.T) {
 	if deref(old.ReplacedBy) != "ses-new-reviewer" || deref(old.ReplacedAt) != "2026-10-26T02:00:00Z" {
 		t.Fatalf("GET the old reviewer = %#v, want it replaced", old)
 	}
-	if got := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/roles/legion-infra-infra-449-reviewer", "")); !slices.Equal(got, []string{"ses-other"}) {
-		t.Fatalf("INFRA-449's reviewers = %v", got)
+	if got := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents/roles/legion-pomju-pomju-449-reviewer", "")); !slices.Equal(got, []string{"ses-other"}) {
+		t.Fatalf("POMJU-449's reviewers = %v", got)
 	}
 }
 
@@ -185,11 +185,11 @@ func TestLegionAgentBatchRouteRecordsEveryEntry(t *testing.T) {
 // in it is an empty list.
 func TestLegionAgentRoutesAnswerAnAbsence(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
-	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T03:15:00Z"))
 	if got := l.want(t, http.StatusNotFound, http.MethodGet, "/v1/legion/agents/sessions/ses-unknown", ""); strings.TrimSpace(got) != `{"error":"unknown legion agent ses-unknown"}` {
 		t.Fatalf("404 body = %s", got)
 	}
-	for _, target := range []string{"/v1/legion/agents/roles/legion-infra-infra-448-reviewer", "/v1/legion/agents?issue=INFRA-1"} {
+	for _, target := range []string{"/v1/legion/agents/roles/legion-pomju-pomju-448-reviewer", "/v1/legion/agents?issue=POMJU-1"} {
 		if got := l.want(t, http.StatusOK, http.MethodGet, target, ""); strings.TrimSpace(got) != `{"entries":[]}` {
 			t.Fatalf("GET %s = %s, want an empty list", target, got)
 		}
@@ -203,12 +203,12 @@ func TestLegionAgentRoutesAnswerAnAbsence(t *testing.T) {
 // takes) and writes nothing.
 func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
-	good := legionEntry("ses-good", "INFRA-448", "tester", "2026-10-26T03:15:00Z")
-	badRole := strings.Replace(legionEntry("ses-bad", "INFRA-448", "tester", "2026-10-26T03:15:00Z"), `"role":"tester"`, `"role":"controller"`, 1)
+	good := legionEntry("ses-good", "POMJU-448", "tester", "2026-10-26T03:15:00Z")
+	badRole := strings.Replace(legionEntry("ses-bad", "POMJU-448", "tester", "2026-10-26T03:15:00Z"), `"role":"tester"`, `"role":"controller"`, 1)
 	wrongProject := strings.Replace(good, `"legion_project":"infra"`, `"legion_project":"sjawharlegion"`, 1)
 	many := make([]string, legionagents.MaxBatch+1)
 	for i := range many {
-		many[i] = legionEntry("ses-"+strconv.Itoa(i), "INFRA-448", "tester", "2026-10-26T03:15:00Z")
+		many[i] = legionEntry("ses-"+strconv.Itoa(i), "POMJU-448", "tester", "2026-10-26T03:15:00Z")
 	}
 	for _, tc := range []struct {
 		name, method, target, body string
@@ -218,11 +218,11 @@ func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 		{"a session id with a dot", http.MethodGet, "/v1/legion/agents/sessions/ses.bad", "", http.StatusBadRequest, "session_id"},
 		{"a session id outside the key alphabet", http.MethodGet, "/v1/legion/agents/sessions/ses:bad", "", http.StatusBadRequest, "session_id"},
 		{"no session id", http.MethodGet, "/v1/legion/agents/sessions/", "", http.StatusBadRequest, "session_id is required"},
-		{"a token that is not a role's", http.MethodGet, "/v1/legion/agents/roles/legion-infra-controller", "", http.StatusBadRequest, "role_token"},
+		{"a token that is not a role's", http.MethodGet, "/v1/legion/agents/roles/legion-pomju-controller", "", http.StatusBadRequest, "role_token"},
 		{"no token", http.MethodGet, "/v1/legion/agents/roles/", "", http.StatusBadRequest, "role_token is required"},
 		{"no issue", http.MethodGet, "/v1/legion/agents", "", http.StatusBadRequest, "issue is required"},
 		{"a lower-case issue", http.MethodGet, "/v1/legion/agents?issue=infra-448", "", http.StatusBadRequest, "issue"},
-		{"an issue with a wildcard", http.MethodGet, "/v1/legion/agents?issue=INFRA-448.%3E", "", http.StatusBadRequest, "issue"},
+		{"an issue with a wildcard", http.MethodGet, "/v1/legion/agents?issue=POMJU-448.%3E", "", http.StatusBadRequest, "issue"},
 		{"a path naming another session", http.MethodPut, "/v1/legion/agents/sessions/ses-other", good, http.StatusBadRequest, `is not the path's`},
 		{"a path id the registry refuses", http.MethodPut, "/v1/legion/agents/sessions/ses.bad", good, http.StatusBadRequest, "session_id"},
 		{"a role outside the six", http.MethodPut, "/v1/legion/agents/sessions/ses-bad", badRole, http.StatusBadRequest, "role"},
@@ -232,7 +232,7 @@ func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 		{"a batch without entries", http.MethodPut, "/v1/legion/agents", `{}`, http.StatusBadRequest, "entries is required"},
 		{"a batch past its bound", http.MethodPut, "/v1/legion/agents", `{"entries":[` + strings.Join(many, ",") + `]}`, http.StatusRequestEntityTooLarge, "at most 256"},
 		{"a body past 1 MiB", http.MethodPut, "/v1/legion/agents", `{"entries":[],"pad":"` + strings.Repeat("x", 1<<20) + `"}`, http.StatusRequestEntityTooLarge, "past 1048576 bytes"},
-		{"a role token read by PUT", http.MethodPut, "/v1/legion/agents/roles/legion-infra-infra-448-tester", good, http.StatusMethodNotAllowed, "method not allowed"},
+		{"a role token read by PUT", http.MethodPut, "/v1/legion/agents/roles/legion-pomju-pomju-448-tester", good, http.StatusMethodNotAllowed, "method not allowed"},
 		{"a delete", http.MethodDelete, "/v1/legion/agents/sessions/ses-good", "", http.StatusMethodNotAllowed, "method not allowed"},
 	} {
 		got := l.want(t, tc.status, tc.method, tc.target, tc.body)
@@ -240,8 +240,8 @@ func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 			t.Fatalf("%s: body %.300s, want it to say %s", tc.name, got, tc.says)
 		}
 	}
-	if got := l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", ""); strings.TrimSpace(got) != `{"entries":[]}` {
-		t.Fatalf("after every refusal INFRA-448 lists %s, want nothing written", got)
+	if got := l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", ""); strings.TrimSpace(got) != `{"entries":[]}` {
+		t.Fatalf("after every refusal POMJU-448 lists %s, want nothing written", got)
 	}
 }
 
@@ -249,30 +249,30 @@ func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 // 409 naming what it is recorded for, and nothing changes.
 func TestLegionAgentRoutesRefuseMovingASession(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
-	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
-	got := l.want(t, http.StatusConflict, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-449", "tester", "2026-10-26T03:15:00Z"))
-	if strings.TrimSpace(got) != `{"error":"legion agent ses-tester is recorded for INFRA-448 tester"}` {
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T03:15:00Z"))
+	got := l.want(t, http.StatusConflict, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "POMJU-449", "tester", "2026-10-26T03:15:00Z"))
+	if strings.TrimSpace(got) != `{"error":"legion agent ses-tester is recorded for POMJU-448 tester"}` {
 		t.Fatalf("409 body = %s", got)
 	}
 	got = l.want(t, http.StatusConflict, http.MethodPut, "/v1/legion/agents", `{"entries":[`+
-		legionEntry("ses-reviewer", "INFRA-448", "reviewer", "2026-10-26T04:00:00Z")+`,`+
-		legionEntry("ses-tester", "INFRA-448", "reviewer", "2026-10-26T03:15:00Z")+`]}`)
-	if !strings.Contains(got, "entries[1]: legion agent ses-tester is recorded for INFRA-448 tester") {
+		legionEntry("ses-reviewer", "POMJU-448", "reviewer", "2026-10-26T04:00:00Z")+`,`+
+		legionEntry("ses-tester", "POMJU-448", "reviewer", "2026-10-26T03:15:00Z")+`]}`)
+	if !strings.Contains(got, "entries[1]: legion agent ses-tester is recorded for POMJU-448 tester") {
 		t.Fatalf("batch 409 body = %s", got)
 	}
-	if ids := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")); !slices.Equal(ids, []string{"ses-tester"}) {
-		t.Fatalf("after the refusals INFRA-448 lists %v, want the tester alone", ids)
+	if ids := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", "")); !slices.Equal(ids, []string{"ses-tester"}) {
+		t.Fatalf("after the refusals POMJU-448 lists %v, want the tester alone", ids)
 	}
-	if ids := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-449", "")); len(ids) != 0 {
-		t.Fatalf("the refused move listed %v under INFRA-449", ids)
+	if ids := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=POMJU-449", "")); len(ids) != 0 {
+		t.Fatalf("the refused move listed %v under POMJU-449", ids)
 	}
 }
 
-// The project.<legion_project> key is the daemon's own (INFRA-204), and no route reads it.
+// The project.<legion_project> key is the daemon's own (POMJU-204), and no route reads it.
 func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
 	client := setupPublishTestClient(t)
 	l := newLegionListener(t, client)
-	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T03:15:00Z"))
 	kv, err := client.JS().KeyValue(bus.LegionAgentBucket)
 	if err != nil {
 		t.Fatalf("open the bucket: %v", err)
@@ -280,7 +280,7 @@ func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
 	if _, err := kv.Put("project.infra", []byte(`{"answering":true,"updated_at":"2026-10-26T04:00:00Z"}`)); err != nil {
 		t.Fatalf("put the project key: %v", err)
 	}
-	for _, target := range []string{"/v1/legion/agents?issue=INFRA-448", "/v1/legion/agents/roles/legion-infra-infra-448-tester"} {
+	for _, target := range []string{"/v1/legion/agents?issue=POMJU-448", "/v1/legion/agents/roles/legion-pomju-pomju-448-tester"} {
 		if ids := legionIDs(t, l.want(t, http.StatusOK, http.MethodGet, target, "")); !slices.Equal(ids, []string{"ses-tester"}) {
 			t.Fatalf("GET %s = %v, want the tester alone", target, ids)
 		}
@@ -301,14 +301,14 @@ func TestLegionAgentsSurviveAListenerRestart(t *testing.T) {
 		return client
 	}
 	before := newLegionListener(t, connect())
-	stored := before.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
+	stored := before.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T03:15:00Z"))
 
 	server.Stop(t)
 	recorder := before.do(t, http.MethodGet, "/v1/legion/agents/sessions/ses-tester", "")
 	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" {
 		t.Fatalf("a read with NATS down = %d %s, want a 503 to retry", recorder.Code, recorder.Body.String())
 	}
-	recorder = before.do(t, http.MethodPut, "/v1/legion/agents", `{"entries":[`+legionEntry("ses-other", "INFRA-448", "reviewer", "2026-10-26T04:00:00Z")+`]}`)
+	recorder = before.do(t, http.MethodPut, "/v1/legion/agents", `{"entries":[`+legionEntry("ses-other", "POMJU-448", "reviewer", "2026-10-26T04:00:00Z")+`]}`)
 	if failure := decodeLegion[legionAgentBatchFailure](t, recorder.Body.String()); recorder.Code != http.StatusServiceUnavailable || failure.Written != 0 || !strings.Contains(failure.Error, "wrote 0 of 1") {
 		t.Fatalf("a batch with NATS down = %d %s, want a 503 naming none written", recorder.Code, recorder.Body.String())
 	}
@@ -319,8 +319,8 @@ func TestLegionAgentsSurviveAListenerRestart(t *testing.T) {
 	if want := decodeLegion[legionAnswer](t, stored); got != want {
 		t.Fatalf("after the restart = %#v, want %#v", got, want)
 	}
-	if ids := legionIDs(t, after.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")); !slices.Equal(ids, []string{"ses-tester"}) {
-		t.Fatalf("after the restart INFRA-448 lists %v", ids)
+	if ids := legionIDs(t, after.want(t, http.StatusOK, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", "")); !slices.Equal(ids, []string{"ses-tester"}) {
+		t.Fatalf("after the restart POMJU-448 lists %v", ids)
 	}
 }
 
@@ -337,7 +337,7 @@ func TestABatchFailureAnswersItsOwnStatusWithWhatItWrote(t *testing.T) {
 	}{
 		{"a key NATS refuses", fmt.Errorf("write legion agent key role.x: %w", bus.ErrInvalidSubject), http.StatusBadRequest, ""},
 		{"a key too long", fmt.Errorf("write legion agent key role.x: %w", bus.ErrTooLarge), http.StatusRequestEntityTooLarge, ""},
-		{"a session another write claimed", &legionagents.ConflictError{SessionID: "ses-raced", Issue: "INFRA-448", Role: "tester"}, http.StatusConflict, ""},
+		{"a session another write claimed", &legionagents.ConflictError{SessionID: "ses-raced", Issue: "POMJU-448", Role: "tester"}, http.StatusConflict, ""},
 		{"a write the bucket did not answer", errors.New("nats: timeout"), http.StatusServiceUnavailable, "1"},
 	} {
 		recorder := httptest.NewRecorder()
@@ -390,12 +390,12 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 	if status, answer := callListener(t, listener.port, http.MethodGet, "/v1/sessions", ""); status != http.StatusOK {
 		t.Fatalf("GET /v1/sessions without the registry grant = %d %s, want 200\n%s", status, answer, listener.Output.String())
 	}
-	entry := legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z")
+	entry := legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T03:15:00Z")
 	routes := []struct{ method, path, body string }{
 		{http.MethodGet, "/v1/legion/agents/sessions/ses-tester", ""},
 		{http.MethodPut, "/v1/legion/agents/sessions/ses-tester", entry},
-		{http.MethodGet, "/v1/legion/agents/roles/legion-infra-infra-448-tester", ""},
-		{http.MethodGet, "/v1/legion/agents?issue=INFRA-448", ""},
+		{http.MethodGet, "/v1/legion/agents/roles/legion-pomju-pomju-448-tester", ""},
+		{http.MethodGet, "/v1/legion/agents?issue=POMJU-448", ""},
 		{http.MethodPut, "/v1/legion/agents", `{"entries":[` + entry + `]}`},
 	}
 	for _, route := range routes {
@@ -422,9 +422,9 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	status, answer := callListener(t, listener.port, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
+	status, answer := callListener(t, listener.port, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", "")
 	if ids := legionIDs(t, answer); status != http.StatusOK || !slices.Equal(ids, []string{"ses-tester"}) {
-		t.Fatalf("GET INFRA-448's agents after the grant = %d %s, want the tester", status, answer)
+		t.Fatalf("GET POMJU-448's agents after the grant = %d %s, want the tester", status, answer)
 	}
 }
 
@@ -457,20 +457,20 @@ func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *tes
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	body := l.want(t, http.StatusServiceUnavailable, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
+	body := l.want(t, http.StatusServiceUnavailable, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", "")
 	if !strings.Contains(body, "envoy: the legion agent registry is unavailable: could not open the legion_agents bucket (a missing grant is the usual cause): nats: timeout") {
 		t.Fatalf("the 503 = %s, want it to name the failed open", body)
 	}
 
 	failing.Store(false)
 	deadline := time.Now().Add(10 * time.Second)
-	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "").Code != http.StatusOK {
+	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", "").Code != http.StatusOK {
 		if time.Now().After(deadline) {
 			t.Fatalf("the registry still answers 503 after its open recovered\n%s", logs.String())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T03:15:00Z"))
 
 	count := func(level, msg string) int {
 		n := 0
@@ -542,7 +542,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	}
 	// Not the store on the replaced connection: the retry's next open, on the connection that is
 	// gone, fails too, so the routes answer 503 until a healthy connection comes.
-	body := l.want(t, http.StatusServiceUnavailable, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "")
+	body := l.want(t, http.StatusServiceUnavailable, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", "")
 	if !strings.Contains(body, "envoy: the legion agent registry is unavailable: ") {
 		t.Fatalf("the 503 = %s, want it to say the registry is unavailable", body)
 	}
@@ -551,7 +551,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	if err := started.reconnect(context.Background(), latest); err != nil {
 		t.Fatalf("the reconnect hook without a store = %v, want nil", err)
 	}
-	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "").Code != http.StatusOK {
+	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=POMJU-448", "").Code != http.StatusOK {
 		if time.Now().After(deadline) {
 			t.Fatalf("the registry still answers 503 after the latest connection came\n%s", logs.String())
 		}
@@ -560,7 +560,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	if openedOn.Load() != latest {
 		t.Fatalf("the registry serves a store opened on another connection, want the latest")
 	}
-	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
+	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "POMJU-448", "tester", "2026-10-26T03:15:00Z"))
 }
 
 // The drain runs its hooks one after another inside its budget, and the registry's open takes no

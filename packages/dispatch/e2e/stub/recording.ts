@@ -279,7 +279,7 @@ export function statusesByRoute(har: Har): Map<string, string> {
  *  exists to watch.
  *
  *  Four guards divide the work, and this is the third of them. The generated contract holds the
- *  client and the server to one shape at compile time (dispatch://INFRA-1406). The contract
+ *  client and the server to one shape at compile time (dispatch://POMJU-1406). The contract
  *  test holds every committed recording's **body** to that shape on every pull request
  *  (`e2e/__tests__/stub-recordings.test.ts`), which is where a renamed, removed or retyped
  *  field fails, on the commit that causes it. This watches the **status of each route**, which

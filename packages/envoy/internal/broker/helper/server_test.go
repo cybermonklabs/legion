@@ -201,7 +201,7 @@ func TestUndrainTakesSessionsAgain(t *testing.T) {
 // died, or its restart reached another process — ends by itself once its bound passes, and the
 // helper logs that it did and takes registrations again. Before, such a helper refused every
 // registration on the machine until something restarted it (36 minutes on 2026-11-16,
-// dispatch://INFRA-3950).
+// dispatch://POMJU-3950).
 func TestADrainNoRestartFollowsEndsAtItsBound(t *testing.T) {
 	logs := &logtest.Buffer{}
 	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(logs, nil)))

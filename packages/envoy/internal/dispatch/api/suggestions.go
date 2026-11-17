@@ -492,7 +492,7 @@ func (s *server) runRelatedCheck(
 			read, crossErr := store.ForConcurrentRead(meaningCtx)
 			if crossErr != nil {
 				// The leg is dropped, and the check's own record names no reason, because a
-				// contained failure of the leg records none (INFRA-2337, R3). The store logs
+				// contained failure of the leg records none (POMJU-2337, R3). The store logs
 				// its own error, with a stack, only the first time a call site is refused
 				// (logRefusal in store/pool.go), so this line is what says, at every refusal,
 				// that a check offered nothing of another project because the store refused
@@ -564,7 +564,7 @@ func (s *server) runRelatedCheck(
 		}
 	}
 	// The check holds the stage's answer while it waits for the leg, so a grace that runs to
-	// the meaning deadline costs it nothing (INFRA-2337 D1, R3). meaning_ms holds the whole
+	// the meaning deadline costs it nothing (POMJU-2337 D1, R3). meaning_ms holds the whole
 	// meaning stage, that wait with it (D7).
 	if answered && answer.cross != nil {
 		answer.otherProjects = s.awaitCrossProject(meaningCtx, answer.cross)
@@ -635,7 +635,7 @@ func (s *server) runRelatedCheck(
 //
 // A meaning search this stage's own context ended, and one the server ended itself at
 // searchMeaningScan's statement bound, are the same thing to the caller: the meaning search did
-// not answer, so the check answers by keywords alone and says so (INFRA-148). Which of the two
+// not answer, so the check answers by keywords alone and says so (POMJU-148). Which of the two
 // clocks ran out first is not the caller's business, and only one of them shows in ctx: a
 // statement Postgres ended arrives as SQLSTATE 57014 (meaningStatementEnded) and may arrive
 // while this stage's own context is still live, so the reason is read from the error too. Were
@@ -701,7 +701,7 @@ func (s *server) relatedMeaningStage(
 // awaitCrossProject is the check's wait for its cross-project leg once the meaning stage has
 // answered: what the leg found when it answers within the grace, nothing otherwise. The grace
 // ends at the earlier of crossProjectGrace from now and the meaning deadline (meaningCtx's), so
-// it never holds the check past the meaning allowance (INFRA-2337 D1). The leg runs on the
+// it never holds the check past the meaning allowance (POMJU-2337 D1). The leg runs on the
 // meaning context too, so it ends by that deadline itself, but the wait does not depend on the
 // leg seeing that.
 //
@@ -960,8 +960,8 @@ func (s *server) resolveSuggestionProject(ctx context.Context, source suggestion
 // matched its title, its spec or a comment on it, since each fills the same one place and the
 // reader is given the issue's key either way. What takes a place an issue needs is an item on a
 // project document: a project-level document or an answered ask on one, which a filer can read
-// and nothing more (dispatch://INFRA-1160/spec, "Problem"). Ranking by the item's own kind
-// instead costs recall, measured: over the 71 known duplicate pairs of INFRA it listed the
+// and nothing more (dispatch://POMJU-1160/spec, "Problem"). Ranking by the item's own kind
+// instead costs recall, measured: over the 71 known duplicate pairs of POMJU it listed the
 // earlier issue for 17, against 25 for the order this replaces, because a target matched
 // through its spec fell below weaker matches on another issue's title.
 //

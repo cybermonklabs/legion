@@ -14,7 +14,7 @@ related_issues:
 ---
 # A census says what its search did not cover, and disposes of the hits in other repositories
 
-Extends docs/solutions/legion/a-contract-census-names-refusals-too-and-lists-every-hit-tests-and-the-prs-own-files-included-and-a-finite-field-is-an-enum-INFRA-229.md.
+Extends docs/solutions/legion/a-contract-census-names-refusals-too-and-lists-every-hit-tests-and-the-prs-own-files-included-and-a-finite-field-is-an-enum-POMJU-229.md.
 
 That document says each change gets its own search and every hit a disposition. This one is about
 the edge of the search.
@@ -39,14 +39,14 @@ the edge of the search.
 
 ## Evidence
 
-INFRA-1017's first census said `HUMAN_ONLY` was "found in no shipped code, this repository's or
+POMJU-1017's first census said `HUMAN_ONLY` was "found in no shipped code, this repository's or
 any caller's" from a tree-only search. Review round 2 named three hits outside it, all in the
 project's other repository: the deployment instructions' sentence that the reads reserved for a
 person answer an agent token `403 HUMAN_ONLY`, which the deploy makes false; a test fake of the
 Inbox route's answer in that repository's production-check tests, which fakes a server and so
 stays green while it stops describing one; and a dated rehearsal record under its
-`docs/solutions/`. The first two are disposed of by dispatch://INFRA-1170, filed against that
-repository and blocked by INFRA-1017; the third is history.
+`docs/solutions/`. The first two are disposed of by dispatch://POMJU-1170, filed against that
+repository and blocked by POMJU-1017; the third is history.
 
 The same census records `TOKEN_ID_INPUT` at zero hits because `requireUUIDPath` builds it as
 `strings.ToUpper(kind) + "_ID_INPUT"`, as `ASK_ID_INPUT` and `HANDOFF_ID_INPUT` are built, and

@@ -1,5 +1,5 @@
 -- 20261102153000_issue_release_rows.up.sql — a release's mark names the rows that are its own
--- (INFRA-945).
+-- (POMJU-945).
 --
 -- first_row and last_row are the outbox ids of the release's first row, its `issue_bundle` save,
 -- and of its last, the `issue_release` teardown, written with the mark in the transaction that

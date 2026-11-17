@@ -29,7 +29,7 @@ import (
 // whether GitHub has reported a check run on the pull request's current head itself
 // (classify.ChecksConcludedOnHead).
 //
-// Both are optional in the stored JSON, so a row written before dispatch://INFRA-714 added them
+// Both are optional in the stored JSON, so a row written before dispatch://POMJU-714 added them
 // still parses, and such a row carries neither. It fails closed on both readings: an empty Head
 // is no head, so the run is never one on the current head, and an empty Conclusion is no
 // conclusion, so it never makes its name red. The names of such a row come to what the stored
@@ -731,7 +731,7 @@ type PullRequest struct {
 	// CheckedHead is the head whose CI settlement Failing, Cancelled, CheckRuns, Generation and
 	// Snapshot record, empty while none is recorded: the current head, or an earlier head whose
 	// settlement no longer counts, since a settlement stands only for the head it names. A
-	// settlement moves no issue (dispatch://INFRA-714/spec R1): what it names is told to the roles
+	// settlement moves no issue (dispatch://POMJU-714/spec R1): what it names is told to the roles
 	// that work the issue and judged by them (workflow's checks).
 	CheckedHead string
 	// CheckRuns is the latest run observed of each check name, and Failing and Cancelled the
@@ -921,7 +921,7 @@ type Move struct {
 // empty when the fact named none, and SyncedAt GitHub's clock of the synchronize), a CI settlement
 // (Settlement), or a reopen, which starts the CI settlement afresh (Reopened). A step stored
 // before Before, Sender or SyncedAt existed reads as naming none, and one a daemon before
-// dispatch://INFRA-714 wrote for a read of what the base branch required, for the clearing of the
+// dispatch://POMJU-714 wrote for a read of what the base branch required, for the clearing of the
 // head its workflow runs were read at, or for the arrival clock of a head whose red was held,
 // reads as a step that replays as nothing: no required set and no held red is left to replay
 // (classify.applyStep).
@@ -1019,7 +1019,7 @@ const (
 
 // Mergeable says whether this is a merge state the issue may advance on. The spec's R1 reads:
 // "Mergeable means GitHub's merge state for the head is CLEAN, UNSTABLE (only checks the
-// repository does not require failed) or HAS_HOOKS" (dispatch://INFRA-714/spec). unstable counts
+// repository does not require failed) or HAS_HOOKS" (dispatch://POMJU-714/spec). unstable counts
 // because the only thing it says failed is a check the repository does not require, which is no
 // reason to hold the work; has_hooks counts because it is clean on a repository whose pre-receive
 // hooks run on the merge. blocked does not count: GitHub holds the head on a check or a review
@@ -2165,7 +2165,7 @@ type RoleClaim struct {
 	// run, a re-send after an unconfirmed retirement among them (supervise's EntryHandshake
 	// queued), where the task's own QueuedAt is that later task's. Its reader is the first stall
 	// arm (admit's architectTookNothing), which counts the task of an entry from when that entry
-	// was first queued, as R7 says (dispatch://INFRA-2614).
+	// was first queued, as R7 says (dispatch://POMJU-2614).
 	Handshake supervise.EntryHandshake
 	Pending   *supervise.Delivery
 }
@@ -2207,7 +2207,7 @@ func (i Issue) Lingers() bool { return i.LingerUntil != nil }
 // the workflow, it asks this: the held list's tree_closed word (HeldReasonOf), which reads a
 // parked root's member as tree_parked once that root's linger has run out, and the route that
 // takes a closed tree's member into a live tree (workflow's AdoptionRefusal), which C4 of
-// dispatch://INFRA-3107 opens only once no linger is left to run.
+// dispatch://POMJU-3107 opens only once no linger is left to run.
 //
 // The zero moment reads every armed linger as still running, which is the conservative answer: a
 // reader with no clock of its own leaves the member where it stands rather than reading its tree

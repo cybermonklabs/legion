@@ -38,7 +38,7 @@ const (
 // idleRigSubscribedTopic is the topic the subscribed pod's session takes with envoy_subscribe: a
 // team topic, which is neither a role topic nor an agent subject. It is a team topic because the
 // team namespace is the one an agent names a topic of its own under that the notification stream
-// captures, and a session is delivered only what its own consumer holds (dispatch://INFRA-771):
+// captures, and a session is delivered only what its own consumer holds (dispatch://POMJU-771):
 // the listener refuses a publish to a notification topic no stream subject captures, by name, so
 // a topic of this test's own invention would answer 400 here rather than reach the session.
 const idleRigSubscribedTopic = "notifications.team.idlerig-watched"
@@ -46,7 +46,7 @@ const idleRigSubscribedTopic = "notifications.team.idlerig-watched"
 // idleRigSender is the session every message of this test is sent from.
 const idleRigSender = "idle-rig-sender"
 
-// TestIdleReleaseAndWake is INFRA-945's A3 acceptance rig: the Go daemon on a real Postgres, a
+// TestIdleReleaseAndWake is POMJU-945's A3 acceptance rig: the Go daemon on a real Postgres, a
 // real nats-server, a real Envoy listener and the Sandbox runtime on a fake Kubernetes API that
 // starts a real `legion launcher` for each pod it reports Ready, whose role processes are
 // scripted stand-ins for Oh My Pi that register, claim their role and record each message they
@@ -130,9 +130,9 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// which names none either. The daemon adopts the working copy for no such task (supervise's
 	// Machine.adopts), so each wake's task reaches its role with no adopt-working-copy frame ahead
 	// of it, nor any since the release. A role-message wake whose task adopted the working copy is
-	// what LINUX-1529 and BET-846 at 04:54Z recorded on a release before cybermonklabs/legion#2539:
+	// what HAFJJ-1529 and BJB-846 at 04:54Z recorded on a release before cybermonklabs/legion#2539:
 	// the woken role's adoption ran its jj commands, `jj metaedit --update-author` or `jj new`, on
-	// the `@` of whichever role was working in the issue's one workspace (dispatch://INFRA-2695).
+	// the `@` of whichever role was working in the issue's one workspace (dispatch://POMJU-2695).
 	// The five-wake pass waited for every one of these tasks, and the daemon sends a frame before
 	// the task it is for and that task only once the frame is answered, so every frame a wake
 	// brought is on the record by now.
@@ -149,7 +149,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		}
 	})
 
-	// Row (a) of check k3 (dispatch://INFRA-2846): a role message published right after the
+	// Row (a) of check k3 (dispatch://POMJU-2846): a role message published right after the
 	// release finds the claim the released session left standing. The role process removed its
 	// session's record as it stopped and nothing else (idleRigRoleProcess.unregister), so the
 	// claim names a holder that is not live, and the listener keeps the message for the role's
@@ -182,7 +182,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		// k3. `keep: false` is the field a sender that holds a queue of its own sets
 		// (notify.Publish), it keeps nothing, and it is answered 404 with the holder state the
 		// listener found: holder_lapsed, since the released session's claim still stands
-		// (dispatch://INFRA-2846/spec R4). It is the `keep: false` case R3 item 3 names, and the
+		// (dispatch://POMJU-2846/spec R4). It is the `keep: false` case R3 item 3 names, and the
 		// one where only the wake can bring the role back: nothing waits on the role's kept lane,
 		// so the sender's next attempt is the only way this message ever reaches a session.
 		status, body := rig.listener.publish(map[string]any{
@@ -407,7 +407,7 @@ func idleRigWakeAll(t *testing.T, rig *idleWakeRig) {
 	// 3. A message published to a role topic of the pod, from a sender that sets no keep flag:
 	//    no live session holds the role, whose claim still names the released session, so the
 	//    listener keeps the message for the role's next live holder and answers the sender 202
-	//    kept for the lapsed holder (sjawhar/legion#2588, dispatch://INFRA-2846), raising the wake
+	//    kept for the lapsed holder (sjawhar/legion#2588, dispatch://POMJU-2846), raising the wake
 	//    report beside that answer. The kept copy waits for a live holder of the role, which
 	//    nothing but this pod coming back brings, so the wake is still the only thing that moves
 	//    this message on.

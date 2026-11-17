@@ -82,7 +82,7 @@ func plannerDone(key string) intake.HandoffComplete {
 // task from rests on (supervise.Claim.DeliveredRows). A row rewritten in place could be one whose
 // earlier payload had already reached the claim, and the lane running it would then recognise the
 // row, drop the later task and finish clean: a phase with no task, no error and no row behind it
-// (dispatch://INFRA-2800).
+// (dispatch://POMJU-2800).
 func TestTwoTransitionsBeforeTheSlotLeaveTheLaterStartAppendOnly(t *testing.T) {
 	pool := migratedPool(t)
 	seedAppendOnlyRoot(t, pool, appendOnlyIssue, 42)

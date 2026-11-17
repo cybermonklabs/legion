@@ -157,7 +157,7 @@ test("an ask thread shows its newest two replies, expands the earlier ones, and 
     const thread = card.getByRole("region", { name: "Replies" });
     const replyBodies = () => thread.locator("li > div > .dispatch-markdown").allTextContents();
 
-    // The thread reads in the reader's own order, which starts at **Oldest first** (INFRA-450):
+    // The thread reads in the reader's own order, which starts at **Oldest first** (POMJU-450):
     // the newest two replies are shown, oldest of the two first, with the rest behind the fold.
     await expect.poll(replyBodies).toEqual(["Newer reply", "Newest reply"]);
     await expect(card.getByText("Middle reply", { exact: true })).toHaveCount(0);
@@ -776,7 +776,7 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     await page.goto("/");
     const row = inboxRow(page, ask.id);
     const banner = page.getByText(/Blocked on you: 1 item/);
-    // The shell carries one number now, the Inbox entry's (INFRA-450), and the band the row
+    // The shell carries one number now, the Inbox entry's (POMJU-450), and the band the row
     // stands in is read off the row itself.
     await expect(row).toHaveAttribute("data-inbox-section", "human");
     await expect(banner).toBeVisible();
@@ -1261,7 +1261,7 @@ test("an unanchored issue-level comment reaches Conversation, not document revie
   }
 });
 
-// INFRA-42: one page, opened on the reader's own work, with `?assignee=` the only memory of
+// POMJU-42: one page, opened on the reader's own work, with `?assignee=` the only memory of
 // anything else. These four rows are that rule from the browser: who the bare address lists, the
 // control that widens it, what clearing it holds, and the counts that do not move with it.
 test("the Inbox opens on the reader's own questions, every visit, and ?assignee= names whose it lists", async ({

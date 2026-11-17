@@ -41,7 +41,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 	}{
 		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree,
 		// and which code each of the two pre-checked texts is refused with: its length, and the
-		// decision block it holds (INFRA-1201).
+		// decision block it holds (POMJU-1201).
 		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
 		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
 		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
@@ -58,7 +58,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
 		// The merge the merger is told to run names the head GitHub must match, on a queue base and
 		// off it, and carries the message it writes itself; its completion is an ordinary phase
-		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
+		// completion, refused only on the grounds every phase worker's is (dispatch://POMJU-714, R2).
 		// It also disarms an auto-merge an older release armed, since GitHub holds an armed pull
 		// request to no head, and it merges nothing while the design gate is closed (R5).
 		{"merger", claim.RoleMerger, false, []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
@@ -117,10 +117,10 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 				"This Go daemon advances phases",
 				"re-read your issue record with the `legion` tool's `read_record`",
 				// Every role is told not to retry a `legion` call its plugin refused because the
-				// daemon answered a shape it does not read (INFRA-1048): the phrase pinned is the
+				// daemon answered a shape it does not read (POMJU-1048): the phrase pinned is the
 				// plugin's own refusal text, which survives a rewording of the clauses around it.
 				"the daemon API contract does not describe",
-				// Every role is told the update round's terms (dispatch://INFRA-2981): its ask comes
+				// Every role is told the update round's terms (dispatch://POMJU-2981): its ask comes
 				// as a message on the role's own topic, the end of a turn answers nothing, and the
 				// round ends at the moment the ask names whatever the role answers.
 				"The daemon can send an update message to your role topic.",
@@ -209,7 +209,7 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 // kept a handoff-only push from starting CI, or retro's removal of the handoffs from the head that
 // merges. Nor does any carry the rules that removal replaced: that the approved and the merged
 // head keep .legion/, and that the daemon strips the leftovers from the next issue's branch. No
-// prompt names READY either: the merger submits the merge itself (dispatch://INFRA-714, R2), so
+// prompt names READY either: the merger submits the merge itself (dispatch://POMJU-714, R2), so
 // the refusals READY answered with went with it.
 func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 	stateDir := t.TempDir()
@@ -245,7 +245,7 @@ func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 }
 
 // GitHub, under each repository's base-branch rules, decides whether a merge happens, and no
-// prompt may tell an agent that Legion refuses one over a check (dispatch://INFRA-83). The daemon
+// prompt may tell an agent that Legion refuses one over a check (dispatch://POMJU-83). The daemon
 // reads none of the head's checks and judges none, so no composed prompt — any phase worker's,
 // and the architect's in both its shapes — still names the refusal that read them, the packet
 // note that said which checks went unread, or a trailer the daemon turns away for the CI it
@@ -274,7 +274,7 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 }
 
 // An issue with no Verification document, or with one holding no `before_merge` check, is a
-// coverage gap every role names and none refuses (dispatch://INFRA-174, R1 and R2): every gate
+// coverage gap every role names and none refuses (dispatch://POMJU-174, R1 and R2): every gate
 // counts the `check` blocks that exist, and a rule that made the empty case a failure would stop
 // every issue in flight on the day these prompts deploy. So the tester records the gap in its
 // handoff without failing the phase for it, the reviewer names it in its review without asking
@@ -602,7 +602,7 @@ func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
 }
 
 // A push moves the branch, but the pull request can keep naming the old commit, so the new
-// commit gets no checks and nothing reports it (dispatch://INFRA-1318). Every pushing role's
+// commit gets no checks and nothing reports it (dispatch://POMJU-1318). Every pushing role's
 // composed prompt therefore carries the read of the pull request's own head after its own push,
 // escalation sentence included, and neither architect shape does: a later edit that moves the
 // step into a part both shapes compose fails here rather than telling an architect to push. The

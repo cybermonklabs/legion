@@ -341,20 +341,20 @@ releases, one per `pi-envoy-v*` tag.
   are shown instead of acked away. A BTW
   that arrives late (delivered before, or stored before the connection's epoch began) is one inert
   card and starts no side turn. Answered `core`, or by a listener of an earlier release, delivery
-  works as before (INFRA-594).
+  works as before (POMJU-594).
 
 ### Changed
 
 - A BTW's side turn and every Dispatch reply run off the frame that started them, so the frames
   after it wait for neither the model call nor the reply, on the core path and the consumer path
-  alike (INFRA-594).
+  alike (POMJU-594).
 
 ### Fixed
 
 - `envoy_sessions`' `machine` filter finds a session by the listener it registered through as
   well as by the machine its process runs on: it matched only the latter, so a filter by a hub's
   machine id (`envoy-hub`, `gke`) listed nothing for the sessions registered through it
-  (INFRA-594).
+  (POMJU-594).
 
 ## [14.0.0] - 2026-11-01
 
@@ -605,7 +605,7 @@ releases, one per `pi-envoy-v*` tag.
 
 ### Added
 
-- Every Dispatch write a session makes carries one `Idempotency-Key` and is asked again under it after a transport failure, a 5xx, a 408, a 429, a `409 KEY_IN_FLIGHT` or an attempt that hears nothing for 20 s (INFRA-258, through `@sjawhar/envoy-client`'s `DispatchClient`). The accept behind a person's direct Send or Aside (`POST /api/v1/messages/{id}/deliveries/{attempt}/accept`) retries inside its own 10 s bound, at 0, 1, 3 and 7 s, so an accept whose `200` was lost becomes the person's turn on the replay where it used to leave the message as a card; every refusal, error and the timeout still keep the card.
+- Every Dispatch write a session makes carries one `Idempotency-Key` and is asked again under it after a transport failure, a 5xx, a 408, a 429, a `409 KEY_IN_FLIGHT` or an attempt that hears nothing for 20 s (POMJU-258, through `@sjawhar/envoy-client`'s `DispatchClient`). The accept behind a person's direct Send or Aside (`POST /api/v1/messages/{id}/deliveries/{attempt}/accept`) retries inside its own 10 s bound, at 0, 1, 3 and 7 s, so an accept whose `200` was lost becomes the person's turn on the replay where it used to leave the message as a card; every refusal, error and the timeout still keep the card.
 
 ## [11.9.0] - 2026-10-29
 
@@ -696,7 +696,7 @@ releases, one per `pi-envoy-v*` tag.
   options chosen and `Answer text: …`, `Closed with no answer: …`, `Closed after an answer: …` with
   `Last answer by …`, or `Open: no answer yet.`; against a Dispatch older than this release, which
   reports no state, `Answer state not reported by this Dispatch; open the link to read the ask.`
-  Its description says an ask hit says whether it is answered (INFRA-569).
+  Its description says an ask hit says whether it is answered (POMJU-569).
 
 - AskGate's marker checks at the `dispatch` CLI (no matching marker, a file changed after the
   review, a file missing when the gate ran) warn by default: the write posts with its warning and
@@ -757,7 +757,7 @@ releases, one per `pi-envoy-v*` tag.
   pass closes it), a failed-delivery lane, a `notifications.legion.` controller lane, or a
   wildcard reaching one such as `notifications.agent.*`, which the listener refuses to store; it
   still follows it live.
-  `scripts/smoke-replay.sh` proves it against a real session, listener and JetStream (INFRA-439).
+  `scripts/smoke-replay.sh` proves it against a real session, listener and JetStream (POMJU-439).
 
 - A person's browser edit of a spec a session wrote reaches that session as one Envoy card, 30
   seconds after the person stops editing: the card names the document, the two versions and each
@@ -788,7 +788,7 @@ releases, one per `pi-envoy-v*` tag.
   person's typed input runs, before its reply is posted, and publishes the frame only when it
   changed and a viewer is attached; a getter that throws is logged and never blocks the replay
   answer. A replay ends with the history, the settings, then the commands; the settings frame is
-  paid for first and whole, and the commands keep the prefix that fits what is left (INFRA-195).
+  paid for first and whole, and the commands keep the prefix that fits what is left (POMJU-195).
 - The `dispatch` skill this plugin ships teaches the board move as a command: a card moves with
   `dispatch issue-update --issue <KEY> --before <OTHER>`, which puts it above that issue,
   `--after <OTHER>`, which puts it below, or both together, which land it between them, where the
@@ -796,10 +796,10 @@ releases, one per `pi-envoy-v*` tag.
   names the agent that keeps each project's order — in a Legion deployment the controller, at
   `notifications.role.legion-<project>-controller` — in place of the retired `backlog-order`
   address, and says to raise a wrong order on the issue itself where no Legion controller runs
-  (INFRA-188).
+  (POMJU-188).
 - The `dispatch` command's `architecture-sync` imports every architecture source of the project,
   one per repository, and prints a line for each, or with `--repo <owner/name>` that one source
-  alone (INFRA-391). Against a Dispatch older than this release,
+  alone (POMJU-391). Against a Dispatch older than this release,
   `dispatch architecture-sync --project <KEY>` falls back to that server's single-source sync and
   prints its one line, and `--repo` needs a Dispatch of this release. The `dispatch` skill this
   plugin ships says an issue's component ids may come from any of its project's source
@@ -932,7 +932,7 @@ releases, one per `pi-envoy-v*` tag.
   frame an earlier one sent. And the page's relay asks the new process for no replay, only re-arms
   it with bare watches, so the settings and commands the process read before the first watch never
   reached the page: a control message that arms a publisher nobody was watching now also sends the
-  settings and commands as they stand (INFRA-195).
+  settings and commands as they stand (POMJU-195).
 - A pass or a role move that never settles no longer stops the registration heartbeat. Both serial
   queues (`passes`, `roleMoves`) give each task a deadline, never shorter than the heartbeat
   interval: past it the caller's call rejects, the queue starts the next task, and the abandoned
@@ -1105,9 +1105,9 @@ releases, one per `pi-envoy-v*` tag.
   `notifications.` topic the stream does not store, reaches a session on a serve port through its
   machine's listener when that listener subscribes to every topic (`ENVOY_SUBSCRIBE_ALL_TOPICS=1`;
   the shared hub's listener does not), where they said such a session received none. A session of
-  this plugin holds its own NATS connection and receives such a topic as before (INFRA-122).
+  this plugin holds its own NATS connection and receives such a topic as before (POMJU-122).
 
-- The `envoy` skill is rewritten to the minimum text that carries its instructions (INFRA-353),
+- The `envoy` skill is rewritten to the minimum text that carries its instructions (POMJU-353),
   from 21,146 bytes to about 7,500, with the delivery fields, role-claim lifetime, Legion lanes,
   Slack, Ghost Wispr and WhatsApp topics and the check-settlement contract moved whole to
   `references/`. Its topic table now names the Dispatch and `agent.<id>` topics, the two that

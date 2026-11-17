@@ -243,7 +243,7 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	// a collection frees that before /healthz answers is the luck of where the boot's collections
 	// fall: read at once, the idle was about 90 MiB on one server and about 330 MiB on the next,
 	// and a request then reused the dead pages, so its peak above idle read up to about 240 MiB
-	// low, and below zero (INFRA-3904).
+	// low, and below zero (POMJU-3904).
 	server.collect(t)
 	server.idle = server.resident(t, "VmRSS")
 	return server
@@ -297,7 +297,7 @@ func (h *memoryHarness) readOwed(t *testing.T) owedBeforeStart {
 // server's start no process in this test is settling anything, so a settlement a write left on a
 // server that has since stopped would stand for ever: a guard that waited for such a row to
 // settle would wait out its whole timeout and fail, which is how every memory test of this
-// package went red on CI (INFRA-985, run 42013424869).
+// package went red on CI (POMJU-985, run 42013424869).
 func (h *memoryHarness) drainBeforeStart(t *testing.T, port string) {
 	t.Helper()
 	owed := h.readOwed(t)

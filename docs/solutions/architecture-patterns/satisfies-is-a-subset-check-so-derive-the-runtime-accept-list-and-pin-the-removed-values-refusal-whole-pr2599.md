@@ -12,7 +12,7 @@ status: active
 module: packages/envoy-client
 related_issues:
   - "sjawhar/legion#2599"
-  - "INFRA-429"
+  - "POMJU-429"
 ---
 
 # `satisfies` is a subset check, so derive the runtime accept-list and pin the removed value's refusal whole

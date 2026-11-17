@@ -43,7 +43,7 @@ func loopCheckNamed(t *testing.T, lines []loopCheckLine, name string) loopCheckL
 
 // TestLoopSeedCheckExpectedFromPlan: every expected number is the plan's own, and over the
 // embedded source file's plan they are the numbers acceptance criterion A2 of
-// dispatch://INFRA-988 fixes. Nothing here is typed twice: the check reads the plan.
+// dispatch://POMJU-988 fixes. Nothing here is typed twice: the check reads the plan.
 func TestLoopSeedCheckExpectedFromPlan(t *testing.T) {
 	p := loopPlanned(t)
 	lines := loopCheckLines(p, loopFound{})
@@ -359,7 +359,7 @@ func loopStoreSeed(ctx context.Context, t *testing.T, pool *pgxpool.Pool, planID
 // loopShadowSchemaDDL is an empty copy, in the schema named after the database's login, of every
 // table of Dispatch's this package reads and of the id map itself. Its columns are the ones the
 // queries name, so a query that resolved here would answer 0 rather than fail - which is what
-// the deployment did (dispatch://INFRA-988).
+// the deployment did (dispatch://POMJU-988).
 const loopShadowSchemaDDL = `
 create table %[1]s.projects (key text primary key, name text not null);
 create table %[1]s.issues (key text primary key, project_key text not null, title text not null);
@@ -381,7 +381,7 @@ create table %[1]s.loadtest_loop_ids (
 // "$user", public, so from that session every unqualified name in the writer, the check and the
 // export resolves to the empty copy. That is what the deployment met - its login is loadtest, a
 // create schema of this tool's made the schema, and the check read 0 of everything while 438
-// issues and 248,354 comments sat in public (dispatch://INFRA-988).
+// issues and 248,354 comments sat in public (dispatch://POMJU-988).
 //
 // The run writes its map and reads its counts over a session where that shadow is in force, and
 // every number is the seed's own.
@@ -534,7 +534,7 @@ func loopSeedCheckResolve(t *testing.T, args ...string) (loopSeedCheckFlags, err
 
 // TestLoopSeedCheckReadsItsPostgresURLFromAFile: this phase runs on the pod that drives the
 // deployment, so a -pg value is an argument anything that can list processes there reads for as
-// long as the check runs (dispatch://INFRA-988). The file's content with its trailing white
+// long as the check runs (dispatch://POMJU-988). The file's content with its trailing white
 // space trimmed is the URL, and the four refusals are the ones every credential of this package
 // is read with (readCredentials).
 func TestLoopSeedCheckReadsItsPostgresURLFromAFile(t *testing.T) {

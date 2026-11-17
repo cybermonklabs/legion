@@ -324,7 +324,7 @@ func TestTokenModeReadTokenForAMissingOwnerReleasesNothingWider(t *testing.T) {
 }
 
 // A repository the installation does not list is not installed, and the installation's own list
-// is the whole of that answer now: a release names no repository (INFRA-2543), so the broker
+// is the whole of that answer now: a release names no repository (POMJU-2543), so the broker
 // refuses none and InstalledOn reads GET /installation/repositories under the owner's read
 // release. Each read is a read scope of its own, keyed by the repository it reads, so the
 // command runs once for each, and each run names the owner and the read-only flag alone.
@@ -354,7 +354,7 @@ func TestTokenModeARepositoryOutsideTheInstallationsListIsNotInstalled(t *testin
 // (listInstallation, ForgetNarrowingRefusal). Served from the Manager's memory instead, an
 // operator who fixes what the broker refused and saves the mapping inside the five minutes a
 // refusal is remembered for would be told the check failed, while the bundle refreshes behind it
-// kept that memory alive (INFRA-513).
+// kept that memory alive (POMJU-513).
 func TestTheInstallationReadAsksPastARememberedNarrowingRefusal(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
@@ -534,7 +534,7 @@ func TestTokenModeInstalledOnReadsTheInstallationsRepositories(t *testing.T) {
 // The command sees the daemon's environment less the NATS seeds, with the two variables the
 // daemon sets replacing any it inherited. The daemon names an owner to the command and no
 // repository at all, since the owner's installation is the whole of a token's reach
-// (INFRA-2543). A command cut off by its context is transient.
+// (POMJU-2543). A command cut off by its context is transient.
 func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
@@ -700,7 +700,7 @@ func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 // The command is told the owner whose installation token the daemon wants and whether it wants
 // a read-only one, and nothing else: an operator's command maps those onto --github-owner and
 // --github-read-only. It is told no repository, since the token reaches every repository the
-// installation holds (INFRA-2543).
+// installation holds (POMJU-2543).
 func TestTokenModeTellsTheCommandTheOwnerAndTheReadOnlyFlag(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))

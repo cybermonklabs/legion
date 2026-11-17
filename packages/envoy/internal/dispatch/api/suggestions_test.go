@@ -162,7 +162,7 @@ func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
 	}
 }
 
-// TestSuggestionsOfferNoAnsweredAskBehindTheTopThree writes down what INFRA-2337 gave up on
+// TestSuggestionsOfferNoAnsweredAskBehindTheTopThree writes down what POMJU-2337 gave up on
 // purpose, so a reader of this suite sees the loss rather than guesses at it: a filing is offered
 // the three items most like it and nothing else. The corpus holds an ask with an answer on a done
 // issue, which relatedItemRank puts behind the three open issues, so no related place is left for
@@ -461,7 +461,7 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 // not the constant, is the pin. It reads the server register mounts, which is the only one a
 // deployment ever runs: a server built here by hand would still carry the zero value after
 // register had been given a suggestionTimeout of its own, and that drift is what the field makes
-// possible (INFRA-56).
+// possible (POMJU-56).
 func TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound(t *testing.T) {
 	if got := register(http.NewServeMux(), t.Context(), Deps{}).relatedAllowance(); got != 5*time.Second {
 		t.Fatalf("the server a deployment runs allows %s for its related-item check, want 5s as the route descriptions promise", got)

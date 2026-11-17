@@ -239,7 +239,7 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	}
 	// The claim keeps both halves of the session it recorded: a done issue is reopened, and its
 	// roles are then started again on the same issue, where only the resume path brings the
-	// worker that did the work back (dispatch://INFRA-714 R8, A10). This deployment's sessions
+	// worker that did the work back (dispatch://POMJU-714 R8, A10). This deployment's sessions
 	// are rows in a session database (Options.SessionStore above), not files on the volume the
 	// close deletes, so the path still names a session its store holds and the close leaves it
 	// alone.
@@ -300,7 +300,7 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	}
 	// The pod and its disk are new, and the session is not: the planner that worked this issue is
 	// started again on the session it recorded, where a fresh agent would have read none of its
-	// own earlier work (dispatch://INFRA-714 R8, A10). Both halves of that record survive the
+	// own earlier work (dispatch://POMJU-714 R8, A10). Both halves of that record survive the
 	// close here — the id, which the session database holds and the volume reaping reads as its
 	// evidence, and the resume path, which is the only handle a runtime resumes by. No session
 	// store the configuration accepts keeps a session on the deleted disk (config's

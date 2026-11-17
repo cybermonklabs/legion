@@ -604,7 +604,7 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	// the sentence the supervisor wrote beside it, the counts that failure left against the
 	// deployment's limits, and the two the claim itself recorded — why its process was last found
 	// gone and why its last start produced no agent (record.NoticeFailure, workflow's
-	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
+	// noticeFailure, dispatch://POMJU-714 R6). The deaths are not counted here — a parked agent
 	// holding no task dies uncounted — which the record says in as many words.
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
 		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",

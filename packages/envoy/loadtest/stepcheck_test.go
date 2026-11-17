@@ -431,7 +431,7 @@ func TestStepCheckJudgesTheBaselineStepByWhatItDrove(t *testing.T) {
 // "R8 (c) …: fail: p99 from arrival 20,681 ms", "R8 (d) …: fail: over the limit: auth-proxy"
 // and "R8 (g) …: fail: classes that lost a notification: unit", then
 // "step-check sensitivity-2x: no clause failed, 43 passed, 0 n/a", and exited 0, where
-// `loadgen curves -series loop` over that same step answers "passes no" (INFRA-988).
+// `loadgen curves -series loop` over that same step answers "passes no" (POMJU-988).
 //
 // A3's words are that the step records "a pass or a fail for each criterion of R8", and the
 // pull request's own evidence line is that each of its fourteen steps was "judged by
@@ -461,7 +461,7 @@ func TestStepCheckCountsAFailedR8CriterionAsAFailedClause(t *testing.T) {
 // negative loss in 22 of its 24 steps, and for sensitivity-2x it reads "lost -573" while the
 // classes of that step lost 170 notifications between them; criterion (g), which reads the
 // classes, fails it correctly. So R6's own notification measurement hides the loss it exists to
-// report (INFRA-988).
+// report (POMJU-988).
 func TestStepCheckReportsNoNegativeLoss(t *testing.T) {
 	f := newStepFixture()
 	e := &f.sum.Events
@@ -485,7 +485,7 @@ func TestStepCheckReportsNoNegativeLoss(t *testing.T) {
 // critReading whatever the verdict, and critReading answered "no step-failed.json, and
 // cgroup.json is there and not failed" for every step that is not a failed row, so a step whose
 // directory holds no cgroup.json at all printed that sentence under the word FAIL: the clause
-// named as missing a file it said was there (dispatch://INFRA-988). The same reading now has to
+// named as missing a file it said was there (dispatch://POMJU-988). The same reading now has to
 // hold for the two cgroup.json files that give the criterion nothing to read - one of no role,
 // and one that sampled every container but Dispatch's.
 func TestStepCheckReadsCriterionFFromWhatTheStepHolds(t *testing.T) {

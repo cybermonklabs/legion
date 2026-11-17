@@ -204,7 +204,7 @@ func everyArtifactIDColumn(t *testing.T, database *store.Store) []artifactColumn
 // keyset cursor (migration 20261101182501): a position in the fill, the highest document id the
 // pass has covered, and not a record of that document. A removal leaves it where it is, because
 // the boot's fill reads that one row every time and the keyset goes on from an id whether or not
-// a document still has it (dispatch://INFRA-4018).
+// a document still has it (dispatch://POMJU-4018).
 var censusExempt = []artifactColumn{{table: "document_search_backfill", column: "artifact_id"}}
 
 // assertNoRowNamesTheDocument is the census: no row of the catalogue names the removed document.
@@ -939,7 +939,7 @@ func documentAppendCount(t *testing.T, database *store.Store, artifactID string)
 }
 
 // Removing the document the search fill's cursor names leaves the fill's progress row as it was,
-// and the boot's fill still runs after it (dispatch://INFRA-4018). document_search_backfill holds
+// and the boot's fill still runs after it (dispatch://POMJU-4018). document_search_backfill holds
 // one row (migration 20261101182501), whose artifact_id is the keyset cursor: the highest document
 // id the pass has covered, and no row of that document's. A removal that deleted it where the
 // cursor equals the removed id left the table empty, and store.FillDocumentSearch, which the boot

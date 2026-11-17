@@ -1,6 +1,6 @@
 package daemon
 
-// A whole daemon over a database whose connection breaks under one claim write (INFRA-1132): a
+// A whole daemon over a database whose connection breaks under one claim write (POMJU-1132): a
 // real pool, a real worker stream, a real claim, and a turn the agent really starts.
 
 import (

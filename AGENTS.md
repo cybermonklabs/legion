@@ -73,9 +73,9 @@ A measurement outranks any line here.
 * **There are no rules, there are only reasons.**
   Explain what is not obvious, but do not turn that into law.
 
-Evidence for each earlier line, with the issues behind it and the cases that cut against it: dispatch://INFRA-1225/artifact/principles-evidence-md.
-Four lines came later, at the owner's request (dispatch://INFRA-3757/ask/a09d1002-5970-4c1e-a2db-bad1da6ade4b): one source of truth, kept bounds, approvals and contract changes.
-The evidence of each is the `Sources` list of its statement in version 7 of dispatch://INFRA-3757/spec:
+Evidence for each earlier line, with the issues behind it and the cases that cut against it: dispatch://POMJU-1225/artifact/principles-evidence-md.
+Four lines came later, at the owner's request (dispatch://POMJU-3757/ask/a09d1002-5970-4c1e-a2db-bad1da6ade4b): one source of truth, kept bounds, approvals and contract changes.
+The evidence of each is the `Sources` list of its statement in version 7 of dispatch://POMJU-3757/spec:
 `copies-of-a-fact-defer-to-its-owner`, `stated-bounds-are-kept`, `approval-binds-the-spec-and-work` and `services-and-clients-share-declared-contracts`.
 
 ## Architecture
@@ -160,7 +160,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - **What those rules do not prove is where an image's bytes came from**, and that is an accepted limit rather than a gap to patch.
   Rule 9 reads only that the package holds the row's digest and rule 10 only the image's label, which the run that publishes the image writes, so together they pass any image at the row's digest whose label carries this tree's recipe hash, whatever built its bytes:
   on a pull request that run executes the pull request's own copy of the build workflow, and of the `install-crane` action and `.github/scripts/ci_images.py` it runs before the build, none of which is checked against the bytes it pushed.
-  A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443)
+  A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://POMJU-1443)
 
 - **Tool assets** that a CI job installs through one of eight actions — `setup-bun`, `install-crane`, `install-changie`, `install-jj`, `install-elan`, `install-uv`, `install-docker-plugin` and `install-pulumi` — have a second source, so an hour of 504s on one service does not stop those eight installs.
   `.github/ci-tools.yaml` holds one row per asset, eleven of them: crane, changie, mise, jj, one per Bun build variant, elan, uv, the docker provider plugin and the Pulumi CLI.
@@ -212,16 +212,16 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   An address assembled at run time out of something the tree never writes, such as a URL read from a file a script downloads first; an install inside a file whose name holds `.test.`; spellings of those three paths that github.com or curl accepts and the patterns do not match — an extra slash before the owner, after the owner or after `releases`, a `/.` segment, `%64ownload` for `download`, `https:/` or `https:///` for `https://`, and a `user@` before a host written with no scheme; and those same bytes reached at any other host, the `release-assets.githubusercontent.com` address each redirect lands on among them, a mirror, a proxy, a copy, and `github.com` written as a path element of some other host, which the gate declines to read for the same reason.
   The download-host rule compares text in that same way, so an address assembled at run time, an install written in a file whose name holds `.test.`, and those same bytes reached at any other host — a vendor's second domain, a redirect's destination, a proxy — are invisible to it too.
   The rule that holds a member to its row's version reads a version as a dotted run of digits, so a member that writes one in some other shape — a date as `20260812`, a tag with its dots taken out — holds nothing that rule can see, and a member left behind in that shape passes it.
-  Its reach is `.github/`, which is what requirement R4 of dispatch://INFRA-1986 asks of it, so the worker image's own toolchain layer is outside it: `packages/daemon/docker/worker.Dockerfile` fetches uv, node, the AWS CLI, Go, kubectl, yq and Chromium from one address each, with no row and no second source, and a 500 on one of them failed this repository's `worker-image` build on 2026-11-09.
-  That gap is held by dispatch://INFRA-1865, which is why it is not a row here: a second source for seven image assets is its own change with its own digests.
+  Its reach is `.github/`, which is what requirement R4 of dispatch://POMJU-1986 asks of it, so the worker image's own toolchain layer is outside it: `packages/daemon/docker/worker.Dockerfile` fetches uv, node, the AWS CLI, Go, kubectl, yq and Chromium from one address each, with no row and no second source, and a 500 on one of them failed this repository's `worker-image` build on 2026-11-09.
+  That gap is held by dispatch://POMJU-1865, which is why it is not a row here: a second source for seven image assets is its own change with its own digests.
   A file under `.github/` that is not valid UTF-8 is read by neither rule; a passing run's summary line names each one, and a failing run prints its problems alone.
 
 - **A decline** is how the manifest records a URL whose bytes are published in one place and nowhere else.
-  The list is empty today: it held elan, uv and the docker provider plugin, and each of the three now has a row with a second source (dispatch://INFRA-1986), which is what made those entries false and deleted them, so an empty list is a key with nothing to decline rather than a dead one.
+  The list is empty today: it held elan, uv and the docker provider plugin, and each of the three now has a row with a second source (dispatch://POMJU-1986), which is what made those entries false and deleted them, so an empty list is a key with nothing to decline rather than a dead one.
   A `no_second_source` entry carries `url`, `digest`, `pinned_in` and `why`, and the gate refuses one whose shape it cannot read (a missing field, a `url` that is not a release-asset address, two entries for one URL),
   one whose `url` no file under `.github/` writes, one whose `digest` is not bare 64-hex, one whose `pinned_in` names a file that is missing, is not readable as text, is the manifest itself or is a `.test.` file — a file that fetches nothing and checks nothing cannot be what pins those bytes, and the manifest would satisfy the rule with the entry's own `digest:` line — one whose `digest` does not occur in that file, one whose repository a row already covers, and one whose `why` is a placeholder or is shorter than the minimum the refusal names.
   Those comparisons are text too: `pinned_in` is compared as the path the entry writes, so `..` or a symlink that reaches the manifest is not recognised as the manifest, and a repository is compared without regard to case but is not percent-decoded.
-  Whether that `why` is true is the reviewer's judgement and not the gate's, and `.github/ci-tools.yaml` says so where that key is: the rules above are the whole of what a program can check here, and a gate claiming to check a reason would teach its readers that the reason had been checked (dispatch://INFRA-1974).
+  Whether that `why` is true is the reviewer's judgement and not the gate's, and `.github/ci-tools.yaml` says so where that key is: the rules above are the whole of what a program can check here, and a gate claiming to check a reason would teach its readers that the reason had been checked (dispatch://POMJU-1974).
 
 ## Commands
 
@@ -732,7 +732,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - Run a database, broker or server the work needs — `docs/kubernetes.md`, "Running a workload in the cluster from a role"
 
-  A role starts it in the cluster as a Job and reaches it by a Service name, where its deployment projects a Kubernetes credential and has applied the declarations (dispatch://INFRA-206);
+  A role starts it in the cluster as a Job and reaches it by a Service name, where its deployment projects a Kubernetes credential and has applied the declarations (dispatch://POMJU-206);
   `kubectl -n <namespace> auth can-i create jobs`, `create services` and `get services` are the gate, and the section dates what has been run there, the whole sequence included.
   The other half of the question is the *Get a tool a role's work needs into the pod* item:
   a service the work talks to runs in the cluster, a tool works on the issue's checkout
@@ -780,11 +780,11 @@ Each item below names a task and where its code is, then notes on it.
 
 - Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
 
-  The by-hand tool of dispatch://INFRA-1408's check k1.
+  The by-hand tool of dispatch://POMJU-1408's check k1.
   It expands every `go test` step of `ci.yaml` and of the workflows its jobs call whose working directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test functions that step really runs — through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with `go test -list` — and gives two verdicts, exiting 1 on either:
   every (package, function) pair more than one step runs, which no `EXCEPTIONS` entry declares with the requirement that makes it run twice, and every pair some expanded step compiles while no step runs it.
   The second verdict is fixed to the packages the expansion already touches, never to every test of the three modules, because a tag-gated live proof no step runs is true and useless; an unrun pair is closed in the workflow rather than declared, by giving the function to a step's `-run` or taking its package off the step that only builds it.
-  The daemon joined the scope with the `-run`/`-skip` pair that keeps `internal/daemon`'s three real-Oh-My-Pi tests to one run each (dispatch://INFRA-1413): a check that sees one of the two steps and not the other proves nothing about them.
+  The daemon joined the scope with the `-run`/`-skip` pair that keeps `internal/daemon`'s three real-Oh-My-Pi tests to one run each (dispatch://POMJU-1413): a check that sees one of the two steps and not the other proves nothing about them.
   No CI job runs it and none should — it compiles every test binary of all three modules, the `-race` ones included, which the script's own header times.
 
 - Documentation site — `docs/site/`
@@ -899,6 +899,8 @@ Each item below names a task and where its code is, then notes on it.
   The private repository Legion is deployed from and the company that runs it are named nowhere either
   — not the repository, its Dispatch project key or issue keys, the company or its hostnames, and not in a file or directory name, a pull request title, body, branch name, commit message, comment or review, or a release note:
   write "the deployment repository" or `<deployment repo>`, and a neutral project key such as `ACME` in a fixture or example.
+  The tree's own issue keys of those projects are placeholders: `.github/scripts/neutralize-private-keys.py` replaces each, read from the `key:<KEY>` lines of the deployment's term list `PRIVATE_NAME_TERMS`, with letters of the same length that depend on the key alone, so a pull request that merges main runs it with that list and gets the same placeholders main has, and its `--check` exits 0 once none is left.
+  The script's header lists the forms it reads, and the few paths it leaves because a tool reads them against the deployment's own data.
   `.github/scripts/check-private-names.sh` fails the build on any text file or path that names either, and on any text that names a private internal host or a Tailscale MagicDNS host, and the `docs` job of `ci.yaml` runs it over the built site too.
   `.github/scripts/check-pr-text.sh` runs it over a pull request's title, body, branch name, commits (each one's message, author and committer), issue comments, reviews and review comments, and requires the title to be a conventional commit subject, in `ci.yaml`'s `pr-title` job at every push to a pull request that is not a draft, when a draft is marked ready and on the merge queue's group (that job's own check run is the required `pr-title`, on the pull request's head or on the group's commit), and in `pr-title.yaml` on an edit and on a review, the events `ci.yaml` does not run on:
   this repository's squash settings make the title main's subject (which the merger passes with the number, and an empty body), and the body holds only the `Co-authored-by:` lines GitHub adds, one for each author of the branch's commits, the squash commit's own author included, so each of those authors' names and addresses reaches main's own history as well as the pull request's page (`e00cfac3b`, pull request #2851, carries one; `eb69b0a75`, #2823, carries two);
@@ -911,7 +913,7 @@ Each item below names a task and where its code is, then notes on it.
   The check reads the title, body and branch name as the pull request has them when it runs, not as its event carried them, so the push-time `pr-title` of `ci.yaml`'s job, which can land after a later edit's run, never passes over text that run refused
 
   - **The guard runs before the write; both scans above still run after it** — a pod's `git push`, its `jj git push` and its `legion gh` run Legion's leak guard before they write, so a name of any of these classes is refused in the pod rather than found on GitHub afterwards (`packages/daemon/internal/leakguard`, `docs/kubernetes.md`).
-    Neither scan is changed by that, and deleting the pull-request half of them, once the guard has been driven in production, is dispatch://INFRA-1825
+    Neither scan is changed by that, and deleting the pull-request half of them, once the guard has been driven in production, is dispatch://POMJU-1825
 
 - **A skill, a role prompt and an `AGENTS.md` name no person**
   — write the role instead: "a person" for whoever sends a message or makes a request, "the operator" for whoever runs this deployment, "the human" for whoever an agent asks for a decision.
@@ -921,7 +923,7 @@ Each item below names a task and where its code is, then notes on it.
   The rule is about these files' own prose and says nothing about what an agent writes into Dispatch, where `skills/dispatch/SKILL.md` has a decision carry the name of the person who made it when the agent was given one, and "the person" when it was not.
   `docs/`, the source, `deploy/`, the scripts and the package CHANGELOGs keep their text:
   they record who decided what and when, or carry a name inside an identifier.
-  No check enforces this; a reviewer does (dispatch://INFRA-227).
+  No check enforces this; a reviewer does (dispatch://POMJU-227).
 
 ## Issue Lifecycle
 
@@ -1281,7 +1283,7 @@ No lifecycle labels carry worker state.
   A commit's `Omp-Session` and `Legion-Role` trailers name the session and the role that made it, and its App fields name no role.
   The pages keep their text, because no role writes under `docs/solutions/`:
 
-  - `docs/solutions/delegation/a-shared-issue-workspace-hands-your-commit-another-roles-app-check-the-author-next-to-the-commit-INFRA-42.md`
+  - `docs/solutions/delegation/a-shared-issue-workspace-hands-your-commit-another-roles-app-check-the-author-next-to-the-commit-POMJU-42.md`
 
   - `docs/solutions/legion/a-child-of-two-open-pull-requests-waits-for-main-re-verifies-every-cited-symbol-and-treats-the-pane-as-a-surface-to-check.md`
 
@@ -1295,13 +1297,13 @@ No lifecycle labels carry worker state.
 
   - `docs/solutions/legion/shared-main-repo-hazards-for-concurrent-issue-workspaces.md`
 
-  - `docs/solutions/legion/the-authorship-guard-reads-false-once-you-have-edited-and-an-unpushed-mis-authored-commit-is-rebuilt-not-recorded-INFRA-127.md`
+  - `docs/solutions/legion/the-authorship-guard-reads-false-once-you-have-edited-and-an-unpushed-mis-authored-commit-is-rebuilt-not-recorded-POMJU-127.md`
 
-  - `docs/solutions/legion/the-issue-workspace-outlives-your-turn-INFRA-31.md`
+  - `docs/solutions/legion/the-issue-workspace-outlives-your-turn-POMJU-31.md`
 
   - `docs/solutions/legion/template-names-a-ci-check-the-repository-never-produces.md`
 
-  - `docs/solutions/legion/handoff-complete-checks-the-handoff-commits-app-and-nothing-checks-a-code-commits-INFRA-92.md`
+  - `docs/solutions/legion/handoff-complete-checks-the-handoff-commits-app-and-nothing-checks-a-code-commits-POMJU-92.md`
 
 > Many docs in `docs/plans/` and `docs/solutions/` predate the TypeScript rewrite and contain Python-era references.
 > These are marked with `[HISTORICAL]` headers.

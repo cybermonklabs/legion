@@ -452,7 +452,7 @@ test("remarkRecordMark keeps the reader's own reading when another writer adds o
 // there was: the placement keeps it as the block's own start, which is where their words no
 // longer sit once another writer has written a sentence in front of them. Nothing of what they
 // read around their words is left whole, so the reading is not theirs to take - the refusal says
-// the text around them changed, which is what happened (dispatch://INFRA-727).
+// the text around them changed, which is what happened (dispatch://POMJU-727).
 test("remarkRecordMark refuses the reading in a block another writer has written in front of, where the placement kept that block's start", async () => {
   await withMarksEditor(TWO_READINGS, ({ view }) => {
     const range = lastReading(TWO_READINGS);
@@ -685,7 +685,7 @@ test("remarkRecordMark takes the reading the whole document surrounds as the rea
  *  suggestion usually goes, or a short line like this one. The placement keeps no text on
  *  either side of their words, because there was none: what it keeps of where they sat is that
  *  their words opened their block and closed it. An empty side that matched any text would
- *  leave such a placement telling no reading from another (dispatch://INFRA-727). */
+ *  leave such a placement telling no reading from another (dispatch://POMJU-727). */
 const WHOLE_BLOCK = "Ship it now.";
 
 test("remarkRecordMark refuses a block the reader selected whole once it reads their words twice among other text", async () => {
@@ -740,7 +740,7 @@ test("remarkRecordMark refuses an unrelated reading elsewhere once the block the
  *  of those line breaks as the newline it reads a block break as - Milkdown's `hardbreak`
  *  stands for one newline, and a code block keeps its own - so what tells a block's edge from a
  *  line's edge is where the blocks begin and end, never the character in front of a reading
- *  (dispatch://INFRA-727). */
+ *  (dispatch://POMJU-727). */
 const HARD_BREAK_LINES = `Notes:\\\n${WHOLE_BLOCK}\\\nLater text here.`;
 const CODE_BLOCK_LINES = `\`\`\`\nNotes:\n${WHOLE_BLOCK}\nLater text here.\n\`\`\``;
 

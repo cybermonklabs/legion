@@ -1,5 +1,5 @@
 -- 20261101030537_server_processes_schema.up.sql
--- INFRA-558: what each registered server process (migration 0135, internal/dispatch/processes)
+-- POMJU-558: what each registered server process (migration 0135, internal/dispatch/processes)
 -- reads and writes, so the processes that serve one database can decide together what a client
 -- may do while two builds serve it.
 --

@@ -373,7 +373,7 @@ func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
 	put(roles, "reviewer", store.RoleClaim{HolderSessionID: "ses_live", ClaimedAt: now})
 	put(interests, "ses_live", store.Interest{SessionID: "ses_live", MachineID: "startup-legacy", Topics: []string{contracts.LegacyAgentSubject("ses_live")}, UpdatedAt: now})
 	// Written straight to the bucket as an earlier build's listener wrote it, serving port and
-	// all: no registration carries a port since dispatch://INFRA-889, and this test is about
+	// all: no registration carries a port since dispatch://POMJU-889, and this test is about
 	// what a listener makes of the records it finds on its start.
 	put(sessions, "ses_live", session.SessionEntry{Port: 1, MachineID: "startup-legacy", UpdatedAt: now})
 	for _, kv := range []natsgo.KeyValue{roles, interests, sessions, records} {

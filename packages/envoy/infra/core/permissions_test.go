@@ -229,7 +229,7 @@ func TestHostPermissionsAreTheListenersThenTheSessions(t *testing.T) {
 
 // Narrowing the session's set to its relay subject does not take notifications.> from the host's
 // or the listener-host's: both name it themselves. It is the reach the sessions sharing a host
-// user keep until dispatch://INFRA-840 gives each session a credential of its own, and the host
+// user keep until dispatch://POMJU-840 gives each session a credential of its own, and the host
 // listener's own reach over the topics it serves.
 func TestHostPermissionsKeepTheSubscribeToEveryTopicTheSessionsLost(t *testing.T) {
 	require.NotContains(t, core.SessionPermissions().Subscribe.Allow, "notifications.>")

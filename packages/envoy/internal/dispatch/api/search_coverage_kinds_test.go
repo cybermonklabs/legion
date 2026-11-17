@@ -12,13 +12,13 @@ import (
 
 // searchFreshness is how long a write has to become findable. A person typing the words of
 // something they just wrote expects it back, so the index is held to a stated wait rather than
-// to "eventually" (dispatch://INFRA-1042, check k5).
+// to "eventually" (dispatch://POMJU-1042, check k5).
 const searchFreshness = 60 * time.Second
 
 // within runs probe until it answers true, failing the test when searchFreshness has passed
 // since written. It polls rather than waits the whole time out, so a check that holds at once -
 // which every one of these does, since each kind is indexed in the write's own transaction and
-// the block-index tick these tests drive themselves has already run (INFRA-988) - costs
+// the block-index tick these tests drive themselves has already run (POMJU-988) - costs
 // nothing.
 func within(t *testing.T, written time.Time, what string, probe func() bool) {
 	t.Helper()
@@ -56,7 +56,7 @@ func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 	written := time.Now()
 	corpus := seedSearchCorpus(t, handler)
 	// An item's and a document's windows are the block-index tick's to write, not the write's
-	// (INFRA-988), and no tick runs behind a test server, so the test runs the one the
+	// (POMJU-988), and no tick runs behind a test server, so the test runs the one the
 	// deployment's reconciler would have run in the seconds this check allows.
 	windowOwedOwners(t, deps)
 
@@ -95,7 +95,7 @@ func TestTheBackfillLeavesEveryIndexedKindComplete(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	seedSearchCorpus(t, handler)
 	// The windows of the corpus's items and documents are the block-index tick's, which no test
-	// server runs of its own (INFRA-988): without this pass the four window kinds hold nothing
+	// server runs of its own (POMJU-988): without this pass the four window kinds hold nothing
 	// and the report has no kind to call complete.
 	windowOwedOwners(t, deps)
 
@@ -238,7 +238,7 @@ func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
 	embedder := &fakeEmbedder{}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	corpus := seedSearchCorpus(t, handler)
-	// The four window kinds are the block-index tick's to write (INFRA-988), and this test
+	// The four window kinds are the block-index tick's to write (POMJU-988), and this test
 	// needs every covered kind complete before it can tell an uncovered one from it.
 	windowOwedOwners(t, deps)
 	processAllPending(t, database, embedder)

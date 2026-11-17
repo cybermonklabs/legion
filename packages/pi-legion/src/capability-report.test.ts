@@ -231,7 +231,7 @@ describe("the report", () => {
     expect(github).toEqual({ name: "github", ok: false, detail: "did not finish within 1 s" });
   });
 
-  // INFRA-927: the session measures again while a row is missing (src/capability-schedule.ts), so
+  // POMJU-927: the session measures again while a row is missing (src/capability-schedule.ts), so
   // a second measurement must carry nothing of the first: the row that failed on its budget is
   // asked again, and so is every row that passed.
   test("a second measurement carries nothing of the first: every row is measured again, and the one that failed on its budget passes", async () => {
@@ -905,7 +905,7 @@ describe("cleanDetail", () => {
   // regression would cost about 3 s and pass — an estimate from those ratios, not a run on CI. One
   // bound at 64 KiB cannot hold both machines: it would have to sit above the 2,633 ms a linear
   // rule costs on that pod under load and below that 3 s, which is no room to stand on.
-  // INFRA-985's architect ruled on 2026-11-07 that this is not fixed here: an accepted risk of this
+  // POMJU-985's architect ruled on 2026-11-07 that this is not fixed here: an accepted risk of this
   // change, recorded in the pull request body, not an oversight.
   for (const { name, unit } of redaction.linear) {
     test(`cleans 64 KiB of ${name} without stalling`, () => {

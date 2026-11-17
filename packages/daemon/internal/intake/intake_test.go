@@ -2065,7 +2065,7 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			// transaction - so this row sets it as a hang guard far above that work, leaving the
 			// failed read and its retry as the only two reads. The margin is what makes the count
 			// of two sound: a third read needs the whole minute to pass before a handling's nak
-			// or acknowledgement reaches the server. The campaign of dispatch://INFRA-1113
+			// or acknowledgement reaches the server. The campaign of dispatch://POMJU-1113
 			// measured that trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and
 			// the handler's own work and that trip together, about 717 ms, are a factor of about
 			// 80 below this window. The progress keeper reports nothing here: it ticks

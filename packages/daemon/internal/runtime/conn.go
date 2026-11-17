@@ -22,7 +22,7 @@ var ErrPromptRefused = errors.New("runtime: the agent refused the prompt")
 // else, and the supervisor charges it to the same prompt budget ErrPromptRefused is charged to.
 // The two are the far side's own answer about this workspace, so asking again in a minute changes
 // nothing by itself, and an unbounded retry of either is a silent stop: the task is never
-// delivered, nothing fails, and the claim waits for hours with no one told (INFRA-1480, where two
+// delivered, nothing fails, and the claim waits for hours with no one told (POMJU-1480, where two
 // planning tasks were held 31 and 33 hours by a stale lock). Charged, the claim runs out of budget
 // and fails, which the workflow reports.
 //

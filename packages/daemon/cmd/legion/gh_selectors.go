@@ -642,7 +642,7 @@ func readGitRemotes() ([]ghRemote, error) {
 //
 // It takes no lock: `git remote -v` and `git config --get-regexp` read configuration and write
 // nothing, so neither can leave a lock file behind for the next reader of the repository. R8 of
-// dispatch://INFRA-3098 gives a process group of its own and the SIGTERM-then-grace-then-SIGKILL
+// dispatch://POMJU-3098 gives a process group of its own and the SIGTERM-then-grace-then-SIGKILL
 // stop to the two command runners of internal/workspace, whose git and jj do take locks, and
 // leaves a read that takes none as it is: this child needs neither the group nor the grace.
 func gitLines(args ...string) ([]string, error) {

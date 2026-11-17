@@ -8,7 +8,7 @@ import type { Swatch } from "./palette";
 
 /**
  * The new issue page's colour tokens, held to the approved design's table ("The colours" in the
- * spec of dispatch://INFRA-3913). `styles-css-pin.test.ts` holds each literal of `styles.css` to
+ * spec of dispatch://POMJU-3913). `styles-css-pin.test.ts` holds each literal of `styles.css` to
  * the swatch its comment names, so a token and its swatch that change together still pass it;
  * this test holds the value itself. The design has no dark scheme: each dark value is a Tailwind
  * shade of the same hue, and the four icon-rail tokens have none, because the rail is dark in both

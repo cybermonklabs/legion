@@ -1,6 +1,6 @@
 -- 20261111225552_phase_entry.up.sql — the phase entry: the number of the work a role is owed, the
 -- work itself, and the two numbers that say what each claim was given and what its worker took
--- (INFRA-2800).
+-- (POMJU-2800).
 --
 -- What stands before this migration is one random token (0067's assignment), minted at each phase
 -- change onto the role's phases row and carried on the single outbox start row that holds the

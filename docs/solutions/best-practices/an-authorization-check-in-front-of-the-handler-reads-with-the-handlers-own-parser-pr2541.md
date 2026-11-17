@@ -51,7 +51,7 @@ guides say that rather than the opposite.
 
 ## Evidence
 
-sjawhar/legion#2541 (INFRA-264) added `withinProjectScope` and `withinSessionScope` over every
+sjawhar/legion#2541 (POMJU-264) added `withinProjectScope` and `withinSessionScope` over every
 mutating Dispatch route. Review round 1 found the uuid-spelling hole with
 `a061-e3f2-c3a0-41f0-80b2-3339-e0cc-3a57`, which answered `200` where the canonical spelling
 answered `403`; the fix moved every resolver onto the raw path value (`02b80896`). The claim that

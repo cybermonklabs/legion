@@ -57,7 +57,7 @@ func embeddingProjectKeyProgressGone(err error) error {
 // whole, with the index work taken once at the end rather than row by row, the same 1,109,536
 // rows took 31 m 41 s - 584 rows a second, of which about 31 m is the HNSW work alone. The two
 // figures are the same work paid in two shapes, and the pass plans by the first: nothing here
-// goes faster than 228 rows a second (INFRA-988,
+// goes faster than 228 rows a second (POMJU-988,
 // 20261109120100_embeddings_project_key_backfill.up.sql).
 //
 // 200 rows is about a second at those rates, which is the longest a live write of a row this
@@ -149,7 +149,7 @@ const fillEmbeddingProjectKeysCursorQuery = `select kind, id from embeddings_pro
 // in every index the row is in, the vector index among them, which only grows
 // (EmbeddingProjectKeyBatch holds what that costs). It gains nothing, since the row comes out
 // as unlabelled as it went in: measured over the sixteen unlabellable rows this round read,
-// eleven of them moved tuple for a null written over null (INFRA-988). Such a row stays null
+// eleven of them moved tuple for a null written over null (POMJU-988). Such a row stays null
 // for ever: nothing can label it, no join would have returned it to a scoped search either,
 // and the block index deletes such a window when it next sees its owner. The cursor still
 // walks past it like any other row, because the cursor comes from `batch`, which takes every
@@ -159,7 +159,7 @@ const fillEmbeddingProjectKeysCursorQuery = `select kind, id from embeddings_pro
 // returned: the nine owner shapes that resolve to no project - an item whose row is gone, an id
 // in no shape a uuid cast takes, a retired whole-text row, each kind of orphan - are walked
 // past and not written, and counting them told a reader of the finish line that 16 rows had
-// been labelled where 5 had (INFRA-988).
+// been labelled where 5 had (POMJU-988).
 //
 // The cursor comes from `batch` and never from `labelled`'s `returning`: a row already labelled
 // returns nothing, so a cursor taken from the write would stall on the first such row. `done`

@@ -493,8 +493,8 @@ func isSessionSwitchCommand(body string) bool {
 // before connected_only existed sends the switch without the field, and a switch stored for a
 // stopped session would change that session's model or thinking level at an unknown later time,
 // long after the person chose it. The spec keeps the switch out of the queued path (its non-goal,
-// dispatch://INFRA-626/spec), and plan D9 and its switch rule table refuse it for a stopped session
-// with nothing stored (dispatch://INFRA-626/artifact/plan-md).
+// dispatch://POMJU-626/spec), and plan D9 and its switch rule table refuse it for a stopped session
+// with nothing stored (dispatch://POMJU-626/artifact/plan-md).
 func isSessionSwitch(message model.Message, delivery string) bool {
 	return message.IssueKey == nil && message.BroadcastID == nil &&
 		message.Author.Kind == "user" && message.Author.Act == nil &&

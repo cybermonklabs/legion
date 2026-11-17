@@ -914,7 +914,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// counted reached with nothing sent (forwardOf). A deployment that raises it for a
 			// stall longer than an hour raises it here too: with the raise in the listener
 			// alone, Dispatch calls gone a holder whose role that listener still keeps, and the
-			// event reaches it never (dispatch://INFRA-392).
+			// event reaches it never (dispatch://POMJU-392).
 			holder := session.SessionEntry{UpdatedAt: time.Now().Add(-90 * time.Minute).UnixMilli()}
 			if state := resolveWith(t, map[string]string{"ENVOY_SESSION_GONE_HORIZON": "3h"}).RoleHolderWindows.EntryState(holder); state != session.Unresponsive {
 				t.Errorf("ENVOY_SESSION_GONE_HORIZON=3h: a holder that registered 90m ago reads %s, want unresponsive", state)

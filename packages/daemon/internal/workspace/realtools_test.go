@@ -112,7 +112,7 @@ const slowCleanFilter = "sleep 300; cat"
 // A real git the budget stops leaves no lock behind. git holds .git/index.lock for the whole of
 // an `git add` and removes it from the signal handler of its own lockfile API; SIGKILL runs no
 // handler, so a git killed outright leaves that lock and every later git and jj of the repository
-// fails on it (dispatch://INFRA-3098, procgroup.StopGrace). The repository is a real one whose
+// fails on it (dispatch://POMJU-3098, procgroup.StopGrace). The repository is a real one whose
 // `filter.slow.clean` sleeps past the budget and whose .gitattributes points every path at that
 // filter, and the add runs through execRunner.Run, the runner provisioning's own git goes
 // through, under a budget shorter than the sleep: what the row reads is the production stop's
@@ -195,7 +195,7 @@ const jjSnapshotAttempts = 3
 // grace, procgroup.WaitDelay and a margin: a jj the stop reaches is a jj that leaves.
 //
 // It does not assert that no lock is left. jj removed the git index lock in 13 of 14 measured
-// SIGTERM runs and left it in the fourteenth (dispatch://INFRA-3098, measured in an issue pod on
+// SIGTERM runs and left it in the fourteenth (dispatch://POMJU-3098, measured in an issue pod on
 // 2026-11-12), and a rate like that is no assertion a row can hold: it would fail about one run
 // in fourteen whatever the tree does. So the row writes what it found — which lock files remain,
 // and how long the stop took — into the test's own output, where a reader of a `-v` run sees it,

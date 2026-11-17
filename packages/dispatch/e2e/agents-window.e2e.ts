@@ -10,8 +10,8 @@ import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The Agents page at the size it really is (INFRA-812, R7; the browser cases of the
- * Verification document's k12, dispatch://INFRA-812/artifact/verification-md).
+ * The Agents page at the size it really is (POMJU-812, R7; the browser cases of the
+ * Verification document's k12, dispatch://POMJU-812/artifact/verification-md).
  *
  * Six hundred sessions is the page a person opens, and the list draws the rows the screen holds
  * and twelve either side of them, with its box as tall as all six hundred so the scrollbar

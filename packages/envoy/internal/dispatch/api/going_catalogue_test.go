@@ -293,7 +293,7 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 	}
 
 	// A call the action's own schema refuses is the same: refused before anything is sent.
-	_, err = caller.Do(context.Background(), "dispatch_issue", map[string]any{"project": "INFRA"})
+	_, err = caller.Do(context.Background(), "dispatch_issue", map[string]any{"project": "POMJU"})
 	var refused GoingArgumentError
 	if !errors.As(err, &refused) || !strings.Contains(refused.Reason, `argument "title" is required`) {
 		t.Fatalf("the caller answered %v, want the missing title refused", err)
@@ -302,7 +302,7 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 		t.Fatalf("the caller sent %d request(s) for a call the schema refuses", len(doer.requests))
 	}
 
-	response, err := caller.Do(context.Background(), "dispatch_issue", map[string]any{"project": "INFRA", "title": "A new issue"})
+	response, err := caller.Do(context.Background(), "dispatch_issue", map[string]any{"project": "POMJU", "title": "A new issue"})
 	if err != nil {
 		t.Fatalf("perform an action the catalogue holds: %v", err)
 	}
@@ -317,11 +317,11 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 	t.Run("a placeholder is filled from the arguments rather than sent as a body field", func(t *testing.T) {
 		doer := &countingDoer{}
 		caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
-		if _, err := caller.Do(context.Background(), "dispatch_claim", map[string]any{"issue": "INFRA-1042"}); err != nil {
+		if _, err := caller.Do(context.Background(), "dispatch_claim", map[string]any{"issue": "POMJU-1042"}); err != nil {
 			t.Fatalf("claim an issue: %v", err)
 		}
 		sent := doer.requests[0]
-		if sent.Method != http.MethodPost || sent.URL.Path != "/api/v1/issues/INFRA-1042/claim" {
+		if sent.Method != http.MethodPost || sent.URL.Path != "/api/v1/issues/POMJU-1042/claim" {
 			t.Fatalf("the caller sent %s %s", sent.Method, sent.URL.Path)
 		}
 	})
@@ -329,11 +329,11 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 	t.Run("the argument that tells two rows apart picks the row", func(t *testing.T) {
 		doer := &countingDoer{}
 		caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
-		if _, err := caller.Do(context.Background(), "dispatch_claim", map[string]any{"issue": "INFRA-1042", "release": true}); err != nil {
+		if _, err := caller.Do(context.Background(), "dispatch_claim", map[string]any{"issue": "POMJU-1042", "release": true}); err != nil {
 			t.Fatalf("release a claim: %v", err)
 		}
 		sent := doer.requests[0]
-		if sent.Method != http.MethodDelete || sent.URL.Path != "/api/v1/issues/INFRA-1042/claim" {
+		if sent.Method != http.MethodDelete || sent.URL.Path != "/api/v1/issues/POMJU-1042/claim" {
 			t.Fatalf("the caller sent %s %s", sent.Method, sent.URL.Path)
 		}
 	})

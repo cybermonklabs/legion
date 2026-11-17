@@ -16,7 +16,7 @@ related_issues:
 
 # A skill recipe that derives what the daemon derives in code reads the whole input the code reads
 
-Extends docs/solutions/skill-patterns/a-command-inside-an-instruction-is-copied-from-the-code-that-runs-it-and-anchored-INFRA-336.md.
+Extends docs/solutions/skill-patterns/a-command-inside-an-instruction-is-copied-from-the-code-that-runs-it-and-anchored-POMJU-336.md.
 That note copies a command from the code that runs it. A recipe the code never runs — a `curl` an
 agent types to reach the same answer the daemon computes in Go — has no source to copy, and its
 semantics are held equal to the code's by review alone.

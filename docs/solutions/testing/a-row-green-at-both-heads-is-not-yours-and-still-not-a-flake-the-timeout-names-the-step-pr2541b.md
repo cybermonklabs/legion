@@ -38,14 +38,14 @@ the step between those two conclusions is where this round was wrong.
 
 ## Evidence
 
-sjawhar/legion#2541 (INFRA-264). CI job 124592486461 at `61e45835` failed one row of
+sjawhar/legion#2541 (POMJU-264). CI job 124592486461 at `61e45835` failed one row of
 `packages/dispatch/e2e/overlapping-marks.e2e.ts:311` with exactly that pair of lines, 1433 rows of
 the same suite green beside it, in a directory the branch does not touch. The row then passed
 15/15 at the branch head and 15/15 in a `--shared` clone of `main` at `290625b7` (which contains
 `b4dc9f96`, the `main` the branch had merged), with the spec byte-identical in both, and the
 re-run of the failed jobs settled green — so the round reported a flake of the harness.
 
-It was not one. INFRA-317's architect had traced the same row at 18:57Z: the test checked only the
+It was not one. POMJU-317's architect had traced the same row at 18:57Z: the test checked only the
 server's record before making the next quote, while the margin refuses a new quote while a
 composer's send is still in flight, so the next composer never opened and the row ran out its 30
 seconds. The fix waits for the composer to close, and passed 10 of 10 with a send held and 40 of

@@ -156,7 +156,7 @@ func TestReconcileLeavesSlotStateUnchangedWhenALevelSnapshotEchoesAnAgentsOutOfW
 			t.Fatalf("seed slot: %v", err)
 		}
 		// The tree's lifecycle is what says it runs (record.TreeLive); a root at a running
-		// status in no live tree is one the INFRA-129 net takes out of the workflow.
+		// status in no live tree is one the POMJU-129 net takes out of the workflow.
 		seedLifecycleTx(t, tx, "LEGION-AGENT")
 	})
 	seedWaiting(t, pool, "LEGION-NEXT", "B")

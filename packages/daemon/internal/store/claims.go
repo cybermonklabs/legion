@@ -23,7 +23,7 @@ var _ supervise.Store = (*Store)(nil)
 // claimSelect reads a claim with the delivery pending on it, if any: the two tables are written
 // separately (a delivery changes far more often than the claim it rides on) and read together.
 // It does not read workspace_lost: nothing carries a disk forward for a launch to find lost
-// (INFRA-80). The column stays unread rather than dropped — migrations here are forward-only, and
+// (POMJU-80). The column stays unread rather than dropped — migrations here are forward-only, and
 // the previous release's daemon still reads its own claims table, so dropping it would make
 // rolling the image back need a database restore.
 // The two marks of how a claim answered its update round are an exception, dropped by
@@ -88,7 +88,7 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 }
 
 // PutClaimActivity writes the four activity columns of token's claim row and nothing else: what
-// that claim's session last reported of what it is doing (INFRA-945). The report is no part of
+// that claim's session last reported of what it is doing (POMJU-945). The report is no part of
 // the claim's machine state — it arrives between a machine's writes, and the machine's in-memory
 // claim does not carry it — so one write of the whole row would erase every report sent since
 // that machine read its claim; the claim's own writes carry no report and leave these columns
@@ -151,7 +151,7 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generat
 }
 
 // PutClaimStep writes the eight step columns of token's claim row and nothing else: what the
-// daemon last saw that claim's agent do (INFRA-1274). The record is no part of the claim's
+// daemon last saw that claim's agent do (POMJU-1274). The record is no part of the claim's
 // machine state — it is built from the tool frames that arrive between a machine's writes, and
 // the machine's in-memory claim does not carry it — so one write of the whole row would erase
 // every step seen since that machine read its claim; the claim's own writes leave these columns

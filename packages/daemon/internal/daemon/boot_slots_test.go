@@ -186,7 +186,7 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 }
 
 // issueSlotsMigration is the migration that gives an issue its own slot, the first schema change
-// of this release (dispatch://INFRA-980). It is the one migration preReleaseStore withholds, and
+// of this release (dispatch://POMJU-980). It is the one migration preReleaseStore withholds, and
 // so the one every test of the first boot watches Store.Migrate apply.
 const issueSlotsMigration = 20261103183833
 
@@ -205,7 +205,7 @@ const issueSlotsMigration = 20261103183833
 //
 // It is built rather than checked in because the first boot on the release is reachable no other
 // way: nothing on intake.DaemonBooted says which boot is the first, so the grant that keeps every
-// working issue at its turn is the migration's own (dispatch://INFRA-980, "The first boot above
+// working issue at its turn is the migration's own (dispatch://POMJU-980, "The first boot above
 // the cap is a migration, not a boot rule"), and the only way to watch that grant is to arrive at
 // it from the schema that precedes it.
 func preReleaseStore(t *testing.T) *store.Store {

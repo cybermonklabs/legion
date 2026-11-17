@@ -229,7 +229,7 @@ func TestPodUpdateOpensARoundAndSendsTheWorkerNothing(t *testing.T) {
 	}
 }
 
-// The round's terms are fixed when it opens (dispatch://INFRA-2981 R9). The sweep posts the same
+// The round's terms are fixed when it opens (dispatch://POMJU-2981 R9). The sweep posts the same
 // round at every tick, and the drift it reads can move while the round runs, but a later post
 // writes none of it: the reasons and the clock stay the first post's, the claim is written no
 // more times, and the worker is sent nothing. So the ask the sweep publishes from the claim's
@@ -282,7 +282,7 @@ func TestPodUpdateLeavesTheTaskAWorkingClaimHolds(t *testing.T) {
 
 // A suspended claim is recorded in the round and is not revived for it, whoever suspended it: the
 // ask is a message on the role's topic, a topic no live session holds is asked nothing, and the
-// round ends at its bound whether or not the role answers (dispatch://INFRA-2981 R1).
+// round ends at its bound whether or not the role answers (dispatch://POMJU-2981 R1).
 func TestPodUpdateRecordsTheRoundOnASuspendedClaimAndRevivesNothing(t *testing.T) {
 	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByOperator} {
 		t.Run(string(by), func(t *testing.T) {
@@ -364,7 +364,7 @@ func TestPodUpdateAskedMarksTheRoundsAskOnce(t *testing.T) {
 }
 
 // An ask an older daemon queued as a task for the round the claim is still in is dropped and
-// never sent (dispatch://INFRA-2981 R1: no update task is sent for a round). That daemon queued
+// never sent (dispatch://POMJU-2981 R1: no update task is sent for a round). That daemon queued
 // it while the claim was in a turn, so the end of that turn was where that daemon sent it, and
 // this daemon restores the claim holding it. Its text can tell the worker that the end of the
 // turn answers the round, and the end of a turn is no answer, whatever contract the claim's
@@ -431,9 +431,9 @@ func TestPodUpdateTheEndOfTheTurnOfAnOlderDaemonsAskIsNoAnswer(t *testing.T) {
 // claim suspended and holding that task. While the suspension stands nothing is sent: the sweep's
 // posts of the round revive nothing and hand the task to nobody. The resume relaunches the claim,
 // and at ready the older daemon's task is dropped and never sent, though it names the round the
-// claim is still in (dispatch://INFRA-2981 R1). The role gets the round's Envoy ask instead, which
+// claim is still in (dispatch://POMJU-2981 R1). The role gets the round's Envoy ask instead, which
 // the sweep publishes and this machine does not. The one prompt the resume sends is the daemon's
-// own delivery of what the operator's suspension ended (dispatch://INFRA-3276 R3): the drop leaves
+// own delivery of what the operator's suspension ended (dispatch://POMJU-3276 R3): the drop leaves
 // the claim holding nothing while that record tells (relaunchAfterDrop).
 //
 // The negative control is sendPending's drop narrowed to the rule before this one, an ask of a
@@ -481,7 +481,7 @@ func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t 
 }
 
 // Once the worker has answered, the next task is held rather than sent: it would be lost with the
-// process (answeredOpenRound, dispatch://INFRA-2981 R5). The round's end releases it.
+// process (answeredOpenRound, dispatch://POMJU-2981 R5). The round's end releases it.
 func TestPodUpdateHoldsTheNextTaskUntilTheRoundEnds(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.reach(StateReady)
@@ -540,7 +540,7 @@ func TestPodUpdateANewRoundSendsTheTaskTheAnsweredRoundHeld(t *testing.T) {
 // task's turn: confirmed, its run served, and retired by that turn's end. Nobody ever sent a task
 // the round holds, so the mark would destroy it and the worker would never read it at all.
 //
-// The notice's turn leaves the worker's answer standing (dispatch://INFRA-2981 R9), so the round
+// The notice's turn leaves the worker's answer standing (dispatch://POMJU-2981 R9), so the round
 // still holds the task through that turn and after its end, and the round's end sends it. What
 // this pins is that the task is still there to be given, once.
 func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
@@ -802,7 +802,7 @@ func TestPodUpdateEndedOnAFailedClaimClearsTheRoundAndSendsNothing(t *testing.T)
 	}
 }
 
-// An answer stands for its round through every turn after it (dispatch://INFRA-2981 R9). An
+// An answer stands for its round through every turn after it (dispatch://POMJU-2981 R9). An
 // Envoy notice delivered into the worker's session, or a person's steer, starts a turn the daemon
 // sent nothing for, and that turn can commit work the answer said was pushed: a commit that turn
 // does not push is lost with the pod, and the answer is not taken back for it. So the answer, its
@@ -841,7 +841,7 @@ func TestPodUpdateAnAnswerStandsThroughATurnTheDaemonDidNotPrompt(t *testing.T) 
 }
 
 // An answered claim is handed no task until its round ends, and a turn the daemon did not prompt
-// changes nothing of that (dispatch://INFRA-2981 R5, R9): the answer stands through the turn, so
+// changes nothing of that (dispatch://POMJU-2981 R5, R9): the answer stands through the turn, so
 // the hold does too. The task queued after the answer stays held and unconfirmed through that
 // turn and after its end, and the round's end releases it.
 func TestPodUpdateATurnTheDaemonDidNotPromptLeavesTheAnsweredClaimsNextTaskHeld(t *testing.T) {
@@ -1015,7 +1015,7 @@ func TestPodUpdateACurrentRegistrationEndsThePluginRound(t *testing.T) {
 
 // A claim an earlier daemon left in a plugin update round leaves that round at the end this
 // release's boot posts for it, whatever state it is in, and the task the round was holding back
-// is released (dispatch://INFRA-2712 R5, internal/daemon's endPluginRounds). Nothing of this
+// is released (dispatch://POMJU-2712 R5, internal/daemon's endPluginRounds). Nothing of this
 // release opens a plugin round, and nothing of it carries one either: the sweep reads pod rounds
 // alone (reconcilePodUpdates), so a round left standing would hold the claim's next task behind
 // it for as long as the claim lives. The end takes the round whole — the ask nothing read, every
@@ -1100,7 +1100,7 @@ func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.
 
 			// The suspension let a process go that had run a turn and left no report the daemon
 			// took (its plugin is stale here), so the resumed claim's task carries the sentence
-			// of what it may have ended (dispatch://INFRA-3276 R3); the live claim's process was
+			// of what it may have ended (dispatch://POMJU-3276 R3); the live claim's process was
 			// never let go, and its task goes as it was queued.
 			want := next
 			if tc.suspend {
@@ -1286,7 +1286,7 @@ func TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced(t *testing.T) {
 // prompt started the turn, and the claim's process dies in it. The relaunch comes up in the
 // round's own pod, so the claim is still in the round, and its ready drops the ask rather than
 // send it. The one prompt the ready sends is the daemon's own delivery of what the death ended
-// (dispatch://INFRA-3276 R3): the drop leaves the claim holding nothing while that record tells
+// (dispatch://POMJU-3276 R3): the drop leaves the claim holding nothing while that record tells
 // (relaunchAfterDrop).
 func TestPodUpdateAnAskKeepsItsRoundWhenItsIdRotates(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
@@ -1718,7 +1718,7 @@ func TestPodUpdateARoundThatReplacesAnotherLeavesNoQuestionArmedForTheNextTask(t
 // An open round holds a task back from its worker only once that worker has answered it
 // (sendPending's answeredOpenRound), so only then is a task no work of the claim's. A claim that
 // has not answered — here one whose turn of an older daemon's ask ended with no call, which is
-// no answer (dispatch://INFRA-2981 R9) — is a claim the daemon hands its task to, and INFRA-264
+// no answer (dispatch://POMJU-2981 R9) — is a claim the daemon hands its task to, and POMJU-264
 // is what refusing its completion looks like — a tester whose first turn an Envoy message started
 // ran its whole phase and was answered that it belonged to no run.
 //

@@ -576,7 +576,7 @@ func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *
 	}
 }
 
-// dispatch://INFRA-392. A role whose holder missed its heartbeats still has that holder: the
+// dispatch://POMJU-392. A role whose holder missed its heartbeats still has that holder: the
 // listener keeps the claim and answers the lookup with holder_state unresponsive, so the
 // delivery resolves to that session and its frame is stored for it until it answers again.
 // Asked without the selector, the same listener answers 404 holder_lapsed - the answer that

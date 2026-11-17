@@ -566,7 +566,7 @@ func listResident(listing *sync.Map, live *crdt.Doc, value any) {
 	// through ygo's room table: a closure holding the listing strongly would be a cycle through
 	// live, which would then never be collected, and nor would anything it holds. The nil check
 	// skips the delete only where the listing went first, and a listing that is gone has no entry
-	// left to drop (dispatch://INFRA-1085).
+	// left to drop (dispatch://POMJU-1085).
 	owner := weak.Make(listing)
 	runtime.AddCleanup(live, func(key weak.Pointer[crdt.Doc]) {
 		if listing := owner.Value(); listing != nil {

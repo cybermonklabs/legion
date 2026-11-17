@@ -14,7 +14,7 @@ module: packages/envoy/internal/dispatch
 
 # A new kind of index row ships with no producer when every build reconciles the index wholesale
 
-Extends docs/solutions/architecture-patterns/a-graph-read-skips-a-node-kind-its-build-cannot-address-and-one-registry-drives-lists-and-counts-INFRA-364.md,
+Extends docs/solutions/architecture-patterns/a-graph-read-skips-a-node-kind-its-build-cannot-address-and-one-registry-drives-lists-and-counts-POMJU-364.md,
 which covers the read direction. This document covers the write direction.
 
 ## The rule

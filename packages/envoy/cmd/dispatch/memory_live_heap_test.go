@@ -19,7 +19,7 @@ import (
 // less than that from run to run. Resident memory above idle (peakAboveIdle) does not: read above
 // an idle taken as /healthz first answered, with the boot's dead pg_query heap in it or not
 // (memoryHarness.start), the two edits differed by -257 to +256 MiB on a 288-CPU host, against the
-// test's 128 (INFRA-3904: rows read 132 and 150); read above an idle taken after a collection that
+// test's 128 (POMJU-3904: rows read 132 and 150); read above an idle taken after a collection that
 // gives the free heap back to the system, they still differed by -21 to +24 MiB, from where the
 // collector's GOGC=25 margin fell and from pages the heap held free.
 //

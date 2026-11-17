@@ -1279,7 +1279,7 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 // it stays the change it was, holding what it held. Either way the adoption is one read of the
 // working copy and the one change it needs.
 //
-// INFRA-53's case (R3 of dispatch://INFRA-2695): an empty undescribed working copy the previous
+// POMJU-53's case (R3 of dispatch://POMJU-2695): an empty undescribed working copy the previous
 // phase role left, as a `jj split` of its work into a described commit leaves one, becomes the
 // incoming phase role's, and the described commit under it keeps its id and its author.
 func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t *testing.T) {

@@ -1623,8 +1623,8 @@ func (c *turnClock) fire(after time.Duration) int {
 	return len(due)
 }
 
-// dispatch://INFRA-2947's case, which the specification makes R4's own acceptance
-// (dispatch://INFRA-3276): a worker whose turn the daemon's task starts, and whose first call in
+// dispatch://POMJU-2947's case, which the specification makes R4's own acceptance
+// (dispatch://POMJU-3276): a worker whose turn the daemon's task starts, and whose first call in
 // it is handoff_complete, is accepted. The tester served an entry of its phase before this one, so
 // the completion is the new task's only once the turn confirms that task. The task's prompt is
 // acknowledged, Oh My Pi's pre-turn work outlasts the daemon's five-second wait, which takes the

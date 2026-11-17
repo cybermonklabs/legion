@@ -10,7 +10,7 @@ const agent = {
   as: "agent" as const,
 };
 
-/** The two bodies that froze a reader's tab for about a minute and 15 s (INFRA-581). They are
+/** The two bodies that froze a reader's tab for about a minute and 15 s (POMJU-581). They are
  *  spelled in `heavy-bodies.ts` with the rest of this suite's heavy bodies, where the digest
  *  table holds them to the bytes Go writes through the API (`heavy-bodies.ts:7-14`). */
 const inputs = [

@@ -10,7 +10,7 @@ date: 2026-11-02
 status: active
 module: packages/daemon
 related_issues:
-  - "INFRA-484"
+  - "POMJU-484"
   - "sjawhar/legion#2538"
 ---
 
@@ -32,7 +32,7 @@ related_issues:
 The shape to recognise: N callers, N−1 of which happen to pass the record's own field. The
 exception is the whole rule, and it is the one the suite does not cover.
 
-## Evidence (INFRA-484, sjawhar/legion#2538)
+## Evidence (POMJU-484, sjawhar/legion#2538)
 
 The daemon opens an update round over a drifted pod and replaces that pod only once every worker
 has answered. A claim whose process is relaunched into another pod **leaves** the round: it takes

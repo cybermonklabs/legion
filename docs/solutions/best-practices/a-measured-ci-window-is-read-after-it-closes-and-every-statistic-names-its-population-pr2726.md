@@ -15,7 +15,7 @@ related_issues:
 
 # A measured CI window is read after it closes, and every statistic names its population
 
-Extends docs/solutions/best-practices/an-instrument-that-answers-a-smaller-question-returns-the-comfortable-answer-INFRA-141.md.
+Extends docs/solutions/best-practices/an-instrument-that-answers-a-smaller-question-returns-the-comfortable-answer-POMJU-141.md.
 
 That note's shape is the instrument that answers a narrower question than the one asked, and
 returns the answer that lets the work go on.
@@ -49,7 +49,7 @@ tester and a reviewer in one pull request:
 
 ## Evidence
 
-sjawhar/legion#2726 (dispatch://INFRA-1052) sized a CI job's `timeout-minutes` from the 30 newest
+sjawhar/legion#2726 (dispatch://POMJU-1052) sized a CI job's `timeout-minutes` from the 30 newest
 counted `test` jobs of main push runs.
 That population has since stopped existing: `ci.yaml` runs on a pull request, a merge group and a
 dispatch, and on no push, so the same window read today is the merge-group runs' jobs, which is

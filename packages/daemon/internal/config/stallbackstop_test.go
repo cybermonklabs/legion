@@ -332,7 +332,7 @@ func TestStallBackstopRefusals(t *testing.T) {
 // last step is already past, so the sweep would end the turn of every claim in one, at once,
 // for ever. Measured at 9714c8241407: with the bound at the reader's own maximum the ladder is
 // -2562047h38m16.855551616s and the default backstop is -1.551616ms, and
-// `worker_stall_backstop_hours: {implementer: 0.5}` loads with `Config OK` (INFRA-1274, the
+// `worker_stall_backstop_hours: {implementer: 0.5}` loads with `Config OK` (POMJU-1274, the
 // tester's round at 9714c8241407).
 //
 // Whatever the remedy — a saturating sum, or a reader bound that leaves the ladder room — the

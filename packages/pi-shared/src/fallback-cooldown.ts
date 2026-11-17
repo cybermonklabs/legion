@@ -2,7 +2,7 @@ import { lastCustomEntry } from "./custom-entry";
 import { integerSetting, type StallLimitsLog } from "./stall-limits";
 
 /**
- * The cooldown a worker's model fallback runs on (INFRA-956 R1): how long a session stays on the
+ * The cooldown a worker's model fallback runs on (POMJU-956 R1): how long a session stays on the
  * weaker model after a provider's content filter refused a turn, and when it goes back.
  *
  * Pure, in the shape of `phase-stall.ts`: it imports nothing of Oh My Pi and reads no clock, so

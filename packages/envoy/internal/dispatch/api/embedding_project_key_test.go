@@ -174,7 +174,7 @@ func fillRetryEvery(t *testing.T, every time.Duration) {
 // what keeps them apart, and duty.Exclusive makes one attempt, so the process that skipped used
 // to do nothing about the fill for the rest of its life: measured on this change's own head,
 // two processes racing left the loser silent and three rows unlabelled after the winner died
-// (INFRA-988). A project-scoped meaning search keeps the owner-joined predicate for as long as
+// (POMJU-988). A project-scoped meaning search keeps the owner-joined predicate for as long as
 // that lasts, so "until something next boots" is the recall the older read serves.
 //
 // So this is the other process's whole life in one test. Another process - a pool of its own on

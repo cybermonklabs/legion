@@ -20,7 +20,7 @@ import (
 
 // The tests in this file run the rendered callout block on the hub's image (testnats.HubImage, the
 // nats-server the hub runs), with an auth service of their own answering the server's requests as
-// dispatch://INFRA-840's will: it admits a client presenting sessionToken into the global account,
+// dispatch://POMJU-840's will: it admits a client presenting sessionToken into the global account,
 // $G, with one session's grant, and refuses every other.
 
 const (

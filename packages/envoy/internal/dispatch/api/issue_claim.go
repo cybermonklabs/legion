@@ -311,7 +311,7 @@ type claimTakeability struct {
 // A live holder keeps its claim: its own release, or a person, is what ends it. An unresponsive
 // holder keeps it too, until its silence outlasts contracts.IssueClaimUnresponsiveGrace: missing
 // heartbeats under box load is ordinary, and a session that comes back must still have the issue
-// it was working (dispatch://INFRA-392). That grace is the age the silence may reach, as the
+// it was working (dispatch://POMJU-392). That grace is the age the silence may reach, as the
 // registry's own windows are (internal/session's StateOf) and as the constant itself reads - the
 // claim is held "until it was last seen longer ago than this" - so a holder exactly takeableAt
 // old still has the issue, and the claim is free from the moment after it. An unresponsive

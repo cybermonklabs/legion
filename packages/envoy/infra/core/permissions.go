@@ -128,11 +128,11 @@ func ListenerPermissions(machineID string) Permissions {
 // included, then a subscribe to every notification topic (bus.NotificationTopicPrefix) that
 // nothing now uses. It existed for the opt-in that had a listener hold a core subscription on
 // notifications.> for the sessions it served, and that opt-in went with the listener's push to
-// a session's serving port (dispatch://INFRA-889), so this set grants the listener's set and the
+// a session's serving port (dispatch://POMJU-889), so this set grants the listener's set and the
 // one subscribe nothing reads. It keeps the subscribe rather than dropping it, and so stays a
 // set of its own rather than an alias, because a change to a set rewrites every hub's rendered
 // authorization: it replaces a VM hub's instance and reaches a clustered hub only as a live
-// reload, which dispatch://INFRA-429's non-goals leave to dispatch://INFRA-551. No grant code
+// reload, which dispatch://POMJU-429's non-goals leave to dispatch://POMJU-551. No grant code
 // changes here, and permissions_test.go keeps asserting that subscribe. The set holds none of
 // SessionPermissions' publish entries, so a process connecting as this user can neither publish
 // a session's agent stream frames nor subscribe to a session's control subject.
@@ -226,7 +226,7 @@ func DispatchPermissions(machineID string) Permissions {
 //
 // What this set does not solve: every session on a shared user holds the same set, so the relay
 // subject carries * and one session can read another's relay frames, until the per-session
-// credentials of dispatch://INFRA-840. dispatch://INFRA-778 is what hands a deployment's sessions
+// credentials of dispatch://POMJU-840. dispatch://POMJU-778 is what hands a deployment's sessions
 // this grant; nothing here does.
 func SessionPermissions() Permissions {
 	return Permissions{
@@ -259,12 +259,12 @@ func DaemonPermissions() Permissions {
 // That subscribe is this set's own, not one it takes from the session's: SessionPermissions holds
 // it no longer. It is the reach the sessions sharing a host user already have - one user is one
 // grant, so each of them may subscribe to every notification topic - and naming it here keeps
-// them at that reach until the per-session credentials of dispatch://INFRA-840 take it away. No
+// them at that reach until the per-session credentials of dispatch://POMJU-840 take it away. No
 // Envoy program reads it: the listener holds no core subscription on notifications.> any more,
 // and a start that still sets ENVOY_SUBSCRIBE_ALL_TOPICS is warned about by name and otherwise
 // ignored (cmd/listener/main.go's warnIgnoredEnv). Dropping it would rewrite every deployed host
 // user, and a hub's users are rendered into the VM's cloud-config, which changes only by
-// replacing the VM, so it stays until INFRA-840 replaces it.
+// replacing the VM, so it stays until POMJU-840 replaces it.
 func HostPermissions(machineID string) Permissions {
 	listener, agent := listenerGrant(machineID), SessionPermissions()
 	// notifications.> admits every notification subject the session's set names, its relay subject

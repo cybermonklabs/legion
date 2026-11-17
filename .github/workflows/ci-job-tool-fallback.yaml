@@ -66,7 +66,7 @@ jobs:
     # watch: 3 s, 5 s and 4 s in those three jobs and 9 s in job 130306447638, so it is the
     # one added step whose cost a reader can see, and the item above allows for it. The watch
     # itself is a sampler beside the job rather than a step of it, so those two steps are its
-    # whole cost to this budget (dispatch://INFRA-2605).
+    # whole cost to this budget (dispatch://POMJU-2605).
     #
     # EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
     # and the twenty-four installs whose control accepts a failure are timed as well, against
@@ -187,7 +187,7 @@ jobs:
       # The job record times every step boundary, so a reader lines any step of this job up
       # against the second it ran in. That is what this job could not answer on 2026-11-10,
       # when one of its runs lost its hosted runner and GitHub's annotation named starvation of
-      # CPU or memory as one of three causes (dispatch://INFRA-2605).
+      # CPU or memory as one of three causes (dispatch://POMJU-2605).
       # WHAT IT DOES NOT SHOW is the loss itself: a runner that stops answering stores no log at
       # all, so the series ends where the log ends and says nothing about the second after it.
       # It is the headroom of every run that does store a log, and the reading for a command

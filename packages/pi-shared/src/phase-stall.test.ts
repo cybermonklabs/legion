@@ -77,7 +77,7 @@ test("a reply the provider refused classifies as the refusal, not as what the wo
 });
 
 // Reminding a session the provider is refusing buys another refused turn, which is what left the
-// implementer of dispatch://INFRA-264 reminded for ever.
+// implementer of dispatch://POMJU-264 reminded for ever.
 test("a refused turn earns no reminder and moves nothing", () => {
   const open = { state: "open", count: 2 } as const;
   expect(stepPhaseStall(open, { kind: "refused", message: "Overloaded" })).toEqual({ state: open });
@@ -110,7 +110,7 @@ test("a record's last message reads back no longer than the notice quotes", () =
   });
 });
 
-// INFRA-484: the worker has answered the daemon's update message (`ready_for_update`), so it is to
+// POMJU-484: the worker has answered the daemon's update message (`ready_for_update`), so it is to
 // start nothing until the daemon comes back to it. A reminder here would continue the answering
 // turn in the same run: the work that continuation did would go with the pod, and the daemon
 // would see no turn end.

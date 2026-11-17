@@ -37,7 +37,7 @@ interface InboxAnswer {
  * `{id, content}` (the envelope's `event_id`, else a fresh id; the rendered content), and resolves
  * once the bridge answers `{id, ok: true}`. A line whose delivery carries more than its text - a
  * person's own message and the pictures it embeds - also carries `blocks`, Claude Code's own
- * content blocks for it (INFRA-1026); `content` stays the text, so a bridge that does not know
+ * content blocks for it (POMJU-1026); `content` stays the text, so a bridge that does not know
  * the field delivers the message as it always did. The bridge answers `ok` only when Claude Code
  * re-emits that user message (`--replay-user-messages`), that is once it took the delivery into a
  * step, and an error when Claude Code never takes it: a relayed frame is answered `done` on the

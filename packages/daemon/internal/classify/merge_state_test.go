@@ -10,7 +10,7 @@ import (
 // GitHub's verdict on merging a head - its mergeability and its merge state - is its answer about
 // the tree that head carries, so a move to another head leaves nothing to read: any push may have
 // changed the code GitHub answered about, and a verdict of another head must never move an
-// approval (dispatch://INFRA-714 R2). The time that verdict was read goes with it
+// approval (dispatch://POMJU-714 R2). The time that verdict was read goes with it
 // (record.PullRequest.StateReadAt): a stamp left behind would say the head the record now stands
 // at had been read when it was the head before it that was. A synchronize that moves no head keeps
 // both, since GitHub answered about that very tree. The push that links a move judges it again:

@@ -218,7 +218,7 @@ test("the criterion is the person's words in a check block carrying no attribute
 // The create lands and a write onto the issue is refused. The issue exists, so the bar reports
 // it as made and says which write was refused against its key, and the row it leaves is the
 // way to open it: pressing again would make a second issue, which is the husk R14
-// (dispatch://INFRA-1042/spec#b-r14) exists to stop.
+// (dispatch://POMJU-1042/spec#b-r14) exists to stop.
 test("a write refused after the create reports the issue as made and offers to create no more", async () => {
   const user = userEvent.setup();
   const bar = openBar({ label: "from-the-bar", session: "sess-1" });

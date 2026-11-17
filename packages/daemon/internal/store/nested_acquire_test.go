@@ -3,7 +3,7 @@ package store
 // The rule the pool cannot survive without, measured against the PostgreSQL LEGION_TEST_PG_DSN
 // names: a caller that already holds one of the pool's connections is refused a second one, at
 // the call that asks for it, rather than waiting for a connection only it can give back. That
-// wait is INFRA-3169 — every connection of the production pool sat `idle in transaction` while
+// wait is POMJU-3169 — every connection of the production pool sat `idle in transaction` while
 // the callers behind them waited — and a pool of one connection is that deployment in miniature.
 
 import (

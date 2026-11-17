@@ -134,7 +134,7 @@ describe("pictureSyntax", () => {
 });
 
 // The one rule the Claude Code plugin tags a streamed row by and the Agents page reads a stored
-// body by, so a person's message shows once (INFRA-1026).
+// body by, so a person's message shows once (POMJU-1026).
 describe("comparableLines", () => {
   const address = "dispatch://agent/s1/artifact/i3-blue96-png@v1";
 
@@ -163,7 +163,7 @@ describe("comparableLines", () => {
 
 // The line step both sides of the Agents page's comparison share: the body's through
 // `comparableLines`, the streamed row's through `rowLines`, which strips the row's pictures its
-// own way first (INFRA-1026).
+// own way first (POMJU-1026).
 describe("trimmedLines", () => {
   const address = "dispatch://agent/s1/artifact/i3-blue96-png@v1";
 

@@ -24,7 +24,7 @@ import (
 // The runtime's entry sweep reaches a root's own architect: on its own period it applies an
 // intake.EntrySweep, and admission sends the architect of a root standing at admitted the work
 // the entry its phases row names. Nothing else happens here — no Dispatch event, no completion,
-// no boot — which is the fixture the measured defect leaves behind (dispatch://INFRA-2614): a
+// no boot — which is the fixture the measured defect leaves behind (dispatch://POMJU-2614): a
 // root admitted with its architect's entry raised, holding its slot, and an architect claim that
 // was never created because the start that would have created it reached nobody.
 //
@@ -94,7 +94,7 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 
 	// Each sweep runs on a hold mark of its own, as workflowRuntime.run starts the sweep
 	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as it does in production
-	// rather than refusing nothing on an unmarked context (INFRA-3169).
+	// rather than refusing nothing on an unmarked context (POMJU-3169).
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()

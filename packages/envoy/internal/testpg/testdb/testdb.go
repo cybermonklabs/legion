@@ -25,7 +25,7 @@ import (
 // the URL its own statements run on, and that URL and the result differ only in the path.
 //
 // A failure names the server's host and the database, never adminURL: a DSN carries a credential,
-// and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).
+// and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-POMJU-229.md).
 // This function reads no environment variable and starts no container, so its failures can name
 // neither.
 func DatabaseOn(t testing.TB, adminURL, prefix string) string {

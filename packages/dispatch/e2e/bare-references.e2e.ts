@@ -61,7 +61,7 @@ const NO_ISSUE_ROW = "Blocked on CORE-1, which no issue holds.";
 const NO_ISSUE_KEY = "CORE-404";
 
 /** The one row of the table whose body is a decision block. The server refuses a body that
- *  holds one (400 DECISION_BLOCK_IN_BODY, INFRA-1201), so the reply that carries this row is
+ *  holds one (400 DECISION_BLOCK_IN_BODY, POMJU-1201), so the reply that carries this row is
  *  seeded straight into `comments` (`e2e/decision-bodies.ts`) rather than written through the
  *  API. It stays on the rendered surface, which is the only browser surface it can be read on:
  *  the preview takes rows of at most 160 characters with no line break, and this body has two. */
@@ -421,7 +421,7 @@ test("the one-line preview shows each reference the shared table links as its ta
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);
   const world = await seedReferenceWorld();
-  // The Replies page carried this one-line preview until INFRA-450 deleted that page, and the
+  // The Replies page carried this one-line preview until POMJU-450 deleted that page, and the
   // Inbox that took its rows draws a thread whole with live links rather than a preview of it.
   // The inert one-line preview a reader still meets is an answered ask's question on the
   // Answers page, so each row of the table is written as one question there. A preview is one

@@ -23,7 +23,7 @@ import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The Inbox's reading column (INFRA-575), in the rows whose claim reaches the server: an answer
+ * The Inbox's reading column (POMJU-575), in the rows whose claim reaches the server: an answer
  * and an approval written and read back, the two withdrawals the server makes while the page
  * watches, the refusal that reads the Inbox back after it, and the row that reads a decision
  * block out of the live document editor. What the column draws over one fixed list - its two

@@ -41,7 +41,7 @@ func stopBound(budget time.Duration) time.Duration {
 // which neededNoBudget reads from the log: there the elapsed time is a hang guard and not a
 // measurement, so it is far from the work's own duration. Held to stopBound instead, such a row
 // reds on a machine that spends a few milliseconds more than the budget on a stop that in fact
-// waited for nothing - 3.005826798 s against 3 s, which is what INFRA-985 was filed for.
+// waited for nothing - 3.005826798 s against 3 s, which is what POMJU-985 was filed for.
 func stopHangGuard(budget time.Duration) time.Duration {
 	return stopBound(budget) + time.Minute
 }

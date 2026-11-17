@@ -34,7 +34,7 @@ Extends docs/solutions/github/join-a-job-to-the-ci-router.md.
 
 ## Evidence
 
-sjawhar/legion#2741 (dispatch://INFRA-1106) gave `envoy-go` a Go cache family of its own,
+sjawhar/legion#2741 (dispatch://POMJU-1106) gave `envoy-go` a Go cache family of its own,
 `go-envoy-test`, restoring `~/go/pkg/mod` and `~/.cache/go-build` (`ci.yaml:2549-2557`) and saving
 it on a push to main (`ci.yaml:2655-2661`). The same commit put `-count=1` on the three calls that
 lacked it (`ci.yaml:2596`, `:2597`, `:2604`); the integration call already had it (`ci.yaml:2632`).

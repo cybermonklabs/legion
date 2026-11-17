@@ -1,6 +1,6 @@
 //go:build e2e
 
-// The live proof of what a provider error does to a worker's task (dispatch://INFRA-956 R2) and
+// The live proof of what a provider error does to a worker's task (dispatch://POMJU-956 R2) and
 // of the operator's hand on the claims it leaves (R3), driven against real Oh My Pi panes under
 // the real daemon. scripts/e2e/provider-error-retry.sh builds this driver with `-tags e2e` and
 // owns the nats-server and the PostgreSQL it runs against.

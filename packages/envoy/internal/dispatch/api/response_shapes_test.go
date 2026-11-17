@@ -11,7 +11,7 @@ import (
 )
 
 // Every response body of the Dispatch HTTP API is a named Go type, so an OpenAPI document can be
-// reflected out of the route table (INFRA-1406). Many of those types replaced a map literal, and
+// reflected out of the route table (POMJU-1406). Many of those types replaced a map literal, and
 // encoding/json marshals a map with its keys sorted and a struct in field declaration order: a
 // type whose fields are not in the map keys' sorted order would move bytes on the wire. Each row
 // below marshals the named type beside the literal the handler wrote before it was named, and

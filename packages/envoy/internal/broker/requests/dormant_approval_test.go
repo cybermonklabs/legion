@@ -4,7 +4,7 @@
 // again; an approval on a row whose lease has lapsed whilst no end is written against it yet
 // grants too, when the end the sweep is about to write would leave that row dormant; an approval
 // of a request on an enrollment ended for good is denied as it always was; and an approval that
-// races the adoption grants to the enrollment the request names now (dispatch://INFRA-1167).
+// races the adoption grants to the enrollment the request names now (dispatch://POMJU-1167).
 package requests
 
 import (

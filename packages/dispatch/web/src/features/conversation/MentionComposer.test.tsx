@@ -830,7 +830,7 @@ test("mention suggestions say the agent list is refilling instead of that no age
   }
 });
 
-// INFRA-440 (exclusion E2). Each suggestion is one option inside a listbox, which may own only
+// POMJU-440 (exclusion E2). Each suggestion is one option inside a listbox, which may own only
 // options, so the agent in it is drawn by `AgentName` with its running state and no link: a
 // session option's name, and a role option's holder in its detail line.
 test("the mention picker draws each agent with its state and no link", async () => {

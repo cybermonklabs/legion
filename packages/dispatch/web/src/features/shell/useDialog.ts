@@ -219,7 +219,7 @@ export function useMediaQuery(query: string): boolean {
  *  moves the address is the page correcting itself under a reader who has not moved - a route
  *  settling in place, a filter or a selection writing itself into the address - and leaves the
  *  overlay open; closing on a key change alone shut the command bar a reader opened over a
- *  project page still redirecting its bare path (dispatch://INFRA-2452). A replace that leaves
+ *  project page still redirecting its bare path (dispatch://POMJU-2452). A replace that leaves
  *  the address unchanged is the reader moving: React Router makes a `<Link>` click a replace
  *  whenever the link's target equals the address already shown, as the Inbox drawer's owner link
  *  to the issue being read is, and that click closes the overlay. Key and address are both

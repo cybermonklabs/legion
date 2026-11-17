@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 /**
- * The Inbox's reading column (INFRA-575), for the specs that drive the Inbox at whatever width
+ * The Inbox's reading column (POMJU-575), for the specs that drive the Inbox at whatever width
  * their project gives them.
  *
  * From `READING_PANE_WIDTH` the Inbox page is two columns: short rows in `inbox-list`, and the

@@ -172,7 +172,7 @@ func fakeClaude() int {
 		case body == "max-turns":
 			// Claude Code's own end of a turn it ran out of turns in. This line is written here
 			// rather than taken from a recording: no result of the measurement carries this
-			// subtype (dispatch://INFRA-956/artifact/claude-code-2-1-310-refusal-measurement-tgz),
+			// subtype (dispatch://POMJU-956/artifact/claude-code-2-1-310-refusal-measurement-tgz),
 			// so it names the one terminal_reason that was measured, which is the value that
 			// would put an error in the prompt_result were the subtype not excluded by name
 			// (bridge.go's providerFailed).
@@ -211,7 +211,7 @@ func fakeClaude() int {
 // never written by hand. background-turn.jsonl and background-during-prompt.jsonl were recorded
 // against the provider; refusal-turn.jsonl, api-error-529.jsonl and api-error-429.jsonl against
 // a stand-in endpoint that answered one refusal, one 529 and one 429
-// (dispatch://INFRA-956/artifact/claude-code-2-1-310-refusal-measurement-tgz, whose
+// (dispatch://POMJU-956/artifact/claude-code-2-1-310-refusal-measurement-tgz, whose
 // out-refusal.jsonl, out-e529.jsonl and out-e429.jsonl these are). A stream is one recording
 // trimmed to the lines a case needs, and commandBlockInTurn is the only one whose lines stand in
 // another order than the recorded one, which its own comment says.
@@ -585,7 +585,7 @@ func TestAFailedStepIsOhMyPisFailedMessage(t *testing.T) {
 // (shimwire.PromptError), and the prompt_result of a turn that ended any other way carries
 // none: the daemon keeps the task and sends it again for every error in this frame, so a turn
 // Claude Code's own limit ended, or one a tool failed in, must reach it as a turn to retire the
-// task on (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d). The message is
+// task on (dispatch://POMJU-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d). The message is
 // Claude Code's own words, and the status is there only when Claude Code named one.
 func TestOnlyAProviderFailureFillsThePromptResultsError(t *testing.T) {
 	for _, tc := range []struct {

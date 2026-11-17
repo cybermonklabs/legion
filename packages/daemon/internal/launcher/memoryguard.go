@@ -64,13 +64,13 @@ const maxWaitingMemoryKills = 32
 // other launcher logs one line and runs none: no manager then holds a guard, so serve hands no
 // settings on and no report is ever queued.
 //
-// Under gVisor the watch is the memory guard (INFRA-3557), which ends a process before the host
+// Under gVisor the watch is the memory guard (POMJU-3557), which ends a process before the host
 // kernel ends the whole sandbox. It runs at memoryguard's defaults from the start, before any role
 // connects, so the pod is guarded while the daemon is away, and each role's acknowledgement then
 // hands it the daemon's settings (serve). In a microVM (Config.MicroVM, the pod as built) the
 // pod's own kernel stops one process, so the guard is never built and no acknowledgement's
 // settings reach one: the launcher logs one off line and runs the guest watch
-// (memoryguard.Guest, INFRA-3729), which steers that kernel to the processes the guard would end,
+// (memoryguard.Guest, POMJU-3729), which steers that kernel to the processes the guard would end,
 // by the same classifier, and reports each process it stopped through the same sink, each report
 // carrying one of the kernel's two causes. Either watch's lines are the launcher's own, behind no
 // role's prefix (roleLog.linef), because it watches every role's processes and the launcher's

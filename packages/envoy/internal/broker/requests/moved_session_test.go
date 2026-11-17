@@ -1,7 +1,7 @@
 // moved_session_test.go holds what a session's move to another box asks of this package: every
 // surface keyed by an enrollment answers for the enrollment the rows name now, so a grant, its
 // request and the names withheld from the session follow it to the box it enrols on next
-// (dispatch://INFRA-1167).
+// (dispatch://POMJU-1167).
 package requests
 
 import (

@@ -645,7 +645,7 @@ export function isIssueStatus(value: string): value is IssueStatus {
  * `holder_unresponsive` is a route whose session - the routed session, or the role's holder -
  * has missed its heartbeats without ending: the route still reaches it, since the listener
  * stores its messages, so it is told apart from `no_holder` rather than folded into it
- * (dispatch://INFRA-392).
+ * (dispatch://POMJU-392).
  */
 export const ISSUE_ROUTE_STATUSES = [
   "live",
@@ -1596,7 +1596,7 @@ export const dispatchToolSpecs = [
       "it, and records the same verdict on every document the " +
       "request names, each at the version the request names. A later version makes an approval " +
       "stale. A review is the one browser action this command takes for a person; every other " +
-      "browser action is dispatch://INFRA-910's. " +
+      "browser action is dispatch://POMJU-910's. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),

@@ -14,7 +14,7 @@ import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// Check k16 of dispatch://INFRA-1042/artifact/verification-md, serving R14: words that match
+// Check k16 of dispatch://POMJU-1042/artifact/verification-md, serving R14: words that match
 // nothing become an issue whose first content is the person's own declaration, with an agent on
 // it. The bar offers, the person accepts, and only then is anything written.
 //

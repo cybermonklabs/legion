@@ -307,7 +307,7 @@ export async function exportJjSessionAttribution(
  * The key is `LEGION_ISSUE_TRAILER` alone, never `LEGION_ISSUE`: a pane works an issue of this
  * deployment's own Dispatch project, and only the daemon knows whether its repository is one the
  * deployment names, so a key reaches a commit only when the daemon put it in this variable
- * (dispatch://INFRA-472). Absent or empty is no key, and the overlay carries the pair alone.
+ * (dispatch://POMJU-472). Absent or empty is no key, and the overlay carries the pair alone.
  *
  * The workspace is `LEGION_WORKSPACE` resolved (`resolvedWorkspace`), since jj matches a scope
  * against the workspace root it resolved: a caller that passed the raw variable would write a

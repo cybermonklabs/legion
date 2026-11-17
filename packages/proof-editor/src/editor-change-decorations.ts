@@ -249,7 +249,7 @@ export const editorChangeDecorationsPlugin = $prose(
  *  empty set draws nothing. */
 export function setChangeDecorations(view: EditorView, decorations: ChangeDecorations): void {
   // A host writes its change decorations from an effect, which can run after the effect that
-  // tore this editor down (INFRA-2409).
+  // tore this editor down (POMJU-2409).
   if (view.isDestroyed) return;
   view.dispatch(
     view.state.tr.setMeta(changeDecorationsKey, decorations).setMeta("addToHistory", false)

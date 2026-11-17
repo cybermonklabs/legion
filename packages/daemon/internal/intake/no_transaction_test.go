@@ -88,7 +88,7 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	// consumerSpec's 200 ms is about the length of this handler's own work on a loaded runner, so
 	// the row sets a minute as a guard far above it. The margin is what makes these counts sound:
 	// a redelivery the counts would see needs the whole minute to pass before the handling's
-	// acknowledgement reaches the server. The campaign of dispatch://INFRA-1113 measured that
+	// acknowledgement reaches the server. The campaign of dispatch://POMJU-1113 measured that
 	// trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work
 	// and that trip together, about 717 ms, are a factor of about 80 below this window.
 	// The progress keeper reports nothing here: it ticks at a third of the window

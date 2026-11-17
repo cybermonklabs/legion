@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The live proof that every child that starts runs under an architect of its own (INFRA-3915):
+# The live proof that every child that starts runs under an architect of its own (POMJU-3915):
 # a child's first phase start starts that architect beside its planner, whether the child came in
 # by the release_children of the architect above it, by a person's todo under a live tree or by
 # the close of the issue it waited on; at its ready the child's architect is told its own issue and

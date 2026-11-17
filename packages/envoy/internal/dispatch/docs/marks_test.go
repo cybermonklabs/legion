@@ -223,7 +223,7 @@ func TestAcceptSuggestionReplacesMarkedTextAndRemovesTheMark(t *testing.T) {
 // A web address a person types in the browser editor, which has no autolink input rule, is plain
 // text in the document's tree, though a reader of the markdown may take it for a link: here after
 // a letter and `;`, seeded as a tree. A doc-edit replacing other text of its paragraph, and a
-// suggestion accepted elsewhere in it, are not refused for how that address reads (INFRA-531).
+// suggestion accepted elsewhere in it, are not refused for how that address reads (POMJU-531).
 func TestEditsBesideAPlainWebAddressInTheirParagraphAreAccepted(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

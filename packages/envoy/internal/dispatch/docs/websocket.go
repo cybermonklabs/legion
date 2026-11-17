@@ -1011,7 +1011,7 @@ func (s *Service) observeAskBlocksForUpdate(room string, askBlocks map[string]st
 // for itself after a remote delete leaves a text's formatting markers covering no text
 // (reearth/ygo #284): nobody typed it, so neither credit path may name anyone for it. On the
 // replica's recover path, where every update it could not place counts as a content change,
-// crediting it would hand every connected browser an edit none of them made (INFRA-644); on the
+// crediting it would hand every connected browser an edit none of them made (POMJU-644); on the
 // shadow path, a cleanup the room measured as no change is stored as a change wherever an open
 // write's shadow measures one (storedClasses), which would store those browsers as its authors.
 func (s *Service) originCreditsNoOne(origin any) bool {

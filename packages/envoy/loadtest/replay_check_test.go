@@ -53,7 +53,7 @@ func TestDumpAnchorOrdinals(t *testing.T) {
 // replayShadowSchemaDDL is an empty copy, in the schema named after the database's login, of the
 // replay's own two tables. Its columns are the ones the seed writes and the check reads, so a
 // statement that resolved here would answer nothing rather than fail - which is what the
-// deployment met of the loop seed's map (dispatch://INFRA-988).
+// deployment met of the loop seed's map (dispatch://POMJU-988).
 const replayShadowSchemaDDL = `
 create table %[1]s.loadtest_replay_ids (
   kind text not null, logged_id text not null, local_id text not null,
@@ -71,7 +71,7 @@ create table %[1]s.loadtest_replay_anchors (
 // table the replay owns; Postgres's default search_path is "$user", public, so from that session
 // every unqualified name resolves to the empty copy. A seed whose DDL made such a schema is what
 // made a deployment serve a second, empty copy of Dispatch's whole schema
-// (dispatch://INFRA-988), so the DDL must create no schema at all and every statement of the
+// (dispatch://POMJU-988), so the DDL must create no schema at all and every statement of the
 // seed, the run and the check must name public.
 func TestReplaySeedReadsPublicUnderAShadowingUserSchema(t *testing.T) {
 	pool, dsn := loopTestDBAt(t)

@@ -1,7 +1,7 @@
 // Package capabilities is the one list of what a Legion worker can do (LEGION-578: every worker is
 // a full agent). Each capability is checked at one site — in the image by `legion probe-image`
 // (CheckImage), by each claimed session at an idle tick of the 5 s interval it already runs, which
-// sends the row on a `claims/ready` of its own and the daemon renders (LEGION-663, INFRA-927), by
+// sends the row on a `claims/ready` of its own and the daemon renders (LEGION-663, POMJU-927), by
 // the daemon from the deployment's configuration, or withheld by a cited issue — and the probe prints
 // the whole table, one line per row, so an operator reads a single declared list in the probe
 // pod's log rather than inferring what was checked from which probes happened to run.
@@ -58,7 +58,7 @@ const (
 	// SiteLive is measured by a claimed session while it runs and is idle, and reported on
 	// claims/ready (claim.ReadyRequest.Capabilities). The daemon renders the row from the live
 	// sessions' reports, and a row no live session has reported reads unchecked
-	// (Deployment.Sessions; LEGION-663, INFRA-927).
+	// (Deployment.Sessions; LEGION-663, POMJU-927).
 	SiteLive Site = "live"
 	// SiteDeployment is decided by the deployment's legion.yaml, which the daemon reports: no
 	// image or pod can show it.
@@ -145,7 +145,7 @@ func render(ctx context.Context, r renderer) ([]State, error) {
 func Decidable() []Name { return namesAtSite(SiteDeployment) }
 
 // Live is the SiteLive names in Table order: the rows each claimed session measures at an idle
-// tick of the 5 s interval it already runs and sends on a `claims/ready` of its own (INFRA-927),
+// tick of the 5 s interval it already runs and sends on a `claims/ready` of its own (POMJU-927),
 // which Normalize fills out and Deployment.Report renders.
 func Live() []Name { return namesAtSite(SiteLive) }
 
@@ -369,7 +369,7 @@ const jwtFirstHeldSequence = `\x{FFFE}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 // `]:8080`, `ab).x` and `ab).)x` are. That includes a masked header's bracket glued to anything
 // else (`)\n401`, `)/retry`, an escape sequence): the word takes `***)` and what follows, the next
 // pass masks that header's value to the line's end, and the tail is lost. Where the word's end is
-// in doubt the rule masks too much and never too little (dispatch://INFRA-3557, the architect's
+// in doubt the rule masks too much and never too little (dispatch://POMJU-3557, the architect's
 // decision of round 5). Only the run's alternative takes a character of the run, and the run
 // shares no character with the one that must follow it, so the word reads each run once, from the
 // character that starts it: in the plugin's JavaScriptCore, which backtracks, an alternative that

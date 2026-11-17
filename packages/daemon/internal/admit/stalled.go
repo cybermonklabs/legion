@@ -76,7 +76,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // The ladder's waits silence a tree only while the project's line can still move, which is the
 // whole of why lineCanMove is read here and not per tree: in a project no work of which can
 // start again by itself, every tree is named save one whose every member waits on work outside
-// its tree (dispatch://INFRA-2560, R5; waitsOnWorkOutsideItsTree's doc says which waits those
+// its tree (dispatch://POMJU-2560, R5; waitsOnWorkOutsideItsTree's doc says which waits those
 // are and why). The clause is a fact of the project and not of one tree, so it is answered once
 // for the pass beside the per-tree walk rather than inside it, where every tree would ask the
 // same question again.
@@ -235,7 +235,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// derive nothing of their own: the same term, read once from an owed start row, once from
 	// the line's membership and once from an issue's need of a slot, disagreed with itself three
 	// times inside one review of this change, each reading right about the shape in front of it
-	// (dispatch://INFRA-2560, R5).
+	// (dispatch://POMJU-2560, R5).
 	//
 	// It is handed over rather than read here because reading it is a walk of every issue of the
 	// project and no pass may walk them twice: the pass has already made that walk to judge its
@@ -249,7 +249,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// costs this pass no read, no reason and no further work of any kind.
 	//
 	// The ladder's waits silence a tree only while the project's line can still move
-	// (lineCanMove, dispatch://INFRA-2560, R5). The answer is one fact of the project, so it is
+	// (lineCanMove, dispatch://POMJU-2560, R5). The answer is one fact of the project, so it is
 	// taken once here and handed to the walk of every tree of the pass, beside the one wait that
 	// silences whatever it says (lineHolds.waitsOnWorkOutsideItsTree). Its claim term reads the
 	// trees R6 counts at work, the set step 2 built if it built one.
@@ -335,7 +335,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 // it moves none. It always answers a map, empty where nothing is at work, so its caller can tell
 // a set it built from one it has not.
 //
-// The rule is R6 (dispatch://INFRA-2560): "A tree is never reported as stalled while any claim
+// The rule is R6 (dispatch://POMJU-2560): "A tree is never reported as stalled while any claim
 // of it is at work. A claim is at work in every state but idle, suspended, failed and retired,
 // with one exception: a phase worker the daemon itself names silent - up between turns in
 // ready, holding no task, its last step older than worker_silence_minutes
@@ -443,7 +443,7 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // and the rule beside it (lineHolds.waitsByDesign) reads it where the word decides: nothing here
 // derives a word of its own from the waiting line, because the line and the words come out of
 // one walk of the record package (record.Waiting) and a second derivation is the fault
-// dispatch://INFRA-2560 was filed for.
+// dispatch://POMJU-2560 was filed for.
 //
 // Four words silence, and they are R5's waits by design as the ladder names them: a tree whose
 // root waits on a person, which only a person's act moves (root_awaiting_person); a tree whose
@@ -569,7 +569,7 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //
 //  1. an issue waiting on a person (record.Issue.AwaitingPerson, a root in awaiting_person,
 //     answered or not) waits by design wherever the walk placed it: it keeps its slot while it
-//     waits (record.KeepsSlot, the ruling on dispatch://INFRA-1909), and once answered it
+//     waits (record.KeepsSlot, the ruling on dispatch://POMJU-1909), and once answered it
 //     stands in the line as well, so neither membership says anything of why it stands still;
 //  2. an entry of the waiting line waits by design exactly where it holds no slot
 //     (record.LineEntry.Holds): that is the cap's own hold, in both its shapes — a start written
@@ -589,7 +589,7 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     issue already started that the line left behind. The holds the ladder names for that last
 //     one — its root's wait on a person, its tree's gate — hold a start, and such an issue has
 //     had its start: it is in its phase and not moving, which is the stall this measure exists
-//     to report and not a wait by design (dispatch://INFRA-2560, R5).
+//     to report and not a wait by design (dispatch://POMJU-2560, R5).
 func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if issue.AwaitingPerson() {
 		return true
@@ -661,7 +661,7 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 
 // lineCanMove says whether the project's line can still move: whether any work of this project
 // can start again by itself. It is the liveness clause of the silencing rule
-// (dispatch://INFRA-2560, R5): the ladder's waits (lineHolds.waitsByDesign) leave a tree unnamed
+// (dispatch://POMJU-2560, R5): the ladder's waits (lineHolds.waitsByDesign) leave a tree unnamed
 // only while this holds, because a wait is a wait for something, and a project where nothing is
 // coming waits for nothing. A wait on work outside the tree is the one exception
 // (lineHolds.waitsOnWorkOutsideItsTree, whose doc says why).
@@ -684,7 +684,7 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //     itself names silent. The per-tree refusal above reads the same set, so the two read one
 //     statement of what being at work is, and the spec's one term. A silent worker is no part
 //     of the line moving: it makes no phase change and no status change, so it gives no slot
-//     back, no more than an idle claim does (dispatch://INFRA-2560, R6, as its architect
+//     back, no more than an idle claim does (dispatch://POMJU-2560, R6, as its architect
 //     ruled for this term). It costs a length check of a map the caller holds; the set's own
 //     read is workingTrees', made at most once per pass. It is the project's answer and not
 //     one tree's: an agent working anywhere in the project will free its slot when it is
@@ -763,7 +763,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 // (lineHolds.waitsByDesign).
 //
 // Every, and never any: "A tree whose every quiet issue is one of those is never named"
-// (dispatch://INFRA-2560, R5). A tree with one issue in a wait of the daemon's and one that has
+// (dispatch://POMJU-2560, R5). A tree with one issue in a wait of the daemon's and one that has
 // simply stopped is named, because nothing is going to move the stopped one, and that tree —
 // a root waiting on a person over a child whose worker died, say — is exactly what this rule
 // was filed to find. Answered on any one member, that single wait would silence the whole tree
@@ -814,7 +814,7 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // controller to read the tree and decide. An issue standing at admitted is told as a phase no
 // role works, as it was before workflow.RoleFor named the architect there: that answer is for
 // the readers that start, resume or report the architect, and this notice keeps the words it
-// had (dispatch://INFRA-2614 R2). Accepting was the architect's before as well, so an issue
+// had (dispatch://POMJU-2614 R2). Accepting was the architect's before as well, so an issue
 // standing there names the architect, as it did.
 //
 // The membership is the measure's own and is read from the one predicate, so the notice names
@@ -836,7 +836,7 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 	for _, member := range members {
 		fmt.Fprintf(&reason, "\n%s is in %s. ", member.Key, member.Phase)
 		// The architect works admitted (workflow.RoleFor), and this notice says what it said
-		// before that: no role works an issue standing there (dispatch://INFRA-2614 R2).
+		// before that: no role works an issue standing there (dispatch://POMJU-2614 R2).
 		standsAt := record.StandsAt(member)
 		if role := workflow.RoleFor(standsAt); role != "" && standsAt != phase.Admitted {
 			fmt.Fprintf(&reason, "The %s has the turn. ", role)

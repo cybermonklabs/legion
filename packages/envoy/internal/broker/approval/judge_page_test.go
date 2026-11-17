@@ -47,7 +47,7 @@ func TestThePageNamesTheModelJudgeAsTheDecider(t *testing.T) {
 	judgeable(r)
 	enrollmentID, key := r.benSession(t, "ben-box")
 	lifetime := 600
-	p := r.request(t, enrollmentID, key, "INFRA-1353 needs the billing key", &lifetime, "", "TEST_SECRET")
+	p := r.request(t, enrollmentID, key, "POMJU-1353 needs the billing key", &lifetime, "", "TEST_SECRET")
 
 	// Ada opens the request while it is still pending and keeps its form, as a person does who
 	// reads a request before deciding it.
@@ -109,7 +109,7 @@ func TestThePageNamesThePolicyThatTurnedAJudgesApprovalIntoADenial(t *testing.T)
 	r.retag(t, policytest.ListedSecret("TEST_SECRET", ada, policy.TierHuman, ben, "test-v1"))
 	enrollmentID, key := r.benSession(t, "ben-box")
 	lifetime := 600
-	p := r.request(t, enrollmentID, key, "INFRA-1353 needs the billing key", &lifetime, "", "TEST_SECRET")
+	p := r.request(t, enrollmentID, key, "POMJU-1353 needs the billing key", &lifetime, "", "TEST_SECRET")
 
 	b := r.browser(t)
 	b.SignIn(t, p.recordID, person(ada))

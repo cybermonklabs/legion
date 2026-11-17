@@ -1,6 +1,6 @@
 -- 20261110233602_past_review_starts_unmarked.up.sql — takes the admission-slot mark off every
 -- queued start of a phase that holds no slot any more, so that the cutover leaves no row the
--- daemon will never run (INFRA-2560).
+-- daemon will never run (POMJU-2560).
 --
 -- An issue holds one of the admission cap's slots from the moment the daemon starts it until its
 -- work is past its review, and accepting, retro and merging hold none (record.KeepsSlot). The

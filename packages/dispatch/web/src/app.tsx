@@ -488,7 +488,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useEffect(() => {
     liveViews.setPinned(pinnedAgents);
   }, [liveViews, pinnedAgents]);
-  // The pins were this browser's until INFRA-812 made them the person's. At the first load
+  // The pins were this browser's until POMJU-812 made them the person's. At the first load
   // after the change each id the old key holds is written as a pin, so this runs once per
   // browser and Dispatch ends up holding the union of what each of the person's browsers had
   // kept.

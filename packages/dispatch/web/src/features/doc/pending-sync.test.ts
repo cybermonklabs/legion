@@ -1006,7 +1006,7 @@ test("a count taken before a row was written is never reported, and answers no w
 // The count a report drops for a row written behind it is left to that row's own write to ask
 // for again. A write the store refuses - the browser's quota, say - is as much the end of that
 // write as a commit, and without a report of its own the toolbar keeps the count it was showing
-// and a `whenSent` waiting on one runs to its bound (dispatch://INFRA-727).
+// and a `whenSent` waiting on one runs to its bound (dispatch://POMJU-727).
 test("a row whose write the store refuses still asks for the count the dropped report owed", async () => {
   const held = Promise.withResolvers<void>();
   const reached = Promise.withResolvers<void>();

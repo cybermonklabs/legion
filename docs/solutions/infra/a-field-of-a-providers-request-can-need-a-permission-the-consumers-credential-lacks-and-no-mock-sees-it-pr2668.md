@@ -16,7 +16,7 @@ related_issues:
 
 # A field of a provider's request can need a permission the consumer's credential lacks, and no mock sees it
 
-Extends docs/solutions/infra/moving-a-tailnet-name-from-a-node-to-a-tailscale-service-needs-a-client-grant-to-the-service-INFRA-560.md.
+Extends docs/solutions/infra/moving-a-tailnet-name-from-a-node-to-a-tailscale-service-needs-a-client-grant-to-the-service-POMJU-560.md.
 
 - A vendor's reference documents a permission per endpoint. "The credential may call this
   endpoint" is not "the credential may set every field of it". Before a component puts one of its

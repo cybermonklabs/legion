@@ -1204,7 +1204,7 @@ func TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished(t *testing.T) {
 // (TestAnUnresponsiveArchitectsNoticeIsLoggedAsAWaitNotAFailedRow). It is no notice held for an
 // architect that holds no role either (errNoticeWaits): this architect holds its role, and
 // nothing of its tree is held behind this row. Read as no holder at all, which is what every
-// such refusal was before dispatch://INFRA-392, the same answer finishes the notice undelivered
+// such refusal was before dispatch://POMJU-392, the same answer finishes the notice undelivered
 // the moment nobody will hold the role for it — here an architect this daemon supervises no
 // claim for — and the notice is lost. Both answers come from a listener answering as the real
 // one does, since the notice's fate turns on how that body is read.

@@ -23,7 +23,7 @@ export interface MessageBoxHelpProps {
 }
 
 /**
- * The one question mark under the message box, and the panel it opens (INFRA-812, R6): what `!`
+ * The one question mark under the message box, and the panel it opens (POMJU-812, R6): what `!`
  * does, where a command runs, and what this view keeps of the conversation. The page carries no
  * rule text of its own, so this panel is where a person reads all three; the message box keeps
  * only its own hint and its own refusal, which are a control's words about the next press.

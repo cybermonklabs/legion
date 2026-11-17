@@ -1,5 +1,5 @@
 // delimiter-corpus.ts - a corpus of delimiter-run shapes for the pmdoc differential (differential.sh),
-// the committed evidence for dispatch://INFRA-534.
+// the committed evidence for dispatch://POMJU-534.
 //
 //   bun delimiter-corpus.ts <out.jsonl> [count]
 //

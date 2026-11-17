@@ -16,7 +16,7 @@ const (
 // identity. Envoy listener settlements are the Go daemon's only input about check runs: it reads
 // GitHub's checks nowhere else, and judges none of them - what a settlement names is told to the
 // roles that work the issue and read by them (workflow's tellChecks,
-// dispatch://INFRA-714/spec R1). The listener publishes a settlement for every settled commit of
+// dispatch://POMJU-714/spec R1). The listener publishes a settlement for every settled commit of
 // a pull request, its current head or not, and the daemon takes one only for the head itself
 // (SettlementFor), since a settlement stands only for the head it names; a settlement of another
 // head than the recorded one starts the fence afresh. A check still running is in no settlement

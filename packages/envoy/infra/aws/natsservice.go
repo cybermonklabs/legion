@@ -90,7 +90,7 @@ type AuthorizationArgs struct {
 	// The auth service's callout, which admits every client that is not one of users; unset, the
 	// server renders exactly what it rendered before callouts existed.
 	Callout *nats.AuthCalloutArgs `pulumi:"callout,optional"`
-	// The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862): it needs
+	// The deployment may make a Dispatch project private (R12 of dispatch://POMJU-3862): it needs
 	// callout, and no user but callout.serviceUser.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
 }

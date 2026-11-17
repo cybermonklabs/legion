@@ -48,7 +48,7 @@ Extends docs/solutions/testing/go-test-in-a-worker-pod-leaves-gowork-to-go-work-
   and a Postgres with the right collation; cite its run in the PR body's `CI` line for everything
   the pod cannot run.
 
-  **Superseded 2026-10-23 (dispatch://INFRA-83):** only the clause that cites the `envoy-go` run in
+  **Superseded 2026-10-23 (dispatch://POMJU-83):** only the clause that cites the `envoy-go` run in
   the PR body's `CI` line is gone: the body carries no `CI:` line
   (`skills/legion-worker/references/pr-body.md`), and no role records a check result for a later
   step to trust — the tester and the reviewer each read CI on GitHub at the head they are judging

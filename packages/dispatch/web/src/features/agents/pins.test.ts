@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { UserAgentStates } from "../../api/types";
 import { legacyPinnedIds, pinnedAgentSessions } from "./pins";
 
-// The rail lists the person's pins oldest first (INFRA-812, R1), so the agent they pinned first
+// The rail lists the person's pins oldest first (POMJU-812, R1), so the agent they pinned first
 // keeps the top row however their agent state is keyed, and a session they have only read or
 // cleared is not in the rail at all.
 test("the pins are the sessions with a pinned_at, oldest pin first", () => {

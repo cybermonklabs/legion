@@ -1,6 +1,6 @@
 /**
  * Labels the comments that people wrote on production Dispatch issues in a window, with the eleven
- * questions of the INFRA-140 labels artifact (dispatch://INFRA-140/artifact/comment-labels-md).
+ * questions of the POMJU-140 labels artifact (dispatch://POMJU-140/artifact/comment-labels-md).
  *
  *   bun label-comments.ts --since <RFC 3339> --until <RFC 3339> --out <dir>
  *       (--gateway <model gateway URL> --key-command <file> | --key-file <file>)

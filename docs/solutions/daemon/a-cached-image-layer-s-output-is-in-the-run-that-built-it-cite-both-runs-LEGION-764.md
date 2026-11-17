@@ -23,7 +23,7 @@ was written about went with the handoff commit in sjawhar/legion#2354). The cach
 a second code push that changes a later layer rebuilds from that layer down and prints `#<n> CACHED` for every
 step above it, so the proof of one step and the proof of another can live in two runs at two heads.
 
-**Changed 2026-10-27 (INFRA-520, the CI router):** a pull request's image build no longer writes
+**Changed 2026-10-27 (POMJU-520, the CI router):** a pull request's image build no longer writes
 the layer cache. Only builds on main write it, in the GitHub Actions cache under the scope
 `worker-image` (`worker-image.yaml`, `cache-to` only on `refs/heads/main`), because a newer head can
 now cancel a pull request's build in the middle of an export. A `CACHED` step in a pull request's

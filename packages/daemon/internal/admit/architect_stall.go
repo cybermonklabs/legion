@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// This file is the architect-stalled wake (dispatch://INFRA-2614, R7): the three arms the
+// This file is the architect-stalled wake (dispatch://POMJU-2614, R7): the three arms the
 // admission pass reads over the own architect of every root it weighs, the wake that tells the
 // project's controller of each arm once per run, and the reading the state route serves of the
 // same arms. The arms are stated here once: the pass, the entry sweep's gate (OwesEntryWork) and
@@ -187,7 +187,7 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // answers what the record says, and "" for a root it does not read.
 //
 // The task is read as the delivery of the entry the row names, of the root's generation, which is
-// R7's "its entry's task" (dispatch://INFRA-2614), and no other. A task of an earlier run, or of
+// R7's "its entry's task" (dispatch://POMJU-2614), and no other. A task of an earlier run, or of
 // an entry the row has moved past, that carries an entry is one the row has superseded: the
 // sweep's send passes over it and writes the start of the row's entry, whose task takes its place
 // in the claim's hands (workflow.ArchitectStartPending), so it is no work the architect failed to
@@ -315,7 +315,7 @@ func firstQueued(held record.RoleClaim) time.Time {
 // architect's claim and the promotion queues its start in the same pass that reads this arm. A
 // claim whose start has run against it and failed, or whose start has stood owed past the bound,
 // is the failure no further send cures, which R7's second arm names (the architect's reading of R7
-// at dispatch://INFRA-2614, measured by its tester on the whole daemon).
+// at dispatch://POMJU-2614, measured by its tester on the whole daemon).
 //
 // A root waiting on a person is in the workflow, holding its slot through the wait
 // (record.KeepsSlot), so the arm reads it as it reads any root, and its reason says that it waits.

@@ -8,8 +8,8 @@
  *  without a thought about which lane answers it fails here rather than on the day the lane is
  *  ten minutes slower than it was.
  *
- *  Why 330 and not the 350 dispatch://INFRA-1407's R1 names: dispatch://INFRA-1410 and
- *  dispatch://INFRA-1511 land after this head and will each want rows on this lane, and the
+ *  Why 330 and not the 350 dispatch://POMJU-1407's R1 names: dispatch://POMJU-1410 and
+ *  dispatch://POMJU-1511 land after this head and will each want rows on this lane, and the
  *  parent's own check reads the 350 at the root's last round rather than here. Twenty rows is
  *  the margin left for them.
  *
@@ -35,7 +35,7 @@ import { listing, projectArguments, retained } from "./playwright-listing";
 /** The rows the pull-request lane schedules, and the rows of the default selection, read from
  *  two listings of one config. The second is read for the stubbed rows alone, and both stubbed
  *  projects are in the default selection, so this file needs no third listing: the three
- *  wall-clock projects carry `default: false` since dispatch://INFRA-1280, so a listing that
+ *  wall-clock projects carry `default: false` since dispatch://POMJU-1280, so a listing that
  *  names no project holds no row of theirs, and no row of theirs is stubbed. Both start here
  *  rather than inside a test, so the second collects while the first does. */
 const lane = retained(
@@ -60,7 +60,7 @@ test(
     expect(
       rows.length,
       `The pull-request lane schedules ${rows.length} rows, and its budget is ${laneBudget}. ` +
-        "It is 330 rather than R1's 350 because INFRA-1410 and INFRA-1511 land after this head " +
+        "It is 330 rather than R1's 350 because POMJU-1410 and POMJU-1511 land after this head " +
         "and need rows of their own on this lane. Take the `@pr` tag off the rows this lane " +
         "answers least, which leaves them running on the full lane at the merge queue and the " +
         "nightly."

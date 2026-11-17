@@ -32,7 +32,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
-  It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
+  It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://POMJU-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
@@ -261,7 +261,7 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` closure captures, and its argum
 `runtime.AddCleanup` says what that costs: "If ptr is reachable from cleanup or arg, ptr will never be collected and the cleanup will never run."
 The runtime keeps a cleanup's closure and its argument alive for as long as the object it is attached to, so either of them reaching that object makes the object immortal, and everything the object holds with it.
 In `packages/envoy/internal/dispatch/docs` the object is a room's live document, and two closures held the service and one of its listings, each of which reaches every resident document through ygo's room table:
-every room the tests loaded then stayed in memory with its replica and its trees, which is what took the `envoy-go-race-docs` job over its runner's memory (dispatch://INFRA-1085).
+every room the tests loaded then stayed in memory with its replica and its trees, which is what took the `envoy-go-race-docs` job over its runner's memory (dispatch://POMJU-1085).
 
 Hold the owner through a `weak.Pointer` instead, and do nothing when its `Value()` is nil, as that package's `keepInstance` (`roomcursor.go`) and `listResident` (`tree.go`) do: the cleanup drops its entry while the owner is alive, and an owner that is gone has no map left to drop it from.
 Hold weakly what the argument would carry as well, and pass `struct{}{}`, which reaches nothing, as `keepInstance` does with the room load its cleanup once took as its argument.
@@ -276,7 +276,7 @@ GODEBUG=checkfinalizers=1 go test -count=1 -timeout 34m ./internal/dispatch/docs
 ```
 
 It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
-The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
+The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://POMJU-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
@@ -288,7 +288,7 @@ A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
 `Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs, which depends on the machine's load.
-A settlement timer's callback therefore holds the service and the room's state weakly (`scheduleSettleAfterLocked` in `packages/envoy/internal/dispatch/docs/service.go`): held strongly, a stopped one kept its shut-down service for up to an hour under a test's `settle = time.Hour`, and the check failed on a loaded machine in nearly every run (dispatch://INFRA-3904).
+A settlement timer's callback therefore holds the service and the room's state weakly (`scheduleSettleAfterLocked` in `packages/envoy/internal/dispatch/docs/service.go`): held strongly, a stopped one kept its shut-down service for up to an hour under a test's `settle = time.Hour`, and the check failed on a loaded machine in nearly every run (dispatch://POMJU-3904).
 
 `packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
@@ -386,7 +386,7 @@ each call site keeps its own reader. The event log route answers through the sam
 
 A test that takes one read as final fails under a transaction someone else holds:
 `TestAnAnsweredAsksPartEdgesAreListedSince` failed about one run in six on main, 7 of 40 measured
-for dispatch://INFRA-592, and in this repository's own pod on 2026-11-02 it failed 15 of 40 runs
+for dispatch://POMJU-592, and in this repository's own pod on 2026-11-02 it failed 15 of 40 runs
 with a transaction held 2 s of every 2.5 s; under that same pulse, reading again, it passed 40 of
 40.
 
@@ -481,7 +481,7 @@ jj searches upward from the directory it runs in for the closest `.jj` and opens
 `-R` does not keep jj off the repository its working directory sits in: jj 0.45.1 loads that repository's configuration before it applies `-R`, and `jj -R <b> log` run inside a repository `a` that still held a legacy `.jj/repo/config.toml` migrated it, writing `a/.jj/repo/config-id`.
 Every `-R` call site of `packages/daemon/internal/workspace` is safe because its `Dir` **is** its `-R` target, not because the flag fences jj in: `runCheckedOnClone`'s comment states that invariant, where the directory a command runs in is chosen.
 A child process started with no working directory of its own inherits the test process's, which in a Legion issue pod is inside `$LEGION_WORKSPACE`, a jj workspace of the pod's real shared clone under `/legion/repos`.
-So a test whose jj child names no directory opens and writes that clone, and the same test is green on a GitHub runner, whose checkout is git-only with no `.jj` anywhere above it (dispatch://INFRA-623).
+So a test whose jj child names no directory opens and writes that clone, and the same test is green on a GitHub runner, whose checkout is git-only with no `.jj` anywhere above it (dispatch://POMJU-623).
 
 - Set `Dir` on every `exec.Command` a test starts that runs `jj`, and on every one that runs `git`, to a directory the test made.
   A `--git-dir` is not enough on its own: it tells git which repository to act on and leaves the child standing wherever the test process stands, which is what the next reader of the command has to work out again.
@@ -564,7 +564,7 @@ a job its ceiling ended stops at the ceiling, and one that stopped before it was
 Those three causes are what GitHub can say, and none of them is a reading of your job.
 A job that carries `.github/scripts/disk_watch.py` through its steps prints the free disk, the memory the kernel reports available and the one-minute load of every second it watched, which is what tells the second cause from the other two on the next run that does store a log.
 `tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
-It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).
+It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://POMJU-2605).
 
 ## A test asserts no count of work a broker may repeat
 
@@ -605,7 +605,7 @@ Two kinds of row keep an exact count.
   (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait = time.Minute`
   over a handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner. The margin
   is what this carve-out rests on: that work, and the acknowledgement's trip to the server, which
-  the campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, come to about 717 ms
+  the campaign of dispatch://POMJU-1113 measured at 516.8 ms at its largest, come to about 717 ms
   together, a factor of about 80 below a minute. The progress keeper is no part of
   it. At a minute its period is 20 s (`spec.AckWait/3` in `consume.go`) and that handler
   acknowledges in about 200 ms, so the keeper never reports for that message at all. The
@@ -653,8 +653,8 @@ That late first report is the late signal above. At the 200 ms window the row fa
 runs in one campaign and 7 of about 2274 in another, which is 0.2 and 0.31 per cent. At the
 committed one-minute window it passed 800 of 800.
 
-Four issues record the same fault. dispatch://INFRA-456 was the daemon preparing one Dispatch issue
+Four issues record the same fault. dispatch://POMJU-456 was the daemon preparing one Dispatch issue
 event's repository more than once under redelivery, which is why `keepInProgress` exists.
-dispatch://INFRA-1471 was two rows of the intake counting work the broker repeats.
-dispatch://INFRA-1530 built the keeper itself. dispatch://INFRA-1113 measured the mechanism above
+dispatch://POMJU-1471 was two rows of the intake counting work the broker repeats.
+dispatch://POMJU-1530 built the keeper itself. dispatch://POMJU-1113 measured the mechanism above
 and wrote this rule.

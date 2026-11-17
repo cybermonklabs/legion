@@ -211,7 +211,7 @@ func boundText(bound time.Duration) string {
 //
 // How the current look ended does not matter: a report of it counts while the check is open,
 // however that look ended — its bound came due, an operator's hold met its start, or the
-// checking role's claim failed in it (dispatch://INFRA-714/spec R12). The checking agent drove
+// checking role's claim failed in it (dispatch://POMJU-714/spec R12). The checking agent drove
 // the change in production and its answer is the fact; refusing it threw that away and left the
 // check to close as not run. A report refused here leaves its event unmarked, so the agent's next
 // send of it applies (intake's ApplyFact).

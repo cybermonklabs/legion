@@ -152,7 +152,7 @@ describe("assert_gh_files", () => {
     );
   });
 
-  // The controller's own layout, which the helper could not tell from a role's before INFRA-513's
+  // The controller's own layout, which the helper could not tell from a role's before POMJU-513's
   // fourth argument: the same listing that passes under `repos` is a failure here.
   test("owner-only passes the controller's directory holding its two gh files alone", () => {
     expect(judge("owner-only", "..data\nacme\nsjawhar\n")).toEqual({ exitCode: 0, out: "OK\n" });

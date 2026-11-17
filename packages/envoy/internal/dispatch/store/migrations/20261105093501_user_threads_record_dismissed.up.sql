@@ -1,6 +1,6 @@
 -- 20261105093501_user_threads_record_dismissed.up.sql
 --
--- INFRA-450: a new write by somebody else brings a dismissed thread back, unread, and the
+-- POMJU-450: a new write by somebody else brings a dismissed thread back, unread, and the
 -- person's own reply does not - a reply they send from the Dismissed view leaves the thread
 -- there. This replaces user_threads_record (0095) with the same function plus two assignments:
 -- the statement that moves the other participants' replied_at also clears their dismissed_at and

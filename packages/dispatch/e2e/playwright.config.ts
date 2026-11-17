@@ -48,7 +48,7 @@ const phoneTagged = tagged("phone");
 // The pair is a selector, not a skip. Each of these rows used to be scheduled in the desktop
 // project and call `test.skip` against `testInfo.project.name` in its own body, so the report
 // named a row that was never going to run; the tag lets the project that owns the row select it
-// (dispatch://INFRA-1410). Playwright reads an array of patterns as OR, so a phone project
+// (dispatch://POMJU-1410). Playwright reads an array of patterns as OR, so a phone project
 // names both tags and takes a row carrying either.
 const phoneOnlyTagged = tagged("phone-only");
 const phoneRowTagged = [phoneTagged, phoneOnlyTagged];
@@ -229,7 +229,7 @@ const testTimeout = 60_000;
 // The per-action deadline, and the one timeout Playwright leaves at 0 by default - no deadline at
 // all, so an action whose target has gone runs until the row's budget ends and is reported at
 // whatever line the row's `finally` holds rather than at the call that hung. A 60 ms product race
-// cost 120 s twice that way, at `await context.close()` (dispatch://INFRA-2452). It bounds one
+// cost 120 s twice that way, at `await context.close()` (dispatch://POMJU-2452). It bounds one
 // action - a click, a fill, a press - and not a row: an `expect` carries `expectTimeout`, a whole
 // row `testTimeout` above, and a navigation its own `navigationTimeout`, which is set apart from
 // this one and stays 0 (node_modules/.bun/playwright@1.64.1/node_modules/playwright-core/lib/
@@ -480,7 +480,7 @@ const parallelProjects = [
  *
  * That field is also what keeps a file filter cheap, and it replaced something that did not.
  * Each of these projects named every project before it in `dependencies` until
- * dispatch://INFRA-1280: that ordered the run, and it also pulled the whole suite in behind any
+ * dispatch://POMJU-1280: that ordered the run, and it also pulled the whole suite in behind any
  * command naming one of their three files, because a filter narrows a project it selects and
  * never a project selected to run before it. With no dependency and no place in the default
  * selection, such a command now selects nothing at all, so the configuration refuses it at the
@@ -511,7 +511,7 @@ const parallelProjects = [
  * `webkit`, for the reasons written above those projects, and runs here in all three;
  * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, as does
  * `agent-workspace-timing.e2e.ts`, whose rows time the live view and the Agents page in the one
- * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
+ * engine the timed halves are claimed for (POMJU-812's D14; the untimed halves of those checks
  * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
@@ -672,7 +672,7 @@ const stubProjects = [
   // `stub` inverts - the second tag, and not the first, is the one a desktop project may
   // invert. Those rows used to say it in their own bodies instead, with a `test.skip` against
   // `testInfo.project.name`, so `stub` scheduled a row it was never going to run
-  // (dispatch://INFRA-1410).
+  // (dispatch://POMJU-1410).
   {
     name: "stub-phone",
     retries: 0,

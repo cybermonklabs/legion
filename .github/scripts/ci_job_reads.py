@@ -425,7 +425,7 @@ RULES = {
     # expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
     # read every filter gating a job that compiles them already matches. They are here so that a
     # later narrowing of one of those filters is refused by rule 1 rather than dropping the read
-    # with nobody noticing (dispatch://INFRA-1413).
+    # with nobody noticing (dispatch://POMJU-1413).
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
@@ -480,16 +480,16 @@ RULES = {
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
-    # The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
+    # The branch of dispatch://POMJU-2614 wrote this check in internal/workflow's role_for_test.go;
     # it moved here because it walks every .go file of the module, test files included, and a row
     # keyed on a file of internal/workflow would put every test file of packages/daemon - this
-    # package's and the live tests' among them - on daemon-go's filter (dispatch://INFRA-1413).
+    # package's and the live tests' among them - on daemon-go's filter (dispatch://POMJU-1413).
     f"{DAEMON}/internal/textcheck/role_for_readers_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/role_for_readers_test.go:88 walks every .go file under packages/daemon (../.., :84) "
                               "and :101 parses each one")),
     # main's #4092 read these three pages in internal/prompts's production-check test; that half
     # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
-    # (dispatch://INFRA-1413).
+    # (dispatch://POMJU-1413).
     f"{DAEMON}/internal/textcheck/production_check_rule_test.go": reads(
         ("AGENTS.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
         ("scripts/e2e/README.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
@@ -502,7 +502,7 @@ RULES = {
     # cmd/legion/troubleshooting_refusals_test.go reads no text outside its own package and has
     # no row: troubleshooting_refusals_extract.txt, the copy of the troubleshooting page's refusal
     # table it reads its rows from, stands in its own directory, and this row is what holds that
-    # copy to the page, in the text-check job (dispatch://INFRA-1413).
+    # copy to the page, in the text-check job (dispatch://POMJU-1413).
     f"{DAEMON}/internal/textcheck/troubleshooting_refusals_doc_test.go": reads(
         ("docs/site/src/content/docs/legion/troubleshooting.md",
          "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
@@ -513,7 +513,7 @@ RULES = {
     # internal/daemon/upgrade_phase_entry_way_back_test.go reads no text outside its own package
     # any more and has no row: upgrade_way_back_extract.txt and
     # upgrade_architect_entry_way_back_extract.txt stand in its own directory, and this row is what
-    # holds those copies to the guide, in the text-check job (dispatch://INFRA-1413).
+    # holds those copies to the guide, in the text-check job (dispatch://POMJU-1413).
     f"{DAEMON}/internal/textcheck/way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
                                "for way_back_doc_test.go:94 (shippedText)"),
@@ -564,7 +564,7 @@ RULES = {
     # main's #3718 brought, read no text outside it any more: each is held to a copy committed
     # beside its own package, and the row above is what holds those copies to the texts, in the
     # text-check job, where a documentation edit is the run that should start
-    # (dispatch://INFRA-1413). cmd/legion/main_test.go is left with no row at all -
+    # (dispatch://POMJU-1413). cmd/legion/main_test.go is left with no row at all -
     # awaiting_summary_extract.txt and waiting_line_block_extract.txt stand in its own directory
     # - and what is left of the two rows below is what each reads of packages/daemon outside its
     # own package, which daemon_go_tests covers with the module itself.
@@ -723,7 +723,7 @@ RULES = {
     # TestTheBuiltEnvelopeIsTheSharedFixture holds its own build to: the one read here of a file
     # of another module, and the one the envoy_go filter had to grow a pattern for, since it
     # matched no file under packages/daemon and a change to that fixture alone therefore ran the
-    # daemon's jobs and not this one (dispatch://INFRA-1413).
+    # daemon's jobs and not this one (dispatch://POMJU-1413).
     f"{ENVOY}/internal/dispatch/startup/started_test.go": reads(
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "internal/dispatch/startup/started_test.go:379")),
     # The deployer's own copy of the migration advisory key, in the shell script beside the Go
@@ -1071,7 +1071,7 @@ def packages_kept(root: str, pattern: str) -> list:
     own pattern, rather than the superset `./...` or a list kept by hand beside it: the closure of
     `./...` carries a dropped package's test files and RULES - the files only its tests read -
     onto this job's filter, and a change to one of them would go on starting a job that does not
-    run the test that reads it (dispatch://INFRA-1413)."""
+    run the test that reads it (dispatch://POMJU-1413)."""
     base = Path(root)
     module = next(line.split()[1] for line in (base / "go.mod").read_text().splitlines()
                   if line.startswith("module "))
@@ -1145,7 +1145,7 @@ DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAG
 #     this list holds that the package no longer declares.
 # Their reads - the lockfile, the two plugin packages, what their prepack reads, and skills/ - are
 # inputs of this one job rather than of the daemon's whole Go suite, so a lockfile-only change, or
-# a change to one skill, runs these tests and no other daemon Go test (dispatch://INFRA-1413, A4).
+# a change to one skill, runs these tests and no other daemon Go test (dispatch://POMJU-1413, A4).
 # Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
 # script, so the -skip and the -run cannot come to name different tests.
 PLUGIN_PACK_TESTS = ["TestTheRealPluginsOnTheRealOhMyPi", "TestTheAgentModelCheckOnTheRealOhMyPi",
@@ -1260,7 +1260,7 @@ hold_plugin_pack_tests()
 # outside it the standard library and the module cache - and neither starts a database, a container,
 # tmux or jj, so they are text-check work: they run in the text-checks job, where they wait behind
 # no fixture, and the daemon-go plain step, which runs their package, skips them by name, so each
-# runs once per run of the router (dispatch://INFRA-1413, R3).
+# runs once per run of the router (dispatch://POMJU-1413, R3).
 # The other three tests of that file drive a machine and stay in the plain step. Nothing of the file
 # moves package - all five read unexported identifiers of internal/supervise - which is why these
 # two are run by name rather than moved into a package of text checks.
@@ -1434,7 +1434,7 @@ UNIT_TEST_PATTERN = "|".join(
 # the module the race lane, internal/integration and the text checks leave it, pmdoc among them -
 # skips the test by name: a second run there would rewrite the committed file and pass whatever
 # that file held, so the pair would run twice per run of the router with nothing asked of the
-# second (dispatch://INFRA-1413). TestTheWebFixtureFindsItsFilesFromAnyDirectory
+# second (dispatch://POMJU-1413). TestTheWebFixtureFindsItsFilesFromAnyDirectory
 # (web_fixtures_test.go:248-255) stats that the same file exists, and an existence check is a
 # read by this table's own rule (the contracts gate declares skills/dispatch-writing-specs/SKILL.md
 # for an existsSync alone), so it runs in the fixture step too and the unit step skips it, which
@@ -1836,7 +1836,7 @@ SESSIONS_STEP = "Test the session message-wait script"
 # changes output of its own naming that harness and that script. Before this table one pattern,
 # `.github/scripts/*`, stood for all of them on the job's own filter, so a change to any one
 # script ran every harness - and, while the daemon's Go suite was in the same job, 1,083 s
-# (median) of Go tests with them (dispatch://INFRA-1413). The job's filter now names what these
+# (median) of Go tests with them (dispatch://POMJU-1413). The job's filter now names what these
 # gates name, through the anchors ci.yaml holds each of these lists under, so a change to a
 # harness or its subject selects the job and exactly that step's gate is true in it.
 #
@@ -1859,7 +1859,7 @@ def harness(filter, step, harness_script, subjects, lib=True):
                 reads=reads(*entries, *subjects))
 
 
-# The private-name port harness, a job of its own since dispatch://INFRA-1413: it is the one
+# The private-name port harness, a job of its own since dispatch://POMJU-1413: it is the one
 # harness of this repository that builds a binary of this head, so the filter that selects it
 # has to name that build's whole closure (LEGION_BUILD, ci.yaml's legion_command). While the
 # step was the test job's, that closure was on the `test` filter and a change to any package of
@@ -1961,6 +1961,10 @@ SCRIPT_TEST_GATES = [
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
         (f"{SCRIPTS}/check-pr-text.sh", "check-private-names.test.sh:525 runs it too: the pull request's text is the guard's other surface"),
+    ]),
+    harness("neutralize_private_keys_test", "Test the project-key replacement",
+            f"{SCRIPTS}/neutralize-private-keys.test.sh", [
+        (f"{SCRIPTS}/neutralize-private-keys.py", "the script under test"),
     ]),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
@@ -2181,7 +2185,7 @@ GATES = [
     # closure as well as what the three read: the two plugin packages, what their prepack builds
     # each bundle from, skills/, and the lockfile the frozen install reads. The job exists for
     # those reads: with the tests here, a change to the lockfile or to one skill runs them
-    # instead of the daemon's whole Go suite (dispatch://INFRA-1413).
+    # instead of the daemon's whole Go suite (dispatch://POMJU-1413).
     gate("plugin_pack", PLUGIN_PACK_JOB, exact=[
         pinned_step(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP, DAEMON, PLUGIN_PACK_SCRIPT, [
             (DAEMON, [f"./{PLUGIN_PACK_PACKAGE}/"], "go test -run over the package the three tests are in", {}),
@@ -2196,7 +2200,7 @@ GATES = [
         # The prompts this checkout ships, laid out for the agent-model probe as the release lays
         # them out: these were a RULES row of agentmodels_omp_test.go while the daemon-go race
         # step ran that test, which put skills/ on that job's filter and ran 1,083 s of Go tests
-        # that could not see a skill (dispatch://INFRA-1413).
+        # that could not see a skill (dispatch://POMJU-1413).
         ("packages/pi-legion/agents/**", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/"
                                          "agentmodels_omp_test.go:165 copyDir"),
         ("scripts/pi-plugin-prepack.sh", f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/"
@@ -2536,7 +2540,7 @@ GATES = [
     # This gate lists no script Run, and cannot: a Run pinned to a script's text is reduced only
     # where nothing around the ci.yaml job can move what the script compiles, and around_job
     # reads that over every job of the called workflow. The shard and alone jobs run in a
-    # container (dispatch://INFRA-1443), which shell_reason counts as exactly such a thing, so a
+    # container (dispatch://POMJU-1443), which shell_reason counts as exactly such a thing, so a
     # script Run here would fall to reading every Go file of the repository. It costs this
     # filter nothing. Those two jobs run no go command at all - run-server.sh and run-broker.sh
     # execute the binaries the first entry below builds - and the scripts the multiprocess job
@@ -2856,7 +2860,7 @@ GATES = [
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one
     # whose step is not race_step's text: it runs the package under .github/scripts/race_memory.py
-    # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
+    # (dispatch://POMJU-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),

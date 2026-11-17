@@ -16,10 +16,10 @@ import (
 // A running row's lease is renewed while the row's own effect is inside a transaction of the
 // pool. The renewal's tick runs beside the row, on a timer goroutine of its own (renewLease), so
 // it is a second caller of the pool and not a second connection of the row's: it must be served
-// its own connection, as it was before the pool refused nested connections (INFRA-3169).
+// its own connection, as it was before the pool refused nested connections (POMJU-3169).
 //
 // Here the row's read of its hand-over (handOverHolds) waits on a lock the test holds, which is
-// the shape INFRA-3169 measured: a transaction that waits while it holds its connection, as a fact
+// the shape POMJU-3169 measured: a transaction that waits while it holds its connection, as a fact
 // that queues on the fact serializer does. A tick that comes in that wait has to move the lease a
 // whole lease ahead, as it does for a row blocked outside any transaction
 // (TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain). A tick refused instead leaves the

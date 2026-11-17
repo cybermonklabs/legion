@@ -53,8 +53,8 @@ and `instanceGroup`, the group's name.
 | `subnetwork` | unset | The VM's subnetwork, for a network with custom subnetworks: one in `zone`'s region. Only with `network`. May come from another resource or stack. |
 | `listener` | unset | The hub's own Envoy listener: `image`, the listener's image pinned as the images above are; `seedSecret`, the id of a Secret Manager secret in the hub's project holding its NATS user's seed; `nkey`, that seed's public key; `allowedHosts`, any further address a client dials this hub by, beyond the hub's own `<h>.<tailnetDnsName>`, which it always serves; and the listener's broker check, `agentSecretsUrl`, `agentSecretsAudience` and `publicUrl`, set together or not at all. Each `allowedHosts` entry is a plain host name or IP address, rendered as written into the listener's `ENVOY_ALLOWED_HOSTS`. See [The hub's listener](#the-hubs-listener) and [The listener's broker check](#the-listeners-broker-check). |
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
-| `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. See [The auth service](#the-auth-service). |
+| `authCallout` | unset | The auth service's callout (dispatch://POMJU-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://POMJU-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. See [The auth service](#the-auth-service). |
 
 Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource's output. Every
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
@@ -252,7 +252,7 @@ as the listener's user repeating it, as `listener "<h>": name repeats users[<ind
 ### The auth service
 
 With `authCallout`, the server admits every client that is not one of its users through the auth
-service (dispatch://INFRA-840), which reads the client's token and answers with that connection's
+service (dispatch://POMJU-840), which reads the client's token and answers with that connection's
 grant, as [NATS authorization](../README.md#nats-authorization) renders it: one `auth_callout`
 block inside the authorization block, whose `auth_users` is the key of every user above, the
 session user's included (a hub with `authCallout` has no listener user, below). After the
@@ -274,11 +274,11 @@ account, beside the static users, so turning the callout on moves no stream.
 
 A hub with `authCallout` runs no `listener` of its own yet: the listener connects as a user whose
 seed the hub stores, and its service identity, with which it would connect through the auth
-service instead, arrives with dispatch://INFRA-840 (its task t-e-13). Until then `listener` beside
+service instead, arrives with dispatch://POMJU-840 (its task t-e-13). Until then `listener` beside
 `authCallout` is refused naming both, as `listener and authCallout: …`, before anything registers.
 
 `privateProjects` says the deployment may make a Dispatch project private, which R12 of
-dispatch://INFRA-3862 allows only while every client connects through the auth service. So it is
+dispatch://POMJU-3862 allows only while every client connects through the auth service. So it is
 refused, as a `core.InputError` naming `privateProjects`, without `authCallout`
 (`privateProjects: a project can be private only while the server admits each client through the
 auth service, and the authorization has no callout`); beside a `sessionUser`

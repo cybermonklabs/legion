@@ -43,7 +43,7 @@ that replays the model's worst case through that loop can take.
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454) has one of each, for the two renewers of the secrets
+`sjawhar/legion#2705` (dispatch://POMJU-454) has one of each, for the two renewers of the secrets
 broker.
 
 Injectable: `cmd/agent-secrets/renew_outage_test.go`'s `outageRig.after` is `renewLoop`'s wait —

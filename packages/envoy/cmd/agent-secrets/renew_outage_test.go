@@ -142,7 +142,7 @@ func (r *outageRig) after(cancel context.CancelFunc, t *testing.T) func(time.Dur
 // outage of leasetime.NotServingSweeps sweeps the model found for this renewer, at one lease
 // below its floor and one above it, each far enough from the boundary that a real-time loop
 // cannot carry it across (minMargin). Below the floor, the renewal that gets through comes after
-// the enrollment ended and the renewer exits 76, the exit that told INFRA-487's pods their
+// the enrollment ended and the renewer exits 76, the exit that told POMJU-487's pods their
 // session was gone; above it, it renews. The walk it
 // takes is asserted instant by instant against the model config.Load refuses by, so the two can
 // never say different things about the same renewer.

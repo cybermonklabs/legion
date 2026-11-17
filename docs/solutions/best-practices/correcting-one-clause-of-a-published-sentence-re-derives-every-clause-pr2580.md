@@ -10,7 +10,7 @@ date: 2026-10-31
 status: active
 module: packages/envoy/cmd/dispatch
 related_issues:
-  - "INFRA-841"
+  - "POMJU-841"
   - "sjawhar/legion#2580"
 ---
 
@@ -27,7 +27,7 @@ related_issues:
 
 ## Evidence
 
-sjawhar/legion#2580, INFRA-841, item 2. The `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES`
+sjawhar/legion#2580, POMJU-841, item 2. The `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES`
 rows of `packages/envoy/cmd/dispatch/settings.go` divided the WARN from the ERROR by "while the
 retries stay under a minute", which is not the bound the guard enforces. The fix rewrote that
 clause and, to introduce it, added a new one: Dispatch "connects in the background and reconciles

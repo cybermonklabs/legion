@@ -8,14 +8,14 @@ import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * dispatch://INFRA-1576 on the surface the asking agent reads: `dispatch open-asks` names the
+ * dispatch://POMJU-1576 on the surface the asking agent reads: `dispatch open-asks` names the
  * person each of its open questions waits on, by the server's own expression
  * (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, answered as `waiting_on_person`), so
  * an agent that opened a question can say who it is waiting for instead of guessing.
  *
  * The real command, as its own process, opens both questions through the real server: one on an
  * issue a person holds, and one on a project document, which no assignee holds, so it waits on
- * the project's default assignee (dispatch://INFRA-3090). A second person then hands the first to
+ * the project's default assignee (dispatch://POMJU-3090). A second person then hands the first to
  * themselves in a browser, and the same author session's `open-asks` names them from then on.
  */
 

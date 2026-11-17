@@ -62,7 +62,7 @@ func (h *harness) abandonSession(refusal string) {
 // that session, the cause in the provider's own words (the context size it refused at among them),
 // the issue's branch and the handoffs committed on it. Nothing in a new session says that an older
 // one existed, so a worker given the bare task would read an empty transcript as a fresh start and
-// do again what the abandoned session already pushed (dispatch://INFRA-714, item 4 of the refusal
+// do again what the abandoned session already pushed (dispatch://POMJU-714, item 4 of the refusal
 // section).
 func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *testing.T) {
 	h := newHarness(t)
@@ -141,7 +141,7 @@ func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 // prompt's admission and can still follow with a busy answer — so the task after it is the task
 // alone. Marking it where the send started instead left the first task the fresh session actually
 // read without the branch, the handoffs and the sentence that says an older session existed at all
-// (dispatch://INFRA-714).
+// (dispatch://POMJU-714).
 func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 	h := newHarness(t)
 	refusal := "the provider ended the turn with an error at 226k tokens of context"

@@ -13,7 +13,7 @@ const droppedDuplicateLine = "an intake fact was delivered again and dropped as 
 
 // Nothing else in the daemon reports a fact delivered a second time: a duplicate is dropped before
 // any handler runs (ApplyFact, facts.go) and acknowledged like an applied one, so this line is the
-// only place the rate of it can be read from (dispatch://INFRA-1113). A change that dropped the
+// only place the rate of it can be read from (dispatch://POMJU-1113). A change that dropped the
 // line, or that left one of its fields behind, would take that rate away with nothing else
 // failing; hence a row of its own.
 //
@@ -32,7 +32,7 @@ func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
 	// 200 ms is about the length of that work on a loaded runner, so a minute is far above it
 	// and cuts nothing the row does. The margin is what makes the count of one sound: a
 	// redelivery the count would see needs the whole minute to pass before the handling's
-	// acknowledgement reaches the server. The campaign of dispatch://INFRA-1113 measured that
+	// acknowledgement reaches the server. The campaign of dispatch://POMJU-1113 measured that
 	// trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work
 	// and that trip together, about 717 ms, are a factor of about 80 below this window.
 	// The progress keeper reports nothing here: it ticks at a third of the window

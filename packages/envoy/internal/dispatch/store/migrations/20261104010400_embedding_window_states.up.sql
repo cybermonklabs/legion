@@ -1,7 +1,7 @@
 -- 20261104010400_embedding_window_states.up.sql — the block state each owner's windows were
 -- written from.
 --
--- INFRA-370 moves meaning search onto windows of an owner's blocks (20261102233625). The
+-- POMJU-370 moves meaning search onto windows of an owner's blocks (20261102233625). The
 -- block-index tick's window arm gives windows to every owner that holds none
 -- (docs.windowDrift), which is every owner written before that change. That test cannot see the
 -- one case a rolling deploy makes: the release before this one re-indexes an owner's blocks on

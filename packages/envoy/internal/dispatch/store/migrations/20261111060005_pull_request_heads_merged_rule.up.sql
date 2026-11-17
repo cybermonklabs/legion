@@ -1,6 +1,6 @@
 -- 20261111060005_pull_request_heads_merged_rule.up.sql
 --
--- The indexes behind the reconcile's merged arm, which R8 of INFRA-1522 widened. The arm now
+-- The indexes behind the reconcile's merged arm, which R8 of POMJU-1522 widened. The arm now
 -- takes a merged row an older attribution rule judged, whether or not that rule credited it, and
 -- not the rows credited to nobody alone (ListStalePullRequestHeads,
 -- delivery.AttributionRuleVersion is 2). Rule 2 ranks the head branch and the two links above the

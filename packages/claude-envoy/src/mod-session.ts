@@ -1,11 +1,11 @@
-// The Claude Code session as the router drives it (INFRA-1026): what the mod says is happening in
+// The Claude Code session as the router drives it (POMJU-1026): what the mod says is happening in
 // it, and the calls that put something into it.
 //
 // Where a message goes — a row of the turn running, or the prompt of a new turn — and whether a
 // turn that ended without reading a row is pointed at it are the mod's to decide, not this
 // file's: the mod is the one process where the turn's events and this plugin's writes arrive in
 // one order. Three review rounds found a race in deciding them here, each from the same cause —
-// two posts whose order is not the order the session saw (INFRA-1026 review, rounds nine to
+// two posts whose order is not the order the session saw (POMJU-1026 review, rounds nine to
 // eleven). So this file hands the mod one message and reads back the row it became
 // (`session.message`, `../hooks/mod-protocol.ts`), and what is left here is what the row's own
 // id answers:
@@ -80,7 +80,7 @@ const COMMAND_OUTPUT_MS = 2_000
  * How long after its own answer a `$.command.run` may still claim the echo row Claude Code
  * wrote for it.
  *
- * Measured on live Claude Code 2.1.310 (INFRA-1026): a `/model haiku` this session ran answered
+ * Measured on live Claude Code 2.1.310 (POMJU-1026): a `/model haiku` this session ran answered
  * at 08:14:06.839 and its echo row landed at 08:14:06.858, 19 ms later; an earlier recording of
  * the same shape put that echo 90 ms after the answer. One second is more than ten times the
  * longest seen.
@@ -113,13 +113,13 @@ export interface ModSession {
    * Whether the row `row` names is the echo row a `$.command.run` of this session's claimed,
    * which is the row the live view must not draw as a person's message: Claude Code echoes the
    * command it ran rather than the one that was asked for - `/cost` ran as `/usage`, and
-   * `/model anthropic/haiku` as `/model haiku`, measured live on 2.1.310 (INFRA-1026) - so the
+   * `/model anthropic/haiku` as `/model haiku`, measured live on 2.1.310 (POMJU-1026) - so the
    * echo drawn is a second message the person never wrote, beside Dispatch's stored copy of the
    * one they did send.
    *
    * One echo row per run, claimed inside `COMMAND_ECHO_MS` of that run's own answer: `origin`
    * separates nothing, since a run's rows and a person's terminal command both reach
-   * `{"kind":"engine"}` (measured on live Claude Code 2.1.310, INFRA-1026). Every other row of
+   * `{"kind":"engine"}` (measured on live Claude Code 2.1.310, POMJU-1026). Every other row of
    * the `command` door is a person's own, and the live view draws it.
    */
   runsCommandRow(row: string): boolean
@@ -131,7 +131,7 @@ export interface ModSession {
    *
    * Answered from the stamp the mod put on the row's own event (`ModEvent`'s `wrote`), as
    * `appendedRow` is. Read instead off the prompt's wording, a card carrying those words — a
-   * review of this code, or a message quoting one — was a card the view never drew (INFRA-1026
+   * review of this code, or a message quoting one — was a card the view never drew (POMJU-1026
    * review, round ten). Every other prompt row is a person's own prompt or a card an idle
    * session took, and the view draws it.
    */
@@ -149,7 +149,7 @@ export interface ModSession {
    * its own — `{"kind":"plugin","name":"<the other plugin>"}`, measured in the issue's spike
    * (`/legion/scratch/tmp/infra-1026-spike/logs`, where `spike-mod2` and `spike-mod3p` name
    * themselves) — so a rule keeping every `plugin` origin drew another mod's model-facing
-   * context as the person's words (INFRA-1026 review, round ten).
+   * context as the person's words (POMJU-1026 review, round ten).
    */
   appendedRow(row: string): boolean
   /**
@@ -158,8 +158,8 @@ export interface ModSession {
    *
    * The mod decides what the card becomes: the prompt of a new turn while nothing is running,
    * submitted without `asUser` as the card's own text and stored nowhere else — an append
-   * starts nothing, so a card only appended would sit there until the person typed (INFRA-1026
-   * review), and a card appended *and* quoted by a prompt reached the model twice (INFRA-1026,
+   * starts nothing, so a card only appended would sit there until the person typed (POMJU-1026
+   * review), and a card appended *and* quoted by a prompt reached the model twice (POMJU-1026,
    * handoff v6: both of the Agents page's rows 8 and 10 of session 225642d4 carried the one
    * card) — or a row of the turn running, which the model reads at that turn's next request and
    * which one prompt of the mod's quotes in full when the turn ends without a request having
@@ -239,7 +239,7 @@ export interface ModSessionOptions {
 
 /** One `$.command.run` whose rows are still to come, and the rows it claimed. A run's rows
  *  arrive after the call answers - 5 ms, 19 ms and 49 ms behind it for a `/model haiku`
- *  measured on live Claude Code 2.1.310 (INFRA-1026) - so a run claims the first echo row
+ *  measured on live Claude Code 2.1.310 (POMJU-1026) - so a run claims the first echo row
  *  inside `COMMAND_ECHO_MS` of its own answer, and the output row directly behind that echo. */
 interface CommandRun {
   /** Whether this run may claim an echo row now: true from the moment its own call answers
@@ -308,7 +308,7 @@ export function modSession(options: ModSessionOptions): ModSession {
    * `COMMAND_ECHO_MS` of that answer, oldest unclaimed run first. The output row directly
    * behind that echo is what the run printed. An echo no run claimed is a command a person
    * typed at their own terminal, and the output row behind it is theirs too: measured on live
-   * Claude Code 2.1.310 (INFRA-1026), the two are told apart by that timing and by nothing
+   * Claude Code 2.1.310 (POMJU-1026), the two are told apart by that timing and by nothing
    * else - the person's `/config` echo and the `/usage` echo of a run this session made both
    * carried `origin {"kind":"engine"}`, and the command a row names says nothing either, since
    * `/cost` runs as `/usage`.
@@ -411,7 +411,7 @@ export function modSession(options: ModSessionOptions): ModSession {
       // event arrives, and nowhere else: the server hands every event to this session before
       // the view records it (`./envoy-channel-server`), so the claim is in place for the row
       // being recorded, while a claim made from the answer of the call that wrote the row
-      // lands after the view has already read it (INFRA-1026 k2, measured live on 2.1.310 — a
+      // lands after the view has already read it (POMJU-1026 k2, measured live on 2.1.310 — a
       // card delivered into a running turn reached the model and was drawn nowhere).
       if (event.wrote === "message") rememberBounded(claimedAppends, event.uuid, CLAIMED_ROWS_MAX)
       if (event.wrote === "pointer") {
@@ -466,7 +466,7 @@ export function modSession(options: ModSessionOptions): ModSession {
         throw error
       }
       // The run's own rows are still to come: measured on live Claude Code 2.1.310
-      // (INFRA-1026), a `/model haiku` answered at 08:14:06.839 and its caveat, echo and
+      // (POMJU-1026), a `/model haiku` answered at 08:14:06.839 and its caveat, echo and
       // output rows followed at .844, .858 and .888. So the wait for them is started whatever
       // the result carried - the echo this run claims is the row the live view must not draw,
       // and the claim is what makes the output row behind it this run's rather than a

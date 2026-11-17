@@ -14,7 +14,7 @@ module: packages/envoy/internal/dispatch/pmdoc
 
 # A respelling search reads each distinct writing back once, and a linearity gate takes no clock floor
 
-Extends docs/solutions/envoy/a-writer-that-checks-its-output-by-reading-it-back-keeps-stored-bytes-only-when-the-new-reader-joins-every-step-of-the-old-ladder-INFRA-534.md.
+Extends docs/solutions/envoy/a-writer-that-checks-its-output-by-reading-it-back-keeps-stored-bytes-only-when-the-new-reader-joins-every-step-of-the-old-ladder-POMJU-534.md.
 
 - **Each new respelling flag multiplies the search; pay for it once per distinct writing.** The
   spellings `inlineWithEscapes` tries are a product of independent flags, and most combinations

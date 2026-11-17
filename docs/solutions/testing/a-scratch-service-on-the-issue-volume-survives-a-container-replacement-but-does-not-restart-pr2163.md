@@ -11,13 +11,13 @@ date: 2026-10-25
 status: active
 module: scripts/e2e
 related_issues:
-  - "INFRA-251"
+  - "POMJU-251"
   - "sjawhar/legion#2163"
 ---
 
 # A scratch service on the issue volume survives a container replacement but does not restart
 
-Extends `docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-INFRA-43.md`,
+Extends `docs/solutions/testing/a-browser-harness-in-an-issue-pod-lives-on-the-issue-volume-POMJU-43.md`,
 which says to build the harness on `/legion` because the issue volume survives a pod replacement
 and the container filesystem does not. True, and not the whole story: the **files** survive, the
 **process** does not, and bringing it back is not just re-running the start command.
@@ -37,7 +37,7 @@ and the container filesystem does not. True, and not the whole story: the **file
   the pod's network namespace, so a service on `127.0.0.1` is reachable from its container too —
   but only if it is running, and only if that role knows the directory and the one `chmod`.
 
-## Evidence (INFRA-251, sjawhar/legion#2163)
+## Evidence (POMJU-251, sjawhar/legion#2163)
 
 The implementer's rig for this issue is a portable PostgreSQL 17.2 under
 `/legion/scratch/rig251`, which gave every round its real-database proof. Between two turns of one

@@ -1,4 +1,4 @@
-// The sidebar's Agents list (INFRA-812, R1), as a browser check reads it: the rows are the
+// The sidebar's Agents list (POMJU-812, R1), as a browser check reads it: the rows are the
 // person's pinned agents, oldest pin first, and below 1280 pixels the whole rail is a sheet
 // behind the Menu control rather than a column of the page. Every row that reads the rail goes
 // through here, so one place knows where the rail is at the width it is run at.

@@ -121,7 +121,7 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 // task's pass asks for each such requirement, and its pending covers a merge production carries
 // whose requirement is still unobserved, not only a merge production does not carry yet: a check
 // told that pending is for the merge alone has no verdict for that case but the pass it is not
-// (dispatch://INFRA-492 reported pass at its last look with its requirement's own condition never
+// (dispatch://POMJU-492 reported pass at its last look with its requirement's own condition never
 // met).
 func TestTheCheckTaskPendsADeployedMergeWhoseRequirementIsStillUnobserved(t *testing.T) {
 	for _, last := range []bool{false, true} {

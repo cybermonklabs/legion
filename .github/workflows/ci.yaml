@@ -85,7 +85,7 @@ name: CI
 # repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 # ~/.cache/ms-playwright restore would carry nothing they do not already have, and
 # ci-caches.yaml's browsers job, the only writer of that entry, is gone with the restores
-# (dispatch://INFRA-1443). setup-bun reads and writes its cache only on main
+# (dispatch://POMJU-1443). setup-bun reads and writes its cache only on main
 # (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 # not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 # job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
@@ -262,7 +262,7 @@ jobs:
     # changes, pr-title, cancel-started and ci-ok run on arm64: each runs JavaScript actions and
     # shell scripts over the image's own gh, jq, git and coreutils, and builds or fetches no binary,
     # so the architecture reaches nothing they compute; at busy hours the x64 pool queues a job for
-    # about 15 minutes where the arm64 pool starts one in seconds (INFRA-4222).
+    # about 15 minutes where the arm64 pool starts one in seconds (POMJU-4222).
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     outputs:
@@ -273,16 +273,16 @@ jobs:
       # a step that does not declare its filter, so an output and its step cannot drift.
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
-      # The daemon's Go suite, a job of its own since dispatch://INFRA-1413: the test job used
+      # The daemon's Go suite, a job of its own since dispatch://POMJU-1413: the test job used
       # to carry it behind the output above, so a change to a shell script ran it too.
       daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_go_tests }}
       # The one test of that suite that packs the two plugin releases, in a job of its own: its
       # pack reads bun.lock, so with it in daemon-go a lockfile change ran the daemon's whole Go
-      # suite (dispatch://INFRA-1413, A4).
+      # suite (dispatch://POMJU-1413, A4).
       plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
       # The private-name port harness, in a job of its own: it builds the `legion` binary of
       # this head, so as a step of the test job it put that build's whole closure on the test
-      # filter (dispatch://INFRA-1413).
+      # filter (dispatch://POMJU-1413).
       private_names_port: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.private_names_port }}
       # The session message-wait suite, in a job of its own: it is the one test of the test job
       # that needs a database, and a Postgres service there would start one for every change
@@ -313,6 +313,7 @@ jobs:
       ci_tools_proof_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_proof_test }}
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
+      neutralize_private_keys_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.neutralize_private_keys_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
@@ -464,7 +465,7 @@ jobs:
           # of theirs (patches/**, packages/broker-client/**, .github/actions/install-crane/**)
           # starts neither. No Markdown file of the repository matches either filter today, so the
           # pattern holds no run back now; it keeps the next guide from riding in, which is what a
-          # week of Markdown-only pull requests cost 1,504 runner-minutes (dispatch://INFRA-1413).
+          # week of Markdown-only pull requests cost 1,504 runner-minutes (dispatch://POMJU-1413).
           # Every other filter of this file was tried with that pattern
           # and refused by rule 1 of .github/scripts/check-ci-filters.sh, which fails a filter that
           # stops matching a file its gate reads: those jobs read an embedded prompt, a README
@@ -479,7 +480,7 @@ jobs:
           # between a BEGIN and an END comment. The ordinary run of that check refuses a block
           # that is not what it computes, naming the first pattern that differs, so an edit by
           # hand is lost. The check prints how many it wrote on every run, so no count is kept
-          # here. That is dispatch://INFRA-1413's R18, the selection half of the rule whose
+          # here. That is dispatch://POMJU-1413's R18, the selection half of the rule whose
           # coverage half is rule 1: a job must not run for a change to a test file of a package
           # whose tests it never runs, and the pattern that selects such a file (packages/envoy/**
           # and its kin) matches the job's own sources too, so nothing but an exclusion can say it.
@@ -655,7 +656,7 @@ jobs:
             # envoy-infra's permissions live test builds (infra/core/permissions_live_test.go:298).
             # packages/envoy/listenfd serves on the socket a test or harness holds (#2229).
             # internal/dispatch/dashboard and internal/dispatch/processes: cmd/dispatch imports them
-            # (INFRA-559, INFRA-555).
+            # (POMJU-559, POMJU-555).
             # internal/roles and, through it, internal/store, internal/session and internal/kvwatch:
             # the outbox's role forward resolves a role's holder with roles.ResolveHolder (#2395).
             dispatch_server: &dispatch_server
@@ -913,11 +914,11 @@ jobs:
             # this job reads of it: the tests of this suite that packed the two plugins - and so
             # resolved the root manifest, the lockfile and the patches - or staged each plugin's
             # partition of skills/ with the prepack script are the plugin-pack job's now, and
-            # this job installs nothing (dispatch://INFRA-1413, A4).
+            # this job installs nothing (dispatch://POMJU-1413, A4).
             #
             # The list is the one the test job's filter used to name through this anchor while
             # it gated nothing of its own; it is now the daemon-go job's own filter, so a change
-            # a Go test cannot see no longer runs 1,083 s of them (dispatch://INFRA-1413).
+            # a Go test cannot see no longer runs 1,083 s of them (dispatch://POMJU-1413).
             daemon_go_tests:
               - *ci_router
               - '.github/workflows/ci-job-daemon-go.yaml'
@@ -1016,7 +1017,7 @@ jobs:
             # each bundle from, the skills it stages, and the frozen install that prepack builds
             # against, the lockfile included. Those reads are why the job exists: while these
             # tests were daemon-go's, bun.lock and skills/ were on that filter and a change to
-            # either ran the daemon's whole Go suite (dispatch://INFRA-1413).
+            # either ran the daemon's whole Go suite (dispatch://POMJU-1413).
             # No Stage 1 script, no uv and no NATS images: those are daemon-go's steps, not this
             # one's.
             plugin_pack:
@@ -1262,7 +1263,7 @@ jobs:
             # test-lib.sh, which each of them sources for `check`, `is` and `summary`.
             # Before these the job's filter carried one pattern, '.github/scripts/*', for all of
             # them: a change to any one script ran every harness, and 28 of the 66 commits that
-            # touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
+            # touched that directory since 2026-10-01 changed no Go file (dispatch://POMJU-1413).
             release_push_test: &release_push_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1413,6 +1414,12 @@ jobs:
               - '.github/scripts/check-private-names.sh'
               # :21 runs the guard's other surface, a pull request's text, with it.
               - '.github/scripts/check-pr-text.sh'
+            neutralize_private_keys_test: &neutralize_private_keys_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/neutralize-private-keys.test.sh'
+              - '.github/scripts/neutralize-private-keys.py'
             check_plugin_names_test: &check_plugin_names_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1646,6 +1653,7 @@ jobs:
               - *ci_tools_proof_test
               - *check_action_pins_test
               - *check_private_names_test
+              - *neutralize_private_keys_test
               - *check_plugin_names_test
               - *check_fireevent_reasons_test
               - *check_daemon_api_contract_test
@@ -1863,7 +1871,7 @@ jobs:
               # Markdown file. The 230 that ride in today are the pmdoc parser's corpus
               # (internal/dispatch/pmdoc/testdata), which only the jobs that run pmdoc's tests
               # read, so a guide or a corpus case written under packages/envoy/internal starts no
-              # notices build (dispatch://INFRA-1413's A2).
+              # notices build (dispatch://POMJU-1413's A2).
               - '!packages/envoy/internal/**/*.md'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
@@ -1874,7 +1882,7 @@ jobs:
       # environment variable, and Linux caps one of those at MAX_ARG_STRLEN, 131,072 bytes: the
       # whole block in one step came to 137,498 bytes once the generated `!` patterns were
       # written into it, and the job could not start at all ("An error occurred trying to start
-      # process ... Argument list too long", dispatch://INFRA-1413). So the filters are declared
+      # process ... Argument list too long", dispatch://POMJU-1413). So the filters are declared
       # in more than one step, each string its own YAML document; the third step's comment says
       # why there are three. Which filter is in which step is
       # grouping, not meaning: the split keeps every filter that shares a group with another in
@@ -2532,7 +2540,7 @@ jobs:
               # installed, the key their apt archive cache was read under and the check that the
               # list had not fallen behind Playwright: those two jobs run in the image this
               # repository builds now, which carries the browsers and their host packages, so
-              # all four files are gone (dispatch://INFRA-1443).
+              # all four files are gone (dispatch://POMJU-1443).
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-postgres.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
@@ -2543,7 +2551,7 @@ jobs:
               # The container image the shard and alone jobs run in and everything that decides
               # which bytes it is: the row that pins its digest, the Dockerfile it is built from
               # and the workflow that builds it. A change to any of them changes what those jobs
-              # run inside, so they run (dispatch://INFRA-1443). The row is named as the whole
+              # run inside, so they run (dispatch://POMJU-1443). The row is named as the whole
               # file because a paths filter matches files and not rows, so any row change
               # re-runs the browser jobs; that is correct and cheap. The two-process and merge
               # jobs are on this same filter and run in no container, so an image change runs
@@ -3349,7 +3357,7 @@ jobs:
       # The third of the filter strings, for the reason the second's comment gives: the second
       # came within rule 18's margin again once envoy_go_race carried a generated block of its
       # own, when search_text_test.go's read narrowed from packages/envoy/** to the Markdown it
-      # opens, and the first had no room for a filter either (dispatch://INFRA-1413). The three
+      # opens, and the first had no room for a filter either (dispatch://POMJU-1413). The three
       # race lane filters are here, and so is envoy_client, which the first step had no room for
       # once main's new test files grew its generated blocks, and so is private_names_port, whose
       # generated block names every migration test of the daemon's store and grows with each one
@@ -3611,7 +3619,7 @@ jobs:
             # seven source guards now carry `//go:build !race`, so the race build compiles none of
             # them and the text-check job runs their tests instead. one_expression_guard_test.go
             # walks the module the same way and is on that side of the tag for the same reason,
-            # so no module-wide walk is left in this job's build (dispatch://INFRA-1413). What is
+            # so no module-wide walk is left in this job's build (dispatch://POMJU-1413). What is
             # left is the closure of `go test -race ./internal/dispatch/api/` (`go list -deps
             # -test -race` in packages/envoy), one pattern per directory, with what those
             # packages embed and the testdata of the package whose tests this job runs: a
@@ -3826,7 +3834,7 @@ jobs:
               # END generated
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
             # a race job of twenty minutes or more must not run on every change under that tree
-            # (INFRA-490). This is the closure of ./internal/dispatch/docs/ (`go list -deps -test
+            # (POMJU-490). This is the closure of ./internal/dispatch/docs/ (`go list -deps -test
             # -race`), one pattern per directory, with what those packages embed and the testdata
             # its own tests read - this package's, and pmdoc's, which one of them names through
             # `..`. A dependency's testdata no test of this job reads is not an input.
@@ -4031,7 +4039,7 @@ jobs:
             # binary is made of, the rule file packages/daemon/internal/leakguard embeds among
             # it - and why the step has a job: while it was the test job's, the whole closure
             # sat on the `test` filter, so a change to one package of the daemon ran thirty-odd
-            # shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+            # shell harnesses and the Bun suites of scripts/ with it (dispatch://POMJU-1413).
             private_names_port:
               - *ci_router
               - '.github/workflows/ci-job-private-names-port.yaml'
@@ -4564,7 +4572,7 @@ jobs:
   # the refusal of every one of them.
   # It is permanent rather than a scaffold. A second source nothing exercises rots — a copy
   # nothing fills, a seam a refactor dropped, a digest nobody reads — and the hour of 504s this
-  # work answers is the hour nobody wants to learn that in (dispatch://INFRA-1873). This
+  # work answers is the hour nobody wants to learn that in (dispatch://POMJU-1873). This
   # repository's own principle is that testing means booting and running it, so what says the
   # fallback works on the day the assets are down is a job that takes them down and installs
   # anyway.
@@ -4623,7 +4631,7 @@ jobs:
   # Read the job record beside it: a lost runner leaves one step `in_progress` and every step
   # after it `pending`, and the job ends before its own `timeout-minutes` would have fired.
   # Three wrong causes were offered for that one job before anyone ran that command
-  # (dispatch://INFRA-2605). `docs/testing.md` says the same for any job of this repository.
+  # (dispatch://POMJU-2605). `docs/testing.md` says the same for any job of this repository.
   #
   # BEFORE YOU PUT A BOUND ON A STEP OF THIS JOB: A BOUND BELONGS ONLY WHERE FIRING IT IS LOUD.
   # A step the runner ends at its `timeout-minutes` leaves the same `outcome` behind it as a
@@ -4639,7 +4647,7 @@ jobs:
   # cancelled it and failed ci-ok. That is why each of those installs is timed as well as read -
   # the eight with nowhere to go by the control step beside them, the sixteen corrupted cases by
   # `report` itself - and why a new bound on a step some later assertion accepts the failure of
-  # needs the same treatment or none at all (dispatch://INFRA-2605).
+  # needs the same treatment or none at all (dispatch://POMJU-2605).
   tool-fallback:
     needs: [changes, ci-images]
     if: ${{ !cancelled() && needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
@@ -4760,6 +4768,7 @@ jobs:
       ci_tools_proof_test: ${{ needs.changes.outputs.ci_tools_proof_test }}
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
+      neutralize_private_keys_test: ${{ needs.changes.outputs.neutralize_private_keys_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
@@ -4784,7 +4793,7 @@ jobs:
       go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
 
   # The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
-  # Postgres, the tools and the cache they need. It left the test job in dispatch://INFRA-1413,
+  # Postgres, the tools and the cache they need. It left the test job in dispatch://POMJU-1413,
   # where one filter had to cover both: a change to a shell script, to packages/claude-envoy or
   # to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
   # and test above, for the reason their comment gives.
@@ -4802,7 +4811,7 @@ jobs:
   # The three tests of the daemon's Go suite that .github/scripts/ci_job_reads.py's
   # PLUGIN_PACK_TESTS names: the one that packs the two plugin releases and loads them, and the
   # two prompt probes of agentmodels_omp_test.go. They left daemon-go above in
-  # dispatch://INFRA-1413: the pack reads bun.lock and the two plugin packages, and the
+  # dispatch://POMJU-1413: the pack reads bun.lock and the two plugin packages, and the
   # agent-model probe stages skills/, so that filter named the lockfile and skills/, and a change
   # to either ran the daemon's whole Go suite. Here they run on their own inputs, and the
   # daemon-go race step skips them by name (.github/scripts/ci_job_reads.py's PLUGIN_PACK_TESTS
@@ -4821,7 +4830,7 @@ jobs:
   # The harness that holds this repository's four private-name rules, as the `legion` binary of
   # this head runs them, to the frozen shell script's verdicts case for case
   # (.github/scripts/check-private-names-port.test.sh). It left the test job in
-  # dispatch://INFRA-1413: the harness builds ./cmd/legion, so that job's filter had to name the
+  # dispatch://POMJU-1413: the harness builds ./cmd/legion, so that job's filter had to name the
   # whole closure of that build, and a change to any package of the daemon ran thirty-odd shell
   # harnesses and the Bun suites of scripts/ that could not see it. Fail-open with typecheck,
   # test, daemon-go and plugin-pack above, for the reason their comment gives, and as this step
@@ -4901,7 +4910,7 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # The session message-wait suite, which creates a session-store database of its own and
-  # refuses without one. It was a step of the test job until dispatch://INFRA-1413: the one step
+  # refuses without one. It was a step of the test job until dispatch://POMJU-1413: the one step
   # of that job that needs a database, which is why it has one here instead of a Postgres
   # service on a job whose other thirty-odd steps would start it for nothing.
   sessions-script:
@@ -5010,7 +5019,7 @@ jobs:
   # One input decides that: the called workflow reads `lane` for the projects each job runs, so
   # nothing here chooses them a second time. It picks no browser to install any more: the shard
   # and alone jobs run in the image this repository builds, which carries all three engines
-  # (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
+  # (dispatch://POMJU-1443), and the two-process job installs Chromium whatever the lane.
   #
   # The matrix is in the called workflow and cannot be here. Every leg of a matrix shares one
   # job id, and .github/actions/ci-ok-report posts the failing ci-ok of a merge-group run from
@@ -5145,14 +5154,14 @@ jobs:
   # TestConnectsSharingADialerRecordItsLastError), the listener, where the role claim watcher, the
   # session and interest watchers and the request handlers meet, with the role claim view, its
   # lock and its epoch in the registry store and the watchers' completeness and rescans in kvwatch
-  # (INFRA-141), the session cache, whose reads take its shared lock beside watcher writes and the
+  # (POMJU-141), the session cache, whose reads take its shared lock beside watcher writes and the
   # expiry timer's callback as kvwatch's resume point is read while a replaced watcher still
   # applies, the Dispatch API and the document service - all under the race detector. A read
   # that walks a live document without its lock races the room's peers, which no ordinary run
   # shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
   # envoy-go because -race runs these packages several times slower, and each job carries a
   # package deadline of its own, since go test's ten-minute default is a whole package's.
-  # envoy-go runs none of these packages plain any more (INFRA-1408): its unit step leaves out
+  # envoy-go runs none of these packages plain any more (POMJU-1408): its unit step leaves out
   # exactly what the lane runs, and the one plain run it keeps of them is the step named "Test
   # what the race build cannot run at all or at full size", which runs the handful of
   # assertions the detector makes impossible or shrinks and nothing else.
@@ -5171,7 +5180,7 @@ jobs:
   # standing when one is red.
   #
   # pmdoc is not in this lane: its tests run plain only, in envoy-go's unit-test step
-  # (INFRA-1408). It sat here because LEGION-571's flakes - pmdoc's own under -race and load, not
+  # (POMJU-1408). It sat here because LEGION-571's flakes - pmdoc's own under -race and load, not
   # a race in production code - cost three review rounds when nothing ran the package under -race
   # before a PR claimed it. Its product code is still race-instrumented wherever a race job
   # compiles it, since envoy-go-race-docs imports pmdoc; what went is the second, race-built run
@@ -5239,7 +5248,7 @@ jobs:
   # GODEBUG=checkfinalizers=1 makes the runtime report a cleanup or a finalizer whose closure or
   # argument reaches the object it is attached to, a cycle that keeps that object alive for the
   # life of the process, and that is the defect that held this package's memory
-  # (dispatch://INFRA-1085). This is the only package of the repository that registers a cleanup,
+  # (dispatch://POMJU-1085). This is the only package of the repository that registers a cleanup,
   # so no other job needs it. It runs without -race: the detector is the runtime's own
   # bookkeeping, and a plain binary leaves the runner room the race binary does not. It reads the
   # same closure as envoy-go-race-docs, so it reuses that filter and that `changes` output rather
@@ -5276,7 +5285,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The two-process tests (packages/envoy/cmd/dispatch/multiprocess_test.go, INFRA-66): each row
+  # The two-process tests (packages/envoy/cmd/dispatch/multiprocess_test.go, POMJU-66): each row
   # starts two real envoy-dispatch processes against one Postgres and one NATS - which is what
   # production runs - and drives them over HTTP, their own logs and NATS's own consumer and
   # stream reads. They build only under the `multiprocess` tag, so envoy-go's unit run leaves
@@ -5337,7 +5346,7 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       dispatch_two_builds_go: ${{ needs.changes.outputs.dispatch_two_builds_go }}
 
-  # The server-change soak (packages/envoy/cmd/listener/server_change_test.go, INFRA-547): it
+  # The server-change soak (packages/envoy/cmd/listener/server_change_test.go, POMJU-547): it
   # drives two real envoy-listener binaries over a three-server NATS cluster, with a session
   # stand-in moved between the servers by lame-duck shutdowns and forced kills and three senders
   # publishing through the listener, and holds every message to reaching its session or failing
@@ -5366,7 +5375,7 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # The two-process tests of the secrets broker (packages/envoy/cmd/broker/multiprocess_test.go,
-  # INFRA-236): each row starts real cmd/broker binaries against one Postgres - which is what the
+  # POMJU-236): each row starts real cmd/broker binaries against one Postgres - which is what the
   # broker's Deployment runs once it carries more than one replica - and drives them over real
   # HTTP and their own logs. They race one refresh token and one device code against both
   # processes, migrate one empty database with both at once, prove a retag read by one process is
@@ -5449,7 +5458,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The session stall suites (INFRA-548): each freezes a session's NATS path behind
+  # The session stall suites (POMJU-548): each freezes a session's NATS path behind
   # envoy-client's stall proxy (test/stall-proxy.ts) on a real natsd and listener, which
   # test/envoy-stack.ts builds with go build from packages/envoy, and holds the client to a
   # reconnect within 60 s: envoy-client's shared connection options on their own, then the real
@@ -5459,13 +5468,13 @@ jobs:
   # which only this job sets, so the envoy-client, pi-envoy and claude-envoy jobs, which set up no
   # Go, skip them.
   #
-  # The session state rig (dispatch://INFRA-392) runs on the same stack and needs no agent: it
+  # The session state rig (dispatch://POMJU-392) runs on the same stack and needs no agent: it
   # SIGSTOPs a child process carrying envoy-client's own registration and heartbeat and holds the
   # listener to `unresponsive` — the role claim kept, the send stored — until the gone horizon.
   # Its longest property waits out that horizon and one reaper pass: the role claim reaper runs
   # at ENVOY_ROLE_CLAIM_REAP_INTERVAL, which the rig sets to two seconds, so the suite costs the
   # horizon rather than the five minutes that reaper's own default would cost it.
-  # The live Dispatch-stack suite rides this job too (dispatch://INFRA-1727). It builds
+  # The live Dispatch-stack suite rides this job too (dispatch://POMJU-1727). It builds
   # packages/envoy's ./cmd/dispatch, makes a database of its own on DISPATCH_TEST_DATABASE_URL and
   # runs the real `dispatch` CLI against that server (packages/envoy-client/test/dispatch-stack.ts),
   # so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane to have: the

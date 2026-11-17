@@ -265,7 +265,7 @@ func TestEveryTaskAgentARolePromptDispatchesIsShipped(t *testing.T) {
 }
 
 // The merger merges the pull request itself, at the head it read, and the daemon submits no merge
-// and changes no merge setting (dispatch://INFRA-714, R2). So a part that has the daemon submit a
+// and changes no merge setting (dispatch://POMJU-714, R2). So a part that has the daemon submit a
 // merge, arm auto-merge or enqueue a pull request contradicts what the merger is told to do, while
 // the parts may — and do — say the daemon merges nothing. The claim is a pattern rather than
 // spelled out, so a grep for it over this directory finds only prompt text; it matches the claim
@@ -302,7 +302,7 @@ func TestNoPartSaysTheDaemonMerges(t *testing.T) {
 
 // GitHub's default squash message, `squash_merge_commit_message` of `COMMIT_MESSAGES`, joins every
 // commit message of a pull request, which put this tree's Dispatch keys, `Omp-Session:` trailers
-// and `skip-checks: true` lines on the default branch (dispatch://INFRA-714, R2), and would put its
+// and `skip-checks: true` lines on the default branch (dispatch://POMJU-714, R2), and would put its
 // `Legion-Role:` trailers there too. So the merger writes the message itself, and on the one path
 // that cannot — `enqueuePullRequest` takes no message — it reads the repository's setting first
 // and stops rather than enqueueing under a setting that joins them. The command's shape is the
@@ -421,7 +421,7 @@ func TestNoPartSaysARoleStaysLiveUntilItsIssueEnds(t *testing.T) {
 }
 
 // retiredCheckSentences are what no role prompt part may say about the production check any more
-// (dispatch://INFRA-809). A merge that closes an issue opens a check only where the project's
+// (dispatch://POMJU-809). A merge that closes an issue opens a check only where the project's
 // `production_check` names a role, the one role it can name is the tester, and the check's own
 // record holds the role that works it; so no part makes the check the implementer's. And nothing
 // the daemon reads from a deployment wakes a look: Dispatch's `issue.deployed`, a Dispatch build,
@@ -525,8 +525,8 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
-// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
+// dispatch://POMJU-332's four role-prompt rules, dispatch://POMJU-924's fifth and
+// dispatch://POMJU-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
 // when a later edit deletes the rule; it does not show that an agent follows it, which each
 // issue's session runs measure. Each of the first four sentences sits in the core its role
 // composes, so the rule reaches that role and no other: the simplify pass and the class search are
@@ -536,7 +536,7 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
 // would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
-	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
+	// The phrase every text of dispatch://POMJU-3204's rule carries once, the skills included
 	// (packages/pi-legion/src/skills-guard.test.ts).
 	const ciCheckRule = "check carrying `ci_check` is CI's"
 	for _, pin := range []struct{ file, rule string }{
@@ -558,13 +558,13 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
 		// core every phase worker but the merger composes and in the oracle core the composer joins for
-		// no role, which is where a later core would copy the sentence from (dispatch://INFRA-924).
+		// no role, which is where a later core would copy the sentence from (dispatch://POMJU-924).
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and `dispatch results` derives that result
-		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
+		// (dispatch://POMJU-3204, R5 of its spec). Each part that orders a check run, recorded or
 		// judged, or lists a check's attributes, carries the exception. The tester's and the
 		// implementer's role parts point at the worker skill's page, which a core part may not name.
 		{"core/tester.md", ciCheckRule},
@@ -589,12 +589,12 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		}
 	}
 	// The replaced sentence said the planner answers such a decision by naming it, which is what
-	// let a plan complete with four decisions open (dispatch://INFRA-206).
+	// let a plan complete with four decisions open (dispatch://POMJU-206).
 	if strings.Contains(rolePart(t, "core/planner.md"), "and saying so is its answer") {
 		t.Error("core/planner.md still answers a decision its owner must make by naming it")
 	}
 	// The forms R5 retires. A part carrying one again would give a retro two orders that disagree
-	// (dispatch://INFRA-924).
+	// (dispatch://POMJU-924).
 	for _, file := range []string{"core/common.md", "core/oracle.md"} {
 		text := rolePart(t, file)
 		for _, retired := range []string{"file and line", "file:line"} {
@@ -606,7 +606,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 }
 
 // Every file-backed role's handoff body names the head its work was done against
-// (dispatch://INFRA-3146). The daemon takes a completion of an earlier entry of the same phase
+// (dispatch://POMJU-3146). The daemon takes a completion of an earlier entry of the same phase
 // only at the head that entry's record holds, so a role whose handoff paragraph lost the field
 // would write a record the daemon cannot place, and its own completion would be refused for a
 // phase it is holding. Each of the four parts is pinned twice: the field as the body names it,

@@ -39,7 +39,7 @@ search or one mark per open anchor:
   `yTextRanges` only after `MarkRange`'s range, type and nesting checks).
   `FindQuote` and `MarkRange` are their one-shot calls.
 - `ReplaceText` (`docs/mutation.go`) builds one finder and one writer for each upload. A dropped
-  miss no longer ranks the nearest blocks, which costs 66–1,006 ms per miss on LINUX specs.
+  miss no longer ranks the nearest blocks, which costs 66–1,006 ms per miss on HAFJJ specs.
 - The plan rejected the spec's suggested cache of flattened text per document head: it would be
   resident memory, and it would never hit, because each anchored comment writes a mark and so moves
   the head.

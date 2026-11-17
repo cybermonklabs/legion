@@ -1,6 +1,6 @@
 Experiment 14, go-workflows: a wait for a person.
 Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
-from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+from the branch of dispatch://POMJU-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
 in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------
@@ -47,8 +47,8 @@ wait-resumed-in-the-replacement: true
 sql-final-instances: state=Finished(2) queue=default locked_until=null sticky_until=2026-11-07T22:38:47.889446Z worker=exp14-gate-host-2 completed_at=2026-11-07T22:38:37.889446Z
 sql-final-history: 11: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowTaskStarted SignalReceived ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowExecutionFinished
 sql-final-signal-received-events: 1
-question-line-1: issue=INFRA-1546 question=approve-the-spec asked-by-pid=28914
-decision-line-1: issue=INFRA-1546 answer=approved applied-by-pid=28924
+question-line-1: issue=POMJU-1546 question=approve-the-spec asked-by-pid=28914
+decision-line-1: issue=POMJU-1546 answer=approved applied-by-pid=28924
 question-asked-times: 1
 work-before-the-wait-re-run-after-the-restart: false
 pending_events-rows-after-the-answer: 0

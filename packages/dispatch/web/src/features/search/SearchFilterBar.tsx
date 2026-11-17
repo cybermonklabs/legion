@@ -95,7 +95,7 @@ function FilterMenu({
 /**
  * The four narrowings the bar offers, each a control while it is unset and a removable chip
  * once the person has chosen: a project, an issue status, an author and the day since which the
- * item was last written. A chip reads back what was chosen in those words (`Project INFRA`),
+ * item was last written. A chip reads back what was chosen in those words (`Project POMJU`),
  * and pressing it drops that narrowing alone and brings its control back.
  *
  * The author is typed rather than picked: an item's author is a person's login or a session id,

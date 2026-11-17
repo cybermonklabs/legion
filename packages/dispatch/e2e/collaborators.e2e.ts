@@ -19,7 +19,7 @@ import { expect, type Locator, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
-// An issue's agents stay reachable from its page once they stop (dispatch://INFRA-470): the
+// An issue's agents stay reachable from its page once they stop (dispatch://POMJU-470): the
 // Collaborators tab lists everyone who worked the issue, running or not, each agent one click from
 // its live conversation, and the mention picker offers the issue's Legion roles nobody live holds
 // under "Not running", addressed to the role rather than to a session that has ended.

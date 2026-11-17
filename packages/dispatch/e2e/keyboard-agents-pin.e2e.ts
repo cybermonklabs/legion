@@ -94,7 +94,7 @@ test.describe("agents page pins", () => {
       const silentRow = await roveToSilent(page);
 
       // To the top of `Idle`, above the Quiet session, and no further: a pin no longer lifts a
-      // row out of its group (INFRA-812's D3). `j` then goes on from there.
+      // row out of its group (POMJU-812's D3). `j` then goes on from there.
       await page.keyboard.press("Shift+P");
       await expect(silentRow.getByRole("button", { name: "Unpin Silent" })).toBeVisible();
       await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
@@ -551,7 +551,7 @@ test.describe("agents page pins", () => {
   });
 
   // The same loss by the other road out of sight: a filter the reader sets over an open row,
-  // pinned or not. A pin no longer moves a row out of its group (INFRA-812's D3), so Shift+P is
+  // pinned or not. A pin no longer moves a row out of its group (POMJU-812's D3), so Shift+P is
   // no longer a way into hiding; the filter is.
   // SLOW(>=2s): the reply has to reach a page that is already loaded, twice - hidden by the
   // filter, then on screen - and each arrival waits out the page's own refresh of the agents

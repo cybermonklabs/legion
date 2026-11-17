@@ -13,7 +13,7 @@ module: packages/envoy/internal/dispatch/api
 
 # A state that switches off a background duty does its last run at the transition, and a durable sweep covers what arrives after
 
-Extends docs/solutions/daemon/a-state-that-starts-lasting-days-gets-a-census-of-every-inbound-fact-and-its-re-entered-rule-tells-nobody-INFRA-229.md.
+Extends docs/solutions/daemon/a-state-that-starts-lasting-days-gets-a-census-of-every-inbound-fact-and-its-re-entered-rule-tells-nobody-POMJU-229.md.
 
 - At plan time, ask of every state change: what does this state stop doing, and what can still be
   owed, or still arrive, once it stops?

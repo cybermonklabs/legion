@@ -1,6 +1,6 @@
 -- 20261112180548_claim_leak_check_cause.up.sql — the sentence a claim's latest launch try was
 -- refused with because the shared public leak check could not be installed in the role's pod,
--- beside the failure record (INFRA-3219).
+-- beside the failure record (POMJU-3219).
 --
 -- claims.leak_check_cause is supervise.Claim.LeakCheckCause: the cause sentence the runtime
 -- refused the start with (runtime.LeakCheckCause), beginning `the shared public leak check could

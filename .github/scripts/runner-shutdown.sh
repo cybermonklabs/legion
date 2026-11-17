@@ -14,7 +14,7 @@
 #
 # 143 is 128 + SIGTERM, the status of a step the runner killed. The pair was read whole on
 # theorem-labs/agent-infra run 42466562410, job `services (legion)` 128687417206, on 2026-11-08
-# (dispatch://INFRA-49/comment/4083a833-8bb4-4dba-9d61-8f20757ca82c). The job's result is
+# (dispatch://POMJU-49/comment/4083a833-8bb4-4dba-9d61-8f20757ca82c). The job's result is
 # `failure`, the same result a test of the change failing gives it, so the result alone cannot
 # tell a platform kill from a fault of the change and those two annotations are what does.
 #
@@ -31,7 +31,7 @@
 #     job and measured the scope there), and so does ci-ok-report.sh's caller: every job of
 #     ci.yaml that calls a workflow declares `checks: write` for the report step it ends with.
 #     It is not that the jobs route is out of reach: probe #3770 ran a step inside the ci-ok
-#     job itself on run 43168566331 and printed `INFRA-1413 cause
+#     job itself on run 43168566331 and printed `POMJU-1413 cause
 #     probe: jobs-anonymous=200 jobs-with-token=200 secrets-with-token=403`, so the jobs route
 #     answers from that job with no token at all — this repository is public, exactly as
 #     ci.yaml:121-123 already records for the `changes` job's read of the pull request's file

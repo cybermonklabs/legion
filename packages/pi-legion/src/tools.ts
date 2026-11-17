@@ -112,9 +112,9 @@ const SUMMARY_LEGEND =
  * admission lists, each capability's status, one line per recorded issue, and under each issue
  * Legion still runs its slot, its hold, its gate and its claims.
  *
- * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
+ * Line-oriented, not JSON: the POMJU deployment's state is about 160 KB of JSON for the 92 issues
  * it records, and the tool's output reaches the controller cut at about 41 KB
- * (dispatch://INFRA-329), so the controller acted on a read whose middle it never saw. Every
+ * (dispatch://POMJU-329), so the controller acted on a read whose middle it never saw. Every
  * recorded key is named, whatever the size: a summary that drops issues to fit is the bug this
  * replaces. What costs the bytes is the per-claim detail, so only an issue Legion still runs
  * carries it — a `done` issue's claims are retired and an `unrecorded` one (an operator's claim)

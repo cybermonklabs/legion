@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The live proof of the two operations an operator and a project's controller have over a claim
-# whose provider keeps refusing its session (dispatch://INFRA-956 R3): `legion claims compact` and
+# whose provider keeps refusing its session (dispatch://POMJU-956 R3): `legion claims compact` and
 # the controller's `compact`, and `legion claims retry --fresh-session` and the controller's
 # `fresh_session`, each driven through both of its doors. The whole daemon is booted by the
 # function `legion start` calls, over a real PostgreSQL and a real nats-server, and four real `omp

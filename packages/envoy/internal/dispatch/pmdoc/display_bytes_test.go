@@ -10,7 +10,7 @@ import (
 )
 
 // displayTreeGrowthBound is how much larger an answer carrying the display trees may be than the
-// same answer without them, on its wire bytes and on its gzip -9 bytes alike (INFRA-635's
+// same answer without them, on its wire bytes and on its gzip -9 bytes alike (POMJU-635's
 // acceptance). The dashboard asks for the trees on every read, so this is what an issue page
 // costs over what it cost before the trees existed.
 const displayTreeGrowthBound = 3.0
@@ -151,7 +151,7 @@ func commentListAnswer(bodies []string, trees bool) []byte {
 	for index, body := range bodies {
 		rows[index] = commentRow{
 			ID:         fmt.Sprintf("3f1c%04x-9b2a-4c7d-8e55-%012d", index, index),
-			IssueKey:   "INFRA-635",
+			IssueKey:   "POMJU-635",
 			Author:     map[string]any{"kind": "agent", "id": "legion-worker", "login": "legion"},
 			Body:       body,
 			CreatedAt:  "2026-11-04T00:02:15.513067Z",
@@ -190,7 +190,7 @@ func activityFeedAnswer(bodies []string, trees bool) []byte {
 			Actor: map[string]any{"kind": "agent", "id": "legion-worker"},
 			Payload: map[string]any{
 				"comment_id": fmt.Sprintf("3f1c%04x-9b2a-4c7d-8e55-%012d", index, index),
-				"issue_key":  "INFRA-635",
+				"issue_key":  "POMJU-635",
 				"body":       body,
 			},
 			At: "2026-11-04T00:02:15.513067Z",

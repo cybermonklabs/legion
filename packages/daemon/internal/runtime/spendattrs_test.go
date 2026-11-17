@@ -78,7 +78,7 @@ func detectorAttributes(t *testing.T, value string) map[string]string {
 // of the boot gate's.
 func TestSpendResourceAttributesAppendsTheLaunchAfterTheOperatorsOwn(t *testing.T) {
 	const (
-		issue      = "INFRA-312"
+		issue      = "POMJU-312"
 		issuePair  = SpendIssueAttribute + "=" + issue
 		launchOnly = issuePair + ",legion.role=implementer"
 	)
@@ -191,9 +191,9 @@ func TestSpendResourceAttributesAppendsTheLaunchAfterTheOperatorsOwn(t *testing.
 		},
 		{
 			"an issue and a role that need escaping", "",
-			SpawnSpec{Issue: "INFRA-312,x=y", Role: claim.Role("role one")},
-			"legion.issue=INFRA-312%2Cx%3Dy,legion.role=role%20one",
-			map[string]string{"legion.issue": "INFRA-312,x=y", "legion.role": "role one"},
+			SpawnSpec{Issue: "POMJU-312,x=y", Role: claim.Role("role one")},
+			"legion.issue=POMJU-312%2Cx%3Dy,legion.role=role%20one",
+			map[string]string{"legion.issue": "POMJU-312,x=y", "legion.role": "role one"},
 		},
 		{
 			"a launch in an arm of each of two experiments, in the order the spec names them", live,
@@ -226,7 +226,7 @@ func TestSpendResourceAttributesAppendsTheLaunchAfterTheOperatorsOwn(t *testing.
 // Nothing the daemon writes is refused by the names it writes itself, and the three keys are the
 // ones the refusal keeps an operator out of.
 func TestSpendAttributeKeysAreTheOnesTheComposerWrites(t *testing.T) {
-	composed := SpendResourceAttributes("", SpawnSpec{Issue: "INFRA-312", Role: claim.RoleTester,
+	composed := SpendResourceAttributes("", SpawnSpec{Issue: "POMJU-312", Role: claim.RoleTester,
 		Variants: []Variant{{Experiment: "memory", Name: "memory"}}})
 	for _, key := range []string{SpendIssueAttribute, SpendRoleAttribute, SpendArmsAttribute} {
 		if !strings.Contains(composed, key+"=") {
@@ -244,11 +244,11 @@ func TestSpendAttributeKeysAreTheOnesTheComposerWrites(t *testing.T) {
 // An issue key and a role, which are unreserved throughout, are encoded without allocating.
 func TestSpendEncodeDoesNotAllocateWhatNeedsNoEscape(t *testing.T) {
 	var sink string
-	if n := testing.AllocsPerRun(100, func() { sink = spendEncode("INFRA-312") }); n != 0 {
-		t.Errorf("spendEncode(INFRA-312) allocates %v times, want none", n)
+	if n := testing.AllocsPerRun(100, func() { sink = spendEncode("POMJU-312") }); n != 0 {
+		t.Errorf("spendEncode(POMJU-312) allocates %v times, want none", n)
 	}
-	if sink != "INFRA-312" {
-		t.Errorf("spendEncode(INFRA-312) = %q, want it back as it stands", sink)
+	if sink != "POMJU-312" {
+		t.Errorf("spendEncode(POMJU-312) = %q, want it back as it stands", sink)
 	}
 }
 
@@ -275,7 +275,7 @@ func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 		{"a 256-character decoded value", long, fmt.Sprintf("its member %q has a value of 256 characters once percent-decoded, over the detector's 255", "theorem.note="+strings.Repeat("a", 256))},
 		{"a 255-character decoded value", prefix + strings.Repeat("a", 255), ""},
 		{"an empty key", "=value", `its member "=value" has an empty key`},
-		{"a member naming legion.issue", "theorem.project=legion,legion.issue=INFRA-1", `its member "legion.issue=INFRA-1" names legion.issue, which the runtime writes into every launch itself`},
+		{"a member naming legion.issue", "theorem.project=legion,legion.issue=POMJU-1", `its member "legion.issue=POMJU-1" names legion.issue, which the runtime writes into every launch itself`},
 		{"a member naming legion.role, percent-encoded", "legion%2Erole=tester", `its member "legion%2Erole=tester" names legion.role, which the runtime writes into every launch itself`},
 		{"a member naming legion.arms", "theorem.project=legion,legion.arms=memory%3Anone", `its member "legion.arms=memory%3Anone" names legion.arms, which the runtime writes into every launch that runs in an experiment's arm`},
 		// The two code points the detector's trim and Go's unicode.IsSpace differ in

@@ -1,5 +1,5 @@
 // Whether a Dispatch front proxy advertises HTTP/2 extended CONNECT, which the live socket's design
-// rests on it not doing (dispatch://INFRA-258).
+// rests on it not doing (dispatch://POMJU-258).
 //
 //   bun scripts/e2e/lib/h2-settings.ts <https-url>
 //
@@ -7,7 +7,7 @@
 // protocol the server chose (`alpn`), and, when that is `h2`, the SETTINGS the server sent as Node's
 // HTTP/2 client reads them (`settings`). A server advertising SETTINGS_ENABLE_CONNECT_PROTOCOL
 // lets a browser open the live socket as a stream of a shared HTTP/2 connection rather than a
-// connection of its own (RFC 8441), and the never-ending request INFRA-258 fixed could come back:
+// connection of its own (RFC 8441), and the never-ending request POMJU-258 fixed could come back:
 // exit 1. One that does not, or that speaks no HTTP/2 at all: exit 0. A usage error, or a server
 // the probe could not read the answer from: exit 2.
 //
@@ -85,7 +85,7 @@ clearTimeout(deadline);
 process.stdout.write(`${JSON.stringify(read)}\n`);
 if (read.settings?.enableConnectProtocol === true) {
   fail(
-    `${url.origin} advertises SETTINGS_ENABLE_CONNECT_PROTOCOL: a browser would run Dispatch's live socket over HTTP/2, where the INFRA-258 hang can return`,
+    `${url.origin} advertises SETTINGS_ENABLE_CONNECT_PROTOCOL: a browser would run Dispatch's live socket over HTTP/2, where the POMJU-258 hang can return`,
     1
   );
 }

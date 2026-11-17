@@ -1,4 +1,4 @@
-/** `bun e2e/tools/check-slow-rows.ts <report.json> [--slow-ms 2000] [--dir e2e]`: reads INFRA-317's
+/** `bun e2e/tools/check-slow-rows.ts <report.json> [--slow-ms 2000] [--dir e2e]`: reads POMJU-317's
  *  acceptance A5 - "every row of the merge-base inventory is under 2 s at the head unless a
  *  comment in the row names why" - against one run's own Playwright JSON report.
  *

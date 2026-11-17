@@ -2,7 +2,7 @@
 //go:build linux
 
 // What enrollLoop does with 403 SESSION_HELD, the broker keeping this session's name for
-// another principal (dispatch://INFRA-1167).
+// another principal (dispatch://POMJU-1167).
 //
 // The refusal is of the principal THIS attempt enrolled under, and not of the name for ever:
 // the helper chooses that principal again at every attempt (Broker.signingAuthority), so the

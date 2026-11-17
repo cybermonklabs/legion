@@ -4,7 +4,7 @@ package store
 // the PostgreSQL LEGION_TEST_PG_DSN names: that a pooled connection has it, that a DSN naming a
 // value of its own keeps that one, and the two things the bound does and does not do — it ends a
 // transaction that sits with no statement running, and it does not touch a statement that runs
-// long. This is the failure INFRA-3169 was: every connection of the production pool sat `idle in
+// long. This is the failure POMJU-3169 was: every connection of the production pool sat `idle in
 // transaction`, and nothing ended any of them.
 
 import (

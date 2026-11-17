@@ -92,7 +92,7 @@ func goodSummary(f float64) summary {
 	committed := int(ev * dur)
 	return summary{
 		// Every real step a series drives carries the factor its run was given: 28 of the 30
-		// step directories of INFRA-988's run hold config.loop_factor, and the two that do not
+		// step directories of POMJU-988's run hold config.loop_factor, and the two that do not
 		// are its baselines, which drove no load of the series at all. A fixture without one
 		// would stand for a file no run writes, so this one carries it (a fixture that means to
 		// be a baseline sets it back to 0).
@@ -771,7 +771,7 @@ func TestCurvesTakeTheLoopFactorOfAStepThatCarriesOne(t *testing.T) {
 	// is how a cluster step's factor is known at all, while the loop series has to read such a
 	// step as no load of its own. Before this, a loop-series baseline
 	// offering exactly 60 requests a second read as "factor 1" in CURVES.md and curves.csv, in
-	// the same table as a 1x step that failed at that factor (INFRA-988).
+	// the same table as a 1x step that failed at that factor (POMJU-988).
 	noLoop := summaryConfig{RequestsPerS: 60, EventsPerS: 4}
 	if got := clusterSeries.stepFactor(noLoop); got != 1 {
 		t.Errorf("the cluster series reads a step with no loop factor at %v, want 1: its steps are scaled against a 1x baseline of 60 requests a second", got)
@@ -1095,7 +1095,7 @@ func TestCurvesKeepTheClusterSeriesPassRule(t *testing.T) {
 // sampled every container but Dispatch's, each left the walk over the roles with nothing to put
 // in overLimit and (f) with a file to point at, so both read ok: the step passed the two
 // criteria that read the sampler on a sampler that read nothing of the container the series
-// measures (dispatch://INFRA-988). Both series judge (d) and (f), and both run Dispatch in a
+// measures (dispatch://POMJU-988). Both series judge (d) and (f), and both run Dispatch in a
 // container of that name, so both read the file this way.
 func TestCurvesFailACgroupJSONThatDidNotSampleDispatch(t *testing.T) {
 	root := t.TempDir()
@@ -1130,7 +1130,7 @@ func TestCurvesFailACgroupJSONThatDidNotSampleDispatch(t *testing.T) {
 // its generator keeping up, and a step that recorded no config.generator_role is such a step.
 // The rule read the role and left a step that carried none alone, so a starved generator was
 // never void unless the run recorded which machine it ran on, and "not void" was a claim about a
-// machine the step's files hold nothing about (dispatch://INFRA-988). The deployment records the
+// machine the step's files hold nothing about (dispatch://POMJU-988). The deployment records the
 // role for every step it runs (vm/vm.sh:2545), so a step of this series without one was not run
 // the way the series runs steps.
 func TestCurvesVoidAStepThatRecordedNoGenerator(t *testing.T) {

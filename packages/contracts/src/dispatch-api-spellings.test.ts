@@ -296,7 +296,7 @@ const TOLERATED_ABSENCES = 22;
  * class is a Go pointer rendered optional and not a schema somebody tightened, and it shows up in
  * a diff beside this one, where a person reads which of the two it is.
  *
- * dispatch://INFRA-3237 owns that cause and deletes this rule in the same change: it makes the
+ * dispatch://POMJU-3237 owns that cause and deletes this rule in the same change: it makes the
  * four shapes that declare the field - `AskWithTrees`, `InboxRow`, `IssueAskRow`, `IssueOpenAsk`
  * - require it and proves no response omits it. So this count is a record of a known departure
  * with an owner, not a place to add a second field to.

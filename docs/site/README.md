@@ -33,7 +33,7 @@ In this directory, `bun run typecheck` is the check CI runs before the build; `b
 these files and no CI job runs this script.
 That script is `biome check --error-on-warnings .`, while the root job runs plain
 `bunx biome check .`, which passes on a warning: so a Biome warning in this directory fails this
-script and no longer fails CI, which is the strictness dispatch://INFRA-1413 gave up when it
+script and no longer fails CI, which is the strictness dispatch://POMJU-1413 gave up when it
 deleted the duplicate lint step (measured first: these files carry no Biome diagnostic at all).
 After the build, `.github/scripts/check-private-names.sh docs/site/dist` (from the repository
 root) fails on any built page, caption or file name that names the private deployment repository

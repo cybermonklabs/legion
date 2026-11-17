@@ -24,7 +24,7 @@ import (
 //
 // They are not the digests of the release before, and cannot be: that release's judgement carried
 // the fix-attempt accounting a CI result moved an issue by, which moves nothing now
-// (dispatch://INFRA-714/spec R1), and its histories carried reads of what the base branch
+// (dispatch://POMJU-714/spec R1), and its histories carried reads of what the base branch
 // requires, which this release has no fact for. Every digest of both fuzzes moved again when each
 // run of the fence gained the head GitHub reported it on and what it concluded
 // (record.AttemptRun), which the judgement carries: both fuzzes settle heads, so every judgement

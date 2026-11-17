@@ -10,7 +10,7 @@
 # posted a failing ci-ok and was then re-run green would keep that failing check run on the head
 # for ever. And it can sit in another workflow's check suite, where no re-run of this workflow
 # reaches it at all. A re-run's own job check run needs nothing from this step, measured on the
-# k28 probe of INFRA-1066 (2026-11-06, head ee30dee4): attempt 1's failing ci-ok job check run
+# k28 probe of POMJU-1066 (2026-11-06, head ee30dee4): attempt 1's failing ci-ok job check run
 # (127883400181) stays on the head under filter=all, but the default `latest` filter returns
 # attempt 2's alone (127889647834) and GitHub's statusCheckRollup reads SUCCESS with one ci-ok
 # context, so a later attempt of the same job supersedes its own earlier one. PATCHing each
@@ -21,7 +21,7 @@
 # ci-ok job check run: main-bypass-check.yaml starts this workflow with `gh workflow run ci.yaml
 # --ref main`, so that dispatched run's github.sha is main's tip, and the queue landed that tip
 # carrying its own merge group's green ci-ok. GitHub will not let this step rewrite it, which the
-# k28 probe of INFRA-1066 measured on 2026-11-06: an unfiltered copy of this step, run under
+# k28 probe of POMJU-1066 measured on 2026-11-06: an unfiltered copy of this step, run under
 # GITHUB_TOKEN against another run's completed ci-ok job check run (127883380092), was refused
 # three times with "Check run status and conclusions can only be updated internally by GitHub
 # Actions". So the rewrite is impossible rather than merely wrong, and what an unfiltered step

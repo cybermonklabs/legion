@@ -25,7 +25,7 @@
 -- second, which is one to two hours for 1,109,536 of them; relabelled whole, with the index work
 -- taken once at the end instead of row by row, those 1,109,536 rows took 31 m 41 s, of which
 -- about 31 m was the index alone. A single-statement backfill of the deployment's 723,015
--- comment windows had not finished after 30 minutes (INFRA-988). A migration is one transaction
+-- comment windows had not finished after 30 minutes (POMJU-988). A migration is one transaction
 -- (store/store.go, applyMigrationOnce): run here, those hours would be hours in which every row
 -- the statement had already touched is locked - a comment edit whose window the pass has passed
 -- waits for all of it - and hours of a deploy's migration step. In committed batches of
@@ -49,7 +49,7 @@
 -- once the done below reads true (api/search.go, meaningProjectScope): done is the one column
 -- of this row a search reads, and the pass is what retires the older shape.
 --
--- Two things that switch has to survive, both found when this change was measured (INFRA-988):
+-- Two things that switch has to survive, both found when this change was measured (POMJU-988):
 --
 --   - a holder that dies mid-pass. The lease is one attempt (duty.Exclusive), so a process that
 --     found it held used to do nothing about the fill for the rest of its life, and the

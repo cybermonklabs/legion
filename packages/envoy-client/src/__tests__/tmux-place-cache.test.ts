@@ -242,7 +242,7 @@ describe("createTmuxPlaceCache", () => {
   // call sits between a registration's start and its POST. A reading that answers after the
   // session's shutdown has been seen writes no place and starts none, so nothing can reach the
   // listener behind the DELETE and write the entry again for a session nobody heartbeats
-  // (dispatch://INFRA-392).
+  // (dispatch://POMJU-392).
   test("a slow reading delays no registration and writes nothing once the session has gone", async () => {
     const reader = slowReader();
     let clock = 1_000;

@@ -213,7 +213,7 @@ func TestSettlementIndexesRetractsAndRestoresTypedAskBlocks(t *testing.T) {
 // plain text and reads back through the document's own markdown pipeline. Text holding a web
 // address - after a space, after a letter and `;`, with a lowercase scheme - is written, settles,
 // and its row reads back as written, whether or not a reader takes the address for a link
-// (INFRA-531).
+// (POMJU-531).
 func TestAnAskWhoseTextHoldsWebAddressesSettlesAsWritten(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

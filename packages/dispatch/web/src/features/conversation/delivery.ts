@@ -38,7 +38,7 @@ export function deliveryMode(value: string): MessageDeliveryMode | undefined {
 
 /** `value` as an attempt's state. Dispatch writes one of the four `DELIVERY_ATTEMPT_STATES` the
  *  route table carries as a plain string, and each is kept as it is: a queued attempt is its own
- *  state, which no surface may draw as sent (INFRA-626). One this build does not know reads as
+ *  state, which no surface may draw as sent (POMJU-626). One this build does not know reads as
  *  `sent`, which is what every surface already showed for it - each tests for the states it
  *  knows, and draws anything else as sent. */
 export function deliveryOutcomeState(value: string): DeliveryOutcome["state"] {

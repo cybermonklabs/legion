@@ -6,7 +6,7 @@ export const TEST_STREAM_ID = "stream-1";
 
 /**
  * The `delivery` a listener answers a registration it can give a consumer: the session's own
- * relay subject, which is the one path a message reaches it by (INFRA-771). Every stand-in
+ * relay subject, which is the one path a message reaches it by (POMJU-771). Every stand-in
  * listener in this repository answers a registration with this, so none of them drifts from what
  * the client accepts: a registration answered anything else — no `delivery` at all, the `core`
  * mode this release dropped, or a field the client cannot read — fails in `parseSubscribeAnswer`,

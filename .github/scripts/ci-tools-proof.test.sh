@@ -104,7 +104,7 @@ check "prints no closing sentence" "$(is "$(contains "$out" "$closing")" false)"
 check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
 
 echo "case: a log whose every record carries the name is refused"
-# The log dispatch://INFRA-2850 was filed against. Before the count refusal the verb read one
+# The log dispatch://POMJU-2850 was filed against. Before the count refusal the verb read one
 # name and a measurement inside the window here, passed, and printed a closing sentence that is
 # false of this log: every one of these 65 fetches kept the pinned ladder and none was shortened.
 run_report "$(repeat 65 "seconds=63 decision=full host=github.com exit=22 full-ladder=crane-head")"

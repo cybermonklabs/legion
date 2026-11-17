@@ -893,7 +893,7 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 }
 
 // The failure record and the held phase as the projection joins them to the state route
-// (dispatch://INFRA-3083): a claim the daemon holds a cause for carries why it failed, keyed on
+// (dispatch://POMJU-3083): a claim the daemon holds a cause for carries why it failed, keyed on
 // the stored cause rather than on the claim's state, so a claim an operator retired after it
 // failed carries it still and a claim that never failed carries nothing; and a held issue
 // carries the phase its hold took it out of.

@@ -454,7 +454,7 @@ func TestCreateIssueDuplicateOrdersCandidatesByScore(t *testing.T) {
 // relatedCommonFloor of its items (`commonAbove`). So in a project whose items have made the
 // words of a title common, a title yields no picked term at all and there is no share to score.
 //
-// dispatch://INFRA-1160/artifact/verification-md's check k4 names INFRA-432 against INFRA-431 —
+// dispatch://POMJU-1160/artifact/verification-md's check k4 names POMJU-432 against POMJU-431 —
 // two open issues with one title and no spec at all — as a pair the rule must refuse. Below
 // duplicateMinTerms the gate scores nothing and asks the other question instead: does an open
 // issue hold the same lexemes, title and spec alike (duplicateEqualLexemesQuery). A copy does,

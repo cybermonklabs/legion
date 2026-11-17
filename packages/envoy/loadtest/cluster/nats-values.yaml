@@ -1,10 +1,10 @@
 # nats-values.yaml: the values render-nats.sh gives chart nats/nats 2.15.1 to render
 # manifests/nats.yaml, the cluster copy's three-pod JetStream hub.
 #
-# They follow INFRA-549's section 2.1 (INFRA-14's shape): a three-server cluster with
+# They follow POMJU-549's section 2.1 (POMJU-14's shape): a three-server cluster with
 # noAdvertise, JetStream on a 20Gi PVC per server with an 18Gi file store and no memory store, the
 # monitor on 8222, 2 CPU / 4Gi per server (request = limit), and a zone spread of maxSkew 1,
-# DoNotSchedule, minDomains 3. Differences from INFRA-549, each for the copy alone:
+# DoNotSchedule, minDomains 3. Differences from POMJU-549, each for the copy alone:
 #   - podDisruptionBudget off: the load-test Role writes no PodDisruptionBudget, and a budget at
 #     zero would hold up the drain of any node a copy pod runs on ("Running a copy");
 #   - no tailnet and no priority class: the namespace's quota refuses any pod naming one;

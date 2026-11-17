@@ -6,7 +6,7 @@
  * branch when nothing was, so what the session remembers doing there may be gone.
  *
  * The text and the identity of one process's notice live here because both harnesses tell a
- * worker the same thing (INFRA-220 D29): the Oh My Pi entry saves it as a custom message ahead of
+ * worker the same thing (POMJU-220 D29): the Oh My Pi entry saves it as a custom message ahead of
  * the next turn, and the Claude Code pane's Legion server writes it into the session over the
  * bridge's inbox once its claim has booted. The helpers that read an Oh My Pi transcript branch
  * stay with that host (`packages/pi-legion/src/workspace-recreated.ts`), so neither host reaches

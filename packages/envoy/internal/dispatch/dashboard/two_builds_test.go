@@ -52,7 +52,7 @@ func newAssetRouter(t *testing.T, pool *store.Pool, distDir string, assets route
 // it is the claim the browser suite's two-process row used to make over two live servers
 // (two-builds.multiprocess.e2e.ts), made here at the seam that answers it: routes.staticHandler
 // (routes/router.go) over WebDistDir, falling back to the AssetStore (routes/assets.go) that
-// dashboard.Publish fills at boot (INFRA-1404).
+// dashboard.Publish fills at boot (POMJU-1404).
 func TestEveryAssetOfBothBuildsAnswersFromEitherProcess(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	ctx := context.Background()

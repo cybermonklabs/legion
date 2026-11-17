@@ -7,7 +7,7 @@
 -- failed), a start that fails carries the error that failed it, and a ready is the transition the
 -- machine makes. None was kept, so each lived only in the daemon's log: a root architect died six
 -- times in 54 minutes and neither its claim, its notices nor its own relaunched session ever said
--- why (dispatch://INFRA-714 R6).
+-- why (dispatch://POMJU-714 R6).
 --
 -- The two causes are separate columns because they answer separate questions: a claim that cannot
 -- start and a claim that keeps dying are different faults with different fixes, and one must never

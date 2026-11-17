@@ -98,7 +98,7 @@ type SkillsReport struct {
 	Plugins     []string
 	// Trees are each plugin's tree digest, by plugin name, as SkillsTreeDigest computes it over
 	// that plugin's directory of this clone: what the TREES record holds and what
-	// `legion skills-check` compares a role's installed plugin against (dispatch://INFRA-1300, R4).
+	// `legion skills-check` compares a role's installed plugin against (dispatch://POMJU-1300, R4).
 	Trees map[string]string
 }
 
@@ -229,7 +229,7 @@ func skillsRecord(ctx context.Context, run Runner, clone string) (SkillsReport, 
 		return SkillsReport{}, err
 	}
 	// The digest of each plugin's tree, taken from this clone, which is the commit above: what a
-	// role's `legion skills-check` compares its installed plugin against (dispatch://INFRA-1300,
+	// role's `legion skills-check` compares its installed plugin against (dispatch://POMJU-1300,
 	// R4). It is taken here, in the container that made the clone and holds the token, and never
 	// in the role's launch, so the number a role checks against is one no role could have written.
 	if catalog.Trees, err = skillsTrees(clone, pluginRoot, catalog.Plugins, sources); err != nil {
@@ -249,7 +249,7 @@ func skillsRecord(ctx context.Context, run Runner, clone string) (SkillsReport, 
 // that is the refusal this whole arrangement rests on. Oh My Pi's catalog admits a plugin source
 // that is a github repository, a git or http URL, or an npm package, and `omp plugin install`
 // fetches such a source itself — in the role's launch context, which is where a fetch ends the
-// pod's gVisor sandbox about four seconds in (dispatch://INFRA-1262). A local marketplace whose
+// pod's gVisor sandbox about four seconds in (dispatch://POMJU-1262). A local marketplace whose
 // catalog named one would therefore reintroduce exactly the crash the clone exists to avoid, so a
 // catalog that names one fails this container instead, by the variant it declares.
 func readSkillsCatalog(clone string) (report SkillsReport, pluginRoot string, sources map[string]string, err error) {
@@ -386,7 +386,7 @@ func skillsLocalSource(clone, pluginRoot, plugin string, source json.RawMessage,
 // reads that word as a package at a version rather than a plugin of a marketplace when the half
 // after the `@` looks like a version — `latest`, or anything beginning with a digit — which would
 // send the install to npm in the role's launch context, the one place a fetch must never happen
-// (dispatch://INFRA-1262). A name this refuses is a name a person renames in the marketplace
+// (dispatch://POMJU-1262). A name this refuses is a name a person renames in the marketplace
 // repository, which costs a commit; a name that reaches npm costs the pod.
 func skillsNameAllowed(name string) bool {
 	if name == "" || !((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) {
@@ -408,7 +408,7 @@ func skillsNameAllowed(name string) bool {
 // (`classify-install-target.ts`, read as source at omp 18.16; the pinned 18.13 was not measured, so
 // refusing these is precaution rather than a failure reproduced here). A marketplace whose catalog
 // named one of them would send a role's install to npm — a fetch in the role's launch context,
-// which is the one place a fetch must never happen (dispatch://INFRA-1262) — so a catalog that
+// which is the one place a fetch must never happen (dispatch://POMJU-1262) — so a catalog that
 // names one fails the skills container instead, where a person can rename it. A plugin name may be
 // any of them: it is the half before the `@`, which is never read as a version.
 var npmDistTags = map[string]bool{

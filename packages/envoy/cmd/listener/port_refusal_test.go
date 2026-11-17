@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// This file holds dispatch://INFRA-889's acceptance A1: the listener delivers nothing to a
+// This file holds dispatch://POMJU-889's acceptance A1: the listener delivers nothing to a
 // session's serve port, so a registration naming one is refused by name, a registration with no
 // port is accepted and answered port 0 by the session list, and the two environment variables the
 // deleted paths were configured by are warned about once each and ignored.

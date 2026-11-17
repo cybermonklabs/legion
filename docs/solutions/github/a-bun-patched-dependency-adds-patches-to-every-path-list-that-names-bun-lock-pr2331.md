@@ -15,7 +15,7 @@ related_issues:
 
 # A Bun patched dependency adds patches/ to every path list that names bun.lock
 
-Extends `docs/solutions/github/a-shared-go-package-or-helper-script-joins-every-dockerfile-copy-and-ci-path-list-that-builds-or-runs-it-INFRA-253.md`.
+Extends `docs/solutions/github/a-shared-go-package-or-helper-script-joins-every-dockerfile-copy-and-ci-path-list-that-builds-or-runs-it-POMJU-253.md`.
 
 - `bun.lock` names a patch only by its path. An edit to `patches/<pkg>@<ver>.patch` changes no
   other file, so a job filtered on `bun.lock` alone never runs for it.

@@ -75,7 +75,7 @@ under "one workflow for the queue" pressure — re-derive that constraint first.
 that is pull-request-only must not be in the ruleset's required list, or the queue waits for it
 forever.
 
-**Superseded 2026-10-27 (INFRA-520).** `pr-title` stays a required check beside `ci-ok` when main
+**Superseded 2026-10-27 (POMJU-520).** `pr-title` stays a required check beside `ci-ok` when main
 merges through the queue, so it must report on the merge group too, and keeping it off
 `merge_group` no longer holds. `pr-title.yaml` now runs on `merge_group` (`checks_requested`) and
 re-checks the pull request the group adds: it reads the number from the group's `head_ref`
@@ -139,7 +139,7 @@ shape; a spec that does not is the place to fix.
   produced from a queue commit. (The tracker settles any commit of a pull request, not only its
   head, so this rests on that list alone.)
 
-  **Superseded 2026-11-05 (INFRA-1211).** The tracker no longer records only check runs that list a
+  **Superseded 2026-11-05 (POMJU-1211).** The tracker no longer records only check runs that list a
   pull request: a run or suite that lists none, whose check suite's `head_branch` is exactly
   `refs/pull/<n>/head`, is recorded under pull request n, and Dispatch's CI reconcile pass records
   every completed run and suite at an open pull request's head whatever its webhook said. The

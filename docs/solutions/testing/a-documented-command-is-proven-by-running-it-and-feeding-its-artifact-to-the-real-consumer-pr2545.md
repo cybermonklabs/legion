@@ -15,7 +15,7 @@ related_issues:
 
 # Prove a documented command by running it and feeding its artifact to the consumer, with the retired form as the negative control
 
-Extends docs/solutions/testing/instruction-text-is-proven-on-the-staged-partition-and-the-daemons-prompt-snapshot-INFRA-227.md.
+Extends docs/solutions/testing/instruction-text-is-proven-on-the-staged-partition-and-the-daemons-prompt-snapshot-POMJU-227.md.
 That document says where instruction text is proven to have arrived. This one says how to prove the
 text is true when the instruction is a command and the name it produces.
 

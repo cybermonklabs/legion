@@ -15,7 +15,7 @@ related_issues:
 
 # A universal in a guide is a census, so generate its members with a grep and cite each one's line
 
-Extends docs/solutions/best-practices/deleting-a-ui-concept-is-a-vocabulary-sweep-and-every-sentence-it-falsifies-is-re-derived-from-the-code-INFRA-42.md.
+Extends docs/solutions/best-practices/deleting-a-ui-concept-is-a-vocabulary-sweep-and-every-sentence-it-falsifies-is-re-derived-from-the-code-POMJU-42.md.
 That file's instruments are a vocabulary sweep and re-derivation by reading. Neither reaches a
 sentence whose words all stay true while its quantifier goes false, and re-derivation by reading
 is what fails here.

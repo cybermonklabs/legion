@@ -1304,7 +1304,7 @@ func TestRemove_ColdCacheReadsFromKV(t *testing.T) {
 // A heartbeat whose body leaves out the controller notice lane its row holds keeps that lane in
 // both the plan and the row written from it: PlanInterest reads the controller's claim for the
 // stored row's lane as well as for the topics the registration names, so the filter the listener
-// builds from the plan and the row its write stores are one set. Until INFRA-771's review the
+// builds from the plan and the row its write stores are one set. Until POMJU-771's review the
 // route read the roles for the body's topics alone, so such a heartbeat dropped the lane from the
 // filter while the write, reading them again for the row, kept it in the row. The plan reads the
 // claim record the grant wrote, so nothing waits for the role claim copy to follow it.
@@ -1382,7 +1382,7 @@ func storedInterest(t *testing.T, conn *natsgo.Conn, sessionID string) Interest 
 // (PlanInterestAfterConflict, which the listener's registration route calls in the loop that also
 // filters the session's consumer on each plan). Seconds pass in that window: the route plans
 // first, then creates or re-filters the consumer, each bus call waiting up to 5 s, and writes the
-// plan after (cmd/listener's subscribeHandler). Until INFRA-771's review the write read the row
+// plan after (cmd/listener's subscribeHandler). Until POMJU-771's review the write read the row
 // again and merged the plan into it unconditionally, so a topic the unsubscribe had removed was
 // written back by the plan that had read it, and the row only ever grew from there; the likeliest
 // trigger is the daemon's fire-and-forget unsubscribe at the end of a role racing the next

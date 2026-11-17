@@ -19,7 +19,7 @@ import { asUser } from "./users";
 
 /**
  * The live view's header shows the model and thinking level an Oh My Pi session runs now, as its
- * `settings` frame reports them, and switches either from a picker (INFRA-195). The harness runs
+ * `settings` frame reports them, and switches either from a picker (POMJU-195). The harness runs
  * Dispatch with NATS disabled, so the frames come from the test hook rather than from a session,
  * and the session's answer to a switch is a reply posted through Dispatch, as pi-envoy posts the
  * host's printed answer. A switch is the person's own Send of `/model <id>` or `/effort <level>`,
@@ -142,7 +142,7 @@ function livePath(sessionID: string): string {
 
 /** On a phone, the session's settings never push the page sideways: the document is no wider
  *  than the 390 px screen, and every piece of them is whole on that screen once the reader has
- *  it in view. The row under the message box scrolls sideways itself (INFRA-812, R6), so a
+ *  it in view. The row under the message box scrolls sideways itself (POMJU-812, R6), so a
  *  picker can start beyond the right edge until that row is scrolled to it; what must never
  *  happen is the page scrolling, or a piece that cannot be brought onto the screen at all. */
 async function expectNoSidewaysScroll(page: Page, project: string): Promise<void> {
@@ -604,7 +604,7 @@ test("a switch from the header is stored under the person who made it and names 
   }
 });
 
-// A3, rewritten for INFRA-1017, which opened this route to a person's own credential. Three
+// A3, rewritten for POMJU-1017, which opened this route to a person's own credential. Three
 // things hold now. A credential that holds no `person` scope - the deployment's shared agent
 // token - is refused the route, 403 OAUTH_SCOPE_REQUIRED under the challenge RFC 6750 gives that
 // refusal, and nothing is sent. A person's own token sends for them, and what it sends is
@@ -760,7 +760,7 @@ test("a switch the session never answers says so after 30 seconds and keeps the 
   }
 });
 
-// INFRA-626. Every other message to a session Envoy knows and that is not running is stored for
+// POMJU-626. Every other message to a session Envoy knows and that is not running is stored for
 // it and handed over when it runs again. A switch is the one send that must not be: `/model` and
 // `/effort` apply to the session that reads them, so one stored would change a model at an
 // unknown later time. The switch asks for a session that is running now (`connected_only`), the

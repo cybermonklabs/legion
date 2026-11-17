@@ -815,7 +815,7 @@ const statusWriteReads = 3
 
 // writeStatus writes payload's status on the sequence of the read this row has just made
 // (dispatch.Client.SetStatusAt), so a change Dispatch recorded after that read is refused rather
-// than written over (dispatch://INFRA-714/spec R4). The sequence is the read's, never the one the
+// than written over (dispatch://POMJU-714/spec R4). The sequence is the read's, never the one the
 // phase decision saw: every event moves it, the daemon's own posts included, so a row carrying
 // that older number would be refused almost every time.
 //
@@ -831,7 +831,7 @@ const statusWriteReads = 3
 // two of the daemon's own rows exist precisely because a change was not a person's: a session's
 // own close or park, which the re-assert undoes, would be taken for a person ending the tree,
 // lingering it and freeing its slot. A change Dispatch recorded reaches the engine through its
-// own event, with its actor (dispatch://INFRA-714/spec R4); this read decides one thing, whether
+// own event, with its actor (dispatch://POMJU-714/spec R4); this read decides one thing, whether
 // to write.
 //
 // rule is the row's kind's rule, which its caller resolved once for the row (ruleFor) before
@@ -1321,7 +1321,7 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 // writes no second version. A read or an upload Dispatch refuses the same way on every run
 // (dispatch.PermanentRefusal) is logged and answered, and the message is posted all the same with
 // a sentence that says so: the message is the issue's one word on what it carries, and a document
-// it could not hold must not cost it that (dispatch://INFRA-2704). Any other failure fails the
+// it could not hold must not cost it that (dispatch://POMJU-2704). Any other failure fails the
 // run, and the row runs again. So does an upload Dispatch filed under a slug other than the
 // name, since the link names the document by that name.
 func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, artifact record.MessageArtifact) (*dispatch.Error, error) {
@@ -1374,7 +1374,7 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // (noticeAnswered, notice_exceptions.go), which a role-lane exception of an earlier listener
 // reaches by the same route (rehold). A listener of this release never answers that a session
 // did not confirm a delivery (`receipt_timeout`): no session confirms a forward any more, and
-// every forward its stream did not store is `delivery_failed` (dispatch://INFRA-771), so that
+// every forward its stream did not store is `delivery_failed` (dispatch://POMJU-771), so that
 // answer reaches the policy only from a listener of the deployed, older build, until that
 // rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
@@ -1543,7 +1543,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // time (notify.ErrNotDelivered) is retried on the row's backoff as any failed publish is. So is a
 // holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
 // the listener's live window but still holds the role, so the message is kept for it rather than
-// dropped as a message to a role nobody holds (dispatch://INFRA-392).
+// dropped as a message to a role nobody holds (dispatch://POMJU-392).
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
@@ -2273,7 +2273,7 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // run, because nothing queues the start again: a re-admission brings back a member's own architect
 // only where it holds a claim (admit's startMidPhaseMembers), and the child's later phase starts
 // revive only a claim that failed (workflow's reviveArchitect). The child's notices would go to the
-// architect above it (record.OwningArchitect) to its close, which R2 of dispatch://INFRA-3915 keeps
+// architect above it (record.OwningArchitect) to its close, which R2 of dispatch://POMJU-3915 keeps
 // only for a child started before that change (plan D9), and this child's first phase start did
 // queue the start.
 //
@@ -2928,7 +2928,7 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing
 // while its tree's design gate is closed, because a new version of the spec is with its reviewer
-// and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
+// and what may merge is what that review decides (dispatch://POMJU-714/spec R5). It answers a
 // wait error for a merger start the gate holds, which leaves the start on the row's backoff as a
 // check start waits on its look (checkLookHolds), and nil for every other role and an open gate.
 // The gate opening releases the row's next try, and tells every phase worker of the tree and the

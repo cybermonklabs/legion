@@ -447,7 +447,7 @@ test.describe("inbox selection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The reading pane's own keyboard (INFRA-963): `l` into the pane, the browser's scrolling keys
+// The reading pane's own keyboard (POMJU-963): `l` into the pane, the browser's scrolling keys
 // there, and Escape back to the row `l` was pressed on. The pane is drawn from 1280 px, which
 // only the `chromium` project is wide enough for, so none of the rows below takes the `@phone`
 // tag: on a phone there is no pane to step into. Every fixture here is made up.

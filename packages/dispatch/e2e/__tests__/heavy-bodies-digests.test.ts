@@ -9,7 +9,7 @@ import * as heavyBodiesModule from "../heavy-bodies";
 // (`e2e/heavy-bodies.ts`), and in Go, for the document writes the API gates
 // (`packages/envoy/internal/dispatch/pmdoc/heavybodies`). The digest table below is what holds
 // the two spellings to each other - a body respelled on one side alone fails that side - and Go
-// reads the same file in `heavybodies/digests_test.go` (INFRA-1404). The same cross-package read
+// reads the same file in `heavybodies/digests_test.go` (POMJU-1404). The same cross-package read
 // as `e2e/engine-reading.ts`'s and `web/src/__tests__/pmdoc-fixtures.ts`'s of pmdoc's own files.
 //
 // What this side is walked over is the module whole, not the `heavyBodies` record alone: every

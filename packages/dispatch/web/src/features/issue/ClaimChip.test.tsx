@@ -264,7 +264,7 @@ test("an unclaimed issue shows no holder and nothing to release", async () => {
 
 // A holder that has missed its heartbeats has not ended: it is still working the issue, and the
 // chip that called it "not running" sent the next agent to take work that was being done
-// (dispatch://INFRA-392). The chip has to tell the two apart, say since when it has been quiet
+// (dispatch://POMJU-392). The chip has to tell the two apart, say since when it has been quiet
 // (R5), and say how long the wait is.
 test("a holder that missed its heartbeats reads as unresponsive since its last heartbeat, not gone, and names when the claim comes free", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);

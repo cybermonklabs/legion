@@ -140,7 +140,7 @@ export function blockPlaceholder(type: string): string {
  * The text an image block becomes in a streamed row. The writer and the Agents page's guard on
  * what a streamed row may say of a person's message read this one spelling: written apart, the
  * guard refused every honest picture row the moment the writer changed and the message showed
- * twice, with no error anywhere (INFRA-1026 review).
+ * twice, with no error anywhere (POMJU-1026 review).
  */
 export const PICTURE_PLACEHOLDER = blockPlaceholder("image");
 
@@ -151,7 +151,7 @@ export const PICTURE_PLACEHOLDER = blockPlaceholder("image");
  * `packages/dispatch/web/src/features/agent-view/conversation.ts`), which is a strip of its
  * own that the body's side does not share. One step with both callers, so a later change to it
  * - CRLF, say - moves the two sides together; a copy of it on one side would leave every
- * honest row unmatched and every message shown twice (INFRA-1026).
+ * honest row unmatched and every message shown twice (POMJU-1026).
  */
 export function trimmedLines(text: string): string[] {
   return text
@@ -178,7 +178,7 @@ export function trimmedLines(text: string): string[] {
  * block of its own, so the markdown the body held is no word of the text the session says it
  * delivered: measured on Claude Code 2.1.310, a pane answering
  * `What colour is this picture? ![blue](dispatch://agent/<id>/artifact/i3-blue96-png@v1)` drew
- * the person's text with the markdown gone (INFRA-1026).
+ * the person's text with the markdown gone (POMJU-1026).
  */
 export function comparableLines(text: string): string[] {
   return trimmedLines(text.replace(pictureSyntax(), ""));

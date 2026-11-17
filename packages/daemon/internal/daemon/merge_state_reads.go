@@ -29,7 +29,7 @@ import (
 //
 // Both numbers have a second user: the outbox's merge-queue read (merge_queue_removal.go's
 // mergeQueueRead), which reads a pull request GitHub reported leaving the merge queue as this
-// ladder reads a merge state GitHub answers `unknown` for (dispatch://INFRA-3274/spec R1). It
+// ladder reads a merge state GitHub answers `unknown` for (dispatch://POMJU-3274/spec R1). It
 // makes at most mergeStateLadderReads attempts, each with at most one read, and after a failed
 // read waits mergeStateLadderWait (mergeStateWait) or GitHub's Retry-After when that is longer.
 // So a change to either number changes that read too.
@@ -56,7 +56,7 @@ func (w *workflowRuntime) queueMergeState(issue string) {
 // a read made after it, which a ladder already past its last read would not be. Dropping the
 // request outright left the issue standing at whatever the running ladder's last answer was,
 // though the fact behind it - a check that concluded, a push, a review - is exactly what changes
-// GitHub's answer (dispatch://INFRA-714 R4).
+// GitHub's answer (dispatch://POMJU-714 R4).
 //
 // mergeStateRunning is that bookkeeping: an issue is in it while its ladder runs, and its value
 // is whether a request arrived while it ran.

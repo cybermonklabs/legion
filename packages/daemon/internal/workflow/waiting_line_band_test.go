@@ -17,7 +17,7 @@ import (
 // and nothing else: whether the sentence around it is true is a reader's to judge, never this
 // loop's, so green here is coverage and not correctness. The file is read through one helper
 // that puts its prose on a single line, so a text wrapped across a line break reads as one
-// written out on a single line. (INFRA-1100.)
+// written out on a single line. (POMJU-1100.)
 //
 // The eight texts outside packages/daemon are read out of waiting_line_words_extract.txt, the
 // copy of their sentences committed beside this package, and never out of the files themselves:
@@ -28,7 +28,7 @@ import (
 // this check that had to stay with the product. What keeps the copy the texts' own, holds it to
 // cover every file of that list, and carries the ban over them, is internal/textcheck's
 // TestTheWaitingLineWordsExtractIsWhatTheShippedTextsSay and
-// TestNoShippedTextClaimsAPositionInTheWaitingLine (INFRA-1413).
+// TestNoShippedTextClaimsAPositionInTheWaitingLine (POMJU-1413).
 //
 // The rule those texts keep, and this test with them: a text states the placement,
 // record.WaitingLineBand, with a tree root's own first phase placed at the moment its gate

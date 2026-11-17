@@ -162,7 +162,7 @@ func waitForStopWarns(t *testing.T, records func() []map[string]any, want int) {
 
 // A stop a Rewatch repairs a moment later is a WARN and nothing more. The repair disarms the wait,
 // so even firing it afterwards writes no ERROR. Without that, every reconnect and every
-// self-health rebuild left an ERROR an operator had to learn to ignore (INFRA-182).
+// self-health rebuild left an ERROR an operator had to learn to ignore (POMJU-182).
 func TestAWatcherRepairedAfterItsConsumerWentLogsOneWarn(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
@@ -240,7 +240,7 @@ func TestAWatcherWhoseBucketIsGoneReportsOnlyWhenItsWaitPasses(t *testing.T) {
 
 // A stop nothing repairs is the outage an operator has to see, so it becomes an ERROR once the
 // minute the watcher waits for a repair has passed, and not before: an ERROR at the stop itself
-// could not tell this apart from a stop a rebuild repairs a moment later (INFRA-182).
+// could not tell this apart from a stop a rebuild repairs a moment later (POMJU-182).
 func TestAWatcherNothingRepairsLogsWhenItsMinutePasses(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)

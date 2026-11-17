@@ -253,7 +253,7 @@ projects:
 gates:
   design: off
 admission_cap: 1
-# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# The wake pacing off (POMJU-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
 worker_wakes_per_minute: 0
 instructions: $work/instructions.md
@@ -743,7 +743,7 @@ bridged "$cc" || fail "the implementer's claude (pid $cc) is not a child of legi
 note "implementer claim $token: generation $generation, pane $pane, Claude Code session $session, transcript $transcript; its claude's argv is $(wc -c <"/proc/$cc/cmdline") bytes"
 pass
 
-# The endless phase reminder on the Claude Code backend (INFRA-220). The implementer holds its phase
+# The endless phase reminder on the Claude Code backend (POMJU-220). The implementer holds its phase
 # and has not completed it, so a turn of its that ends settles the pane's `Stop` hook: the `legion`
 # MCP server answers `{"decision":"block","reason":<the reminder>}` (legion_phase_hook, whose hook
 # entries are legion/hooks/hooks.json in the run's own build of the plugin, $work/claude-envoy), and

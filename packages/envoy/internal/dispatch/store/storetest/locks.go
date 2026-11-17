@@ -68,7 +68,7 @@ func WaitForLockWaiters(t testing.TB, holder pgx.Tx, want int, within time.Durat
 // holder's own connection for the same reason. Watching one backend rather than counting them is
 // what tells the call under test from any other session queued on the same lock: an issue's
 // document settlement locks the issue's row too (docs/solutions/testing/a-lock-wait-test-watches-
-// the-pid-of-the-call-under-test-and-its-mutant-fires-only-on-that-call-INFRA-260.md).
+// the-pid-of-the-call-under-test-and-its-mutant-fires-only-on-that-call-POMJU-260.md).
 func QueuedBehind(ctx context.Context, holder pgx.Tx, pid uint32) (bool, error) {
 	var queued bool
 	if err := holder.QueryRow(ctx, waitingBehindHolder+`select exists (select 1 from waiting where pid = $1)`, pid).Scan(&queued); err != nil {

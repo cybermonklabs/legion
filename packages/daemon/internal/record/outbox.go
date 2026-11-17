@@ -173,7 +173,7 @@ func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 // marker. Artifact, when set, is a document the body links (dispatch://<issue>/artifact/<name>):
 // the runner puts it on the issue before it posts the body, so the link never comes before its
 // document. No message of this release sets Artifact: its one producer was the pod rescue's
-// message, removed with the rescue (INFRA-2848). The field stays because the outbox decodes a
+// message, removed with the rescue (POMJU-2848). The field stays because the outbox decodes a
 // payload strictly and refuses an unknown field, so a row an older daemon queued with an artifact
 // must still decode and still put its document up. It, MessageArtifact and the outbox's upload
 // can go once no daemon of a release before this one shares the database and no unsent
@@ -343,7 +343,7 @@ type Notice struct {
 	// the legion.yaml line that records a decision; a gap is the operator's to close or decide, a
 	// live row's the session's environment to fix, and neither is the controller's.
 	OpenCapabilities []string `json:"openCapabilities,omitempty"`
-	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for (INFRA-225),
+	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for (POMJU-225),
 	// one it has still to start or one it started that gave its admission slot back for the wait,
 	// with what each still waits on. Only a tick controller
 	// notice carries it, as OpenCapabilities does: the tick is the turn that posts the day's
@@ -352,14 +352,14 @@ type Notice struct {
 	Blocked []BlockedIssue `json:"blocked,omitempty"`
 	// Held is every issue of the project the daemon's own record holds in the workflow that
 	// stands in neither the active set nor the waiting line, with the one word for why
-	// (C3 of dispatch://INFRA-3107), in the shape the state carries them (api.Admission.Held,
+	// (C3 of dispatch://POMJU-3107), in the shape the state carries them (api.Admission.Held,
 	// an alias of this row). Only a tick controller notice carries it, as OpenCapabilities and
 	// Blocked are: the tick is the turn that posts the day's report, so the controller reads
 	// there what nothing starts beside what waits on a Dispatch issue. A tick with nothing held
 	// carries none.
 	Held []HeldIssue `json:"held,omitempty"`
 	// Silent is every issue of the project whose phase worker is one nothing will prompt
-	// (workflow.SilentPhaseWorker, dispatch://INFRA-3163), and every one whose worker's own
+	// (workflow.SilentPhaseWorker, dispatch://POMJU-3163), and every one whose worker's own
 	// report of background work has stood past its bound, which the daemon never prompts
 	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
 	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
@@ -416,7 +416,7 @@ type NoticeFailure struct {
 	PromptRetires  FailureBudget `json:"promptRetires"`
 	// Death is why the claim's process was last found gone and StartFailure why its last start
 	// produced no running agent, each as the claim recorded it and each absent where it recorded
-	// none (dispatch://INFRA-714 R6). They are two answers to two questions and are never merged
+	// none (dispatch://POMJU-714 R6). They are two answers to two questions and are never merged
 	// into one sentence: a claim that cannot start and a claim that keeps dying are different
 	// faults, and an agent deciding between a retry and an escalation reads them apart. Cause
 	// above says which of them ended this claim; these say what the runtime and the launcher
@@ -669,7 +669,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // per run of its tree (Store.TellArchitectsStalled, admit's architectStalls), so a root that
 // two arms read raises two and neither hides the other. Nobody inside the tree is told: the
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
-// reached, or has not moved (dispatch://INFRA-2614).
+// reached, or has not moved (dispatch://POMJU-2614).
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"
@@ -883,7 +883,7 @@ type SuperviseRequest struct {
 	Relaunch bool `json:"relaunch,omitempty"`
 	// Assignment is written by nothing. It carried the token the release before the phase entry
 	// minted for a start and wrote on the role's phases row, which Entry above replaced
-	// (INFRA-2800); the outbox decodes it now and acts on it nowhere.
+	// (POMJU-2800); the outbox decodes it now and acts on it nowhere.
 	//
 	// It is kept for one release for the reason Relaunch above is, and for the one the
 	// migration's own header gives (migrations/20261111225552_phase_entry.up.sql): a rollback is
@@ -1011,7 +1011,7 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // is the claim token, which the
 // runner addresses as a role topic, and Body is the whole of what the holder is told. It is how
 // the daemon reaches a worker with something to read rather than a task to do - a settled head's
-// check results, which move nothing (workflow's tellChecks, dispatch://INFRA-714/spec R1). A role
+// check results, which move nothing (workflow's tellChecks, dispatch://POMJU-714/spec R1). A role
 // with no live holder is told nothing: the row finishes, since the message is of a moment that
 // has passed by the time anyone claims the role, and every recipient can read the pull request's
 // checks on GitHub for itself.

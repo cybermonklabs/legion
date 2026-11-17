@@ -50,7 +50,7 @@ func (n *fixtureName) UnmarshalJSON(data []byte) error {
 // cut as the store keys it, the failed and cancelled checks, and a tester or architect run only from
 // the reviewer App. This test is the whole of what holds those rules: the Legion daemon had a pass
 // that built a settlement for a head the listener never settled, read from this same fixture, and
-// that pass went with the daemon's own periodic reads of GitHub (dispatch://INFRA-714 R1), so
+// that pass went with the daemon's own periodic reads of GitHub (dispatch://POMJU-714 R1), so
 // nothing else reads the file now. A rule changed here and not in the listener fails this test,
 // and a reader looking for the daemon's half will not find one.
 func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {

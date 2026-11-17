@@ -139,7 +139,7 @@ the process stays alive until the driver kills it.
 that actually installs the release inside the image. Read its `Build and push` log for
 `mise github:sjawhar/oh-my-pi@<tag> ✓ installed`, `omp/18.1.18`, and `probe-image: OK
 (/opt/omp/bin/omp)`. The first run is the evidence; a later commit that touches nothing the image
-needs re-runs the workflow fully `CACHED`. (Superseded 2026-10-27, INFRA-520, the CI router: the
+needs re-runs the workflow fully `CACHED`. (Superseded 2026-10-27, POMJU-520, the CI router: the
 pull request's image build is now the `worker-image` job of ci.yaml, which calls
 `worker-image.yaml`. A push cancels the first run if that run is unfinished, and a pull request's
 build writes no cache, since only builds on main write the Actions cache scope `worker-image`, so

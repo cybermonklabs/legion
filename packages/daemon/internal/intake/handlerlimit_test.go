@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The three rows of this file hold the relation dispatch://INFRA-1574 put in the place of the
+// The three rows of this file hold the relation dispatch://POMJU-1574 put in the place of the
 // fixed ten-minute intake handler limit: the limit one fact's handling runs under is derived from
 // the acknowledgement window that bounds each of that fact's reads, so a deployment which widens
 // worker_rpc_timeout_seconds widens the limit with it, instead of leaving a review's three

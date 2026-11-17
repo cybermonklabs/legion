@@ -38,7 +38,7 @@ and the branches that served the deleted caller became unreachable while still c
   source never sends, and observes that none of them renders while the page still works, turns "no
   test pins this absence" into an observed refusal.
 
-## Evidence (sjawhar/legion#2649, INFRA-879)
+## Evidence (sjawhar/legion#2649, POMJU-879)
 
 Deleting Dispatch's `CredentialRecordPage` left `MachineLoginPage` the only caller of
 `CredentialRecordFacts.tsx`. Its record comes from one route, `POST

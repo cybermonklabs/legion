@@ -13,7 +13,7 @@ describe("messageFor", () => {
     expect(messageFor(null)).toBe("null");
   });
 
-  // The tree of dispatch://INFRA-1523 read three refusals through curl because the command printed
+  // The tree of dispatch://POMJU-1523 read three refusals through curl because the command printed
   // no code, while skill://dispatch has every agent branch on the code. A Node errno error carries
   // a `code` of its own and is none of Dispatch's business, which is why `fromDispatch` decides.
   test("a refusal Dispatch decided prints its code before its message", () => {

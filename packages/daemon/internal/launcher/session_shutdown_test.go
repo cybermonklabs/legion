@@ -53,7 +53,7 @@ func TestLauncherTermDialer(t *testing.T) {
 // ending), which is what a pod deletion, an eviction or a node drain sends. The agent spends its
 // grace finishing and recording its work, and every write in that grace that needs a connection must
 // still find the proxy serving; the old postgres store, which dials the database directly, never
-// lost its last writes this way (INFRA-271).
+// lost its last writes this way (POMJU-271).
 func TestASessionDatabaseServesItsChildThroughTheChildsShutdownGrace(t *testing.T) {
 	for _, how := range []string{"daemon stop", "container shutdown"} {
 		t.Run(how, func(t *testing.T) {

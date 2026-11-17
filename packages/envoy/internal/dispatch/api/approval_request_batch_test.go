@@ -157,7 +157,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  20. the question's references, none of which it names (replaceReferences);
 //  21. the row the ask owes the grammar's re-index queue, deleted where it has one
 //     (refs.settleOwed): the write holds the source's row and has just read its text with the
-//     whole grammar, so nothing is owed for it any more (INFRA-869);
+//     whole grammar, so nothing is owed for it any more (POMJU-869);
 //  22. the ask's block-state row, inserted where it has none (refs.IndexAskPartsCounted, through
 //     lockItemState);
 //  23. that state row, read and locked;

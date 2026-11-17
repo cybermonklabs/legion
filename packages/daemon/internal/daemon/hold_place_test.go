@@ -45,7 +45,7 @@ func waitingLine(t *testing.T, pool *store.Pool) []string {
 	return line
 }
 
-// dispatch://INFRA-1067's rule on the daemon's own runtime, for the boot catch-up's hold.
+// dispatch://POMJU-1067's rule on the daemon's own runtime, for the boot catch-up's hold.
 // TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt, in hold_release_test.go,
 // proves the same rule there for the Dispatch consumer's hold, which a quiet consumer releases;
 // this one is the other hold the boot places, which only the catch-up releases.

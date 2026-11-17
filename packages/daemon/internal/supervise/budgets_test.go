@@ -101,7 +101,7 @@ func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
 		before int
 		// task is whether the claim holds the task its process dies in the turn of. The death is
 		// charged either way on this release, since a turn in flight is work outstanding whether
-		// or not a delivery is still owed for it (chargeDeath, dispatch://INFRA-714/spec R7); the
+		// or not a delivery is still owed for it (chargeDeath, dispatch://POMJU-714/spec R7); the
 		// task a claim holding none is given after the refusal is one the dead process never had.
 		task bool
 	}{
@@ -384,7 +384,7 @@ func TestADeathBeforeReadyIsALaunchFailureNotADeath(t *testing.T) {
 // turn: an agent that got through a turn after being killed is making progress, and only deaths
 // that keep a turn from ending should ever fail a claim. A notice's turn colliding with the
 // re-send is refused busy and leaves the interrupted task still waiting, and its end clears the
-// deaths all the same (dispatch://INFRA-714 R6).
+// deaths all the same (dispatch://POMJU-714 R6).
 func TestATurnThatEndsClearsTheDeathsEvenWhenItNeverRanTheTask(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)

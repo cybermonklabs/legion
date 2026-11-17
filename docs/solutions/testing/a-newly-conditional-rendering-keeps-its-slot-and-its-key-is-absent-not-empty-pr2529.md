@@ -16,7 +16,7 @@ related_issues:
 
 # A newly conditional rendering keeps its slot, and its key is absent rather than empty
 
-Extends docs/solutions/testing/assert-the-rendering-in-the-shape-the-consumer-passes-not-the-default-INFRA-62.md.
+Extends docs/solutions/testing/assert-the-rendering-in-the-shape-the-consumer-passes-not-the-default-POMJU-62.md.
 That document is about asserting a conditionally built list; these are the authoring rules for
 making an entry of such a list conditional in the first place.
 

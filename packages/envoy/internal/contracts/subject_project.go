@@ -33,7 +33,7 @@ func projectOfToken(token string) string {
 	return NoProject
 }
 
-// IssueProject is the project of an issue key (INFRA of INFRA-12), and false for a token that is
+// IssueProject is the project of an issue key (POMJU of POMJU-12), and false for a token that is
 // no issue key: a project key, a hyphen and a number.
 func IssueProject(key string) (string, bool) {
 	project, number, found := strings.Cut(key, "-")
@@ -207,7 +207,7 @@ func keptLane(topic string) (kind string, rest []string, ok bool) {
 }
 
 // CanonicalTopic is the new form of an old-form topic, and whether topic was in the old form: an
-// issue's topic naming its key alone (notifications.dispatch.issue.INFRA-12.>) gains its key's
+// issue's topic naming its key alone (notifications.dispatch.issue.POMJU-12.>) gains its key's
 // project, a session's agent subject (notifications.agent.<session>) gains a wildcard project, and
 // a role lane gains its role's project (RoleProject); a failed-delivery report of one, and a kept
 // role lane, follow the name they carry. Every other topic, a wildcard where the old form's key,
@@ -254,9 +254,9 @@ func isProjectPosition(token string) bool {
 // for a topic with none: an issue's topic under its key's own project names its key alone; one
 // session's agent subject and one role's lane under any project name the session and the role
 // alone; a failed-delivery report and a kept lane follow the name they carry. A topic over every
-// issue of one project (notifications.dispatch.issue.INFRA.>) has no old form, since no subject
+// issue of one project (notifications.dispatch.issue.POMJU.>) has no old form, since no subject
 // pattern names the issues of one project in the old form. Nor has an issue's topic under a
-// wildcard project (notifications.dispatch.issue.*.INFRA-12.>): its old form would overlap it (the
+// wildcard project (notifications.dispatch.issue.*.POMJU-12.>): its old form would overlap it (the
 // wildcard against the key, the key against what follows), and a session consumer handed both
 // would be reduced to a filter over every project's issues (bus.ReduceFilterSubjects); the new
 // form alone already reaches the key's own project. Until the old form is refused only.
@@ -308,7 +308,7 @@ func TopicForms(topic string) []string {
 }
 
 // CanonicalRole reads a claimed role in either form: the new form names its project and then the
-// role (INFRA.legion-infra-infra-12-architect, _.lead-reviewer), and the old form, the role alone,
+// role (POMJU.legion-pomju-pomju-12-architect, _.lead-reviewer), and the old form, the role alone,
 // works for the project its name says (RoleProject), with legacy true. A role's name holds no dot
 // (roles.PatternString), so a name that is not the new form is the old one, and is left to the
 // role check to refuse. Until the old form is refused only.
@@ -330,8 +330,8 @@ func CanonicalRole(role string) (project, name string, legacy bool) {
 var issueEventKeyPattern = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-[0-9]+$`)
 
 // IssueEventKey reads the issue key an issue event's name carries, in either form: the new form
-// names the key's own project and then the key (notifications.dispatch.issue.INFRA.INFRA-12.<type>),
-// and the old form the key alone (notifications.dispatch.issue.INFRA-12.<type>), with legacy
+// names the key's own project and then the key (notifications.dispatch.issue.POMJU.POMJU-12.<type>),
+// and the old form the key alone (notifications.dispatch.issue.POMJU-12.<type>), with legacy
 // true. ok is false for a name of the family whose key is in neither form, a project that is not
 // the key's own among them, and for a name of any other family. A key is read by
 // issueEventKeyPattern, the shape every daemon has accepted, so a daemon reads every key it read

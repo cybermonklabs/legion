@@ -649,7 +649,7 @@ test("a second missing anchor after the margin re-anchored is the reader's to se
 // The held send stays refused while the margin waits for the mark it wrote to reach the server:
 // `readdress` only amends that send, so a composer left with no line of the margin's own falls
 // back to the server's words - "anchor mark is not in the document", about a mark the reader
-// never saw - between the re-mark and the retry (dispatch://INFRA-727).
+// never saw - between the re-mark and the retry (dispatch://POMJU-727).
 test("the composer never shows the server's words between the re-mark and the retry's outcome", async () => {
   const user = userEvent.setup();
   const sent = Promise.withResolvers<void>();
@@ -723,7 +723,7 @@ test("a refused re-anchor tells the reader the words are gone and keeps the draf
 });
 
 // What the reader is told is about what they are writing. An ask is no comment, and a refusal
-// that calls it one tells them about something they never wrote (dispatch://INFRA-727).
+// that calls it one tells them about something they never wrote (dispatch://POMJU-727).
 test("a refused re-anchor on an ask calls it an ask, and never a comment", async () => {
   const user = userEvent.setup();
   const bridge = stubDocumentBridge(specArtifact.id, {
@@ -755,7 +755,7 @@ test("a refused re-anchor on an ask calls it an ask, and never a comment", async
 // `ANCHOR_MISSING` for it can land before the reader's own document has bound its bridge - that
 // happens only after `onSynced`, `createEditor` and `bindEditor`. Telling the reader looking at
 // that very document that it "is not open" would be false, so the recovery waits for the bridge
-// and runs when it binds (dispatch://INFRA-727).
+// and runs when it binds (dispatch://POMJU-727).
 test("a missing anchor that lands before the document binds is recovered once it does", async () => {
   const user = userEvent.setup();
   const remarked: string[] = [];
@@ -798,7 +798,7 @@ test("a missing anchor that lands before the document binds is recovered once it
 // Retry is the reader's throughout the wait, and it sends the mark the server has already
 // refused, which is refused again. A second recovery for that mark would write a second mark
 // when the bridge binds, and the first of the two would stay in the shared document with no
-// record to hold it, so a recovery is marked as running before the wait (dispatch://INFRA-727).
+// record to hold it, so a recovery is marked as running before the wait (dispatch://POMJU-727).
 test("a Retry pressed while the document is still binding leaves one written mark, not two", async () => {
   const user = userEvent.setup();
   let minted = 1;
@@ -857,7 +857,7 @@ test("a Retry pressed while the document is still binding leaves one written mar
 
 // The reader is on no document at all - a page that registers no bridge - so nothing can be
 // read about their words from here. The wait ends at `BRIDGE_BIND_WAIT_MS` with the refusal
-// they can act on: opening the document the draft belongs to (dispatch://INFRA-727).
+// they can act on: opening the document the draft belongs to (dispatch://POMJU-727).
 test("a refusal no document binds for ends at the wait's bound, telling the reader to open that document", async () => {
   const remarked: string[] = [];
   const bridge = stubDocumentBridge(specArtifact.id, {

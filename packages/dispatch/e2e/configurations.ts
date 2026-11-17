@@ -255,7 +255,7 @@ export function tagged(tag: string): RegExp {
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
  *  directory and names no project at all, and a reader that took it for one answered "the
  *  stubbed layer alone" for a run holding real-stack rows, which then met no stack
- *  (dispatch://INFRA-1410). A bare `--` ends the options, so no token after it is a project,
+ *  (dispatch://POMJU-1410). A bare `--` ends the options, so no token after it is a project,
  *  whatever it is spelled like: `e2e/playwright-argv.ts`'s own measurements show a command
  *  line that holds one (`-- --ui --list` ran its rows, the `--ui` naming no mode). */
 export function projectsOnCommandLine(argv: readonly string[]): string[] {

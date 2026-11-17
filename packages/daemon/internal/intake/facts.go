@@ -596,7 +596,7 @@ type PullRequestReview struct {
 	// ReadFromList is whether the daemon's own read of GitHub's list of the pull request's
 	// reviews produced this fact (daemon's reviewToApply) rather than the review's webhook, which
 	// the decoder never sets it from. The list answers with GitHub's current commit_id for every
-	// review it holds (LegionHead, dispatch://INFRA-1557), where the webhook's envelope carries
+	// review it holds (LegionHead, dispatch://POMJU-1557), where the webhook's envelope carries
 	// the commit_id the event was delivered with, so the workflow lets a person's listed review
 	// decide no round while the same person's webhook review decides as it always has
 	// (workflow's refusesRound).
@@ -664,7 +664,7 @@ func (r PullRequestReview) LegionSession() string {
 //
 // The workflow holds a review the review App submitted to this rather than to CommitID because
 // GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
-// can name a head the review never saw (dispatch://INFRA-1557). Nothing rewrites the body a
+// can name a head the review never saw (dispatch://POMJU-1557). Nothing rewrites the body a
 // review was submitted with, so the footer is the review's own word for the code it read, and it
 // is the only thing a force push back to an earlier head cannot forge: no clock tells those
 // heads apart.
@@ -1005,7 +1005,7 @@ func (f CloseRoot) Message() string {
 // a running agent, each as the runtime said it and empty when the claim has none: the two answer
 // different questions — a worker that kept dying and a worker that could never start — and the
 // notices this fact sends name both, since the architect reading them has no other way to learn
-// either (dispatch://INFRA-714 R6).
+// either (dispatch://POMJU-714 R6).
 type ClaimFailed struct {
 	Issue        string
 	Role         claim.Role
@@ -1061,7 +1061,7 @@ func (SessionStoreFault) isFact() {}
 // (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
 // the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
 // `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
-// twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
+// twice is applied once (POMJU-3557). For the kernel's kill, <guard> is the id of the launcher's
 // guest watch (memoryguard.Guest).
 //
 // Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
@@ -1167,7 +1167,7 @@ type DaemonBooted struct {
 func (DaemonBooted) isFact() {}
 
 // CutoverMergerRepair is the one-time boot repair of the mergers the `awaiting_merge` cutover
-// left stopped (dispatch://INFRA-3274/spec R2): an earlier build's idle release stopped the
+// left stopped (dispatch://POMJU-3274/spec R2): an earlier build's idle release stopped the
 // merger's pod while its issue waited in `awaiting_merge`, which no role worked, so it armed no
 // backstop, and the migration that moved the issue to `merging` gave the merger no task. It is
 // never decoded from an event. The boot applies it once per Dispatch project, under a fixed
@@ -1400,7 +1400,7 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool
 // for a second connection while the fact's own transaction holds one — under the global fact lock
 // every other fact queues behind — is refused at that call (store.ErrNestedAcquire) instead of
-// waiting for a connection only it can give back (INFRA-3169).
+// waiting for a connection only it can give back (POMJU-3169).
 //
 // It is named as the three methods the intake uses rather than as that one type because the
 // packages that measure the handlers against a real Postgres — the workflow engine's and
@@ -1488,7 +1488,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 	// applies instead of being answered as one already received. Beside it, a handler leaves a
 	// fact unmarked only where the refusal's cause can clear without changing the fact's id
 	// (Result.Unspent). An unmarked refusal of any other fact would make a refused handoff apply
-	// on its next delivery, which those refusals exist to stop (dispatch://INFRA-714/spec R12).
+	// on its next delivery, which those refusals exist to stop (dispatch://POMJU-714/spec R12).
 	_, report := fact.(CheckReport)
 	if (report && result.Refusal != nil) || result.Unspent {
 		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {

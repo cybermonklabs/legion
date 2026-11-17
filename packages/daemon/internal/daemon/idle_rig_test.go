@@ -64,7 +64,7 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
-// idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
+// idleWakeRig is the acceptance rig of POMJU-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose
 // controller stand-in starts a real `legion launcher` for every pod it reports Ready, each
 // launcher running a scripted stand-in for Oh My Pi that registers, claims its role and records

@@ -3,7 +3,7 @@ import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// Check k10 of dispatch://INFRA-1042/artifact/verification-md, serving R10: handing the request
+// Check k10 of dispatch://POMJU-1042/artifact/verification-md, serving R10: handing the request
 // to the issue's own agent is one action among the rest. The bar offers it only while a live
 // session holds the issue's claim, it always asks, and approving is what sends.
 //

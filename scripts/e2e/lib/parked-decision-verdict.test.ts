@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runJq } from "./run-jq.ts";
 
-// The parked-decision verdict (INFRA-214): each person's spec decision the outbox finished
+// The parked-decision verdict (POMJU-214): each person's spec decision the outbox finished
 // undelivered, paired by its row with the line that relayed it, found it relayed, or relayed nothing
 // because no person made it. Judged on a daemon log as the daemon writes it, one JSON object a line.
 

@@ -402,7 +402,7 @@ var corpusMix = []struct {
 }
 
 // The real corpus the pass has to get through, from the census this change was specified against
-// (sjawhar/legion#2712, INFRA-635).
+// (sjawhar/legion#2712, POMJU-635).
 const (
 	corpusTexts = 140622
 	corpusBytes = 5.8e9
@@ -474,7 +474,7 @@ func TestTheFillGetsThroughTheCorpusWellWithinADayAtTwoWorkers(t *testing.T) {
 // One round of the mix is a thousand texts and about 41 MB, which is what CI seeds. An operator
 // measuring the whole corpus rather than its rate sets LEGION_FILL_CORPUS_ROUNDS: 140 rounds is
 // 140,000 texts and about 5.8 GB, the corpus this change was specified against, and takes a disk
-// and an hour that no CI run has (INFRA-635).
+// and an hour that no CI run has (POMJU-635).
 func seedCorpus(t *testing.T, database *store.Store) (texts, written int) {
 	t.Helper()
 	ctx := context.Background()

@@ -11,13 +11,13 @@ date: 2026-10-25
 status: active
 module: skills/legion-worker
 related_issues:
-  - "INFRA-251"
+  - "POMJU-251"
   - "sjawhar/legion#2163"
 ---
 
 # Zero runs at the head you just pushed is read with mergeability or not at all
 
-Extends `docs/solutions/github/an-empty-check-set-is-a-conflict-until-proven-otherwise-INFRA-42.md`,
+Extends `docs/solutions/github/an-empty-check-set-is-a-conflict-until-proven-otherwise-POMJU-42.md`,
 which tells whoever is **waiting** on checks to treat an empty run set as a conflict until proven
 otherwise. The delta is for the role that is forbidden to wait:
 
@@ -40,7 +40,7 @@ otherwise. The delta is for the role that is forbidden to wait:
   fingerprints; a merge that brings the base's files in changes the fingerprint, so the earlier
   evidence does not carry by fingerprint alone.
 
-## Evidence (INFRA-251, sjawhar/legion#2163)
+## Evidence (POMJU-251, sjawhar/legion#2163)
 
 Round 2 pushed head `eb4e98d5da36fde43138c19b1e31710c34f127c2`, read
 `gh run list --commit eb4e98d5…` once at completion, found nothing, and wrote `no run yet` into the

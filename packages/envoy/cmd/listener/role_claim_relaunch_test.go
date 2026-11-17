@@ -104,7 +104,7 @@ func (r *roleClaimRelaunchRig) stored() store.RoleClaim {
 
 // A Legion role whose agent process a probe judges gone is stopped cleanly and relaunched under
 // the same session id in a new process: the daemon deletes the dead process's registration
-// (DELETE /v1/sessions/<session_id>?if_not_registered_after=…, dispatch://INFRA-392) and the
+// (DELETE /v1/sessions/<session_id>?if_not_registered_after=…, dispatch://POMJU-392) and the
 // relaunched process registers that id again with a client instance of its own. The claim the
 // dead process left still names the dead process, and a release frees only the claims naming the
 // process that asks (store.RoleReleaseAuthority), so the whole path from the clean stop to the

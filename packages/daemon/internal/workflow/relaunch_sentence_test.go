@@ -19,7 +19,7 @@ import (
 // let-go of its process ended, which the ready carries while the claim's record of it is untold
 // (intake.ClaimReady.Relaunch, the daemon's applyTerminal): the first turn of such an architect
 // can be its catch-up's, and it reads that its subagent died before it reads its tree
-// (dispatch://INFRA-3276 R3). The rest of the catch-up is what it always was. A ready that carries
+// (dispatch://POMJU-3276 R3). The rest of the catch-up is what it always was. A ready that carries
 // no sentence — the record told, or nothing recorded — composes the reason as before.
 func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
 	pool := migratedPool(t)

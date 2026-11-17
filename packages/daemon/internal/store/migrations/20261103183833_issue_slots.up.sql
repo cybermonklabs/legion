@@ -1,5 +1,5 @@
 -- 20261103183833_issue_slots.up.sql — what the admission cap and the children-first phase rule
--- read once a slot counts an issue rather than a tree (INFRA-980): the mark that a design gate
+-- read once a slot counts an issue rather than a tree (POMJU-980): the mark that a design gate
 -- once opened, the Dispatch parent of every mirrored issue, and a slot for every issue already at
 -- work when the daemon that reads them boots.
 --

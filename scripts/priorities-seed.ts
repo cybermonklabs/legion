@@ -1,6 +1,6 @@
 /**
  * priorities-seed.ts writes the first priorities from the table a person keeps by hand
- * (dispatch://INFRA-2947/spec, R10). Its one argument is that table's Dispatch document
+ * (dispatch://POMJU-2947/spec, R10). Its one argument is that table's Dispatch document
  * reference, so the script names no deployment, no document and no row of its own.
  *
  * One priority is written for each row whose `Where` cell does not begin with the word `DONE`,
@@ -16,8 +16,8 @@
  *     ---
  *
  *     Table row 11 of dispatch://KEY/artifact/some-table-md, read at version 70.
- *     Advances: INFRA-2947, INFRA-2969.
- *     Not advanced: BET-1030 (done), FOO-12 (no issue carries this key).
+ *     Advances: POMJU-2947, POMJU-2969.
+ *     Not advanced: BJB-1030 (done), FOO-12 (no issue carries this key).
  *
  * The row number is the idempotency key: a run against a table whose rows moved finds each row's
  * priority by that number and writes nothing, so the priorities it already wrote keep their

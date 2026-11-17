@@ -3,7 +3,7 @@
 // registration that waited one out could reach the listener after the DELETE its own session's
 // shutdown sent: the listener would write the entry again, with nobody left to heartbeat it, and
 // peers would read the session as live and then unresponsive for the gone horizon
-// (dispatch://INFRA-392). So a reading runs between registrations and never inside one. A
+// (dispatch://POMJU-392). So a reading runs between registrations and never inside one. A
 // registration takes whatever this holds at the moment it is built — the place when a reading has
 // landed, none when none has — and a session whose shutdown has been seen stops every reading,
 // the one already away included, from writing anything at all.

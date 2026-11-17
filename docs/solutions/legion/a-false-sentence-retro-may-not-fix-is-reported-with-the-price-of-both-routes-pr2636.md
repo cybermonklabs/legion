@@ -12,8 +12,8 @@ status: active
 module: docs/solutions
 related_issues:
   - "sjawhar/legion#2636"
-  - "INFRA-958"
-  - "INFRA-67"
+  - "POMJU-958"
+  - "POMJU-67"
 ---
 
 # A false sentence retro may not fix is reported with the price of both routes, because the deferral is observed to leave it standing
@@ -54,8 +54,8 @@ its own approval, READY refused `READY_UNREVIEWED_CHANGE`, and the round that fo
 implementing round with no code, a tester re-run, a full review from `a5df7090` that found nothing
 else, and this second retro — for two sentences.
 
-The deferral's price is the other half, and it is not zero. INFRA-42 filed its own prose residue as
-dispatch://INFRA-67 on 2026-10-20, naming the sentence it had declared false; fifteen days later, at
+The deferral's price is the other half, and it is not zero. POMJU-42 filed its own prose residue as
+dispatch://POMJU-67 on 2026-10-20, naming the sentence it had declared false; fifteen days later, at
 this pull request's head, that sentence is still in the tree verbatim —
 `packages/dispatch/web/src/features/issue/useIssueAssignee.ts:22-23`, "moves in or out of the list
 at once".

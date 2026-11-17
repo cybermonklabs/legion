@@ -124,7 +124,7 @@ func TestASessionConsumerOnAServerThatSkipsAFilterLosesItsOldFormMessage(t *test
 	}
 	pull, _ := releasedAndRegisteredAgain(t, owner, consumers)
 	got := next(t, pull)
-	if got.Subject != contracts.AgentSubject("INFRA", scanSession) {
+	if got.Subject != contracts.AgentSubject("POMJU", scanSession) {
 		t.Fatalf("handed over %d on %s first, want the new-form message: the old-form one stored before it is skipped on this server", got.StreamSeq, got.Subject)
 	}
 }
@@ -204,7 +204,7 @@ type ownMessage struct {
 func publishOwn(t *testing.T, owner *Client, session string) []ownMessage {
 	t.Helper()
 	var own []ownMessage
-	for _, subject := range []string{contracts.LegacyAgentSubject(session), contracts.AgentSubject("INFRA", session)} {
+	for _, subject := range []string{contracts.LegacyAgentSubject(session), contracts.AgentSubject("POMJU", session)} {
 		own = append(own, ownMessage{seq: publishStored(t, owner, subject, "the session's own message"), subject: subject})
 	}
 	return own

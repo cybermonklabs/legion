@@ -10,7 +10,7 @@
 # Requirement 12 asks for.
 #
 # Four roots run under admission_cap 4, a cap of the issues the daemon has started rather than of trees
-# (dispatch://INFRA-980). Tree 1 runs the whole workflow with real agents to `done`, through one
+# (dispatch://POMJU-980). Tree 1 runs the whole workflow with real agents to `done`, through one
 # changes-requested review round whose thread the reviewer opens, lingers, and closes; while its
 # planner holds, the driver files two children under it, each in an issue pod and on a volume of
 # its own, which fills the cap and leaves tree 3 waiting for a slot, then closes one as done and
@@ -24,14 +24,14 @@
 # roles uses Oh My Pi's tools and the image's toolchain as its own App (full-agent-tools). Tree 2
 # runs through its planner beside tree 1, carrying the repository-configuration fixture, whose
 # skills, language servers, CodeGraph index and settings its planner uses in its checkout
-# (repository-tools), supplies the capability report measured at an idle tick (full-agent, INFRA-927),
+# (repository-tools), supplies the capability report measured at an idle tick (full-agent, POMJU-927),
 # and is then moved to backlog. Tree 3 waits for a slot while tree 1's first two children hold
 # the cap, takes one the moment they leave, supplies the held
 # phase the controller checkpoint needs and, held, the planner whose workspace turns a capability off
 # and on (full-agent-negative), and is taken out from an operator shell (controller-walk). Tree 4 is
 # admitted once tree 3 has left, supplies a planner killed mid-turn and an implementer killed until
 # it is held, and is taken out the same way.
-# Three checkpoints are gone with INFRA-229 and INFRA-980 (mid-turn-carry and carried-child, with
+# Three checkpoints are gone with POMJU-229 and POMJU-980 (mid-turn-carry and carried-child, with
 # the setups that left a child mid-run and mid-turn under a closing root, and children-at-the-merge,
 # whose children entered the tree after its root was accepted): no merge closes a root while a child
 # of its tree is still in the workflow any more, and no issue enters a tree beneath an ancestor
@@ -251,10 +251,10 @@ session_dsn_key=SESSION_DSN
 # under it.
 pod_sessions_dir=/home/legion/.omp/profiles/legion/agent/sessions
 stream=ENVOY_NOTIFICATIONS
-# The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue the
+# The issues the run's daemon runs at once. Since dispatch://POMJU-980 a slot is one issue the
 # daemon has started, a root or a child, so tree 1's children count against this cap as its root
 # does, and an issue holds one as root AGENTS.md's "Admission" says: since
-# dispatch://INFRA-2560 an issue in accepting, retro or merging holds none. Four is
+# dispatch://POMJU-2560 an issue in accepting, retro or merging holds none. Four is
 # the run's own peak under that rule, reached once, at issue-independence: tree 1's root and its
 # two children beside tree 2's root, which is where the cap stands full and tree 3, set todo
 # there, waits for it. The later gathering is three and not four: at children-first-acceptance
@@ -876,7 +876,7 @@ issue_sandbox_modes() {
 # pod_disk POD prints POD's own disk as `<name> <phase> <owner kind>/<owner name>`, and nothing at
 # all when there is none. An issue pod's disk is a generic ephemeral volume declared in its own pod
 # template, so Kubernetes names the claim `<pod>-issue`, the pod owns it, and it is created with
-# the pod and deleted with it (INFRA-80). It carries no label — the Sandbox CRD declares the
+# the pod and deleted with it (POMJU-80). It carries no label — the Sandbox CRD declares the
 # ephemeral template's metadata a bare object, so the API server prunes anything set there — so it
 # is read by that name, never by legion.dev/issue, which an issue's Sandbox-owned volume carried
 # before. A read that fails fails the function; a claim that is not there is no failure.
@@ -959,7 +959,7 @@ pod_viewer() {
 # anything else at the root is a stranger, named.
 #
 # LAYOUT says which layout this container holds inside that owner's directory, since the two differ:
-# `repos` for a role of an issue pod, whose directory holds its two gh files and, since INFRA-513
+# `repos` for a role of an issue pod, whose directory holds its two gh files and, since POMJU-513
 # narrowed every token, a directory per other repository the project serves under that owner (the
 # bundle's `<owner>/<repo>` entries), each holding those two files alone; `owner-only` for the
 # controller, whose directory holds the two files and nothing else, because `appauth.bundleDirs`
@@ -1472,7 +1472,7 @@ projects:
 gates:
   design: "${design_gate:-off}"
 admission_cap: $admission_cap
-# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# The wake pacing off (POMJU-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
 # restart_daemon writes this file afresh, so every daemon of the run reads it.
 worker_wakes_per_minute: 0
@@ -3714,7 +3714,7 @@ else
 fi
 
 begin admitted-issue-cap
-# The cap counts the issues the daemon has started (dispatch://INFRA-980), so two roots fill none of a cap of 4
+# The cap counts the issues the daemon has started (dispatch://POMJU-980), so two roots fill none of a cap of 4
 # and both are admitted at once, in rank order. Tree 3 is filed here, with the ranks of the run's
 # roots settled in one place, and set todo at issue-independence, where tree 1's two children
 # fill the cap and it is held in the line — the state this checkpoint used to read here, when a
@@ -4016,14 +4016,14 @@ begin child-release
 # (issue_close), and its durable close effect foreground-deletes the child's Sandbox (SuspendIssue,
 # internal/runtime/sandbox/issue_suspend.go), logging the release; its pod goes with that Sandbox
 # and its disk goes with the pod, since an issue's disk is its pod's own ephemeral volume
-# (INFRA-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
+# (POMJU-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
 # Child 2 set backlog: a park reaches SuspendIssue exactly as a close does (linger.go enqueues an
 # IssueSuspend for every stop that is not a merged done), so its Sandbox is deleted with the six
 # role Secrets it owned once its pod is gone, and its disk went with that pod; nothing of the
 # parked child is left to keep, and its next todo (child-reentered) makes the Sandbox afresh.
 # The two slots those children held are freed with them, and the line's first issue takes one:
 # tree 3, waiting since issue-independence. A child's slot going to a root is the cap counting
-# issues (dispatch://INFRA-980), where before this release a child held none of its own.
+# issues (dispatch://POMJU-980), where before this release a child held none of its own.
 root_uid=$(op get pod "$root_pod" -o jsonpath='{.metadata.uid}') || fail "the operator could not read the root's pod $root_pod"
 lost_before=$(grep -c 'volume was lost' "$daemon_log" || true)
 deleted_lines() { log_lines "$deleted_msg" | jq -c --arg issue "$1" 'select(.issue == $issue)'; }
@@ -4342,7 +4342,7 @@ pass
 
 begin full-agent
 # Every live session measures the six live capability rows at an idle tick of the 5 s interval it
-# already runs and sends them on a `claims/ready` of its own (LEGION-663, INFRA-927): the report
+# already runs and sends them on a `claims/ready` of its own (LEGION-663, POMJU-927): the report
 # follows the session's first idle measurement rather than its boot, which is why the rows are
 # waited for. Tree 1's and tree 2's roles are live, and tree 2's planner, finished and idle, still
 # runs the process of its first boot, whose report the fixture makes the fullest: two MCP servers
@@ -4871,7 +4871,7 @@ note "the reviewer's approval moved $tree1 to accepting (no worker started, the 
 pass
 
 begin children-first-acceptance
-# INFRA-980's children-first rule, live: a parent is accepted only once every issue beneath it has
+# POMJU-980's children-first rule, live: a parent is accepted only once every issue beneath it has
 # left the workflow. Two more children of tree 1 are filed while it stands in accepting, as at
 # issue-independence — in Dispatch, todo, with no `legion` label, each entered by the daemon under
 # tree 1's open gate (workflow's recordChildUnderLiveTree) and each planner registering from an
@@ -5903,7 +5903,7 @@ begin full-agent-negative
 # the role whose workspace can take a configuration no pull request carries: a workspace
 # .omp/config.yml turns web_search off, the planner's generation is killed (end_claim_process
 # kill), and its relaunch reads the file at its first idle measurement, which it makes on its own
-# interval rather than at its boot (INFRA-927), and reports web-search failing. The daemon runs it
+# interval rather than at its boot (POMJU-927), and reports web-search failing. The daemon runs it
 # all the same (dispatch://LEGION-663: run, and report): the row reads open with the planner's
 # pod, role, issue and the fact, the report's warning carries the relaunch's incarnation, the next
 # tick names the row to the controller, and the planner answers. With the file removed and the
@@ -6407,7 +6407,7 @@ await_merger_merge "$repo" "$pr_number" --delete-branch
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge is recorded and the root waits for the rest of its tree (INFRA-229).
+# The merge is recorded and the root waits for the rest of its tree (POMJU-229).
 merge_recorded() {
   daemon_state | jq -e --arg issue "$tree1" '.issues[$issue] | .phase == "merging" and .pullRequest.state == "merged"' >/dev/null
 }
@@ -6719,7 +6719,7 @@ pass
 begin re-admission
 # The re-admitted tree's root starts on a pod and a disk of its own: tree 1's close took both at
 # its linger expiry, and nothing of them is recovered. There is no lost-volume verdict and no
-# recovery marker left to read (INFRA-80 deleted both): the architect comes back on the session
+# recovery marker left to read (POMJU-80 deleted both): the architect comes back on the session
 # the session database kept for it, in a workspace provisioned afresh from the branch, and its
 # Legion plugin tells it so from the launcher's own LEGION_WORKSPACE_RECREATED rather than from a
 # file on a disk.
@@ -6731,7 +6731,7 @@ readmitted_volume=$(op get pvc "${found%% *}" -o jsonpath='{.metadata.uid}') || 
 # No launch of this run may report a lost volume: the verdict is gone, so a line of it is a daemon
 # the run did not build.
 others=$(grep -c 'volume was lost' "$daemon_log" || true)
-[ "$others" = 0 ] || fail "the daemon reported a lost volume $others times, want none: the verdict is gone (INFRA-80)"
+[ "$others" = 0 ] || fail "the daemon reported a lost volume $others times, want none: the verdict is gone (POMJU-80)"
 # The recovery marker is gone with it, and a workspace that still carries one is an old image.
 marker_path=/legion/workspaces/$repo/${tree1,,}/.legion/$tree1/workspace-recovered.json
 if left=$(pod_exec "$pod" architect cat "$marker_path" 2>&1); then

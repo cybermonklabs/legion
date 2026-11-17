@@ -2,10 +2,10 @@
 """Measure what a CI job ran on - the free disk of the path it writes to, the memory the machine
 had left, and its one-minute load - second by second, and print the worst each of them reached.
 
-Two kinds of job drive it. envoy-smoke (dispatch://INFRA-1085), whose live tests build container
+Two kinds of job drive it. envoy-smoke (dispatch://POMJU-1085), whose live tests build container
 images on the runner's disk, asks how close a step came to filling it: nothing else in that job's
 log says how much room the step ever had, so a run that fails for space says only that it ran
-out, never how much it was short by. The tool-fallback jobs (dispatch://INFRA-2605) ask what the
+out, never how much it was short by. The tool-fallback jobs (dispatch://POMJU-2605) ask what the
 machine was doing while each of their steps ran: one of them lost its hosted runner in the middle
 of a run and recorded nothing at all about the machine it had been running on.
 
@@ -80,7 +80,7 @@ import time
 # doing over a job and across the steps that last, and to catch a trough while one runs. It is
 # not fine enough to put a reading either side of every step boundary, and the job this watch
 # was written for stopped being one where it could: since the ladders stopped sleeping
-# (dispatch://INFRA-2621) most of its steps cost a second or less, so in job 130306447638 the
+# (dispatch://POMJU-2621) most of its steps cost a second or less, so in job 130306447638 the
 # 212 boundary stamps of 106 steps fall on 41 distinct seconds and 67 of those steps begin and
 # end inside one second. A reader lines a step up against the series to see the machine it ran
 # on, not to price the step, which the job record already gives to the second.

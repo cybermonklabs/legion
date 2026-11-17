@@ -85,10 +85,10 @@ func recordedHead(t *testing.T, pool *pgxpool.Pool) string {
 }
 
 // A backward move made while the daemon's record holds this head as conflicting with its base
-// costs review_round_cap nothing, for none of the ways it is made (dispatch://INFRA-1442). The
+// costs review_round_cap nothing, for none of the ways it is made (dispatch://POMJU-1442). The
 // cap bounds a loop of rejected work; a head that stopped merging into its base is the daemon's
 // own news, answered by one forward merge, and a tree reached the cap on three rounds of which
-// two were conflicts and none was a rejection (dispatch://INFRA-1265).
+// two were conflicts and none was a rejection (dispatch://POMJU-1265).
 //
 // Three moves are made at the conflicting head here, one for each way this release makes one: the
 // move the daemon makes on its own when its read of GitHub judges the head conflicting

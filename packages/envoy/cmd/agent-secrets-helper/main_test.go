@@ -82,7 +82,7 @@ func TestConfigDerivesDefaultsAndServeRequiresURL(t *testing.T) {
 	}
 	// The records hold a named session's signing key and must outlive a reboot, so they sit
 	// beside the machine login, never in the runtime directory the socket is in: that is tmpfs
-	// (dispatch://INFRA-1167). LegacyStatePath is where a helper upgraded in place finds them.
+	// (dispatch://POMJU-1167). LegacyStatePath is where a helper upgraded in place finds them.
 	if cfg.Socket != "/run/user/7/agent-secrets/helper.sock" || cfg.StatePath != "/home/u/.config/agent-secrets/sessions.json" ||
 		cfg.LegacyStatePath != "/run/user/7/agent-secrets/sessions.json" ||
 		cfg.OperatorFile != "/home/u/.config/agent-secrets/operator" || cfg.MachineFile != "/home/u/.config/agent-secrets/machine.json" {

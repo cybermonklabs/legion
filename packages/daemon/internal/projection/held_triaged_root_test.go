@@ -12,7 +12,7 @@ import (
 
 // The state's own word for the member of a tree whose root stands out of the workflow at
 // triage, at phase done and under a gate a person approved: no word above `unclassified` is
-// true of it, so C2's last word is what it reads (dispatch://INFRA-3107).
+// true of it, so C2's last word is what it reads (dispatch://POMJU-3107).
 //
 // It is the state's half of a pair, the other being internal/admit's
 // TestTheTickNoticeCarriesTheHeldIssues, which records the same member and requires the same

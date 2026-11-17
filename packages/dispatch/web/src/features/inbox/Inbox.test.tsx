@@ -2237,7 +2237,7 @@ test("a refused snooze rolls the row back and says why, where the reader can sti
 });
 
 // ----------------------------------------------------------------------------------------
-// The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px,
+// The reading column (POMJU-575). Every test above this line runs at happy-dom's own 1024 px,
 // where the Inbox is the list of cards it has always been - the Inbox below 1280 px, which the
 // spec keeps unchanged - so the tests below say where they stand by widening the window first.
 // ----------------------------------------------------------------------------------------

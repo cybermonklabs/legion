@@ -15,7 +15,7 @@ supersedes:
   - docs/solutions/legion/out-of-spec-findings-go-to-the-architect-and-come-back-as-spec-versions.md
   - docs/solutions/legion/a-child-of-two-open-pull-requests-waits-for-main-re-verifies-every-cited-symbol-and-treats-the-pane-as-a-surface-to-check.md
   - docs/solutions/testing/a-flake-spec-names-no-cause-before-the-retained-trace-is-read.md
-  - docs/solutions/legion/a-fix-that-produces-the-next-finding-is-a-ratchet-stop-it-with-a-rule-written-early-INFRA-66.md
+  - docs/solutions/legion/a-fix-that-produces-the-next-finding-is-a-ratchet-stop-it-with-a-rule-written-early-POMJU-66.md
 related_issues:
   - "sjawhar/legion#2130"
 ---

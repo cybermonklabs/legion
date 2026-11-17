@@ -1,5 +1,5 @@
 -- 20261113082214_outbox_kinds_with_the_update_ask.up.sql — the outbox kind that carries an
--- update round's ask to one role of the issue's pod (update_ask, INFRA-2981).
+-- update round's ask to one role of the issue's pod (update_ask, POMJU-2981).
 --
 -- Before this change the ask was a task the machine queued on the claim. Now the sweep queues
 -- one row for each role it asks, and the role-message lane publishes that row to the role's own

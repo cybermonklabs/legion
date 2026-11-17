@@ -1,6 +1,6 @@
 -- 20261106020619_comment_watermarks.up.sql
 --
--- A comment list answers under a validator read before its body is built (INFRA-635). Until now
+-- A comment list answers under a validator read before its body is built (POMJU-635). Until now
 -- that validator was the hash of the answer's own bytes, so the handler had to load the comments,
 -- their mentions and their delivery attempts, shape them and encode them - display trees and all -
 -- before it could know the key its kept answer sits under, which is the whole of what a warm read

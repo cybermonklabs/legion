@@ -23,7 +23,7 @@ test("the seeded workspace fills every surface the person scope opens @pr", asyn
     const page = await alice.newPage();
     // The Inbox opens on the reader's own work: alice's issues' asks, with the snoozed one
     // folded under Later. From 1280 px the questions are short rows and only the selected one
-    // is a card (INFRA-575), so a question's urgency and its author chip are read on the card
+    // is a card (POMJU-575), so a question's urgency and its author chip are read on the card
     // the pane draws for it: a session's ask names it by the title its write stamped, as a real
     // agent's does, rather than by its raw id.
     await page.goto("/");

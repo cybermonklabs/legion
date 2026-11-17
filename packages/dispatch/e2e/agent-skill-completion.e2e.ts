@@ -5,8 +5,8 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * Completing a session's command at the text cursor (INFRA-812, R5; the browser cases of the
- * Verification document's k7, dispatch://INFRA-812/artifact/verification-md).
+ * Completing a session's command at the text cursor (POMJU-812, R5; the browser cases of the
+ * Verification document's k7, dispatch://POMJU-812/artifact/verification-md).
  *
  * The menu belongs to the `/` token the cursor sits in, wherever that token is: a pick at the
  * start of the message is the command line the session runs, and a pick inside a sentence is

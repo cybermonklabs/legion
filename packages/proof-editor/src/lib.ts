@@ -205,7 +205,7 @@ export interface CreateProofEditorOptions {
  *
  * Every write on it answers a destroyed handle by doing nothing and reporting that it did: a
  * host writes from effects, and React runs a child's cleanup after the parent's, so a write can
- * arrive after the teardown (INFRA-2409). The reads are the exception, and `getMarkdown` is the
+ * arrive after the teardown (POMJU-2409). The reads are the exception, and `getMarkdown` is the
  * one that throws after teardown, since its serializer lives in the editor's ctx, which
  * `destroy` empties.
  */
@@ -552,7 +552,7 @@ export async function createProofEditor(
     documentRef: opts.documentRef,
     getState: () => view.state,
     dispatch: (transaction) => {
-      // A menu item a host kept across the teardown runs through here (INFRA-2409).
+      // A menu item a host kept across the teardown runs through here (POMJU-2409).
       if (view.isDestroyed) return;
       view.dispatch(transaction);
     },
@@ -632,7 +632,7 @@ export async function createProofEditor(
     },
     retypeMark(markId: string, kind: SelectionBarActionKind): RetypeOutcome {
       // A destroyed editor holds no document, so the mark reads nowhere: the same answer as a
-      // document that has lost it (INFRA-2409).
+      // document that has lost it (POMJU-2409).
       if (view.isDestroyed) return { refused: "missing" };
       return retypeRecordMark(view, markId, kind, opts.user.name);
     },
@@ -700,7 +700,7 @@ export async function createProofEditor(
       // them - and only then destroys the ProseMirror view, so between the two the view is live
       // over an emptied ctx: anything that redraws it there reads a slice that is gone and
       // throws `Context "<slice>" not found, do you forget to inject it?` out of whatever called
-      // it, which in Dispatch is a React effect and so the page's error boundary (INFRA-2409).
+      // it, which in Dispatch is a React effect and so the page's error boundary (POMJU-2409).
       // Every `view.isDestroyed` guard in this package and its hosts is written against this
       // order: destroying the view here makes all of them hold before a slice can go.
       view.destroy();

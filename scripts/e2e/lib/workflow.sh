@@ -842,7 +842,7 @@ smoke_branch_state() {
 # smoke_rate_limit_wait allows, reading the reset from `gh api rate_limit` (which no limit counts),
 # and the read made again once; any other failure fails naming gh's own answer. A bare `gh api`
 # whose failure was read as the commit's absence reported a spent rate limit as a missing commit
-# (INFRA-220, 2026-10-26).
+# (POMJU-220, 2026-10-26).
 smoke_rate_limit_wait=900
 smoke_commit_files() {
   local commit=$1 out err status reset wait attempt

@@ -12,7 +12,7 @@ import (
 // refs.IndexBlocks records the document's blocks at its latest version, refs.IndexItem clears
 // each item's owed_at and stores its body_sha256, and refs.WriteDocumentWindows and
 // refs.WriteItemWindows write the windows those blocks stand in, which no write of this build
-// writes for itself any more (INFRA-988) - and this settles what is left, then proves the
+// writes for itself any more (POMJU-988) - and this settles what is left, then proves the
 // invariant rather than trusting it.
 //
 // A server that drained owed work would rewrite the seeded rows: RunBlockIndexReconciliation
@@ -76,7 +76,7 @@ func (r *seedRun) checkNoOwedWork(ctx context.Context) error {
 // with that arm's own reads rather than with a copy of their predicates
 // (docs.Service.windowDrift). No write of this build writes an owner's embedding windows any
 // more - a version write records a document's blocks and an item's write its own, each leaving
-// the windows to that arm (INFRA-988) - so the seed writes them itself
+// the windows to that arm (POMJU-988) - so the seed writes them itself
 // (refs.WriteDocumentWindows, refs.WriteItemWindows) and this is what says it wrote every one
 // of them.
 func (r *seedRun) checkNoOwedWindows(ctx context.Context) error {

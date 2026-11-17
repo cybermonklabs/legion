@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// INFRA-368. A reply names one block of the message it answers, and a repeat of that keyed write
+// POMJU-368. A reply names one block of the message it answers, and a repeat of that keyed write
 // is answered from the key's recovery point (recoveredMessage) rather than run again. The repeat
 // answers the same reply_block as the first press on both message routes: the issue message's,
 // whose replay keeps the first answer's shape (replayIssueMessage), and the single-session send's,

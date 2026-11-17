@@ -333,7 +333,7 @@ var ghFileOptions = map[string]bool{
 //     `--all` in other commands, so it cannot be added to the table above. What these files
 //     keep is the shared check, which reads every argument of the call, and the spec's own line
 //     on release assets, that reading inside them is the check's policy and not this issue's
-//     (dispatch://INFRA-1527, Goals and non-goals). No Legion role writes a gist: the roles
+//     (dispatch://POMJU-1527, Goals and non-goals). No Legion role writes a gist: the roles
 //     post pull request and issue text, which the options above carry.
 //
 // Arguments past a bare `--` are read as nothing: gh's parser takes no option after one, so a

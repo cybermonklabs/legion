@@ -16,7 +16,7 @@ related_issues:
 
 # A wait added to a shared send path is charged to every test of the package and to every client deadline on the path
 
-Extends docs/solutions/testing/an-envoy-go-timeout-at-10m0s-in-dispatch-api-is-the-whole-package-near-go-tests-default-limit-on-ci-too-not-the-test-it-names-INFRA-391.md.
+Extends docs/solutions/testing/an-envoy-go-timeout-at-10m0s-in-dispatch-api-is-the-whole-package-near-go-tests-default-limit-on-ci-too-not-the-test-it-names-POMJU-391.md.
 
 That note reads a `test timed out after 10m0s` in `internal/dispatch/api` as the package's size and
 says to re-run the job. When your branch added a wait to a path many tests take, the timeout is

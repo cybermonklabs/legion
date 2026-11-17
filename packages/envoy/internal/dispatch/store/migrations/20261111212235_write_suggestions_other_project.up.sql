@@ -1,6 +1,6 @@
 -- 20261111212235_write_suggestions_other_project.up.sql — a cross-project offer joins the roles.
 --
--- INFRA-2337: the related-item check of a question also offers the answered asks of the other
+-- POMJU-2337: the related-item check of a question also offers the answered asks of the other
 -- projects, and api.persistSuggestions records every item a check offered, one row per item. Such
 -- an item is recorded under the role `other_project`, beside the `related` rows of the same check,
 -- so the outcome sweep (api.RunSuggestionOutcomeSweep) resolves it like any other row, and the

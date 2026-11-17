@@ -54,14 +54,14 @@ test("every machine the agent list names is a row with its counts and a link to 
     session("a".repeat(16), "sami-devbox", PLACE),
     session("b".repeat(16), "sami-devbox", { ...PLACE, pane_id: "%6", pane_index: 1 }),
     session("c".repeat(16), "sami-devbox"),
-    session("d".repeat(16), "legion-infra-daemon"),
+    session("d".repeat(16), "legion-pomju-daemon"),
   ]);
   const view = renderMachines();
   try {
     const rows = await screen.findAllByTestId("machine-row");
 
     expect(rows.map((row) => row.getAttribute("data-machine"))).toEqual([
-      "legion-infra-daemon",
+      "legion-pomju-daemon",
       "sami-devbox",
     ]);
     const [daemon, devbox] = rows;

@@ -42,7 +42,7 @@ const printedBlockCapRefusal = (block: number, units: number) =>
 
 /** How the Dispatch server refuses a body whose block `block` is a decision block, worded as
  *  `itemblocks.DecisionBlock` words it: the card such a block draws is one nobody can answer
- *  where it stands, so the body is refused however short it is (INFRA-1201). */
+ *  where it stands, so the body is refused however short it is (POMJU-1201). */
 function decisionBlockRefusal(block: number): string {
   return (
     `body block ${block} (ask) holds a decision block, which nobody can answer where it stands: ` +
@@ -927,7 +927,7 @@ describe("the dispatch CLI", () => {
     expect(uploaded.map((request) => request.body)).toEqual([rows]);
   });
 
-  // INFRA-370: `dispatch comment` and `dispatch message` carry no length of their own. A body of
+  // POMJU-370: `dispatch comment` and `dispatch message` carry no length of their own. A body of
   // 40,000 characters in paragraphs posts whole, because Dispatch bounds a body block by block,
   // and the command sends the text it was handed, not a cut of it.
   test("a comment and a message of 40,000 characters in paragraphs are posted whole", async () => {
@@ -1705,10 +1705,10 @@ describe("the dispatch entry as its own process", () => {
   }, 30_000);
 
   // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
-  // INFRA-1201), and what the writer reads is the whole of the server's message, which says
+  // POMJU-1201), and what the writer reads is the whole of the server's message, which says
   // where the question belongs. The refusal now opens with the server's code, because
   // `skill://dispatch` has every agent branch on the code and the command printed none
-  // (dispatch://INFRA-1523); the message that INFRA-1201's row was written for follows it
+  // (dispatch://POMJU-1523); the message that POMJU-1201's row was written for follows it
   // unchanged. The 30 s limit is the hang guard the row above carries, for the reason written
   // there.
   test("exits nonzero on the server's decision-block refusal, printing its code and its whole message", async () => {

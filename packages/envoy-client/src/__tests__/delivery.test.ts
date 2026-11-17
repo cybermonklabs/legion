@@ -647,7 +647,7 @@ describe("renderInbound dispatch events", () => {
     );
   });
 
-  // A session's inbox has two forms while every reader takes both (dispatch://INFRA-3862): the
+  // A session's inbox has two forms while every reader takes both (dispatch://POMJU-3862): the
   // session alone, and the session under a project (`_` for none). A message on either form is
   // this session's own, so its card names it the recipient; another session's inbox is not, in
   // either form.

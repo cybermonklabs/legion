@@ -1,7 +1,7 @@
 package daemon
 
 // The fourth place a lost session is reported is the session that replaces it
-// (dispatch://INFRA-714 R8): nothing in a new session says an older one existed, so an agent
+// (dispatch://POMJU-714 R8): nothing in a new session says an older one existed, so an agent
 // started on a claim whose session is gone would read an empty transcript as a fresh start and
 // redo work that is already pushed.
 

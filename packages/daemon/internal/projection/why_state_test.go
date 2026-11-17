@@ -33,7 +33,7 @@ import (
 // workflow: LEGION-502, which is done, LEGION-503, which a person left on the backlog, and
 // LEGION-710, the parked root itself, whose park took its own record out of the workflow while
 // the status of the child below it stands. The other three stand past their own review, where
-// an issue holds no slot at all since dispatch://INFRA-2560 and so is named by none of the
+// an issue holds no slot at all since dispatch://POMJU-2560 and so is named by none of the
 // three lists, only by `admission.held` under at_work: LEGION-700, whose tree's architect is
 // reading the head its worker built, LEGION-701, whose retro implementer is at work, and
 // LEGION-702, whose merger rests between its turns. Each of the three is at work in a tree that

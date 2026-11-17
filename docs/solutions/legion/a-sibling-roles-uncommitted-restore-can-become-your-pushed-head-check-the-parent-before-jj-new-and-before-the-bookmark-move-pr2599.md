@@ -12,18 +12,18 @@ status: active
 module: skills/legion-worker
 related_issues:
   - "sjawhar/legion#2599"
-  - "INFRA-429"
+  - "POMJU-429"
 ---
 
 # A sibling role's uncommitted restore can become your pushed head: check the parent before `jj new` and before the bookmark move
 
-Extends docs/solutions/legion/a-red-main-gives-you-at-a-forward-merge-is-fixed-in-its-own-pull-request-against-main-built-off-the-shared-working-copy-INFRA-366.md,
+Extends docs/solutions/legion/a-red-main-gives-you-at-a-forward-merge-is-fixed-in-its-own-pull-request-against-main-built-off-the-shared-working-copy-POMJU-366.md,
 which tells the role doing side work to keep it out of the shared working copy. This is the other
 seat: what the role doing the *assigned* work must check, and how to recover when it did not.
 
 The six roles of an issue share one jj working copy, and jj snapshots it on every command. So a
 sibling's uncommitted edit becomes a commit under you at your next `jj new`, and your
-`bookmark set -r @-` then **publishes** it. The outcome is worse than the loss INFRA-366 records:
+`bookmark set -r @-` then **publishes** it. The outcome is worse than the loss POMJU-366 records:
 the branch head carries a change nobody reviewed, and if that edit was a negative control, the
 published head *undoes* the work.
 
@@ -58,7 +58,7 @@ change's own negative control, which is a restore of
 `packages/dispatch/web/src/features/settings/AgentTokensSection.tsx` to its pre-change text. jj
 snapshotted that restore into `569fd73932b7`, "test: scratch working copy at the pull request
 head"; the implementer's `jj new` landed on it rather than on the merge it had just made, and
-`bookmark set -r @-` pushed it. For about ten minutes `legion/INFRA-429`'s head carried the old
+`bookmark set -r @-` pushed it. For about ten minutes `legion/POMJU-429`'s head carried the old
 paragraph — the one the change exists to remove.
 
 The first repair made it worse in a small way: a merge of the forward merge over `569fd739`

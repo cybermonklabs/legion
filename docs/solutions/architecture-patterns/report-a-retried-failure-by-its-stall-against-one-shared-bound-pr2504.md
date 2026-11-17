@@ -10,7 +10,7 @@ tags:
 date: 2026-10-30
 status: active
 module: packages/envoy
-supersedes: docs/solutions/architecture-patterns/a-timer-callback-acts-only-for-the-generation-that-armed-it-INFRA-182.md
+supersedes: docs/solutions/architecture-patterns/a-timer-callback-acts-only-for-the-generation-that-armed-it-POMJU-182.md
 related_issues:
   - "sjawhar/legion#2504"
 ---

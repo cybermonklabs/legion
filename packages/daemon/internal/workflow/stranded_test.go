@@ -110,7 +110,7 @@ func strandedIssue(key, tree string, p phase.Phase) record.Issue {
 // saw before R6.
 var strandedNow = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
-// INFRA-945 R6: a released claim is the one claim Stranded judges on its pod's wakes. Nothing
+// POMJU-945 R6: a released claim is the one claim Stranded judges on its pod's wakes. Nothing
 // woke it, so it waits for a delivery as a released pod is meant to and is not stranded; a wake
 // that ran out of StrandedReleaseWake with no turn of the woken role is the pod that never came
 // back, and nothing else will take that wake again.
@@ -176,7 +176,7 @@ func TestStrandedNamesAReleasedClaimOnlyWhenItsWakeNeverBroughtThePodBack(t *tes
 
 // Each claim nothing will wake is named, and every claim something will still wake, or that
 // waits correctly, is not. A retired claim is read by the same questions as a failed one
-// (INFRA-1480): it owns the phase its issue's worker works, or it is its running tree's
+// (POMJU-1480): it owns the phase its issue's worker works, or it is its running tree's
 // architect, and no start that would relaunch it is queued. The start executor retries a retired
 // claim, so a queued start of that phase takes it out of the report, and a tree that does not run
 // strands nothing of its own.
@@ -324,7 +324,7 @@ func TestStrandedNamesTheClaimsNothingWillWake(t *testing.T) {
 // such claim; a start queued for it resumes it, as on main. A tree architect is stranded whoever
 // suspended it, since no rule resumes an architect.
 //
-// A retired worker is stranded whatever its row's suspendedBy says (INFRA-1480): the rule that
+// A retired worker is stranded whatever its row's suspendedBy says (POMJU-1480): the rule that
 // leaves out a worker the daemon or its own exit suspended reads the suspended state itself, and
 // nothing resumes a retired claim. The one a release suspended and a close then retired keeps
 // `suspendedBy: released` on its row, so the report both names it and names its move as the

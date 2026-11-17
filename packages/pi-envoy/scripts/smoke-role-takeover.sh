@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # smoke-role-takeover.sh — live proof that a role claim is weighed on the process that holds it:
 # a second process that resumed a live session's id can neither take, release nor outlast that
-# session's role (INFRA-783), and a soft claim naming a predecessor takes the role only from a
-# predecessor that is gone or is the claimant's own client instance (INFRA-404, R8 and A5 of
-# dispatch://INFRA-404/spec); and that once a session holding a role restarts, the role lookup
-# and the session listing name the same holder (INFRA-2747).
+# session's role (POMJU-783), and a soft claim naming a predecessor takes the role only from a
+# predecessor that is gone or is the claimant's own client instance (POMJU-404, R8 and A5 of
+# dispatch://POMJU-404/spec); and that once a session holding a role restarts, the role lookup
+# and the session listing name the same holder (POMJU-2747).
 #
 # It builds natsd (packages/envoy/internal/testnats/cmd/natsd) and the listener
 # (packages/envoy/cmd/listener) from this checkout with `go build` and runs both on loopback ports
@@ -40,7 +40,7 @@
 #             it, by the same case.
 #   R8 row 4  a Claude Code `/clear` handoff gets the role: the deregistration removes the
 #             process's own entry (R7), and the claim then finds no live predecessor (R6 case 1).
-#   INFRA-783 a second process that resumed a live session's id is refused the role that session
+#   POMJU-783 a second process that resumed a live session's id is refused the role that session
 #             holds (409 naming the holder), is granted it once the holder stops renewing the
 #             claim and the window passes, and a release from the process that no longer holds
 #             the claim frees nothing. The Oh My Pi story drives all three; the Claude Code
@@ -51,21 +51,21 @@
 #             (A5 scenario 2).
 #   A5        a refused process stays registered, and takes the role on its next session event
 #             once the predecessor that held it is gone.
-#   INFRA-783 an older client's hand-back marks a live holder's claim: a release of that role's
+#   POMJU-783 an older client's hand-back marks a live holder's claim: a release of that role's
 #             own lane topic, under the holder's own session id, stating no `client_instance_id`
 #             — the shape a client built before this change sends — frees nothing, marks the
 #             claim, and the lookup answers `handed_back`. The holder is a current client, which
 #             reads a marked claim as a role it does not hold, so it claims the role back at its
 #             next heartbeat and keeps taking the lane's messages.
-#   INFRA-783 the same hand-back from an old-build client, which does not read the mark and so
+#   POMJU-783 the same hand-back from an old-build client, which does not read the mark and so
 #             never claims back, frees the role one live window plus up to one reap interval
 #             later while that client is still registering: no registration renews a marked
 #             claim, so its renewal lapses, and a claim the hand-back marked is the one kind a
 #             pass frees while the session its holder registered under is still alive.
-#   INFRA-783 a client that states no process at all keeps its role across several live windows:
+#   POMJU-783 a client that states no process at all keeps its role across several live windows:
 #             a registration carrying no `client_instance_id` renews the claims of its own
 #             session that name none, which is the shape every claim standing at a deploy is in.
-#   INFRA-2747 a session that holds a role restarts: its process is killed, a new one starts
+#   POMJU-2747 a session that holds a role restarts: its process is killed, a new one starts
 #             under the same session id and is granted the role once the live window passes, and
 #             within 90 s of that process's first registration the role lookup and the session
 #             listing name the same holder, or both name none. The lookup reads the claim record
@@ -79,7 +79,7 @@
 # that once failed there were counted in cybermonklabs/legion#2875 (277768d83e, 2026-11-07)
 # against the main of that day, which did not yet have the listener rule those rows drive; main
 # has carried that change since, so `--base-rev main@origin` is no longer a negative control for
-# them. The INFRA-2747 row passes there too: with nothing taken out of its copy, that listener's
+# them. The POMJU-2747 row passes there too: with nothing taken out of its copy, that listener's
 # copy names the restarted holder's role as the claim record does. That row's negative control is
 # SMOKE_DROP_ROLE_FROM_COPY=1 against a scratch build, below.
 #
@@ -87,8 +87,8 @@
 # a scratch build; natsd is still built from this checkout. A path that is not an executable file
 # is refused, and so is `--listener-bin` beside `--base-rev`, since each chooses the listener.
 #
-# SMOKE_DROP_ROLE_FROM_COPY=1 turns the INFRA-2747 row into its own control (c-live-restart of
-# dispatch://INFRA-2747/verification): once the restarted process's claim is granted, the row asks
+# SMOKE_DROP_ROLE_FROM_COPY=1 turns the POMJU-2747 row into its own control (c-live-restart of
+# dispatch://POMJU-2747/verification): once the restarted process's claim is granted, the row asks
 # the listener to take the role out of its copy (`POST /debug/role-copy/drop?role=<role>`, which
 # only a scratch-tree patch serves, passed with `--listener-bin`) and fails saying so on any answer
 # that is not a 2xx, and it sends that process nothing more, so only the listener's own repair of
@@ -147,7 +147,7 @@ readonly listener_wait_timeout=60
 # renewing the claim: the live window above, the heartbeat passes that ask again inside it, and
 # room for a loaded machine.
 readonly takeover_timeout=90
-# The live restart row's window (c-live-restart of dispatch://INFRA-2747/verification): from the
+# The live restart row's window (c-live-restart of dispatch://POMJU-2747/verification): from the
 # restarted process's first registration, the role lookup and the session listing have one
 # deployment heartbeat, 90 s, to name the same holder.
 readonly live_restart_window=90
@@ -188,7 +188,7 @@ local_stack_fail=refuse
 # shellcheck source=packages/pi-envoy/scripts/local-stack.sh
 source "${script_dir}/local-stack.sh"
 
-# The listener's own HTTP surface: the raw calls every row drives a pre-INFRA-783 client with,
+# The listener's own HTTP surface: the raw calls every row drives a pre-POMJU-783 client with,
 # and the readers of the role lookup and the registry each row states its outcome in. It reads
 # `envoy_url`, `work` and `curl_max_time`, all set below.
 # shellcheck source=packages/pi-envoy/scripts/listener-api.sh
@@ -500,7 +500,7 @@ row1_omp() {
 # stands and the first thing the restarted server hears is a 409 naming this very session. What
 # the row proves is that it keeps asking — each heartbeat presses the record again — and is
 # granted the role one window later, rather than being left roleless for the life of the
-# process (dispatch://INFRA-783).
+# process (dispatch://POMJU-783).
 row1_claude() {
   local role session state first second
   role="$(role_for r1cc)"
@@ -622,7 +622,7 @@ row4_handoff() {
   end_scenario
 }
 
-# INFRA-783, Oh My Pi. One story of two processes on one session id, which is what a continuation
+# POMJU-783, Oh My Pi. One story of two processes on one session id, which is what a continuation
 # resuming a live session is: A holds the role under X and keeps answering for its claim, B
 # resumes X and is held off, A then stops answering and B takes the role, and A's release on its
 # way out frees nothing of B's.
@@ -632,7 +632,7 @@ row5_omp() {
   x="$(session_for r5x)"
   left="$(session_for r5left)"
   topic="notifications.role.${role}"
-  begin_row "INFRA-783 — a second Oh My Pi process in the live holder's session is refused the role"
+  begin_row "POMJU-783 — a second Oh My Pi process in the live holder's session is refused the role"
   start_omp omp-a
   send omp-a "$(jq -nc --arg s "$x" '{op:"start",session:$s,roles:[]}')"
   send omp-a "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
@@ -655,7 +655,7 @@ row5_omp() {
   evidence "${x} kept ${role} with client instance ${instance_a}, which answers for the claim; ${instance_b}, which resumed ${x} and registered it last, was refused 409 naming ${x}"
   end_row
 
-  begin_row "INFRA-783 — the second process is granted the role once the holder stops renewing its claim"
+  begin_row "POMJU-783 — the second process is granted the role once the holder stops renewing its claim"
   # Nothing renews A's claim from here: the Oh My Pi heartbeat is this script's to tick, and it
   # ticks no more for A. B's own registrations keep X live, so the lookup goes on naming X under
   # another process, which is the one refusal a heartbeat pass asks about again.
@@ -674,7 +674,7 @@ row5_omp() {
   evidence "${instance_b} took ${role} under ${x} once ${instance_a} had left its claim unrenewed past the ${session_live_window} live window, asking again on each heartbeat pass while ${x} stayed live"
   end_row
 
-  begin_row "INFRA-783 — a release from the process that no longer holds the claim frees nothing"
+  begin_row "POMJU-783 — a release from the process that no longer holds the claim frees nothing"
   # A's branch records a release, so A ends its hold and hands the role topic back naming its own
   # process. A is the second process in X now — the standing claim is B's — and a release frees
   # the claims of the process that asks and no others, so B keeps the role. This is the incident
@@ -735,7 +735,7 @@ row6_predecessor() {
   begin_row "A5 — a refused Oh My Pi process stays registered"
   expect_true "the refused session is registered" registered "$z"
   # A session a process leaves is gone at once where that entry was its own
-  # (dispatch://INFRA-392), and stays where it was not: P belongs to D, so C's deregistration of
+  # (dispatch://POMJU-392), and stays where it was not: P belongs to D, so C's deregistration of
   # it removed nothing, which is what left a live predecessor for the claim above to be weighed
   # against.
   expect "P's registration stayed with D when C left it" "$(delete_answer omp-c "$p" deleted)" "false"
@@ -763,7 +763,7 @@ row6_predecessor() {
   end_scenario
 }
 
-# INFRA-783 and R8 row 5 (A5 scenario 2), Claude Code. A holds the role under X and answers for
+# POMJU-783 and R8 row 5 (A5 scenario 2), Claude Code. A holds the role under X and answers for
 # its claim; B, a second `claude` of the same user, resumes X, reads the role record A wrote and
 # is refused the role under that id; A then runs a `/clear` handoff whose claim names X, which B
 # registers now, and that claim is refused by the predecessor rule.
@@ -774,7 +774,7 @@ row5_claude() {
   x2="$(session_for r5ccx2)"
   state="${work}/r5cc-plugin-data"
   record="${state}/roles/${x}.json"
-  begin_row "INFRA-783 — a second Claude Code channel server in the live holder's session is refused the role"
+  begin_row "POMJU-783 — a second Claude Code channel server in the live holder's session is refused the role"
   start_claude cc-a "$x" "$state" "$claude_quiet_heartbeat_ms"
   expect_true "process A's channel server registered" wait_for "$listener_wait_timeout" registered "$x"
   send cc-a "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
@@ -830,7 +830,7 @@ row5_claude() {
   end_scenario
 }
 
-# INFRA-783, Oh My Pi: an older client's hand-back of a role a live process holds. A release
+# POMJU-783, Oh My Pi: an older client's hand-back of a role a live process holds. A release
 # stating no `client_instance_id` is the shape a client built before this change sends, and it
 # can free nothing here: the claim names a process, and a release that cannot say which process
 # it is must not take the live holder's role. What it leaves instead is the mark — the lookup
@@ -848,7 +848,7 @@ row7_handback_mark() {
   role="$(role_for r7)"
   session="$(session_for r7)"
   topic="notifications.role.${role}"
-  begin_row "INFRA-783 — an older client's hand-back marks a live holder's claim, which the holder claims back at its next heartbeat"
+  begin_row "POMJU-783 — an older client's hand-back marks a live holder's claim, which the holder claims back at its next heartbeat"
   start_omp omp-handback
   send omp-handback "$(jq -nc --arg s "$session" '{op:"start",session:$s,roles:[]}')"
   send omp-handback "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
@@ -887,7 +887,7 @@ row7_handback_mark() {
   end_scenario
 }
 
-# INFRA-783, an old-build client throughout: the same hand-back, from a client that does not
+# POMJU-783, an old-build client throughout: the same hand-back, from a client that does not
 # read the mark and so never claims back. It is driven by curl alone, because every client in
 # this checkout would take the role straight back, which is the row above.
 #
@@ -903,7 +903,7 @@ row8_handback_frees() {
   session="$(session_for r8)"
   instance="oldclient${run_id}"
   topic="notifications.role.${role}"
-  begin_row "INFRA-783 — an older client's hand-back frees the role a live window and up to one reap interval later while that client still runs"
+  begin_row "POMJU-783 — an older client's hand-back frees the role a live window and up to one reap interval later while that client still runs"
   expect "the old client registers" "$(old_register "$session" "$instance")" "200"
   expect "its claim, which states no process, is granted" "$(old_claim "$session" "$role" "")" "200"
   expect "the claim names no process yet" "$(role_instance "$role")" ""
@@ -937,7 +937,7 @@ row8_handback_frees() {
   end_row
 }
 
-# INFRA-783, an old-build client throughout: a client that states no process at all, which is
+# POMJU-783, an old-build client throughout: a client that states no process at all, which is
 # the shape every claim standing at a deploy is in. Its claim names no process, and a
 # registration that states none renews exactly the claims of its own session that name none, so
 # the role stands through live window after live window of such registrations. Nothing adopts
@@ -946,7 +946,7 @@ row9_no_instance() {
   local role session held index
   role="$(role_for r9)"
   session="$(session_for r9)"
-  begin_row "INFRA-783 — a client that states no process keeps its role across several live windows"
+  begin_row "POMJU-783 — a client that states no process keeps its role across several live windows"
   expect "the old client registers with no client_instance_id" "$(old_register "$session" "")" "200"
   expect "its claim, which states no process either, is granted" "$(old_claim "$session" "$role" "")" "200"
   expect "the claim names no process" "$(role_instance "$role")" ""
@@ -964,7 +964,7 @@ row9_no_instance() {
   end_row
 }
 
-# INFRA-2747 (c-live-restart of dispatch://INFRA-2747/verification): a session that holds a role
+# POMJU-2747 (c-live-restart of dispatch://POMJU-2747/verification): a session that holds a role
 # restarts. Its Oh My Pi process is killed, so its registration and its claim outlive it, and a
 # new process comes up under the same session id with the role in its transcript, as row 1's
 # reload does, and is granted the role once nobody has renewed the killed process's claim inside
@@ -992,7 +992,7 @@ row10_live_restart() {
   local metrics since_drop=""
   role="$(role_for r10)"
   session="$(session_for r10)"
-  begin_row "INFRA-2747 — after a restart under the holder's own id, the role lookup and the session listing name the same holder within ${live_restart_window}s"
+  begin_row "POMJU-2747 — after a restart under the holder's own id, the role lookup and the session listing name the same holder within ${live_restart_window}s"
   start_omp omp-restart-1
   send omp-restart-1 "$(jq -nc --arg s "$session" '{op:"start",session:$s,roles:[]}')"
   send omp-restart-1 "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"

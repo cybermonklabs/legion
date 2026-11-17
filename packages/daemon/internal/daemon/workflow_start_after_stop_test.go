@@ -441,7 +441,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 
 		// The issue reaches the one phase a merge closes it from, as the rest of its run would
 		// leave it, and GitHub reports the merge. On this release that phase is merging, which
-		// the merger holds until its merge closes the issue (dispatch://INFRA-714 R2), so this
+		// the merger holds until its merge closes the issue (dispatch://POMJU-714 R2), so this
 		// is not finish's done: a merge of an issue already done closes nothing and opens no
 		// check.
 		mergingPhase(t, pool, root)

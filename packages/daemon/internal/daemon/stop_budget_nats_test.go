@@ -79,7 +79,7 @@ const natsConnectionClosePoll = 50 * time.Millisecond
 // The daemon's tests share one NATS server, and its fixture resets the server only once every
 // client connection to it has gone (internal/testnats, URL's drain), so a connection this stop
 // left open would be charged to whichever test runs next — a test that had no part in it
-// (INFRA-1964).
+// (POMJU-1964).
 func TestRunClosesTheWorkflowsNATSConnectionWhenItsStopBudgetRunsOut(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
 	rt := newSweepStall(t)

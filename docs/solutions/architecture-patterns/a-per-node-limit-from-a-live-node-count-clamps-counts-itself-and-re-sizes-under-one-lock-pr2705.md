@@ -14,7 +14,7 @@ related_issues:
 
 # A per-node limit from a live node count clamps, counts itself, and re-sizes under one lock
 
-Extends docs/solutions/architecture-patterns/taking-a-single-process-service-to-several-the-four-audits-INFRA-236.md.
+Extends docs/solutions/architecture-patterns/taking-a-single-process-service-to-several-the-four-audits-POMJU-236.md.
 
 That page gives the sizing arithmetic — the `N²` store-read rate, the burst that is not divided,
 and "make `N` an input, or log the `N` you assumed". This is what the live input then has to do.
@@ -49,7 +49,7 @@ and "make `N` an input, or log the `N` you assumed". This is what the live input
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454), the secrets broker's reread rate.
+`sjawhar/legion#2705` (dispatch://POMJU-454), the secrets broker's reread rate.
 
 `api.MinReplicas = 2` is the clamp (`packages/envoy/internal/broker/api/limits.go`), with the
 reason in its comment: "a lone development broker, a pod before its first beat and a fleet whose

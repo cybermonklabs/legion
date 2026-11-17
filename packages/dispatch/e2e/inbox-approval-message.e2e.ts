@@ -14,7 +14,7 @@ import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The question an approval request asks, in the Inbox's reading column (INFRA-963): the
+ * The question an approval request asks, in the Inbox's reading column (POMJU-963): the
  * requester's own words, rendered as markdown above the document inside the column's one
  * scroller, and drawn by the question's own card instead wherever the column cannot open that
  * document - so the question is on screen once either way.

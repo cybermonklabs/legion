@@ -74,7 +74,7 @@ func attributedHeadRow(number int, issue *string, source attributionSource) Pull
 // issue to another appends one event on the issue it left and one on the issue it reached, each
 // naming both sides and the source that decided the new one. The issue's results are measured
 // against the heads attributed to it (HeadsAttributedTo), so a move changes what both issues are
-// measured against, and R8 of INFRA-1522 asks that neither change without a record of it.
+// measured against, and R8 of POMJU-1522 asks that neither change without a record of it.
 func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	left := seedHeadIssue(t, ctx, pool, 70)

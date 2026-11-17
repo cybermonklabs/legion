@@ -1,5 +1,5 @@
 -- 20261113181500_architect_stalled_notices.up.sql — the mark that the project's controller has
--- been told a root's own architect has stalled (INFRA-2614).
+-- been told a root's own architect has stalled (POMJU-2614).
 --
 -- The daemon's admission pass reads three arms over each root it holds a slot for, after it has
 -- sent every role the work its phase entry names: the architect took nothing it was sent, the

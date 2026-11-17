@@ -1,5 +1,5 @@
 -- 20261102224250_workspace_bundle_attempt.up.sql — a saved workspace bundle gets one restore
--- attempt, and the row records it (INFRA-945).
+-- attempt, and the row records it (POMJU-945).
 --
 -- attempt_pod_uid is the uid of the pod whose launcher the bundle was sent to, and attempt_at when
 -- the daemon sent it. Both are written before the first slice leaves the daemon

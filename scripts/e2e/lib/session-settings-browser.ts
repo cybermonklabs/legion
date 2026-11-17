@@ -3,7 +3,7 @@
 // thread as shown, the agent view's first replay, and a screenshot per check.
 //
 // Playwright is resolved from packages/dispatch, the package that owns the browser suite, and
-// launched on the Chromium the rig names: a pod has no Playwright browser of its own (INFRA-42).
+// launched on the Chromium the rig names: a pod has no Playwright browser of its own (POMJU-42).
 import { createRequire } from "node:module";
 import { readAgentReplay } from "./agent-replay";
 import { currentNumber, PERSON, type Rig, until } from "./session-settings-common";

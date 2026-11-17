@@ -35,7 +35,7 @@ import (
 //
 // Both are tables of public, the schema Dispatch's own tables live in, and not of a schema of
 // this tool's own, for the reason loopIDsDDL gives (loopseed_write.go): a schema named as the
-// database's login is shadows public for every unqualified name (dispatch://INFRA-988).
+// database's login is shadows public for every unqualified name (dispatch://POMJU-988).
 const replayIDsDDL = `create table if not exists public.loadtest_replay_ids (
   kind text not null, logged_id text not null, local_id text not null,
   primary key (kind, logged_id));

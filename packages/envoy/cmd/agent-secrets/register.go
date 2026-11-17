@@ -36,7 +36,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	// afresh and the requests it had pending and the grants it had been given — all bound to the
 	// enrollment id it no longer has — are cancelled with the old enrollment. With it the helper
 	// names the session `session-<id>`, keeps its key, and hands the same identity back to the
-	// same session id when it comes back, within DormantGrace (dispatch://INFRA-1167).
+	// same session id when it comes back, within DormantGrace (dispatch://POMJU-1167).
 	//
 	// A launcher that knows the id only once the agent has started (omp opens its transcript
 	// seconds in, so only a resumed session's id is in the launch argv) registers without one and

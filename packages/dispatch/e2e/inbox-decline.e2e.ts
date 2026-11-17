@@ -20,7 +20,7 @@ import { signIn } from "./users";
 
 /**
  * A person declines to answer a question, and the agent that asked is told so
- * (dispatch://INFRA-1282).
+ * (dispatch://POMJU-1282).
  *
  * Every row writes the decline through the person's own signed-in browser, on the control the
  * card draws, rather than seeding a resolution: what the suite is asked to hold is that a reader

@@ -24,7 +24,7 @@ const (
 	expectedMaxMarkAttrNesting = 99
 
 	// expectedMaxTypedNesting is how many typed blocks a document may open inside one another, the
-	// same bound the browser's read-only engine draws a deeper `:::` opener as text past (INFRA-581).
+	// same bound the browser's read-only engine draws a deeper `:::` opener as text past (POMJU-581).
 	expectedMaxTypedNesting = 32
 )
 

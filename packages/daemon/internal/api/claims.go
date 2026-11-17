@@ -359,7 +359,7 @@ func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, cal
 }
 
 // activity is a live role's session reporting what it is doing, after each of its turns and
-// whenever the report's content changes (INFRA-945), so the idle rule can decide whether the
+// whenever the report's content changes (POMJU-945), so the idle rule can decide whether the
 // session's pod may be released. It decides nothing about the claim, so it posts no request to
 // the claim's machine: the report is written onto the claim's row alone
 // (store.Store.PutClaimActivity, reached through Options.ClaimActivity), where a machine's own

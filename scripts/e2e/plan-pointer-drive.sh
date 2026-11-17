@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The live proof that a Legion phase worker whose task line names a stale plan-handoff pointer
-# builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038).
+# builds from the newest `plan.md` version the plan review approved (dispatch://POMJU-2038).
 # `--tasks` chooses one of two stagings and `--mid-approval` one of two watcher shapes. Each
 # staging is run twice, as two arms that differ in one thing: the implementer's role prompt. The
 # head arm composes it from this checkout's own `packages/daemon`, with the change's new text. The
@@ -10,9 +10,9 @@
 # packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts), so what each session is told is what
 # the daemon would send it, and the whole `--append-system-prompt` argument is turned into the
 # prompt file by the shell rather than by a regular expression
-# (docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md).
+# (docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-POMJU-336.md).
 #
-# The staged issue carries four designs of one plan, as INFRA-1992's own history carried them.
+# The staged issue carries four designs of one plan, as POMJU-1992's own history carried them.
 # Each design names one call, and each task of the plan is to write that call to a file, so the
 # score reads an artifact rather than prose about one:
 #

@@ -1,7 +1,7 @@
 package daemon
 
-// A round over a pod its claims no longer record, as dispatch://INFRA-1583's implementer claim held
-// one from 2026-11-12 (dispatch://INFRA-3276, R5). Round `pod:0a389176…` was ended by its own
+// A round over a pod its claims no longer record, as dispatch://POMJU-1583's implementer claim held
+// one from 2026-11-12 (dispatch://POMJU-3276, R5). Round `pod:0a389176…` was ended by its own
 // replacement, which posted the end to every member's machine. Four machines took it; the
 // implementer's was in a relaunch, the daemon stopped before it took the post, and the post went
 // with the daemon, since it lives in memory alone. The boot restored the round from the store,

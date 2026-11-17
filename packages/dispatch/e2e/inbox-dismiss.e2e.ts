@@ -29,7 +29,7 @@ import { type BrowserContext, expect, type Page, type Request, test } from "./te
 import { asUser } from "./users";
 
 /**
- * The Inbox's **Dismiss** (INFRA-450, A12): a thread stays in the Inbox, read or not, until the
+ * The Inbox's **Dismiss** (POMJU-450, A12): a thread stays in the Inbox, read or not, until the
  * reader dismisses it, as an email stays in its inbox until it is archived. Reading a thread only
  * changes how its row is drawn (`e2e/inbox-read-state.e2e.ts`), and so does **Mark all read**
  * (`e2e/inbox-mark-all.e2e.ts`); **Dismiss** is what takes a row out, by its own control, by the

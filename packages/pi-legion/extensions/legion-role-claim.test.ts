@@ -226,7 +226,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
         machine_id: "test",
         dir: "/tmp",
         topics: body.topics,
-        // A session receives only what its own consumer holds (INFRA-771), so every
+        // A session receives only what its own consumer holds (POMJU-771), so every
         // registration asks the listener for one, and one answered without it is refused.
         delivery: consumerDelivery(body.session_id, { streamID: "legion-role-claim-stream" }),
       });
@@ -301,9 +301,9 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   }
   await sessionStart({}, context);
 
-  // The boot is over and the name is not taken (INFRA-1573): the claim runs at the session's
+  // The boot is over and the name is not taken (POMJU-1573): the claim runs at the session's
   // first turn, so nothing has reached the listener yet and the only managed interval is the
-  // session activity report every claimed session sends on change (INFRA-945).
+  // session activity report every claimed session sends on change (POMJU-945).
   expect(registrations).toHaveLength(0);
   expect(intervals).toHaveLength(1);
 

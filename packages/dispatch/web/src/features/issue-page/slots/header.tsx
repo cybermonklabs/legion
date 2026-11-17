@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../../theme/classes";
 import type { SlotProps } from "../slot-props";
 
-/** Filled by INFRA-1196 part P, "The header". */
+/** Filled by POMJU-1196 part P, "The header". */
 export function HeaderSlot({ issue }: SlotProps): ReactNode {
   return (
     <div>

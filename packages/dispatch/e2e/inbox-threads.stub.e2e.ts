@@ -1,4 +1,4 @@
-/** The Inbox's thread rows (INFRA-450): the Reply and Agent rows that stand in the one list
+/** The Inbox's thread rows (POMJU-450): the Reply and Agent rows that stand in the one list
  *  beside the reader's open asks and approvals, and what the Type filter makes of them.
  *
  *  Each row reads what the page draws over one fixed list, so each runs against a recording

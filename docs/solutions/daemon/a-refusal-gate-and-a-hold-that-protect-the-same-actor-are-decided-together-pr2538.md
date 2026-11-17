@@ -11,13 +11,13 @@ date: 2026-11-02
 status: active
 module: packages/daemon
 related_issues:
-  - "INFRA-484"
+  - "POMJU-484"
   - "sjawhar/legion#2538"
 ---
 
 # A refusal gate and a hold that protect the same actor are decided together
 
-Extends docs/solutions/daemon/a-hold-is-computed-with-the-check-the-action-that-releases-it-uses-INFRA-252.md.
+Extends docs/solutions/daemon/a-hold-is-computed-with-the-check-the-action-that-releases-it-uses-POMJU-252.md.
 
 That document pairs a hold with the action that releases it, inside one package, through one
 shared predicate. This adds the case where the hold is in one package and the gate that defeats it
@@ -37,7 +37,7 @@ is in another, with no shared predicate to make the contradiction visible.
   "this is exactly case X". Several shapes reach the same condition, and a reader who finds a
   second one assumes the comment is wrong rather than incomplete.
 
-## Evidence (INFRA-484, sjawhar/legion#2538)
+## Evidence (POMJU-484, sjawhar/legion#2538)
 
 The stale-plugin lane relaunches a worker whose plugin is older than the daemon's contract, and it
 **holds** that relaunch while the worker is in a turn, so the turn can push what it has rather

@@ -72,7 +72,7 @@ func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
 }
 
 // A start made after the release of a pod no claim owns makes that pod again, with everything
-// the release took: the Sandbox, the pod and its disk. This is INFRA-1341's second release rule
+// the release took: the Sandbox, the pod and its disk. This is POMJU-1341's second release rule
 // over the whole daemon — the rig of TestIdleReleaseAndWake, the Sandbox runtime on a fake
 // Kubernetes API that starts a real `legion launcher` per pod, scripted role processes and a
 // real Envoy listener (idle_rig_test.go says where each part comes from).

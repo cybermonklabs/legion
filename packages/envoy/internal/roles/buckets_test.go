@@ -116,7 +116,7 @@ func TestBucketsDecodeAClaimAsTheRegistryDoesWithinTheirContext(t *testing.T) {
 // how long the session bucket keeps a record: a record the bucket still holds is answered
 // whatever its age, and the state it reads follows the windows alone. Before this a record older
 // than the bucket's TTL read as a session that is not there, and the resolution released its
-// role claim on that word (dispatch://INFRA-392).
+// role claim on that word (dispatch://POMJU-392).
 func TestBucketsJudgeAHolderByItsRegistrationAndNotTheBucketsAge(t *testing.T) {
 	holders, _, _, js := bucketsRig(t)
 	kv, err := js.KeyValue(bus.SessionBucket)

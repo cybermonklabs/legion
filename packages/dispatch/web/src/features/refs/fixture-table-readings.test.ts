@@ -105,7 +105,7 @@ let tableReadings: TableReading[] | undefined;
  * `--timeout 1900` and `--timeout 2000` three times out of three, passed `--timeout 2500`,
  * 3000, 3500, 4000 and 5000 three times out of three, and went both ways at 2100, 2200, 2300
  * and 2400 - so bun's 5 s default is only about twice the idle cost, which one busy core
- * takes: the oracle row red once in four runs of `bun run test` at 5,660 ms (INFRA-1404).
+ * takes: the oracle row red once in four runs of `bun run test` at 5,660 ms (POMJU-1404).
  */
 function wholeTable(): TableReading[] {
   tableReadings ??= pmdocFixtures.map((entry) => {

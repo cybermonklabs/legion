@@ -40,7 +40,7 @@ func (d *interleaving) GetIssue(ctx context.Context, key string) (dispatch.Issue
 
 // A daemon deployed over a tree already running finds issues whose Dispatch status is not their
 // phase's — a child Legion has been planning for hours that Dispatch still shows `todo` — and its
-// boot queues the write that corrects each (dispatch://INFRA-714/spec R4). The write carries the
+// boot queues the write that corrects each (dispatch://POMJU-714/spec R4). The write carries the
 // sequence of the read the row makes as it runs, and Dispatch moves that sequence on every event,
 // its own messages included, so a refusal says only that the read was overtaken: the row reads
 // again and writes, and Dispatch ends at the phase's status.
@@ -79,7 +79,7 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 // The same write must never land over a change Dispatch recorded after the row's read. A person
 // who closes the issue in that moment has ended the work, and the status the row carries is of a
 // workflow the issue has left: Dispatch keeps the close and the row finishes having written
-// nothing (dispatch://INFRA-714/spec R4).
+// nothing (dispatch://POMJU-714/spec R4).
 //
 // What the row does not do is tell the engine what it read. That read carries no actor, so the
 // engine could only take every change it shows for a person's, and two of the daemon's own rows
@@ -122,7 +122,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 // is: the row's first attempt writes only while Dispatch shows the status the row observed, and
 // the read it makes after the refusal is held to the same comparison. A person who moves the
 // issue to another lifecycle status in that moment keeps it, and the row finishes having written
-// nothing (dispatch://INFRA-714/spec A6).
+// nothing (dispatch://POMJU-714/spec A6).
 func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing.T) {
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)

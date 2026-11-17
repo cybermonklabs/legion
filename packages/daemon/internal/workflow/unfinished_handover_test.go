@@ -234,7 +234,7 @@ const (
 // approved pull request with no live tree left to merge it. Handed over, it keeps its run and its
 // pull request, its own merger merges it under its new tree, and that merge closes it. Left
 // behind, it lost its claims and its workspace with the rest of the tree and stood at
-// awaiting_merge for good, which is where INFRA-1333 stood until a person merged it by hand.
+// awaiting_merge for good, which is where POMJU-1333 stood until a person merged it by hand.
 func TestLingerHandsOver(t *testing.T) {
 	t.Run("a parked root hands over the member whose merge nothing else will make", func(t *testing.T) {
 		pool, logged, apply := handsOverFixture(t)

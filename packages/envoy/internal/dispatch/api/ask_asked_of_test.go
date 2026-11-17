@@ -23,7 +23,7 @@ import (
 )
 
 // The field an ask waits on a person by, and who may write it: PUT /api/v1/asks/{id}/asked-of.
-// This file is the Go half of dispatch://INFRA-1576's c-no-agent-picks-a-person, whose `run`
+// This file is the Go half of dispatch://POMJU-1576's c-no-agent-picks-a-person, whose `run`
 // names TestAskAskedOf, so the test and the file carry that name rather than the package's
 // sentence-style one.
 
@@ -417,7 +417,7 @@ func TestAskAskedOf(t *testing.T) {
 
 	// This case came from main's pull request #3429 ("a person hands a question to the person it
 	// is for", merged 2026-11-11T00:53Z), where the block left the document through a delete on
-	// the edits route. This branch's R5 (dispatch://INFRA-1520) refuses such a batch, so the
+	// the edits route. This branch's R5 (dispatch://POMJU-1520) refuses such a batch, so the
 	// removal now runs through a person's own editor, the seam R5 exempts. What the case proves
 	// is unchanged: asked_of survives the block's removal, the settlement's retraction and the
 	// restore.

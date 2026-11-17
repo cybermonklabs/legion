@@ -75,7 +75,7 @@ type State struct {
 	// pacing at a time (supervise.RefreshGate), so the wakes waiting are what it has admitted,
 	// never what it has left; a reader of the 2026-11-10 wave counted 395 live processes on the
 	// old contract against about 600 of the lane's wakes and nothing in the body reconciled the
-	// two (dispatch://INFRA-2712 R4).
+	// two (dispatch://POMJU-2712 R4).
 	//
 	// A daemon that can relaunch onto no plugin at all is in the count like any other: the
 	// number stands at what that lane cannot act on, beside the Error line such a daemon writes
@@ -399,7 +399,7 @@ type ContractView struct {
 type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
-	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
+	// the issues the daemon has started rather than the trees (dispatch://POMJU-980), and an
 	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
 	// past its review — accepting, retro and merging hold none — or until it is done or
 	// Dispatch takes it out of the workflow, except while it waits on another issue before that
@@ -430,7 +430,7 @@ type Admission struct {
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
 	Trees []string `json:"trees,omitzero"`
 	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for
-	// (INFRA-225), by issue key: a waiting root admission skips, a child the workflow holds at
+	// (POMJU-225), by issue key: a waiting root admission skips, a child the workflow holds at
 	// `admitted`, and an issue the daemon has started that gave its slot back for the wait,
 	// together in one list, each with what it still waits on. A blocked issue the line carries
 	// is in Waiting too. Never null; empty when nothing waits on a link.
@@ -736,7 +736,7 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 
 // ClaimView is one role claim as the record holds it: the session its agent registered as, where
 // it is in its life (`supervise.ClaimState`), its locator, and the capability report its session
-// sent on a `claims/ready` of its own while it ran (LEGION-663, INFRA-927). The locator is the
+// sent on a `claims/ready` of its own while it ran (LEGION-663, POMJU-927). The locator is the
 // runtime's own nested shape —
 // `{"runtime":"tmux","claim":…,"incarnation":…,"tmux":{"window":…,"pane":…}}` or the `sandbox`
 // member for a pod — marshalled by the standard library from `runtime.Locator`; the process
@@ -798,7 +798,7 @@ type ClaimView struct {
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
-	// provider outage (dispatch://INFRA-956's R2) — and the project's controller is told of it
+	// provider outage (dispatch://POMJU-956's R2) — and the project's controller is told of it
 	// once, at a run of six, so without this key the number behind that telling stands on no
 	// surface its reader can reach.
 	ProviderErrorRun int `json:"providerErrorRun,omitempty"`
@@ -1063,7 +1063,7 @@ type HandoffRecordView struct {
 // that read has run. It is what says whether GitHub would merge the head now ("clean") or holds
 // it on a check or a review the repository requires ("blocked").
 // No CI verdict is shown: a CI result moves no issue, so the daemon keeps none
-// (dispatch://INFRA-714/spec R1), and GitHub's own merge state is what says whether a check the
+// (dispatch://POMJU-714/spec R1), and GitHub's own merge state is what says whether a check the
 // repository requires holds the head.
 type PullRequestView struct {
 	// Repo is the repository (owner/name) the pull request is in, its issue's.
@@ -1366,7 +1366,7 @@ type HeldOutboxRow struct {
 // entry under `issues` carries the rest. Its state, its role and who suspended it say the move
 // that brings it back (Move), and that suspender is no field of it: every plugin parses this
 // body with the schema of the contract it was built at, and a session whose plugin predates
-// INFRA-1048 refuses the whole state over a key it does not know — a daemon that relaunches no
+// POMJU-1048 refuses the whole state over a key it does not know — a daemon that relaunches no
 // stale session (spec R10) would break every such pod the moment a claim is stranded. A plugin
 // built after it strips the key instead, which loses the field rather than the state, and the
 // drift gate in packages/contracts names it at the next golden write. It is served on the

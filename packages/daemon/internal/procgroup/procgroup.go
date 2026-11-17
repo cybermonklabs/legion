@@ -37,7 +37,7 @@ const WaitDelay = time.Second
 // command that handles SIGTERM has to clean up after itself. git removes its own lock files from
 // its signal handler (its lockfile API), and SIGKILL runs no handler, so a git killed outright can
 // leave an index.lock or a ref lock behind that stops every later git and jj of that repository
-// (dispatch://INFRA-3098, measured in an issue pod on 2026-11-11 with git 2.47.3: SIGTERM removed
+// (dispatch://POMJU-3098, measured in an issue pod on 2026-11-11 with git 2.47.3: SIGTERM removed
 // the lock, SIGKILL left it).
 //
 // The grace is spent inside Cancel rather than left to os/exec's own wait delay, because that

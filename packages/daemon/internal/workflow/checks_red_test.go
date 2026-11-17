@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A CI settlement moves no issue, in any phase (dispatch://INFRA-714/spec R1): a failed check is
+// A CI settlement moves no issue, in any phase (dispatch://POMJU-714/spec R1): a failed check is
 // information the worker holding the phase decides on - re-run, wait, or fix - and not the
 // daemon's to read the semantics of. What the settlement says is told instead, as one message per
 // role to three roles: the worker holding the issue's phase, the implementer, whose code the
@@ -116,7 +116,7 @@ func TestASettlementThatSaysNothingNewTellsNobodyAgain(t *testing.T) {
 
 // A check GitHub produced no run for - an aggregate job whose needs: never ran, so it never
 // started - reaches the three roles like any other conclusion, and moves nothing, because nothing
-// classifies it (dispatch://INFRA-622). The settlement reports its runs and names that check as
+// classifies it (dispatch://POMJU-622). The settlement reports its runs and names that check as
 // failed; the message names it beside the checks that ran, and the worker holding the phase
 // decides what it means.
 func TestACheckGitHubNeverRanIsToldLikeAnyOtherConclusion(t *testing.T) {

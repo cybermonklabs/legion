@@ -10,7 +10,7 @@ export type Writer = "alive" | "gone";
  * Every line the writer has finished: the lines before the last newline, empties dropped. A
  * trailing fragment with no newline yet is a line a write has not finished, so it is left for the
  * next read and a poll answers "not yet" rather than throwing on half an object
- * (dispatch://INFRA-2188). A line that is complete and malformed is returned, so parsing it still
+ * (dispatch://POMJU-2188). A line that is complete and malformed is returned, so parsing it still
  * throws: that is a defect in whatever wrote it. The RPC frame reader of the pane harness buffers
  * to a newline for the same reason (`@legion/pi-shared/test/omp-harness`).
  */

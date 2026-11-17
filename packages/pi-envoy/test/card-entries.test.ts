@@ -31,7 +31,7 @@ test("the cards of a file are its envoy-message lines, in the order it holds the
 
 // The control for the withholding rule: the last line is a card the host has not finished
 // writing, cut after both markers, which is the read that threw in packages/pi-legion's
-// stall-watchdog case and would throw here too (dispatch://INFRA-2188). Reverting
+// stall-watchdog case and would throw here too (dispatch://POMJU-2188). Reverting
 // `writtenLines` to a plain `split("\n")` turns this case red where it compares the lines,
 // which then holds a third entry.
 test("a card line the host has not finished writing is withheld while the pane runs", () => {

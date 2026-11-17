@@ -145,7 +145,7 @@ type Tokens interface {
 	// Token is the write token for repo: the App role's installation token on repo's owner,
 	// holding the write permissions the App's roles use (writePermissions). It reaches every
 	// repository the account's installation holds, which the account chooses when it installs
-	// the App and the daemon narrows no further (INFRA-2543); repo keys the lease alone. A zero
+	// the App and the daemon narrows no further (POMJU-2543); repo keys the lease alone. A zero
 	// Repository names none and is refused before anything is minted: every caller names the
 	// repository its lease is cached under, and a call naming none is a caller's mistake.
 	Token(ctx context.Context, role AppRole, repo ghrepo.Repository) (Lease, error)
@@ -333,7 +333,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 // with the App role's write permissions (writePermissions). Concurrent requests for the same
 // App, owner and repository share that one exchange. The lease reaches every repository that
 // installation holds: the account chooses those when it installs the App, and the daemon asks
-// for no narrowing of them (INFRA-2543), so repo keys the lease and reaches GitHub not at all.
+// for no narrowing of them (POMJU-2543), so repo keys the lease and reaches GitHub not at all.
 // A zero Repository names none: every caller names the repository its lease is cached under, so
 // a call naming none is a caller's mistake, refused before anything is minted.
 func (m *Manager) Token(ctx context.Context, role AppRole, repo ghrepo.Repository) (Lease, error) {
@@ -429,7 +429,7 @@ type ReadScopeForgetter interface {
 // scope. It is for the caller whose question is not what a token it holds may do but which
 // repositories the installation reaches now, which a cached lease cannot answer — the probes a
 // directory keeps its repositories by, read as the installation's membership, when the ask under
-// the repositories they said answered is refused all the same (dirEntry, INFRA-513). Forget
+// the repositories they said answered is refused all the same (dirEntry, POMJU-513). Forget
 // would throw away every good token of the owner and ForgetNarrowingRefusal alone would leave
 // the probe answered from the cache, which is the answer that misled it.
 //
@@ -535,7 +535,7 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner, 
 // lease cached under it good-looking until its expiry nears (refreshWindow), which is why a
 // caller that reads a cached answer as membership and is then refused the ask under what it
 // read drops those scopes whole — the lease with the refusal — and asks again (ForgetReadScope,
-// dirEntry, INFRA-513).
+// dirEntry, POMJU-513).
 //
 // A mint that succeeds also drops every lease the cache holds that has expired. The cache is
 // keyed by the repositories a caller names, so a mapping that changes over a long-lived

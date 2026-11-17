@@ -1,6 +1,6 @@
 -- 20261103070013_agent_token_scopes.up.sql — the OAuth scopes a personal agent token holds.
 --
--- INFRA-1017: Dispatch stops refusing every bearer token on the routes only a browser could call,
+-- POMJU-1017: Dispatch stops refusing every bearer token on the routes only a browser could call,
 -- and two scopes decide instead: `person`, "this credential acts as its person", and `approve`,
 -- the right to settle what a person settles. A personal agent token carries its own set, so the
 -- column is where that set lives.

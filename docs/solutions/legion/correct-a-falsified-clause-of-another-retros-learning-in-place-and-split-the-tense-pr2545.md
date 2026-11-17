@@ -29,7 +29,7 @@ related_issues:
 
 sjawhar/legion#2545 renamed the changelog fragment the repository's instructions teach.
 
-- `docs/solutions/best-practices/a-scanner-refuses-every-entry-it-cannot-handle-and-the-remedy-its-error-names-is-tested-too-INFRA-629.md:38`
+- `docs/solutions/best-practices/a-scanner-refuses-every-entry-it-cannot-handle-and-the-remedy-its-error-names-is-tested-too-POMJU-629.md:38`
   read "Fixed in 6b255451bb62: fold-plan refuses them by name, and `AGENTS.md` says to write each
   `/` as `-`." The second half became history with that change; the first half is live behaviour,
   `.github/scripts/release-push.sh:832` with its refusal message at `:857`. The edit keeps

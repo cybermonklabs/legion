@@ -942,7 +942,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // (record.RoleMessage), the way the daemon reaches a role holder with something to read rather
 // than work to do (tellChecks). A new version of an approved spec closes the gate under workers
 // already running on the old one, and until now it told none of them: they went on building to a
-// design the person was being asked about again (dispatch://INFRA-714/spec R5). The opening is
+// design the person was being asked about again (dispatch://POMJU-714/spec R5). The opening is
 // told the same way, so a worker that was told to expect a change hears that it landed.
 //
 // No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
@@ -993,7 +993,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	}
 	// The step and its own document, never "spec version": under more than one gated step the
 	// version this event carries is that step's document's, and a message naming the spec would
-	// send a reader to the wrong one (INFRA-1272).
+	// send a reader to the wrong one (POMJU-1272).
 	var body string
 	if open {
 		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
@@ -1024,7 +1024,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // writes a row at a new version, which closes it, or carries the approval its read found, which
 // opens it — and before this helper only the artifact path told anyone, so a merger could be left
 // merging under a document nobody had approved, or waiting for an opening it was never told of
-// (dispatch://INFRA-714/spec R5).
+// (dispatch://POMJU-714/spec R5).
 //
 // Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record
 // of a person's approval on a parked root (recordHandover), whose roles are suspended and whose

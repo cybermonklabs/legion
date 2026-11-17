@@ -1,5 +1,5 @@
 /**
- * Container directives nest at most 32 deep (INFRA-581). The read-only engine draws an opener
+ * Container directives nest at most 32 deep (POMJU-581). The read-only engine draws an opener
  * standing inside 32 open directive containers as the line of text it is, and the default mode
  * refuses it naming its line, as the document service refuses a 33rd nested typed block. Bodies
  * that nest `:::` thousands deep, which froze a reader's tab for about a minute, are read here

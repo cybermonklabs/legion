@@ -27,7 +27,7 @@ import (
 // park suspends every role of what it parks, and queues the suspension and, for a root, the
 // linger's close. That set is how the test shows the release was added to the park and replaced
 // nothing. No row disarms a pull request, since the daemon changes no merge setting of any
-// (dispatch://INFRA-714 R2).
+// (dispatch://POMJU-714 R2).
 func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 	// A root's park acts on its whole tree: six suspends and an IssueSuspend for each of its two
 	// members, and the one row that closes the linger.

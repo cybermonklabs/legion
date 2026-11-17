@@ -486,7 +486,7 @@ func TestSessionRegistryDeleteIf_KeepsTheEntryAfterTwoLostCompareAndSwaps(t *tes
 
 // The condition the daemon's clean stop of a dead role's session carries: the registration under
 // that session id was written after the moment the stop belongs to, so it is the relaunched
-// process's and the delete must not take it (dispatch://INFRA-392).
+// process's and the delete must not take it (dispatch://POMJU-392).
 func TestSessionRegistryDeleteIf_KeepsARegistrationWrittenAfterTheMoment(t *testing.T) {
 	reg := openRegistryForInstanceDelete(t)
 	const sessionID = "ses_registered_again"

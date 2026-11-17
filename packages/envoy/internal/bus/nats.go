@@ -1001,7 +1001,7 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 // durable over. An unsubscribe drops the subscription from the connection's list at once, so the
 // reconnect's resend does not find it, and the UNSUB it would have written is not needed: the
 // server released that interest with the connection that dropped. Dispatch's delivery intake gives
-// its subscription up exactly when its link is down (INFRA-1551), which is why this is the rule
+// its subscription up exactly when its link is down (POMJU-1551), which is why this is the rule
 // rather than a caller's choice.
 //
 // A drain begun on a live link leaves the same thing behind when the link drops before that drain
@@ -1326,7 +1326,7 @@ func readSubscriptionRefusal(err error) (subscriptionRefusalText, bool) {
 // DeliverSubject. The registration's own subject is useless for that: registerSubscription stores
 // subject: "" for a nats.Bind registration (cmd/listener/durable.go binds with an empty subject),
 // while the subscription nats.go returns carries the consumer's configured DeliverSubject —
-// measured against a real server for INFRA-182, sub.Subject equals info.Config.DeliverSubject for
+// measured against a real server for POMJU-182, sub.Subject equals info.Config.DeliverSubject for
 // a nats.Bind push subscription. The empty string is the honest answer while the client is
 // replacing the subscription it holds, and the listener reads it as unbound.
 func (c *Client) SubSubject() string {
@@ -2152,7 +2152,7 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // leaving the wait for the stream's acknowledgement to the returned forward's Wait, so a caller
 // can publish forwards in order on one goroutine and wait for each on another. The window,
 // timeout, starts with this call. Every holder is reached this way: no session subscribes to its
-// agent subject any more (INFRA-771), so the forward's one lasting copy is the stored one, which
+// agent subject any more (POMJU-771), so the forward's one lasting copy is the stored one, which
 // the holder's session consumer delivers through the listener's relay, with acknowledgement and
 // redelivery.
 //

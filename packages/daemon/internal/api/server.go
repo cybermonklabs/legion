@@ -39,7 +39,7 @@ const readHeaderTimeout = 10 * time.Second
 
 // stateReadBound is how long the state route gives its whole read — its repeatable-read
 // transaction and the statements inside it — before it answers a failure and ends that
-// transaction (stateRoute, Options.StateReadBound). Until INFRA-3169 the route's only bound was
+// transaction (stateRoute, Options.StateReadBound). Until POMJU-3169 the route's only bound was
 // whether its client was still waiting, so a read that never finished held its connection for as
 // long as the client held the socket, and 32 of those are the whole pool.
 //
@@ -682,7 +682,7 @@ func (s *server) stopRefusal(request string) string {
 }
 
 // stateRoute answers the state out of one repeatable-read, read-only snapshot, under a bound of
-// the daemon's own (stateReadBound, Options.StateReadBound). Before INFRA-3169 the only thing
+// the daemon's own (stateReadBound, Options.StateReadBound). Before POMJU-3169 the only thing
 // that ended this read was the client giving up, so a read that never finished held its
 // connection as long as the client held its socket, and 32 of those are the whole pool.
 //
@@ -768,7 +768,7 @@ func statementBound(bound time.Duration) int64 {
 // stateFor is state as the plugin that asked for it reads it, decided from claims, the project's
 // claims the state's own snapshot holds. The route authenticates nobody, so the caller is known
 // by its address alone: a pod of the project (Options.CallerPod), whose claims record the plugin
-// contract each registration declared. A plugin older than INFRA-1048 — which is who this
+// contract each registration declared. A plugin older than POMJU-1048 — which is who this
 // function is kept for — reads the state with a strict schema and refuses the whole body for one
 // key it does not know, where today's plugin strips one; and an update round serves a claim of
 // the contract before it until its pod is replaced (version.go's 46). So a caller in a pod whose
@@ -834,7 +834,7 @@ func statementBound(bound time.Duration) int64 {
 // caller, the contract that caller's pod records, the contract this daemon declares and what
 // that arm dropped (stateNarrowings, narrowedTheState): the narrowed body cannot say of itself
 // that it was narrowed — a key added to it is what the narrowing exists to prevent — so an
-// absent fact and a withheld fact would otherwise read alike (dispatch://INFRA-3083, R12). What
+// absent fact and a withheld fact would otherwise read alike (dispatch://POMJU-3083, R12). What
 // the body does carry, for a caller at or above recordFieldsContract and for no caller below
 // it, is the two numbers those lines name (`contract`, ContractView), which is how the one
 // reader that is never narrowed — the operator's `legion state --json` — says which contract
@@ -983,12 +983,12 @@ const gatedStepsContract = 55
 const retiredStrandedContract = 56
 
 // stallRecordContract is the daemon contract that added each claim view's `step`, what the daemon
-// last saw that claim's agent do (dispatch://INFRA-1274). A plugin before it is served the state
+// last saw that claim's agent do (dispatch://POMJU-1274). A plugin before it is served the state
 // without the key: one built before sjawhar/legion#2788 reads it with a strict schema and would
 // refuse the whole body for a key it does not name, and one built after strips the key instead.
 //
 // It is 57 because that is the number DaemonAPIVersion took at the bump this record forced: main
-// held 56, INFRA-1480's retired stranded state, which carries no step record, so that branch took
+// held 56, POMJU-1480's retired stranded state, which carries no step record, so that branch took
 // the first number above it, and the release that carries the record declares that number. This
 // daemon's own contract is never below it — DaemonAPIVersion (version.go) declares what this
 // binary serves, and that number only rises — so a pod at either is served the record and only a
@@ -1023,7 +1023,7 @@ const backwardMovesContract = 62
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
-// of the issue record, served or withheld (dispatch://INFRA-3083, ClaimRecordFields and
+// of the issue record, served or withheld (dispatch://POMJU-3083, ClaimRecordFields and
 // IssueRecordFields). It added to this route a claim view's `servingGeneration`,
 // `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`, an issue's
 // `heldFrom`, `lingerUntil` and `ancestry`, and the `contract` mark beside the daemon's block,
@@ -1084,15 +1084,15 @@ const phaseEntriesContract = 94
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
 // no key, then mergeWaitContract's, assignmentsContract's and entryTimesContract's, the last
 // this daemon's own contract — so a caller from it up is served the measure, and none of what a
-// later row adds until it reaches that row's contract (123, INFRA-3146's contract, moves no
+// later row adds until it reaches that row's contract (123, POMJU-3146's contract, moves no
 // shape of the state).
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
-// another issue (record.LineWaitingOnIssue). A plugin from 85 up to it, INFRA-714's 86,
-// INFRA-3219's 87, INFRA-2800's 94, INFRA-3107's 98, INFRA-3161's 104, INFRA-2560's 111 and
-// INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
+// another issue (record.LineWaitingOnIssue). A plugin from 85 up to it, POMJU-714's 86,
+// POMJU-3219's 87, POMJU-2800's 94, POMJU-3107's 98, POMJU-3161's 104, POMJU-2560's 111 and
+// POMJU-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
 // optional.
@@ -1104,7 +1104,7 @@ const waitingOnIssueContract = 132
 // refuse the whole body for a key it does not name, and one built after strips the key instead,
 // so the strip is what keeps the object from a caller that did not ask for it rather than what
 // keeps such a caller reading at all. A key's contract is the one that added it, so this is the
-// number dispatch://INFRA-3027 declares and no band of another change: a caller from a pod
+// number dispatch://POMJU-3027 declares and no band of another change: a caller from a pod
 // below it is served the state without `mergeWait`, whatever else the contracts it does reach
 // give it.
 const mergeWaitContract = 133

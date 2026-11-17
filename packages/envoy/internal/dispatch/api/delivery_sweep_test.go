@@ -133,7 +133,7 @@ var sweepRoutes = map[string]sweepRoute{
 	},
 }
 
-// INFRA-258. A delivery finishes on the server whether anyone asks again or not. For every route
+// POMJU-258. A delivery finishes on the server whether anyone asks again or not. For every route
 // whose write delivers to a session: the write's attempt is sent, and its process dies inside the
 // send - the client gave up meanwhile - leaving the attempt pending under its claim. A repeat under
 // the write's key inside that claim answers the write the key made and sends nothing: the claim's
@@ -555,7 +555,7 @@ func (rig sweepRig) strandMentionAttempts(rows pgx.Rows, ago string, mentioned b
 	return ids
 }
 
-// INFRA-258, INFRA-448. The sweep never sticks on an attempt nothing can send. A closed issue is
+// POMJU-258, POMJU-448. The sweep never sticks on an attempt nothing can send. A closed issue is
 // no longer one of those: every sender takes a delivery there (lockIssue,
 // lockedCommentForDelivery), so the attempts a dead process left on a closed issue - a message's,
 // a keyed send with no attempt at all, a comment mention's - are sent like any other, each under
@@ -675,7 +675,7 @@ func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
 	}
 }
 
-// INFRA-258. The sweep sends exactly the attempt it found owed. A delivery a card retry
+// POMJU-258. The sweep sends exactly the attempt it found owed. A delivery a card retry
 // overtook while its first sender still held it has two pending attempts once both senders die,
 // and the sweep owes only the retry's, the latest: it sends that one, in its own mode and to its
 // own session, and never the older attempt in its place. A mention's older attempt is then the

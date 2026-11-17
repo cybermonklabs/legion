@@ -32,7 +32,7 @@ not what was already running.
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454) extracted the secrets broker's boot and stop
+`sjawhar/legion#2705` (dispatch://POMJU-454) extracted the secrets broker's boot and stop
 sequences into `boot` and `stop` (`packages/envoy/cmd/broker/boot.go`) and pinned five orderings
 in `cmd/broker/ordering_test.go`, each red on one named one-line revert.
 

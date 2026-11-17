@@ -681,7 +681,7 @@ test("a well-formed ask block in a body keeps its record and says the question i
 
 // The reader opens an `ask` container on an opening line carrying no attributes, as it does on
 // one carrying urgency, and draws the same card for it. The server refuses every body it opens
-// one in (INFRA-1201), so this is what a reader meets in a body stored before that rule stood.
+// one in (POMJU-1201), so this is what a reader meets in a body stored before that rule stood.
 test("an ask block in a body whose opening line carries no attributes draws the card and its one line", async () => {
   const view = render(withAskCard(<MarkdownBody markdown={`:::ask\n${askBody}`} />));
 
@@ -1367,7 +1367,7 @@ function looseText(container: HTMLElement): string {
 /** The next task, so a row reads what one slice of a paint left in the element: the task that
  *  slice queued is ahead of this one, so exactly one of them has run when it resolves.
  *
- *  This one stays on the real clock (INFRA-1505). A paint fills one task until its budget runs
+ *  This one stays on the real clock (POMJU-1505). A paint fills one task until its budget runs
  *  out, and that budget is read from `performance.now()` (`useRenderedMarkdown`,
  *  `paintAcrossTasks`), which `jest.useFakeTimers()` freezes: under a fake clock one task
  *  paints the whole body, so the rows below - which read what a single slice left in the

@@ -203,7 +203,7 @@ func TestPlanEditDiffAndSubstitute(t *testing.T) {
 func TestNATSKey(t *testing.T) {
 	for id, want := range map[string]bool{
 		"01a179a2-7029-707e-943c-e192020b043b": true, "ses-replay-0001": true,
-		"legion-daemon:LINUX": false, "": false, ".a": false, "a.": false, "a b": false,
+		"legion-daemon:HAFJJ": false, "": false, ".a": false, "a.": false, "a b": false,
 	} {
 		if natsKey(id) != want {
 			t.Errorf("natsKey(%q) = %v", id, !want)

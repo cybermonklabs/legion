@@ -29,7 +29,7 @@ reviewer actually computed.
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454), the lease model, round 2.
+`sjawhar/legion#2705` (dispatch://POMJU-454), the lease model, round 2.
 
 Round 1's review prescribed a model where each refused renewal either fails at once or is held to
 the whole 30 s client timeout, and quoted the floors that model gives: 330 s, 360 s and 105 s at

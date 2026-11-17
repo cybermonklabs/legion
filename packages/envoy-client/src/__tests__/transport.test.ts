@@ -1178,7 +1178,7 @@ describe("EnvoyClient", () => {
         host: "envoy-fixture",
         dir: "/work/infra-742-fixture",
         port: 0,
-        title: "INFRA-742 fixture session",
+        title: "POMJU-742 fixture session",
         topics: [],
         roles: [],
         capabilities: [],
@@ -1309,7 +1309,7 @@ describe("EnvoyClient", () => {
 
   // A sender decides whether to wait on the recipient's state and on how long it has been
   // silent, and the listener sends both; dropping last_seen left the caller the state alone
-  // (dispatch://INFRA-392, R7).
+  // (dispatch://POMJU-392, R7).
   test("carries the recipient's last registration from a send, and omits one the listener cannot name", async () => {
     const envelope = {
       event_id: "event-stalled",
@@ -1346,7 +1346,7 @@ describe("EnvoyClient", () => {
 
   // The refusal an agent reads at the moment it decides whether its peer is alive. The
   // listener's own text names no state, so an unresponsive holder's lapsed role read as a dead
-  // one, and the next agent took its work (dispatch://INFRA-392, R7).
+  // one, and the next agent took its work (dispatch://POMJU-392, R7).
   test("a lapsed role's refusal says which state its holder is in, and that the claim stands", async () => {
     const recorded = recordFetch([
       Response.json(

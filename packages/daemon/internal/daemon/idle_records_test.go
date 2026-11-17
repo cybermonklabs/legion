@@ -20,7 +20,7 @@ func (r *idleRig) records(t *testing.T) store.PodReleaseRecords {
 	return records
 }
 
-// INFRA-945 R6: a completed release is recorded with the run it released, the roles whose claims
+// POMJU-945 R6: a completed release is recorded with the run it released, the roles whose claims
 // it suspended and the size of the bundle it saved, so a deployment can count what release did
 // without reading the daemon's log.
 func TestAReleaseRecordsItsRolesAndTheBundleItSaved(t *testing.T) {

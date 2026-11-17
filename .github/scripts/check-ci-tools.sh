@@ -2,7 +2,7 @@
 # The gate on .github/ci-tools.yaml: it holds every row to its shape, to the pin that decides
 # which version a job installs, and it refuses any other address for a tool asset in CI's reach.
 # A tool this repository installs from a GitHub release asset has a second source, because an
-# hour of 504s on those assets otherwise holds every merge (dispatch://INFRA-1873), and that
+# hour of 504s on those assets otherwise holds every merge (dispatch://POMJU-1873), and that
 # manifest is the one place a row's version, its pinned digest and both of its addresses are
 # written.
 #

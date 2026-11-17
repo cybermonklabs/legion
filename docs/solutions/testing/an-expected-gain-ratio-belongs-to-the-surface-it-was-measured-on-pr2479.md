@@ -36,7 +36,7 @@ fraction of the function's time the change removes:
 
 - sjawhar/legion#2479, body section A4. The fold share fell 1.65 points, against a bar of 1.73
   (`r` = 0.14, from the planner's 10 specs), 1.63 (`r` = 0.132, a busy box) and 3.03 (`r` = 0.246,
-  on 1,204 LINUX specs on a quiet box). The load-test fold fell about 11 % against about 25 % on
+  on 1,204 HAFJJ specs on a quiet box). The load-test fold fell about 11 % against about 25 % on
   the corpus.
 - The tester's independent runs on another base gave the same split: `r` = 0.14 passed and
   `r` = 0.246 failed. Clause 1 (every head run below every base run) decided both times, which

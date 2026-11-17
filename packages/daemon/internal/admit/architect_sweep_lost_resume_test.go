@@ -17,8 +17,8 @@ import (
 // that entry, the task that names the answer: which ask or which review, and where to read it
 // (workflow.Engine.ResumeAwaitedRoot). When that resume's start row is lost, the sweep sends the
 // entry again, and the work of the entry is the answer: an architect sent a task that does not
-// name it has lost the work it owes (dispatch://INFRA-2614, R4, and the architect's reading at
-// dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e).
+// name it has lost the work it owes (dispatch://POMJU-2614, R4, and the architect's reading at
+// dispatch://POMJU-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e).
 //
 // The task sent again says nothing false of the root either. Its architect has run in this
 // generation, so the first act (a spec to write and children to file) is not what it owes (R3),
@@ -102,7 +102,7 @@ func TestTheArchitectSweepResendsWhatALostResumeCarried(t *testing.T) {
 // row names is still the resume's, one its claim was never given. The sweep's reach keeps such a
 // root while that entry stands unsent (workflow.ArchitectAtWork), so the next pass writes the
 // architect's start at that entry, carrying the resume's own text: a lost row loses none of what
-// the person's answer owes the architect (dispatch://INFRA-2614, R4).
+// the person's answer owes the architect (dispatch://POMJU-2614, R4).
 //
 // The control is the same pass a second time, while the start it wrote is still queued: a start
 // on its way is not written twice (workflow.ArchitectStartPending).

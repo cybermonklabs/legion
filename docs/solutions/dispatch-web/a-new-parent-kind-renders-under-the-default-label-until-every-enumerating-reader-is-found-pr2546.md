@@ -16,7 +16,7 @@ related_issues:
 
 # A new parent kind renders under the default label until every enumerating reader is found
 
-Extends docs/solutions/legion/a-type-census-also-searches-the-types-that-contain-it-their-re-exports-and-indexed-access-types-INFRA-367.md.
+Extends docs/solutions/legion/a-type-census-also-searches-the-types-that-contain-it-their-re-exports-and-indexed-access-types-POMJU-367.md.
 
 That note's census misses cost nothing because nothing read the widened field. Where a consumer
 *enumerates* the members of such a union, a miss costs a wrong label on a page a person reads.

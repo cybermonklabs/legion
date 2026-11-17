@@ -39,7 +39,7 @@ names — drift at every site that sets them separately.
   AST scan, a grep for both the command's name and its package's — before you believe it is
   complete.
 
-## Evidence (sjawhar/legion#2600, INFRA-623)
+## Evidence (sjawhar/legion#2600, POMJU-623)
 
 - The invariant: a `jj -R <x>` command is safe only because it runs with `Dir` = `<x>`. `-R` is no
   fence — jj 0.45.1 loads the repository its working directory sits in before it applies `-R`.

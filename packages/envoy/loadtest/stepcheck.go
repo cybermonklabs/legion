@@ -1,7 +1,7 @@
 package main
 
 // loadgen step-check: one step directory judged against acceptance criterion A3 of
-// dispatch://INFRA-988 - "In each step's result file, every offered rate of R5, the unit starts
+// dispatch://POMJU-988 - "In each step's result file, every offered rate of R5, the unit starts
 // and the concurrent unit sessions are within 5% of target, no proposal has more than 30 unit
 // sessions at once, and every measurement of R6 and a pass or fail for each criterion of R8 is
 // present."
@@ -918,7 +918,7 @@ func (sc *stepCheck) sizeClause() stepClause {
 // (curves.go loopSeries). A criterion the rule failed is a failed clause, so the verdict line
 // names it, the count holds it and the command exits non-zero: this command and `loadgen curves
 // -series loop` read the same verdicts, and a step the series rule answers "passes no" for is no
-// step the check passes (INFRA-988). A criterion the step's own load makes meaningless - no
+// step the check passes (POMJU-988). A criterion the step's own load makes meaningless - no
 // write offered, no read sent, no loop session - is n/a and no failure; a criterion that is n/a
 // for want of a file the step should hold is a measurement the step lacks, so it fails here even
 // though the curves would draw the step without it. Every clause carries the reading its verdict
@@ -1013,7 +1013,7 @@ func (sc *stepCheck) critReading(c int) string {
 		// a step-failed.json, no cgroup.json at all, or a cgroup.json that holds no dispatch
 		// role (curves.go judge, sampledDispatch). The last two used to print the ok text, so a
 		// step whose directory holds no cgroup.json read "cgroup.json is there and not failed"
-		// under the word FAIL (dispatch://INFRA-988).
+		// under the word FAIL (dispatch://POMJU-988).
 		switch {
 		case sc.step.failed:
 			return "the step failed: " + strings.Join(sc.step.failedKinds, ", ")
@@ -1092,7 +1092,7 @@ func runStepCheck(args []string) error {
 	fs := flag.NewFlagSet("step-check", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: loadgen step-check <step dir>")
-		fmt.Fprintln(fs.Output(), "  One step directory judged against acceptance A3 of dispatch://INFRA-988: every offered")
+		fmt.Fprintln(fs.Output(), "  One step directory judged against acceptance A3 of dispatch://POMJU-988: every offered")
 		fmt.Fprintln(fs.Output(), "  rate of R5, the unit starts and the unit sessions at once within 5% of the step's own")
 		fmt.Fprintln(fs.Output(), "  targets, no proposal past 30 unit sessions, every measurement of R6 present, and a pass")
 		fmt.Fprintln(fs.Output(), "  or a fail for each criterion of R8.")

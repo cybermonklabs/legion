@@ -337,7 +337,7 @@ var stallLimitVariables = []string{
 }
 
 // refusalCooldownVariables are the two numbers a Legion role's model fallback runs on
-// (INFRA-956 R1), in name order: the longest the session stays on the weaker model after a
+// (POMJU-956 R1), in name order: the longest the session stays on the weaker model after a
 // provider's content filter refused a turn, and how long the first such wait is. They ride the
 // same seam as the stall limits, which SpawnSpec merges after the fork, and reach a worker's
 // launch from workerSpawnSpec, which is why they are a list of their own: these are no stall
@@ -481,7 +481,7 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	if c.SessionLost {
 		// The agent this launch starts is a fresh session on a claim that had one: nothing in it
 		// says an earlier session existed, so it would read an empty transcript as a fresh start
-		// and redo work that is already pushed (dispatch://INFRA-714 R8).
+		// and redo work that is already pushed (dispatch://POMJU-714 R8).
 		fragment += " The session this claim recorded was found in no session store, so this is a new session: " +
 			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " +
 			"Read your issue and the committed handoffs in your workspace before you continue. " +

@@ -392,7 +392,7 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // issues already holding one.
 //
 // The held rows are what the line left behind, with the word for why (record.Waiting's second
-// answer, which C2 of dispatch://INFRA-3107 asks the pass for, so that a reader cannot take a
+// answer, which C2 of dispatch://POMJU-3107 asks the pass for, so that a reader cannot take a
 // candidate it left behind for a placed one). The pass builds a row at each of its fourteen
 // drop sites on every judgement, whoever asked for the line: the state and the controller's
 // tick read them, and so does the admission pass's stalled-tree measure (admit's

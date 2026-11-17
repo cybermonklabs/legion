@@ -381,7 +381,7 @@ func indexItemBlocks(
 	//
 	// A document's version write does the same, in the same shape: it records the blocks and
 	// marks the document owed its windows in the one transaction, for the tick's arm to write
-	// (IndexBlocks, DocumentsOwedWindows). That write is the statement INFRA-988 measured as
+	// (IndexBlocks, DocumentsOwedWindows). That write is the statement POMJU-988 measured as
 	// the write path's blocker - 9.7% of an hour's database time over 31,241 calls at a
 	// 114.3 ms mean, holding the issue row while a comment's `select status, closed_at is
 	// null from issues where key = $1 for no key update` waited on it - and the two paths are
@@ -412,7 +412,7 @@ func indexItemBlocks(
 // body is empty holds none (api's createCommentFor takes such a comment when it carries a
 // suggestion), and so does one whose last block an edit removed, which still holds the windows
 // of the text it had. The sum written here is what the arm finds it by, since it has no
-// current block row to be found by (ItemsOwedWindows, INFRA-988).
+// current block row to be found by (ItemsOwedWindows, POMJU-988).
 func recordItemIndexed(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1003,7 +1003,7 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 // (WriteItemWindows, writeWindows); the semi-join this replaced dropped it, and since that
 // statement is the only one that clears the marker, it stayed marked for ever - an entry in
 // the partial index every later pass paid a probe for and no pass could ever remove
-// (INFRA-988).
+// (POMJU-988).
 //
 // An item that is neither - one an older build wrote, marked for both arms at once, indexed by
 // no block-aware build and holding no block yet - is not this arm's: windows under no block
@@ -1042,7 +1042,7 @@ func ItemsOwedWindows(ctx context.Context, q Queryer, kind ItemKind, after strin
 // The two readings this replaced both walked the whole state table to decide owedness from
 // state: the two correlated `not exists` probes under an `or`, 13.7 s a pass over the
 // load-test deployment's 511,595 comment state rows for an answer of no rows, and the same
-// predicate as anti-joins, 2.92 s a pass with 472 MB of temporary files written (INFRA-988).
+// predicate as anti-joins, 2.92 s a pass with 472 MB of temporary files written (POMJU-988).
 func itemsOwedWindowsQuery(tables itemTables) string {
 	return `
 		select s.` + tables.item + `::text

@@ -20,7 +20,7 @@ import { inboxRow } from "./inbox-pane";
 import { type APIResponse, expect, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 
-// INFRA-492: what an open page shows must still follow the writes it shows, once an event
+// POMJU-492: what an open page shows must still follow the writes it shows, once an event
 // refreshes only what it can change. Each test writes as another party through the API while
 // alice's page stays open, and expects the change on the page within 2 s, with no reload.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
@@ -108,7 +108,7 @@ test("reference: a title written while the reference's read is in flight shows a
     await page.clock.install();
     await openLive(page, `/issues/${holder.key}/conversation`);
     const turns = page.getByRole("list", { name: "Conversation turns" });
-    // INFRA-869's R4: "A `dispatch://` reference reads as its target's title ... an issue as
+    // POMJU-869's R4: "A `dispatch://` reference reads as its target's title ... an issue as
     // its key and title", so the link reads the key and the title where it read the title
     // alone before. What this test holds - a title written while the read is in flight shows
     // once the page is left and returned to - is unchanged.
@@ -158,7 +158,7 @@ test("inbox: an issue closed while the Inbox read is in flight drops its ask fro
     await page.clock.install();
     await openLive(page, "/?assignee=everyone");
     // The question the Inbox keeps, read as the row it is: from 1280 px its text is also in the
-    // reading pane, which draws the selected row's card (INFRA-575).
+    // reading pane, which draws the selected row's card (POMJU-575).
     await expect(inboxRow(page, staying.id)).toBeVisible();
 
     // The Inbox read the new ask owes is composed with the ask and held; the close lands while it

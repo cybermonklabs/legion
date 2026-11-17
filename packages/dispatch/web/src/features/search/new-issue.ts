@@ -47,7 +47,7 @@ export interface FiledIssue {
  * One write onto an issue the create has already made. The issue exists whatever becomes of
  * this, so a refusal is answered rather than thrown: a throw would leave the bar saying it
  * could not make an issue it has made, and offering to make it a second time, which is the
- * husk R14 (dispatch://INFRA-1042/spec#b-r14) exists to stop.
+ * husk R14 (dispatch://POMJU-1042/spec#b-r14) exists to stop.
  */
 async function writeOnto<T>(
   writes: Writes,

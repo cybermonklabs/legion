@@ -44,7 +44,7 @@
 #                           into bin/dispatch-seed and run the patch's tests there (TestLen16Seed),
 #                           with every *.md under BUNDLE_DIR as the corpus; exits with their status.
 #   stack.sh replay-seed --bundle DIR [--keys-file FILE] [--stock] [--resume] [--out DIR] [-- ARGS]
-#                           the LINUX replay's seed: build Dispatch at 35efd326 (production's commit on
+#                           the HAFJJ replay's seed: build Dispatch at 35efd326 (production's commit on
 #                           2026-10-26, migration 0114) with replay-seed-len16.patch (--stock: without)
 #                           into bin/dispatch-seed[-stock]; on database dispatch_replay_build (dropped
 #                           and recreated, or kept with --resume) start it while Postgres, the proxy,
@@ -52,23 +52,27 @@
 #                           dispatch_replay_build [-keys-file FILE] ARGS`, wait for Dispatch to owe no
 #                           work and go idle, stop it, vacuum, pg_dump the database (the smallest of
 #                           gzip:9 and the zstd levels this pg_dump accepts), split it into 24 MiB
-#                           parts linux-replay-seed-0114.dump.partNN under DIR of --out (default
+#                           parts replay-seed-0114.dump.partNN under DIR of --out (default
 #                           $LOADTEST_ROOT/replay-seed) and write seed.meta.json there.
 #   stack.sh replay-manifest --bundle-pack FILE --bundle DIR [--seed-dir DIR] [--part-version N] > MANIFEST
-#                           a replay manifest (schema 1, replay-2026-10-26.json) from replay-pack's
-#                           JSON, the bundle's bundle.meta.json and replay-seed's seed.meta.json
-#                           (without --seed-dir, "seed": null); every part's version is N (default
-#                           1). No lock, no stack.
+#                           a replay manifest (schema 1) from replay-pack's JSON, the bundle's
+#                           bundle.meta.json and replay-seed's seed.meta.json (without --seed-dir,
+#                           "seed": null); every part's version is N (default 1). No lock, no stack.
 #   stack.sh replay-get [--manifest FILE] [--from-dir DIR]
-#                           the manifest's parts (default replay-2026-10-26.json) under
-#                           $LOADTEST_ROOT/replay/parts, each kept when its sha256 matches, else
-#                           copied from DIR or downloaded from DISPATCH_URL with DISPATCH_TOKEN_FILE's
-#                           token, and refused on a sha256 mismatch; the bundle unpacked into
-#                           replay/bundle and verified file by file; the seed dump restored once into
-#                           the template dispatch_replay_seed (replay/seed-restored.json). The
-#                           manifest names no issue: LOADTEST_REPLAY_ISSUE names the issue the parts
-#                           are file artifacts of and is required, even with --from-dir. Needs
-#                           Postgres running when the manifest names a seed.
+#                           the manifest FILE, else replay-2026-10-26.json, a project file of the
+#                           project of the issue LOADTEST_REPLAY_ISSUE names (common.sh
+#                           replay_fetch_manifest: kept at $LOADTEST_ROOT/replay/parts when its
+#                           sha256 is the pinned one, else copied from DIR or downloaded, refused on
+#                           any other sha256, and refused before any part when it can be none of
+#                           these); then the manifest's parts under $LOADTEST_ROOT/replay/parts, each
+#                           kept when its sha256 matches, else copied from DIR or downloaded from
+#                           DISPATCH_URL with DISPATCH_TOKEN_FILE's token, and refused on a sha256
+#                           mismatch; the bundle unpacked into replay/bundle and verified file by
+#                           file; the seed dump restored once into the template dispatch_replay_seed
+#                           (replay/seed-restored.json). The manifest names no issue:
+#                           LOADTEST_REPLAY_ISSUE names the issue the parts are file artifacts of and
+#                           is required, even with --from-dir. Needs Postgres running when the
+#                           manifest names a seed.
 #   stack.sh replay-prepare this build's replay template dispatch_replay_<key> (key: the first 16 hex
 #                           of bin/envoy-dispatch.json's dispatch_binary_sha256): from
 #                           dispatch_replay_seed, migrated by this build's Dispatch, its block-index
@@ -97,7 +101,8 @@
 # on Postgres without the proxy; LOADTEST_ENVOY_RTT=<duration> starts Dispatch with ENVOY_URL
 # through a latency proxy (envoy_proxy) in front of the listener;
 # LOADTEST_DISPATCH_COMMIT (setup, above); LOADTEST_GOMAXPROCS, Dispatch's GOMAXPROCS (default: nproc);
-# LOADTEST_REPLAY_ISSUE, the issue the replay's parts are file artifacts of (replay-get, above).
+# LOADTEST_REPLAY_ISSUE, the issue the replay's parts are file artifacts of, and
+# LOADTEST_REPLAY_MANIFEST_VERSION and LOADTEST_REPLAY_MANIFEST_SHA256 (replay-get, above).
 #
 # Every stack process starts under `env -i` with an explicit environment, so this shell's
 # DISPATCH_URL, ENVOY_URL, ENVOY_NATS_URL, AWS_*, HOME and XDG_* never reach it, and every process is
@@ -136,7 +141,7 @@ START_ORDER=(postgres proxy nats listener envoy_proxy dispatch)
 # The stack.json port keys (PORT_KEYS), each one's environment variable (PORT_VAR) and the default
 # ports of this root, which follow LOADTEST_ROOT, are common.sh's (stack_ports).
 
-# The LINUX replay's commands (replay-seed-patch-check, replay-seed, replay-manifest,
+# The HAFJJ replay's commands (replay-seed-patch-check, replay-seed, replay-manifest,
 # replay-get, replay-prepare and `reset --replay`), their constants and their helpers.
 # shellcheck source=packages/envoy/loadtest/replay.sh
 source "$here/replay.sh"

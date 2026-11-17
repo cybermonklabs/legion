@@ -986,7 +986,7 @@ func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
 // production-check line and the capability gaps, and the warning says what the refusal would
 // have said: the key, that nothing counts fix attempts, that no CI verdict sends work back on its
 // own — what a settlement names is told to the roles that work the issue
-// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and review_round_cap,
+// (dispatch://POMJU-714/spec R1) — that the architect decides when to stop, and review_round_cap,
 // the one cap left that blocks a pull request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
 // resync_interval_seconds) are the control that the two kinds stay apart.
 func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
@@ -996,7 +996,7 @@ func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 
-	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://POMJU-956 R4)\n"
 	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -1929,9 +1929,9 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // applies to every compiled source file of a run — and a documentation edit would then start the
 // whole daemon Go lane. What holds the copy to the guide is internal/textcheck's
 // TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample, in the job whose subject is a
-// file's words (INFRA-1413). That the guide also names the words of the wait itself is one rule
+// file's words (POMJU-1413). That the guide also names the words of the wait itself is one rule
 // held in one place, workflow's TestTheShippedWordsNameTheWaitingLineBand, which reads each
-// out of the source that declares it. (INFRA-1100.)
+// out of the source that declares it. (POMJU-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	const (
@@ -1996,7 +1996,7 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // in this job's filter — a declared read applies to every compiled source file of a run — and a
 // documentation edit would then start the whole daemon Go lane. What holds the copy to the
 // guide is internal/textcheck's TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock, in
-// the job whose subject is a file's words (INFRA-1413). That copy is its own file rather than
+// the job whose subject is a file's words (POMJU-1413). That copy is its own file rather than
 // more lines of awaiting_summary_extract.txt, which quotes the same sample, because the guide
 // keeps these two passages thirty lines apart and one quotation of one contiguous passage
 // cannot hold both; its header says the rest.
@@ -2006,7 +2006,7 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // WaitingLineReason test), so a change to either side is read here as the change it is. What
 // this test holds is the shape the command prints around them: a guide that says the block
 // names the key, the place and the part, while the command prints something else, is the defect
-// it exists to catch. (INFRA-2554.)
+// it exists to catch. (POMJU-2554.)
 func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 	const (
 		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
@@ -2233,7 +2233,7 @@ func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) 
 // empty), so on a deployment that ran a release without this change those rows exist from the
 // upgrade on, and the memory line must not start counting them. The want is the line a binary of
 // legion-v20.8.1 (045ee0762538), a release without this change, printed for the same issues,
-// measured by INFRA-2566's tester on 2026-11-13.
+// measured by POMJU-2566's tester on 2026-11-13.
 func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -2344,7 +2344,7 @@ func TestPlainStateCountsTheMemoryLineFromTheMemoryFieldsOfADaemonThatServesNoAs
 // there are; with none the line says so.
 //
 // The state body names no claim's suspender — every plugin parses it with the schema of its own
-// contract, and one whose answer side predates INFRA-1048 refuses a key it does not know — so the
+// contract, and one whose answer side predates POMJU-1048 refuses a key it does not know — so the
 // command reads that from the operator claim list, with the bearer
 // --operator-token-file names (strandedSuspenders). Read without that flag, as a pane reads,
 // there is no bearer and a released claim reads as the suspended worker it is.
@@ -2361,7 +2361,7 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 		`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`
 	// The phrase `legion state` puts before the claims a workflow start brings back
 	// (main.go's strandedPhrases), which names a retired claim beside a failed one and the acts
-	// that queue such a start (INFRA-1480).
+	// that queue such a start (POMJU-1480).
 	const workflowStart = "failed or retired, needs a workflow start: the architect's retry_or_escalate of a held phase, a transition into the phase, or a tree close and re-admission"
 	for _, tc := range []struct {
 		name, stranded, want string
@@ -2381,7 +2381,7 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 			stranded: `[{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`,
 			want:     "claims nothing will wake: 1 — " + workflowStart + " LEGION-210 reviewer\n",
 		},
-		// INFRA-945 R6: a claim whose idle pod the daemon released and whose wake never brought
+		// POMJU-945 R6: a claim whose idle pod the daemon released and whose wake never brought
 		// the pod back reads as that, under a move of its own, never as a suspension to resume or
 		// a failure to retry.
 		{
@@ -2395,7 +2395,7 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer, LEGION-209 tester; " +
 				workflowStart + " LEGION-210 reviewer\n",
 		},
-		// INFRA-1480: a retired claim needs the same workflow start a failed worker does, and the
+		// POMJU-1480: a retired claim needs the same workflow start a failed worker does, and the
 		// operator claim list still names the one a release suspended before its close retired it
 		// as released: the line names it under the workflow start, never as a pod coming back.
 		{

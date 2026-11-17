@@ -8,7 +8,7 @@ import (
 )
 
 // A check's words are its assertion. Rewording it under an unchanged serves edge
-// must stay stale; INFRA-1253 R4 inherits this characterization of today's carry.
+// must stay stale; POMJU-1253 R4 inherits this characterization of today's carry.
 func TestACheckWhoseWordsChangedCarriesNoApprovalThoughItsServesDidNot(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "WORDS", "Check words", ":::requirement{#r1}\nThe read succeeds.\n:::\n")

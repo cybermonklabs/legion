@@ -85,7 +85,7 @@ func grantOfJudgedRecord(t *testing.T, ts *testServer, enrollmentID string, sess
 // issue. The record the rules do admit releases, which is what makes the three refusals the
 // rules' doing and not the rewrite's.
 func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
-	const judgeableReason = "INFRA-1353 needs the key to drive the stack"
+	const judgeableReason = "POMJU-1353 needs the key to drive the stack"
 	for _, c := range []struct {
 		name     string
 		reason   string

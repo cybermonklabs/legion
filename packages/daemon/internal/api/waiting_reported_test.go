@@ -140,7 +140,7 @@ type waitingIssue struct {
 // (GET /legion/v1/state): the two started issues that wait stand in `admission.waiting` and in
 // `admission.blocked`, each with the keys it waits on, and in neither case in `admission.active`,
 // because an issue the daemon started and that waits on another issue holds none of the cap's
-// rows (INFRA-3036). Nor does either stand in `admission.held`, which names no issue the line
+// rows (POMJU-3036). Nor does either stand in `admission.held`, which names no issue the line
 // names (record.HeldList), and each one's `why` reads `waiting`, the state of a member of the
 // line, and not a held word's sentence. What a reader of `legion state` is told of them is the
 // other half, under this name in packages/daemon/cmd/legion: the plain line an operator reads.

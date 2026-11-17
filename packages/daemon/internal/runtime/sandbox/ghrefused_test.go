@@ -116,7 +116,7 @@ func ghVolumeDrift(g *rig, loc runtime.Locator, role claim.Role) []string {
 // asked for, the daemon would read the pod as drifted at every sweep, open an update round, task
 // every worker in the pod to push, replace the pod, and mint the pod that replaces it a bundle
 // lacking that directory again: a pod replaced for ever over an owner no mint can produce
-// (INFRA-513). The record the mints write and the directory set reads is what keeps the two
+// (POMJU-513). The record the mints write and the directory set reads is what keeps the two
 // answers one (appauth.LeftOut). Once GitHub answers for that owner again, a mint clears the
 // record and the pod is replaced once, which is right.
 func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) {
@@ -203,7 +203,7 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 // case: it projects what both Apps' bundles hold, so an owner either App is refused is in no
 // projection of it and its pod is no pod to replace. Were the record read for every App at
 // once, the implement App's refusal would hide the controller's drift for as long as it stood —
-// and in a project with no live issue pod nothing mints for that App to clear it (INFRA-513).
+// and in a project with no live issue pod nothing mints for that App to clear it (POMJU-513).
 func TestAnOwnerOnlyTheOtherAppIsRefusedForIsDriftForTheControllersPod(t *testing.T) {
 	var implement, review atomic.Bool
 	implement.Store(true)

@@ -11,13 +11,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 )
 
-// The two bodies that froze a reader's tab in the browser engine (INFRA-581) are refused by a
+// The two bodies that froze a reader's tab in the browser engine (POMJU-581) are refused by a
 // document write in a few milliseconds: Go reads a bare `:::a` as a malformed directive, whatever
 // it is nested in. Each refusal is held to 1 s of this process's CPU time (cpuTimeOf), hundreds of
 // times what it takes, so neither a loaded runner nor -race flakes it.
 //
 // The bodies are heavybodies.NestedDirectives (pmdoc/heavybodies), so the API's own test of the
-// verdict a write of each gets reads the very same bytes (INFRA-1404).
+// verdict a write of each gets reads the very same bytes (POMJU-1404).
 func TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly(t *testing.T) {
 	for _, test := range heavybodies.NestedDirectives() {
 		t.Run(test.Name, func(t *testing.T) {

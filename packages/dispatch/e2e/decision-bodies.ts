@@ -1,6 +1,6 @@
 // A decision block (`:::ask`) written into a text body draws a decision card nobody can answer
 // where it stands, so the server refuses every body that holds one: 400 DECISION_BLOCK_IN_BODY
-// on a comment, a reply, a message and a broadcast alike (INFRA-1201). A browser row that has
+// on a comment, a reply, a message and a broadcast alike (POMJU-1201). A browser row that has
 // to read such a card therefore writes the body straight into Postgres, the way a bulk thread
 // is seeded (`e2e/inbox-threads.ts`): into `comments` and `messages`, never into an index table.
 // The triggers of migrations 0142 to 0144 owe the row its block index themselves, and the card

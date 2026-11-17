@@ -8,7 +8,7 @@ package daemon
 // sweep is for is most often one whose pod was replaced: the daemon sends a phase task as one
 // outbox row, the claim machine retires it at the end of the first turn that confirmed it, and
 // what carries the worker through the rest of its phase is a timer inside its own process, which
-// dies with that process (dispatch://INFRA-3163).
+// dies with that process (dispatch://POMJU-3163).
 //
 // One sweep is one call of tellSilentPhaseWorkers over the claims the store holds now, as the
 // orphan sweep's tick makes it (sweepForSilence). What the sweep writes is a fact, and what the
@@ -245,7 +245,7 @@ func assertPromptedWithItsPhasesTask(t *testing.T, rig *podUpdateRig, conn *fake
 }
 
 // takesRelaunchSentence is role's replacement, relaunched holding nothing, reading the daemon's
-// own delivery of the sentence of what its pod's end took (dispatch://INFRA-3276 R3), which its
+// own delivery of the sentence of what its pod's end took (dispatch://POMJU-3276 R3), which its
 // ready sent it at once, and saying says: Oh My Pi's acknowledgement, the turn it starts, its end,
 // and the prompt's result behind it. That turn is all the delivery asks of it, and its result
 // retires the delivery, so the worker holds nothing again and is the one nothing will prompt.
@@ -509,7 +509,7 @@ func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 // fact's identity is the claim token, its launch and the moment of the last step
 // (workerSilentEventID), and a duplicate applies nothing. A worker that steps and then goes
 // silent again is a second silence, with a moment of its own, and it is told again. That is R5
-// of dispatch://INFRA-3163.
+// of dispatch://POMJU-3163.
 //
 // What stops the second notice is the identity and nothing else, and it stops it twice before
 // any handler runs: the sweep's own read of which ids this daemon has applied
@@ -844,7 +844,7 @@ func (r *podUpdateRig) reportsNothingRunning(role claim.Role) {
 // A second sweep adds neither notice nor row: the fact's identity is the claim token, its launch
 // and the moment of the report (workerBackgroundEventID), a session whose report reached the
 // daemon sends none of a later moment until it takes a turn or its reading changes, and a
-// duplicate applies nothing. That is R6 of dispatch://INFRA-3163.
+// duplicate applies nothing. That is R6 of dispatch://POMJU-3163.
 func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testing.T) {
 	rig := aBackgroundStalledWorker(t)
 	worker := claim.RoleImplementer
@@ -1044,7 +1044,7 @@ func TestWorkerBackgroundOfARoleWhoseCompletionWasAcceptedTellsNobody(t *testing
 // bound — so the sweep sends it its phase's task again, well inside the background bound: a
 // rule that read the stale report as work still running would leave it for the four hours of
 // worker_background_hours and then only tell its architect, which is the incident of
-// dispatch://INFRA-3163 with a longer fuse.
+// dispatch://POMJU-3163 with a longer fuse.
 func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(t *testing.T) {
 	rig := aBackgroundStalledWorker(t)
 	worker := claim.RoleImplementer
@@ -1058,7 +1058,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(
 	// nothing: the first report a Claude Code session makes is at the end of its first turn.
 	rig.displacedInto(worker, podUpdateReplacementPod)
 	// The replacement is told first that the task its dead process reported died with the pod
-	// (dispatch://INFRA-3276 R3), and reads it in a turn; then nothing prompts it.
+	// (dispatch://POMJU-3276 R3), and reads it in a turn; then nothing prompts it.
 	rig.takesRelaunchSentence(worker, "Each Claude Code background task that you started stopped with that process.")
 	conn := rig.workers[worker]
 	before := len(conn.Prompts())
@@ -1192,7 +1192,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 	old := rig.claimOf(worker).Generation
 	rig.displacedInto(worker, podUpdateReplacementPod)
 	// No report of the dead launch had landed when its pod went, so the replacement is told that
-	// the daemon has none (dispatch://INFRA-3276 R3), and reads it in a turn.
+	// the daemon has none (dispatch://POMJU-3276 R3), and reads it in a turn.
 	rig.takesRelaunchSentence(worker, "The daemon has no report of the background work of your last turn.")
 	// The dead process's Stop-hook report, authenticated under its own launch, lands after the
 	// launch's clear.

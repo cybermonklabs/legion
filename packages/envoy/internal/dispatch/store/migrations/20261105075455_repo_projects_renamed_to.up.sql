@@ -4,9 +4,9 @@
 --   renamed_to  the full `owner/name` this mapping's repository is called today, null for a
 --               repository that was never renamed, which is every row this migration leaves.
 --
--- INFRA-1240: one GitHub repository under two names is two names to Dispatch. `sjawhar/legion`
--- was renamed to `cybermonklabs/legion`, repo_projects maps both to project INFRA, and 243 of
--- INFRA's issues carry `repo = sjawhar/legion` of their own while 270 resolve to it. Such an
+-- POMJU-1240: one GitHub repository under two names is two names to Dispatch. `sjawhar/legion`
+-- was renamed to `cybermonklabs/legion`, repo_projects maps both to project POMJU, and 243 of
+-- POMJU's issues carry `repo = sjawhar/legion` of their own while 270 resolve to it. Such an
 -- issue's pull request is on the new name, so the attribution compares two spellings of one
 -- repository and holds nobody (delivery's attributionHeld), and the results route asks the App
 -- about the old name, which answers 404 for its installation, so a `before_merge` result reads

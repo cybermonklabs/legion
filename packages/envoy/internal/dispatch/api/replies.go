@@ -134,7 +134,7 @@ const (
 // the rows the cut kept, by their primary key. One step would be neither: with the Inbox's own read
 // taking every undismissed row, a plan that fetches each row as it walks the index costs more than
 // one that scans the table, so the planner scans it - 101,540 rows read to answer 1,540 of them at
-// INFRA-450's a14 seed - and sorts what it keeps.
+// POMJU-450's a14 seed - and sorts what it keeps.
 //
 // Neither step carries an order over the joins: the route sorts the two kinds of row together
 // (listMyReplies) whatever order each half read them in, so an order here would be one sort for
@@ -543,7 +543,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	// answers is a cut of a list the caller is told the length of. The Dismissed view is counted
 	// nowhere: it answers 200 rows at a time from a cursor and says in next_cursor whether another
 	// page follows, which is what the view reads, and a count of it is a count of every thread the
-	// person has ever dismissed - 110,000 rows at INFRA-450's a14 seed, 8 s of the 9.4 s that read
+	// person has ever dismissed - 110,000 rows at POMJU-450's a14 seed, 8 s of the 9.4 s that read
 	// took. Its total is the page it answers (contracts' MyRepliesResponse).
 	counted := limit != nil && state != myRepliesStateDismissed
 	if wantReply {

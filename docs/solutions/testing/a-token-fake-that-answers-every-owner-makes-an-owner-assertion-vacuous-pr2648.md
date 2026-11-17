@@ -15,7 +15,7 @@ related_issues:
 
 # A token fake that answers every owner, and a fixture whose two answers agree, make an owner assertion vacuous
 
-Extends docs/solutions/testing/prove-which-credential-a-caller-presents-without-minting-or-printing-one-INFRA-228.md,
+Extends docs/solutions/testing/prove-which-credential-a-caller-presents-without-minting-or-printing-one-POMJU-228.md,
 which is about proving a live caller's identity. This one is about the unit test's fake.
 
 When the thing under test is **which principal a call was made as** — which owner a token was

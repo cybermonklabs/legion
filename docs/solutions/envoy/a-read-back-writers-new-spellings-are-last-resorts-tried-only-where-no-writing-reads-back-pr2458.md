@@ -13,7 +13,7 @@ module: packages/envoy/internal/dispatch/pmdoc
 
 # A read-back writer's new spellings are last resorts, tried only where no writing reads back
 
-Extends docs/solutions/envoy/a-writer-that-checks-its-output-by-reading-it-back-keeps-stored-bytes-only-when-the-new-reader-joins-every-step-of-the-old-ladder-INFRA-534.md.
+Extends docs/solutions/envoy/a-writer-that-checks-its-output-by-reading-it-back-keeps-stored-bytes-only-when-the-new-reader-joins-every-step-of-the-old-ladder-POMJU-534.md.
 That page covers adding a reader; this one covers adding candidate spellings to fix shapes the
 writer refuses.
 

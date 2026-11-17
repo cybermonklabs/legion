@@ -16,7 +16,7 @@ related_issues:
 
 # Freeze a network path by pausing both sockets, and size a backlog past the runtime's buffers
 
-Extends `docs/solutions/testing/a-stopped-bus-cannot-prove-a-request-bound-only-a-connected-silent-one-can-INFRA-141.md`.
+Extends `docs/solutions/testing/a-stopped-bus-cannot-prove-a-request-bound-only-a-connected-silent-one-can-POMJU-141.md`.
 That document asks for a connected, silent peer. A silent peer that still reads is a different
 fixture from a dead route.
 

@@ -15,7 +15,7 @@ related_issues:
 
 # An approved head waiting on its merge rechecks main's migration numbers at every wake, and only a push can send it back
 
-Extends docs/solutions/envoy/a-migration-number-is-checked-against-mains-highest-at-every-push-and-the-local-harness-database-is-recreated-after-a-renumber-INFRA-367.md.
+Extends docs/solutions/envoy/a-migration-number-is-checked-against-mains-highest-at-every-push-and-the-local-harness-database-is-recreated-after-a-renumber-POMJU-367.md.
 
 - That note checks the number before every push and every review round. A head in
   `awaiting_merge` has neither, and two new migration files never conflict as text, so GitHub

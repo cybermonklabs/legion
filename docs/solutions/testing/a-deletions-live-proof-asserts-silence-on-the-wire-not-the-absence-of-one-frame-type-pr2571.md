@@ -14,7 +14,7 @@ related_issues:
 
 # A deletion's live proof asserts silence on the wire, not the absence of the one frame type it deleted
 
-Extends docs/solutions/testing/evidence-can-be-absent-rather-than-wrong-and-absence-reads-exactly-like-success-INFRA-31.md
+Extends docs/solutions/testing/evidence-can-be-absent-rather-than-wrong-and-absence-reads-exactly-like-success-POMJU-31.md
 with the shape for a removed mechanism.
 
 "We no longer send X" cannot be asserted by looking for X once X's type is gone: the assertion

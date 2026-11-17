@@ -1,6 +1,6 @@
 package supervise
 
-// The live case behind dispatch://INFRA-714 R7: INFRA-264's tester registered on a fresh claim, an
+// The live case behind dispatch://POMJU-714 R7: POMJU-264's tester registered on a fresh claim, an
 // Envoy message reached its role topic six seconds later and started its first turn, it ran the
 // whole testing round in that turn, and its handoff_complete was refused 409 HANDOFF_NO_RUN —
 // "this claim has taken none" — because the daemon's phase task had not been delivered yet.

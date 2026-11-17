@@ -15,7 +15,7 @@ related_issues:
 
 # A proof harness a later round reruns lives on the pull request, not on the issue disk
 
-Updates docs/solutions/legion/a-roles-scratch-on-the-container-filesystem-is-what-an-issue-pod-is-replaced-over-INFRA-43.md,
+Updates docs/solutions/legion/a-roles-scratch-on-the-container-filesystem-is-what-an-issue-pod-is-replaced-over-POMJU-43.md,
 whose "the volume survives a pod replacement" no longer holds: an issue pod's disk is created with
 the pod and deleted with it (docs/kubernetes.md, "The disk dies with its pod"). `/legion/scratch`
 keeps the container's root filesystem small; it does not keep anything past the pod.

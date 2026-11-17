@@ -207,7 +207,7 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 			signalStopped,
 		},
 		{
-			"a warning naming the test's own database whose pending_for has passed the own-hold bound fails whatever the elapsed time, so a hold holding up its live readers is never waited out (dispatch://INFRA-636)",
+			"a warning naming the test's own database whose pending_for has passed the own-hold bound fails whatever the elapsed time, so a hold holding up its live readers is never waited out (dispatch://POMJU-636)",
 			state{elapsed: 3 * time.Millisecond, warnings: 1, last: FromLine(stallWarningLine(ownDatabase, 2*OwnHoldBound))},
 			ownHold,
 		},

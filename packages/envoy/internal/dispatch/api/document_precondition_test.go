@@ -418,7 +418,7 @@ func TestDocumentEditPreconditionRejectsWriterAfterDurableAppendRace(t *testing.
 	}
 }
 
-// A `replace` that writes blocks is a conditional edit like any other (INFRA-1520 R9): a `blocks`
+// A `replace` that writes blocks is a conditional edit like any other (POMJU-1520 R9): a `blocks`
 // precondition naming the matched block's current token takes it, the blocks it adds need no token
 // of their own, having no earlier version to name, and a stale token for that block refuses it with
 // nothing written. A `replace` that parses to one paragraph answers the same way.

@@ -44,7 +44,7 @@ export const DISPATCH_ISSUE_TOPIC_PREFIX = `${DISPATCH_TOPIC_PREFIX}issue.` as c
 export const DISPATCH_DOCUMENT_TOPIC_PREFIX = `${DISPATCH_TOPIC_PREFIX}document.` as const;
 
 /** An issue's event, named under the issue's project and then its key:
- * `notifications.dispatch.issue.INFRA.INFRA-12.comment.created`. The project comes first so a
+ * `notifications.dispatch.issue.POMJU.POMJU-12.comment.created`. The project comes first so a
  * grant or a reader can name every message of one project with one pattern. */
 export type DispatchIssueSubject<
   Project extends string = string,
@@ -61,7 +61,7 @@ export function dispatchIssueSubject(project: string, issueKey: string, type: st
   return `${DISPATCH_ISSUE_TOPIC_PREFIX}${project}.${issueKey}.${type}`;
 }
 
-/** An issue's event in the old form, with no project: `notifications.dispatch.issue.INFRA-12.…`.
+/** An issue's event in the old form, with no project: `notifications.dispatch.issue.POMJU-12.…`.
  * Every reader takes both forms until the old one is refused; a caller still on this one is
  * counted where it registers (`canonicalTopic` in `subject-project.ts`). */
 export type LegacyDispatchIssueSubject<
@@ -93,7 +93,7 @@ export function dispatchDocumentSubject(project: string, slug: string, type: str
 }
 
 /** One session's messages, named under the project they belong to, `NO_PROJECT` for none:
- * `notifications.agent.INFRA.<session>`. */
+ * `notifications.agent.POMJU.<session>`. */
 export type AgentSubject<
   Project extends string = string,
   Session extends string = string,
@@ -119,7 +119,7 @@ export function legacyAgentSubject(session: string) {
 }
 
 /** A role's lane, named under the project the role works for, `NO_PROJECT` for none:
- * `notifications.role.INFRA.legion-infra-infra-12-architect`. The old form,
+ * `notifications.role.POMJU.legion-pomju-pomju-12-architect`. The old form,
  * `notifications.role.<role>`, is `roleTopic` in `legion-roles.ts`. */
 export type RoleSubject<
   Project extends string = string,

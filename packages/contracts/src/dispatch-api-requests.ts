@@ -63,7 +63,7 @@ export type ArtifactVersionContent = ArtifactVersionText | ArtifactVersionBlob;
 /**
  * The code of the `409` Dispatch answers an id written as a prefix two items or more carry: a
  * page address, a `dispatch://` reference or a dashboard address in text, or a route that takes
- * an id in its path (INFRA-869). `candidates` then lists the items it names, at most ten, in id
+ * an id in its path (POMJU-869). `candidates` then lists the items it names, at most ten, in id
  * order, for the caller to write more of the id or to choose one. Generated into Go as
  * `contracts.IDAmbiguous`.
  */

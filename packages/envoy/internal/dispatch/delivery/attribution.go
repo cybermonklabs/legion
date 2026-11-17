@@ -29,7 +29,7 @@ import (
 //  5. a key in its commit messages, in commit order.
 //
 // The prototype's collector/attribution.py tried the title and the body first, and ranks 1 to 3
-// below them. R8 of INFRA-1522 moved them above: a branch name and a link are acts that name the
+// below them. R8 of POMJU-1522 moved them above: a branch name and a link are acts that name the
 // issue — someone branched for it, someone linked it — while a key in a title or a body is a
 // mention, which a pull request that reverts, follows or merely cites another issue's work
 // carries as readily as one that does that work. The commit messages stay last: they are the

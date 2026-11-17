@@ -1,4 +1,4 @@
-// The live proof's driver for dispatch://INFRA-980's acceptance line A8: the admission cap counts
+// The live proof's driver for dispatch://POMJU-980's acceptance line A8: the admission cap counts
 // the issues the daemon has started rather than the trees, and a parent's own phases come after
 // its children's.
 // It boots the whole daemon on a real Postgres, drives one root with two children and one second
@@ -471,7 +471,7 @@ func (r *admissionIssuesLive) childrenHoldTheSlots() {
 // nothing will wake.
 //
 // The return is the architect's own, not a red settlement: a CI settlement moves no issue on this
-// release (dispatch://INFRA-714/spec R1), and what the step is about is a return that finds the
+// release (dispatch://POMJU-714/spec R1), and what the step is about is a return that finds the
 // cap full, whichever move made it.
 func (r *admissionIssuesLive) backwardMoveReturnsAWaitingIssue() {
 	t := r.t

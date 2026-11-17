@@ -57,7 +57,7 @@ a {
 }
 
 /* The new issue page's typeface: Inter, the face every width of that page's spec and pictures
-   is measured in (dispatch://INFRA-1196 R36), shipped in the bundle so that no reader of it is
+   is measured in (dispatch://POMJU-1196 R36), shipped in the bundle so that no reader of it is
    drawn in whatever face their machine happens to hold. It is declared under a family name of
    its own, `Dispatch Inter`, which only that page's stack names (the rule after the palette,
    below): every other page keeps the root's stack, whose `Inter` can only be a face the reader's
@@ -189,7 +189,7 @@ a {
 }
 
 @theme {
-  /* The issue page's palette (dispatch://INFRA-1196), the approved prototype's own colours
+  /* The issue page's palette (dispatch://POMJU-1196), the approved prototype's own colours
      (`theme/palette.ts`'s `PAGE_*` and `ICON_RAIL*`), each named for what it is on that page:
      the paper, the ink and its two lighter greys, the rules, the left pane and its marked row,
      and for each kind of node the colour of its bullet and tag and the tint behind it. Each
@@ -356,7 +356,7 @@ html:has([data-issue-page]) {
      `lib.css`, line height 1.6), 16px on 25.6px, 3.2px / 3.4px; an agent turn's reasoning
      (`AgentThread.tsx`, `text-xs`), 12px on 16px, 0.8px / 1.2px. A fixed 3px there measured
      -1px, reaching into the letters of the line above, and a fixed 4px on a message turn
-     measured a clearance of 1px (INFRA-95).
+     measured a clearance of 1px (POMJU-95).
 
      No fallback declaration: Tailwind v4's browser floor supports `lh`, and a browser
      without it drops the declaration and gives the link no padding, which never overlaps.

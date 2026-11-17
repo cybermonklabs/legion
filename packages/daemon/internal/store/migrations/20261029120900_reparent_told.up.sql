@@ -1,5 +1,5 @@
 -- 20261029120900_reparent_told.up.sql — the parent a root was told it stays its own tree under
--- (dispatch://INFRA-714 R3).
+-- (dispatch://POMJU-714 R3).
 --
 -- A root that ran as a tree of its own is adopted by no release of children and no admission
 -- sweep, however a person re-parents it: it stays its own tree. The daemon says so once, on the

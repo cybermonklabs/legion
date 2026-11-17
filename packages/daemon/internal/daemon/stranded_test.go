@@ -200,7 +200,7 @@ func keysOf(state map[string]json.RawMessage) []string {
 // architects under `resume`, the suspended phase workers under `suspendedWorkers`, the failed
 // architects under `retry` and the failed phase workers and the retired claims under
 // `needsWorkflowStart`; the state carries the same claims, each with its state, `retired` among
-// them (INFRA-1480).
+// them (POMJU-1480).
 //
 // Every slot here holds a worker with work, as a previous daemon's slot does: the suspended,
 // failed and retired workers kept the task their start gave them (holdingTask) and the planner's
@@ -412,7 +412,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 // supervisor after beginning the transaction, while RoleRuns stayed in the transaction, used to
 // answer the newer `suspended` worker with no stranded entry.
 //
-// The claim the snapshot saw retired is the other half of that consistency (INFRA-1480): its
+// The claim the snapshot saw retired is the other half of that consistency (POMJU-1480): its
 // worker view says `retired` and the report names it, since only a start of its phase relaunches
 // it and no rule queues one.
 func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T) {

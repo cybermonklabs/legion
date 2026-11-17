@@ -68,7 +68,7 @@ const (
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
 	// The launcher's memory guard reports each process it ended, unasked, so the daemon can tell
-	// that process's role why it is gone (INFRA-3557). The settings the guard runs by travel the
+	// that process's role why it is gone (POMJU-3557). The settings the guard runs by travel the
 	// other way, on the launcher_hello_ack (LauncherMemoryGuard).
 	TypeLauncherMemoryKill = "launcher_memory_kill"
 	// The shared public leak check's two directions: the daemon pushing the check's packed
@@ -250,7 +250,7 @@ const (
 // LauncherMemoryKill is one process of a role that was stopped because the pod was out of memory:
 // ended with SIGKILL by the launcher's memory guard, or, in a microVM pod, stopped by the pod's own
 // kernel (Cause). The launcher sends it, unasked, on the connection of the role whose process it
-// was, and the daemon tells that role why the process is gone (INFRA-3557).
+// was, and the daemon tells that role why the process is gone (POMJU-3557).
 //
 // Guard is the identifier the guard minted for itself when the launcher process started, and
 // Sequence the guard's own count of its kills, from 1: together they name the kill once, so a
@@ -526,7 +526,7 @@ func (f PromptResult) Reason() string {
 // ToolExecutionStart is Oh My Pi beginning one tool call of a turn, and ToolExecutionEnd that
 // same call finishing. They are the only frames that say an agent mid-turn is still moving: the
 // daemon stamps each on receipt and keeps the last of them on the claim, so a turn whose agent
-// has stopped stepping is found rather than read as hours of work (INFRA-1274).
+// has stopped stepping is found rather than read as hours of work (POMJU-1274).
 //
 // ToolCallID is what pairs an end with its start, and the only thing that does: two calls of one
 // tool in one assistant message come back with byte-identical ToolName and Args, and their ends

@@ -1,7 +1,7 @@
 package daemon
 
 // The sentence a relaunched process is told of what the last let-go of its process ended
-// (dispatch://INFRA-3276 R3), end to end over the real supervision, the real workflow and a real
+// (dispatch://POMJU-3276 R3), end to end over the real supervision, the real workflow and a real
 // Postgres, with a faked runtime: a root architect relaunched holding a task and holding none,
 // either one's catch-up, and the catch-up of one whose relaunch also lost its session; the
 // daemon-launched controller's start message; a phase worker's resume task behind the daemon's
@@ -498,7 +498,7 @@ func (r *readyWorkerRig) dueNow() {
 }
 
 // The operator's stop of a phase worker in the turn of its phase's task, its session reporting a
-// subagent, and the operator's plain retry after it (dispatch://INFRA-3276 R3, an operator's
+// subagent, and the operator's plain retry after it (dispatch://POMJU-3276 R3, an operator's
 // retry), each through the operator's own routes, as `legion claims stop` and `legion claims
 // retry` send them. The stop records on the claim's row what it ended, under its own cause: the
 // turn, that turn's task, and the subagent. The retry starts the worker's phase again (api's

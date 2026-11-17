@@ -78,7 +78,7 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 
 				// The host's set holds no session consumer's call, so this listener can give no
 				// session a consumer, and a session is reached through its own consumer and
-				// nothing else: the core receive path is gone with dispatch://INFRA-771 and the
+				// nothing else: the core receive path is gone with dispatch://POMJU-771 and the
 				// serving port with sjawhar/legion#2674. So every registration this listener
 				// answers is refused by name and writes nothing, and the registry knows no such
 				// session afterwards.
@@ -280,7 +280,7 @@ func TestListenerHostPermissionsOnRealServers(t *testing.T) {
 // The narrowing of this set is of the subscribe side alone: a session keeps every publish entry
 // it had, _INBOX.> among them, because every relay frame is answered on the listener's own inbox
 // and a session that could not answer would be relayed the same message for ever. Whether another
-// session's relay subject is refused is dispatch://INFRA-840's, not this set's, and is not
+// session's relay subject is refused is dispatch://POMJU-840's, not this set's, and is not
 // asserted here.
 func TestSessionPermissionsOnRealServers(t *testing.T) {
 	for _, image := range testnats.Images {

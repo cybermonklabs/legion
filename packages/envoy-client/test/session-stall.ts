@@ -1,5 +1,5 @@
 /**
- * The committed regression rig for the three session states (dispatch://INFRA-392): a session
+ * The committed regression rig for the three session states (dispatch://POMJU-392): a session
  * whose box stalls it is `unresponsive`, not dead, and keeps its record, its role claim and its
  * messages until the gone horizon.
  *

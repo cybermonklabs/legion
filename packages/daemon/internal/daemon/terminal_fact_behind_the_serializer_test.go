@@ -15,10 +15,10 @@ import (
 // stop the daemon: the fact waits its turn and is applied once the serializer is free, as every
 // fact of the intake does (intake.HandlerLimitFor gives a message at least ten minutes for the
 // same wait). The serializer is a queue behind every fact of the project, so a wait of tens of
-// seconds is load and not a fault, and INFRA-3169 measured `pg_advisory_xact_lock` as the
+// seconds is load and not a fault, and POMJU-3169 measured `pg_advisory_xact_lock` as the
 // costliest statement of its window. A live terminal fact the daemon gives up on is sent to
 // w.failed, which ends the workflow and with it the daemon: a slow fact would then cost a
-// restart, and a restart is what started INFRA-3169.
+// restart, and a restart is what started POMJU-3169.
 //
 // The test holds the serializer for a little longer than bootTimeout, the bound the boot's replay
 // gives each fact and the bound a live terminal fact had at 52f51bd6, then frees it.

@@ -31,7 +31,7 @@ const (
 // declares — the const block of record/held.go, and any other block of the package that declares
 // one — by the name it is declared under. It reads the source rather than a list a person keeps
 // beside the table, because a test over such a list would pass while this measure ignored a word
-// nobody added to it, which is the fault dispatch://INFRA-2560 was filed for rather than a new
+// nobody added to it, which is the fault dispatch://POMJU-2560 was filed for rather than a new
 // place to hide it: a word the daemon's own walk writes and this table has never heard of
 // silences nothing, so the tree it holds is named as a stall whatever the daemon is doing about
 // it. It reads the whole package and not one file, so a word declared beside another rule is

@@ -39,7 +39,7 @@ one field away, which is the trap.
 
 ## Evidence
 
-sjawhar/legion#2726 (dispatch://INFRA-1052) measured each package's wall time in the two Go steps
+sjawhar/legion#2726 (dispatch://POMJU-1052) measured each package's wall time in the two Go steps
 of the `test` job, over 30 jobs.
 
 - Read by the jobs API's step window, job 125891768215 gave 17 package lines to the plain step and

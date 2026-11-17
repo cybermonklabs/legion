@@ -454,7 +454,7 @@ test("a compact answered ask's Write a reply opens its composer as the next keyb
 
     await page.keyboard.type("Following up");
     await page.keyboard.press("Control+Enter");
-    // The thread reads oldest first, the order every surface shares (INFRA-450), so the reply
+    // The thread reads oldest first, the order every surface shares (POMJU-450), so the reply
     // just written stands at the end of it.
     await expect(replies.first()).toContainText("Thanks");
     await expect(replies.nth(1)).toContainText("Following up");

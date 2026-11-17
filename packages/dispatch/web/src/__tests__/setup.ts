@@ -36,7 +36,7 @@ expect.extend(reportableJestDomMatchers());
 // from `bun:test` and no global, so without this line every `waitFor` and `findBy*` under
 // `jest.useFakeTimers()` takes the real-clock path and polls timers the test is holding still:
 // a wait whose node is already there passes by its first synchronous check, and a wait that
-// needs the clock to move can never end. That is what dispatch://INFRA-983 measured on a 2-core
+// needs the clock to move can never end. That is what dispatch://POMJU-983 measured on a 2-core
 // pod, where four of its files fail 16 tests without this line; on the pod this line was written
 // in, nothing discriminates it, so `testing-library-fake-timers.test.tsx` holds it in place by
 // asserting the global rather than by timing a wait, and says so.
@@ -55,7 +55,7 @@ expect.extend(reportableJestDomMatchers());
 // `row-configurations.test.ts`'s "no row runs twice in one configuration", reads 13.83 s loaded.
 // The number is twice the slowest loaded test, and it is sized on the slower of the two pod
 // shapes this suite runs in rather than on the one that measured 13.83 s: at code that does not
-// differ, dispatch://INFRA-983's pod reads 335 s for the whole suite where this one reads 156 s,
+// differ, dispatch://POMJU-983's pod reads 335 s for the whole suite where this one reads 156 s,
 // a factor of 2.15, which puts that same test at about 29.7 s there - inside a 30 s deadline by
 // 0.3 s, which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is
 // 59.4 s, so 60 s, and it is kept as small as that rule allows, because every hung test costs
@@ -71,7 +71,7 @@ expect.extend(reportableJestDomMatchers());
 // `e2e/__tests__/compare-recordings-refusal.test.ts:28`, `stub-web-server.test.ts:43` and
 // `psql-session.test.ts:61,70` at 60 s, equal to the flag, and `MarkdownBody.test.tsx`'s 40 s,
 // above the 25 s wait that row must let run out. The list is not a superlative and is not
-// checked by anything: a row added tomorrow may set more, as dispatch://INFRA-1571 does with
+// checked by anything: a row added tomorrow may set more, as dispatch://POMJU-1571 does with
 // a 90 s limit of its own. What lowering the flag would cut is every row that sets none.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
@@ -84,14 +84,14 @@ expect.extend(reportableJestDomMatchers());
 // drives no subprocess reads 5.80 s whole. This number is not re-sized for the slower pod shape
 // as the deadline above is, because a wait is not a test: the longest single wait measured
 // loaded here is `mermaid-diagrams.test.tsx`'s shadow-root draw at 1.2 to 1.4 s, which the 2.15
-// factor puts at about 3 s there, against 10 s. dispatch://INFRA-1405 sets this same number in
+// factor puts at about 3 s there, against 10 s. dispatch://POMJU-1405 sets this same number in
 // this same file, so changing it is that tree's to agree to as well.
 //
 // Under `jest.useFakeTimers()` the same budget is 10 s of *fake* time, not of the machine's:
 // Testing Library advances the held clock by its polling interval until the wait succeeds or the
 // deadline passes, so a wait that does not succeed now moves that clock ten times as far as it
 // did. No row of this suite changes verdict for it: the files that install a clock and wait -
-// 21 of them when dispatch://INFRA-1405 measured this on its own tree, about twice that in the
+// 21 of them when dispatch://POMJU-1405 measured this on its own tree, about twice that in the
 // merged one - were green before this budget and are green after it, and a wait that used to
 // succeed cannot start failing because it is given longer. What the longer advance can do is let
 // a wait succeed that used to give up - a product timer it now reaches - so what the suite gives

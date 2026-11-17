@@ -35,7 +35,7 @@ That page's rule — a test that reads a repository's configuration with real gi
   environment caught. A base-commit control proves the failure pre-exists your change; it does not
   prove the failure is not yours to fix.
 
-## Evidence (sjawhar/legion#2600, INFRA-623)
+## Evidence (sjawhar/legion#2600, POMJU-623)
 
 - A Legion issue pod sets `GIT_CONFIG_COUNT=5`, and two of those five pairs are
   `credential.https://github.com.helper` — once empty, once `!legion git-credential`.

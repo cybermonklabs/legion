@@ -784,7 +784,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 }
 
-// /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the agents' client
+// /healthz says this build judges a write's Idempotency-Key (POMJU-258), which the agents' client
 // reads before it retries a write under its key: an earlier Dispatch ignores the header and would
 // run the retry again. It is the binary's fact, so a probe that answers 503 - its database down,
 // closed or never configured - carries it in its body as a 200 does: a client that reads the body

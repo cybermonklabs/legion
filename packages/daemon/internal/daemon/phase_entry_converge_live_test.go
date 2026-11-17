@@ -1,7 +1,7 @@
 //go:build e2e
 
 // The live proof that the work of a phase entry reaches the worker that entry names, on a running
-// daemon (dispatch://INFRA-2800's R3, R4, R5, R6 and R9). scripts/e2e/phase-entry-converge.sh
+// daemon (dispatch://POMJU-2800's R3, R4, R5, R6 and R9). scripts/e2e/phase-entry-converge.sh
 // builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's

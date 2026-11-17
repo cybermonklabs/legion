@@ -21,7 +21,7 @@ import (
 // consumer holds the message. The recipient whose own consumer does is pinned by
 // TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery below.
 //
-// A session with no entry leaves no attempt record whichever refusal it meets (INFRA-594): a
+// A session with no entry leaves no attempt record whichever refusal it meets (POMJU-594): a
 // mode it does not advertise cannot be judged against an entry there is none of, so the message
 // is taken and the resolution that then fails records nothing, and a mode that cannot be read is
 // refused before the entry is read at all but recorded only where the resolution succeeded.
@@ -151,7 +151,7 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 
 // A recipient the fan-out read an entry for and nothing reaches -- an entry with no consumer of
 // its own holding the message (session.ErrNoSessionRecord), the record a build before
-// dispatch://INFRA-771 left for a session on the core path -- has its attempt recorded before
+// dispatch://POMJU-771 left for a session on the core path -- has its attempt recorded before
 // the exception of its refusal is published, so a redelivery of the identical message inside the
 // attempt window is the attempt-dedupe skip judgeFollowedTopic makes of it and raises no second
 // exception. This path is that recipient's one report (fanoutDelivery), so without the record
@@ -221,7 +221,7 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 // a frame whose delivery mode it cannot read without a word, so a refusal left to that relay
 // would be reported by nobody. The fan-out records no attempt for it: it hands the message to
 // nobody, so a record would have the relay's own copy of the next event under that key skipped as
-// one already on its way (INFRA-594).
+// one already on its way (POMJU-594).
 func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -279,7 +279,7 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 // when another interest on that topic sends the same message down the durable path: the session's
 // consumer holds it and its relay is what sends it, so the fan-out hands it to nobody and records
 // neither an attempt nor a dedupe key for it -- records that would have the next copy of the same
-// event skipped as one the session already has (INFRA-594).
+// event skipped as one the session already has (POMJU-594).
 func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 	// Unowned, so no relay runs until the fan-out has read the message: the test orders the two
 	// paths by construction rather than by timing.
@@ -315,7 +315,7 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 // echo: the fan-out hands it back to nobody, reports no failure of it, and records neither a
 // dedupe key nor an attempt for it, so the next event under that key still reaches it. Every
 // other session following the topic is given the message as usual, by the relay of its own
-// consumer, which the fan-out records nothing for either (INFRA-594).
+// consumer, which the fan-out records nothing for either (POMJU-594).
 //
 // Both sessions are on consumer delivery, the shape every live registration has, and the message
 // is stored, so the durable path's fan-out is the lane that reads it: the listener's core

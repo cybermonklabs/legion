@@ -21,7 +21,7 @@ import (
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
 // it says (tellChecks). It moves nothing: a failed CI check is information the worker holding the
 // phase decides on - rerun, wait, or fix - and not the daemon's to read the semantics of
-// (dispatch://INFRA-714/spec R1).
+// (dispatch://POMJU-714/spec R1).
 func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Role) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
@@ -65,7 +65,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// The settlement that applies is the other half of that pair, and it is news: the head it
 	// settled on, the runs it reports and what each of them concluded are new to the record, and
 	// a GitHub event of the issue's pull request is a movement of the issue
-	// (dispatch://INFRA-2560 R3). So this write goes through the helper that marks it
+	// (dispatch://POMJU-2560 R3). So this write goes through the helper that marks it
 	// (putPullRequest) while the duplicate above does not, and a tree whose last news was its CI
 	// settling is measured from that settlement rather than from whatever moved the issue before
 	// it.
@@ -175,7 +175,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 // cancelled was cancelled, and one it reports as a run and names neither way succeeded - the
 // listener settles a commit once every check it has seen is terminal. Nothing here judges those
 // conclusions: a job GitHub never started reads like any other, and what they mean for the work is
-// the reading worker's (dispatch://INFRA-714/spec R1). The line is the whole of what the daemon
+// the reading worker's (dispatch://POMJU-714/spec R1). The line is the whole of what the daemon
 // knows of that head's CI, so two settlements that leave it the same say nothing new (tellChecks).
 //
 // Each name's conclusion is the newest run of it among the settlements of the head the fence
@@ -251,7 +251,7 @@ func namedConclusions(conclusions map[string]record.RunConclusion) string {
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
 // request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
 // the worker that holds the phase decides whether to re-run, wait or fix
-// (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
+// (dispatch://POMJU-714/spec R1). One message goes to three roles - the worker holding the issue's
 // phase, the implementer, whose code the checks ran on, and the architect that owns the issue
 // (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
 // a role holder with a message. A role named twice, the implementer holding the phase, is told
@@ -419,7 +419,7 @@ func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullReq
 //     (intake.PullRequestReview.ReadFromList) that the review App did not submit decides nothing,
 //     at every head the record can come to hold. The list answers with GitHub's own commit_id for
 //     every review it holds, and that id moves to the pull request's current head
-//     (dispatch://INFRA-1557), so a person's listed approval would stand for code it never read,
+//     (dispatch://POMJU-1557), so a person's listed approval would stand for code it never read,
 //     and no head the record reaches makes the list's answer evidence of the code it read. The
 //     same person's review by webhook decides as it always has, on the commit_id the event
 //     carried.
@@ -598,7 +598,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 // submitted names the head it read in its Legion footer (intake.PullRequestReview.LegionHead),
 // which is why it decides the round at all (refusesRound); GitHub's commit_id for that same
 // review is the pull request's head as GitHub holds it, and GitHub moves it onto each later head
-// (dispatch://INFRA-1557). Recorded from commit_id, an approval of the head its footer names
+// (dispatch://POMJU-1557). Recorded from commit_id, an approval of the head its footer names
 // would stand for the head after it the moment that head arrived, approving code the reviewer
 // never read. A person's review carries no footer, so it is recorded on the commit_id its
 // webhook was delivered with, the head it decides on and the one GitHub had not yet moved.
@@ -633,7 +633,7 @@ const (
 	// roundApproved ends the round: its approval approves the head's code (classify.ApprovalStands),
 	// which GitHub answers for with a merge state the issue may advance on, or which the pull
 	// request has already merged at. No CI verdict is read: the reviewer reads the head's checks on
-	// GitHub before it approves, and a settlement moves no issue (dispatch://INFRA-714/spec R1).
+	// GitHub before it approves, and a settlement moves no issue (dispatch://POMJU-714/spec R1).
 	roundApproved
 	// roundRejected ends the round: its reviewer requested changes, whether or not it has
 	// completed (reviewRound).
@@ -709,7 +709,7 @@ func (r round) stuckAs(other round) bool {
 // held, and naming it here would read as a run GitHub made on this one.
 //
 // The daemon reads no repository ruleset, so it does not know which checks the base requires
-// (dispatch://INFRA-714/spec R1): a required check that has never run is in no list GitHub gives
+// (dispatch://POMJU-714/spec R1): a required check that has never run is in no list GitHub gives
 // for the head, so it is simply absent from the checks named here. The reason says so, because a
 // reader who does not know that would take a short list for the daemon leaving something out
 // rather than for the finding it is - the check that is missing is the one to look for. It says
@@ -722,7 +722,7 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 
 // reviewRound is what issue's review round comes to, row being its reviewer's and pr its pull
 // request as a fact left them. The review event decides it, and the reviewer's handoff records its
-// findings (dispatch://INFRA-714/spec R1): a request for changes ends the round whether or not the
+// findings (dispatch://POMJU-714/spec R1): a request for changes ends the round whether or not the
 // reviewer has completed, and the completion that follows is recorded on the reviewer's own row
 // (engine's leftItsPhase). An approval ends it once it approves the head's code
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
@@ -835,7 +835,7 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 // (TriggerImplementationReady: a record closed without merging, or none, moves nothing). It
 // reads no CI result: a settlement that arrived while the implementer worked moved nothing and
 // moves nothing now, since the roles were told what it said when it arrived (checks,
-// dispatch://INFRA-714/spec R1).
+// dispatch://POMJU-714/spec R1).
 func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest) error {
 	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, "")
 }
@@ -958,7 +958,7 @@ func told(row record.PhaseRow, r round) bool {
 // than a sentence in a comment and nine calls spread through the handlers: the pull request's own
 // events, a push to it, a review, a CI settlement, and a push to the base it sits on. Apply calls
 // it once, after the handler, so a handler's own early return cannot drop the read and no handler
-// recomputes the round settleRound has just computed (dispatch://INFRA-714 R3). GitHub's own
+// recomputes the round settleRound has just computed (dispatch://POMJU-714 R3). GitHub's own
 // answer does not ask - the fact a read applies is mergeability, and a read that asked for
 // another would read the same head for as long as GitHub kept answering the same way. What a read
 // answers is the ladder's to decide (daemon's mergeStateLadder), and the next fact of the issue
@@ -1070,7 +1070,7 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string, from, 
 // (classify.ConflictRound, record.PhaseRow.ConflictRounds). A round opened while the record holds
 // the pull request's own head as conflicting is answered by the implementer's forward merge,
 // whatever else was asked of it, so it costs the issue nothing - which is what
-// dispatch://INFRA-1442 asked for, on a tree that reached the cap on three rounds of which two
+// dispatch://POMJU-1442 asked for, on a tree that reached the cap on three rounds of which two
 // were conflicts. Rounds rises for both kinds, so the record keeps what the issue spent beside
 // what it was excused, and the message names both numbers: an architect woken by it reads how
 // many rounds were counted against the cap and how many were not.

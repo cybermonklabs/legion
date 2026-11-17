@@ -200,7 +200,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 // pullRequestSynchronized records the pull request's new head and what the move leaves standing
 // (classify.AdvancePullRequestHead). It reads no CI result: a settlement moves nothing, in any
 // phase, and the roles that work the issue were told what it said when it arrived (checks,
-// dispatch://INFRA-714/spec R1). In reviewing the head's arrival re-asks the round (settleRound):
+// dispatch://POMJU-714/spec R1). In reviewing the head's arrival re-asks the round (settleRound):
 // any push may change code, so an approval of the previous head does not approve the new one
 // (classify.ApprovalStands), whether the push that left it is known yet or not. The push's own
 // handler re-asks it again when it arrives, and a round stuck the same way at the same head is
@@ -316,7 +316,7 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	}
 	// A push changes which settlement stands for the head, and that moves nothing: a CI result
 	// moves no issue, and the roles that work it were told what the settlement said when it
-	// arrived (checks, dispatch://INFRA-714/spec R1). In reviewing the push can be what shows the
+	// arrived (checks, dispatch://POMJU-714/spec R1). In reviewing the push can be what shows the
 	// head the reviewer approved is about to be replaced, so the round is settled again; the
 	// round's re-ask is reviewing's alone.
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -535,7 +535,7 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // before the read loses nothing.
 //
 // It moves no phase, writes no slot and wakes no claim: what a removal means is the merger's to
-// decide (dispatch://INFRA-3274/spec R1). A removal at a head other than the one the record holds,
+// decide (dispatch://POMJU-3274/spec R1). A removal at a head other than the one the record holds,
 // of an issue that has left merging, or of a pull request that is not open writes nothing and is
 // logged, as a read of GitHub's merge state for a head the record has moved past is
 // (mergeability): the record has moved on since GitHub reported it.

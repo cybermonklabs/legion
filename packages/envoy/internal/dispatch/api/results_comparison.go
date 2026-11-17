@@ -123,7 +123,7 @@ func noBases(reason string) comparison {
 // that resolves to no repository because the two part every answer below: nothing to compare
 // with is a fact about the work and leaves no pass standing, while a read Dispatch could not
 // make is model.ReasonReadFailed and leaves the gate's question open. One nil for both is how
-// a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522).
+// a database hiccup came to read as "this work has moved on" (dispatch://POMJU-1522).
 type repositoryAnswer struct {
 	repo     *string
 	answered bool
@@ -293,7 +293,7 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // longer resolves to; walking that name would reach onNamedBranch with no repository to ask
 // GitHub or the stored rows about and answer unknown for every result of the check. There is
 // nothing to compare with and nothing left to read, which is a fact about the work and not a
-// failed read, so no pass of such a check stands (dispatch://INFRA-1522).
+// failed read, so no pass of such a check stands (dispatch://POMJU-1522).
 //
 // A resolve that did not answer is the second, and parts from the first here rather than at
 // the walk below: Dispatch does not know whether that issue has a repository, so it knows
@@ -362,7 +362,7 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // where GitHub named one: that head is now a row, and so a basis.
 //
 // It is what stops a result recorded at a commit before any pull request carried it from
-// standing at no basis for ever (dispatch://INFRA-1240). It runs over the whole document
+// standing at no basis for ever (dispatch://POMJU-1240). It runs over the whole document
 // before any check is answered, so every `before_merge` check of one issue names the same
 // list of heads: a head one check's result taught Dispatch is a basis the sibling check is
 // read against too, whichever came first in the document.
@@ -423,7 +423,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // An issue whose resolve did not answer is unknown everywhere instead, and for the opposite
 // reason: Dispatch cannot say whether there is a repository to read a head from, so a commit
 // no head names is no evidence that the work moved on. Both nils were one answer here before
-// dispatch://INFRA-1522, and a failed resolve read as the fact about the work.
+// dispatch://POMJU-1522, and a failed resolve read as the fact about the work.
 func (c *comparisonReader) commitStands(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
@@ -744,7 +744,7 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 // unanswered, either read having failed, where Dispatch cannot say which of the two the issue
 // is. q is the pool or transaction the two reads are made on.
 //
-// The three were two before dispatch://INFRA-1522, one nil standing for both nothings, and
+// The three were two before dispatch://POMJU-1522, one nil standing for both nothings, and
 // every caller of this read had to guess which of them it held. They part here, where the
 // reads are made and the error is in hand, because the guess has one right answer and it is
 // not the same one at each call site: an issue that resolves to no repository is a fact about

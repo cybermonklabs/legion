@@ -1242,7 +1242,7 @@ test("one socket carries a delivery view, the event feed and two agent views", a
   }
 });
 
-// The browser check of what an open live view costs reads this count (D15, INFRA-812): at most
+// The browser check of what an open live view costs reads this count (D15, POMJU-812): at most
 // two views are mounted, so at most two agent subscriptions are open, and a view that sleeps
 // holds none - which is also what lets the relay's watch for that session lapse.
 test("the socket reports its open agent subscriptions on the handle the registry shares", () => {

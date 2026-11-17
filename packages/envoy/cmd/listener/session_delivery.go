@@ -101,7 +101,7 @@ type deliveryRefusal struct {
 	// status is 503 for a cause that may pass of itself - this listener holds no session-consumer
 	// connection, or a consumer call failed - and 409 for one that will not: the registration
 	// asked for no consumer, or its session id names none. The plugin's own half of this is
-	// dispatch://INFRA-771: it starts with Envoy inbound unavailable, says so, and asks again at
+	// dispatch://POMJU-771: it starts with Envoy inbound unavailable, says so, and asks again at
 	// each heartbeat.
 	status int
 	Error  string `json:"error"`
@@ -999,7 +999,7 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // topics while the session holds that project's controller role, and this filter is the whole of
 // how it now reaches the controller: the lane's live core subscription, which handed the session
 // only what was published while it was subscribed, went with the rest of the core receive path
-// (INFRA-771), so a notice published while the controller was away is delivered from the stream
+// (POMJU-771), so a notice published while the controller was away is delivered from the stream
 // when it returns. A topic the stream does not store reaches the session on no path of its own: a
 // role lane reaches its holder as a forward on the holder's agent subject, and a topic an earlier
 // build's row still names, which /v1/interests/subscribe drops from a registration with a

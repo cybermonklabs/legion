@@ -272,7 +272,7 @@ package api
 // declaring it, then sjawhar/legion#2009 at 32 and released pi-legion v10.10.0 declaring it, each
 // without these shapes, so this branch takes the number above it, as the collision note says.)
 //
-// 34: cybermonklabs/legion INFRA-31 -- the roles of an issue share one scratch on the issue's volume,
+// 34: cybermonklabs/legion POMJU-31 -- the roles of an issue share one scratch on the issue's volume,
 // `/legion/scratch` (scratchRoot), and the values `mainEnvironment` sets name its directories:
 // every role container of a pod, a workflow role's and the controller's, is told the same
 // `TMPDIR`, `XDG_CACHE_HOME`, `XDG_DATA_HOME` and `BUN_INSTALL_CACHE_DIR` —
@@ -304,11 +304,11 @@ package api
 // `xxxxx@`, keyed as the file is. Required, so a plugin built before it refuses the state and the
 // bump is why the two never meet; the plugin parses it loosely (two typed keys, the rest unknown),
 // so a later legion.yaml key changes no strictly parsed shape and bumps nothing. (This branch took
-// 30; main then landed sjawhar/legion#1986 at 30, 31 and 32, LEGION-781 at 33 and INFRA-31 at 34,
+// 30; main then landed sjawhar/legion#1986 at 30, 31 and 32, LEGION-781 at 33 and POMJU-31 at 34,
 // each released without this shape, so this branch takes the number above them, as the collision
 // note says.)
 //
-// 36: INFRA-229 (cybermonklabs/legion) -- `api.PullRequestView` gains `state`, the pull request's
+// 36: POMJU-229 (cybermonklabs/legion) -- `api.PullRequestView` gains `state`, the pull request's
 // `open`, `merged` or `closed`, always emitted: an architect's acceptance is now refused while an
 // issue beneath it is still in the workflow and a merged root's close waits for the rest of its
 // tree, so a root stands in the phase that waits for its merge for days and an operator must see
@@ -316,7 +316,7 @@ package api
 // state whose pull request views carry the field, so the boot gate and `legion probe-image`
 // refuse the mixed pair.
 //
-// 37: cybermonklabs/legion INFRA-80 -- an issue's disk dies with its pod: the pod's one volume is a
+// 37: cybermonklabs/legion POMJU-80 -- an issue's disk dies with its pod: the pod's one volume is a
 // generic ephemeral volume the pod itself owns (issuePod.disk), which the kubelet creates
 // with the pod and deletes with it, so an issue's Sandbox owns no volume claim template and a
 // stopped issue's Sandbox is always deleted. Nothing carries a disk from one pod to the next, so
@@ -336,11 +336,11 @@ package api
 // provisioned afresh and reported as provisioned, and that daemon resumes a role onto a session
 // file the new disk does not hold; an image built before 37 runs the whole lost-disk machinery
 // against a daemon that sets none of it. The image probe, which holds the image's pi-legion to
-// this number, refuses either pair. (This branch took 36; main then landed INFRA-229 at 36 and
+// this number, refuses either pair. (This branch took 36; main then landed POMJU-229 at 36 and
 // released pi-legion declaring it, so this branch takes the number above it, as the collision
 // note says.)
 //
-// 38: cybermonklabs/legion INFRA-225 -- Legion starts no issue that waits on an unfinished Dispatch
+// 38: cybermonklabs/legion POMJU-225 -- Legion starts no issue that waits on an unfinished Dispatch
 // issue, and says what it is waiting for. `api.Admission` gains `blocked`, required: every root
 // and every child Legion is waiting to start, by issue key, each `{issue, blockedBy}` with the
 // keys it waits on that are not done (`blockedBy` is never null, and a key the daemon has no
@@ -350,10 +350,10 @@ package api
 // say, and these two say which children it started and which it left held. A 37 plugin's strict
 // reader refuses a state carrying `blocked` and a release answer carrying `started` or `held`,
 // so the boot gate and `legion probe-image` refuse the mixed pair. (This branch took 36, then 37;
-// main landed INFRA-229 at 36 and INFRA-80 at 37 while it was open, so this change takes the
+// main landed POMJU-229 at 36 and POMJU-80 at 37 while it was open, so this change takes the
 // number above them, as the collision note says.)
 //
-// 39: INFRA-208 -- an issue pod is one container, `roles`, whose PID 1 is one `legion launcher`
+// 39: POMJU-208 -- an issue pod is one container, `roles`, whose PID 1 is one `legion launcher`
 // serving every workflow role (`--roles-dir /var/run/legion/roles` and one `--role` per role), each
 // role's generation started in namespaces of its own by `legion launcher role-init`; each role's
 // own volumes are mounted under `/var/run/legion/roles/<role>/` and the role homes volume at
@@ -365,8 +365,8 @@ package api
 // next launch of any of them, uncharged. `settings.runtime.kubernetes.resources` is now
 // `{issue, controller}`, the two pods' reservations, rather than one entry per role; the
 // resource-limits capability row names those pods. (This branch took 36; main then landed
-// INFRA-229 at 36, so this branch took 37; main then landed INFRA-80 at 37 with store migration
-// 0051, so this branch took 38 and store migration 0052; main then landed INFRA-225 at 38 with
+// POMJU-229 at 36, so this branch took 37; main then landed POMJU-80 at 37 with store migration
+// 0051, so this branch took 38 and store migration 0052; main then landed POMJU-225 at 38 with
 // store migrations 0052 and 0053, so this branch takes 39 and store migration 0054, as the
 // collision note says. Other open branches may declare 39 too: whichever merges after another
 // takes the next free contract number, every site that names it included. A store migration is
@@ -384,7 +384,7 @@ package api
 // daemon of this contract writes one), `since`, the hand-back the wait began at, and, once the
 // wait was answered, `answeredAt` and `answeredBy` (`answeredBy` names how, not always by a
 // person). A 39 plugin's strict reader refuses the phase
-// and the field, so the boot gate and `legion probe-image` refuse the mixed pair. (39 is INFRA-208,
+// and the field, so the boot gate and `legion probe-image` refuse the mixed pair. (39 is POMJU-208,
 // on main before this change, so this change takes the number above it, as the collision note
 // says.)
 //
@@ -483,7 +483,7 @@ package api
 // takes 45 and a store migration named for the UTC moment it was written, as the collision note
 // says.)
 //
-// 46: INFRA-484 -- the update round, which replaces a pod only once the work on it is pushed.
+// 46: POMJU-484 -- the update round, which replaces a pod only once the work on it is pushed.
 // `POST /legion/v1/claims/ready-for-update` is a new claim route in the shape of `claims/ready`
 // (`claim.ReadyForUpdateRequest`: `claimToken`, `sessionId`, `secret`, `generation`, `round`, and
 // an optional `head`), answering 204: it is the worker's answer to the update task — everything
@@ -535,7 +535,7 @@ package api
 // then landed 45 and, as sjawhar/legion#2538, 46, and sjawhar/legion#2539 takes 47, so this
 // branch takes the number above them, as the collision note says.)
 //
-// 49: INFRA-1101 -- the memory group of an issue's tree on `GET /legion/v1/state`. Every issue
+// 49: POMJU-1101 -- the memory group of an issue's tree on `GET /legion/v1/state`. Every issue
 // record of the state gains `memoryGroup` (`memory` or `none`), `memoryDrawMode` (the project's
 // `projects.<KEY>.memory.mode` in force at the draw) and `memoryDrawnAt`, the three absent
 // together while nothing has drawn for the issue's tree; the draw is made once on the tree's root
@@ -556,7 +556,7 @@ package api
 // was unmerged; main landed it as 48, so this branch takes the number above it, as the collision
 // note says.)
 //
-// 51: dispatch://INFRA-980 -- the admission cap counts the issues at work rather than the trees,
+// 51: dispatch://POMJU-980 -- the admission cap counts the issues at work rather than the trees,
 // so `api.Admission` on GET /legion/v1/state changes shape with it. `active` and `waiting` name
 // issues, a child as much as a root: a tree with three working children holds three slots, and a
 // tree whose issues only wait holds none. `trees` is new, the root of every live tree
@@ -581,12 +581,12 @@ package api
 // named for the UTC moments they were written, 20261103183833 and 20261104004500, since the
 // numbered series is closed. (This branch took 47 while sjawhar/legion#2731 held that number
 // open and unmerged; main has since reached 49 — 47 is sjawhar/legion#2539's, the idle release
-// landed as 48 and the memory group as 49 — and sjawhar/legion#2731, dispatch://INFRA-1077, has
+// landed as 48 and the memory group as 49 — and sjawhar/legion#2731, dispatch://POMJU-1077, has
 // since taken 50 on its own branch, so this change takes the number above them all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 52: INFRA-1307 -- a pane is told the issue key it stamps into its commits, LEGION_ISSUE_TRAILER:
+// 52: POMJU-1307 -- a pane is told the issue key it stamps into its commits, LEGION_ISSUE_TRAILER:
 // the claim's own issue when `projects.<KEY>.commit_issue_trailer_repos` names the repository the
 // launch works, among the repositories Dispatch maps to the project, and set on no other pane, so
 // a squash landing the branch of such a repository carries `Dispatch: <KEY>` in its message. Each
@@ -609,7 +609,7 @@ package api
 // says. main held 51 at the forward merge that renumbered this entry, 71abec3650df; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 53: INFRA-976 -- the daemon spreads the wakes it causes at the pace its operator set
+// 53: POMJU-976 -- the daemon spreads the wakes it causes at the pace its operator set
 // (`legion.yaml`'s `worker_wakes_per_minute`, default 8, and `worker_wake_burst`, default 1, which
 // the settings carry as the two numbers they are), and `api.State` gains `wakesWaiting`, the wakes
 // that pace is holding until their turn: an array, never null, of `{claim, issue, role, kind,
@@ -639,7 +639,7 @@ package api
 // main held 52 at the forward merge that renumbered this entry, bb24cc4d20d9; read main's own
 // number again at the next merge rather than from this line.)
 //
-// 54: INFRA-809 -- the project decides whether a merge that closes an issue opens a production
+// 54: POMJU-809 -- the project decides whether a merge that closes an issue opens a production
 // check and who works it (`projects.<KEY>.production_check`, `off` or `tester`), and the checking
 // agent names its own next look. `api.CheckView` gains `role`, the role the check records as the
 // one that works it, always emitted; its `nextWakeAt` is now the time the **next look** is due —
@@ -661,14 +661,14 @@ package api
 // a strict reader that refuses a state whose check views carry `role`, and its `handoff_complete`
 // sends no `wakeAt`, which this daemon requires of a pending report, so the boot gate and `legion
 // probe-image` refuse the mixed pair. (This branch took 50 while main stood at 49;
-// sjawhar/legion#2731, dispatch://INFRA-1077, holds 50 on its own branch, and main has since
-// landed the admission cap at 51, the pane issue key at 52 (sjawhar/legion#2839) and INFRA-976's
+// sjawhar/legion#2731, dispatch://POMJU-1077, holds 50 on its own branch, and main has since
+// landed the admission cap at 51, the pane issue key at 52 (sjawhar/legion#2839) and POMJU-976's
 // wake pacing at 53 (sjawhar/legion#2805, merged as d43e0fe9 just before this one), so this
 // branch takes the number above them all, as the collision note says. main held 53 at the
 // forward merge that renumbered this entry, d43e0fe9bbb1; read main's own number again at the
 // next merge rather than from this line.)
 //
-// 55: INFRA-1272 -- the design gate is a list of steps a deployment declares, and the issue
+// 55: POMJU-1272 -- the design gate is a list of steps a deployment declares, and the issue
 // record of `GET /legion/v1/state` gains `gatedSteps`, one entry for each step the deployment
 // gates, in the order it gates them (`api.GatedStepView`): the `step` (`decisions`, `criteria` or
 // `spec`), the document its architect registered for that step and that document's
@@ -697,7 +697,7 @@ package api
 // says. main held 54 at the forward merge that renumbered this entry, b5482068c554; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 56: dispatch://INFRA-1480 -- `api.StrandedClaim.state` on `GET /legion/v1/state` may now be
+// 56: dispatch://POMJU-1480 -- `api.StrandedClaim.state` on `GET /legion/v1/state` may now be
 // `retired` as well as `suspended` and `failed`, because `workflow.Stranded` now reports a retired
 // claim that owns the phase its issue's worker works: only a start of that phase relaunches such a
 // claim, and no rule the daemon runs queues that start by itself, so nothing will wake it. A plugin
@@ -719,7 +719,7 @@ package api
 // for those three columns, named for the UTC moment it was written, since the numbered series is
 // closed. (This branch has been renumbered three times, which is what a hand-allocated serial
 // costs: 51, then 53 when main reached 52, then 55 when main reached 54, and 56 now that main
-// carries 55 — INFRA-1272's gated steps, merged as #2848 while this branch stood approved at
+// carries 55 — POMJU-1272's gated steps, merged as #2848 while this branch stood approved at
 // its own 55. So it takes the number above every number main declares, as the collision note
 // says, and that number was read from main at this merge rather than assumed. Two other open
 // branches declare 55 as well: whichever merges after another takes the next free number, and
@@ -727,7 +727,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 57: dispatch://INFRA-1274 -- every claim view carries `step`, what the daemon last saw that
+// 57: dispatch://POMJU-1274 -- every claim view carries `step`, what the daemon last saw that
 // claim's agent do: `at`, when the daemon received that step, `turnStartedAt`, when the turn it
 // belongs to began, the `tool` and `callId` of the call the agent is in, that call's `argsBytes`
 // and `argsHash` — its arguments' length and an eight-byte fingerprint of them, never their text,
@@ -751,14 +751,14 @@ package api
 // and a pod launcher's start command carry verbatim): a session told none of them runs on the
 // defaults its plugin holds. This change adds the store migration the record is kept in,
 // `20261107052815_claim_step_record`. (53 is the contract this branch declared at its bump;
-// main has since landed the optional production check at 54, INFRA-1272's design-gate steps at
-// 55 and INFRA-1480's retired stranded state at 56, none of which carries the claim step record
+// main has since landed the optional production check at 54, POMJU-1272's design-gate steps at
+// 55 and POMJU-1480's retired stranded state at 56, none of which carries the claim step record
 // or the stall numbers, so this branch takes 57, above them all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 58: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
+// 58: POMJU-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
 // issue stands in `admission.waiting`: its `place`, 1 being first in the line, and the `length`
 // of that list at this read (`api.WaitingLineView`). It is present only for an issue the list
 // names, so a slot holder and an issue the line does not carry have no such key, and the wire
@@ -778,15 +778,15 @@ package api
 // and 57 is later than that change, so such a plugin reads this state and sees no `waitingLine`
 // at all. The strip below is still what serves it: a caller that did not ask for the field is
 // not given it, and a plugin built before #2788 is strict and would refuse the body.
-// (This branch declared 56 while main held 55. main then landed INFRA-1480 at 56, and
+// (This branch declared 56 while main held 55. main then landed POMJU-1480 at 56, and
 // @sjawhar/pi-legion 18.32.1 was released declaring that 56 with none of these shapes, so this
-// branch took 57; main has since landed INFRA-1274's claim step record at 57, which carries none
+// branch took 57; main has since landed POMJU-1274's claim step record at 57, which carries none
 // of these shapes either, so this branch takes the number above it, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 57 at the forward merge that renumbered this entry, 0297a21a3b07; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 59: INFRA-956 (sjawhar/legion#2780) -- fix-attempt counting gone. `legion.yaml` no
+// 59: POMJU-956 (sjawhar/legion#2780) -- fix-attempt counting gone. `legion.yaml` no
 // longer takes `max_fix_attempts`, and a file carrying it loads with a warning naming the
 // removal, which boot logs and `legion start --check-config` prints, rather than a refusal, so
 // the settings block of `GET /legion/v1/state` no longer carries `max_fix_attempts` and
@@ -854,16 +854,16 @@ package api
 // (It took 47, then 48, then 50, then 52, then 54, then 55, then 56, then 57, then 58,
 // as main's own changes took each number before it: main merged the idle-pod release at 48 while
 // that branch was open, landed the memory group at 49, the admission cap over the issues at work
-// at 51, the pane issue key at 52, INFRA-976's wake pacing at 53 and INFRA-809's production-check
+// at 51, the pane issue key at 52, POMJU-976's wake pacing at 53 and POMJU-809's production-check
 // decision at 54 (sjawhar/legion#2855), each release declaring its number without these shapes,
-// INFRA-1272's design-gate steps landed as 55 (cybermonklabs/legion#2848), INFRA-1480's retired
-// stranded state landed as 56 (cybermonklabs/legion#2919), INFRA-1274's claim step record landed
-// as 57 (cybermonklabs/legion#2922), and INFRA-1100's waiting line landed as 58
+// POMJU-1272's design-gate steps landed as 55 (cybermonklabs/legion#2848), POMJU-1480's retired
+// stranded state landed as 56 (cybermonklabs/legion#2919), POMJU-1274's claim step record landed
+// as 57 (cybermonklabs/legion#2922), and POMJU-1100's waiting line landed as 58
 // (cybermonklabs/legion#2989), so it took the number above them all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. It landed on main as sjawhar/legion#2780's 59, which took this branch to 60.)
 //
-// 62: INFRA-2551 (cybermonklabs/legion) -- the daemon counts every move back of an issue by its
+// 62: POMJU-2551 (cybermonklabs/legion) -- the daemon counts every move back of an issue by its
 // `<from>-<to>` pair (internal/phase's BackwardPairs), and each worker of `GET /legion/v1/state`
 // carries those counts as `backwardMoves`, the pair to its count (`api.PhaseView`). The key is
 // absent, and never `{}`, for an issue that has had no move back, so a reader tells an issue
@@ -905,7 +905,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. Read main's own number, and every open branch's, again at the next forward merge rather
 // than from this line.)
-// 64: INFRA-312 -- every Legion launch says which issue its dollars were spent on: the pane
+// 64: POMJU-312 -- every Legion launch says which issue its dollars were spent on: the pane
 // environment and a pod's worker container now carry `legion.issue`, the issue the launch serves,
 // and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`, written after the attributes
 // the operator's own `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env` sets (the one
@@ -914,7 +914,7 @@ package api
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
 // deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
 // resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
+// issue follows when the collector keeps them, which dispatch://POMJU-1835 adds to that list. The
 // detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
@@ -929,7 +929,7 @@ package api
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
 // image whose pi-legion declares another, so no pane and no pod runs an agent of one contract
 // under a daemon of the other. (Read again at the forward merge of 2026-11-11 that brought main
-// in, 6c288b5434a86dad0d78930118888cddb9661949: main declares 62, which is INFRA-2551's entry
+// in, 6c288b5434a86dad0d78930118888cddb9661949: main declares 62, which is POMJU-2551's entry
 // above and which cybermonklabs/legion#3522 declared before it merged, and the open pull requests
 // of this repository declare 60 (#2539, #2731, #3511 and #3519), 61 (#2230), 62 (#2733 and
 // #3573) and 63 (#3534), none of them carrying these attributes, so this change keeps 64, the
@@ -939,7 +939,7 @@ package api
 // this entry was first written. As
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-// 68: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
+// 68: POMJU-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
 // an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
 // (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
 // any other — rather than answer it, so nobody will answer that question. The daemon then starts
@@ -972,7 +972,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 73: INFRA-2712 -- the stale-plugin lane asks its worker nothing, and what it has left to do is
+// 73: POMJU-2712 -- the stale-plugin lane asks its worker nothing, and what it has left to do is
 // readable. `api.State` gains `claimsToRefresh`, how many claims the lane still has to relaunch
 // onto this daemon's plugin: a claim with a recorded session, whose process holds a capability,
 // whose recorded plugin contract is not this number, that is in no pod update round, and whose
@@ -983,7 +983,7 @@ package api
 // all it stands at what that lane cannot act on, beside the Error line such a daemon already
 // writes for each of those claims. `wakesWaiting` alone could not say it: the lane now holds at
 // most one minute of the pacing at a time (`supervise.RefreshGate`), so its waiting wakes are
-// what it has been admitted, never what it has left — at the INFRA wave of 2026-11-10 one
+// what it has been admitted, never what it has left — at the POMJU wave of 2026-11-10 one
 // reading counted 395 live processes on the old contract against about 600 of the lane's wakes,
 // and nothing in the body reconciled them. A strict reader before 73 refuses a state carrying
 // the key, 0 as surely as a number, so for the one window the pairing leaves open — a pod of the
@@ -1030,7 +1030,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 75: INFRA-3083 -- a claim says why it failed, and a held issue says which phase its hold
+// 75: POMJU-3083 -- a claim says why it failed, and a held issue says which phase its hold
 // stopped. A claim view of `GET /legion/v1/state` — a worker's, an architect's — carries
 // `failure` once the daemon holds a cause and a sentence for that claim: `cause`, one of the
 // seven words of `supervise.FailureCause` (`launch_refused`, `died`, `never_registered`,
@@ -1128,7 +1128,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 85: INFRA-2554 (cybermonklabs/legion) -- every issue of `GET /legion/v1/state` that is not
+// 85: POMJU-2554 (cybermonklabs/legion) -- every issue of `GET /legion/v1/state` that is not
 // working now carries one rendered answer, `why` (`api.WhyView`): its `state` —
 // `claim_stopped`, `waiting`, `blocked` or `unlisted` — and the `reason`, the sentence a person
 // reads. It is present only for an issue the record holds in the workflow whose sentence
@@ -1183,12 +1183,12 @@ package api
 // than the page holds answers without this path. Read the base's own number and every open
 // pull request again at every forward merge rather than from this line.)
 //
-// 86: dispatch://INFRA-714 -- the daemon is an event-driven state machine, and its strictly parsed
+// 86: dispatch://POMJU-714 -- the daemon is an event-driven state machine, and its strictly parsed
 // shapes change with it. The phase enum loses `awaiting_merge` (both places it is spelled: the
 // issue's phase and a backward move's target), since the merger merges in `merging` and the daemon
 // closes the issue when it reads that merge. `api.PullRequestView` loses `checksVerdict` — no CI
 // verdict moves an issue at all on this contract: the daemon names every check it read to the
-// tree's roles and judges none (dispatch://INFRA-714/spec R1), so it keeps no verdict of its own,
+// tree's roles and judges none (dispatch://POMJU-714/spec R1), so it keeps no verdict of its own,
 // the fix-attempt count having gone already at main's 59 — and gains `mergeState`, GitHub's
 // own merge state for the head in GitHub's lowercase spelling (`clean`, `unstable`, `has_hooks`,
 // `blocked`, `dirty`, `behind`, `draft`, `unknown`), absent until the daemon's read of the pull
@@ -1204,22 +1204,22 @@ package api
 // after strips, so the boot gate and `legion probe-image` are what refuse the mixed pair.
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
-// INFRA-484's sjawhar/legion#2538 takes 46, this branch then took 47, and main's #2642 landed
-// the idle release at 48 and INFRA-1101's memory group at 49; this branch then took 50, and
-// main reached 51, 52, 53, 54 and, with INFRA-1272's gated steps, 55, which took this branch to
-// 56, and INFRA-1480's retired stranded claim landed 56 on main at the next forward merge, so
+// POMJU-484's sjawhar/legion#2538 takes 46, this branch then took 47, and main's #2642 landed
+// the idle release at 48 and POMJU-1101's memory group at 49; this branch then took 50, and
+// main reached 51, 52, 53, 54 and, with POMJU-1272's gated steps, 55, which took this branch to
+// 56, and POMJU-1480's retired stranded claim landed 56 on main at the next forward merge, so
 // this branch takes 57, the number above every number main declares, read from main at that
 // merge rather than assumed, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. main's #2958 then landed INFRA-1274's claim step record at 57 as well, which took this
-// branch to 58; main's #2989 landed INFRA-1100's waiting line at 58, which took it to 59; main's
-// #2780 landed INFRA-956's end of fix-attempt counting at 59, which took it to 60; and main's
-// #3522 has since landed INFRA-2551's counts of the moves back at 62, #3521 INFRA-312's launch
-// spend attributes at 64, and #3511 INFRA-1282's declined ask at 68. The number has to be above
+// says. main's #2958 then landed POMJU-1274's claim step record at 57 as well, which took this
+// branch to 58; main's #2989 landed POMJU-1100's waiting line at 58, which took it to 59; main's
+// #2780 landed POMJU-956's end of fix-attempt counting at 59, which took it to 60; and main's
+// #3522 has since landed POMJU-2551's counts of the moves back at 62, #3521 POMJU-312's launch
+// spend attributes at 64, and #3511 POMJU-1282's declined ask at 68. The number has to be above
 // every number main declares and clear of every number an open branch has claimed, and the
 // entries below carry those releases' shapes with this one. main's #3536 has since landed
-// INFRA-2712's count of the claims the stale-plugin lane has left to relaunch at 73, #3662
-// INFRA-3083's decided claim and issue records at 75, and #3718's one answer for every issue that
+// POMJU-2712's count of the claims the stale-plugin lane has left to relaunch at 73, #3662
+// POMJU-3083's decided claim and issue records at 75, and #3718's one answer for every issue that
 // is not working now at 85, the entry right above this one. Read at the forward merge of
 // 2026-11-12 that brought main fbe970eef8 in, at 15:53Z: main declares 85, and 86 is the number
 // above it this change takes. That read missed an open head already declaring 86 (#3575, which
@@ -1236,7 +1236,7 @@ package api
 // declares a number its base already carries. Read main's own number, and the ledger, again at
 // that merge rather than from this line.)
 //
-// Also at 86: dispatch://INFRA-714 -- every turn a session ends is reported to the daemon by the producer
+// Also at 86: dispatch://POMJU-714 -- every turn a session ends is reported to the daemon by the producer
 // that ended it, over `POST /legion/v1/claims/turn-outcome`: `{claimToken, sessionId, secret,
 // generation, sequence, outcome, message}`, authenticated by the registration's secret as the
 // ready and the exit are, answering `{refusedRun, failed}`. `sequence` is the producer's own count
@@ -1254,7 +1254,7 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
-// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// 87: POMJU-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
 // shared public leak check could not be installed in the role's pod says so in a field of its
 // own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
 // `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
@@ -1281,7 +1281,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 94: INFRA-2800 (cybermonklabs/legion) -- a phase entry is a numbered fact of the record, and
+// 94: POMJU-2800 (cybermonklabs/legion) -- a phase entry is a numbered fact of the record, and
 // each issue of `GET /legion/v1/state` carries the two numbers that say whether its role holds
 // the work that entry names: `phaseEntry`, the entry the role of the issue's current phase
 // stands on (`record.PhaseRow.Entry`), and `givenEntry`, the entry of the last task that role's
@@ -1327,7 +1327,7 @@ package api
 // (This entry took 77 against a base that declared 68 and held 77 through three forward merges;
 // it took 86 at the fourth such merge, 87 at the fifth and 93 at the push of that fifth merge,
 // and 96 at the sixth, of 2026-11-13, which brought main in at 0b297211 —
-// dispatch://INFRA-3219's own #3939, whose `const DaemonAPIVersion` is the 87 right above, so 87
+// dispatch://POMJU-3219's own #3939, whose `const DaemonAPIVersion` is the 87 right above, so 87
 // is the base's now. It takes 94 at the push of that sixth merge. The reading behind 96, of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 139 open pull requests of
 // cybermonklabs/legion at 2026-11-13T04:20Z, found 96 free; #2731 took it between that reading
@@ -1347,7 +1347,7 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+// 98: POMJU-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 // record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
 // the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
 // eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
@@ -1375,7 +1375,7 @@ package api
 // (`blockers.JudgeLine`, which now answers the rows the pass left behind beside the line it
 // built), so the body costs no further read of the store.
 // (The base declares 94, main's #3677 entry right above this one, landed by
-// cybermonklabs/legion#3677 (INFRA-2800). By the rule of 2026-11-13T06:29Z this change keeps 98
+// cybermonklabs/legion#3677 (POMJU-2800). By the rule of 2026-11-13T06:29Z this change keeps 98
 // while it stands above its base and no other open head declares it, and renumbers only when the
 // base takes 98 or a number above it. It declared 76 when this pull request opened, then 78 and
 // 86, each renumbered when another change took the number first, then 94, which it left for 98
@@ -1389,7 +1389,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 104: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
+// 104: POMJU-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
 // reaches a claim stored working that no process stands behind. Such a claim was refused
 // `CLAIM_IN_A_TURN` by both recoveries, which left a project controller no recovery at all for a
 // dead architect. Both doors now read that claim's process at the moment of the request
@@ -1439,7 +1439,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 111: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
+// 111: dispatch://POMJU-2560 -- every issue record of `GET /legion/v1/state` that stands in a
 // live tree gains that tree's quiet time: `treeMovedAt`, the newest movement the daemon has
 // seen anywhere in the tree, and `quietHours`, how long the tree has been still at this read,
 // as a number of hours. The pair is the tree's and not the issue's, so every issue of one tree
@@ -1497,12 +1497,12 @@ package api
 // no earlier word of the ladder is true of it, and one held from such a phase under
 // `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
 // reader of 98 or above refuses them.
-// (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
-// moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
+// (This branch took 62 against the base 5a585b02, which carried 59; POMJU-2551's counts of the
+// moves back landed on main as 62 (cybermonklabs/legion#3522) and POMJU-312's spend attributes
 // as 64 (#3521), so this change takes a number above both. Read again on
 // 2026-11-11 at 10:13Z, in each head's own copy of this file: main declares 64, and the open
-// branches declare 65 (legion/INFRA-2009 and legion/INFRA-1282), 66 (legion/INFRA-1578) and 59
-// (legion/INFRA-1522), with INFRA-2009 having published a move to 67. 65 was a four-way
+// branches declare 65 (legion/POMJU-2009 and legion/POMJU-1282), 66 (legion/POMJU-1578) and 59
+// (legion/POMJU-1522), with POMJU-2009 having published a move to 67. 65 was a four-way
 // collision there, where the first of the four to land refuses the other three, so this change
 // took 70: above every open declaration, and leaving 68 and 69 free for the two trees that had
 // not chosen. That reading is of this file at each head, never of a file list, which GitHub
@@ -1519,15 +1519,15 @@ package api
 // 9009dc1d5c73e017bc8a293873265f3629f00b33, where #3662's 75 was the entry above and was the
 // number the base then carries: 82 was above it, so nothing was renumbered. It took 86 at the
 // forward merge of 2026-11-12 that brought main in at
-// fbe970eef84df8635b58ba73b380a13f1e6f0a78, which lands INFRA-2554's 85. It took 91 at the
+// fbe970eef84df8635b58ba73b380a13f1e6f0a78, which lands POMJU-2554's 85. It took 91 at the
 // forward merge of 2026-11-12 that brought main in at
-// a4c0ff994adc50fe79ca0e3b07ddde3af8aff708, which lands INFRA-714's own 86: 86 was no longer
+// a4c0ff994adc50fe79ca0e3b07ddde3af8aff708, which lands POMJU-714's own 86: 86 was no longer
 // above the base, so .github/scripts/check-daemon-api-contract.sh was run as CI runs it,
 // refused this tree for declaring 86 against a base at 86, and named 91 — the lowest number
 // above the base's that no open pull request declared, read in each head's own copy of this
 // file and never from a file list, which passed over 87 (#3939), 88 (#3730), 89 (#3519 and
 // #3659) and 90 (#3575, #3830 and #3937). It takes 96 at the forward merge of 2026-11-13 that
-// brought main in at 12ba4e6afa71acf380d0b64738de7a44653f9ea8, which lands #3939's INFRA-3219
+// brought main in at 12ba4e6afa71acf380d0b64738de7a44653f9ea8, which lands #3939's POMJU-3219
 // at 87, the entry right above, and is the number the base now carries. 91 was still above it
 // but was declared by #3519 and #3712 as well, a three-way collision where the first of the
 // three to land refuses the other two, so the check was run as CI runs it against this tree
@@ -1536,20 +1536,20 @@ package api
 // (#3519, #3712 and this change's own former number), 92 (#3715), 93 (#3677 and #3937), 94
 // (#3708) and 95 (#3575) — which was the number this change then declared. It takes 100 at the
 // forward merge of 2026-11-13 that brought main in at 045ee07625382ecc0f00bb3cc4069d479cf76d4a,
-// which lands #3677's INFRA-2800 at 94, the entry right above, and is the number the base now
+// which lands #3677's POMJU-2800 at 94, the entry right above, and is the number the base now
 // carries. 96 was still above it but was declared by #2731 as well, so the check was run as CI
 // runs it against this tree declaring the base's own 94, refused it, and named 100 — the lowest
 // number above the base's that no open pull request declares, which passed over 95 (#3519 and
 // #3712), 96 (#2731, and this change's own former number), 97 (#3937), 98 (#3708) and 99
 // (#3575) — which was the number this change then declared. It takes 101 at the forward merge of
 // 2026-11-13 that brought main in at 0fde2dcff6e4eb08a172d6fe7309151dabe011b1, which lands
-// #3708's INFRA-3107 at 98, then the entry right above, and was the number the base then carried. 100
+// #3708's POMJU-3107 at 98, then the entry right above, and was the number the base then carried. 100
 // was still above it, so the check was run as CI runs it against this tree declaring the base's
 // own 98, refused it, and named 101 — the lowest number above the base's that no open pull
 // request declares, which passed over 99 (#3575) and 100 (this change's own former number) —
 // which was the number this change then declared. It takes 111 at the forward merge of
 // 2026-11-13 that brought main in at 7810d00ef1c3a52e08e090f127bcf9e3b7ab3393, which lands
-// #3830's INFRA-3161 at 104, the entry right above, and is the number the base now carries.
+// #3830's POMJU-3161 at 104, the entry right above, and is the number the base now carries.
 // 101 was no longer above it, so the check was run as CI runs it against this tree declaring
 // 101, refused it, and named 111 — the lowest number above the base's that no open pull
 // request declares, which passed over 105 (#3659), 106 (#2731 and #3730), 107 (#3712), 108
@@ -1558,7 +1558,7 @@ package api
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
 //
-// 123: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
+// 123: POMJU-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
 // about, and the completion route judges that head rather than which phase entry the turn began
 // under. Every file-backed handoff record now carries `head`, the commit the work it reports was
 // done against, and the plugin's `handoff_complete` sends that head as the completion's `commit`
@@ -1598,7 +1598,7 @@ package api
 // (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
 // them all.)
 //
-// 132: INFRA-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
+// 132: POMJU-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
 // `GET /legion/v1/state` gains a fifth word, `waiting_on_issue`: an issue the daemon has started
 // that gave its admission slot back to wait on another issue — a Dispatch blocker of it that is
 // not done, or an open child its own first phase waits for (record.LineWaitingOnIssue). It
@@ -1608,8 +1608,8 @@ package api
 // what it waits on is a Dispatch blocker or an open child, in `admission.blocked`, and so in no
 // row of 98's `admission.held`, which names no issue `active` or `waiting` names. An issue past
 // its review holds no slot on 111's rule, so it has none to give back and never reads this word.
-// A plugin from 85 through 131, INFRA-714's 86, INFRA-3219's 87, INFRA-2800's 94, INFRA-3107's
-// 98, INFRA-3161's 104, INFRA-2560's 111 and INFRA-3146's 123 above among them, reads `kind`
+// A plugin from 85 through 131, POMJU-714's 86, POMJU-3219's 87, POMJU-2800's 94, POMJU-3107's
+// 98, POMJU-3161's 104, POMJU-2560's 111 and POMJU-3146's 123 above among them, reads `kind`
 // with a `z.enum` of the
 // four words before it, which refuses a word it does not name and with it the whole state body,
 // so a caller from a pod whose claims record a contract below 132 is served every member of that
@@ -1623,18 +1623,18 @@ package api
 // `20261111214351`, which adds the column `ReleasedForWaitAt` is read from; a migration moves the
 // daemon's own record and is no part of this number. Nothing else of this change is on the wire.
 // (This branch took 86 at the forward merge of 2026-11-12 that brought main in at fbe970ee,
-// which declared 85. main has since landed INFRA-714's 86 at a4c0ff99, so this branch moved off
+// which declared 85. main has since landed POMJU-714's 86 at a4c0ff99, so this branch moved off
 // it at the forward merge that brought that commit in. A reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 144 open pull requests of
 // cybermonklabs/legion at 2026-11-12T19:36Z gave, above 86: 87 (#3939), 88 (#3730), 89 (#3519
 // and #3659) and 90 (#3575, #3830 and #3937), and this branch took 91. The same reading of the
 // 141 open pull requests at 2026-11-12T20:41Z gave 87 (#3939), 88 (#3730), 89 (#3519 and
 // #3659), 90 (#3575 and #3830) and 91 (#3937, which had moved up from 90 meanwhile), so this
-// branch took 92. main has since landed #3939's 87, INFRA-3219's, at 12ba4e6a, and the forward
+// branch took 92. main has since landed #3939's 87, POMJU-3219's, at 12ba4e6a, and the forward
 // merge that brought that commit in read the 139 open pull requests again at 2026-11-13T05:17Z:
 // above 87 they declare 88 (#3730), 89 (#3659), 90 (#3830), 91 (#3519, #3573 and #3712), 93
 // (#3937), 96 (#2731 and #3677), 97 (#3575) and 98 (#3708), and no open head declares 92, so
-// this branch kept it. main has since landed #3677's 94, INFRA-2800's, at 045ee076, which is
+// this branch kept it. main has since landed #3677's 94, POMJU-2800's, at 045ee076, which is
 // above 92, so this branch moved off it at the forward merge that brought that commit in. The
 // same reading at refs/pull/<n>/head of each of the 140 open pull requests other than this one
 // (141 with it) at 2026-11-13T08:16Z gave, above 94: 95 (#3519 and #3712), 96 (#2731 and
@@ -1643,7 +1643,7 @@ package api
 // requests other than this one at 2026-11-13T09:03:10Z gave, above 94: 95 (#3519 and #3712), 96
 // (#2731 and #3573), 97 (#3937, which had moved up from 93 meanwhile), 98 (#3708) and 99
 // (#3575), so 97 was no longer free and this branch took 100. main has since landed #3708's 98,
-// INFRA-3107's, then the entry right above, at b7a2f926, and this entry sits above it. The same
+// POMJU-3107's, then the entry right above, at b7a2f926, and this entry sits above it. The same
 // reading at refs/pull/<n>/head of each of the 140 open pull requests other than this one (141
 // with it) at 2026-11-13T13:47:46Z gave, above 98: 99 (#3575), 100 (#3573), 101 (#3712), 102
 // (#3730), 103 (#3519), 104 (#3830 and #3937) and 105 (#3659), so this branch moved to 106. The
@@ -1653,7 +1653,7 @@ package api
 // moved to 107. The same reading of the 140 open pull requests other than this one at
 // 2026-11-13T14:31:49Z gave, as the highest numbers above 98, 105 (#3659), 106 (#3730 and
 // #3793) and 107 (#3712, which had moved up from 101 meanwhile), and no open head declares above
-// 107, so this branch moved to 108. main has since landed #3830's 104, INFRA-3161's, then the
+// 107, so this branch moved to 108. main has since landed #3830's 104, POMJU-3161's, then the
 // entry right above, at aee2873c, and this entry sits above it. The same reading of the 137 open pull
 // requests other than this one at 2026-11-13T17:15:05Z gave, above 104, 105 (#3659), 106 (#2731
 // and #3730), 107 (#3712) and 109 (#3519 and #3793), and no open head declares above 109, so
@@ -1662,7 +1662,7 @@ package api
 // (#2731 and #3730), 107 (#3712), 108 (#3519, which had moved down from 109 meanwhile), 109
 // (#3793) and 110 (#3937, which had moved up from 104 meanwhile), and no open head declares
 // above 110, so this branch took 111, above main's 104 and above every number another open head
-// declared. main has since landed #3573's 111, INFRA-2560's, then the entry right above, at 80920857,
+// declared. main has since landed #3573's 111, POMJU-2560's, then the entry right above, at 80920857,
 // and this entry sits above it. The same reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head of each of the 138 open pull requests other than this one (139 with it), at
 // 2026-11-13T22:06:06Z, gave, above 111, 111 (#3793), 112 (#2731), 113 (#3575) and 114 (#3730),
@@ -1670,7 +1670,7 @@ package api
 // pull requests other than this one (140 with it) at 2026-11-13T22:47:06Z gave, above 111, 111
 // (#3178, #3793 and #3982), 112 (#2731), 113 (#3575), 114 (#3730) and 115 (#3519 and #3659,
 // which had moved up meanwhile), and no open head declared above 115, so this branch took 116.
-// main has since landed #3793's 123, INFRA-3146's, the entry right above, at 25f3e38a, and this
+// main has since landed #3793's 123, POMJU-3146's, the entry right above, at 25f3e38a, and this
 // entry sits above it. The same reading of the 148 open pull requests other than this one at
 // 2026-11-14T15:19:58Z gave, above main's 123, 124 (#4021), 125 (#4030), 126 (#2230 and #4017),
 // 127 (#3519, #3659 and #3711), 128 (#3730 and #4035) and 129 (#3937), and no open head declared
@@ -1682,7 +1682,7 @@ package api
 // declares. Read the base's own number and every open pull request again at every forward merge
 // rather than from this line.)
 //
-// 133: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
+// 133: dispatch://POMJU-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
 // the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
 // mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one rule
 // the engine reads to decide whether to ask GitHub about a round at all, so the object is on the
@@ -1723,7 +1723,7 @@ package api
 // repository, taken at the moment the sites are written and never the base's number plus one,
 // because the open heads move the free number within the hour. The reading that chose this one was
 // taken at 2026-11-14T23:49:47Z-23:52:45Z, at the forward merge of main 8b0f29b9, over the 152 open
-// pull requests: main declares 132 (INFRA-3036's entry above, landed by #3715), and no open head
+// pull requests: main declares 132 (POMJU-3036's entry above, landed by #3715), and no open head
 // declares 133 or above, so 133 is the lowest number above the base's that no other open head
 // declares. This change keeps its number while it stands above its base, even when another open
 // head declares the same one: check-daemon-api-contract.sh compares a change with its base alone, a
@@ -1731,13 +1731,13 @@ package api
 // one renumbered (AGENTS.md). When the base declares this change's number or a higher one, the base
 // has taken it, and this change takes the free number at its next forward merge, from a census read
 // then, in one push. The readings that chose this change's earlier numbers are in its implement
-// handoffs on dispatch://INFRA-3027 rather than here, since each merge would make them false, and
+// handoffs on dispatch://POMJU-3027 rather than here, since each merge would make them false, and
 // the entries above keep the numbers they were read at. Read the base's own number and every open
 // head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 137: INFRA-3621 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// 137: POMJU-3621 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-impersonate-service-account <email>`, a fourth session flag after the three that name
 // the Cloud SQL session database (`sessionProxyAccountFlag` after `sessionProxyFlagNames`,
 // `internal/runtime/sandbox/manifest.go`). The daemon renders it
@@ -1755,7 +1755,7 @@ package api
 // (#4017 and #4021), 135 (#3659) and 136 (#3575 and #3730). Read the base's own number and every
 // open pull request again at every forward merge rather than from this line.)
 //
-// 141: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
+// 141: POMJU-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
 // issue record of the state gains `assignments`, the experiment answers that apply to it: one
 // `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
 // the experiments (config.Project.ExperimentsDeclared): the `memory` block's experiment first,
@@ -1866,7 +1866,7 @@ package api
 // that brought main in at 7baa398b, main declared 137, #4046's own, below 141, so the number
 // held.)
 //
-// 144: dispatch://INFRA-3557 -- the memory guard in an issue pod's launcher, which is two shapes of
+// 144: dispatch://POMJU-3557 -- the memory guard in an issue pod's launcher, which is two shapes of
 // the launcher wire. The daemon's answer to a launcher's hello carries the settings the guard runs
 // by, as one optional member of `shimwire.LauncherHelloAck` (`memoryGuard`: `actPercent`,
 // `floorPercent`, `waitSeconds` and `intervalMilliseconds`, from
@@ -1903,9 +1903,9 @@ package api
 // sets it takes the block out before an earlier image is pinned (docs/kubernetes.md, "Rolling back
 // below the release that guards an issue pod's memory").
 //
-// Two other changes touch the same frame: dispatch://INFRA-3531, the guard of the controller's pod,
+// Two other changes touch the same frame: dispatch://POMJU-3531, the guard of the controller's pod,
 // which fills this same member for that pod from a block of its own beside `issue_pods`, and
-// cybermonklabs/legion#3519 (dispatch://INFRA-2009), which adds `volumeTrim` beside it and a
+// cybermonklabs/legion#3519 (dispatch://POMJU-2009), which adds `volumeTrim` beside it and a
 // `launcher_volume_report` frame. Of this change and either of those, the one that merges second
 // takes a number above the first's, every site that names the number included, and keeps every
 // member of both.
@@ -1913,7 +1913,7 @@ package api
 // read on 2026-11-14 in each head's own copy of this file, and kept it at the forward merge of
 // 2026-11-14 that brought main in at 25f3e38a3e29 (#3793's 123). It took 134 at the forward
 // merge of 2026-11-15 that brought main in at 8b0f29b971df (#3715's 132), and kept it at the one
-// that brought main in at a3ff3b81bbf0 (INFRA-3027's 133). It took 144 at the forward merge of
+// that brought main in at a3ff3b81bbf0 (POMJU-3027's 133). It took 144 at the forward merge of
 // 2026-11-15 that brought main in at 7baa398b206b (#4046's 137), the lowest number above 137 that
 // no open pull request declared at 2026-11-15T12:47Z, and keeps it at the forward merge that
 // brings main in at 7ed023731622, which carries #3575's 141, the entry right above and the number
@@ -1924,7 +1924,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 146: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
+// 146: POMJU-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
 // for, so the two keys contract 94 added carry a root: `phase.RoleFor` answers the architect for
 // `admitted`, the phase a root's own architect works, and each root's view carries the entry its
 // architect's work stands at and the entry its claim was queued, as a child's carries its
@@ -1943,7 +1943,7 @@ package api
 // gives the claim the two numbers and no handshake, which is how a reader tells such a root from
 // one this release served — and `entryConfirmedAt` alone is absent while no turn has confirmed a
 // task of the entry, which is the root whose architect took nothing.
-// A tree's own root carries `architectStalls` too: every arm of INFRA-2614's architect-stalled
+// A tree's own root carries `architectStalls` too: every arm of POMJU-2614's architect-stalled
 // reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
 // `took-nothing` (the task of the entry its `phases` row names was first queued to its claim more
 // than ten minutes ago and no turn confirmed it, counted from that first queueing however many
@@ -2004,7 +2004,7 @@ package api
 // list named this file or was cut short, gave above that base's 104: 105 (#3659), 106 (#2731 and
 // #3730), 107 (#3712), 108 (#3519), 109 (#3793) and 110 (#3715 and #3937). It took 117 at the
 // forward merge of 2026-11-13 that brought main in at 809208573a01, which landed
-// cybermonklabs/legion#3573's INFRA-2560 at 111, then the entry right above: 111 was the number
+// cybermonklabs/legion#3573's POMJU-2560 at 111, then the entry right above: 111 was the number
 // this change declared until then, and it was the number the base then carried. A first reading
 // of `const DaemonAPIVersion` in this file at refs/pull/<n>/head between 2026-11-13T22:44Z and
 // 22:48Z, for every one of the 139 open pull requests of this repository other than this
@@ -2017,19 +2017,19 @@ package api
 // open head declared. The reading is of this file at each head and not of a file list: GitHub
 // cuts a pull request's file list short, so every open head is read. It took 127 at the forward
 // merge of 2026-11-14 that brought main in at 25f3e38a3e29, which landed
-// cybermonklabs/legion#3793's INFRA-3146 at 123, then the entry right above and the number the
+// cybermonklabs/legion#3793's POMJU-3146 at 123, then the entry right above and the number the
 // base then carried, so 117 was no longer above it. A reading of the number every open pull
 // request of this repository declared, made between 2026-11-14T12:30:25Z and 12:34:35Z, gave
 // above the base's 123: 124 (#4021), 125 (#4030) and 126 (#2230 and #4017), and no head declared
 // a number above 126, so this change took 127, the lowest number above the base's that no open
 // head declared. It took 133 at the forward merge of 2026-11-15 that brought main in at
-// 8b0f29b971df, which landed cybermonklabs/legion#3715's INFRA-3036 at 132, then the entry right
+// 8b0f29b971df, which landed cybermonklabs/legion#3715's POMJU-3036 at 132, then the entry right
 // above and the number the base then carried, so 127 was no longer above it. A reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this repository,
 // made between 2026-11-15T00:05:55Z and 00:10:18Z, found no head declaring 133 or above, so this
 // change took 133, the lowest free number above main's 132 at that reading. It took 139 at the
 // forward merge of 2026-11-15 that brought main in at 2e546572f2b8, which landed
-// cybermonklabs/legion#3937's INFRA-3027 at 133, then the entry right above and the number the base
+// cybermonklabs/legion#3937's POMJU-3027 at 133, then the entry right above and the number the base
 // then carried, so 133 was no longer this change's. A reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for every open pull request of this repository, made between
 // 2026-11-15T03:58:42Z and 04:03:11Z, gave above the base's 133: 134 (#4017 and #4021), 135
@@ -2042,20 +2042,20 @@ package api
 // and #3993), 140 (#3519), 141 (#3575), 142 (#3712) and 143 (#3730), and no head declared a
 // number above 143, so 139 was no longer free and this change took 144, the lowest free number
 // above main's 133 at that reading. It took 146 at the forward merge of 2026-11-15 that brought
-// main in at fecceeb60ec0, which landed cybermonklabs/legion#4046's INFRA-3621 at 137, then the
+// main in at fecceeb60ec0, which landed cybermonklabs/legion#4046's POMJU-3621 at 137, then the
 // entry right above and the number the base then carried. A reading of `const DaemonAPIVersion`
 // at refs/pull/<n>/head for every open pull request of this repository, made between
 // 2026-11-15T14:06:47Z and 14:11:13Z, gave above the base's 137: 138 (#4017), 139 (#2731 and
 // #3993), 140 (#3519), 141 (#3575), 142 (#3712), 143 (#3730), 144 (#4021) and 145 (#3659), so
 // 144 was no longer free and this change took 146, the lowest free number above main's 137 at
 // that reading. It kept 146 at the forward merge of 2026-11-15 that brought main in at
-// 3aef4ebbd041, which landed cybermonklabs/legion#3575's INFRA-2566 at 141, then the entry right
+// 3aef4ebbd041, which landed cybermonklabs/legion#3575's POMJU-2566 at 141, then the entry right
 // above and the number the base then carried. A reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for every open pull request of this repository, made between
 // 2026-11-15T18:12:54Z and 18:16:58Z, gave above the base's 141: 142 (#3712), 143 (#3730), 144
 // (#4021), 145 (#3659) and 147 (#4017), so 146 was still the lowest free number above main's 141
 // at that reading. It keeps 146 at the forward merge of 2026-11-15 that brings main in at
-// 52b3cf5c002a, which carries cybermonklabs/legion#4021's INFRA-3557 at 144, the entry right
+// 52b3cf5c002a, which carries cybermonklabs/legion#4021's POMJU-3557 at 144, the entry right
 // above and the number the base now carries. A reading of `const DaemonAPIVersion` at
 // refs/pull/<n>/head for every open pull request of this repository, made between
 // 2026-11-15T23:05:22Z and 23:08:22Z, gave above the base's 144: 145 (#3659), 147 (#4017), 148
@@ -2066,7 +2066,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 151: dispatch://INFRA-3729 -- issue pods in GKE Sandbox microVMs, which is four shapes of the
+// 151: dispatch://POMJU-3729 -- issue pods in GKE Sandbox microVMs, which is four shapes of the
 // launcher wire and one of the state. The launcher's command line gains `--microvm` and, with
 // `runtime.kubernetes.sandbox.microvm.metadata` set, `--metadata-workload-pool` and
 // `--metadata-identity-provider`, which a microVM issue pod's container passes (sandbox's
@@ -2102,7 +2102,7 @@ package api
 // (This change took 151, the lowest number above main's 144 that no open pull request declared,
 // read on 2026-11-15 in each open head's own copy of this file: #3659 holds 145, #3711
 // 146, #4017 147, #4049 and #3519 148, #2731 149 and #3730 150. It keeps 151 at the forward merge
-// of 2026-11-16 that brings main in at 47a901c14da2, which carries #3711's INFRA-2614 at 146, the
+// of 2026-11-16 that brings main in at 47a901c14da2, which carries #3711's POMJU-2614 at 146, the
 // entry right above and the number the base now carries: 151 is still above it, and a reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, made between
 // 2026-11-16T19:30:30Z and 19:35:10Z, gave 151 to this change alone (147 #4017, 148 #3519, 149

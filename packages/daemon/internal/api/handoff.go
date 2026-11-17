@@ -542,7 +542,7 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // A completion at admitted is answered so too, whichever role sends it. Admitted is the
 // architect's own phase (phase.RoleFor), and the architect completes nothing (workflow's
 // handoff refuses it ACCEPTANCE_IS_SIGN_OFF), so the guard keeps the answer a completion at
-// admitted had while no role was named for that phase (dispatch://INFRA-2614, R2), now that a
+// admitted had while no role was named for that phase (dispatch://POMJU-2614, R2), now that a
 // root's architect holds an entry there.
 //
 // An entry above the row's is refused with the entry below it (unraisedEntry), though the record

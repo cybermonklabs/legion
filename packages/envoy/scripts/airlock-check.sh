@@ -2,7 +2,7 @@
 # packages/envoy/scripts/airlock-check.sh
 #
 # Runs one before_merge check of the airlock's verification document
-# (dispatch://INFRA-1352/artifact/verification-md) end to end and says whether it passed, so
+# (dispatch://POMJU-1352/artifact/verification-md) end to end and says whether it passed, so
 # that the implementer and the tester run the same command and read the same evidence.
 #
 # What one run proves is the check's own sentence and nothing wider. The script starts the
@@ -61,7 +61,7 @@ usage() {
 	cat <<'EOF'
 usage: airlock-check.sh <id> [--keep-stack]
 
-Runs one before_merge check of dispatch://INFRA-1352/artifact/verification-md and prints, for
+Runs one before_merge check of dispatch://POMJU-1352/artifact/verification-md and prints, for
 each property the check's outcome sentence names, what it expected beside what it got.
 
   <id>           k1, k2, k3, k4, k5, k6, k7, k8a, k9 or k15

@@ -78,7 +78,7 @@ func TestSearchCoverageCountsItemsWithNoRowAsLacking(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	seedSearchCorpus(t, handler)
 	// The corpus's writes record their blocks and leave the windows to the block-index tick,
-	// which the coverage report counts (INFRA-988).
+	// which the coverage report counts (POMJU-988).
 	windowOwedOwners(t, deps)
 	if _, err := database.Pool.Exec(context.Background(), "delete from embeddings where kind = 'issue'"); err != nil {
 		t.Fatalf("delete the issue's row: %v", err)

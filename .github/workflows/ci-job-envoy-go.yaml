@@ -191,7 +191,7 @@ jobs:
       # internal/testnats runs its server in the test process, so the untagged step above starts
       # no container. The real-server tests, a rendered authorization on the image the hub runs
       # among them, are the one thing an in-process server cannot reproduce: they sit behind the
-      # natslive tag, and this step is where they run (INFRA-250). internal/bus has tests of its own
+      # natslive tag, and this step is where they run (POMJU-250). internal/bus has tests of its own
       # there. One is the consumer cap: the module links nats-server v2.15.1 in process, which caps
       # a stream that sets no cap at a default of its own and takes a change of MaxConsumers on a
       # stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the consumer
@@ -199,7 +199,7 @@ jobs:
       # proved in process. What is left for a real image is the pair of 2.10 cases - the stream with
       # no cap the binary must leave alone, and the refusal of the raise of a lower cap, naming the
       # field, the cap and the first server taking the change - and the hub's own reconcile on the
-      # nats:2.15.1-alpine image the deployment runs (INFRA-1384). The others are a session
+      # nats:2.15.1-alpine image the deployment runs (POMJU-1384). The others are a session
       # consumer's own messages behind other sessions' traffic on the hub's image, the listener's
       # refusal of nats:2.10 (natsversion), and that refusal's control: on 2.10, stepped past, the
       # consumer loses its old-form message. Each

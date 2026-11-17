@@ -177,9 +177,9 @@ func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, c.secret)
+			req := pendingJudgeable(t, m, enr, key, "POMJU-1353 wants the key", 600, c.secret)
 
-			dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "issue": "INFRA-1353"})
+			dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "issue": "POMJU-1353"})
 			if err != nil || dec.State != "granted" || dec.GrantID == "" {
 				t.Fatalf("ApplyJudgeDecision = %+v, %v; want a granted decision", dec, err)
 			}
@@ -215,7 +215,7 @@ func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
 // decision event, no grant, and the request still waiting for the person who decides it today.
 func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
-	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+	req := pendingJudgeable(t, m, enr, key, "POMJU-1353 wants the key", 600, "DEEL_API_KEY")
 
 	if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "the reason does not say what it reads"}); err != nil {
 		t.Fatalf("LogJudged: %v", err)
@@ -233,7 +233,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 
 	// A verdict a caller left nil is a row all the same: audit.detail is NOT NULL, so it is
 	// written as the empty object rather than refused.
-	bare := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key too", 600, "SHARED_KEY")
+	bare := pendingJudgeable(t, m, enr, key, "POMJU-1353 wants the key too", 600, "SHARED_KEY")
 	if err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
 		t.Fatalf("LogJudged(no detail): %v", err)
 	}
@@ -253,10 +253,10 @@ func TestApplyJudgeDecisionRefusesARecordTheRulesDoNotAdmit(t *testing.T) {
 		names    []string
 		deny     bool
 	}{
-		"two secrets":                     {"INFRA-1353 wants both", 600, []string{"DEEL_API_KEY", "DEEL_OTHER_KEY"}, false},
-		"a lifetime past the judge bound": {"INFRA-1353 wants the key", 1200, []string{"DEEL_API_KEY"}, false},
+		"two secrets":                     {"POMJU-1353 wants both", 600, []string{"DEEL_API_KEY", "DEEL_OTHER_KEY"}, false},
+		"a lifetime past the judge bound": {"POMJU-1353 wants the key", 1200, []string{"DEEL_API_KEY"}, false},
 		"a reason naming no issue":        {"need it", 600, []string{"DEEL_API_KEY"}, false},
-		"a denial":                        {"INFRA-1353 wants the key", 600, []string{"DEEL_API_KEY"}, true},
+		"a denial":                        {"POMJU-1353 wants the key", 600, []string{"DEEL_API_KEY"}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
@@ -298,7 +298,7 @@ func TestOneDecisionBetweenThePersonAndTheJudge(t *testing.T) {
 	for name, judgeFirst := range map[string]bool{"the judge first": true, "the person first": false} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+			req := pendingJudgeable(t, m, enr, key, "POMJU-1353 wants the key", 600, "DEEL_API_KEY")
 			verdict := map[string]any{"verdict": "approve"}
 
 			if judgeFirst {
@@ -382,7 +382,7 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+			req := pendingJudgeable(t, m, enr, key, "POMJU-1353 wants the key", 600, "DEEL_API_KEY")
 			if c.before != nil {
 				c.before(t, m, enr)
 			}
@@ -418,7 +418,7 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 // the owner's to approve, which is the path a person has had all along.
 func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
-	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+	req := pendingJudgeable(t, m, enr, key, "POMJU-1353 wants the key", 600, "DEEL_API_KEY")
 	if _, err := m.Store.Pool.Exec(t.Context(),
 		`insert into withheld_secrets (enrollment_id, name) values ($1,'DEEL_API_KEY')`, enr); err != nil {
 		t.Fatalf("withhold the name: %v", err)
@@ -459,7 +459,7 @@ func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	retag(t, m, adminSecret())
-	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the admin console", 600, adminSecretName)
+	req := pendingJudgeable(t, m, enr, key, "POMJU-1353 wants the admin console", 600, adminSecretName)
 
 	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"})
 	if !errors.Is(err, record.ErrNotApprover) {

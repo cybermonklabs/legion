@@ -122,7 +122,7 @@ func clearWindowMarkers(t *testing.T, database *store.Store) {
 // `s.body_sha256 is not null or held.block is not null` (item_blocks.go:1057) - and windows it to
 // no window, which deletes those stale windows and clears the marker in the one statement. The
 // backfill that required a block marked nothing for it, so no arm ever listed it and the stale
-// windows survived the upgrade (INFRA-988).
+// windows survived the upgrade (POMJU-988).
 var windowBackfillStates = []windowState{{
 	name:   "windowed, and the windows stand for its blocks",
 	block:  currentBlock,
@@ -234,7 +234,7 @@ func TestTheWindowMarkerBackfillsMarkEveryDocumentTheArmWouldTake(t *testing.T) 
 // A backfill run twice leaves every row it marked exactly as it found it: a marker carries the
 // moment the work was owed, so re-stamping it is a rewrite of a value a reader had. Without the
 // `windows_owed_at is null` guard the items' backfill answered UPDATE 7 over rows it had just
-// marked itself (INFRA-988).
+// marked itself (POMJU-988).
 func TestTheWindowMarkerBackfillsRewriteNothingTheyHaveAlreadyMarked(t *testing.T) {
 	fixture := newOwedWindowFixture(t, windowBackfillStates)
 	clearWindowMarkers(t, fixture.database)

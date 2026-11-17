@@ -14,7 +14,7 @@ module: packages/envoy/internal/testnats
 
 # The in-process NATS cluster restarts a mute member, and a single server is a false pass for a replica raise
 
-Extends docs/solutions/testing/the-envoy-in-process-nats-rig-what-it-guarantees-and-the-three-places-it-does-not-INFRA-250.md.
+Extends docs/solutions/testing/the-envoy-in-process-nats-rig-what-it-guarantees-and-the-three-places-it-does-not-POMJU-250.md.
 
 - Prove clustered JetStream behaviour on `testnats.StartCluster(t, n)`, never on one server. A
   single nats-server v2.10.29 accepts an update raising an existing stream from 1 to 3 copies and

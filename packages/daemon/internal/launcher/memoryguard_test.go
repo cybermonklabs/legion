@@ -655,10 +655,10 @@ func TestMemoryGuardSparesTheLaunchersAndTheAgentsOwnProcessesByTheirPlaceInTheT
 	}
 }
 
-// Oh My Pi's helpers start helpers of their own. In an INFRA issue pod on 2026-11-14 the agent's
+// Oh My Pi's helpers start helpers of their own. In an POMJU issue pod on 2026-11-14 the agent's
 // `__omp_worker_daemon_broker` was the parent of `__omp_worker_lsp_mux`, the same executable,
 // and that helper was the parent of gopls; the head's classifier, run over that pod's real /proc,
-// spared the broker and not the multiplexer. INFRA-3531's rule, which W1 takes, protects every Oh
+// spared the broker and not the multiplexer. POMJU-3531's rule, which W1 takes, protects every Oh
 // My Pi helper, the Oh My Pi executable started with an `__omp_worker_` selector other than its
 // eval kernel, known by its place in the tree: a helper that a helper of the agent started is as
 // much Oh My Pi's own as one the agent started. What a helper runs that is not Oh My Pi (gopls),

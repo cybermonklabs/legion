@@ -18,7 +18,7 @@ related_issues:
 
 # A forward merge on an allowlist census re-derives the tables from the merged types, and the Claude plugin's committed bundle is a strict parser of the state
 
-Extends docs/solutions/legion/a-long-branch-loses-the-serial-number-it-reserved-INFRA-31.md.
+Extends docs/solutions/legion/a-long-branch-loses-the-serial-number-it-reserved-POMJU-31.md.
 
 That note gives the serial-number rule and the forward-merge discipline. The delta:
 

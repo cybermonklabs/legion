@@ -151,7 +151,7 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 	// back past every run before it. goldmark's ProcessDelimiters walks a closer back over every
 	// earlier run of either character, so `~~a ` then `a* ` and `*a ` then `a~ ` took 3.8-4.2 s at
 	// 112 KB, and pairing `~` runs by length makes `~~a ` then `a~ ` and `~a ` then `a~~ ` the same
-	// walk (dispatch://INFRA-534). The rule of three keeps every `*` of `a*a`, which can both open
+	// walk (dispatch://POMJU-534). The rule of three keeps every `*` of `a*a`, which can both open
 	// and close, from every `**` before it, so a walk passed each of them: `**a ` then `a*a` took
 	// 100 s at 437 KiB. Each is read as a rendering is and as a caller's write is; a write of a
 	// mebibyte may be refused for the elements it makes, and a shape nesting past maxInlineNesting

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The driver of the check c-outside-path-reach (dispatch://INFRA-3862): a person from outside runs
+# The driver of the check c-outside-path-reach (dispatch://POMJU-3862): a person from outside runs
 # it on their own device, over the path we give them, to measure which of our listed addresses that
 # device reaches. What it measures is TCP connects from that device to the listed addresses and
 # ports, nothing more: it cannot see a service the origin itself forwards by path or by Host on its

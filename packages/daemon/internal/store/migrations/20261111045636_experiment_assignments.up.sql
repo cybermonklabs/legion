@@ -1,6 +1,6 @@
 -- 20261111045636_experiment_assignments.up.sql — one row for each unit the daemon drew an
 -- experiment for, so a project declares as many experiments as it likes instead of the one
--- hard-coded memory coin (INFRA-2566).
+-- hard-coded memory coin (POMJU-2566).
 --
 -- What the four issues.memory_* columns are is one experiment spelled into the issues table: a
 -- tree's root row carries the group it drew, the mode it was drawn under and the instant, and a

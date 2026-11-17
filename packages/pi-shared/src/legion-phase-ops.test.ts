@@ -224,8 +224,8 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
-// refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
-// (dispatch://INFRA-2824). A read that names no issue now reads the claim's own, a read that names
+// refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in POMJU's sessions alone
+// (dispatch://POMJU-2824). A read that names no issue now reads the claim's own, a read that names
 // one still reads that one, and a completion takes the claim's own issue and refuses any other.
 test("read_record with no issue answers the claim's own record; handoff_complete takes its own issue and refuses another", async () => {
   const { ops, routes, posted } = runtime();
@@ -271,7 +271,7 @@ test("read_record with no issue answers the claim's own record; handoff_complete
 });
 
 /** `state.json` with a key no schema names at four depths: the top level, one issue, one worker's
- * claim — the path INFRA-1048's incident took, where one key of a daemon a contract ahead
+ * claim — the path POMJU-1048's incident took, where one key of a daemon a contract ahead
  * failed every `legion` call — and the locator below that claim. */
 function stateWithKeysNoSchemaNames(): Record<string, unknown> {
   const state = daemonFixture("state.json");

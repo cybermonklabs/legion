@@ -69,7 +69,7 @@ func registered(age time.Duration) session.SessionEntry {
 // A resolution says what it found and takes nothing: a holder past the live window and one past
 // the gone horizon are both lapsed, each named with the state its own record puts it in and the
 // registration that dates it, and the claim is read once and never written. That is the whole of
-// dispatch://INFRA-392's R4 for every caller of this package: an unresponsive session keeps the
+// dispatch://POMJU-392's R4 for every caller of this package: an unresponsive session keeps the
 // role it claimed, and so does a gone one until the role-claim reaper takes it.
 func TestResolveHolderReadsEachStateAndTakesNothing(t *testing.T) {
 	live := registered(time.Minute)

@@ -31,7 +31,7 @@ test("a turn's text is the report of the `!` message whose body it carries", () 
   // The body is the person's line as they sent it and as Dispatch stored it, every space around
   // the mark kept. A report opening with the trimmed command is the report of no message here,
   // so the page draws that person's line twice: once as their message, once as the report
-  // (dispatch://INFRA-812, round 2).
+  // (dispatch://POMJU-812, round 2).
   expect(isShellCommandReport("! ls\n\n```\none.txt\n```", "! ls")).toBe(true);
   expect(isShellCommandReport("!ls\n\n```\none.txt\n```", "! ls")).toBe(false);
   expect(

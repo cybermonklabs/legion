@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# vm.sh: the Dispatch load test on the separate deployment of INFRA-988 -- the virtual machines
-# its deployment file names and a Cloud SQL instance of its own (dispatch://INFRA-1051) --
+# vm.sh: the Dispatch load test on the separate deployment of POMJU-988 -- the virtual machines
+# its deployment file names and a Cloud SQL instance of its own (dispatch://POMJU-1051) --
 # driven from a Legion worker pod over ssh. cluster/cluster.sh is the model: the same
 # subcommands, the same flag parsing and refusals, the same run directory; only the deployment
 # changes, from a Kubernetes namespace to a set of virtual machines and a managed instance.
@@ -48,7 +48,7 @@
 #       loadgen curves -series loop over the run's steps, in the order they ran, into <run>/curves.
 #   vm.sh down --config FILE [--run ID]
 #       Stops every container and the stub embedder. The machines and the instance are left
-#       alone: they are dispatch://INFRA-1051's to create and to remove.
+#       alone: they are dispatch://POMJU-1051's to create and to remove.
 #
 # The container specification (R3 and the plan's departure 7), which up starts and check reads
 # back. Every container is started by image digest, never by a tag:
@@ -105,11 +105,11 @@
 # does. Without it that ssh is refused `publickey` -- the machines carry enable-oslogin and
 # block-project-ssh-keys, and the load machine has no ~/.ssh of its own -- and
 # ExitOnForwardFailure then leaves no tunnel at all, which is what refused every step of this
-# issue's first rehearsal on the deployment (dispatch://INFRA-988).
+# issue's first rehearsal on the deployment (dispatch://POMJU-988).
 #
 # Every machine is Container-Optimized OS, where /var is mounted noexec, so the loadgen copy
 # under <remote_root> cannot be executed where a plain mkdir puts it and every step fails on its
-# first exec (dispatch://INFRA-49). Every up gives every machine's remote root a bind mount of
+# first exec (dispatch://POMJU-49). Every up gives every machine's remote root a bind mount of
 # /mnt/stateful_partition/<paths.stateful_dir>, which is COS's own writable partition, remounts
 # it exec,nosuid,nodev and gives it to the ssh user; a root that already carries the mount is
 # remounted rather than mounted again. up then reads the mount table back and is refused by name,
@@ -162,7 +162,7 @@
 # Nothing of the deployment is named here. Every machine, address, port, image, credential and
 # production address comes from the deployment file --config names, because the deployment's own
 # shape has already changed twice under this issue (a third machine for NATS and the hub
-# listener in dispatch://INFRA-1051's later version) and will change again. The file is one JSON
+# listener in dispatch://POMJU-1051's later version) and will change again. The file is one JSON
 # object, and vm/deployment.example.json beside this script is one: every key read below, each
 # optional one at the default named below, with placeholder machines, addresses and credentials
 # throughout. Copy that file and edit it; vm.test.sh holds it to this script, so a key added here
@@ -189,7 +189,7 @@
 # question this issue asks is whether production Dispatch carries the spec loop's load on top of
 # production's own usual traffic:
 #
-#   the baseline population, dispatch://INFRA-598's 1x, which every step carries as it is: its
+#   the baseline population, dispatch://POMJU-598's 1x, which every step carries as it is: its
 #   writes are drawn from seed.json's issues with the baseline's mix (production-2026-10-26:
 #   comment, anchored, reply, edit and upload) and its reads from the production routes `loadgen
 #   run` holds embedded;
@@ -225,7 +225,7 @@
 # What a step records of Postgres, and when it records it. R6 asks each step for the instance's
 # CPU and memory, its slowest statements and its lock waits, and the database's size at the start
 # and at the end, and nothing collected the last four: a step's directory held the load's own
-# files, the profiles, cgroup.json and cloudsql-cpu.json's CPU alone (dispatch://INFRA-988). So
+# files, the profiles, cgroup.json and cloudsql-cpu.json's CPU alone (dispatch://POMJU-988). So
 # beside the sampler a step runs two collectors of its own, both on this pod and both reading the
 # instance directly, as cloudsql-cpu does, with the database's URL in a file of mode 600 under the
 # run's directory here that is removed when the step ends (pg_step_secret): `loadgen pg-size`
@@ -239,7 +239,7 @@
 # A step's stop takes its remote work with it. ssh carries no signal to the command it runs, so a
 # series stopped on this pod with a TERM left `loadgen run` loading the deployment from the load
 # machine with its whole window to go, the local processes that carried it, and the profiling
-# tunnel -- each to be killed by hand, on both machines (dispatch://INFRA-988). Two things
+# tunnel -- each to be killed by hand, on both machines (dispatch://POMJU-988). Two things
 # together end it. The load is started through an sh that records on that machine the pid of the
 # loadgen itself, the process and not a shell around it, before it execs it (load_pid_file), so a
 # kill over ssh reaches the load rather than an ssh that has already gone; and it is waited on in
@@ -310,7 +310,7 @@ PPROF_TUNNEL_PORT_DEFAULT=16060
 PPROF_TUNNEL_COMMAND_DEFAULT="ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes"
 # COS's own writable partition, which is where the remote root's backing directory is made: /var
 # is mounted noexec on these machines and this partition is not, so a bind mount of a directory
-# under it is what makes loadgen runnable under <remote_root> (dispatch://INFRA-49). The options
+# under it is what makes loadgen runnable under <remote_root> (dispatch://POMJU-49). The options
 # the remount gives that mount: exec because loadgen runs from there, nosuid and nodev because
 # nothing under it is a device or needs a set-user-id bit.
 STATEFUL_PARTITION=/mnt/stateful_partition
@@ -332,7 +332,7 @@ OSLOGIN_KEY_SECONDS=86400
 # process, and a series or a seed is a process that runs for days, so the import at its start is
 # not enough on its own: the key expires part way through, every ssh after it is refused
 # `Permission denied (publickey)`, and check reads that back as containers it cannot see rather
-# than as a key it cannot use, which is how it was found (dispatch://INFRA-988). So each step
+# than as a key it cannot use, which is how it was found (dispatch://POMJU-988). So each step
 # and each seed phase imports the key again when less than this is left of it (oslogin_ready).
 # Two hours covers the longest piece of work either one starts: an hour-long step with its
 # warm-up, its slack and the collection after its load.
@@ -479,7 +479,7 @@ parse() {
         ;;
     esac
   done
-  [ -n "${OPT[config]:-}" ] || die "$CMD: --config is required: name the deployment's JSON file (there is no default; the deployment is dispatch://INFRA-1051's, and nothing of it is named in this script)"
+  [ -n "${OPT[config]:-}" ] || die "$CMD: --config is required: name the deployment's JSON file (there is no default; the deployment is dispatch://POMJU-1051's, and nothing of it is named in this script)"
   CONFIG=$(abs_file --config "${OPT[config]}")
   jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CMD: --config $CONFIG is not readable JSON"
   check_placement
@@ -606,7 +606,7 @@ loop_route_mix() { load_value loop.route_mix routes-spec-loop-2026-11-03.txt; }
 # (routes.go loadRouteMix): a step puts it on the load machine first (push_route_mix), and a
 # setting that names no file on this pod is one no step can be given. Refusing it here is the
 # point of the check -- an hour-long step that starts without its mix dies at its first second
-# and measures nothing (dispatch://INFRA-988). The copy on the load machine keeps the file's own
+# and measures nothing (dispatch://POMJU-988). The copy on the load machine keeps the file's own
 # name, which is a path element there, so that name is held to the shape every value that
 # reaches a command line is held to.
 check_route_mixes() {
@@ -1183,7 +1183,7 @@ pg_passfile_field() {
 # and a failure returned as "the instance holds none" is what sent an up to `create database`
 # on a database that was plainly there, where the server refused it on
 # pg_database_datname_index while the same up a minute later found that database and said so
-# (dispatch://INFRA-988).
+# (dispatch://POMJU-988).
 db_exists() {
   local got errors said rc=0
   errors=$(mktemp "$RUN_DIR/.dberr.XXXXXX") || die "making a file for psql's errors in $RUN_DIR failed"
@@ -1209,7 +1209,7 @@ db_exists() {
 # notices that its client has gone -- a pool of them for Dispatch, and more for each of the five
 # listeners. That is what ended the 3x step of this issue's series: the reset stopped the seven
 # containers, dropped the database a moment later and was refused with 274 sessions still
-# attached, and the series died there with its grid half run (dispatch://INFRA-988).
+# attached, and the series died there with its grid half run (dispatch://POMJU-988).
 #
 # `with (force)` alone is not the answer, and it was already on that drop when the series died:
 # FORCE signals the attached backends and then waits five seconds of the server's own for them
@@ -1386,7 +1386,7 @@ loadgen_bin() {
 # Postgres URL with its password -- are given as files and not as values: a value would be an
 # argument of loadgen on the load machine and of the ssh that carries it there, which
 # `ps -eo args` hands to anything that can list processes on either machine
-# (dispatch://INFRA-988).
+# (dispatch://POMJU-988).
 endpoints() {
   local token_file listener_token_file pg_file
   token_file=$(remote_secret dispatch-token "$(cfg .secrets.dispatch_token)")
@@ -1481,7 +1481,7 @@ mounted_options() {
 # remote_root_mount VM: remote_root on the machine VM made a directory programs can be executed
 # from, whatever state an earlier run left it in. These are Container-Optimized OS machines,
 # where /var is mounted noexec, so loadgen copied under remote_root cannot be executed where a
-# plain mkdir puts it (dispatch://INFRA-49): the root is a bind mount of a directory under the
+# plain mkdir puts it (dispatch://POMJU-49): the root is a bind mount of a directory under the
 # stateful partition, remounted exec. That directory and the root are made with sudo, because
 # neither partition is the ssh user's to write in, and the root is given to that user afterwards,
 # so that nothing but docker and these mounts needs sudo again. A root that already carries a
@@ -1968,7 +1968,7 @@ reset_deployment() {
   # through sudo, as every docker call on these machines does, because what is inside the store
   # is the NATS container's: that container runs as root and makes jetstream/ there at mode 700,
   # which the ssh user cannot descend into, so that user's own rm -rf of the store is refused
-  # "Permission denied" and a series fails at its first reset (dispatch://INFRA-988). The mkdir
+  # "Permission denied" and a series fails at its first reset (dispatch://POMJU-988). The mkdir
   # that follows stays the ssh user's, because what this step must leave is the store exactly as
   # up leaves it: that user's own directory, at the mode that user's umask gives, under a remote
   # root up has already given to the same user. A store remade with sudo would be root's at
@@ -2050,7 +2050,7 @@ sampler_targets() {
 # went on reading every machine and appending to the same cgroup.jsonl. Four of them were found
 # alive on this pod after four steps, so a later step's window held rows several samplers wrote
 # at once and loadgen cgroup-merge read duplicated per-container CPU for it, which is where the
-# report's per-step CPU rows come from (dispatch://INFRA-988). A simple command with an
+# report's per-step CPU rows come from (dispatch://POMJU-988). A simple command with an
 # assignment before it is execed by the very process & forked, so SAMPLER_PID is now the
 # sampler's own pid: the TERM reaches the binary and wait reaps it.
 sampler_start() {
@@ -2083,7 +2083,7 @@ sampler_stop() {
 # is no part of the deployment: check reads no row of it, up starts none and down stops none; it
 # lives exactly as long as one step's load. The command that opens it is the deployment file's,
 # because it is the generator's own ssh and runs there; the key it presents is the run's own OS
-# Login key, which tunnel_identity puts on that machine for the run (dispatch://INFRA-988).
+# Login key, which tunnel_identity puts on that machine for the run (dispatch://POMJU-988).
 
 # pprof_tunnel_port: the port the tunnel listens on, on the load machine.
 pprof_tunnel_port() { cfg_valid port .ports.pprof_tunnel "$PPROF_TUNNEL_PORT_DEFAULT"; }
@@ -2125,7 +2125,7 @@ tunnel_kill() {
 # key that opens it has to be on that machine. This pod's copy authenticates nothing from
 # there: the machines carry enable-oslogin and block-project-ssh-keys, the load machine has no
 # ~/.ssh of its own, and an ssh that names no identity is refused `publickey`, which under
-# ExitOnForwardFailure leaves no tunnel at all and refuses every step (dispatch://INFRA-988).
+# ExitOnForwardFailure leaves no tunnel at all and refuses every step (dispatch://POMJU-988).
 #
 # The consequence, which is what the tunnel being the generator's own ssh costs: for the life of
 # the run, the load machine holds a key OS Login accepts on all three machines of this
@@ -2435,7 +2435,7 @@ step_mixes() {
 # its path there into ROUTE_MIX_REMOTE. `loadgen run` reads -route-mix as a file of the machine
 # it runs on (routes.go loadRouteMix), which is the load machine, and nothing else carries a
 # route mix there: a step given the deployment file's own value would read no route mix and die
-# at its first second (dispatch://INFRA-988). A route mix is public -- the weights and paths of
+# at its first second (dispatch://POMJU-988). A route mix is public -- the weights and paths of
 # the loop's reads -- and the loadgen that reads it runs as the ssh user put_file writes as, so
 # it goes in at put_file's own mode. It is put once per process, so a series of a dozen steps
 # copies the mix they share once; the answer is a variable and not a printed path because a
@@ -2756,7 +2756,7 @@ cmd_down() {
   # (tunnel_identity). Each is mode 600, but on a disk that stays; this is what removes them,
   # and the only thing that does.
   remote_secrets_remove
-  note "down done: every container of run $RUN is stopped and the run's credential files are gone from the $LOAD_VM VM. The machines and the Cloud SQL instance are left as they are: dispatch://INFRA-1051's merge removes them."
+  note "down done: every container of run $RUN is stopped and the run's credential files are gone from the $LOAD_VM VM. The machines and the Cloud SQL instance are left as they are: dispatch://POMJU-1051's merge removes them."
 }
 
 main() {

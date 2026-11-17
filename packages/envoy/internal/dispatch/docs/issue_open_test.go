@@ -1611,7 +1611,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 // That is the record the one-process run of this reaches through a second close: a room loads
 // after the reopen, its settlement empties the record as well as the row, and the close that
 // follows snapshots no source, writes nothing, and leaves the record reading closed at the
-// sequence the first close read it at (setRoomIssueOpen, INFRA-1470).
+// sequence the first close read it at (setRoomIssueOpen, POMJU-1470).
 //
 // The close is then let go and waited for (evictWG, waitForRefusedAppendClose). The document must
 // owe no settlement at all: a row put back here owes one for an edit task B's version has already

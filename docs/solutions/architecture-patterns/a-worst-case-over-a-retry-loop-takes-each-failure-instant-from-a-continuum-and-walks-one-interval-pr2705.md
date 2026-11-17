@@ -39,7 +39,7 @@ fails is a free variable with a whole interval of values, not two.
 
 ## Evidence
 
-`sjawhar/legion#2705` (dispatch://INFRA-454) took three review rounds on one model, and the first
+`sjawhar/legion#2705` (dispatch://POMJU-454) took three review rounds on one model, and the first
 two were both endpoint models.
 
 Round 1 modelled each refused renewal as failing at once or at the whole 30 s client timeout, and

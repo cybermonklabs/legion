@@ -2,7 +2,7 @@
  * The headless engine's default mode (without `readOnly`) draws a typed block whose content
  * breaks its ProseMirror content rule as its literal lines, where Milkdown used to drop it
  * silently with all its text (`createNodeInParserFail`), and keeps the parser's directive
- * refusals (INFRA-565). The live editor draws such a block the same way, and decides typed
+ * refusals (POMJU-565). The live editor draws such a block the same way, and decides typed
  * blocks as the read-only mode does (`liveTypedBlocksRemarkPlugin`): a container directive the
  * block schema refuses is drawn as its lines too, and a paragraph line that opens like a
  * directive stays the text it is, where a refusal thrown from a paste let the browser insert the

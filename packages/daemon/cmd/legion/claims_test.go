@@ -703,7 +703,7 @@ func TestClaimsListPrintsOneLinePerClaim(t *testing.T) {
 func TestClaimsListPodUpdateLine(t *testing.T) {
 	waiting := make([]string, 25)
 	for i := range waiting {
-		waiting[i] = fmt.Sprintf("INFRA-%d", 100+i)
+		waiting[i] = fmt.Sprintf("POMJU-%d", 100+i)
 	}
 	for _, testCase := range []struct {
 		name string
@@ -716,24 +716,24 @@ func TestClaimsListPodUpdateLine(t *testing.T) {
 			name: "both limits set",
 			rounds: &api.PodUpdateRounds{
 				Swept: true, MaxOpenRounds: new(2), RoundsPerMinute: new(1),
-				InRound: []string{"INFRA-10", "INFRA-1000"}, WaitingOnMaxOpenRounds: []string{"INFRA-2"},
+				InRound: []string{"POMJU-10", "POMJU-1000"}, WaitingOnMaxOpenRounds: []string{"POMJU-2"},
 			},
-			want: "pod update rounds: max open 2, 1 a minute; in a round: 2 — INFRA-10, INFRA-1000; " +
-				"waiting on the open-round limit: 1 — INFRA-2; waiting on the limit a minute: none",
+			want: "pod update rounds: max open 2, 1 a minute; in a round: 2 — POMJU-10, POMJU-1000; " +
+				"waiting on the open-round limit: 1 — POMJU-2; waiting on the limit a minute: none",
 		},
 		{
 			name:   "neither key set",
-			rounds: &api.PodUpdateRounds{Swept: true, InRound: []string{"INFRA-10"}},
-			want: "pod update rounds: max open no limit, no limit a minute; in a round: 1 — INFRA-10; " +
+			rounds: &api.PodUpdateRounds{Swept: true, InRound: []string{"POMJU-10"}},
+			want: "pod update rounds: max open no limit, no limit a minute; in a round: 1 — POMJU-10; " +
 				"waiting on the open-round limit: none; waiting on the limit a minute: none",
 		},
 		{
 			name: "more issues waiting than the line names",
 			rounds: &api.PodUpdateRounds{
 				Swept: true, MaxOpenRounds: new(2), RoundsPerMinute: new(1),
-				InRound: []string{"INFRA-10", "INFRA-1000"}, WaitingOnMaxOpenRounds: waiting,
+				InRound: []string{"POMJU-10", "POMJU-1000"}, WaitingOnMaxOpenRounds: waiting,
 			},
-			want: "pod update rounds: max open 2, 1 a minute; in a round: 2 — INFRA-10, INFRA-1000; " +
+			want: "pod update rounds: max open 2, 1 a minute; in a round: 2 — POMJU-10, POMJU-1000; " +
 				"waiting on the open-round limit: 25 — " + strings.Join(waiting[:20], ", ") + ", and 5 more; " +
 				"waiting on the limit a minute: none",
 		},
@@ -1092,7 +1092,7 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 	d.wantNothingReached()
 }
 
-// INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
+// POMJU-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
 // operator reading `legion claims list` does not read it as a suspension someone must lift. Every
 // other claim prints the state it is in, suspended by an operator among them. None of the three
 // is in an update round, in a tool call or refused by the leak check, so each line ends in the
@@ -1134,7 +1134,7 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 	}
 }
 
-// dispatch://INFRA-1274: the claim line's call column names the tool call the claim's agent is
+// dispatch://POMJU-1274: the claim line's call column names the tool call the claim's agent is
 // in — the tool, the call id its stream's frames pair by, and when the daemon received the start
 // — so an operator reading `legion claims list` sees what a worker that has shown as working for
 // hours is stuck in. This is the only listing that carries a controller's, since the state puts
@@ -1182,7 +1182,7 @@ func TestClaimLineNamesTheCallAClaimIsIn(t *testing.T) {
 	}
 }
 
-// dispatch://INFRA-3083 R6: the claim line says why a claim failed, in the column beside the
+// dispatch://POMJU-3083 R6: the claim line says why a claim failed, in the column beside the
 // state word, so an operator reading `legion claims list` reads the cause there rather than
 // opening each failed claim with --json. The column is the one word the site that failed the
 // claim chose (api.ClaimFailureView.Cause); the sentence it wrote, the moment and the counts
@@ -1223,7 +1223,7 @@ func TestTheClaimsListPrintsTheCause(t *testing.T) {
 	}
 }
 
-// dispatch://INFRA-3219 R3: the claim line's last column is the sentence the claim's latest
+// dispatch://POMJU-3219 R3: the claim line's last column is the sentence the claim's latest
 // launch try was refused with because the shared public leak check could not be installed in
 // its pod, so an operator reading `legion claims list` reads what to fix beside the cause word,
 // for the controller too, whose claim is on no claim view of the state. The sentence is

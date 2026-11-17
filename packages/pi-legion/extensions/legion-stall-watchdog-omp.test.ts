@@ -31,7 +31,7 @@ import {
   warmedWedge,
 } from "../test/stall-watchdog-pane";
 
-// The stall watch's ladder on the real Oh My Pi (INFRA-1274's `k6`): a worker whose tool call
+// The stall watch's ladder on the real Oh My Pi (POMJU-1274's `k6`): a worker whose tool call
 // stops, carried through the three steps of `@legion/pi-shared/stall-watchdog` by this package's
 // four collaborators, against the binary that ships. Only the real binary can say any of this: the
 // clock the watch judges a call by starts at the host's own `tool_execution_start`, the processes
@@ -177,7 +177,7 @@ test.skipIf(skip)(
     expect(conversation(after)).toContain("the child is gone");
     // An absence read taken while the pane is mid-write would be the absence of a line still
     // being written, not of the record: `records()` withholds an unfinished last line while the
-    // pane runs (test/transcript-entries.ts, dispatch://INFRA-2188), so this waits for the
+    // pane runs (test/transcript-entries.ts, dispatch://POMJU-2188), so this waits for the
     // transcript to end on a newline before it reads one.
     await pane.settled();
     const records = await pane.records();

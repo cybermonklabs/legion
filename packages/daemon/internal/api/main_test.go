@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 // Without it, a TestMain that called fixtureenv.Guard() with no names would leave every test of
 // this package green — TestTheGuardKeepsTheGatedProofsInputs below runs its own Guard with
 // guardKeep, so it answers for the list rather than for the entry point — and the loss would show
-// only as an operator's gated proof skipping, with nothing red (dispatch://INFRA-917 R1).
+// only as an operator's gated proof skipping, with nothing red (dispatch://POMJU-917 R1).
 func TestTheGuardTestMainRanKeptTheGatedProofsInputs(t *testing.T) {
 	want := []string{"LEGION_GH_PATH", "LEGION_REAL_GITHUB"}
 	kept := slices.Sorted(slices.Values(guardedAtStart))

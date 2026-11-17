@@ -213,7 +213,7 @@ describe("the topics a registration carries", () => {
 
   test("leave out a topic nothing would be delivered on, which would be refused 400", () => {
     // `notifications.team` is the bare base an earlier build expanded `notifications.team.>` to,
-    // and the one a stored row or a transcript brings back (INFRA-771 review).
+    // and the one a stored row or a transcript brings back (POMJU-771 review).
     expect(
       registrationTopics(OWN, ["notifications.team", "notifications.lxspec.probe.all"])
     ).toEqual([OWN]);

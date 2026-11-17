@@ -121,8 +121,8 @@ func TestBothReadersRefuseWhatTheDetectorWouldThrowOn(t *testing.T) {
 		},
 		{
 			name:   "a member naming the issue the runtime writes itself",
-			value:  "theorem.project=legion,legion.issue=INFRA-1,theorem.credential=gateway",
-			reason: `its member "legion.issue=INFRA-1" names legion.issue, which the runtime writes into every launch itself`,
+			value:  "theorem.project=legion,legion.issue=POMJU-1,theorem.credential=gateway",
+			reason: `its member "legion.issue=POMJU-1" names legion.issue, which the runtime writes into every launch itself`,
 			absent: []string{"theorem.project", "theorem.credential", "gateway"},
 		},
 	} {

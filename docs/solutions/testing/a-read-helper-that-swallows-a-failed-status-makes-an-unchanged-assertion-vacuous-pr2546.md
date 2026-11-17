@@ -15,7 +15,7 @@ related_issues:
 
 # A read helper that swallows a failed status makes an unchanged assertion vacuous
 
-Extends docs/solutions/best-practices/a-negative-control-that-cites-an-existing-test-is-read-before-it-is-cited-INFRA-188.md.
+Extends docs/solutions/best-practices/a-negative-control-that-cites-an-existing-test-is-read-before-it-is-cited-POMJU-188.md.
 
 That document says an assertion about absence can pass for nothing. This is the helper that makes
 it happen, and it looks like ordinary test plumbing.

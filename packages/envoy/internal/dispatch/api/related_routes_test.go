@@ -504,7 +504,7 @@ func TestRelatedRouteExcludeIssuesLeavesEveryNamedIssueOut(t *testing.T) {
 // query's words than the one keeper that also matches, and the check still lists the keeper.
 // Dropped after the page instead, those issues take every place in the window and the check
 // answers none while the match it exists to find sits below it - which is what the list is for,
-// a read that leaves out an issue and its subtree (INFRA-1160).
+// a read that leaves out an issue and its subtree (POMJU-1160).
 func TestRelatedRouteExcludedIssuesLeaveTheSearchWindowNotJustItsResults(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RWIN")

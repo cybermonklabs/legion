@@ -37,7 +37,7 @@ const ambientProcessCount: Record<string, string> =
 // two-core runner.
 //
 // The third names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
-// which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
+// which carry `default: false` since dispatch://POMJU-1280. A listing that names no project
 // holds no row of theirs, so without this one the accounting below would read the suite with
 // `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` missing:
 // 51 rows, which is what this head's wall-clock listing holds.
@@ -192,7 +192,7 @@ test(
 // in the suite reads them: `workers: 1` and `retries: 0` are what make a reading the page's own
 // work rather than the other workers', `default: false` is what keeps 51 rows out of a run that
 // names no project, and a `dependencies` is what pulled the whole suite in behind a file filter
-// until dispatch://INFRA-1280 (e2e/playwright.config.ts, above `aloneProjects`).
+// until dispatch://POMJU-1280 (e2e/playwright.config.ts, above `aloneProjects`).
 //
 // This reads the imported configuration and no listing, so it holds in two-process mode as it
 // stands: that mode declares one project, which selects the multiprocess specs and is no
@@ -237,7 +237,7 @@ test("the wall-clock projects are the one list, in its order, and run their rows
       project.dependencies ?? [],
       `${named} names \`dependencies\`, which a wall-clock project has none of: a dependency is ` +
         "a project selected to run before it, and a file filter narrows the project it selects " +
-        "and never one pulled in that way, so dispatch://INFRA-1280 deleted them. Delete this " +
+        "and never one pulled in that way, so dispatch://POMJU-1280 deleted them. Delete this " +
         "one too; `--project` is how one of these projects is run."
     ).toEqual([]);
   }

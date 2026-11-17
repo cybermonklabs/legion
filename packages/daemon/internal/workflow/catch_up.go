@@ -55,7 +55,7 @@ import (
 // of a relaunched architect can be this catch-up's rather than its prompt's, and the
 // architect then reads that its subagent died before it reads its issues. A prompt the claim's
 // machine sends tells the same record and is what marks it told, so a catch-up that is held,
-// superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
+// superseded or never queued here costs nothing (dispatch://POMJU-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
 		return intake.Result{}, e.readyWorkerTask(ctx, tx, fact)
@@ -179,7 +179,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // this launch, and after a restart — the worker's process relaunched, its claim retried, its
 // session resumed — nothing else sends it anything. A tester that came back from a restart with no
 // task waited, and its issue waited with it, for 301 hours across 48 waits
-// (dispatch://INFRA-714 R7).
+// (dispatch://POMJU-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
 // one claim: the issue is this project's and in the workflow, its phase's role (RoleFor) is this

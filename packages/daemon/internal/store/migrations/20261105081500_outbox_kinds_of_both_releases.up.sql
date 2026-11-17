@@ -1,5 +1,5 @@
 -- 20261105081500_outbox_kinds_of_both_releases.up.sql — one outbox_kind_check holding the kinds
--- of this release and of the idle release it merged (dispatch://INFRA-714).
+-- of this release and of the idle release it merged (dispatch://POMJU-714).
 --
 -- Two releases rewrote this constraint from bases that did not know each other. This release's
 -- 20261029120800 dropped the three kinds of the daemon's own merge and added `role_message`;
@@ -19,10 +19,10 @@
 -- on one that already carries a constraint of this name from any of them, by dropping the
 -- constraint if it exists before adding it.
 --
--- It names `check_wake` beside `check_compare`: INFRA-809 renamed the compare kind on main, and a
+-- It names `check_wake` beside `check_compare`: POMJU-809 renamed the compare kind on main, and a
 -- database that ran main's own rewrite has rows of the new name, which this list has to admit
 -- when it runs late over them. The compare kind stays named for the database that queued one
--- under the release before that rename, and `gated_steps_publish` for the same reason: INFRA-1272
+-- under the release before that rename, and `gated_steps_publish` for the same reason: POMJU-1272
 -- added that kind on main after this version, and a database that ran it first queues such a row.
 -- `claim_release` is named for the same reason and is the one that has to be: main's
 -- 20261108000545 added it, a park queues such a row on main and retries it for up to an hour, so

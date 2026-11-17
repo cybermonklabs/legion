@@ -404,7 +404,7 @@ test("the live event probe authenticates with a bearer file and exits at its tim
   expect(result.stdout).toEqual([]);
 });
 
-// INFRA-292's production check: the probe starts its feed where a page does, at whoami's
+// POMJU-292's production check: the probe starts its feed where a page does, at whoami's
 // event_head, and a write committed after whoami answered and before the socket opened reaches it.
 test("--from-whoami resumes the feed from whoami's event_head under the cookie it was given", async () => {
   const directory = scratch();

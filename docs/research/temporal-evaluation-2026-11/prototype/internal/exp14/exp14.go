@@ -195,7 +195,7 @@ func Worker(ctx context.Context, cfg libx.WorkerConfig) error {
 	if cfg.Start {
 		c := client.New(be)
 		params := Params{
-			IssueID:      "INFRA-1546",
+			IssueID:      "POMJU-1546",
 			QuestionFile: QuestionFile(cfg.WorkDir),
 			DecisionFile: DecisionFile(cfg.WorkDir),
 		}

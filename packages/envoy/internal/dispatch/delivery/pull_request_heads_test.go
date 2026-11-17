@@ -37,7 +37,7 @@ func seedHeadIssue(t *testing.T, ctx context.Context, pool *store.Pool, number i
 }
 
 // gadgetsRepo is the repository project GDGT owns and gadgetsOldRepo the name GitHub knew it by
-// before it was renamed: the pair INFRA-1240 is about, where Dispatch maps both names to one
+// before it was renamed: the pair POMJU-1240 is about, where Dispatch maps both names to one
 // project and the App can read only the new one.
 const (
 	gadgetsRepo    = "acme/gadgets"
@@ -79,7 +79,7 @@ func seedRenamedGadgets(t *testing.T, ctx context.Context, pool *store.Pool) {
 
 // seedGadgetsIssueUnderTheOldName is seedGadgetsIssue with the issue's own repo set to
 // gadgetsOldRepo: an issue recorded under the name its repository was renamed away from, which
-// 243 of INFRA's issues are. It sets the repository rather than leaving it, so the issue
+// 243 of POMJU's issues are. It sets the repository rather than leaving it, so the issue
 // resolves to the old name itself and not through its project's default.
 func seedGadgetsIssueUnderTheOldName(t *testing.T, ctx context.Context, pool *store.Pool, number int) string {
 	t.Helper()
@@ -1324,7 +1324,7 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const base = "integration/138"
 	merged := PullRequestHead{
-		Repo: "acme/widgets", Number: 91, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		Repo: "acme/widgets", Number: 91, HeadSHA: landedCommit, HeadRef: "legion/POMJU-1691",
 		BaseRef: base, State: "merged", AttributionSource: "none", Title: "A change",
 		URL: "https://github.com/acme/widgets/pull/91", MergeCommitSHA: mergeCommit,
 	}
@@ -1369,7 +1369,7 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 	pool, ctx := deliveryTestPool(t)
 	const base = "integration/138"
 	merged := PullRequestHead{
-		Repo: "Acme/Widgets", Number: 94, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		Repo: "Acme/Widgets", Number: 94, HeadSHA: landedCommit, HeadRef: "legion/POMJU-1691",
 		BaseRef: base, State: "merged", AttributionSource: "none", Title: "A change",
 		URL: "https://github.com/Acme/Widgets/pull/94", MergeCommitSHA: mergeCommit,
 	}
@@ -1428,7 +1428,7 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	withoutBranchCommits(t, ctx, pool)
 	merged := PullRequestHead{
-		Repo: "acme/widgets", Number: 95, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		Repo: "acme/widgets", Number: 95, HeadSHA: landedCommit, HeadRef: "legion/POMJU-1691",
 		BaseRef: "integration/138", State: "merged", AttributionSource: "none", Title: "A change",
 		URL: "https://github.com/acme/widgets/pull/95", MergeCommitSHA: mergeCommit,
 	}
@@ -1536,7 +1536,7 @@ func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(
 	in := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil)
 	payload := map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "9103",
-		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "acme/widgets",
+		"head_sha": landedCommit, "head_ref": "legion/POMJU-1691", "head_repo": "acme/widgets",
 	}
 
 	// A context already ended is Postgres out of reach: pgx answers the first read with it, as
@@ -1550,7 +1550,7 @@ func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(
 
 	malformed := map[string]string{
 		"kind": "pr", "action": "opened", "repo": "widgets", "number": "9103",
-		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "widgets",
+		"head_sha": landedCommit, "head_ref": "legion/POMJU-1691", "head_repo": "widgets",
 	}
 	_, err := in.recordPullRequestHead(ctx, malformed, 9103)
 	switch {

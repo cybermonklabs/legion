@@ -18,7 +18,7 @@
 // two releases: that change's migration adds the per-pod indexes and keeps 0015's
 // `launcher_credentials_live_subject`, so a roll of the broker serves the previous generation
 // beside it, and one ServiceAccount still holds one live credential until the follow-up
-// migration of the release after it drops that index (dispatch://INFRA-1567). So this drives
+// migration of the release after it drops that index (dispatch://POMJU-1567). So this drives
 // the schema that release leaves, through the helper #2777 added for exactly that
 // (storetest.PerPodLoginSchema), as #2777's own per-pod rows do — rather than skipping until
 // the drop lands, which would leave two pods of one account unproven for a release.

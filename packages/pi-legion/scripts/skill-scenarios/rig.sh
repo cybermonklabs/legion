@@ -37,7 +37,7 @@
 #   label-comments.ts --since <t> --until <t> --out <dir> (--gateway <url> --key-command <file> |
 #                     --key-file <file>)
 #                         labels people's production Dispatch comments in the window with the
-#                         INFRA-140 questions; writes <dir>/labels.jsonl, prints the counts
+#                         POMJU-140 questions; writes <dir>/labels.jsonl, prints the counts
 #   fetch-spec-sources.ts --out <dir> <issue key | dispatch://<PROJECT>/artifact/<slug>>...
 #                         reads each source from production Dispatch into <dir>/<name>/
 #                         (title.txt, messages.md, asks.json, and old-spec.md for an issue);

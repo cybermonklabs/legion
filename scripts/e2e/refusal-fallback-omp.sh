@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The live proof that a Legion worker a provider refused stays off that model for the whole of the
-# plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1, the check
+# plugin's cooldown and goes back to it when the cooldown ends (dispatch://POMJU-956 R1, the check
 # c-r1-chain). It is a script of its own because the window it measures is longer than any CI job
 # holds: Oh My Pi's own floor for suppressing a model whose error it cannot classify is five
 # minutes (packages/coding-agent/src/session/turn-recovery.ts:2029-2037 at the pinned tag), the
@@ -12,7 +12,7 @@
 # real `omp --mode rpc` child of the pinned Oh My Pi with this checkout's @sjawhar/pi-envoy and
 # @sjawhar/pi-legion loaded and an OpenAI-shaped model stand-in of its own, under a profile whose
 # chain steps from standin/strong-model to standin/weak-model with `retry.fallbackRevertPolicy:
-# never`, the shape INFRA's operator overlay carries (deploy/kubernetes/operator-route/overlay.yml),
+# never`, the shape POMJU's operator overlay carries (deploy/kubernetes/operator-route/overlay.yml),
 # and `retry.rateLimitWalksChain: true`, which Oh My Pi has off: on, a rate limit is admitted to the
 # chain consult rather than deferred to another attempt on the same model.
 # Each pane is driven about once a minute for about twelve and a half minutes — the stand-in answers
@@ -151,7 +151,7 @@ pass
 
 begin nats
 # A pane's Envoy extension is given no consumer by a listener it cannot reach a NATS server
-# through, and a session with no consumer ends at its claim boot (INFRA-771), so the run starts a
+# through, and a session with no consumer ends at its claim boot (POMJU-771), so the run starts a
 # JetStream server of its own, as the delivery proofs do. The port is the kernel's pick (`-p -1`),
 # read back from the line the server logs once it listens.
 command -v go >/dev/null || fail "go is not on PATH: the run builds its own natsd"

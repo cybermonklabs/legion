@@ -11,7 +11,7 @@ date: 2026-10-25
 status: active
 module: skills
 related_issues:
-  - "INFRA-251"
+  - "POMJU-251"
   - "sjawhar/legion#2163"
 ---
 
@@ -45,9 +45,9 @@ resolution is the step that deletes the work.
 - **No check guards this.** A later merge that drops the block from both files passes every lane.
   The protection is the measurement above, written into the handoff.
 
-## Evidence (INFRA-251, sjawhar/legion#2163)
+## Evidence (POMJU-251, sjawhar/legion#2163)
 
-`main` took INFRA-376 (sjawhar/legion#2192), which moved the Wake routing table out of
+`main` took POMJU-376 (sjawhar/legion#2192), which moved the Wake routing table out of
 `skills/legion-architect/SKILL.md` into `skills/legion-architect/references/wake-routing.md` so the
 skill would fit the 51,200-byte spill guard. This branch carried three hunks in that skill, at
 `main`'s lines 160, 447 and 470, of which only the 447 one — the `design-changes-requested` row of

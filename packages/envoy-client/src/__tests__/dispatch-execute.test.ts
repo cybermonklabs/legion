@@ -884,7 +884,7 @@ describe("executeDispatchTool", () => {
     expect(failure.problems).toEqual([
       `ask ids are uuids. Write the whole id, or at least its first 8 characters. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
     ]);
-    // The problem is the id, not which flags the command takes (INFRA-1522 R16).
+    // The problem is the id, not which flags the command takes (POMJU-1522 R16).
     expect(failure.message).not.toContain("Allowed flags");
     expect(failure.message).toContain("Example:");
     expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
@@ -2858,7 +2858,7 @@ describe("executeDispatchTool", () => {
   // missed its heartbeats has not ended and still holds the claim, so "not running" would send
   // the reader to take work that is being done; what it needs instead is both times - since
   // when the holder has been silent, and from when the server lets anyone else take it
-  // (dispatch://INFRA-392).
+  // (dispatch://POMJU-392).
   test("an unresponsive holder's claim says since when it is silent and when it becomes takeable", async () => {
     const serve = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
@@ -3033,7 +3033,7 @@ describe("executeDispatchTool", () => {
   // A list row has no liveness of its own, so it used to judge a claim by membership of the
   // agent list alone - and that list carries unresponsive sessions now, because an unresponsive
   // session keeps its claims. Such a holder then read as plainly holding on the list while
-  // dispatch_read and the dashboard said unresponsive (dispatch://INFRA-392, R5).
+  // dispatch_read and the dashboard said unresponsive (dispatch://POMJU-392, R5).
   test("dispatch_issues says an unresponsive holder is unresponsive, from the holder's own agent row", async () => {
     const stalledAt = Date.parse("2026-09-24T06:30:00Z");
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -4696,7 +4696,7 @@ describe("executeDispatchTool", () => {
         owner: "alice",
         service: null,
         session: "session-1",
-        project: "INFRA",
+        project: "POMJU",
       });
 
     const result = await executeDispatchTool({
@@ -4715,10 +4715,10 @@ describe("executeDispatchTool", () => {
       session: "session-1",
       owner: "alice",
       service: null,
-      project: "INFRA",
+      project: "POMJU",
     });
     expect(result.text).toContain("Session session-1 acts for alice");
-    expect(result.text).toContain("It may write project INFRA and no other.");
+    expect(result.text).toContain("It may write project POMJU and no other.");
     expect(result.text).not.toContain("which is not this host session");
   });
 
@@ -9245,7 +9245,7 @@ describe("executeDispatchTool", () => {
   // names `dispatch plan-approve`, in `dispatch read` and in the trailer of `dispatch doc-read`
   // alike. The document is a plan as Dispatch answers it, role `plan` and slug `plan-md`, which is
   // what the architect's ruling keys on
-  // (dispatch://INFRA-3327/comment/d19c71f5-6186-44f0-9017-858947155b75).
+  // (dispatch://POMJU-3327/comment/d19c71f5-6186-44f0-9017-858947155b75).
   test("a stale approval a person gave a plan names dispatch plan-approve, not a request", async () => {
     const hash = "cd".repeat(32);
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -9311,7 +9311,7 @@ describe("executeDispatchTool", () => {
   });
 
   // The slug fallback that names a role-less `plan-md` a plan holds for an issue's documents alone
-  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf): an issue's plan.md with
+  // (dispatch://POMJU-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf): an issue's plan.md with
   // no role is still a plan, whose stale approval names `dispatch plan-approve`, and a project
   // document named plan.md is a plain document, whose stale approval comes back through a
   // request, as any other document's does. Each document is answered as Dispatch answers it: no
@@ -9418,7 +9418,7 @@ describe("executeDispatchTool", () => {
   // document, which went stale before the close, names no command to restore it, on its plan as
   // on its spec: `dispatch read`, the trailer of `dispatch doc-read` and the issue read's spec line
   // each say the issue is closed instead
-  // (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf).
+  // (dispatch://POMJU-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf).
   test("a stale approval on a closed issue names no command, since Dispatch takes no approval there", async () => {
     const hash = "cd".repeat(32);
     const session = "01a1b464-9df7-7298-a78f-4ff4f8284ce7";
@@ -10221,7 +10221,7 @@ describe("executeDispatchTool", () => {
   });
 
   // `Applied 1 ops (version 3)` reads the same whether the edit wrote a list or a paragraph of
-  // dashes, so the server reads back what it wrote and the command prints it (INFRA-1520 R6). It
+  // dashes, so the server reads back what it wrote and the command prints it (POMJU-1520 R6). It
   // prints under the decision-block lines: the tool description promises those come after the
   // result's first line, and up to 2000 bytes of markdown above them would not keep that promise.
   test("prints the decision block's check under the Applied line and the markdown it wrote under that", async () => {
@@ -11169,7 +11169,7 @@ describe("executeDispatchTool", () => {
     expect(JSON.parse(requests[0]?.init.body as string)).toMatchObject({ name });
   });
 
-  // INFRA-1522 R14: an upload under a name the issue already holds would write that document's
+  // POMJU-1522 R14: an upload under a name the issue already holds would write that document's
   // next version, over the text it holds, so the command reads what the issue holds and refuses
   // it before it sends the upload. --force is what asks for the version.
   test("refuses an upload under a name the issue already holds, naming --force", async () => {
@@ -11225,7 +11225,7 @@ describe("executeDispatchTool", () => {
     expect(requests.every((request) => request.method === "GET")).toBe(true);
   });
 
-  // INFRA-1334 R10: the command's held-name refusal answers a create that would write the held
+  // POMJU-1334 R10: the command's held-name refusal answers a create that would write the held
   // document's next version, and a create whose content is blank writes none. The guard is the
   // server's own `blank` (the `blank :=` line of jsonArtifactUpload,
   // packages/envoy/internal/dispatch/api/artifacts.go): a blank create goes to the server, which
@@ -11298,7 +11298,7 @@ describe("executeDispatchTool", () => {
     expect(String(failure)).not.toContain(ARTIFACT_NAME_EXISTS_RULE);
   });
 
-  // INFRA-1334 R11: the server reads U+FEFF as content, the other way round from U+0085 above
+  // POMJU-1334 R11: the server reads U+FEFF as content, the other way round from U+0085 above
   // (goBlankPattern's comment names the pair). So this create writes the held document's next
   // version over the text it holds, and what answers it is the same held-name refusal
   // "refuses an upload under a name the issue already holds, naming --force" reads for
@@ -11384,7 +11384,7 @@ describe("executeDispatchTool", () => {
     expect(posts).toEqual(["/api/v1/issues/DSP-42/artifacts"]);
   });
 
-  // INFRA-1522 R15: inline text is stored as Markdown, so Dispatch stores its rendering. The
+  // POMJU-1522 R15: inline text is stored as Markdown, so Dispatch stores its rendering. The
   // command asks the store what it would hold and refuses a text it would write otherwise. The
   // refusal prints the text the store writes, because that is the text the writer sends instead.
   test("refuses inline content the store would change, printing the text Dispatch stores", async () => {
@@ -11559,7 +11559,7 @@ describe("executeDispatchTool", () => {
     expect(problem).not.toContain(long);
   });
 
-  // INFRA-1522 R15: the store ends every document it holds with a line feed, so text written
+  // POMJU-1522 R15: the store ends every document it holds with a line feed, so text written
   // without one comes back with one and nothing else changed. That is no other spelling, and the
   // upload goes on. The server's own test pins it ("one" is stored as "one\n",
   // packages/envoy/internal/dispatch/api/markdown_round_trip_test.go).
@@ -11597,7 +11597,7 @@ describe("executeDispatchTool", () => {
     expect(posts.map((body) => JSON.parse(body).content)).toEqual([content]);
   });
 
-  // INFRA-1522 R15(b): only a Dispatch that holds no such route leaves the upload to make its own
+  // POMJU-1522 R15(b): only a Dispatch that holds no such route leaves the upload to make its own
   // refusal. 404 and 405 are what such a server answers.
   test.each([
     [404, "NOT_FOUND", "no route for POST /api/v1/markdown/round-trip"],
@@ -14343,7 +14343,7 @@ describe("executeDispatchTool", () => {
             actor: {
               kind: "session",
               id: "s1",
-              origin: { session_title: "Legion implementer · INFRA-1160" },
+              origin: { session_title: "Legion implementer · POMJU-1160" },
             },
             created_at: "2026-09-09T00:01:00Z",
             payload: {
@@ -14372,7 +14372,7 @@ describe("executeDispatchTool", () => {
       [
         "Key: DSP-42",
         "Events:",
-        "- #1 issue.created · session s1 (Legion implementer · INFRA-1160) · 2026-09-09T00:01:00Z · status triage · forced past DSP-7, DSP-9",
+        "- #1 issue.created · session s1 (Legion implementer · POMJU-1160) · 2026-09-09T00:01:00Z · status triage · forced past DSP-7, DSP-9",
       ].join("\n")
     );
   });
@@ -14406,7 +14406,7 @@ describe("executeDispatchTool", () => {
               actor: {
                 kind: "session",
                 id: "s1",
-                origin: { session_title: "Legion implementer · INFRA-1160" },
+                origin: { session_title: "Legion implementer · POMJU-1160" },
               },
               created_at: "2026-09-09T00:01:00Z",
               payload: {
@@ -14434,7 +14434,7 @@ describe("executeDispatchTool", () => {
     };
 
     const created =
-      "- #1 issue.created · session s1 (Legion implementer · INFRA-1160) · 2026-09-09T00:01:00Z · status triage";
+      "- #1 issue.created · session s1 (Legion implementer · POMJU-1160) · 2026-09-09T00:01:00Z · status triage";
     expect(await createdLine({ past: [] })).toBe(
       `${created} · forced, the near-copy check did not answer`
     );
@@ -16013,7 +16013,7 @@ describe("positionText", () => {
 });
 
 describe("goBlankPattern", () => {
-  // INFRA-1334: the pattern writes Go's `unicode.IsSpace` set out, and the create rows above pin
+  // POMJU-1334: the pattern writes Go's `unicode.IsSpace` set out, and the create rows above pin
   // the two characters a person meets. Nothing but this test holds the whole set, so a hand edit
   // that drops one scalar, or a raise of Go that moves the set, would otherwise be silent on this
   // side. The committed list is what both languages read: Go's own predicate is held to it by

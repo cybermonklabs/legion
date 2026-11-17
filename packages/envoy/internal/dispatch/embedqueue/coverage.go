@@ -57,11 +57,11 @@ const issueRows = `select s.id, s.text, encode(sha256(convert_to(s.text, 'UTF8')
 var issueItems = searchableItems(issueRows)
 
 // windowCoverageKinds is every kind whose rows the writers of windows own: one row per window
-// of a document's, a comment's, a message's blocks or of an ask's parts (INFRA-370). Migration
+// of a document's, a comment's, a message's blocks or of an ask's parts (POMJU-370). Migration
 // 20261102233626 and the three after it dropped the whole-text triggers these replace, so
 // every such row is written by the block-index tick's window arm, which writes the windows of
 // every comment, message, ask and document whose blocks a write recorded and whose windows it
-// left to that tick (INFRA-988). No statement of this pass may invent one: the pass has no way
+// left to that tick (POMJU-988). No statement of this pass may invent one: the pass has no way
 // to window an owner, and a row it inserted for a window that no longer exists would be
 // embedded for ever at a text no reader can reach. So no statement here builds a window row
 // (insertMissingIssues and repairStaleIssues are the issue's alone), a window kind takes the

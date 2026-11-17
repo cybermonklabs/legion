@@ -285,7 +285,7 @@ func skillsInstallation(repository ghrepo.Repository, legion string) *skillsInst
 // which runs that check.
 //
 // The check is `legion skills-check`, and it is the last thing before the harness for a reason
-// (dispatch://INFRA-1300, R4): the install's own success says a marketplace resolved a plugin of
+// (dispatch://POMJU-1300, R4): the install's own success says a marketplace resolved a plugin of
 // that version, and nothing more. The check compares the bytes Oh My Pi installed with the digest
 // skills-fetch took of that plugin's directory in the clone at the commit it recorded, so an
 // install that resolved something else, a tree something wrote into the plugin cache afterwards,
@@ -294,12 +294,12 @@ func skillsInstallation(repository ghrepo.Repository, legion string) *skillsInst
 // network: it reads the pod's own records and asks Oh My Pi where it installed each plugin.
 //
 // It adds a *local* marketplace, a path on the pod's own volume, and never `owner/repo`. That is
-// the point of the whole arrangement (dispatch://INFRA-1300): a registered local marketplace has
+// the point of the whole arrangement (dispatch://POMJU-1300): a registered local marketplace has
 // no git remote, so neither this step nor Oh My Pi's own startup refresh of a marketplace whose
 // cache is more than 24 hours old fetches anything — measured on the pinned omp 18.13.3, where a
 // stale local marketplace's refresh re-reads the directory and runs no git at all, while the same
 // refresh of an `owner/repo` marketplace clones. A clone in a role's launch context is what ends
-// the pod's gVisor sandbox about four seconds in (dispatch://INFRA-1262), so a role must do none.
+// the pod's gVisor sandbox about four seconds in (dispatch://POMJU-1262), so a role must do none.
 //
 // `add` is run first. If the name is already registered, remove that registration and add the
 // local path again: a kept role may have registered the same name from GitHub, and `update` would
@@ -530,7 +530,7 @@ func claudeCodeBlock(stateHome string, generation uint64, lockWait int) string {
 //
 // The skills install comes before the setup command so that a deployment's setup may check what it
 // installed (`omp plugin list | grep -q …`) rather than install anything itself: a role's launch
-// must clone nothing (dispatch://INFRA-1262).
+// must clone nothing (dispatch://POMJU-1262).
 //
 // claudeDir is the launch's CLAUDE_CONFIG_DIR (claudeConfigDir), "" for an Oh My Pi launch, which
 // therefore never renders claudeCodeBlock. It is made here and nowhere else: it is on the issue's

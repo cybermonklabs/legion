@@ -28,7 +28,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * INFRA-1017 end to end: the real `dispatch` command, run as its own process under a personal
+ * POMJU-1017 end to end: the real `dispatch` command, run as its own process under a personal
  * token the person minted on the Settings page, against the real server, beside the page a real
  * browser renders from the same data.
  *
@@ -38,7 +38,7 @@ import { asUser } from "./users";
  * beside them, which every reader renders. Last, the Settings checkbox that narrows a token to
  * the person scope alone stops it approving, and ticking it back lets it approve again.
  *
- * The second row reads the `Unread threads` band on the command's own surface (INFRA-450): the
+ * The second row reads the `Unread threads` band on the command's own surface (POMJU-450): the
  * two threads of this seed the reader has not caught up with, each named by its owner, the agent
  * that wrote the newest reply and how long ago, and the count the call leaves in its details.
  *

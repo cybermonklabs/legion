@@ -1,6 +1,6 @@
 // session_carry_test.go drives the REAL compiled broker on a real Postgres and measures one
 // thing: a session's grant, and its pending request, follow the session to a new box
-// (dispatch://INFRA-1167). A session is a name — the session_id its launcher states at
+// (dispatch://POMJU-1167). A session is a name — the session_id its launcher states at
 // POST /v1/enrollments — and a box is whatever holds the launcher credential that enrols it. The
 // box is replaced far more often than the session it runs: a helper restarts, a machine is
 // rebuilt, a person signs in on a second machine. Today each of those enrols the session again

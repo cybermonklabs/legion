@@ -9,7 +9,7 @@ import (
 )
 
 // embeddingsPendingSinceVersion adds embeddings.pending_since and dead_model, and teaches
-// embeddings_enqueue to set them on a text change (INFRA-393); the next version drops the removed
+// embeddings_enqueue to set them on a text change (POMJU-393); the next version drops the removed
 // backfill-embeddings subcommand's checkpoint table.
 const embeddingsPendingSinceVersion = 118
 

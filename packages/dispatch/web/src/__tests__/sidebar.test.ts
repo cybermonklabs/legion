@@ -408,7 +408,7 @@ test("sidebar keeps its hide control available while navigation loads", async ()
   }
 });
 
-// The rail's Priorities entry (INFRA-2947, R8): the way to the page from every other page, with
+// The rail's Priorities entry (POMJU-2947, R8): the way to the page from every other page, with
 // the number of faults now beside it, which is the two fault counts added.
 test("the rail's Priorities entry opens the page and counts both faults as one number", async () => {
   const sidebar = renderSidebar("/", undefined, summary(5, 7));

@@ -32,7 +32,7 @@ export function userPreferenceStorageKey(login: string, preference: UserPreferen
 
 /**
  * Where this browser kept the Agents page's pins before they became the person's own, held by
- * Dispatch (INFRA-812). Nothing writes it any more, so it is no `UserPreference`: the shell
+ * Dispatch (POMJU-812). Nothing writes it any more, so it is no `UserPreference`: the shell
  * reads it once at the first load after the change, writes each id it holds as a pin and
  * removes it. The format is the one `userPreferenceStorageKey` wrote, frozen as it was written.
  */

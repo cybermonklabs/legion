@@ -844,7 +844,7 @@ test("an unread reply is never folded away", async () => {
   }
 });
 
-// INFRA-869: a reply that is nothing but a reference shows the reference's card under it, as
+// POMJU-869: a reply that is nothing but a reference shows the reference's card under it, as
 // the margin's comments do.
 test("a reply that is nothing but a reference shows its card", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({

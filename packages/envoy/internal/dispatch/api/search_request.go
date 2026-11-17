@@ -175,8 +175,8 @@ func (r searchReading) operators() []string {
 
 var (
 	// searchIssueKeyPattern is an issue key as a person writes it in the bar: the key itself
-	// (INFRA-1042), the same in any case (infra-1042), or the key with a space where the hyphen
-	// is (INFRA 1042), which is what a person typing fast writes.
+	// (POMJU-1042), the same in any case (infra-1042), or the key with a space where the hyphen
+	// is (POMJU 1042), which is what a person typing fast writes.
 	searchIssueKeyPattern = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]{1,9})[-\s]+([0-9]{1,9})$`)
 	// searchIssueNumberPattern is an issue number alone (1042), which names the issue of that
 	// number in the project the request reads it in (numberScope), or in every project at once.

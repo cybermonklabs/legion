@@ -298,7 +298,7 @@ export function listingColumns(listing: IssueListing, titled: boolean): ListingC
 
 /** The work that records why an issue was moved into backlog or icebox. Until it lands no move
  *  carries a reason, and the Reason cell names it. */
-const MOVE_REASON_WORK = "dispatch://INFRA-2934";
+const MOVE_REASON_WORK = "dispatch://POMJU-2934";
 
 /**
  * The four listing columns. They name what R6 asks each fault row to name, and none of them

@@ -63,6 +63,6 @@ is `01c895950bde` and whose author is `343353655+legion-implementer[bot]`, the r
 the empty turn-start commit left alone.
 
 The prevention for the second half is already written:
-docs/solutions/delegation/a-shared-issue-workspace-hands-your-commit-another-roles-app-check-the-author-next-to-the-commit-INFRA-42.md
+docs/solutions/delegation/a-shared-issue-workspace-hands-your-commit-another-roles-app-check-the-author-next-to-the-commit-POMJU-42.md
 says to run `jj new` before the turn's **first edit**, not before its first commit. This is what to
 do once that moment has passed.

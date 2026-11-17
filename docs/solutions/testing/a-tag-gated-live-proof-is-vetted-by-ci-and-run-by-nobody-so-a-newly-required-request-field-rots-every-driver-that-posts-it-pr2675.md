@@ -40,7 +40,7 @@ step whenever somebody next runs it.
   now fails for a new reason can be made green by a change that also hides the old assertion, so
   check that each refusal the proof names is still the refusal it observes.
 
-## Evidence (sjawhar/legion#2675, INFRA-609)
+## Evidence (sjawhar/legion#2675, POMJU-609)
 
 sjawhar/legion#2354 (merge `b552205c`) moved Legion's phase handoffs onto their Dispatch issues and
 made a completion of a file-backed phase name a Dispatch handoff record:
@@ -56,11 +56,11 @@ Nothing reported it. CI's only contact with these files is
 `scripts/e2e/lib/live-daemon-proof.sh:122-123` builds the driver with `go test -c -tags e2e` and
 the script is run by hand with `LEGION_TEST_PG_DSN`.
 
-The rot surfaced eight days later, when INFRA-609's plan named that script as the surface of its
+The rot surfaced eight days later, when POMJU-609's plan named that script as the surface of its
 own acceptance criterion. Its first run died at step 1 — `ci_red_no_takeover_live_test.go:418: the
 implementer's completion = 400 HANDOFF_RECORD_REQUIRED … want 200` — before any of the five steps
 the proof is about. The same run at the parent commit failed identically, which is how it was told
-apart from the change under test. Repairing it cost INFRA-609 a second implementing round.
+apart from the change under test. Repairing it cost POMJU-609 a second implementing round.
 
 `scripts/e2e/no-required-checks.sh`, in the same directory and run in the same session, was
 unaffected: it drives CI settlements, pushes and base-branch reads and completes no phase, so it

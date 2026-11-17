@@ -1,5 +1,5 @@
 -- 20261114020537_claim_entry_handshake.up.sql — the handshake a claim keeps of the last phase
--- entry it was queued a task of (INFRA-2614).
+-- entry it was queued a task of (POMJU-2614).
 --
 -- The four columns are supervise.Claim.Handshake: the entry (handshake_entry), the issue
 -- generation that entry's task was of (handshake_generation), when a task of that entry was first
@@ -23,7 +23,7 @@
 --
 -- Every row the table already holds takes the defaults, 0 and null, which name no entry, and
 -- nothing fills them. So the state reads both times as absent for every claim until its role's
--- next start, which is how a root of the release before this one reads (dispatch://INFRA-2614,
+-- next start, which is how a root of the release before this one reads (dispatch://POMJU-2614,
 -- R8).
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no

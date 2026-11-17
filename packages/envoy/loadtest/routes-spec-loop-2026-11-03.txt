@@ -1,6 +1,6 @@
 # Request route mix of the Verified Linux spec loop (loadgen run -route-mix <this file>).
 #
-# Source: decision D1 of the plan of dispatch://INFRA-988, which counts what the loop's driver
+# Source: decision D1 of the plan of dispatch://POMJU-988, which counts what the loop's driver
 # reads over a driver day. Every weight below is that read's share of the loop's reads, and the
 # seven add up to 99: the loop's remaining 1% is reads of no one shape.
 #

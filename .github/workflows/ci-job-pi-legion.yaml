@@ -55,13 +55,13 @@ jobs:
     # concluded `success`. A ceiling a little above today's sum is back inside the test step's
     # own spread at the next file that lands: five stall-watchdog files and two model-fallback
     # files took that step from 297 s at 17:49Z on 2026-11-08 to 638 s by 22:16Z.
-    # 28 rather than the next minute up: #2918 (dispatch://INFRA-1545) makes install-jj retry
+    # 28 rather than the next minute up: #2918 (dispatch://POMJU-1545) makes install-jj retry
     # on a 1057 s ladder and gates a job's ceiling above its slowest retried step, a refusal
     # that names 18 minutes, and that branch carries 28, so both hold one value on this line.
     # Every figure here is a cold-Bun one: off main the setup-bun wrapper passes no-cache, so a
     # pull request's run and a merge group's both download the 34 MB release asset rather than
     # restore it, and that download is the 2 s above.
-    # dispatch://INFRA-2125 shortens the suite and is the fix; this line is the stopgap.
+    # dispatch://POMJU-2125 shortens the suite and is the fix; this line is the stopgap.
     timeout-minutes: 28
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.

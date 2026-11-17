@@ -94,7 +94,7 @@ rerun <run> --failed`, no commit — a push onto a red verdict would count as a 
 the flake and the evidence in the pull request's CI line, and **file it** (LEGION-174) so the
 pattern is visible the second time. A rerun with no record is how a flake becomes folklore.
 
-**Superseded 2026-10-23 (dispatch://INFRA-83):** only the clause that records the flake and the
+**Superseded 2026-10-23 (dispatch://POMJU-83):** only the clause that records the flake and the
 evidence in the pull request's CI line is gone: the body carries no `CI:` line
 (`skills/legion-worker/references/pr-body.md`), and no role records a check result for a later step
 to trust — the tester and the reviewer each read CI on GitHub at the head they are judging and

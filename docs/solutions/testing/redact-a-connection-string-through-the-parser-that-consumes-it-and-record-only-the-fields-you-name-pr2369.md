@@ -17,7 +17,7 @@ related_issues:
 
 # Redact a connection string through the parser that consumes it, and record only the fields you name
 
-Extends docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md.
+Extends docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-POMJU-229.md.
 
 That note says to use the store's own parser for error text. This one adds that "compose from
 parsed parts" (docs/solutions/daemon/a-configuration-projected-onto-an-unauthenticated-route-is-audited-by-the-loaders-admitted-value-shapes-not-by-field-names-LEGION-791.md)

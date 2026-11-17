@@ -1,4 +1,4 @@
-/** A person takes as long as they like to write a comment on a document (dispatch://INFRA-727).
+/** A person takes as long as they like to write a comment on a document (dispatch://POMJU-727).
  *
  *  Each row opens the margin composer from a selection, leaves it open while something that can
  *  take the provisional mark away happens, and then presses Send. Every row records, every
@@ -404,7 +404,7 @@ function markOffsets(page: Page): Promise<{ id: string; offset: number }[]> {
 /** The author-offline row's wait, with words that read twice in the document. The document's text
  *  never changes: the sweep takes the mark while the tab is away, and Send has to put the comment
  *  on the reading its author selected - the second one here, at character 62 of the paragraph -
- *  not refuse it as text that "was changed or deleted" (dispatch://INFRA-727 acceptance 2). */
+ *  not refuse it as text that "was changed or deleted" (dispatch://POMJU-727 acceptance 2). */
 // SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one settle delay and
 // one unrecorded-mark TTL after it was written, which no page clock can bring forward.
 test("a comment on words that read twice keeps the reading its author selected", async ({
@@ -449,7 +449,7 @@ test("a comment on words that read twice keeps the reading its author selected",
 /** The same refusal as the row above it, from an Ask composer: the words it is anchored to are
  *  gone, so the draft stays and the reader is told. What the reader is told has to be about the
  *  thing they are writing - an ask here, a suggestion from the Suggest composer - and never
- *  "this comment" (dispatch://INFRA-727 acceptance 2: the composer keeps the draft and says why). */
+ *  "this comment" (dispatch://POMJU-727 acceptance 2: the composer keeps the draft and says why). */
 test("an ask whose selected text another writer deleted is not called a comment", async ({
   browser,
 }) => {
@@ -511,7 +511,7 @@ function readingOffsets(page: Page): Promise<number[]> {
  *  are still there - they are the paragraph's third reading now, where they were its second - so
  *  Send either attaches the comment to them or tells the reader it cannot and keeps the draft.
  *  What it must never do is attach the comment to a reading the reader never selected, which no
- *  refusal tells them about (dispatch://INFRA-727 acceptance 2; the INFRA-512 architect's decision
+ *  refusal tells them about (dispatch://POMJU-727 acceptance 2; the POMJU-512 architect's decision
  *  of 2026-10-30T09:49:42Z rests on it: "a record on the wrong passage is worse than a refusal"). */
 test("a comment keeps its own reading when another writer adds an earlier one", async ({
   browser,
@@ -594,7 +594,7 @@ const TWO_PARAGRAPH_SPEC = [
  *  same words still read once in another paragraph, surrounded by different text. That other
  *  paragraph is a different passage, so Send must not quietly put the comment there: it says it
  *  cannot be attached, keeps the draft, and does not claim the words were changed or deleted,
- *  since they are plainly still on the page (the INFRA-512 architect's amended decision on
+ *  since they are plainly still on the page (the POMJU-512 architect's amended decision on
  *  sjawhar/legion#2548: words and surroundings both have to match). */
 test("a comment whose own paragraph lost the words is not moved to another paragraph", async ({
   browser,
@@ -644,7 +644,7 @@ test("a comment whose own paragraph lost the words is not moved to another parag
  *  those words once - in the other sentence, which the reader never selected. Their passage is
  *  gone, so Send must say so and keep the draft: the one reading left is somebody else's, and a
  *  comment put there is a record on a passage no refusal ever tells the reader about
- *  (dispatch://INFRA-727 acceptance 2; the rule the INFRA-512 architect's decisions rest on). */
+ *  (dispatch://POMJU-727 acceptance 2; the rule the POMJU-512 architect's decisions rest on). */
 test("a comment is not moved to the block's other reading when its own words are deleted", async ({
   browser,
 }) => {
@@ -797,7 +797,7 @@ const ACROSS_BLOCKS_TWICE_SPEC = [
  *  words read across another pair of paragraphs the editor cannot say which pair is the
  *  reader's: refusing is right. Telling them their words are "no longer where you selected it"
  *  is not - they are exactly where they were, and only the words around them changed. Each
- *  refusal says what is true of the case it is reached in (the INFRA-512 architect's rule, this
+ *  refusal says what is true of the case it is reached in (the POMJU-512 architect's rule, this
  *  review's finding 4); the sentence it is told in is `unremembered`'s, asserted word for word. */
 test("a cross-block refusal does not claim the words moved while they are where they were", async ({
   browser,

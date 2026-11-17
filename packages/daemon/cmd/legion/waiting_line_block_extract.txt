@@ -11,7 +11,7 @@
 # edit would then start the whole daemon Go lane. The product half is that test, which builds
 # each line from the state the guide describes; packages/daemon/internal/textcheck's
 # TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock holds each passage below to the guide
-# itself, in the job whose subject is a file's words (INFRA-1413). Neither half alone is the
+# itself, in the job whose subject is a file's words (POMJU-1413). Neither half alone is the
 # guarantee: a sample corrected in the guide alone fails the text-check half, and a renderer that
 # stopped printing one of the four lines fails the product half.
 #

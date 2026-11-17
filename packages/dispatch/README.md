@@ -490,7 +490,7 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
 
 `e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
 the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
-proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
+proves it. It has one section for each of the checks `k1` to `k5` of dispatch://POMJU-3204's
 Verification document, and each runs that check's `run` and asserts its `negative_control`:
 
 - `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
@@ -617,7 +617,7 @@ missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISP
 without printing it, unsetting both so no process the script starts inherits it.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
-(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
+(dispatch://POMJU-3862): a person from outside runs it on their own device, over the path they
 were given to Dispatch, to measure which of our listed addresses that device reaches. What it
 measures is TCP connects from that device to the listed addresses and ports, nothing more: it
 cannot see a service the origin itself forwards by path or by Host on its own host and port, and

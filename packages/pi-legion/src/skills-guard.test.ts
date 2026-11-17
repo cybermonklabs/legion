@@ -79,7 +79,7 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
 });
 
 // The merger merges the pull request itself, at the head it read, and the daemon submits no merge
-// and changes no merge setting (dispatch://INFRA-714, R2): no skill a Legion pane loads, and no
+// and changes no merge setting (dispatch://POMJU-714, R2): no skill a Legion pane loads, and no
 // daemon prompt, may hand the merge back to the daemon. The pattern matches the claim made of the
 // daemon and not its denial, so the verb follows `daemon` directly and names what is merged.
 test("no skill or prompt says the daemon merges", () => {
@@ -96,7 +96,7 @@ test("no skill or prompt says the daemon merges", () => {
   expect(saying).toEqual([]);
 });
 
-// An issue's disk dies with its pod (INFRA-80), so nothing writes the recovery marker
+// An issue's disk dies with its pod (POMJU-80), so nothing writes the recovery marker
 // `.legion/<issue>/workspace-recovered.json` any more: `workspace-init` lost it with the lost-disk
 // verdict. The `Your workspace was recreated…` notice now reaches every resume in a new pod, so a
 // skill or prompt that still sends an agent to the marker sends every resumed agent after a file
@@ -211,7 +211,7 @@ test("the controller skill reads pull requests as the review App, and nothing sa
   expect(offending).toEqual([]);
 });
 
-// INFRA-83 took the `CI:` line out of the pull request body, and the forward merge of main put the
+// POMJU-83 took the `CI:` line out of the pull request body, and the forward merge of main put the
 // paragraph that defined it back into skills/legion-worker/references/pr-body.md with no conflict
 // for anyone to read: a merge keeps both sides by design, so a deletion is undone in silence. The
 // body carries no such line, and that reference is the file every worker reads before it touches a
@@ -360,7 +360,7 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
   }
 }, 60_000);
 
-// dispatch://INFRA-332's eight guidance rules, each pinned where it was written. A pin fails when
+// dispatch://POMJU-332's eight guidance rules, each pinned where it was written. A pin fails when
 // a later edit deletes the rule's key sentence; it does not show that an agent follows the rule,
 // which the issue's session runs measure. Whitespace is collapsed before the match, as
 // shipped-agents.test.ts collapses it, so a pin survives a rewrap of the file it reads.
@@ -386,7 +386,7 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
 }
 
 // R1: the simplify pass covers every file of the diff, docs-only diffs included, and a defect it
-// sees is reported rather than dropped as out of scope (dispatch://INFRA-198).
+// sees is reported rather than dropped as out of scope (dispatch://POMJU-198).
 test("the simplify pass reads every file of its scope and reports the defects it sees", () => {
   const simplify = collapsed(path.join(staged, "simplify-settled-diff", "SKILL.md"));
   expect(simplify).toContain(
@@ -414,7 +414,7 @@ test("the simplify pass reads every file of its scope and reports the defects it
 });
 
 // R2: a check that cannot fail is not a result, and a documented procedure counts only when it
-// ran (dispatch://INFRA-142, dispatch://INFRA-198).
+// ran (dispatch://POMJU-142, dispatch://POMJU-198).
 test("a check that cannot fail is not a result, and a documented procedure counts only when it ran", () => {
   const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
   expect(prBody).toContain("**A check that cannot fail is not a result.**");
@@ -424,7 +424,7 @@ test("a check that cannot fail is not a result, and a documented procedure count
 });
 
 // R3: the unchanged-diff fingerprint covers the branch's own diff alone, so a forward merge can
-// bring a new instance of a class the branch already answered (dispatch://INFRA-83). The `E2E`
+// bring a new instance of a class the branch already answered (dispatch://POMJU-83). The `E2E`
 // re-check wording carries the class search in both files that hold it.
 test("the forward-merge re-check searches the new head for each earlier finding's class", () => {
   expect(
@@ -445,7 +445,7 @@ test("the forward-merge re-check searches the new head for each earlier finding'
 });
 
 // R4: a planner waits on a decision its plan needs rather than completing around it
-// (dispatch://INFRA-206). The role prompts carry the rest of R4; roles_test.go pins those.
+// (dispatch://POMJU-206). The role prompts carry the rest of R4; roles_test.go pins those.
 test("a planner waits on an open decision instead of completing around it", () => {
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
     "a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase"
@@ -453,7 +453,7 @@ test("a planner waits on an open decision instead of completing around it", () =
 });
 
 // R5: a review agent returns its whole report, and the reviewer refuses a result without one
-// (dispatch://INFRA-331). shipped-agents.test.ts pins the two agent definitions.
+// (dispatch://POMJU-331). shipped-agents.test.ts pins the two agent definitions.
 test("the reviewer treats a result with no report as a failed run, not a verdict", () => {
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
   expect(mergeGate).toContain(
@@ -468,7 +468,7 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
 });
 
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
-// (dispatch://INFRA-334). The sentence goes in the always-loaded prompts and agent definitions,
+// (dispatch://POMJU-334). The sentence goes in the always-loaded prompts and agent definitions,
 // because skills/legion-worker/references/tools.md loads only on a tool or test question.
 test("every shipped prompt and bash-running agent says how to read a piped command's status", () => {
   countedOncePerFile(
@@ -489,7 +489,7 @@ test("every shipped prompt and bash-running agent says how to read a piped comma
 });
 
 // R8: every role of an issue shares one $TMPDIR on the issue's volume, so a glob sweep deletes
-// another role's open directory (dispatch://INFRA-654). The reviewer's pair states it in
+// another role's open directory (dispatch://POMJU-654). The reviewer's pair states it in
 // `thermonuclear-code-quality`, which the Envoy plugin now ships and whose guard holds it there.
 test("every prompt and agent that may write says to make its own scratch and delete only what it made", () => {
   countedOncePerFile(
@@ -505,7 +505,7 @@ test("every prompt and agent that may write says to make its own scratch and del
 });
 
 // R9: a push moves the branch while the pull request can keep naming the old commit, so the new
-// commit gets no checks (dispatch://INFRA-1318). The step is one wording held across
+// commit gets no checks (dispatch://POMJU-1318). The step is one wording held across
 // `skill://legion-worker` and the daemon's worker prompt, counted once in each file, so the
 // pinned sentences cannot drift; the prompt also carries text of its own that no pin here holds,
 // and the pins below hold what only the prompt carries and the skill points at. The carve-out
@@ -558,7 +558,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
   );
 });
 
-// dispatch://INFRA-3204: a check carrying `ci_check` is proved by the CI run it names, so no role
+// dispatch://POMJU-3204: a check carrying `ci_check` is proved by the CI run it names, so no role
 // runs it or records its result, and `dispatch results` derives that result. The worker skill's
 // page holds the whole rule, and each skill text that orders a check run, recorded or judged, or
 // lists a check's attributes, carries the exception in one phrase, counted once per file, as does
@@ -626,7 +626,7 @@ test("the architect writes a check CI already proves as ci_check", () => {
 // architect corrects, and no role sends that to an implementer who cannot cure it
 // (`ci-checks.md`, "A name that no run answers"). Retro's step that sends a CI check with no pass
 // back names that case and gives it to the architect, so the two texts say the same thing
-// (dispatch://INFRA-3204, tester round 5).
+// (dispatch://POMJU-3204, tester round 5).
 test("retro gives a ci_check that no run answers to the architect, not to the implementer", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   const sentences = retro.split(/(?<=\.)\s+/);
@@ -636,7 +636,7 @@ test("retro gives a ci_check that no run answers to the architect, not to the im
   expect(absent.some((sentence) => sentence.includes("to: implementing"))).toBe(false);
 });
 
-// dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites
+// dispatch://POMJU-924's rule, beside dispatch://POMJU-332's eight above: a retro learning cites
 // a file and a symbol, or text quoted from it, read at the head the pull request commits, never a
 // line number the next edit above it moves.
 test("a retro learning cites a symbol or quoted text at the committed head, never a line number", () => {
@@ -656,7 +656,7 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
   );
   // The two files this change touches, named rather than swept: three other staged skills carry
   // these strings, in six files, in finding formats the specification scopes out
-  // (dispatch://INFRA-924).
+  // (dispatch://POMJU-924).
   const retired = ["file, line or commit", "file:line", "file and line"];
   const retroFiles: [string, string][] = [
     ["references/learnings.md", learnings],
@@ -668,7 +668,7 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
   expect(carried).toEqual([]);
 });
 
-// dispatch://INFRA-3116's rule, beside the rules above: where a tree builds or changes a surface a
+// dispatch://POMJU-3116's rule, beside the rules above: where a tree builds or changes a surface a
 // person opens, the architect shows that person the surface and gets their answer before it asks
 // them to approve the root spec. The rule is one bullet of section 1 and the section of the
 // design-gate reference that bullet sends the architect to, and each pin here is one of its

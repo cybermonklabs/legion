@@ -1,5 +1,5 @@
 /**
- * The Inbox reading column's place-keeping (INFRA-2512), as `inbox-pane-scroll.e2e.ts` reads it:
+ * The Inbox reading column's place-keeping (POMJU-2512), as `inbox-pane-scroll.e2e.ts` reads it:
  * the long documents its rows open, the drives that used to take the reader's place away, and
  * the readings of the column that say where the reader stands in it.
  *

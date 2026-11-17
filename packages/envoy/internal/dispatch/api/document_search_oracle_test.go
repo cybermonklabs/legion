@@ -14,13 +14,13 @@ import "fmt"
 // the oracle is built from the package's own helpers: an oracle sharing a helper with the
 // statement under test changes with it, and the comparison then holds nothing. The cost is that
 // an edit to a part of these statements this change leaves alone has to be copied here too,
-// which is what the equality tests report when it is not - INFRA-1042's one scored list across
+// which is what the equality tests report when it is not - POMJU-1042's one scored list across
 // the kinds (mainFusedSQL for search and mainRelatedFusedSQL for the related-item check,
 // ts_rank_cd's normalisation flag, a page that names no kind) is
 // copied below for exactly that reason, so the only thing these statements still answer
 // differently by is their document arm.
 //
-// INFRA-370 is such an edit, and two of its three parts are copied here. Every keyword arm now
+// POMJU-370 is such an edit, and two of its three parts are copied here. Every keyword arm now
 // carries two more columns, window_id and covers; a keyword arm matched no window and has
 // nothing to put in them, so main's arms carry them as nulls, for the column shape alone. The
 // page names one output column more, the block a meaning hit matched, which the package computes
@@ -44,12 +44,12 @@ import "fmt"
 // arm this change moves to document_search. That arm is a named piece of its own
 // (mainDocumentKeywordLeg), the side the measurement holds this change's arm against.
 //
-// Each arm carries window_id and covers as nulls, which main's arms did not: INFRA-370 added the
+// Each arm carries window_id and covers as nulls, which main's arms did not: POMJU-370 added the
 // two columns to every arm of both unions, a keyword arm has nothing to put in them, and these
 // legs are unioned with this release's meaning CTEs, which do carry them
 // (searchQueryMeaningOverMainsDocumentArm). Nothing reads either column out of a keyword row.
 //
-// The issue arm's own column reads q.own_keys, the array INFRA-1042 made of main's scalar
+// The issue arm's own column reads q.own_keys, the array POMJU-1042 made of main's scalar
 // own_key: these legs run under both openers - main's two below, whose own_keys is the one key
 // main's own_key was, and this release's own (searchQueryMeaningOverMainsDocumentArm,
 // relatedMeaningQueryOverMainsDocumentArm), which names no scalar at all - and `= any(<one key>)`
@@ -114,7 +114,7 @@ func mainDocumentKeywordLeg(rank func(searchColumn string) string) string {
 }
 
 // mainSearchKeywordLegsSQL is main's searchKeywordLegsSQL, those legs ranked by ts_rank_cd with
-// INFRA-1042's length normalisation (32).
+// POMJU-1042's length normalisation (32).
 var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) string {
 	return "ts_rank_cd(" + searchColumn + ", q.tsq, 32)"
 })
@@ -124,7 +124,7 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // tests no tsquery.
 //
 // One output column is not main's. Where the package's page names the block a meaning hit
-// matched (hit.block_id, INFRA-370), this writes a literal null. The package computes that column
+// matched (hit.block_id, POMJU-370), this writes a literal null. The package computes that column
 // in a lateral over r.covers, and no row either body here hands this page carries any: a keyword
 // leg writes null for covers, and so do main's meaning arms, which know no windows. unnest of no
 // covers is no row, so the package's own lateral answers null for every one of those rows too.

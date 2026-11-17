@@ -142,7 +142,7 @@ func (p *dispatchProcess) createProject(t *testing.T, key, name string) {
 // document's id.
 //
 // It forces the create past the near-copy gate. These cases want several issues of one project
-// holding the same spec, which is what the gate refuses (dispatch://INFRA-1160/spec#b-r2), and
+// holding the same spec, which is what the gate refuses (dispatch://POMJU-1160/spec#b-r2), and
 // what they are about is the document rooms rather than the filing: a filer who means a near copy
 // passes force in the same way.
 func (p *dispatchProcess) createIssueIn(t *testing.T, project, title, spec string) (key, artifactID string) {

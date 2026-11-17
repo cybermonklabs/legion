@@ -1,8 +1,8 @@
 -- 20261112024320_priority_nodes.up.sql — the cross-project priority, as a node and its tuples.
 --
--- INFRA-2947: a priority is a thing the whole deployment holds rather than a row of one project's
+-- POMJU-2947: a priority is a thing the whole deployment holds rather than a row of one project's
 -- board, and work in any project states that it advances one. The two tables are the shape of
--- the node and tuple store legion/INFRA-1149 is to add, whose own migration this tree does not
+-- the node and tuple store legion/POMJU-1149 is to add, whose own migration this tree does not
 -- hold yet, less `legacy_source_seq`, which exists there only for a projection's own backfill:
 -- so the day that store lands, these rows copy into
 -- `graph_nodes` and `graph_tuples` column for column. They carry names of their own rather than

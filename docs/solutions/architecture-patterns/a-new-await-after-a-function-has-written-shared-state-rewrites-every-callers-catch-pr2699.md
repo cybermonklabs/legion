@@ -36,7 +36,7 @@ happened".
 
 ## Evidence
 
-sjawhar/legion#2699 (INFRA-436) added the server's round trip to `subscribe()` in
+sjawhar/legion#2699 (POMJU-436) added the server's round trip to `subscribe()` in
 `packages/pi-envoy/extensions/envoy.ts`. Review round 1 found the consequence: a failed open left
 its subjects in `subscriptions` while `subscribeNotice`'s catch unmarked them as the role's, on the
 premise that nothing opened. The next registration then carried such a subject as a plain interest,

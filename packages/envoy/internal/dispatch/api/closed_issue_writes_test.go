@@ -118,7 +118,7 @@ func TestClosedIssueDeliversACommentMentionItsRetryAndTheAgentsReply(t *testing.
 	assertCreatedOnClosedIssue(t, "a mentioning comment", created)
 	comment := decodeMentionedComment(t, created)
 	// The comment answers as soon as it commits, its attempt pending and pinned to s1; the mention
-	// sender delivers it after that response (INFRA-606).
+	// sender delivers it after that response (POMJU-606).
 	if len(comment.Deliveries) != 1 || comment.Deliveries[0].State != "pending" || comment.Deliveries[0].Attempt != 1 ||
 		comment.Deliveries[0].SessionID == nil || *comment.Deliveries[0].SessionID != "s1" {
 		t.Fatalf("closed issue's mention delivery = %#v, want attempt 1 pending for s1", comment.Deliveries)

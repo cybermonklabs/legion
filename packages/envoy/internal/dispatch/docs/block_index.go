@@ -386,7 +386,7 @@ func (s *Service) windowOwners() []windowOwner {
 // windowDrift gives windows to at most blockIndexWindowBatch owners whose windows do not stand
 // for their blocks. For a comment, a message and an ask that is every one whose text was
 // written since this arm last windowed it: an item's write records its blocks and leaves their
-// windows here (refs.recordItemIndexed, INFRA-988), so this arm writes every window an item
+// windows here (refs.recordItemIndexed, POMJU-988), so this arm writes every window an item
 // holds, a tick behind the write. A document is the same since its version write stopped
 // windowing its own blocks (refs.IndexBlocks): every document whose version write moved its
 // blocks is listed here, beside one written before meaning search moved to windows, one whose
@@ -411,7 +411,7 @@ func (s *Service) windowOwners() []windowOwner {
 // still holds the windows of the text it had. The write below is what deletes those
 // (refs.writeWindows' `dropped`), and it clears the marker in the same statement, so such an
 // owner is served once rather than left marked for ever
-// (refs.DocumentsOwedWindows, refs.ItemsOwedWindows, INFRA-988).
+// (refs.DocumentsOwedWindows, refs.ItemsOwedWindows, POMJU-988).
 func (s *Service) windowDrift(ctx context.Context, cursors map[string]string, tick *BlockIndexTick) (bool, error) {
 	owners := s.windowOwners()
 	next := make(map[string]string, len(owners))
@@ -474,7 +474,7 @@ func (s *Service) windowItem(ctx context.Context, kind refs.ItemKind, id string)
 // first, writes the windows of the stored latest version's blocks
 // (refs.WriteDocumentWindows). It writes no block row and no reference: the index of this
 // document's blocks stands, and only its windows are missing. Since a version write records
-// its blocks and leaves their windows here (refs.IndexBlocks, INFRA-988), this is where every
+// its blocks and leaves their windows here (refs.IndexBlocks, POMJU-988), this is where every
 // window a document holds is written, a tick behind the write.
 //
 // What is windowed is the text the version write indexed: the stored markdown of the latest
@@ -612,7 +612,7 @@ func (owner wholeTextOwner) owners() string {
 // pending or stale, one of an item refs.ItemsOwedWindows never lists - so that pass pays the
 // cost again on every tick for ever. Driving it from the whole-text rows reads every row of the
 // kind: one pass took 25 minutes against the 482,073 comments the load-test deployment then had
-// unwindowed (INFRA-988). The walk over the owners is what bounds it.
+// unwindowed (POMJU-988). The walk over the owners is what bounds it.
 func (owner wholeTextOwner) retire() string {
 	return fmt.Sprintf(`
 		with picked as (

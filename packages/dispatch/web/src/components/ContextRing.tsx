@@ -12,7 +12,7 @@ import {
 } from "../theme/classes";
 import { usePanelDismiss } from "./usePanelDismiss";
 
-/** The two figures a session's `context` frame carries (INFRA-812). */
+/** The two figures a session's `context` frame carries (POMJU-812). */
 export interface ContextUsage {
   /** The current model's context window, in tokens. */
   readonly contextWindow: number;
@@ -61,7 +61,7 @@ export interface ContextRingProps {
 
 /**
  * How much of its context window a session fills, as a ring with the share beside it, and a
- * panel holding the tokens, the window and what a nearly full window means (INFRA-812, R3). It
+ * panel holding the tokens, the window and what a nearly full window means (POMJU-812, R3). It
  * holds no width of its own beyond its own content, so a row that scrolls sideways at a phone
  * width can keep it at the right edge of the message box.
  *

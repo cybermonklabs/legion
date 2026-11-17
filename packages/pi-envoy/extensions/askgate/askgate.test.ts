@@ -2659,7 +2659,7 @@ console.log(JSON.stringify(args, null, 2));
       `arg:ask\narg:--issue\narg:X-1\narg:--question-file\narg:-\n${QUESTION}`
     );
   });
-  // Security, round 15 (INFRA-168): the override comment stands where bash ends the command's
+  // Security, round 15 (POMJU-168): the override comment stands where bash ends the command's
   // line and nowhere else. Written at the first newline it could land inside a multi-line quoted
   // value, where its own quote closes that value's — bash then hands the CLI other arguments and
   // runs what the rebuttal holds — or after a pipe stage, where the grammar took no comment and
@@ -3584,7 +3584,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         },
       } satisfies RecordClient;
       const g = bind({
-        env: { ...STUB, OMP_ASKGATE: "block", OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+        env: { ...STUB, OMP_ASKGATE: "block", OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
         cwd: work,
         store,
         dispatch: () => ({
@@ -3624,7 +3624,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         },
       } satisfies RecordClient;
       const g = bind({
-        env: { ...STUB, OMP_ASKGATE: "warn", OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+        env: { ...STUB, OMP_ASKGATE: "warn", OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
         cwd: work,
         recordThrows: true,
         dispatch: () => ({
@@ -3699,7 +3699,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         }),
       } satisfies RecordClient;
       const g = bind({
-        env: { ...STUB, OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+        env: { ...STUB, OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
         cwd: work,
         dispatch: () => ({
           client: client as unknown as DispatchClient,
@@ -5671,7 +5671,7 @@ describe("askgate.ts, the entry", () => {
     try {
       const { loaded, handlers, registration } = await registerOnly({
         OMP_ASKGATE_TIMEOUT_MS: "soon",
-        OMP_ASKGATE_RECORD_PROJECT: "INFRA",
+        OMP_ASKGATE_RECORD_PROJECT: "POMJU",
         DISPATCH_URL: "http://dispatch.test",
         DISPATCH_TOKEN: "dispatch-token",
       });
@@ -5725,7 +5725,7 @@ describe("askgate.ts, the entry", () => {
     });
     try {
       const { loaded, handlers, registration } = await registerOnly({
-        OMP_ASKGATE_RECORD_PROJECT: "INFRA",
+        OMP_ASKGATE_RECORD_PROJECT: "POMJU",
         DISPATCH_URL: "http://dispatch.test",
         DISPATCH_TOKEN: "dispatch-token",
       });
@@ -6490,7 +6490,7 @@ describe("rules check", () => {
     );
   });
   test("a replace whose with opens an ask block reaches the rules model, as an insert's markdown does (rules test 13a)", async () => {
-    // A `replace` writes the blocks its `with` names (dispatch://INFRA-1520), so a `with` that
+    // A `replace` writes the blocks its `with` names (dispatch://POMJU-1520), so a `with` that
     // opens an ask block opens that ask and the rules model reviews it, where before this the
     // gate read a `replace` as opening none.
     const g = bind({ complete: bySystem(ALLOW, NO_CHANGE) });
@@ -6917,7 +6917,7 @@ describe("rules check", () => {
       const both = Promise.withResolvers<void>();
       const g = bind({
         now: () => clock,
-        env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+        env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
         dispatch: (_directory, signal) => {
           recordSignals.push(signal);
           return {
@@ -7002,7 +7002,7 @@ describe("rules check", () => {
       } satisfies RecordClient;
       const g = bind({
         now: () => clock,
-        env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+        env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
         dispatch: (_directory, signal) => {
           recordSignal = signal;
           return {
@@ -7710,14 +7710,14 @@ describe("the Dispatch decision record (A5)", () => {
     const dispatch = recordingDispatch();
     const g = bind({
       complete: bySystem(ALLOW, MATCHED),
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
       dispatch: dispatch.session,
     });
     expect((await g.device("t1", "dispatch_ask", KEEP))?.block).toBe(true);
     // The record is started as the handler returns; this drain lets it answer.
     await recorded();
     expect(dispatch.uploads).toMatchObject([
-      { project: "INFRA", name: "askgate-decisions-sess-1.md" },
+      { project: "POMJU", name: "askgate-decisions-sess-1.md" },
     ]);
     // The create carries the header alone; the record is the append that follows it.
     expect(recordsIn(dispatch.uploads[0]?.content ?? "")).toEqual([]);
@@ -7725,7 +7725,7 @@ describe("the Dispatch decision record (A5)", () => {
       {
         session: "sess-1",
         source: "machine",
-        project: "INFRA",
+        project: "POMJU",
         tool: "dispatch_ask",
         target: "dispatch_ask issue=X-1",
         rule: "no_change",
@@ -7764,7 +7764,7 @@ describe("the Dispatch decision record (A5)", () => {
     });
     const g = bind({
       complete: bySystem(ALLOW, MATCHED),
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
       dispatch: dispatch.session,
     });
     const gated = g.device("t1", "dispatch_ask", KEEP);
@@ -7799,7 +7799,7 @@ describe("the Dispatch decision record (A5)", () => {
     });
     const g = bind({
       complete: bySystem(ALLOW, MATCHED),
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
       dispatch: dispatch.session,
     });
     expect((await g.device("t1", "dispatch_ask", KEEP))?.block).toBe(true);
@@ -7821,7 +7821,7 @@ describe("the Dispatch decision record (A5)", () => {
     });
     const g = bind({
       complete: bySystem(ALLOW, MATCHED),
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
       dispatch: dispatch.session,
     });
     const result = await g.device("t1", "dispatch_ask", KEEP);
@@ -7871,7 +7871,7 @@ describe("the Dispatch decision record (A5)", () => {
         now: () => clock,
         // Neither model call ever answers, not even once it is aborted.
         complete: () => Promise.withResolvers<Completion>().promise,
-        env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+        env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
         dispatch: dispatch.session,
       });
       /** Runs the clock and the timers with it until `until` holds, or `limit` is reached. */
@@ -7931,7 +7931,7 @@ describe("the Dispatch decision record (A5)", () => {
     const dispatch = recordingDispatch();
     const g = bind({
       complete: bySystem(ALLOW, MATCHED),
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
       dispatch: dispatch.session,
       dryRun: async () => ({
         exitCode: 0,
@@ -7977,7 +7977,7 @@ describe("the Dispatch decision record (A5)", () => {
     const dispatch = recordingDispatch();
     const g = bind({
       complete: bySystem(ALLOW, MATCHED),
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
       dispatch: dispatch.session,
       dryRun: uploadOf(content),
     });
@@ -8010,7 +8010,7 @@ describe("the Dispatch decision record (A5)", () => {
     ]);
     const g = bind({
       complete: bySystem(ALLOW, MATCHED),
-      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+      env: { OMP_ASKGATE_RECORD_PROJECT: "POMJU" },
       dispatch: served.session,
       dryRun: uploadOf(stored),
       // A directory that exists: the gate reads the stored version through the Dispatch the

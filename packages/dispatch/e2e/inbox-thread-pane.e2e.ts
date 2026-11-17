@@ -31,7 +31,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The Inbox's reading pane over a thread (INFRA-450): a comment thread anchored in a document
+ * The Inbox's reading pane over a thread (POMJU-450): a comment thread anchored in a document
  * opened at its section with the thread under its own block, the fold and the reply box of a
  * long thread, the three thread shapes drawn alike, and a reply sent from the pane.
  *

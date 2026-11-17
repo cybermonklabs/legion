@@ -4,7 +4,7 @@
 // No resolution here takes anything from a holder. It reads the role's claim and the holder's
 // session record and says what it found; it never deletes a claim, and it never writes to the
 // role bucket at all. A holder that stopped answering keeps its role until the role-claim reaper
-// finds it gone (session.Gone), which is the one place a claim is taken away (dispatch://INFRA-392,
+// finds it gone (session.Gone), which is the one place a claim is taken away (dispatch://POMJU-392,
 // R4): a lookup, a publish and a role-lane delivery attempt leave the claim and its claimed_at
 // exactly as they were, so a stalled session that comes back still holds the role it had.
 //

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// A turn that ends in a provider error does not retire its task (dispatch://INFRA-956 R2). The
+// A turn that ends in a provider error does not retire its task (dispatch://POMJU-956 R2). The
 // work is still owed: the claim used to go idle holding nothing, and the only way to give the
 // task back was an edit of the daemon's store. The task is kept here, and the same session is
 // prompted with it again after a wait that grows to a limit, with no attempt limit and no new
@@ -54,7 +54,7 @@ func promptRetryDelay(attempt int) time.Duration {
 // the turn did read it, it is told twice rather than lost.
 //
 // The decision is made here, from this prompt's own result and nothing else
-// (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d): the status the provider
+// (dispatch://POMJU-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d): the status the provider
 // answered either holds the issue (holdsTheIssue) or the task goes to the same session again on
 // the ladder. Oh My Pi's Retryable flag is logged and read by nothing: the status alone decides.
 //
@@ -86,7 +86,7 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 //
 //   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
-//     (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
+//     (dispatch://POMJU-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
 //     whose turn hits one is worse than sending the task again, and the notice the project's
 //     controller is given at six such turns in a row is what tells a person
 //     (tellControllerOfProviderErrors);
@@ -134,7 +134,7 @@ func promptRetryDue(m *Machine, ctx context.Context, _ Event) error {
 // providerErrorCause names what ended the turn, in words built from the status alone: the HTTP
 // status the provider answered, else nothing more than that a provider failed. A refusal's
 // own explanation is itself refused when it is sent back
-// (dispatch://INFRA-956/artifact/cause-evidence-md), so the provider's text reaches neither the
+// (dispatch://POMJU-956/artifact/cause-evidence-md), so the provider's text reaches neither the
 // prompt this is written into nor the controller's notice. A content filter's refusal carries no
 // status, so it is the second of the two.
 func providerErrorCause(status int) string {

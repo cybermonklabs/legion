@@ -136,7 +136,7 @@ func ControllerCredential(tokens Tokens, repos func() []ghrepo.Repository, renam
 // Without it an owner whose every repository GitHub refuses costs the pod more than that owner:
 // no bundle holds the directory, so no pod projects it, while the comparison names it at every
 // sweep (sandbox's movedGhDirs), an update round asks every worker in the pod to push, the pod is
-// replaced, and its new bundle lacks the directory again — for ever (INFRA-513).
+// replaced, and its new bundle lacks the directory again — for ever (POMJU-513).
 //
 // It is sticky, not timed: a directory stays recorded left out until a mint of it answers, which
 // clears it, and the comparison then names it once and the pod is replaced once, which is right.
@@ -148,7 +148,7 @@ func ControllerCredential(tokens Tokens, repos func() []ghrepo.Repository, renam
 // App alone: were the implement App's record read for it too, a controller launched before an
 // owner was served would never be found to lack that owner's directory, its gh would hold no
 // token for an owner the review App reaches, and in a project with no live issue pod nothing
-// would mint for the implement App to clear the record (INFRA-513).
+// would mint for the implement App to clear the record (POMJU-513).
 //
 // A nil record holds nothing and names nothing left out: the API's controller route builds a
 // bundle of its own per request (internal/api's controllerGitHubCredential), and no pod's
@@ -773,7 +773,7 @@ func bundleDefault(bundle ghconfig.Bundle, appRole AppRole, role claim.Role, dfl
 // answer now, and the directory holds a lease over what answers then. One extra round, never a
 // loop: a second refusal of the ask over them leaves the directory out of the bundle, as every
 // repository being refused does, rather than failing the bundle the write lease and the launch
-// are in for repositories GitHub reaches (mintBundle, INFRA-513).
+// are in for repositories GitHub reaches (mintBundle, POMJU-513).
 //
 // A Tokens that caches nothing and remembers nothing implements neither optional interface and is
 // asked for neither: its probes are GitHub's answer already, so the second round repeats the

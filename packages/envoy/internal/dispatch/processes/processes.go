@@ -1,4 +1,4 @@
-// Package processes is the registry of live envoy-dispatch server processes (INFRA-555, migration
+// Package processes is the registry of live envoy-dispatch server processes (POMJU-555, migration
 // 0135): one server_processes row per process that serves requests, written once the process has
 // bound its port and before it serves anything, kept alive by a heartbeat, and deleted once its
 // HTTP drain has ended. Which rows are live is measured on the database's clock, never a process's

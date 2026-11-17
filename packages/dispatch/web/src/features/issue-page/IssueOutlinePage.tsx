@@ -49,8 +49,8 @@ export function IssueOutlinePage(): ReactNode {
  * background refetch keeps the issue, so the slots stay mounted through it.
  *
  * The words of the failed, missing and loading states are copied from today's `IssueDetail` in
- * `features/issue/IssuePage.tsx`, because R33 of INFRA-1196 changes no file today's page uses
- * but by adding. The copy goes with INFRA-1196's last step, which removes today's page.
+ * `features/issue/IssuePage.tsx`, because R33 of POMJU-1196 changes no file today's page uses
+ * but by adding. The copy goes with POMJU-1196's last step, which removes today's page.
  */
 function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   const issue = useQuery(issueQuery(route.key));

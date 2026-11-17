@@ -1,12 +1,12 @@
 //go:build e2e
 
-// The live proof's driver for INFRA-252: a labelled root still queued in admission, which a person
+// The live proof's driver for POMJU-252: a labelled root still queued in admission, which a person
 // then makes a child of a live tree, joins that tree and runs there, rather than running as a tree
 // of its own. Its first phase waits for a slot of its own, as every issue the daemon starts does
-// (INFRA-980), and its own architect starts with that phase, as every child's does (INFRA-3915).
+// (POMJU-980), and its own architect starts with that phase, as every child's does (POMJU-3915).
 // Admission's sweep adopts it once its recorded parent is in the live tree
 // (admit's adoptQueuedRoots); an architect's release_children adopts it from the Dispatch chain it
-// reads, from todo, from backlog, and from the state INFRA-214 reached, before it answers
+// reads, from todo, from backlog, and from the state POMJU-214 reached, before it answers
 // (api's adoptReleasedChildren); a todo root under an unreleased child of a live tree waits in no
 // line (record.Waiting reads its Ancestry, the Dispatch chain above it), past a root of its own
 // parked on that chain too, a todo child of that root waits with it, is refused by name when
@@ -77,7 +77,7 @@ import (
 
 const (
 	// childAdoptionCap is the admission cap. It counts every issue the daemon has started, a
-	// child's first phase among them (INFRA-980), so a child that joins the live tree waits for a
+	// child's first phase among them (POMJU-980), so a child that joins the live tree waits for a
 	// slot of its own as a queued root does. The live tree holds one slot and two other trees the
 	// others, so each queued root waits in the line; step 1 frees the third tree's slot for the
 	// first child to join, each child after takes the slot of the one before it, which its step
@@ -85,7 +85,7 @@ const (
 	// children they start.
 	childAdoptionCap = 3
 	// childAdoptionLinger is how long a tree that left the workflow lingers: long enough for step
-	// 4 to release a root inside its linger, as INFRA-214's release came, and short enough for the
+	// 4 to release a root inside its linger, as POMJU-214's release came, and short enough for the
 	// step to wait the linger out.
 	childAdoptionLinger = 8 * time.Second
 	// childAdoptionOutboxPoll is the margin past a row's due time a step allows the outbox lane
@@ -660,7 +660,7 @@ func (r *childAdoptionLive) releaseAdoptsFromBacklog() {
 	r.inTree(f, r.tree)
 }
 
-// Step 4 (AC3). E reaches INFRA-214's state: a labelled todo root, moved to backlog (which lingers
+// Step 4 (AC3). E reaches POMJU-214's state: a labelled todo root, moved to backlog (which lingers
 // it), its label taken off and moved back to todo, so admission readmits nothing. Dispatch shows it
 // under T with no event of that. T's architect releases it inside its linger: E is in T, waiting in
 // the line for a slot of its own until T's architect parks F, step 3's child, and then planning on
@@ -686,9 +686,9 @@ func (r *childAdoptionLive) releaseAdoptsInfra214State() {
 	r.note("drove %s's label off, then %s back to todo with no label: two issue.updated envelopes", e, e)
 	r.waitFor(e+" todo without the label", e, func(got api.Issue) bool { return got.Status == "todo" })
 	if got := r.issue(e); got.Phase != phase.Done || r.waiting(e) {
-		t.Fatalf("%s is in %s (waiting %v) after its unlabelled todo, want done and out of the line, as INFRA-214 stood", e, got.Phase, r.waiting(e))
+		t.Fatalf("%s is in %s (waiting %v) after its unlabelled todo, want done and out of the line, as POMJU-214 stood", e, got.Phase, r.waiting(e))
 	}
-	r.note("read back: %s is todo, phase done, not in admission.waiting — INFRA-214's state", e)
+	r.note("read back: %s is todo, phase done, not in admission.waiting — POMJU-214's state", e)
 	r.board.place(e, "todo", r.tree, false)
 	r.note("the Dispatch stand-in shows %s todo under %s; no envelope of the re-parent is published", e, r.tree)
 	mark := r.outboxMark()

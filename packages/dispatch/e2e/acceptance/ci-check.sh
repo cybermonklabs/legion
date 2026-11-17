@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drives a check that CI proves end to end against a running server, as an agent sees it: a
 # `check` block carrying `ci_check`, which names the GitHub check run that proves it. One section
-# for each of the checks k1 to k5 of dispatch://INFRA-3204's Verification document, each running
+# for each of the checks k1 to k5 of dispatch://POMJU-3204's Verification document, each running
 # that check's `run` and asserting its `negative_control`:
 #
 # - k1: a check with `ci_check` is stored and read back by `dispatch doc-read`; the documents API

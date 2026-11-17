@@ -16,7 +16,7 @@ related_issues:
 
 # A collaborative binding deletes a node its schema refuses, so relax only validContent, from the server's list
 
-Extends docs/solutions/dispatch-web/every-milkdown-markdown-parse-path-needs-the-content-rule-check-registered-after-the-mark-plugins-and-locked-by-a-valid-block-INFRA-565.md.
+Extends docs/solutions/dispatch-web/every-milkdown-markdown-parse-path-needs-the-content-rule-check-registered-after-the-mark-plugins-and-locked-by-a-valid-block-POMJU-565.md.
 That note covers the markdown parse paths. This one covers the path that builds nodes from the
 shared Yjs document.
 

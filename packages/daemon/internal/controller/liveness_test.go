@@ -121,7 +121,7 @@ func TestProbeIsGone(t *testing.T) {
 // A holder the listener calls unresponsive is past its live window and inside its gone horizon: it
 // still holds the role and answers for itself once its heartbeats land, so the probe says Unknown
 // and the keeper leaves the controller alone rather than replacing a session that is working
-// (dispatch://INFRA-392).
+// (dispatch://POMJU-392).
 func TestProbeIsUnknownForAnUnresponsiveHolder(t *testing.T) {
 	var log bytes.Buffer
 	l := &listener{status: http.StatusNotFound, body: lapsed("unresponsive")}

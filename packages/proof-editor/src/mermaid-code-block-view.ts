@@ -1,6 +1,6 @@
 /**
  * The editor's view of every code block, legion's own in place of upstream's
- * `mermaidDiagramsPlugin` (INFRA-532). A plain code block is upstream's
+ * `mermaidDiagramsPlugin` (POMJU-532). A plain code block is upstream's
  * `div.proof-code-block > pre.proof-code-block-pre > code`. A mermaid block is drawn by the host's
  * `MermaidDrawer` (Dispatch's Web Worker), never on the page's thread, and the drawing is mounted
  * in the preview's shadow root, so the diagram's styles stay inside it; when no renderer can run,

@@ -249,7 +249,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // The Conversation's first placement runs as a child layout effect, before the restore below
   // in the same commit, so a position recorded while the tab showed only its loading text is
   // forgotten here and the reader lands on the newest message. A return to a list the reader was
-  // already placed in never fires it, so that restore stands (INFRA-303).
+  // already placed in never fires it, so that restore stands (POMJU-303).
   const forgetConversationScroll = useCallback(() => {
     delete panelScroll.current.conversation;
   }, []);

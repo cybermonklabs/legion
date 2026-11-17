@@ -12,12 +12,12 @@ status: active
 module: packages/daemon
 related_issues:
   - "sjawhar/legion#2674"
-  - "INFRA-1052"
+  - "POMJU-1052"
 ---
 
 # A go test step is protected only by the -timeout it names itself
 
-Extends docs/solutions/testing/the-pod-only-skip-list-is-re-derived-against-a-main-extract-and-the-daemon-package-needs-a-longer-timeout-INFRA-225.md.
+Extends docs/solutions/testing/the-pod-only-skip-list-is-re-derived-against-a-main-extract-and-the-daemon-package-needs-a-longer-timeout-POMJU-225.md.
 
 That document says to give `internal/daemon` `-timeout 25m` and measures it at 459–853 s, but it
 is about a local run in a pod.
@@ -37,7 +37,7 @@ under `-timeout 30m`, where the race detector makes those packages slower, not f
 So a red `test` job whose panic names a `packages/daemon` package tells you which step it came from
 by the deadline it prints: a 15-minute deadline panics at `15m0s`, a 30-minute one at `30m0s`.
 Read the job's step list before you read its log, because the log's `running tests:` line names only
-the test that happened to be executing, as INFRA-391 says:
+the test that happened to be executing, as POMJU-391 says:
 
 ```bash
 gh api repos/cybermonklabs/legion/actions/jobs/<job id> \
@@ -56,7 +56,7 @@ largest measured green duration plus its own `-timeout`.
 The `test` job's `timeout-minutes` is 80 for a measured worst case of about 76, so a flag raised
 without the limit can let the runner cancel the job before Go prints the goroutine dump a hang
 needs — the budget rule in
-docs/solutions/testing/a-race-lane-names-the-packages-that-hold-the-shared-state-and-its-job-limit-outlasts-every-steps-test-timeout-INFRA-141.md.
+docs/solutions/testing/a-race-lane-names-the-packages-that-hold-the-shared-state-and-its-job-limit-outlasts-every-steps-test-timeout-POMJU-141.md.
 
 ## Evidence
 

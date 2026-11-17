@@ -17,7 +17,7 @@ related_issues:
 
 # The filter-drift gate is one-sided: a filter wider than its closure passes
 
-Extends docs/solutions/github/a-go-jobs-path-filter-is-the-closure-of-what-its-command-compiles-production-imports-included-and-stops-at-a-nested-module-INFRA-583.md.
+Extends docs/solutions/github/a-go-jobs-path-filter-is-the-closure-of-what-its-command-compiles-production-imports-included-and-stops-at-a-nested-module-POMJU-583.md.
 
 `.github/scripts/check-ci-filters.sh` fails a filter that misses a file its job reads. It does
 not fail one that matches far more, so `packages/envoy/**` on a half-hour job passes the gate

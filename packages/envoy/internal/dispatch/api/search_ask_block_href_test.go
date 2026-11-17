@@ -53,7 +53,7 @@ func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 		asks[index].id = blockAskID(t, handler, issue.Key, asks[index].block)
 	}
 	// A batch whose result drops a block an open ask points at is refused (R5 of
-	// dispatch://INFRA-1520), so the question is closed first and the block deleted after, which
+	// dispatch://POMJU-1520), so the question is closed first and the block deleted after, which
 	// is the order a caller takes a decision out of a document in.
 	if resolved := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asks[2].id+"/resolve", map[string]any{
 		"kind": "retracted", "reason": "asked elsewhere", "actor": sessionActor(),
@@ -78,7 +78,7 @@ func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 		t.Fatalf("the block id of %d bytes is a graph node, want none past the bound", len(long))
 	}
 
-	// The writes record the asks' parts; their windows are the tick's to write (INFRA-988),
+	// The writes record the asks' parts; their windows are the tick's to write (POMJU-988),
 	// and the rows embedded below are the ones it writes.
 	windowOwedOwners(t, deps)
 

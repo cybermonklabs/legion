@@ -1,4 +1,4 @@
-// Where a person's message from Dispatch's Agents page goes (INFRA-1026).
+// Where a person's message from Dispatch's Agents page goes (POMJU-1026).
 //
 // Every inbound frame used to become one rendered card naming its sender. A frame that is a
 // person's own direct message to this session becomes the session's own user turn instead, and a
@@ -338,7 +338,7 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
   /**
    * A person's pick of a model, which is their own `/model` message. Nothing of the run is
    * expected back as a row: Claude Code echoes the command it ran - `/model haiku` for the
-   * `/model anthropic/haiku` the person sent, measured live on 2.1.310 (INFRA-1026) - and the
+   * `/model anthropic/haiku` the person sent, measured live on 2.1.310 (POMJU-1026) - and the
    * live view draws no row of a run of this session's at all, so their own line reaches the
    * page as the message Dispatch stored and nothing beside it.
    */

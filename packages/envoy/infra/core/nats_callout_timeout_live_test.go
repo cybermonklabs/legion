@@ -36,7 +36,7 @@ func renderedTimeout(t *testing.T, text string) int {
 }
 
 // TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient (found in the acceptance of
-// dispatch://INFRA-3884, cybermonklabs/legion#4118 at e7c174fa1b): a nats.go client is the client
+// dispatch://POMJU-3884, cybermonklabs/legion#4118 at e7c174fa1b): a nats.go client is the client
 // every Go service of this repository connects with, and it is admitted only if the auth service's
 // answer reaches it inside the time the block lets the service take. Measured at e7c174fa1b, which
 // rendered `timeout: 5`, on testnats.HubImage (nats-server 2.15.1) with nats.go v1.53.1: an answer

@@ -1269,7 +1269,7 @@ releases, one per `legion-envoy-v*` tag.
   once, with NATS down until the new VM starts. A hub carries the grant only after that
   replacement or a live reload of its configuration; until then the listener answers every
   registration `core` with `no_grant` and subscribes its role lane in its machine's group
-  (INFRA-594).
+  (POMJU-594).
 - `packages/envoy/loadtest/` measures consumer delivery. `LOADTEST_SESSION_DELIVERY=consumer`
   (`loadgen run -session-delivery consumer`, which `stack.sh loadgen` passes on) has each simulated
   session subscribe its relay subject before it registers, ask for consumer delivery with one epoch
@@ -1296,7 +1296,7 @@ releases, one per `legion-envoy-v*` tag.
   and `done` columns the verdict rests on.
 - `/healthz` answers `503 {"status":"unhealthy","error":"role lane subscription inactive"}` when
   the role lane's own connection is not connected or holds no valid subscription, since no role
-  message is forwarded then (INFRA-594).
+  message is forwarded then (POMJU-594).
 - Session consumers. `POST /v1/interests/subscribe` takes an optional `delivery`,
   `{consumer, epoch, resume?}`. A registration that asks for a consumer, and every registration
   with a serving port, gets a durable JetStream pull consumer of its own, `s-<session id>`, on
@@ -1339,7 +1339,7 @@ releases, one per `legion-envoy-v*` tag.
   subscriptions, the durable's `Skipped`, `/v1/replay`. Any rollout order works: a plugin of an
   earlier release sends no `delivery` and stays on the core path, and a plugin of this release
   reads an earlier listener's answer, which has no `delivery`, as `core`. No stream setting
-  changes (INFRA-594).
+  changes (POMJU-594).
 
 ### Changed
 
@@ -1351,7 +1351,7 @@ releases, one per `legion-envoy-v*` tag.
   stored copy, which reaches the holder through its session consumer across a restart. A holder
   on a serving port, which answers no receipt, counts on the stream's acknowledgement alone
   (`StartRequestStoredTo`), and its stored copy is pushed to the port until the port accepts it
-  (INFRA-594).
+  (POMJU-594).
 - The role lane forwards each role message once across listeners. Every listener subscribes
   `notifications.role.>` in one queue group, `envoy-roles`, so NATS hands each role message to one
   listener of all of them, and the stream stores one forward per message; a listener whose grant
@@ -1361,7 +1361,7 @@ releases, one per `legion-envoy-v*` tag.
   resolves the holder from the watched copy of `envoy_roles` and hands the forward on: forwards to
   one holder are published in arrival order and each waits for its outcome on its own, at most
   4,096 at once (`envoy_role_forwards_outstanding`), so a holder slow to answer holds up no other
-  role (INFRA-594).
+  role (POMJU-594).
 - The listener durable acknowledges, before it decodes it, a stored message whose subject no
   session of its machine needs: the subject is matched against an index of the machine's
   interests by subject token, not against every cached interest. The push to a serving-port
@@ -1370,7 +1370,7 @@ releases, one per `legion-envoy-v*` tag.
   the message in progress, so a slow session holds up no other session and its own messages stay
   in order. A delivery exception the stream stores carries `Nats-Msg-Id`
   `exception.<reason>.<original Nats-Msg-Id or stream sequence>`, so the stream keeps one however
-  many listeners raise it (INFRA-594).
+  many listeners raise it (POMJU-594).
 - **Breaking:** `envoy-dispatch redeliver-webhooks` needs `DATABASE_URL`, the database the
   Dispatch server uses, and exits 2 naming it when the variable is unset, before it connects to
   NATS or GitHub: the GitHub rate limits it obeys now live in that database. It migrates nothing,
@@ -1474,7 +1474,7 @@ releases, one per `legion-envoy-v*` tag.
   NAKed back to the durable, or one deferred as unplaceable, before the session's first consumer
   was created -- is in no consumer, so the durable still pushes it to the port instead of
   acknowledging it as delivered, the stored copy of a role forward to a serving-port holder
-  included (INFRA-594).
+  included (POMJU-594).
 - A server that closes a connection during a reconnect's handshake, as a restarting NATS server
   does, is logged as a failed reconnect attempt (`envoy nats reconnect attempt failed`, WARN, on the
   reconnect throttle) rather than as an `envoy nats async error` at ERROR, while the connection is still
@@ -1977,7 +1977,7 @@ releases, one per `legion-envoy-v*` tag.
   the one they stored - so the write that closed a Legion design gate is told, while a write on
   a document nobody approved, one whose approval was already stale, one a changes request had
   already closed and one whose version carried the approval forward report nothing.
-- `packages/envoy/loadtest/` replays LINUX's real write log of 2026-10-26 22:55-23:34Z against a local Dispatch (`loadgen run -source replay`), so a change to Dispatch's write path is measured on production's writes. `run-step.sh <name> --replay` is the one command: it gets the bundle and the seed the committed manifest (`replay-2026-10-26.json`) names, checking every part's sha256, prepares a template for the Dispatch build once (the seed is at 35efd326's migration and the build migrates it forward), resets to it, and re-sends each logged write at its offset as the dispatch CLI sends it, with read actions before each write at a stated assumption. `--rate`, `--reads`, `--read-mix`, `--uploads`, `--from`/`--to`, `--roster` and `--rng-seed` are its inputs; `--dispatch-commit REV` builds Dispatch alone from another commit, and `--gomaxprocs N` sets its `GOMAXPROCS`. One bundle, one set of inputs and one rng seed send the same requests in every run, and each document's writes are sent in log order (a write waits for the previous one on its document), so three runs at a change's base and three at its head differ only in Dispatch, and `replay.end_state.sha256` shows they left the same documents.
+- `packages/envoy/loadtest/` replays HAFJJ's real write log of 2026-10-26 22:55-23:34Z against a local Dispatch (`loadgen run -source replay`), so a change to Dispatch's write path is measured on production's writes. `run-step.sh <name> --replay` is the one command: it gets the bundle and the seed the committed manifest (`replay-2026-10-26.json`) names, checking every part's sha256, prepares a template for the Dispatch build once (the seed is at 35efd326's migration and the build migrates it forward), resets to it, and re-sends each logged write at its offset as the dispatch CLI sends it, with read actions before each write at a stated assumption. `--rate`, `--reads`, `--read-mix`, `--uploads`, `--from`/`--to`, `--roster` and `--rng-seed` are its inputs; `--dispatch-commit REV` builds Dispatch alone from another commit, and `--gomaxprocs N` sets its `GOMAXPROCS`. One bundle, one set of inputs and one rng seed send the same requests in every run, and each document's writes are sent in log order (a write waits for the previous one on its document), so three runs at a change's base and three at its head differ only in Dispatch, and `replay.end_state.sha256` shows they left the same documents.
 
   Each run's `summary.json` `replay` gives Dispatch's CPU-seconds over the window from `/proc`, the cores at the full rate (and with the idle cores taken off), writes planned, sent and failed, substitutes, saturation, the writes that waited for their document's previous write (`doc_order_waits`, `doc_order_wait_s`) and the end state of the documents written (`end_state`, with `end_state.json` in the step directory), and the step directory holds heap profiles at the window's start and end (`go tool pprof -sample_index=alloc_space -diff_base=heap-start.pprof -top envoy-dispatch heap-end.pprof`). `loadgen replay-plan` prints what a run would send without a stack. `loadgen replay-fetch`, `replay-pack` and `stack.sh replay-seed` and `replay-manifest` rebuild the bundle and the seed, whose history versions change as many bytes as production's and whose anchors land by stated rules that `replay-check-seed` checks. `loadtest/README.md`, The replay, has every input, field and what the replay does not reproduce.
 
@@ -2392,7 +2392,7 @@ releases, one per `legion-envoy-v*` tag.
   retry instead. Before, an edit of only its urgency or
   `multiple` wrote its options, joined across both lists, to the ask.
 - **Breaking:** migration 0141 drops `broadcast_idempotency_keys`, the broadcast send's own key
-  table from before every write took an `Idempotency-Key` header (INFRA-258). No value anything
+  table from before every write took an `Idempotency-Key` header (POMJU-258). No value anything
   reads is lost: since 0137 a broadcast's key is a `request_keys` row, and the send route no
   longer takes the body key the dropped rows recorded. Rollback floor: once 0141 has applied, a
   task older than legion-envoy v21.0.0, the release that added 0137, still boots, but its
@@ -2772,18 +2772,18 @@ releases, one per `legion-envoy-v*` tag.
 
 ### Added
 
-- Every Dispatch `POST` and `PATCH` route takes an optional `Idempotency-Key` request header (INFRA-258). A repeat with the same key and request replays the stored status, headers and body with `Idempotency-Replayed: ?1`; a different request is `422 KEY_REUSED`; and a still-running request is `409 KEY_IN_FLIGHT` with `Retry-After: 1`. A keyed handler finishes detached from its client, is bounded at ten minutes, renews its 60-second lease every 20 seconds, and is counted in shutdown's background wait. A write that committed but lost its answer is `409 KEY_COMMITTED`, so it is never run again. Keys belong to the caller's login and are kept for 24 hours in migration `0137_request_keys`; `POST /api/v1/writes/_test/slow` drives a keyed handler that is slow to finish.
+- Every Dispatch `POST` and `PATCH` route takes an optional `Idempotency-Key` request header (POMJU-258). A repeat with the same key and request replays the stored status, headers and body with `Idempotency-Replayed: ?1`; a different request is `422 KEY_REUSED`; and a still-running request is `409 KEY_IN_FLIGHT` with `Retry-After: 1`. A keyed handler finishes detached from its client, is bounded at ten minutes, renews its 60-second lease every 20 seconds, and is counted in shutdown's background wait. A write that committed but lost its answer is `409 KEY_COMMITTED`, so it is never run again. Keys belong to the caller's login and are kept for 24 hours in migration `0137_request_keys`; `POST /api/v1/writes/_test/slow` drives a keyed handler that is slow to finish.
 
   A write the dashboard pressed runs only as the person who pressed it: every write carrying `Dispatch-Login` is `409 LOGIN_CHANGED` before anything runs when its caller is another person or no person.
 
   A delivery a process left half-done is finished without anyone asking again. The maintenance pass sends lapsed keyed-send and delivery attempts once under their durable recovery points; migration `0138_pending_delivery_indexes` adds the partial indexes its pending-attempt read uses.
-- Dispatch now keeps a browser tab's delivery, event-feed, and agent-view subscriptions on one `GET /ws/live` socket (INFRA-258). Delivery views retain their snapshots, deltas, freshness, and resume semantics; an `events` view sends `events_start` then event frames; and an `agent` view sends responder, replay, and frame events. The server rotates each socket at a random age from 30 to 60 minutes with `4001 max age`; a page reconnects and resumes without a gap. Shutdown and `POST /api/v1/live/_test/disconnect` close with `1012`; loss of identity closes with `1008`; a full hub queue closes with `1013`; oversized and unencodable frames close with `1009` and `1011`; and a disappeared peer is the ordinary `1006` connection loss. `POST /api/v1/live/_test/rotate` exercises the age rotation. The routes this socket replaces are gone.
+- Dispatch now keeps a browser tab's delivery, event-feed, and agent-view subscriptions on one `GET /ws/live` socket (POMJU-258). Delivery views retain their snapshots, deltas, freshness, and resume semantics; an `events` view sends `events_start` then event frames; and an `agent` view sends responder, replay, and frame events. The server rotates each socket at a random age from 30 to 60 minutes with `4001 max age`; a page reconnects and resumes without a gap. Shutdown and `POST /api/v1/live/_test/disconnect` close with `1012`; loss of identity closes with `1008`; a full hub queue closes with `1013`; oversized and unencodable frames close with `1009` and `1011`; and a disappeared peer is the ordinary `1006` connection loss. `POST /api/v1/live/_test/rotate` exercises the age rotation. The routes this socket replaces are gone.
 
-  `GET /auth/whoami` answers `event_head`, the newest committed event id as of the sign-in check (INFRA-292). A page's first events subscription on `/ws/live` resumes from it, so a change committed between that answer and the socket opening reaches the page instead of being lost until something else refreshed it.
+  `GET /auth/whoami` answers `event_head`, the newest committed event id as of the sign-in check (POMJU-292). A page's first events subscription on `/ws/live` resumes from it, so a change committed between that answer and the socket opening reaches the page instead of being lost until something else refreshed it.
 
 ### Changed
 
-- **Breaking:** Dispatch's live routes before `GET /ws/live` are gone (INFRA-258): `GET /api/v1/events`, `GET /api/v1/agents/{session_id}/stream`, `GET /ws/delivery`, and their disconnect test hooks answer `404`. A tab opened before the deploy shows `Live updates unavailable` until it reloads.
+- **Breaking:** Dispatch's live routes before `GET /ws/live` are gone (POMJU-258): `GET /api/v1/events`, `GET /api/v1/agents/{session_id}/stream`, `GET /ws/delivery`, and their disconnect test hooks answer `404`. A tab opened before the deploy shows `Live updates unavailable` until it reloads.
 
   **Breaking:** the body field `idempotency_key` is gone from `POST /api/v1/broadcasts`; the `Idempotency-Key` header names the send instead. A body that still carries the field is `400 INVALID_JSON`.
 
@@ -3350,7 +3350,7 @@ releases, one per `legion-envoy-v*` tag.
   NATS's error; a listener without the route answers 404, which a session reads as "does not
   replay". A `session_id` that is not one literal NATS token (`.`, `*`, `>`, whitespace or a
   control character) is a 400, so a wildcard cannot make `notifications.agent.>` its own subject
-  and read every session's inbox (INFRA-439).
+  and read every session's inbox (POMJU-439).
 - `envoy-infra`'s `ListenerPermissions`, and through it `HostPermissions` and
   `DispatchPermissions`, grant `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, the stored-message
   read `/v1/replay` makes; it reads one message at a time and can create, change or delete
@@ -3358,7 +3358,7 @@ releases, one per `legion-envoy-v*` tag.
   with a `listener`, a `machineId` user or a `dispatchMachineId` user to this release replaces its
   VM once, with NATS down until the new VM starts; a hub with none of them keeps its VM. A
   listener whose NATS user lacks the read answers `/v1/replay` with `REPLAY_UNAVAILABLE`
-  (INFRA-439).
+  (POMJU-439).
 - A person's browser edit of a document reaches the agent sessions that wrote it. Once the
   document has been quiet for 30 seconds after a person's last settled version, Dispatch appends
   one `artifact.human_edited` event: the person who edited last is its actor, and its payload
@@ -3578,7 +3578,7 @@ releases, one per `legion-envoy-v*` tag.
   bytes of text a call, so a call of dense text (CJK, hex) finishes well inside the 60-second
   request timeout instead of timing out and being split; Bedrock's batches are unchanged. Pacing
   estimates 4 characters a token, which under-counts such text, so a backlog of it can meet
-  Azure's 429s, which the queue retries as throttles (INFRA-393).
+  Azure's 429s, which the queue retries as throttles (POMJU-393).
 - The Dispatch server keeps meaning search's coverage itself: a coverage pass at boot and every 10
   minutes embeds items written before the embedding triggers existed or with them off, repairs a
   row whose text changed with the triggers off, drops every vector another embedder made and
@@ -3589,7 +3589,7 @@ releases, one per `legion-envoy-v*` tag.
   misnamed Azure deployment or a refused credential drops no vector.
   `GET /api/v1/search/coverage` reports the configured embedder's identity, place and model, and
   in total and per kind the searchable items with a current vector, lacking one or failed, and the
-  oldest lacking item's wait (INFRA-393).
+  oldest lacking item's wait (POMJU-393).
 - `agent-secrets` names the store it answered from, so no answer of its own is read as another
   secrets CLI's about the same name: the broker `AGENT_SECRETS_URL` names, and the kind of that
   broker's store, read once from its public `GET /v1/settings` (`AWS Secrets Manager`, `GCP Secret
@@ -3685,7 +3685,7 @@ releases, one per `legion-envoy-v*` tag.
   review once.
 - Dispatch's conversation view (`/agents/<id>/live`) shows the model and thinking level an Oh My
   Pi session runs now, from the `settings` frame pi-envoy publishes, before any turn runs on them
-  and within about 20 seconds of a change made anywhere else (INFRA-195). Where the session runs
+  and within about 20 seconds of a change made anywhere else (POMJU-195). Where the session runs
   `/model` and `/effort` from Dispatch, each is a native picker in the header: the model picker
   lists every model the session can use, grouped by provider, and the thinking picker the levels
   `/effort` offers. On a focused picker the arrows and type-ahead only move its choice, `Enter`
@@ -3701,7 +3701,7 @@ releases, one per `legion-envoy-v*` tag.
   token is still refused on `POST /api/v1/agents/{id}/messages` (`403 HUMAN_ONLY`).
 - A Dispatch project imports its component model from any number of architecture sources, one
   per repository, each on its own branch, and its model is every source's components together
-  (INFRA-391). `GET /api/v1/projects/{key}/architecture-sources` lists a project's sources (`[]`
+  (POMJU-391). `GET /api/v1/projects/{key}/architecture-sources` lists a project's sources (`[]`
   with none); `PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}` `{branch}` adds a
   source, or changes the branch of the one it already is, after proving the GitHub App can read
   the repository and that `branch` is the name of a branch it has (an exact
@@ -3967,7 +3967,7 @@ releases, one per `legion-envoy-v*` tag.
   own defensive fallback to `machine_id` for a listener that predates the field too.
 - A session on a serving port (the OpenCode plugin's way of being reached) receives a topic the
   stream does not store, such as a team topic, when its machine's listener runs with
-  `ENVOY_SUBSCRIBE_ALL_TOPICS=1` (INFRA-122). Such a listener opens a second NATS client holding
+  `ENVOY_SUBSCRIBE_ALL_TOPICS=1` (POMJU-122). Such a listener opens a second NATS client holding
   one core queue subscription on `notifications.>`, in the group
   `envoy-listener-live-<machine id, spaces as hyphens>` (`bus.ListenerLiveQueue`, so two listeners
   of one machine deliver each message once); it leaves a subject under `notifications.role.` to the
@@ -4344,7 +4344,7 @@ releases, one per `legion-envoy-v*` tag.
   nothing more. The search palette shows it under each ask hit's excerpt: a badge (`Open`,
   `Answered`, `Closed, no answer` or `Closed after an answer`), who closed the ask and when, and
   its latest answer, with who gave it, when, the options chosen and its text cut to three lines
-  (INFRA-569).
+  (POMJU-569).
 
 ### Changed
 
@@ -4437,7 +4437,7 @@ releases, one per `legion-envoy-v*` tag.
   an unsubscribe that rewrite the row, so the fan-out stops reaching the session after its next
   heartbeat. pi-envoy and claude-envoy no longer register or replay a topic reaching a private
   stream subject other than their own agent subject (`reachesPrivateStreamSubject` in
-  `@legion/envoy-client/replay`, mirroring `bus.ReachesPrivateStreamSubject`) (INFRA-439).
+  `@legion/envoy-client/replay`, mirroring `bus.ReachesPrivateStreamSubject`) (POMJU-439).
 - A dead session's subscriptions now stay 5 minutes longer: the interest reaper deletes one only
   15 minutes after its row's last write, where it was 10, because it now adds
   `store.InterestRefreshAge` to its grace window. For that time the subscribers page and the
@@ -4464,7 +4464,7 @@ releases, one per `legion-envoy-v*` tag.
   its own identity: run one embedder configuration on every process of a deployment, since each
   process's pass drops the others' vectors, and put a new model on Azure under a new deployment
   name. A text with nothing to embed (empty or only white space) is settled with no vector rather
-  than retried until it dies, and a row that died that way is settled by the pass (INFRA-393).
+  than retried until it dies, and a row that died that way is settled by the pass (POMJU-393).
 - **Breaking (local development):** `agent-secrets-devrelay` presents a listed caller's own
   ServiceAccount token, read from `--account-token-file` (default
   `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE`), in place of the shared bearer the broker no longer takes. A
@@ -4482,17 +4482,17 @@ releases, one per `legion-envoy-v*` tag.
   variable, so a key that does not parse stops boot with `DISPATCH_APP_PEM_B64: plain PEM:
   <reason>` or `DISPATCH_APP_PEM_B64: base64 of a PEM: <reason>` (a value that is not base64 at
   all, `DISPATCH_APP_PEM_B64: <reason>`), never quoting the key, where it stopped boot with
-  `parse GitHub App private key: <reason>`, naming neither the variable nor the form (INFRA-390).
+  `parse GitHub App private key: <reason>`, naming neither the variable nor the form (POMJU-390).
 - A failed NATS reconnect attempt is logged, where it was silent: one WARN a minute per
   connection, `envoy nats reconnect attempt failed`, naming the client, the servers it was
   configured with and the error, with the first failure of an outage logged at once. nats.go
   retries about once a second forever, so a broker that is down left no line at all in the
-  process's log, and thousands of identical lines would name the outage no better (INFRA-182).
+  process's log, and thousands of identical lines would name the outage no better (POMJU-182).
 - A cache watcher that ends on its own logs `<cache> watcher stopped` at WARN, where it was an
   ERROR. The ERROR is now `<cache> watcher was not repaired`, logged once with the bucket, the
   recorded error and a `reason` of `repair failed` or `no repair within 1m0s`, and only when a
   repair has failed or none has run within a minute, so a stop the self-health rebuild repairs a
-  moment later no longer raises one (INFRA-182).
+  moment later no longer raises one (POMJU-182).
 - **Breaking:** once any secret with a `kind` tag holds a value, roll the secrets broker forward,
   never back past this release. A broker before kinds reads no `kind` tag and would serve the
   secret's stored GitHub App key or refresh token as its value. `agent-secrets secret` writes
@@ -4651,9 +4651,9 @@ releases, one per `legion-envoy-v*` tag.
   `status` answered, the `holder` a role lane resolved, and an `outcome` of `accepted`,
   `invalid_request`, `too_large` or `bus_unavailable` on either line, `no_live_session` or
   `capability_refused` on a send, and `publish_denied`, `role_unclaimed`, `role_lapsed`,
-  `role_holder_changed` or `role_claim_unreadable` on a publish (INFRA-141).
+  `role_holder_changed` or `role_claim_unreadable` on a publish (POMJU-141).
 - The Envoy listener's webhook routes and `/healthz` answer a bus that went silent inside their
-  callers' wait (INFRA-141). A GitHub check_suite
+  callers' wait (POMJU-141). A GitHub check_suite
   or check_run delivery's CI record - the wait for a write it queues behind and its own write - is
   held to 4 s, two write budgets, each KV call included, where a silent bus held it for the 10 s
   JetStream wait, and ends sooner when its request does; it is still the 503 a failed record was.
@@ -4668,7 +4668,7 @@ releases, one per `legion-envoy-v*` tag.
   -sf`) still fails and replaces the task, as it did when the 10 s wait outran it. A check that
   answered with a failure keeps its answer.
 - A session holds a role exactly when the role's claim in `envoy_roles` names it, and every
-  answer that names a role's holder reads the claim (INFRA-141). `GET /v1/sessions` rows and `GET
+  answer that names a role's holder reads the claim (POMJU-141). `GET /v1/sessions` rows and `GET
   /v1/registry/<session_id>` (which Dispatch's route roster reads) report `roles` from the claims,
   and so does the `sender.roles` a send or a publish stamps, where both took them from the
   `notifications.role.<role>` topics on the session's interest record: a session whose record kept
@@ -4697,7 +4697,7 @@ releases, one per `legion-envoy-v*` tag.
   covers the role claim view too, and its timeout is logged
   `interest or role claim cache warm-up timed out`, its error naming the cache.
 - A comment, comment edit, message or broadcast body is at most 32,000 characters
-  (`contracts.DispatchBodyMax`, UTF-16 units), up from 2,000 (INFRA-45); a longer one is
+  (`contracts.DispatchBodyMax`, UTF-16 units), up from 2,000 (POMJU-45); a longer one is
   `400 CAP_EXCEEDED` as before, named the way every other cap names its own. The limit is
   generated from `DISPATCH_BODY_MAX` in `packages/contracts`, which also generates the Legion
   daemon's `dispatch.MessageBodyLimit`, so that daemon's derived `record.MessagePostLimit` moves
@@ -5244,12 +5244,12 @@ releases, one per `legion-envoy-v*` tag.
 - An ask hit's search excerpt, in `GET /api/v1/search` and in the write-time suggestions, is cut
   from the text its search vector indexes - the question, the options' labels and descriptions,
   the answer's text and the options it chose - where it was cut from the question, the options'
-  raw JSON and the answer's text, so the excerpt could show JSON keys and braces (INFRA-569).
+  raw JSON and the answer's text, so the excerpt could show JSON keys and braces (POMJU-569).
 - An ask answer that chose no option reads `"selected": []` from `GET /api/v1/asks/{id}`, the ask
   lists and `GET /api/v1/me/answers`, and an `ask.answered` event's `answer` and `previous_answer`
   read it from `GET /api/v1/issues/{key}/events`, `GET /api/v1/artifacts/{id}/events` and the
   `GET /api/v1/events` stream, where each read `null`, including the rows and `ask.answered`
-  events already stored with `null`; a new answer stores `[]` (INFRA-569).
+  events already stored with `null`; a new answer stores `[]` (POMJU-569).
 
 - A document now strikes tilde runs as a comment does. A run of `~` pairs only with a run of its
   own length, so `Plain ~a~~ text.` and `Plain ~~a~ text.` keep their tildes where a document
@@ -5267,15 +5267,15 @@ releases, one per `legion-envoy-v*` tag.
   rendered, and no stored document is rewritten. An image inside an image's label now adds its own
   alt text to the outer alt text, as the browser editor reads it. A `*` or `_` run beside a tilde
   now opens or closes toward it as the browser editor reads it, so `*~~**b~~*` is emphasis around
-  struck `**b`, and `Plain b*~* text.` is emphasis `~` (INFRA-534).
+  struck `**b`, and `Plain b*~* text.` is emphasis `~` (POMJU-534).
 
 - A bare email address, or one written `<a@b.test>`, in Markdown written to a document through the
   API is now stored and shown as a link to its `mailto:` URL, `[a@b.test](mailto:a@b.test)`, as a
-  comment and the browser editor show it (INFRA-530). Dispatch linked it to the bare address, which
+  comment and the browser editor show it (POMJU-530). Dispatch linked it to the bare address, which
   the editor's link opener resolved as a page path under the document's own URL. A document that
   already holds `[a@b.test](a@b.test)` keeps that link's bare target until it is edited.
 
-- A broker outage no longer ends the sessions whose leases ran out during it (INFRA-487). A session
+- A broker outage no longer ends the sessions whose leases ran out during it (POMJU-487). A session
   renews its lease through a broker, so while every broker process was down, or none could reach
   the database, no lease could be renewed, and the first sweep after the outage ended every
   enrollment whose lease ran out meanwhile: each such pod lost its grants and stayed locked out
@@ -5331,7 +5331,7 @@ releases, one per `legion-envoy-v*` tag.
   since no markdown of a cell writes it: an API replace, delete by quote or accepted suggestion
   that adds such code is refused, naming the table, the cell and the header above it, also beside
   such code a browser edit left, and a browser edit that holds one is stored with that `|` written
-  as text after the code (INFRA-172).
+  as text after the code (POMJU-172).
 
 - A Dispatch page in Firefox now shows what changed while its live event stream was reconnecting,
   such as a session's answer to a model switch, without waiting for the stream's heartbeat.
@@ -5362,7 +5362,7 @@ releases, one per `legion-envoy-v*` tag.
   nobody saw its own edits, until it reconnected for some other reason. The ygo pin moves from
   `v1.51.3-sami.1` to `v1.51.3-sami.3`, where a forced close also closes such a browser before it
   returns, so the dashboard's usual reconnect takes it to the live room (reearth/ygo#331,
-  INFRA-403).
+  POMJU-403).
 
 - An agent woken by a Slack message now reads the words the message carries, wherever it carries
   them. A Slack delivery's `text` is the message's own text and then every display string its
@@ -5391,7 +5391,7 @@ releases, one per `legion-envoy-v*` tag.
   Slack tells app authors to post beside a short `text` field, says more than that field and is
   read like any other block, as is a `rich_text` block nested in one already read. The delivered
   text is still cut at 2,048 runes and marked `body_truncated`, and a deleted message still
-  delivers nothing (INFRA-180).
+  delivers nothing (POMJU-180).
 
 - A Dispatch reference read no longer fails while the database holds an edge a newer build wrote.
   `GET /api/v1/references` (`?to=` and `?from=`) and `GET /api/v1/artifacts/{id}/references`
@@ -5405,7 +5405,7 @@ releases, one per `legion-envoy-v*` tag.
   than the 1 MiB response cap, as a commit touching many files did. `githubapp.Client.Ref` asks
   `GET /repos/{owner}/{repo}/commits/{branch}` for the SHA alone
   (`Accept: application/vnd.github.sha`) and refuses an answer that is not one 40-hex SHA, which a
-  directory read at it would have imported as an empty model (INFRA-390).
+  directory read at it would have imported as an empty model (POMJU-390).
 - `GET /v1/registry/<session_id>` is the listener's authoritative answer about one session, so a
   session that is working is no longer read as gone while a listener's session cache refills. The
   read goes through that cache to the session bucket: a 200 carries the same body a row of `GET
@@ -5428,13 +5428,13 @@ releases, one per `legion-envoy-v*` tag.
   `unhealthy` with `durable consumer unavailable: not bound to this listener's subscription`,
   and the self-health monitor treats an unbound durable as terminal: it confirms the reading
   with a second one, rebinds, and reports success only once the server itself reports this
-  listener bound (INFRA-182).
+  listener bound (POMJU-182).
 - No NATS server URL the bus logs carries its userinfo: `envoy nats reconnected` and the refusal
   of a NATS server that is not this machine's wrote the configured URL whole, and nats.go
   authenticates with a URL's userinfo, a user name alone as a token and `user:password` as a
   password, so `NATS_URLS=nats://user:password@host:4222` put the password in the process's log.
   Each URL is now written without its userinfo, as `envoy nats reconnect attempt failed` writes
-  its servers (INFRA-182).
+  its servers (POMJU-182).
 - `agent-secrets secret` writes on a dev box under the person's own Google sign-in, with no setup
   but `gcloud auth login`, and never tells a person to run `gcloud auth application-default login`,
   which replaces a machine's own credentials for every program that uses them. A write under
@@ -5463,7 +5463,7 @@ releases, one per `legion-envoy-v*` tag.
 - With two `envoy-dispatch` processes on one database, a document whose room one process held
   behind the durable head no longer answers every write with `503 DOC_SERVICE_UNAVAILABLE` for a
   while, and a version named there no longer records text missing the other process's edit
-  (INFRA-218). A settlement the durable gate refused from such a room was retried on the same
+  (POMJU-218). A settlement the durable gate refused from such a room was retried on the same
   room, which can never pass the gate, so its third refusal failed the room
   (`document settlement failed 3 times`) and every transaction on the document was refused until
   the eviction ran. The refusal now closes the room and settles it again from the reloaded one. A
@@ -5482,7 +5482,7 @@ releases, one per `legion-envoy-v*` tag.
   resumption.
 
 - A person who opens a Dispatch document while the service is force-closing that document's room
-  keeps the credit for what they type (INFRA-352). The service forces such a close when the room
+  keeps the credit for what they type (POMJU-352). The service forces such a close when the room
   fails, when another process's write leaves it behind the stored document, and when a test or the
   browser-test harness asks, and it threw the room's in-memory record away once the close
   returned. The browser registers before its room is loaded, the room that replaces the closed one

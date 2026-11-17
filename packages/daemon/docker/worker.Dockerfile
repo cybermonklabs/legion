@@ -89,7 +89,7 @@ ARG GH_TOOL=gh@2.98.0
 # directory holds it. The image carries the pin alone. The pod's launcher names this tag to the
 # daemon, which reads the check at it and pushes it to the launcher, and the launcher installs it
 # under the issue's scratch before any role's agent starts (packages/daemon/internal/leakguard's
-# Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
+# Source and InstallServed). R5 of dispatch://POMJU-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
 # newest, read with `gh api repos/theorem-labs/agent-infra/git/refs/tags` at 2026-11-09T23:45:49Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which

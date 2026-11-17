@@ -181,7 +181,7 @@ func (s *Store) StuckPodResumes(ctx context.Context, project string, before time
 // in the transaction they have already begun, so the wakes and the released claims they belong
 // to come from one moment. There is no form of this read on the pool: every caller of it is
 // already inside a transaction of this pool, and asking the pool for a second connection while
-// holding one of its own is how a pool of a busy deployment deadlocks (INFRA-3169).
+// holding one of its own is how a pool of a busy deployment deadlocks (POMJU-3169).
 func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project string, before time.Time) ([]PodResume, error) {
 	return podResumesWithoutAFirstTurn(ctx, tx, project, before, false)
 }

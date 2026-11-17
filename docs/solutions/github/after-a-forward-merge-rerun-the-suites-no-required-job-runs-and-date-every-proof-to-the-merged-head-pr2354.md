@@ -24,7 +24,7 @@ pull request and the pin in another, and your merge lands between them.
 - **Rerun first the suites of every package the merge touched that no required job runs.** A pin
   or count the merge broke goes red only there, and the required checks stay green. Read which
   jobs are required from the base's rules, as
-  `docs/solutions/testing/a-regression-lock-binds-only-as-far-as-its-lane-is-required-INFRA-149.md`
+  `docs/solutions/testing/a-regression-lock-binds-only-as-far-as-its-lane-is-required-POMJU-149.md`
   says.
 - **Date each proof claim to the head it ran at.** A suite result from before the merge says
   nothing about the merged head. Run it again there, or name the head it ran at.

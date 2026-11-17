@@ -420,7 +420,7 @@ afterAll(async () => {
 
 // One server serves one mod: it keeps the first instance that names itself in a post and refuses
 // every other, so two Claude Code processes booted on one session id do not share a live view or
-// a person's Send (INFRA-1026 review).
+// a person's Send (POMJU-1026 review).
 test("every post the mod makes names the one instance this process's mod is", () => {
   const posts = requested.filter(({ method }) => method === "POST")
   expect(posts.length).toBeGreaterThan(0)
@@ -437,7 +437,7 @@ test("every post the mod makes names the one instance this process's mod is", ()
 // `thinking=None`, the model taking no effort whatever the mod set, while the mod went on
 // reporting `low` on every step and the live view's header read `low` for a session thinking at no
 // level at all. The step reports the request that ran, so the pick is left off a request Claude
-// Code names no effort for, and off its step (INFRA-1026).
+// Code names no effort for, and off its step (POMJU-1026).
 test("a step of a model with no effort of its own runs and reports none, pick or no pick", async () => {
   const { server } = started()
   expect(await server.request("set-effort", { effort: "low" })).toEqual({ effort: "low" })
@@ -482,7 +482,7 @@ test("a step of a model with an effort of its own runs and reports the picked on
 // and neither uuid ever reached a hook
 // (`/legion/scratch/tmp/infra-1026-spike/logs/mod3-q1q3q5.jsonl:36,64`). So the row would reach
 // the live view's mapper nowhere at all, and a card delivered during a turn was drawn nowhere
-// (INFRA-1026, handoff v6). The mod reports it itself, out of what the call answered, stamped
+// (POMJU-1026, handoff v6). The mod reports it itself, out of what the call answered, stamped
 // with what it wrote the row for.
 test("a message handed to a running turn is a row, reported as the row this plugin wrote", async () => {
   const card = "Dispatch message from alice: the migration is approved."
@@ -529,7 +529,7 @@ test("a message handed to a running turn is a row, reported as the row this plug
 
 // The server is at-least-once: a frame it leaves unanswered is sent again, and the copy reaches
 // the mod as the same Envoy event id. The write is idempotent by that id, so the engine sees one
-// message however many copies arrive (INFRA-1026 review, round eleven). Two copies at once are
+// message however many copies arrive (POMJU-1026 review, round eleven). Two copies at once are
 // the case the store cannot answer on its own: two `get`s of an unset key both answered
 // undefined, 0 ms and 2 s apart, in one session and across two
 // (`/legion/scratch/tmp/infra-1026-store/README.md`), so the mod chains them per id.
@@ -551,7 +551,7 @@ test("the same event id handed over twice is written once, at once or later", as
   await turn("turn-after-once", 1)
 })
 
-// Repro `R-B` (INFRA-1026 review, round eleven): the server read "which request has gone out"
+// Repro `R-B` (POMJU-1026 review, round eleven): the server read "which request has gone out"
 // off a `step-request` event and "the row exists" off the append's answer, and the two cross on
 // the wire, so a row stored after the turn's last request looked read by it and was never
 // quoted. In the mod the two are one order: the request is counted at the top of the
@@ -569,7 +569,7 @@ test("a row stored after the turn's last request is quoted, though its step answ
   await turn("turn-after-unread", 1)
 })
 
-// Repro `R-C` (INFRA-1026 review, round three):
+// Repro `R-C` (POMJU-1026 review, round three):
 // a row stored behind a submit that the session then drops waited for a turn that never starts,
 // so nothing ever pointed the model at it. The mod gives the prompt it handed over
 // `TURN_START_MS` to start its turn, and points at the rows behind a prompt that started none.
@@ -596,7 +596,7 @@ test("a row stored behind a prompt the session dropped is pointed at", async () 
   await turn("turn-after-dropped", 1)
 })
 
-// The same row one tick later (INFRA-1026 review, round five): the prompt it was stored behind
+// The same row one tick later (POMJU-1026 review, round five): the prompt it was stored behind
 // is dropped while its own store is still in flight. The drop's `stopPrompting` finds nothing,
 // because the row is not watched yet, so the end of that store is the last moment anything can
 // catch it. Read off the turn as it stood before the store — `undefined`, since it was a prompt
@@ -634,7 +634,7 @@ test("a row stored behind a prompt dropped while that row was being stored is po
 
 // An idle session takes the message as the prompt of a new turn and nothing else: an appended
 // row starts nothing, so a card only appended would wait for the person to type, and a card
-// appended *and* quoted reached the model twice (INFRA-1026, handoff v6). The row Claude Code
+// appended *and* quoted reached the model twice (POMJU-1026, handoff v6). The row Claude Code
 // writes for that prompt is the prompt's own: the mod stamps it for the live view and answers
 // the write with no row at all (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
 test("an idle session takes the message as its prompt, answered as a prompt and no row", async () => {
@@ -783,7 +783,7 @@ test("a background subagent's step is none of the main turn's requests", async (
 // included (requirement R8, `docs/site/src/content/docs/dispatch/agents.md`). Measured on
 // 2.1.310, a subagent's `turn.step` carries the session's own effort, so a hook that passed one
 // straight through left the main loop at the picked level while every Task subagent ran at the
-// level Claude Code had saved, under a header reading the pick (INFRA-1026 review, round five).
+// level Claude Code had saved, under a header reading the pick (POMJU-1026 review, round five).
 // What a subagent's step is still none of is this session's bookkeeping: the count the unread
 // rule reads, and the live view.
 test("a subagent's step takes the session's pick and is still none of this session's requests", async () => {
@@ -862,7 +862,7 @@ test("a person's message and the card its resend becomes are one write", async (
 // carries no uuid, and no `deny`, because the session has the prompt. The Envoy event is
 // recorded under it all the same, which is what keeps the resend of that event from writing
 // the message a second time — unrecorded, it was written twice, and for a person's own
-// message Dispatch told them their session had dropped a prompt it took (INFRA-1026 review).
+// message Dispatch told them their session had dropped a prompt it took (POMJU-1026 review).
 test("a prompt the session took is recorded, so the resend of its event writes nothing", async () => {
   const words = "the staging box is yours for the afternoon"
   const sent = submits.length
@@ -886,7 +886,7 @@ test("a prompt the session took is recorded, so the resend of its event writes n
 // 15 ms to 26 ms before that answer. So the watch for the row is bounded from the answer and
 // not from the call: bounded from the call, a prompt the engine held longer than
 // `PROMPT_ROW_MS` had its row arrive unclaimed, the pointer prompt's row went unstamped, and
-// the live view drew every message that prompt quotes a second time (INFRA-1026 review, round
+// the live view drew every message that prompt quotes a second time (POMJU-1026 review, round
 // six).
 test("a pointer prompt the engine holds past the row window still has its row stamped pointer", async () => {
   const card = "the deploy window moved to Thursday"

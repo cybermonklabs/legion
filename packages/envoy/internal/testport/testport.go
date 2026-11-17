@@ -1,7 +1,7 @@
 // Package testport is a loopback address that refuses every dial for as long as the test that
 // asked for it runs. A test that needs a peer that is not there takes one rather than the address
 // of a server or listener it closed: a freed port is any process's to take, and on a machine that
-// runs other tests beside this one another process took it and answered HTTP (dispatch://INFRA-3904).
+// runs other tests beside this one another process took it and answered HTTP (dispatch://POMJU-3904).
 //
 // The daemon module keeps the same file at packages/daemon/internal/testport/testport.go. The two
 // are copies, not one package imported twice, for the reason packages/envoy/internal/testtmp gives:

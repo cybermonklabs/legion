@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// What INFRA-988 holds scopeSourcesQuery's seed to: that its arms answer what the one `or`-ed
+// What POMJU-988 holds scopeSourcesQuery's seed to: that its arms answer what the one `or`-ed
 // seed before them answered, over a comment of every shape an arm can match, and that each arm
 // is read through an index of comments rather than by a scan of the whole table. Those are two
 // questions - one about the set, one about the plan - and each is asked here beside its own
@@ -321,7 +321,7 @@ func TestScopeSourcesSeedArmsAnswerTheOneSeed(t *testing.T) {
 
 // scopeSeedScaleIssues and scopeSeedScaleComments are the size the plan below is read at: a few
 // thousand comments over forty issues, enough that reading one document's comments through an
-// index beats a scan of the table and small enough to build in a test. The deployment INFRA-988
+// index beats a scan of the table and small enough to build in a test. The deployment POMJU-988
 // measured holds 494,000 comments, where the scan cost 867.7 ms a document.
 const (
 	scopeSeedScaleIssues   = 40

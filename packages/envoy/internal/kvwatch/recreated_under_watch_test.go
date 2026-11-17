@@ -22,7 +22,7 @@ const recreateNoticeBound = 20 * time.Second
 // the old stream was the longer. The copy must stop following before it applies any record of the
 // new bucket, and the watcher must read the new bucket whole by itself, with no Check and no
 // Rewatch, so a list never answers from a copy that silently misses records its bucket holds
-// (INFRA-261). Both shapes run: the old stream shorter than the new one (the reset consumer
+// (POMJU-261). Both shapes run: the old stream shorter than the new one (the reset consumer
 // delivers the new bucket's tail as if it were followed) and longer (it delivers nothing).
 func TestABucketRecreatedUnderALiveWatcherIsReadWholeWithoutCheck(t *testing.T) {
 	for _, shape := range []struct {

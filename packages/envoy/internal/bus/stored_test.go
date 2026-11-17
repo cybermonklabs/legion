@@ -259,7 +259,7 @@ func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
 // whose controller role it does not hold, and wildcards reaching any of those. Its own agent
 // subject is its own only when it is one literal subject, and so is the notice lane of the
 // project whose controller role its claims name: the holder registers that lane because the
-// notices reach it through its own consumer alone (INFRA-771), while another project's
+// notices reach it through its own consumer alone (POMJU-771), while another project's
 // controller lane, and every other private subject, stay out of a controller's registration too.
 // The cases are testdata/private-stream-subjects.json, which @legion/envoy-client's mirror of this
 // rule runs too (stream-topics.test.ts): one file, read by both, so a case added for either is run

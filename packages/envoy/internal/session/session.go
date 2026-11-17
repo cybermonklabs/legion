@@ -34,7 +34,7 @@ func (e SessionEntry) ConsumerRelaysStored(captured bool, storedSeq uint64) bool
 // two answers left, which its error alone carries: a nil error is the session's own consumer
 // relaying the message, so this delivery has nothing left to do - the relay of that consumer is
 // what delivers it - and ErrNoSessionRecord is an entry that records no way of receiving at all.
-// No session takes a message off a NATS subscription of its own any more (dispatch://INFRA-771),
+// No session takes a message off a NATS subscription of its own any more (dispatch://POMJU-771),
 // so there is no third outcome for a result to describe. A nil entry produces ErrNoSessionRecord,
 // the same answer a failed lookup produces, so a caller can avoid a second registry read.
 //
@@ -68,6 +68,6 @@ func Resolve(item contracts.Envelope, sessionID string, entry *SessionEntry, sto
 	// path, and one whose consumer cannot carry this message, are both out of reach until the
 	// session registers again. The error is the honest answer, raising one delivery exception per
 	// stored message: a silent skip would hide a session that receives nothing
-	// (dispatch://INFRA-771).
+	// (dispatch://POMJU-771).
 	return fmt.Errorf("%w for session %s", ErrNoSessionRecord, sessionID)
 }

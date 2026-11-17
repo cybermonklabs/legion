@@ -14,7 +14,7 @@ import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
  *
  * This module measures the rows; when a session measures them and sends them on a `claims/ready`
  * of its own is `./capability-schedule`'s — an idle tick of the session's own 5 s interval, never
- * its boot, which measures nothing (INFRA-927).
+ * its boot, which measures nothing (POMJU-927).
  *
  * The daemon renders the report and never refuses a session for it, so a failing check is a
  * failing row and never an error its caller has to handle: `measureCapabilities` never throws.

@@ -211,7 +211,7 @@ async function transcriptText(sessions: string): Promise<string> {
  * Its lines, raw; none until the file exists. A pane appends to its transcript as a case polls
  * it, so a read can land between a line's bytes and its newline; `writtenLines` withholds that
  * fragment until the write has finished it, rather than handing `JSON.parse` half an object
- * (dispatch://INFRA-2188). Once Oh My Pi has exited nothing will finish it, so `writer` is
+ * (dispatch://POMJU-2188). Once Oh My Pi has exited nothing will finish it, so `writer` is
  * `"gone"` from then on, every line is parsed and a fragment throws. A caller reads which of the
  * two holds before this reads the file and never after, or a read that caught half a line while
  * Oh My Pi then exited would be parsed and its error would stand in for the real failure, which
@@ -838,7 +838,7 @@ interface StoredMessage {
 
 /**
  * What reaches a controller session over the real NATS server. A session takes its messages from
- * its own consumer and from nothing else (INFRA-771), so every frame here goes where the Envoy
+ * its own consumer and from nothing else (POMJU-771), so every frame here goes where the Envoy
  * listener's relay would send it: the session's deliver subject
  * (`notifications.envoy.deliver.<session>`), under the headers that name the subject the stream
  * stored it on. A card is the listener's forward of a role-lane message to the session's agent
@@ -1445,7 +1445,7 @@ test.skipIf(skip)(
 
     // The start message is the new session's first user message, and the replaced session has none.
     // Both files belong to the one live process, so an unfinished last line is withheld
-    // (`completeLines`, dispatch://INFRA-2188) rather than parsed half-written.
+    // (`completeLines`, dispatch://POMJU-2188) rather than parsed half-written.
     const [replacedUsers, newUsers] = await session.until(
       "the new session's transcript to hold the start message",
       async () => {
@@ -1922,7 +1922,7 @@ for (const variant of ["the start claim never answers", "the start command never
   );
 }
 
-// The real pair's proof of the controller's own lanes (INFRA-771): a session receives what its
+// The real pair's proof of the controller's own lanes (POMJU-771): a session receives what its
 // own consumer carries and nothing else, and the controller role is what puts its project's
 // notice lane (`notifications.legion.<project>.controller`) and its Slack channels' mention
 // topics into that consumer's filter. The controller the daemon launches is the one whose launch

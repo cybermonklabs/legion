@@ -177,7 +177,7 @@ type Config struct {
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
 	// runs has been quiet for longer than this and nothing of it is at work, the daemon tells the
 	// project's controller once for that tree, unless the tree waits by design (admit's
-	// tellStalledTrees, dispatch://INFRA-2560 R5). The quiet time and the work are what
+	// tellStalledTrees, dispatch://POMJU-2560 R5). The quiet time and the work are what
 	// `record.QuietTrees` measures — the tree's own now less the newest movement of its root, of
 	// the issues under it the workflow still runs and of those issues' claims' steps — and it is
 	// the one measure both the admission pass and the
@@ -238,7 +238,7 @@ type Config struct {
 	RoleConfigFiles map[claim.Role][]string
 	// WorkerStallBackstops is `worker_stall_backstop_hours`: how long after a role's recorded
 	// last step the daemon ends the turn that step belongs to itself, by role, 0 being the
-	// backstop off for that role (INFRA-1274). A role the file leaves out is not here and runs
+	// backstop off for that role (POMJU-1274). A role the file leaves out is not here and runs
 	// on its own ladder's length (StallBackstopFor); nil while the file names none.
 	WorkerStallBackstops map[claim.Role]time.Duration
 	// StallLimits are the worker stall-watch numbers this daemon's own environment sets, which
@@ -310,7 +310,7 @@ const (
 	// defaultWorkerBackground is `worker_background_hours`'s default (Config.WorkerBackground):
 	// four hours is several times the longest background-work hold the reading this work was
 	// filed for measured — two holds of about three quarters of an hour on one pod
-	// (dispatch://INFRA-3163) — so a job of the length a healthy worker runs is never named,
+	// (dispatch://POMJU-3163) — so a job of the length a healthy worker runs is never named,
 	// and short enough that a job which hung is named while the working day it hung in lasts.
 	// It has no floor of its own: its floor is the silence bound the deployment sets
 	// (checkWorkerBackground).
@@ -319,7 +319,7 @@ const (
 	// defaultPodUpdateGrace is `pod_update_grace_minutes`'s default (Config.PodUpdateGrace):
 	// four of the seven roles held on the morning this bound was set answered within about ten
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
-	// of a roll (dispatch://INFRA-2981 R2).
+	// of a roll (dispatch://POMJU-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
 )
 
@@ -328,7 +328,7 @@ const (
 // would.
 var tossedKeys = map[string]string{
 	"worker_cap":                 "the running-worker cap no longer exists (LEGION-208 Requirement 8)",
-	"worker_idle_retire_seconds": `an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (INFRA-945)`,
+	"worker_idle_retire_seconds": `an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (POMJU-945)`,
 	"resync_interval_seconds":    `the mirror of Dispatch and GitHub as truth, and resync's drift healing, no longer exist (LEGION-208 Design, "Ported, and tossed")`,
 	"max_recursion_depth":        "no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 }
@@ -341,9 +341,9 @@ var tossedKeys = map[string]string{
 // own text (Config.Warnings, readKeys), which boot logs and `legion start --check-config`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
-	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
-	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
-	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
+	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://POMJU-956 R4)",
+	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://POMJU-2981 R7)",
+	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://POMJU-2981 R6)",
 }
 
 // migrationKeys are the keys refused with a migration message, mapped to that message verbatim.

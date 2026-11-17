@@ -1593,7 +1593,7 @@ func requireKillNamesAlone(t *testing.T, label string, pod *fakePod, fp fakeProc
 }
 
 // No argument of a process shows in its kill's line or its report: the guard names the process by
-// its executable alone (processName), which reads none of them (dispatch://INFRA-3557, W4). The
+// its executable alone (processName), which reads none of them (dispatch://POMJU-3557, W4). The
 // input is the tester's, a token that is a URL with no `@` after a bearer label: measured in a
 // gVisor issue pod on 2026-11-15 at 63bf5151 by the implementer (its handoff, version 8), the
 // masking rules the guard then ran over its arguments gave `Bearer ***://u:SECRETPASS` for it.

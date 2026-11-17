@@ -1,5 +1,5 @@
 -- 20261109130413_review_footer_head.up.sql — the pull request's head arrival is dropped, because a
--- review names the head it read itself (dispatch://INFRA-714/spec R12).
+-- review names the head it read itself (dispatch://POMJU-714/spec R12).
 --
 -- head_arrived_at (20261108190000) held a listed review to the head it names by comparing times: a
 -- review decided the current head only if it was submitted after that head arrived. Three review

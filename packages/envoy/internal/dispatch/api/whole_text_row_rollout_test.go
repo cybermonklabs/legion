@@ -60,7 +60,7 @@ func reconcileBlockIndexPass(t *testing.T, deps Deps) docs.BlockIndexTick {
 //
 // This is the row "a windowed item keeps the whole-text row the older build's meaning search
 // reads until its window is current", which drove no browser at
-// packages/dispatch/e2e/two-builds.multiprocess.e2e.ts until INFRA-1554 moved it here, where the
+// packages/dispatch/e2e/two-builds.multiprocess.e2e.ts until POMJU-1554 moved it here, where the
 // meaning search can be driven and neither the 30-second block-index tick nor the embed queue's
 // scans are waited out: ReconcileBlockIndex and the queue's batches are called directly, in the
 // row's own order. docs/block_index_test.go's TestRetirementWaitsForACurrentWindow is its

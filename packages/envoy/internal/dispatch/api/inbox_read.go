@@ -51,7 +51,7 @@ import (
 // that id, fenced from the planner as the list route's page read is (myRepliesPageRows,
 // api/replies.go): a one-step match reads the owner columns too, and the cheapest way to read a
 // few columns of a thousand rows out of a table one login owns is a scan of the whole table, which
-// at INFRA-450's a14 seed is 101,540 rows read to mark 1,300.
+// at POMJU-450's a14 seed is 101,540 rows read to mark 1,300.
 func inboxReplyMatchQuery(source, mark string) string {
 	return `
 	with matched as materialized (

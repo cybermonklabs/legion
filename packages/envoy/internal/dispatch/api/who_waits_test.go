@@ -10,7 +10,7 @@ import (
 
 // One expression decides whose list an ask is in: askedOfPersonExpression, the person somebody
 // handed the ask to, else the assignee of its issue, else the default assignee of its project,
-// which every project names. The Go half of dispatch://INFRA-1576's c-one-expression-decides is
+// which every project names. The Go half of dispatch://POMJU-1576's c-one-expression-decides is
 // two tests in two files: this file's TestOneExpressionDecidesWhoWaits, which reads every answer
 // for the same ask and the same person, and TestOneExpressionDecidesWhoWaitsInOneSpelling in
 // one_expression_guard_test.go, which holds the six reads to the one constant and, under
@@ -271,7 +271,7 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		}
 	})
 
-	// The pair that disagreed in dispatch://INFRA-1687: a document ask one person was handed is
+	// The pair that disagreed in dispatch://POMJU-1687: a document ask one person was handed is
 	// their Inbox row, so it is not also a Reply row of theirs.
 	t.Run("a handed-on document ask is an inbox row and not a reply row", func(t *testing.T) {
 		if listed := inboxRowsOf(inboxFor(t, handler, "alice", "me"), documentAsk); listed != 1 {

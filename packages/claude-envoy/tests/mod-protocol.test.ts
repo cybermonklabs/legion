@@ -57,7 +57,7 @@ test("the socket sits under the run directory, else Claude Code's configuration 
 // No other local user can create anything inside a home or a run directory, which is why those
 // are the only bases. In one other users write - `TMPDIR`, `/tmp` - another local user binds the
 // path first, a session id being no secret, and then reads the conversation and submits prompts
-// as the person (INFRA-1026 review).
+// as the person (POMJU-1026 review).
 test("a session with no run, configuration or home directory gets no socket, and TMPDIR names no base", () => {
   const resolution = resolveModSocketPath("s1", {})
   expect(resolution.path).toBeUndefined()
@@ -74,7 +74,7 @@ test("a session with no run, configuration or home directory gets no socket, and
   expect(modSocketPath("s1", { TMPDIR: "/tmp" })).toBeUndefined()
 })
 
-// The reviewer's measurement (INFRA-1026 review): a usual macOS `TMPDIR` with
+// The reviewer's measurement (POMJU-1026 review): a usual macOS `TMPDIR` with
 // `/claude-envoy-<uuid>.sock` after it is 103 bytes, which is why the name is the id's hash. A
 // macOS session resolves under its own home's `.claude` now, well inside the bound.
 test("a macOS session resolves under its configuration directory, inside the bound", () => {
@@ -169,7 +169,7 @@ function fenceOf(prompt: string): string {
 
 // Any client on the bus can send a card, and this prompt quotes a card's text under the same
 // roof as a person's own words. A card that wrote the person's label into its own text took
-// the person's authority for everything after that line (INFRA-1026 review, security[prompt]).
+// the person's authority for everything after that line (POMJU-1026 review, security[prompt]).
 // The label is the router's: it carries a mark minted for the one prompt and checked absent
 // from every message that prompt quotes, the prompt says a label is a label only with that
 // mark, and a text fixed before the mark exists cannot carry it.

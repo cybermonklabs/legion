@@ -94,7 +94,7 @@ func TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone(t *testing
 // outbox waits a send out for, each with a comment_fallback_copies row of its own that the pass
 // publishing those rows sends: the person's one comment on an issue a session claims would be
 // answered by the claimant and by the session that wrote the document, which is what
-// dispatch://INFRA-1368 is about. This test fails on that mutation.
+// dispatch://POMJU-1368 is about. This test fails on that mutation.
 //
 // The copies are counted wherever this pass left them - sent now, or held as a row for that
 // later pass - because a copy held is a copy that goes.

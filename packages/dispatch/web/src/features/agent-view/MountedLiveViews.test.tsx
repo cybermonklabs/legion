@@ -24,7 +24,7 @@ import { LiveViewRoute, MountedLiveViews } from "./MountedLiveViews";
 import "./AgentConversationPage";
 
 /**
- * The shell's host of the live views (INFRA-812, D5 to D8): what the person finds on the page as
+ * The shell's host of the live views (POMJU-812, D5 to D8): what the person finds on the page as
  * they walk into a live view, out of it and into others, and what each view is still doing while
  * they are elsewhere.
  *
@@ -365,15 +365,15 @@ test("a lingering view leaves the tab's name to the view in front", async () => 
   await waitFor(() => expect(document.title).toContain("Reviewer"));
 
   registry = registry.map((agent) =>
-    agent.session_id === PLANNER ? { ...agent, title: "Planner on INFRA-9" } : agent
+    agent.session_id === PLANNER ? { ...agent, title: "Planner on POMJU-9" } : agent
   );
   await act(async () => {
     await queryClient.invalidateQueries({ queryKey: ["agents"] });
   });
 
-  await waitFor(() => expect(within(viewOf(PLANNER)).getByText(/Planner on INFRA-9/)).toBeTruthy());
+  await waitFor(() => expect(within(viewOf(PLANNER)).getByText(/Planner on POMJU-9/)).toBeTruthy());
   expect(document.title).toContain("Reviewer");
-  expect(document.title).not.toContain("INFRA-9");
+  expect(document.title).not.toContain("POMJU-9");
 });
 
 // Each view renders inside a boundary of its own, keyed on its session: a session whose frames

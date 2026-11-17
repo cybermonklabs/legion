@@ -25,7 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testpg"
 )
 
-// This file is the one proof that spans both services. Every other test of INFRA-249 exercises
+// This file is the one proof that spans both services. Every other test of POMJU-249 exercises
 // one of them: the listener's route against its own stores, or Dispatch against a stand-in
 // listener. Here the real listener mux and the real Dispatch mux run together over one real NATS
 // and one real Postgres, so "a mention reaches a session the listener's cache has not refilled"
@@ -119,7 +119,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		sessions:    d.sessions,
 		machineID:   rigMachineID,
 		// The delivery config resolves the entry from its own sessions field and hands it to
-		// session.Resolve, which holds no registry of its own (INFRA-141).
+		// session.Resolve, which holds no registry of its own (POMJU-141).
 		dedupeCache:       dedupeCache,
 		attemptCache:      attemptCache,
 		logger:            listenerRigLogger(t, "delivery listener"),
@@ -132,7 +132,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		// the budget its predecessor held rather than opening a second one. This rig needs one only
 		// because listenerDeliveryHandler refuses a config without it: its unplaceableRetryWindow
 		// is zero, so nothing here is ever deferred, and these tests cover Dispatch resolution and
-		// delivery rather than the retry policy (INFRA-141).
+		// delivery rather than the retry policy (POMJU-141).
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		// The guards two drains of one role take inside one listener, which main.go keeps one set
 		// of for the process. This rig needs one for the same reason as the set above: the handler

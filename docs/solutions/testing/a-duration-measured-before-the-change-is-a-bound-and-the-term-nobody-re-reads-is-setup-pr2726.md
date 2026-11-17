@@ -15,7 +15,7 @@ related_issues:
 
 # A duration measured before the change is a bound, and the term nobody re-reads is setup
 
-Extends docs/solutions/testing/a-race-lane-names-the-packages-that-hold-the-shared-state-and-its-job-limit-outlasts-every-steps-test-timeout-INFRA-141.md.
+Extends docs/solutions/testing/a-race-lane-names-the-packages-that-hold-the-shared-state-and-its-job-limit-outlasts-every-steps-test-timeout-POMJU-141.md.
 
 That note's third bullet is the budget rule: a job's `timeout-minutes` stays above the sum of the
 largest setup time and, for each `go test` step, its largest measured green duration plus its own
@@ -43,7 +43,7 @@ needs.
 
 ## Evidence
 
-sjawhar/legion#2726 (dispatch://INFRA-1052) raised the `test` job's `timeout-minutes` to 80 for a
+sjawhar/legion#2726 (dispatch://POMJU-1052) raised the `test` job's `timeout-minutes` to 80 for a
 sum of 4578 s, about 76.3 minutes:
 325 s of setup, the plain step's 839 s plus its `-timeout 15m`, the race step's 694 s plus its
 `-timeout 30m`, 13 s for the steps after it and 7 s for the cache save.

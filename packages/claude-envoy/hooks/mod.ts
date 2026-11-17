@@ -201,7 +201,7 @@ function createLink(): SessionLink {
   /** This Claude Code process's mod, minted here: the link serves the first instance that names
    *  itself and refuses every other, so two processes that booted on one session id (`claude
    *  -c`, and `claude --resume <id>` in a second terminal) no longer share one server, one live
-   *  view and one person's Send (INFRA-1026 review). The time and the random part together are
+   *  view and one person's Send (POMJU-1026 review). The time and the random part together are
    *  as distinct as two processes of one session need: they rule out the one other instance this
    *  socket can see. */
   const instance = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
@@ -646,14 +646,14 @@ export function register(on: On): void {
     // the effort set here (the stack's model-request log, 2026-11-05). So the server's pick rides
     // on an effort Claude Code named and never fills in an absent one, and the step reports what
     // went out rather than what was set: a step that echoed a pick its own request did not carry
-    // held the live view's header on a level nothing was thinking at (INFRA-1026).
+    // held the live view's header on a level nothing was thinking at (POMJU-1026).
     const set = link.effortNow()
     const request: TurnStepInput =
       set === null || e.effort === undefined ? e : { ...e, effort: set }
     // The pick is the session's, so it is on this request whichever loop made it: a subagent's
     // step carries the session's own effort (measured on 2.1.310), and a pick left off it ran
     // every Task subagent at the level Claude Code had saved while the header read the pick
-    // (INFRA-1026 review, round five). What is skipped for a subagent is this session's
+    // (POMJU-1026 review, round five). What is skipped for a subagent is this session's
     // bookkeeping, which its loop is none of: its request raises no count here - a row stored
     // after the main turn's last request looked read by a subagent's step and was never quoted -
     // and the live view publishes nothing of it, which is where the spec puts a subagent's work

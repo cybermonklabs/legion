@@ -30,7 +30,7 @@ holds the two packages to one wire shape. It holds them to exactly as much as it
 - **The assertion is free of a second fixture.** The golden the producer's own test regenerates is
   the input; strengthening the consumer's read of it adds no file to keep in step.
 
-## Evidence (sjawhar/legion#2675, INFRA-609)
+## Evidence (sjawhar/legion#2675, POMJU-609)
 
 `packages/contracts/fixtures/github-envelopes/push.json` is written by the Envoy listener's golden
 test and read by the Legion daemon's intake test, which is the only place the two packages' idea

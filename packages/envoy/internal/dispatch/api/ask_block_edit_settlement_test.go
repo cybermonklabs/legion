@@ -20,7 +20,7 @@ import (
 // blockAskHandlerWithDocuments is blockAskHandler plus the document service a browser peer
 // connects to. A test needs the service when the writer has to be a person's own editor: the
 // edits route refuses a batch whose result drops a block an open ask points at (R5 of
-// dispatch://INFRA-1520), and the editor is the seam R5 exempts. The service reads Identity to
+// dispatch://POMJU-1520), and the editor is the seam R5 exempts. The service reads Identity to
 // admit a socket, and connectBrowserPeer dials with an X-Dispatch-User header, so a nil one
 // would admit no peer.
 func blockAskHandlerWithDocuments(t *testing.T) (http.Handler, *store.Store, *docs.Service) {
@@ -606,7 +606,7 @@ func TestResolveBlockAskRefusesTheSettlementReason(t *testing.T) {
 // removeBlockAsABrowserDoes deletes one block of the live document through a browser peer, and
 // returns once the room holds that deletion. A person's editor is the writer that removes a
 // block an open ask points at: the edits route refuses a batch whose result drops one (R5 of
-// dispatch://INFRA-1520), and so does an upload. The peer stays connected for the rest of the
+// dispatch://POMJU-1520), and so does an upload. The peer stays connected for the rest of the
 // test, as an open editor does.
 func removeBlockAsABrowserDoes(t *testing.T, documentService *docs.Service, artifactID, blockID string) {
 	t.Helper()
@@ -632,7 +632,7 @@ func removeBlockAsABrowserDoes(t *testing.T, documentService *docs.Service, arti
 // Acceptance 5, second half: when the block leaves the document, settlement retracts its ask in
 // its own name, and undoing the deletion brings the ask back. A person deleting the block in
 // their editor is what takes it out of the document, since the edits route refuses a batch whose
-// result drops a block an open ask points at (R5 of dispatch://INFRA-1520,
+// result drops a block an open ask points at (R5 of dispatch://POMJU-1520,
 // TestAnEditDroppingABlockAnOpenAskPointsAtIsRefused).
 func TestBlockRemovedFromTheDocumentRetractsAsTheSystemActorAndUndoRestores(t *testing.T) {
 	handler, _, documentService := blockAskHandlerWithDocuments(t)

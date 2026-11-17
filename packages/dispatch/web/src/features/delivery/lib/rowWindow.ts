@@ -8,7 +8,7 @@
  * scrollbar - before a single row is drawn. Pure: no React. The caller draws the rows this
  * answers with, measures them, and hands the heights back (`withMeasuredHeights`).
  *
- * Two rules are INFRA-812's D1. The list draws the rows the screen holds and `OVERSCAN_ROWS`
+ * Two rules are POMJU-812's D1. The list draws the rows the screen holds and `OVERSCAN_ROWS`
  * either side, and it draws every row the person has opened wherever that row has scrolled to:
  * an open row holds its reply target, its unread set and its composer's draft, which a scroll
  * must no more throw away than a collapse does. The height this answers is the whole list's,

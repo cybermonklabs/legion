@@ -50,7 +50,7 @@ var errNoRoleReaders = errors.New("the outbox has no role-claim or session reade
 //
 // No arm of it takes anything from the holder: a claim stands until the listener's role-claim
 // reaper finds its holder gone, so a stalled holder's role is still its own when it answers again
-// (dispatch://INFRA-392).
+// (dispatch://POMJU-392).
 //
 // holder is the claim's holder whenever it is known, so the destination's key is the holder's agent
 // subject (destination.key) even while it stays pending; a keep carries none, since it reaches no
@@ -298,7 +298,7 @@ func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]rol
 // sessions the comment's own thread names - the author of the thread it replies to, a
 // follower, a primary document's author - go in the pass that reads them, under the event's
 // own key: nothing of the comment says that mention is on its way to one of them, and the 1 s
-// p99 delivery target of INFRA-514 outranks the double that a sender which does pin it there
+// p99 delivery target of POMJU-514 outranks the double that a sender which does pin it there
 // costs. Past that attempt's lease the hold is every copy's again: the attempt's state is then
 // every session's (unpinnedRoleMentions.resendingUnnamed), each copy bound for a session's own
 // topic is held as a comment_fallback_copies row as a named holder's is, and the pass that
@@ -318,7 +318,7 @@ func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]rol
 // That the live hold is those copies rather than every copy of the comment is what the
 // measurement of the wider rule showed: holding every session's copy made each of them wait
 // for the 2 s re-read mentionPendingDelay sets (TestR17UnrelatedAuthorCopyFirstPass, measured
-// at +2.3 s against +0.3 s on this package's own drive), which is the whole of INFRA-514's p99
+// at +2.3 s against +0.3 s on this package's own drive), which is the whole of POMJU-514's p99
 // budget, for a mention that reaches one session. That pair is one run of each: the same
 // quantity read on real binaries, two runs on one stack, came out +2.219 s against +2.350 s,
 // inside its own run-to-run spread, so what the hold's narrowing rests on is the 2 s re-read
@@ -755,7 +755,7 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // stores one copy however often it is sent. The stream's acknowledgement of that copy is the
 // answer, and what counts the forward as having reached the holder, for every holder alike: a
 // holder is delivered its stored copy from its own consumer by the listener's relay and answers
-// the request with nothing (INFRA-771).
+// the request with nothing (POMJU-771).
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
 	subject := contracts.LegacyAgentSubject(f.holder)

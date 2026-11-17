@@ -2,7 +2,7 @@
 # shellcheck disable=SC2317 # cleanup is trap-invoked
 # e2e-refill.sh — Proves on the real listener and a real NATS server that the listener keeps its
 # copy of a bucket while it reads the bucket again, and refuses its two list routes, with no
-# active-sessions sample, while it cannot stand behind that copy (INFRA-261).
+# active-sessions sample, while it cannot stand behind that copy (POMJU-261).
 #
 # Builds and starts a NATS server of its own (internal/testnats/cmd/natsd, its file store under the
 # output directory) and the listener, as e2e-local.sh does, and drives them with refillrig

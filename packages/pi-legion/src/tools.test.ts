@@ -1554,7 +1554,7 @@ test("a refused completion surfaces the daemon's code and leaves the phase open"
 function legionState(overrides: Record<string, unknown> = {}): LegionState {
   return LegionStateResponse.parse({
     daemon: {
-      project: "INFRA",
+      project: "POMJU",
       schemaVersion: 71,
       boots: 9,
       firstBootAt: "2026-10-01T00:00:00Z",
@@ -1576,8 +1576,8 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
 /** The phase workers of an issue, in the order the summary lists them under the architect. */
 const WORKER_ROLES = ["planner", "implementer", "tester", "reviewer", "merger"] as const;
 
-/** The state at the size that cut the controller's read (dispatch://INFRA-329): the 92 issues
- * the INFRA deployment recorded, `running` of them still in the workflow, each carrying a slot, a
+/** The state at the size that cut the controller's read (dispatch://POMJU-329): the 92 issues
+ * the POMJU deployment recorded, `running` of them still in the workflow, each carrying a slot, a
  * design gate, a pull request, an architect and a claim for every role with both turn times. Half
  * the issues run at once, nearly six times the deployment's admission cap, so the summary is
  * measured well above the load it meets. */
@@ -1606,7 +1606,7 @@ function stateOf92Issues(running = 46): LegionState {
   const phases = LEGION_WORKFLOW_PHASES.filter((phase) => phase !== "done");
   const issues: Record<string, unknown> = {};
   for (let index = 0; index < 92; index += 1) {
-    const key = `INFRA-${100 + index}`;
+    const key = `POMJU-${100 + index}`;
     const phase = phases[index % phases.length];
     issues[key] =
       index < running
@@ -1659,9 +1659,9 @@ function stateOf92Issues(running = 46): LegionState {
     admission: {
       cap: 8,
       free: 0,
-      active: ["INFRA-100", "INFRA-101"],
-      waiting: ["INFRA-102"],
-      blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103", "INFRA-104"] }],
+      active: ["POMJU-100", "POMJU-101"],
+      waiting: ["POMJU-102"],
+      blocked: [{ issue: "POMJU-102", blockedBy: ["POMJU-103", "POMJU-104"] }],
     },
     capabilities: [
       { name: "subagents", status: "present", detail: "6 agents discovered" },
@@ -1835,8 +1835,8 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   const [block] = result.content;
   const summary = block !== undefined && block.type === "text" ? block.text : "";
 
-  // The INFRA deployment's own state at this size is about 160 KB of JSON, and the tool's output
-  // reaches the controller cut at about 41 KB (dispatch://INFRA-329). This one is of that order,
+  // The POMJU deployment's own state at this size is about 160 KB of JSON, and the tool's output
+  // reaches the controller cut at about 41 KB (dispatch://POMJU-329). This one is of that order,
   // and the summary of it is a fifth of the cut.
   expect(Buffer.byteLength(JSON.stringify(state), "utf8")).toBeGreaterThan(100 * 1024);
   expect(Buffer.byteLength(summary, "utf8")).toBeLessThan(30720);
@@ -1848,9 +1848,9 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
     expect(lines).toContain(`${key} ${issue.phase} ${issue.status}`);
   }
 
-  expect(summary).toContain("project INFRA boots 9 started 2026-10-30T01:02:03Z");
+  expect(summary).toContain("project POMJU boots 9 started 2026-10-30T01:02:03Z");
   expect(summary).toContain(
-    "\nadmission cap 8 free 0\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
+    "\nadmission cap 8 free 0\nactive POMJU-100 POMJU-101\nwaiting POMJU-102\nblocked POMJU-102 on POMJU-103 POMJU-104\n"
   );
   expect(summary).toContain("\ncapability subagents present\n");
   expect(summary).toContain(
@@ -1860,7 +1860,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   // claim's last turn times; a hold carries its reason.
   expect(summary).toContain(
     [
-      "\nINFRA-100 admitted in_progress",
+      "\nPOMJU-100 admitted in_progress",
       "  slot 0 since 2026-10-30T00:00:00Z",
       "  gate 3 approved 2",
       "  architect idle 2026-10-30T00:00:00Z 2026-10-30T00:07:00Z",
@@ -1875,7 +1875,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   expect(summary).toContain("  gate 3 approved none\n");
   // A done issue's claims are retired, so its line stands alone: that is what pays for naming
   // every key.
-  expect(summary).toContain("\nINFRA-146 done done\nINFRA-147 done done\n");
+  expect(summary).toContain("\nPOMJU-146 done done\nPOMJU-147 done done\n");
 });
 
 test("read_state's filters answer full records, and name what they cannot select", async () => {
@@ -1886,20 +1886,20 @@ test("read_state's filters answer full records, and name what they cannot select
     tool.execute("", parameters, undefined, undefined, context("ses_controller"));
 
   // The record a filter answers is the state's own, every claim and count in it.
-  await expect(run({ op: "read_state", issue: "INFRA-101" })).resolves.toEqual({
+  await expect(run({ op: "read_state", issue: "POMJU-101" })).resolves.toEqual({
     content: [
       {
         type: "text",
-        text: JSON.stringify({ issues: { "INFRA-101": state.issues["INFRA-101"] } }),
+        text: JSON.stringify({ issues: { "POMJU-101": state.issues["POMJU-101"] } }),
       },
     ],
-    details: { issues: { "INFRA-101": state.issues["INFRA-101"] } },
+    details: { issues: { "POMJU-101": state.issues["POMJU-101"] } },
   });
   await expect(
-    run({ op: "read_state", issues: ["INFRA-101", "INFRA-130"] })
+    run({ op: "read_state", issues: ["POMJU-101", "POMJU-130"] })
   ).resolves.toMatchObject({
     details: {
-      issues: { "INFRA-101": state.issues["INFRA-101"], "INFRA-130": state.issues["INFRA-130"] },
+      issues: { "POMJU-101": state.issues["POMJU-101"], "POMJU-130": state.issues["POMJU-130"] },
     },
   });
   const reviewing = Object.fromEntries(
@@ -1914,18 +1914,18 @@ test("read_state's filters answer full records, and name what they cannot select
   });
 
   const refusals = [
-    [{ op: "read_state", issue: "INFRA-999" }, "The daemon has no record for INFRA-999"],
+    [{ op: "read_state", issue: "POMJU-999" }, "The daemon has no record for POMJU-999"],
     [
-      { op: "read_state", issues: ["INFRA-998", "INFRA-999"] },
-      "The daemon has no record for INFRA-998, INFRA-999",
+      { op: "read_state", issues: ["POMJU-998", "POMJU-999"] },
+      "The daemon has no record for POMJU-998, POMJU-999",
     ],
     [
-      { op: "read_state", issue: "INFRA-101", settings: true },
+      { op: "read_state", issue: "POMJU-101", settings: true },
       "read_state takes one of issue, issues, phase, settings, not issue and settings",
     ],
     [{ op: "read_state", phase: "nowhere" }, `read_state's phase is one of ${LEGION_PHASES[0]}`],
     [{ op: "read_state", settings: false }, "read_state's settings is true"],
-    [{ op: "read_state", issues: "INFRA-101" }, "read_state's issues is a list of issue keys"],
+    [{ op: "read_state", issues: "POMJU-101" }, "read_state's issues is a list of issue keys"],
   ] as const;
   for (const [parameters, message] of refusals) {
     const result = await run(parameters);

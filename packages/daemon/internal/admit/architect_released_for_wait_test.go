@@ -13,7 +13,7 @@ import (
 // A root at admitted whose design gate has opened gives its admission slot back while an open
 // Dispatch child of it goes first (blockers.waitsOf, admit's releaseSlotsForWaits), and its own
 // architect is still the role at work there: the rule reaches a root at admitted whether or not
-// its design gate has opened (dispatch://INFRA-2614 R5). So the architect of a root released for
+// its design gate has opened (dispatch://POMJU-2614 R5). So the architect of a root released for
 // a wait is weighed as it was while the root held the row: the entry repair sends it the work of
 // the entry its phases row names, once, and the stall reading reads its arms and wakes the
 // controller for one that holds. The root's phase workers stay out of the repair while it waits,

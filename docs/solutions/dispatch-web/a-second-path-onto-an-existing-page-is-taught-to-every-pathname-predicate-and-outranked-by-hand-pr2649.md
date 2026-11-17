@@ -45,7 +45,7 @@ at a second **path**, where the component is untouched and the shell decides its
   />} path="…" />` and nothing else, so `<Navigate replace to="/" />` would silently drop out of
   the comparison the mirror exists to make.
 
-## Evidence (sjawhar/legion#2649, INFRA-879)
+## Evidence (sjawhar/legion#2649, POMJU-879)
 
 The change deleted Dispatch's credential record page and routed its path at the Inbox:
 `packages/dispatch/web/src/app.tsx:808-809` reads `<Route element={<InboxPage />}

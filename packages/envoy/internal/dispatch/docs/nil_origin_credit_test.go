@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// INFRA-644. ygo answers a remote update that leaves a text's formatting markers covering no text
+// POMJU-644. ygo answers a remote update that leaves a text's formatting markers covering no text
 // with a cleanup of its own (reearth/ygo #284): a local transaction on the document that applied
 // the remote update, committed with no origin at all. In a Dispatch room that cleanup is one more
 // logged update, which the room's update observer classifies and credits: to every browser

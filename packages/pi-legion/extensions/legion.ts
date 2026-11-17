@@ -212,7 +212,7 @@ export default function legionExtension(pi: PiApi): void {
     return role !== undefined && role !== "architect";
   };
   // Every Legion role falls back down Oh My Pi's model chain when a provider's content filter
-  // refuses its turn (INFRA-956 R1), the architect and the controller included, so the model
+  // refuses its turn (POMJU-956 R1), the architect and the controller included, so the model
   // fallback gates on the session holding a Legion claim of any kind rather than on
   // `phaseWorkerSession`, which excludes an architect and serves the phase reminder alone.
   const legionClaimSession = (context: CommandContext | SessionContext): boolean => {
@@ -306,7 +306,7 @@ export default function legionExtension(pi: PiApi): void {
   };
 
   /**
-   * INFRA-945: what this pane is doing, which the daemon reads to decide whether its issue pod
+   * POMJU-945: what this pane is doing, which the daemon reads to decide whether its issue pod
    * may be released. A report is sent at every settle, change or no change — the daemon releases
    * no claim whose last report predates its last turn, so a quiet turn that sent nothing would
    * hold the pod for ever — and between turns only when the report's content changes.
@@ -392,7 +392,7 @@ export default function legionExtension(pi: PiApi): void {
   });
 
   /**
-   * INFRA-1274: the worker's watch on its own tool calls, and the ladder it drives when one of
+   * POMJU-1274: the worker's watch on its own tool calls, and the ladder it drives when one of
    * them stops. The detector is `@legion/pi-shared/stall-watchdog`, which holds the open calls
    * and decides when a step runs; the four collaborators it reaches the machine, the listener and
    * this process through are `src/stall-evidence.ts` (the evidence and the owner's notice),
@@ -492,7 +492,7 @@ export default function legionExtension(pi: PiApi): void {
    * (`extensionHandlers.toolCallTimeoutMs`, 30 s by default) and fails the call closed when the
    * handler throws or outruns it, both measured on omp/18.16.0 on 2026-11-07. This reverses the
    * decision this entry carried since LEGION-631 — that it registers no `tool_call` hook at all —
-   * and the reversal is deliberate (dispatch://INFRA-1274/spec#b-r2): what is gone with that
+   * and the reversal is deliberate (dispatch://POMJU-1274/spec#b-r2): what is gone with that
    * decision is the pane rule and the per-command grant mint, which refused calls and rewrote
    * their arguments; this handler does neither, and nothing a pane runs is refused or minted for.
    *
@@ -652,7 +652,7 @@ export default function legionExtension(pi: PiApi): void {
       // interrupted task arrives as a prompt.
       if (phaseWorkerSession(context)) phaseReminder.armResumeReminder();
       /**
-       * INFRA-927: the session measures its six capability rows on this interval, while it is
+       * POMJU-927: the session measures its six capability rows on this interval, while it is
        * idle, up to three times, until every row is present — a check that lost the boot-time
        * race stayed reported open for the session's whole life, since the boot measured once and
        * never again. The architect measures first at the sixth tick as every other role does
@@ -742,7 +742,7 @@ export default function legionExtension(pi: PiApi): void {
     clearStartupTurn(context.sessionManager.getSessionId());
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
-    // INFRA-1573: a turn of this session has started, whatever started it, so the claim boot
+    // POMJU-1573: a turn of this session has started, whatever started it, so the claim boot
     // takes the session's Envoy name now rather than at its bound — the lane the listener kept
     // for the role is then handed over inside a turn that is already running, instead of taking
     // the session's first turn ahead of the daemon's task. A `task` subagent's event is not a
@@ -772,7 +772,7 @@ export default function legionExtension(pi: PiApi): void {
   });
 
   // The host walked this session's own fallback chain: the plugin owns the return, since the
-  // host's restore never comes for a refusal it pinned (dispatch://INFRA-956). The event's own
+  // host's restore never comes for a refusal it pinned (dispatch://POMJU-956). The event's own
   // reason says whether a content filter earned the walk, and a settled turn says so for a host
   // build whose event carries none (src/model-fallback.ts).
   pi.on("retry_fallback_applied", async (event, context) => {

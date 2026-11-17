@@ -65,7 +65,7 @@ func mergingEngineAt(now time.Time) *Engine {
 	return New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		// The project opens its production check with the tester, the role a project that names
-		// no production_check gets (INFRA-809); an engine with no role opens no check at all.
+		// no production_check gets (POMJU-809); an engine with no role opens no check at all.
 		ProductionCheckRole: claim.RoleTester,
 		Clock:               func() time.Time { return now },
 	}, nil)

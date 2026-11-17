@@ -152,7 +152,7 @@ pull request body's CI line**, and if the re-run is red on the same test, report
 daemon counts a red verdict on a code head as a fix attempt (LEGION-33) and published `pr-blocked`
 for it; the record in the body is what lets the reviewer and the merger read that count correctly.
 
-**Superseded 2026-10-23 (dispatch://INFRA-83):** only the clause that records both run ids and the
+**Superseded 2026-10-23 (dispatch://POMJU-83):** only the clause that records both run ids and the
 `main` evidence in the pull request body's CI line is gone, and with it the sentence that the
 record in the body is what lets the reviewer and the merger read that fix-attempt count correctly:
 the body carries no `CI:` line (`skills/legion-worker/references/pr-body.md`), and no role records

@@ -27,7 +27,7 @@
 #
 # What this does not stop is a role that runs /usr/bin/git itself, PATH unread. Nothing here
 # tries to: the spec's Design says of every layer of this guard that none of them stops somebody
-# who means to publish a name, and that this change does not try to (dispatch://INFRA-1527).
+# who means to publish a name, and that this change does not try to (dispatch://POMJU-1527).
 #
 # `jj git push` shells out to the `git` PATH names (`git -c core.fsmonitor=false … --git-dir <dir>
 # push --porcelain --no-verify …`, measured with jj 0.45.1-sami), so this one wrapper catches a
@@ -90,7 +90,7 @@ done
 # and putting the kept ones back at the end with `set -- "$@" "$arg"`, and dash copies the whole
 # list each time, so a rebuild costs time that grows with the square of the argument count: one
 # push's leak check spent 62 s of its 78 s in this wrapper, rebuilding a `git rev-list` of about
-# 4,970 `^<sha>` arguments (dispatch://INFRA-3456).
+# 4,970 `^<sha>` arguments (dispatch://POMJU-3456).
 if [ "$commit" -eq 1 ]; then
   exec "$legion" git --real "$real" -- "$@"
 fi

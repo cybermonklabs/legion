@@ -15,7 +15,7 @@ import (
 // documentation-only edit would then start the whole daemon Go lane. The product half reads
 // cmd/legion/troubleshooting_refusals_extract.txt, a copy of the heading and its table committed
 // beside it; this half holds that copy to the page. Neither half alone is the guarantee: together
-// they are the one the single test used to give. (INFRA-1413.)
+// they are the one the single test used to give. (POMJU-1413.)
 //
 // What it proves: the page has the copy's heading as a line of its own, and the section under it,
 // to the next `## ` heading, holds the copy's table as one passage of whole lines and no table

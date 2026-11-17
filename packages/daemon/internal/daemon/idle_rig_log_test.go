@@ -25,7 +25,7 @@ func TestTheIdleRigLogHelperFails(t *testing.T) {
 }
 
 // A test run that ends leaves no file in the temporary directory it was given, whether its tests
-// passed or failed (dispatch://INFRA-1346/spec#b-a1: "whether its tests pass or fail", and "the
+// passed or failed (dispatch://POMJU-1346/spec#b-a1: "whether its tests pass or fail", and "the
 // six removals after m.Run become removals a finished run makes whatever its tests concluded";
 // the two endings R1 exempts are a run killed by a signal and a test that panics, and a test that
 // merely fails is neither). The idle rig's daemon log is the site R1 names: it is a quarter of a

@@ -18,7 +18,7 @@ import (
 // restartPolicy Always (manifest), and the fetch that comes back finds the feed its own pod's disk
 // already holds and brings only what is missing, while a replacement pod downloads the repository
 // again onto a fresh disk — what a fetch killed mid-download used to cost: the download thrown
-// away and the issue launched again into the same wait (INFRA-495). The grace is counted because a
+// away and the issue launched again into the same wait (POMJU-495). The grace is counted because a
 // fetch that cannot get through at all must still reach the claim's launch budget rather than
 // restart for ever.
 const fetchRestartGrace = 3

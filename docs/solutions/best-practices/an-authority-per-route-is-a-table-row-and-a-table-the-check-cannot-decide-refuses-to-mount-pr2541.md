@@ -42,7 +42,7 @@ it is a table the routes are already declared in, and a refusal at mount.
 
 ## Evidence
 
-sjawhar/legion#2541 (INFRA-264). The forward merge `74797a9e` brought in `main`'s new
+sjawhar/legion#2541 (POMJU-264). The forward merge `74797a9e` brought in `main`'s new
 `POST /api/v1/projects/{key}/related`; the correspondence test and the mount refusal named it at
 once, and classing it was the whole of the merge's code work. Review round 2 then asked for the
 request-path guard beside the panic, which is the resolver-less branch the file now carries. The

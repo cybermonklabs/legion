@@ -81,7 +81,7 @@ func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 }
 
 // A worker that answers a plugin update round after this release's boot has taken its claim out
-// of it is refused, and nothing of the answer is recorded (dispatch://INFRA-2712 R5). The boot
+// of it is refused, and nothing of the answer is recorded (dispatch://POMJU-2712 R5). The boot
 // ends every plugin round an earlier daemon left, over every claim, because nothing of this
 // release carries such a round and one left standing holds the claim's next task behind it for
 // ever (internal/daemon's endPluginRounds). A turn that was in flight across the restart still

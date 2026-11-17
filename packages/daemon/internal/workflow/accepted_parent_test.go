@@ -84,7 +84,7 @@ func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status 
 // has already accepted does not refuse that ancestor's sign-off. Without the exclusion the rules
 // deadlock: the child is pinned at admitted until the ancestor closes, and the ancestor cannot
 // be accepted or closed while the child is in the workflow. Decided by this tree's architect on
-// dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
+// dispatch://POMJU-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *testing.T) {
 	pool := migratedPool(t)
 	// The root's own pull request has merged, and the root stands in merging, waiting for the

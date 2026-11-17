@@ -27,8 +27,8 @@ const START = 1_793_000_000_000;
 const WORKER: LegionSessionKind = {
   kind: "phase-worker",
   role: "implementer",
-  tree: "INFRA-1200",
-  issue: "INFRA-1274",
+  tree: "POMJU-1200",
+  issue: "POMJU-1274",
 };
 
 const directories: string[] = [];
@@ -61,10 +61,10 @@ function warnings(): Warnings {
 test("the counter file is the claim's own, so panes sharing a state directory keep their own counts", () => {
   const directory = stateDir();
   expect(stallExitsFile(directory, WORKER)).toBe(
-    path.join(directory, "legion-stall-exits-infra-1274-implementer.json")
+    path.join(directory, "legion-stall-exits-pomju-1274-implementer.json")
   );
-  expect(stallExitsFile(directory, { kind: "root-architect", tree: "INFRA-1200" })).toBe(
-    path.join(directory, "legion-stall-exits-infra-1200-architect.json")
+  expect(stallExitsFile(directory, { kind: "root-architect", tree: "POMJU-1200" })).toBe(
+    path.join(directory, "legion-stall-exits-pomju-1200-architect.json")
   );
   expect(stallExitsFile(directory, { kind: "controller" })).toBe(
     path.join(directory, "legion-stall-exits-controller.json")
@@ -106,7 +106,7 @@ test("a worker that has ended itself no times reads zero, and the count it wrote
   expect(written).toEqual({
     exits: 1,
     at: new Date(START).toISOString(),
-    who: "infra-1274-implementer",
+    who: "pomju-1274-implementer",
   });
 
   // The relaunch the daemon makes after this worker's exit is a new process of the same pod: it

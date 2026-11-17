@@ -173,8 +173,8 @@ func writeGitHubAppKey(dir string) (string, error) {
 // drives both the issue a reader may act on and the issue it must not. Every other key is a
 // 404, which is the third case and needs no fixture.
 const (
-	standInOpenIssue = "INFRA-1353"
-	standInDoneIssue = "INFRA-1200"
+	standInOpenIssue = "POMJU-1353"
+	standInDoneIssue = "POMJU-1200"
 )
 
 // standInSpec is the open issue's spec document. It is written to the house outline, because a

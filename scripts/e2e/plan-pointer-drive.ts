@@ -28,7 +28,7 @@
  *                               prints the run's row, and writes <run>/row.json.
  *   summarize <arm> <run>...    Prints one summary line over those runs' rows.
  *
- * The staged plan carries four designs, as INFRA-1992's own history carried them. `early` is the
+ * The staged plan carries four designs, as POMJU-1992's own history carried them. `early` is the
  * design of versions 1 to 3, which the task's handoff pointer cites and which the plan review
  * approved at version 1. `standing` is the design of versions 4 to 6, approved at version 6, so
  * it is the newest approved design when the session begins. `unapproved` is the design of

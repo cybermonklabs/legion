@@ -89,7 +89,7 @@ type Admission struct {
 	openCapabilities func() []string
 
 	// unclassifiedLogged is the generation at which the tick last logged each issue whose held
-	// row read unclassified (logUnclassified, C2 of dispatch://INFRA-3107). It is this daemon
+	// row read unclassified (logUnclassified, C2 of dispatch://POMJU-3107). It is this daemon
 	// run's own memory and nothing durable, written and read inside the fact lock alone, so it
 	// takes none of the mutex above. A re-admission raises the generation and clears the phase,
 	// which is a state of that issue the log has not reported, so it is logged again; the
@@ -537,7 +537,7 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 // Legion waits on another issue for, one it has still to start or one it started that gave its
 // slot back (`blocked`, blockers.Blocked), every issue the daemon's own record holds in the
 // workflow that stands in neither the active set nor the waiting line, with the one word for why
-// (`held`, C3 of dispatch://INFRA-3107), and every issue whose phase worker nothing will prompt
+// (`held`, C3 of dispatch://POMJU-3107), and every issue whose phase worker nothing will prompt
 // (`silent`, silentWorkers).
 //
 // The two are two assemblies of one judgement of the line, so they are built together here:
@@ -757,7 +757,7 @@ func (a *Admission) rootArchitectOf(project string, issue record.Issue) (phaseWo
 // within the minute: a child's architect that does not hold its role is passed over for the one
 // above it, but the notice can end at a tree root's architect claim that has failed or is gone,
 // where it reaches nobody. The controller is the role that holds `fresh_session` and reads the
-// whole project (this root's architect ruled it on 2026-11-12, dispatch://INFRA-3163). The tick
+// whole project (this root's architect ruled it on 2026-11-12, dispatch://POMJU-3163). The tick
 // carries the list. The state route gains no field for it; the state's settings gain the two
 // bounds, `worker_silence_minutes` and `worker_background_hours`, as two keys of a loose object,
 // so no daemon API contract number is taken for either.
@@ -1644,7 +1644,7 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // one record.Store.Slots, one bulk tree-lifecycle read, one design-gate read, one read of the
 // starts the project owes its workers (the three of record.ReadLineFacts) and one read of the
 // Dispatch mirror rows of everything it judges (blockers.Judged, blockers.Load). The release,
-// the waiting line, the INFRA-129 safety net, the promotion and the two repair passes all judge
+// the waiting line, the POMJU-129 safety net, the promotion and the two repair passes all judge
 // from those, so no path reads per slot, per tree or per issue under the one fact lock every
 // fact takes (intake.ApplyFact). A read is made again only where this pass has itself written
 // something that would make it stale (reread).
@@ -2047,7 +2047,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// (record.Waiting, LineFirstPhase), because the line reads the gate's whole step list on
 	// every pass rather than waiting for a fact about it. The other half that once needed a pass
 	// of its own — a merger's READY the dropped step refused — went with READY: the merger merges
-	// the head it read and no gate refuses a completion (dispatch://INFRA-714 R2).
+	// the head it read and no gate refuses a completion (dispatch://POMJU-714 R2).
 	return admitted, released, nil
 }
 
@@ -2217,7 +2217,7 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 }
 
 // waitsForChildren says whether an issue's own first phase is held because a Dispatch child of
-// its own is still open — the children-first rule of dispatch://INFRA-980. It is the named seam
+// its own is still open — the children-first rule of dispatch://POMJU-980. It is the named seam
 // the safety net below asks, so that the rule arrives in one place rather than as a condition
 // spread through this file, and waits is the pass's own judgement of it
 // (record.LineFacts.ChildWaits, filled by blockers.JudgeLine from record.ChildWaits): never a stored
@@ -2228,7 +2228,7 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 }
 
 // unslotted says whether issue is a root of this project left in the workflow (workflow's
-// InWorkflow) with no way to run, the state dispatch://INFRA-129 reported: not lingering, at a
+// InWorkflow) with no way to run, the state dispatch://POMJU-129 reported: not lingering, at a
 // status only a running tree has (in_progress, testing, needs_review, retro) rather than todo,
 // where a root waits in the line (record.Waiting), and in none of the states that explain a root
 // holding no slot.
@@ -2783,7 +2783,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // The root's own architect is the second role, and record.AtWork is not its reading: that rule
 // answers false for a root at admitted once its design gate has opened, where the architect is
 // still the only role at work on the root itself, and a relaunched architect of exactly such a
-// root is the measured defect (dispatch://INFRA-2614). The architect of every root of the domain
+// root is the measured defect (dispatch://POMJU-2614). The architect of every root of the domain
 // is weighed here, slotted, past its review or released for a wait, and the reach that decides
 // which of them is owed anything is read once its claim is behind (architectReached,
 // workflow.ArchitectAtWork): a root at admitted whatever its gate, a root a hand-over carried in
@@ -2863,7 +2863,7 @@ type slotReading struct {
 // A root released for a wait (record.Issue.ReleasedForWaitAt, releaseSlotsForWaits) holds no row
 // and goes on working, and its architect alone is held: a root at admitted whose design gate has
 // opened gives its row back while an open child goes first, and its architect is still the role
-// at work there (dispatch://INFRA-2614 R5), so the repair and the stall reading weigh it as they
+// at work there (dispatch://POMJU-2614 R5), so the repair and the stall reading weigh it as they
 // did while it held the row. Its phase worker is not held: the repair's reach over phase workers
 // is the issues holding a row, so a waiting issue's lost worker starts again with the row's return
 // and never before it (TestReturningASlotStopsNothing). The mark stands only while the root needs
@@ -3012,7 +3012,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// here would hand the operator back, a second later, the worker they stopped. The ways
 		// back are the workflow's own starts — the held phase's retry, the tree's re-admission —
 		// and this skip touches none of them; no operator command starts a retired phase worker
-		// at this head, and INFRA-956 is where one is added. What it costs: the issue keeps its
+		// at this head, and POMJU-956 is where one is added. What it costs: the issue keeps its
 		// admission slot with no worker in it until one of those starts or a person moves the
 		// issue, and a claim reading retired from an earlier run is passed over for as long as
 		// it reads so.
@@ -3082,7 +3082,7 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // has not been given, since its phase role owns the rest of its work. Both callers hand over the
 // entry and the run the pass read for the whole selection (slotReading), so the first arm reaches
 // the same roots the send does, which is R7's "the root is one the rule of R5 reaches"
-// (dispatch://INFRA-2614). The pure reading is asked first, so the reach's read of the hand-over
+// (dispatch://POMJU-2614). The pure reading is asked first, so the reach's read of the hand-over
 // row is made only for a root that hears.
 func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.Issue, entry record.PhaseEntry,
 	run record.RoleRun,

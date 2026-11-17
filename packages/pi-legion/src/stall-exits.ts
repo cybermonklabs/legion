@@ -6,7 +6,7 @@ import type { StallWatchdogExits, StallWatchdogLog } from "@legion/pi-shared/sta
 import type { LegionSessionKind } from "./classify";
 
 /**
- * The third step of the stall ladder (INFRA-1274, R4) is the only one that costs the process, and
+ * The third step of the stall ladder (POMJU-1274, R4) is the only one that costs the process, and
  * this module is what bounds how often a worker may take it: its own count of the stall exits it
  * has made, in a file of `LEGION_STATE_DIR`. `packages/pi-shared/src/stall-watchdog.ts` decides
  * when the step runs and holds the cap (`STALL_EXIT_CAP`); this module reads and writes the

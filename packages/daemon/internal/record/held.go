@@ -10,7 +10,7 @@ import (
 
 // HeldReason is the one word for why the daemon runs nothing of an issue its own record holds in
 // the workflow and queues it nowhere: an issue that stands in neither the active set nor the
-// waiting line stands in the held list with this word beside it (C1 of dispatch://INFRA-3107).
+// waiting line stands in the held list with this word beside it (C1 of dispatch://POMJU-3107).
 // The words are a closed list, read in one order by one ladder (HeldReasonOf), so that the
 // projected state and the controller's tick give one issue one word rather than each naming
 // whichever hold it noticed first.
@@ -221,7 +221,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// these two are guarded: tree_closed and tree_parked ask the same of the record above, and
 	// every word below reads facts of the issue itself, so an issue with no recorded root that
 	// a Dispatch link holds still reads dispatch_blocker, which is C1's order (the architect's
-	// ruling of 2026-11-12T07:28Z on dispatch://INFRA-3107).
+	// ruling of 2026-11-12T07:28Z on dispatch://POMJU-3107).
 	switch {
 	case recorded && root.AwaitingPerson():
 		return HeldRootAwaitingPerson, []string{issue.Tree}
@@ -240,7 +240,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	if accepted := acceptedAncestorHolding(issue, facts.Chain); accepted != "" {
 		return HeldAcceptedAncestor, []string{accepted}
 	}
-	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from a phase past the
+	// The issue must not stand in held. Since dispatch://POMJU-2560 a hold from a phase past the
 	// review keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held
 	// issue, and its sentence — that the issue's workers run as they did — is false for an issue
 	// whose hold stopped its work. Such an issue falls to unclassified instead. The stalled-tree

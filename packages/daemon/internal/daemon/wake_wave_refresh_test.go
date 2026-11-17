@@ -1,7 +1,7 @@
 package daemon
 
 // The stale-plugin lane's own wave, over a fleet larger than the gate: the before-merge proof of
-// checks c-bound and c-pace of dispatch://INFRA-2712/artifact/verification-md, driven through the
+// checks c-bound and c-pace of dispatch://POMJU-2712/artifact/verification-md, driven through the
 // daemon itself on the wave rig beside this file (wake_wave_test.go) and read from what an
 // operator of a running wave reads — the schedule the state serves (api.State.WakesWaiting), the
 // count the state serves beside it (api.State.ClaimsToRefresh), the moments the launches reach
@@ -16,7 +16,7 @@ package daemon
 // Three things of the rig are this file's own, because only a fleet needs them: the worker shim
 // that puts a seeded claim in a turn and takes it out of one during the wave (waveTurn), the
 // settled readings the gate's bound is asserted on (settledRefreshes, decision P8 of
-// dispatch://INFRA-2712/artifact/plan-md), and the pairing of each wake's line to the moment its
+// dispatch://POMJU-2712/artifact/plan-md), and the pairing of each wake's line to the moment its
 // launch ran (pacedWakeMoments), which is how the 60-second windows of check c-pace are counted
 // from the lines the daemon writes rather than from the runtime's record alone.
 
@@ -44,7 +44,7 @@ import (
 const (
 	// refreshWaveStale is how many live claims the wave starts with on an earlier plugin
 	// contract: check c-bound asks for at least 120, which at rate 8 is fifteen minutes of
-	// refresh and the shape of the INFRA fleet of 2026-11-10, where one reading counted 395 live
+	// refresh and the shape of the POMJU fleet of 2026-11-10, where one reading counted 395 live
 	// processes on the old contract.
 	refreshWaveStale = 120
 	// refreshWaveRoots is how many roots the same boot raises a first architect launch for: the
@@ -68,7 +68,7 @@ const (
 	// have reached the machines' published views: the floor it holds is the admissions granted
 	// since the previous correction, so a wake still unparked two corrections after it was
 	// admitted is counted by neither and the gate hands its credit out a second time (reading 6
-	// and decision P2 of dispatch://INFRA-2712/artifact/plan-md). On the shipped daemon that is
+	// and decision P2 of dispatch://POMJU-2712/artifact/plan-md). On the shipped daemon that is
 	// a minute against the milliseconds a post takes; at a tenth of a second, over a hundred and
 	// thirty machines and the race detector, it is not, and the lane was measured holding the
 	// rate and one.
@@ -81,7 +81,7 @@ const (
 	// gives back after the pass has walked on (refreshPlugin's hold, the one window in which a
 	// claim in a turn holds a credit at all); the killed claim's own re-post; and a correction
 	// that keeps a credit one sweep longer because the claim views it reads lag a decision in
-	// flight (reading 6 and decision P2 of dispatch://INFRA-2712/artifact/plan-md). It is the
+	// flight (reading 6 and decision P2 of dispatch://POMJU-2712/artifact/plan-md). It is the
 	// drain assertion of check c-bound: a lane that admitted one claim a sweep would need 118
 	// of these rounds.
 	refreshWaveRounds = 25
@@ -266,7 +266,7 @@ func (w *waveTurn) endTurn() {
 // wakes of that kind than worker_wakes_per_minute (check c-bound, supervise.RefreshGate).
 //
 // Settled means two readings alike in a row, which is the discipline awaitWave and awaitGate use
-// and which decision P8 of dispatch://INFRA-2712/artifact/plan-md asks of exactly this assertion:
+// and which decision P8 of dispatch://POMJU-2712/artifact/plan-md asks of exactly this assertion:
 // the machines publish their views at the end of each decision (supervise's publish, read by the
 // daemon's waitingWakes), so a single reading taken while a decision is in flight can hold the
 // wake of a claim whose credit is already free and would read K+1 for a gate that never granted
@@ -418,7 +418,7 @@ func baselineRootLaunches(t *testing.T) []time.Duration {
 // one, twelve roots whose first architect launch the same boot raises, eight of those claims in a
 // turn that ends while the wave runs, one in a pod update round, one whose launch installs no
 // plugin, and one whose process is killed while it holds an admitted refresh wake. It is the
-// surface of check c-bound of dispatch://INFRA-2712/artifact/verification-md, and it proves what
+// surface of check c-bound of dispatch://POMJU-2712/artifact/verification-md, and it proves what
 // that check names, each assertion below marked where it stands:
 //
 //  1. No settled reading of api.State.WakesWaiting holds more wakes of the lane's own kind than
@@ -570,7 +570,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 					continue
 				}
 				if got := rt.launchesOf(turn.token); got != 0 {
-					t.Fatalf("%s was relaunched %d times at its turn's end, want none: the gate is full, so its relaunch waits for a later sweep (dispatch://INFRA-2712 R2)", turn.token, got)
+					t.Fatalf("%s was relaunched %d times at its turn's end, want none: the gate is full, so its relaunch waits for a later sweep (dispatch://POMJU-2712 R2)", turn.token, got)
 				}
 				turnEndsRefused++
 			}
@@ -606,7 +606,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		// what spends it, posting another stale claim on it. The correction stays the backstop
 		// for the losses no decision of a machine reaches (the correction refreshStalePlugins
 		// makes, supervise.RefreshGate.Correct; decision P2 of
-		// dispatch://INFRA-2712/artifact/plan-md).
+		// dispatch://POMJU-2712/artifact/plan-md).
 		//
 		// It reads a full gate too, and waits for one in the same way, for the same reason: a
 		// lane that never fills one has the drain below to answer for, and the end of this case
@@ -834,7 +834,7 @@ func assertMinutesHoldTheRate(t *testing.T, what string, moments []time.Time) {
 	}
 }
 
-// The same wave read as check c-pace of dispatch://INFRA-2712/artifact/verification-md reads it:
+// The same wave read as check c-pace of dispatch://POMJU-2712/artifact/verification-md reads it:
 // the lane's refreshes and the roots' own launches drawing on one limiter, with no 60-second
 // window of the run holding more paced wakes than the rate plus the burst, counted from the
 // `supervise: wake ran` lines the daemon writes and recorded as the number of lines read.

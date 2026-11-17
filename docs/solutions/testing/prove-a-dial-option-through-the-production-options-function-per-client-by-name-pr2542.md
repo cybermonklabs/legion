@@ -38,7 +38,7 @@ where no call site carries the option, so it is no pin at all.
 
 ## Coverage
 
-Extends `docs/solutions/testing/a-test-only-knob-widens-the-value-production-runs-pin-it-at-the-construction-a-deployment-reaches-INFRA-56.md`
+Extends `docs/solutions/testing/a-test-only-knob-widens-the-value-production-runs-pin-it-at-the-construction-a-deployment-reaches-POMJU-56.md`
 ("the pin calls the composition root, never a struct literal that looks like it"). For a **dial
 option** the composition root is the options function, and the pin must be per constructed client,
 since one process reaches NATS from more than one call site.

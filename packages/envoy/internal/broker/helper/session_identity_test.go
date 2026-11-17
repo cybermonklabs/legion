@@ -1,7 +1,7 @@
 // packages/envoy/internal/broker/helper/session_identity_test.go
 //go:build linux
 
-// A session's broker identity outliving its process (dispatch://INFRA-1167).
+// A session's broker identity outliving its process (dispatch://POMJU-1167).
 //
 // A credential request and a grant are bound to the enrollment id alone, and ending an
 // enrollment cancels every request still pending under it and revokes its grants (the broker's

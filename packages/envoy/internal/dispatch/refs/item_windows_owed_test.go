@@ -25,7 +25,7 @@ import (
 // itemsOwedWindowsTwoNotExists is the first of them: the question as two correlated `not
 // exists` probes under an `or`, which the planner can only run as two subplans, once per row of
 // the state table. It is the shape measured at 13.7 s and 1,023,190 index searches over 511,595
-// comment state rows (INFRA-988).
+// comment state rows (POMJU-988).
 func itemsOwedWindowsTwoNotExists(kind ItemKind, tables itemTables) string {
 	return `
 		select s.` + tables.item + `::text from ` + tables.state + ` s

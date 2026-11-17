@@ -38,7 +38,7 @@ const (
 // StallDeclaredDeadlineCap is the longest deadline a call's own arguments can declare, as the
 // host clamps them (`packages/pi-shared/src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS: 0
 // disables the deadline and every other number is clamped to 1–3600 seconds, which is
-// INFRA-1274's R6). A call that declares one is judged by it and the grace over it, whatever the
+// POMJU-1274's R6). A call that declares one is judged by it and the grace over it, whatever the
 // role's bound is, so an hour is how long a working call can legitimately run before the
 // worker's own ladder takes its first step, and so the daemon's backstop floor is reckoned from
 // it where it is the longer of the two (StallLadderFor).

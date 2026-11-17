@@ -60,7 +60,7 @@ const MAX_INTERVAL_MS = 2_147_483_647;
 /**
  * How long a deregistration waits for a registration already on the wire. One that lands after
  * the DELETE writes the record back, and the session stays registered with nothing heartbeating
- * it (dispatch://INFRA-392); a listener call can take a timeout and a retry (5.25 s) to fail, so
+ * it (dispatch://POMJU-392); a listener call can take a timeout and a retry (5.25 s) to fail, so
  * this is the whole of one attempt, past which the DELETE goes out anyway — one never sent always
  * leaves the record behind, where one that races a slow registration only may.
  */
@@ -81,7 +81,7 @@ export const SHUTDOWN_SETTLE_MS = 250;
  * The window the one extra registration a failed heartbeat makes waits out, before the heartbeat
  * returns to its plain interval. A registration that times out under listener load costs the
  * session a third of its live window (`SESSION_LIVE_WINDOW_MS` in `@legion/contracts`), and three
- * missed refreshes drop a running session out of every live listing (dispatch://INFRA-392), so
+ * missed refreshes drop a running session out of every live listing (dispatch://POMJU-392), so
  * one failure buys one extra call rather than a whole interval's wait.
  */
 export const HEARTBEAT_RETRY_MIN_MS = 20_000;

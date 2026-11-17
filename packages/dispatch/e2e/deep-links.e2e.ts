@@ -843,7 +843,7 @@ test("a resolving reference above a linked card does not end the hold", async ({
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
     await expect(card).toBeInViewport();
-    // Each ask above the card cites the target issue. INFRA-869's R4: "A `dispatch://`
+    // Each ask above the card cites the target issue. POMJU-869's R4: "A `dispatch://`
     // reference reads as its target's title wherever Dispatch shows text ... an issue as its
     // key and title. A reference whose target is missing shows its address as written." The
     // summary read is held, so until it lands the words the author wrote stand - the short form

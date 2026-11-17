@@ -40,7 +40,7 @@ rule under it: many calls, one dependency, one bound.
 
 ## Evidence
 
-In sjawhar/legion#2699 (INFRA-436) a subscription is confirmed by the NATS server before the
+In sjawhar/legion#2699 (POMJU-436) a subscription is confirmed by the NATS server before the
 session is registered on it. The first shape bounded that round trip per open. A reconcile pass
 opens the agent subject, the relay, the control subject and every recovered topic before it
 registers, and a reconnecting nats.js connection answers no round trip and, with

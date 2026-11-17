@@ -203,7 +203,7 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await expect(markSpan(bobPage, ask.ask.anchor.mark_id)).toContainText(ask.ask.anchor.quote);
     // A document has no assignee, so its question reaches the default assignee of its project,
     // which is bob: his own list holds it. The short row names the document the question
-    // belongs to, and the card - which from 1280 px the reading pane draws (INFRA-575) -
+    // belongs to, and the card - which from 1280 px the reading pane draws (POMJU-575) -
     // answers it. Neither move is a cold load the row proves: bob is already signed in and on
     // the page.
     await navigateInApp(bobPage, "/");

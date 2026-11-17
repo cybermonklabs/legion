@@ -18,7 +18,7 @@ import (
 // far side's answer about this workspace and spends the prompt budget, while a transport failure
 // under the frame and a failure to mint the role's App identity — which never leaves the daemon,
 // and is an outage of the App rather than a fault of this workspace — spend nothing and are
-// retried for ever (INFRA-1480).
+// retried for ever (POMJU-1480).
 func TestAPhaseTaskAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	for _, tc := range []struct {
@@ -83,7 +83,7 @@ const (
 // An adoption the shim answers ok writes one Info line, because it was the one end of an adoption
 // the log kept no word of: a refusal is logged (table.go's refused) and an ok was not, so nothing
 // told which tasks adopted the working copy — which is what the production check reads to see that
-// only phase tasks adopt (dispatch://INFRA-2695). The line names the task, its phase and the App
+// only phase tasks adopt (dispatch://POMJU-2695). The line names the task, its phase and the App
 // by its git name, never a token, and the machine's own logger adds the claim. A task of no phase
 // adopts nothing and so writes no such line, and an adoption the shim refuses writes its refusal
 // in this line's place.
@@ -202,7 +202,7 @@ func testerClaim() Claim {
 // The roles of an issue work one jj workspace, so the adoption a phase task makes of its working
 // copy is not the adopting claim's own act: run while another role is in a turn, it moves that
 // role's worker onto a fresh commit mid-write, and the work it goes on to do lands authored by
-// this role (dispatch://INFRA-714). The tester's task therefore waits while the implementer's
+// this role (dispatch://POMJU-714). The tester's task therefore waits while the implementer's
 // turn is open, and is adopted and sent when that turn ends — once, whatever arrives after it.
 func TestATesterPhaseTaskWaitsForTheImplementersTurnToEnd(t *testing.T) {
 	bot := runtime.GitIdentity{Name: "legion-tester[bot]", Email: "7+legion-tester[bot]@users.noreply.github.com"}

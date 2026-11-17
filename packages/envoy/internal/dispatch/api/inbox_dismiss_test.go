@@ -893,7 +893,7 @@ func TestDismissAppendsOneEventPerProjectAndSession(t *testing.T) {
 	}
 }
 
-// INFRA-450's a13: a reply the person sends from the Dismissed view leaves the thread there, on
+// POMJU-450's a13: a reply the person sends from the Dismissed view leaves the thread there, on
 // both halves, which is what the two clears being unconditional must not have cost.
 // user_threads_record clears dismissed_at for every login but the writer's, so their own row
 // keeps its mark (migration 20261105093501), and the Agent trigger fires on a session's reply

@@ -186,7 +186,7 @@ func TestAgentTokensArePrivateRevocableAndAttributeSessionWrites(t *testing.T) {
 	}
 }
 
-// INFRA-258. A token's plaintext is shown once, in the mint's answer, and agent_tokens holds only
+// POMJU-258. A token's plaintext is shown once, in the mint's answer, and agent_tokens holds only
 // its hash, so an Idempotency-Key never keeps that answer: request_keys holds no copy of the token.
 // The mint is still made once: a repeat under the key, its answer lost or not, is 409
 // KEY_COMMITTED - the token was made and is not shown again - and no second token is minted.

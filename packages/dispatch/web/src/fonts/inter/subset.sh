@@ -1,6 +1,6 @@
 #!/bin/sh
 # Writes InterVariable-subset.woff2 beside this file: the typeface the Dispatch web app ships and
-# draws the issue page in (`web/src/styles.css`, dispatch://INFRA-1196 R36), cut from rsms/inter's
+# draws the issue page in (`web/src/styles.css`, dispatch://POMJU-1196 R36), cut from rsms/inter's
 # own release. It starts from the release's `web/InterVariable.woff2`, the file the approved
 # prototype of the issue page embeds, checked by the SHA-256 of the release archive and of that
 # file, and keeps:

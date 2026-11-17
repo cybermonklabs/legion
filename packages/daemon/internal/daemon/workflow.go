@@ -80,7 +80,7 @@ type workflowRuntime struct {
 	// reaches that stream call by (updateSubscription). The boot leaves it nil, which means
 	// w.consumers.SetRepositories; a test sets it to a stand-in, since consumers is the concrete
 	// *intake.Consumers and a test of the mapping refresh's ordering has to hold the call while it
-	// proves no transaction waits on it (INFRA-3169).
+	// proves no transaction waits on it (POMJU-3169).
 	setRepositories func(ctx context.Context, repositories []ghrepo.Repository) error
 	outbox          *outbox
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
@@ -404,7 +404,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	// A lease is keyed by the repository it is minted for, so the boot mints each App's write
 	// lease for every repository the mapping serves rather than once per owner. No mint names its
-	// repository to GitHub (INFRA-2543), so each App's mints for one owner's repositories all send
+	// repository to GitHub (POMJU-2543), so each App's mints for one owner's repositories all send
 	// that owner's installation the same request, and what stops the boot is about the owner: an
 	// App not installed on it, or an installation granted none of the permissions a role's write
 	// token asks for, stops the boot naming the repository it was minting for (mintAtBoot), where
@@ -1132,7 +1132,7 @@ type sweptFact struct {
 // time. A sweep runs every minute over every claim, and a claim that is silent and stays silent
 // mints the same id at every sweep for ever, since the id is the claim token and a last step
 // that does not move. The reading this work was filed for found hundreds of claims with a last
-// step more than an hour old (dispatch://INFRA-3163), and without this read the pass would open
+// step more than an hour old (dispatch://POMJU-3163), and without this read the pass would open
 // a transaction for each of them every minute on the one advisory lock every fact of the daemon
 // takes (intake.ApplyFact), each one only to be told the fact was applied already.
 //
@@ -1311,7 +1311,7 @@ func (w *workflowRuntime) booted(ctx context.Context, bootID int64) error {
 // repairCutoverMergers applies the boot's one-time repair of the mergers the `awaiting_merge`
 // cutover left stopped (intake.CutoverMergerRepair, workflow's cutoverMergerRepair), under the
 // one event id the project keeps for it, so processed_events records that it ran and a later
-// boot's apply is a duplicate that repairs nothing (dispatch://INFRA-3274/spec R2). run applies
+// boot's apply is a duplicate that repairs nothing (dispatch://POMJU-3274/spec R2). run applies
 // it after the listing's reconcile and the roots' catch-up and before the consumers start, so no
 // wake of the boot comes before it. A duplicate runs no handler, and the boot still writes its one
 // record of the repair (R2), so this logs it: the repair owed a start to no merger.
@@ -1336,11 +1336,11 @@ func (w *workflowRuntime) repairCutoverMergers(ctx context.Context) error {
 // serializer is free. That lock is a queue behind every fact, and intake gives a message at least
 // ten minutes for the same wait (intake.HandlerLimitFor), so a wait of tens of seconds is load and
 // not a fault; and an error here ends the workflow (w.failed) and with it the daemon, so a bound
-// would turn a slow queue into a restart, which is what started INFRA-3169. The wait still ends
+// would turn a slow queue into a restart, which is what started POMJU-3169. The wait still ends
 // when the real work ahead of it ends: every connection of the daemon's pool carries the idle
 // bound (internal/store's idleBound, 30 s), so a holder of the serializer that sits in its
 // transaction with no statement running loses its connection, and the lock with it — the
-// transaction nobody ended, which INFRA-3169 measured. The boot's bound stays the boot's own:
+// transaction nobody ended, which POMJU-3169 measured. The boot's bound stays the boot's own:
 // replayTerminal gives each fact it replays a budget (bootTimeout, daemon.go), since a boot that
 // waits on a Postgres that never answers would hang with nothing logged.
 //

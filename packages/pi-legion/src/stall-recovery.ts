@@ -13,7 +13,7 @@ import {
 } from "./stall-evidence";
 
 /**
- * The first step of the stall ladder (INFRA-1274, R4): the stuck call's own processes, ended.
+ * The first step of the stall ladder (POMJU-1274, R4): the stuck call's own processes, ended.
  * `packages/pi-shared/src/stall-watchdog.ts` decides when the step runs; this module decides
  * which processes the step is about, and it is the one place that ends anything.
  *

@@ -16,7 +16,7 @@ import (
 // root, each as its slash-separated path relative to root and its bytes, in the order a sorted walk
 // visits them. It is the one definition of that digest, so the init container that records it and
 // the check a role runs against what Oh My Pi installed compute the same number from the same tree
-// (dispatch://INFRA-1300, R4).
+// (dispatch://POMJU-1300, R4).
 //
 // Every field is written length-prefixed — the decimal byte count, a newline, then exactly that
 // many bytes — and a path holding a newline or a NUL is refused. Both are needed, and the second
@@ -132,7 +132,7 @@ func ReadSkillsTrees(dir string) (digests map[string]string, order []string, err
 // COMMIT names. A plugin the install left nowhere, one whose tree differs, and one the record does
 // not name are each a refusal, naming the plugin and what differed — the role's launch then fails
 // before Oh My Pi, rather than an agent running with skills nobody can account for
-// (dispatch://INFRA-1300, R4).
+// (dispatch://POMJU-1300, R4).
 //
 // It is a comparison of bytes and not of a version string: a marketplace install that resolved a
 // different plugin, a tree something wrote into the install cache after the install, and a volume

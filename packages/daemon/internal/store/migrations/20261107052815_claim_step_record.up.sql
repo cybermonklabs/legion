@@ -1,5 +1,5 @@
 -- 20261107052815_claim_step_record.up.sql — what the daemon last saw a worker's agent do, so a
--- turn that hangs is found rather than read as hours of work (INFRA-1274). Oh My Pi writes a
+-- turn that hangs is found rather than read as hours of work (POMJU-1274). Oh My Pi writes a
 -- tool_execution_start and a tool_execution_end frame for every call the agent makes, and the
 -- daemon keeps the last of them on the claim; a backstop over these columns is what ends a turn
 -- whose agent has stopped stepping. Store.PutClaimStep writes these eight columns and nothing

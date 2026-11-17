@@ -16,7 +16,7 @@ related_issues:
 
 # A reconnect handshake the server closes reaches only AsyncErrorCB
 
-Extends docs/solutions/envoy/nats-go-facts-a-test-or-a-shutdown-path-must-design-around-INFRA-182.md.
+Extends docs/solutions/envoy/nats-go-facts-a-test-or-a-shutdown-path-must-design-around-POMJU-182.md.
 
 - In nats.go v1.50.0, when a server accepts a reconnect's dial and then closes the connection
   during the CONNECT/PING handshake (a server that is restarting), `sendConnect` gives the read's

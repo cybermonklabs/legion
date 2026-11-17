@@ -9,7 +9,7 @@
 # composite action's and not a script's: a step that calls a script keeps its own
 # `timeout-minutes`. So this body is written once, both steps call it, and a fix here is a fix
 # for both jobs. It stood as two copies, word for word apart from the stack count, until a
-# review read them together (dispatch://INFRA-1443).
+# review read them together (dispatch://POMJU-1443).
 #
 #   .github/scripts/dispatch-browser-postgres.sh <stack count>
 #

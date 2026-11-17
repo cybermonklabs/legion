@@ -38,9 +38,9 @@ answers they refuse. Two seams reach them without forging a credential.
 
 ## Evidence
 
-sjawhar/legion#2541 (INFRA-264). The implementer's live proof ran `scripts/dev-broker.sh` and
+sjawhar/legion#2541 (POMJU-264). The implementer's live proof ran `scripts/dev-broker.sh` and
 `packages/dispatch/e2e/run-server.sh` as one pair; the tester's rounds put a counting proxy
 between them and drove `PUT /__rewrite {"project_scope":"named","project":""}`, the one refusal
-no live token can produce, recorded in `.legion/INFRA-264/test.json`. The stand-in package came
+no live token can produce, recorded in `.legion/POMJU-264/test.json`. The stand-in package came
 out of the `ce-simplify-code` pass (`14a3ecbb` → `e9d7da2e`), which found the same broker stubbed
 twice.

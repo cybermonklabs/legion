@@ -13,7 +13,7 @@ module: packages/envoy/loadtest
 
 # A gain smaller than the run-to-run spread is judged by the function's profile share
 
-Extends docs/solutions/testing/measure-the-mechanism-not-the-symptom-count-the-work-the-system-does-not-do-INFRA-228.md.
+Extends docs/solutions/testing/measure-the-mechanism-not-the-symptom-count-the-work-the-system-does-not-do-POMJU-228.md.
 
 ## Rules
 

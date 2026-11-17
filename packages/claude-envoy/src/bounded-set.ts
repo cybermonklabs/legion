@@ -1,4 +1,4 @@
-// The bounded, insertion-ordered records this plugin keeps (INFRA-1026): a session remembers
+// The bounded, insertion-ordered records this plugin keeps (POMJU-1026): a session remembers
 // several things for its whole life — the rows it claimed, the deliveries it answered, the
 // attempts it handled, the Dispatch message each delivered row is — and each drops its oldest
 // entry at a bound of its own. Two shapes carry them, a `Set` for a record that is its values

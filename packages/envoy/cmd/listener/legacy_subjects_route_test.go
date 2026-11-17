@@ -25,8 +25,8 @@ import (
 func TestARegistrationInTheOldFormIsToldTheNewFormAndReceivesEither(t *testing.T) {
 	const sessionID = "ses_old_form"
 	rig := newSessionConsumerRig(t)
-	legacy := "notifications.dispatch.issue.INFRA-12.>"
-	current := contracts.DispatchIssueSubject("INFRA", "INFRA-12", ">")
+	legacy := "notifications.dispatch.issue.POMJU-12.>"
+	current := contracts.DispatchIssueSubject("POMJU", "POMJU-12", ">")
 	body, err := json.Marshal(map[string]any{
 		"session_id":      sessionID,
 		"self_subscribed": true,
@@ -57,10 +57,10 @@ func TestARegistrationInTheOldFormIsToldTheNewFormAndReceivesEither(t *testing.T
 		t.Fatalf("consumer filters = %q, want %q", got, want)
 	}
 
-	rig.store(t, "notifications.dispatch.issue.INFRA-12.comment.created")
-	rig.store(t, contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"))
-	rig.store(t, contracts.AgentSubject("INFRA", sessionID))
-	rig.store(t, contracts.DispatchIssueSubject("INFRA", "INFRA-13", "comment.created"))
+	rig.store(t, "notifications.dispatch.issue.POMJU-12.comment.created")
+	rig.store(t, contracts.DispatchIssueSubject("POMJU", "POMJU-12", "comment.created"))
+	rig.store(t, contracts.AgentSubject("POMJU", sessionID))
+	rig.store(t, contracts.DispatchIssueSubject("POMJU", "POMJU-13", "comment.created"))
 	rig.awaitPending(t, sessionID, 3)
 }
 
@@ -72,7 +72,7 @@ func TestARegistrationInTheNewFormIsNamedInNoWarning(t *testing.T) {
 	body, err := json.Marshal(map[string]any{
 		"session_id":      sessionID,
 		"self_subscribed": true,
-		"topics":          []string{contracts.DispatchIssueSubject("INFRA", "INFRA-12", ">"), "notifications.team.deploy-squad"},
+		"topics":          []string{contracts.DispatchIssueSubject("POMJU", "POMJU-12", ">"), "notifications.team.deploy-squad"},
 		"delivery":        map[string]any{"consumer": true, "epoch": "e"},
 	})
 	if err != nil {
@@ -93,7 +93,7 @@ func TestARegistrationInTheNewFormIsNamedInNoWarning(t *testing.T) {
 // reads the holder the new form's claim gave it.
 func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	const sessionID = "ses_role_forms"
-	const role = "legion-infra-infra-12-architect"
+	const role = "legion-pomju-pomju-12-architect"
 	rig := newSessionConsumerRig(t)
 	rig.register(t, sessionID, nil)
 
@@ -104,7 +104,7 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	if err := json.Unmarshal([]byte(rig.post(t, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"`+role+`"}`)), &old); err != nil {
 		t.Fatalf("decode the old form's claim: %v", err)
 	}
-	if want := []string{role + " is the old form of INFRA." + role + "; claim INFRA." + role}; !slices.Equal(old.Warnings, want) {
+	if want := []string{role + " is the old form of POMJU." + role + "; claim POMJU." + role}; !slices.Equal(old.Warnings, want) {
 		t.Fatalf("warnings = %q, want %q", old.Warnings, want)
 	}
 	if !slices.Contains(old.Topics, contracts.RoleTopicPrefix+role) {
@@ -116,7 +116,7 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 	var current struct {
 		Warnings []string `json:"warnings"`
 	}
-	if err := json.Unmarshal([]byte(rig.post(t, "/v1/roles/set", `{"session_id":"`+other+`","role":"INFRA.`+role+`"}`)), &current); err != nil {
+	if err := json.Unmarshal([]byte(rig.post(t, "/v1/roles/set", `{"session_id":"`+other+`","role":"POMJU.`+role+`"}`)), &current); err != nil {
 		t.Fatalf("decode the new form's claim: %v", err)
 	}
 	if len(current.Warnings) != 0 {
@@ -149,7 +149,7 @@ func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 		{"PRIV.legion-zz-controller", "legion-zz-controller", "ZZ", "PRIV"},
 		{"_.legion-zz-controller", "legion-zz-controller", "ZZ", "_"},
 		{"PRIV.lead-reviewer", "lead-reviewer", "_", "PRIV"},
-		{"INFRA.reviewer", "reviewer", "_", "INFRA"},
+		{"POMJU.reviewer", "reviewer", "_", "POMJU"},
 	} {
 		answer := claim(refused.role)
 		body := answer.Body.String()
@@ -211,7 +211,7 @@ func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
 
 	for _, tc := range []struct{ role, project, holder string }{
 		{"lead-reviewer", contracts.NoProject, "ses_lead_holder"},
-		{"legion-infra-infra-12-architect", "INFRA", "ses_architect_holder"},
+		{"legion-pomju-pomju-12-architect", "POMJU", "ses_architect_holder"},
 	} {
 		t.Run(tc.role, func(t *testing.T) {
 			if err := sessions.Put(tc.holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -289,7 +289,7 @@ func (c *legacyKinds) counted() []string {
 func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testing.T) {
 	const sessionID = "ses_stored_old_form"
 	rig := newSessionConsumerRig(t)
-	rig.register(t, sessionID, map[string]any{"topics": []string{"notifications.dispatch.issue.INFRA-12.>"}})
+	rig.register(t, sessionID, map[string]any{"topics": []string{"notifications.dispatch.issue.POMJU-12.>"}})
 	rig.post(t, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"lead-reviewer"}`)
 	stored, err := rig.deps.registry.Get(context.Background(), sessionID)
 	if err != nil {

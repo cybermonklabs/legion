@@ -14,7 +14,7 @@ module: packages/dispatch
 
 # Judge an automated write by what it changes, not by the state or timing it arrived in
 
-Extends docs/solutions/envoy/a-condition-over-shared-state-is-a-data-model-change-INFRA-246.md.
+Extends docs/solutions/envoy/a-condition-over-shared-state-is-a-data-model-change-POMJU-246.md.
 
 - When a false signal comes from a program's own writes (an editor plugin, a normalizer, a
   migration), classify each write by what it changes and exclude that class wherever the signal is

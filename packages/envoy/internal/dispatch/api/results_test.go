@@ -484,7 +484,7 @@ func resultRead(t *testing.T, read issueResults, blockID, resultID string) model
 //
 // Both are named at every call on purpose. A result at a compared commit whose check was
 // reworded is at_basis with moved words, and a test that asserted one word for the two would
-// re-make the defect this surface answers (dispatch://INFRA-1522).
+// re-make the defect this surface answers (dispatch://POMJU-1522).
 func standsAt(
 	t *testing.T, read issueResults, blockID, resultID, what, stands string, moved bool,
 ) model.ResultCommitStands {
@@ -1248,7 +1248,7 @@ func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 // lost the repository, which delivery keeps across a read that can say nothing exactly so
 // that this answer survives (delivery/branch.go:261-273).
 //
-// This pins the reviewer's finding on pull request #3530 (dispatch://INFRA-1522):
+// This pins the reviewer's finding on pull request #3530 (dispatch://POMJU-1522):
 // branchBases compared with nothing as soon as the repository read answered unreadable, so
 // the branches were never asked and the stored yes was never reached. One failed App read
 // turned every `after_merge` and every `default_branch` result of the repository from
@@ -1325,7 +1325,7 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 // yes at it places the merge commit.
 //
 // This pins the second half of the reviewer's finding on pull request #3530
-// (dispatch://INFRA-1522): branchBases answered nothing at all as soon as the default branch
+// (dispatch://POMJU-1522): branchBases answered nothing at all as soon as the default branch
 // had no name, so a branch nothing about GitHub turns on was never asked, and the squash
 // merge of a deleted base branch — which nothing else can ever place — read `unknown`.
 //
@@ -1371,7 +1371,7 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoDefaultBranchNamed(t *test
 // The branch the issue merged into is a fact of Dispatch's own database and the yes at it a
 // row kept for good, so the merge commit stands at that branch with no GitHub at all — which
 // is the whole of what such a deployment can answer, and more than the nothing it answered
-// before (dispatch://INFRA-1522).
+// before (dispatch://POMJU-1522).
 //
 // A commit the stored row says that branch does not carry is unknown and never another
 // commit: the walk is short of the default branch, which nothing could name, so the branch
@@ -1948,7 +1948,7 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 	return handler, database, served, fake
 }
 
-// INFRA-1240 at the surface a reviewer reads. A `before_merge` result is recorded at a commit
+// POMJU-1240 at the surface a reviewer reads. A `before_merge` result is recorded at a commit
 // no pull request carries yet: GitHub names none, so the record's own read-through stores no
 // head row, the check compares with nothing and the result stands at another commit. The pull
 // request is opened at that head a moment later and nothing tells Dispatch — a deployment
@@ -2117,7 +2117,7 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 // still have its head at that commit, which no event tells Dispatch about. So the answer is
 // held for delivery.CommitPullSettledFor and then asked again, and a settling kept for the
 // life of the process would leave such a result standing at no basis for ever
-// (dispatch://INFRA-1240, the round-3 review of pull request #2798).
+// (dispatch://POMJU-1240, the round-3 review of pull request #2798).
 //
 // Four steps: the first read settles the pair, the second pull request opens at the commit, a
 // read inside the span places the commit elsewhere and asks GitHub nothing, which is what
@@ -2399,7 +2399,7 @@ func readResultsAt(t *testing.T, handler http.Handler, issue, at string) issueRe
 // no pass of either stands. A repository the App cannot read is the other answer, and leaves
 // the gate's question unanswered rather than answered no.
 //
-// The two were one answer before dispatch://INFRA-1522, and a reviewer could not tell a check
+// The two were one answer before dispatch://POMJU-1522, and a reviewer could not tell a check
 // nothing proves from one Dispatch could not read.
 func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
@@ -3143,7 +3143,7 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 // A ci_check name written with spaces around it is either refused at the write or answered by
 // the run it names without them, never stored as a name no run carries: the spaces cannot be
 // seen in the editor, and docs.CarriesCICheck already trims the value, so the write path and the
-// read must agree on which run the block names (dispatch://INFRA-3204, tester round 1).
+// read must agree on which run the block names (dispatch://POMJU-3204, tester round 1).
 func TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	keys := []string{issueInRepository(t, handler, "RESCP", "acme/widgets", "Padded 0").Key}

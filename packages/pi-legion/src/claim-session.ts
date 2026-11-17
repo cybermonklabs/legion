@@ -64,7 +64,7 @@ export function attributionInputs(
  * measured later, on its own interval.
  *
  * The Envoy name is taken last, after `claims/ready` has answered and at the session's first
- * turn (INFRA-1573): the listener keeps a message published to a role no session holds and hands
+ * turn (POMJU-1573): the listener keeps a message published to a role no session holds and hands
  * the whole kept lane over the moment the role is claimed, so a name taken before the daemon's
  * task lets that lane take the session's first turn while the task waits for it to end, and a
  * name taken as a turn starts puts the lane inside a turn that is already running. The signal is

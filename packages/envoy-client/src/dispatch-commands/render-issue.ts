@@ -106,7 +106,7 @@ export function claimText(
  * thing for a reader that has no such read. The registry lists an unresponsive session, because
  * an unresponsive session keeps its roles and its claims, so reading the list as membership
  * alone showed such a holder as plainly holding while `dispatch read` and the dashboard said
- * unresponsive (dispatch://INFRA-392, R5).
+ * unresponsive (dispatch://POMJU-392, R5).
  */
 function holderLiveness(
   claim: IssueClaim,
@@ -459,7 +459,7 @@ function eventRef(event: DispatchEvent): string | undefined {
 
 /** The writer an event log line names: `actorText`, and a session's own title beside its id when
  *  the actor carries one. The controller's weekly audit counts a week's creates by their filer,
- *  and the filer is that title (`Legion implementer · INFRA-1160` counts as `Legion
+ *  and the filer is that title (`Legion implementer · POMJU-1160` counts as `Legion
  *  implementer`): a session id names one process, so without the title the count is one row per
  *  session (`skill://legion-controller/references/weekly-audit.md`). */
 function eventActorText(actor: DispatchEvent["actor"]): string {

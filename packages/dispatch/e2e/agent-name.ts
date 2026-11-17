@@ -15,7 +15,7 @@ import {
   patchIssue,
 } from "./api";
 import { marginCard } from "./editor";
-// One agent component draws every agent the app shows (dispatch://INFRA-440): its current name,
+// One agent component draws every agent the app shows (dispatch://POMJU-440): its current name,
 // whether it is running, and a link to its live conversation. These rows hold it to that in the
 // four places the issue names - "Claimed by", a Conversation turn, an Inbox ask card and a margin
 // comment - for a running agent and one that is not running, at desktop and phone width.

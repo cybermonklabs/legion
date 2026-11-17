@@ -185,14 +185,14 @@ func IndexBlocks(
 	// (writeWindows' `dropped`), so leaving such a version unmarked here would leave those
 	// rows standing for text the document no longer holds; the arm finds it by the version
 	// recorded below rather than by a row of document_blocks it has none of
-	// (documentsOwedWindowsQuery, INFRA-988).
+	// (documentsOwedWindowsQuery, POMJU-988).
 	//
 	// What a reader meets for it: a document's windows, and so its hits in meaning search,
 	// appear one reconciliation tick after the write rather than within it, as a comment's do
 	// (indexItemBlocks). The write holds the issue row for its own rows alone: this window
 	// write was 9.7% of an hour's database time over 31,241 calls at a 114.3 ms mean on the
 	// load-test deployment, and the writers queued behind it were waiting on that row
-	// (INFRA-988).
+	// (POMJU-988).
 	if _, err := tx.Exec(ctx, `
 		insert into document_block_versions (artifact_id, version, windows_owed_at) values ($1, $2, now())
 		on conflict (artifact_id) do update set version = excluded.version,
@@ -389,7 +389,7 @@ const documentBlockState = `coalesce(v.version::text, '')`
 // window arm. A document written before meaning search moved to windows has blocks and no
 // window; one whose version write failed after its blocks were written has the same; and every
 // document written since this arm last windowed it is one too, because a version write records
-// the blocks and leaves the windows here (IndexBlocks, INFRA-988).
+// the blocks and leaves the windows here (IndexBlocks, POMJU-988).
 //
 // The read is of the marker, windows_owed_at (migration 20261108070000), which is the
 // question written down rather than asked of state, as the items' is (ItemsOwedWindows): the
@@ -405,7 +405,7 @@ const documentBlockState = `coalesce(v.version::text, '')`
 // version the blocks are indexed at, and whether a window row existed at all - which is two
 // index probes for every row of document_block_versions: 112-122 ms a pass with 67,496 buffer
 // hits over the load-test deployment's 9,881 documents, for an answer of no rows, and a tick
-// runs it every 2 s while the arm has a full batch (INFRA-988).
+// runs it every 2 s while the arm has a full batch (POMJU-988).
 func DocumentsOwedWindows(ctx context.Context, q Queryer, after string, limit int) ([]string, error) {
 	rows, err := q.Query(ctx, documentsOwedWindowsQuery, uuidAfter(after), limit)
 	if err != nil {
@@ -439,7 +439,7 @@ func DocumentsOwedWindows(ctx context.Context, q Queryer, after string, limit in
 //     the marker in the one statement (WriteDocumentWindows, writeWindows). The semi-join
 //     this replaced dropped it, and since that statement is the only one that clears the
 //     marker, the row stayed marked for ever: an entry in the partial index that every later
-//     pass paid a probe for and no pass could ever remove (INFRA-988).
+//     pass paid a probe for and no pass could ever remove (POMJU-988).
 //   - a document owed a block index (version null) that holds the blocks of an earlier
 //     version. Its stored version's windows are this arm's to write while the owed arm
 //     cannot index it, which is what a document whose live text stays ahead of its latest

@@ -300,7 +300,7 @@ func (c Config) StallBackstopFor(role claim.Role) time.Duration {
 // Wrapped, each inverts the thing it exists for — a negative floor is one every named bound
 // clears, so the refusal that keeps the daemon off a turn its worker's plugin is still
 // recovering accepts every bound; a negative default is a bound every recorded last step is
-// already past (INFRA-1274).
+// already past (POMJU-1274).
 //
 // Saturating is the remedy rather than a reader maximum reckoned to leave the ladder room,
 // because the grace and the step gap are themselves deployment settings

@@ -15,7 +15,7 @@ related_issues:
 
 # Filter a process-wide log capture by a client name the caller passes in, never by waiting for a record that names it
 
-Extends docs/solutions/testing/the-race-detector-runs-in-a-worker-pod-with-zig-as-the-c-compiler-and-a-library-callback-from-an-earlier-test-writes-your-log-sink-INFRA-182.md,
+Extends docs/solutions/testing/the-race-detector-runs-in-a-worker-pod-with-zig-as-the-c-compiler-and-a-library-callback-from-an-earlier-test-writes-your-log-sink-POMJU-182.md,
 whose rule is already "keep only your own client's records (filter on the `name` attribute)". This
 is how to hold that filter to the client under test without writing a second race.
 

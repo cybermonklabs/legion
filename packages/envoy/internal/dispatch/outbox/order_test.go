@@ -1003,7 +1003,7 @@ func someIDs(ids []int64) string {
 // walk: on 2026-11-09 the healthy claim fetched 37 blocks at 5,000 and 37 at 20,000, and the
 // claim over the rebuilt index 56 and 113. blocks_fetched counts a hit and a read alike, so cache
 // pressure does not move it. The tuples an index returned do not separate the two cases, which
-// the review of INFRA-2065 measured: the access method skips the entries without returning them.
+// the review of POMJU-2065 measured: the access method skips the entries without returning them.
 //
 // A count is the same on a loaded machine as on an idle one, which no wall clock is. This row
 // asserted the claim ran in under 0.5 ms, and on 2026-11-08 the claim, unchanged and healthy,

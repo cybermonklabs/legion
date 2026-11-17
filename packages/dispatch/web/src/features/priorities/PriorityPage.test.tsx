@@ -12,7 +12,7 @@ function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow
     id,
     title: `Priority ${id}`,
     description: "",
-    owner: "BET and LINUX controllers",
+    owner: "BJB and HAFJJ controllers",
     rank: id,
     state: "live",
     made_at: "2026-11-10T09:00:00Z",
@@ -61,7 +61,7 @@ function issue(key: string, advances: string[] = []): IssueSummary {
 }
 
 const ROWS: PriorityRow[] = [
-  priority("legion-first", { title: "Legion works reliably first", owner: "INFRA controller" }),
+  priority("legion-first", { title: "Legion works reliably first", owner: "POMJU controller" }),
   priority("rocq-lean", {
     title: "Rocq and Lean speed work restarted",
     description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again.",
@@ -268,10 +268,10 @@ test("the owner is a control beside the title and writes the owner", async () =>
   const { patch } = page();
   const owner = await screen.findByRole("combobox", { name: "Owner" });
   await user.clear(owner);
-  await user.type(owner, "LINUX controller");
+  await user.type(owner, "HAFJJ controller");
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-  expect(patch.mock.calls[0]?.[1]).toEqual({ owner: "LINUX controller" });
+  expect(patch.mock.calls[0]?.[1]).toEqual({ owner: "HAFJJ controller" });
 });
 
 test("the page carries no tab strip, no version control and no delete", async () => {

@@ -1,6 +1,6 @@
 package daemon
 
-// The state route's own bound (INFRA-3169 R3), over a real pool on a real database: a read that
+// The state route's own bound (POMJU-3169 R3), over a real pool on a real database: a read that
 // does not finish ends at the route's deadline instead of holding its transaction for as long as
 // the client holds its socket, and the connection it was holding is back in the pool afterwards.
 

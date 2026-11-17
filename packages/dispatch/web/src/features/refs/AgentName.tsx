@@ -90,7 +90,7 @@ type AgentSubject =
 type AgentVariant =
   /** `link` (default): the name links to the live conversation, pushing the address, so Back
    *   walks the pages the reader came from. `replace` is the rail's pinned rows alone
-   *   (INFRA-812): a move from one pinned agent to another replaces the live view the reader is
+   *   (POMJU-812): a move from one pinned agent to another replaces the live view the reader is
    *   in rather than stacking it. `onNavigate` is told the link was followed, which is how the
    *   rail's sheet closes behind it. `static`: no link, for the places a link cannot sit (a
    *   tooltip, a listbox option, the live page's own header). */

@@ -65,6 +65,6 @@ load ran` with `the panicking load left the room healthy, so nothing reloads the
 `the panicking load left its record behind, which no instance will take`; both cases pass at this
 head. The row needs no seam the fix introduces, so it runs at either head. For the mechanics of
 that export-and-run shape, see
-`docs/solutions/testing/prove-a-go-acceptance-test-fails-on-base-by-running-the-unchanged-file-in-a-git-archive-export-INFRA-487.md`.
+`docs/solutions/testing/prove-a-go-acceptance-test-fails-on-base-by-running-the-unchanged-file-in-a-git-archive-export-POMJU-487.md`.
 The test itself is `websocket_test.go:461`, two rows: a caller still waiting for the load, and a
 caller whose context ended while the load ran.

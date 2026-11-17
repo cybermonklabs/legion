@@ -24,7 +24,7 @@ Extends docs/solutions/database-issues/a-batched-lookup-keeps-the-row-loop-and-a
   issue pod's embedded Postgres has only `C`, which is byte order, as Go's sort is. So the pod is
   green and CI is red on the same code.
 - To see the CI order in a pod, recreate `template1` under the ICU provider first
-  (docs/solutions/testing/recreate-template1-under-the-icu-provider-and-the-pods-postgres-runs-the-collation-test-too-INFRA-56.md).
+  (docs/solutions/testing/recreate-template1-under-the-icu-provider-and-the-pods-postgres-runs-the-collation-test-too-POMJU-56.md).
 
 ## Evidence
 

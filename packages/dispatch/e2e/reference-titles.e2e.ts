@@ -34,7 +34,7 @@ import { asUser } from "./users";
  * as.
  *
  * The inert one-line preview is read on the Answers page. The Replies page carried it until
- * INFRA-450 deleted that page, and the Inbox that took its rows draws a thread whole with live
+ * POMJU-450 deleted that page, and the Inbox that took its rows draws a thread whole with live
  * links rather than a preview of it, so the preview a reader still meets is an answered ask's
  * question (`answeredQuestionPreview`).
  */

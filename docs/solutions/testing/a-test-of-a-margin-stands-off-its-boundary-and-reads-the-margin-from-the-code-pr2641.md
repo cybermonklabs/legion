@@ -17,7 +17,7 @@ related_issues:
 # A test of a margin stands off its boundary and reads the margin from the code
 
 For a rule of the form "act only once this is more than M old". The control direction is
-docs/solutions/testing/a-regression-row-fails-for-the-mechanism-it-names-INFRA-66.md; these are the
+docs/solutions/testing/a-regression-row-fails-for-the-mechanism-it-names-POMJU-66.md; these are the
 three ways such a test passes while proving nothing.
 
 ## Rules

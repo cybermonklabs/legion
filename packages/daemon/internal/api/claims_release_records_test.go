@@ -22,7 +22,7 @@ func readRecords(token claim.Token, secret, since string) ReleaseRecordsRequest 
 	return ReleaseRecordsRequest{ClaimToken: token, Secret: secret, Since: since}
 }
 
-// INFRA-945 R6: a pod reads its project's idle-release records with the one credential it holds —
+// POMJU-945 R6: a pod reads its project's idle-release records with the one credential it holds —
 // its claim's — and gets back every release, resume and hold of the window it named.
 func TestClaimReleaseRecordsServeAPodTheProjectsWindow(t *testing.T) {
 	h := newHarness(t)

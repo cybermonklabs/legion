@@ -52,7 +52,7 @@ console.log("export DISPATCH_E2E_REUSE_SERVERS=1");
 // process ends with SIGTERM's own disposition. A second listener for it would stop one stack
 // twice at once: the other caller finds the Supervisor's children already taken and goes on to
 // `pg_ctl -m immediate stop` and to clear the run directory under a server that is still
-// shutting down, which the server reports as a failed deregistration (dispatch://INFRA-1410).
+// shutting down, which the server reports as a failed deregistration (dispatch://POMJU-1410).
 const interrupted = Promise.withResolvers<void>();
 process.once("SIGINT", () => interrupted.resolve());
 await interrupted.promise;

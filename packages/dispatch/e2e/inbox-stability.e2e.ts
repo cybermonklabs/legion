@@ -219,7 +219,7 @@ test("a row being typed into keeps its draft when an agent's progress note flips
     if (hasReadingPane(page)) {
       // The question is in the column, so the reader's hand is on no row at all: the row joins
       // Waiting on agents at once, telling the truth about whose turn it is, and the column
-      // keeps the question and the half-written answer where they are (INFRA-575). The view
+      // keeps the question and the half-written answer where they are (POMJU-575). The view
       // does not follow the row down.
       await expect(row).toHaveAttribute("data-inbox-section", "agent");
       expect(Math.abs((await listScrollTop(page)) - scrolled)).toBeLessThanOrEqual(2);
@@ -277,7 +277,7 @@ test("the reader's own Ask back leaves the view still and holds the row only whe
     if (hasReadingPane(page)) {
       // The question is in the column, which stays on it: the selection is the reader's and
       // only they move it. The row beside it joins Waiting on agents at once - their hand is in
-      // the column, on no row (INFRA-575) - and the view does not follow it.
+      // the column, on no row (POMJU-575) - and the view does not follow it.
       await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", target.ask.id);
       await expect(row).toHaveAttribute("data-inbox-section", "agent");
       expect(Math.abs((await listScrollTop(page)) - scrolled)).toBeLessThanOrEqual(2);

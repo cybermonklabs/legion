@@ -168,7 +168,7 @@ func TestPlanReviewTakesAPlanRowThatCarriesNoRole(t *testing.T) {
 // A role belongs to an issue's documents alone: documentRole gives a project's document none, and
 // the slug fallback of documentPlays exists for an issue document whose role column a rolling
 // deploy left null. So a project document named plan.md is a plain document, as the architect
-// ruled (dispatch://INFRA-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf): a person's
+// ruled (dispatch://POMJU-3327/comment/6a7a54ba-a1c3-4de8-a7b7-504a422f48cf): a person's
 // approval of it is requested as any other project document's is, and no plan review takes it.
 // The project's notes.md is the control: its request opens an ask the same way.
 func TestAProjectDocumentNamedPlanIsAPlainDocument(t *testing.T) {

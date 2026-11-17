@@ -1,7 +1,7 @@
 -- 20261108015800_issues_search_fastupdate.up.sql — issues_search carries no pending list, so the
 -- planner can price it.
 --
--- INFRA-1042: a GIN index created with the default fastupdate batches new entries into a pending
+-- POMJU-1042: a GIN index created with the default fastupdate batches new entries into a pending
 -- list, and every scan of the index must read that whole list before it reads anything else. The
 -- planner charges for it, measured on a fixture of production's size, 4,369 issues: with nothing
 -- pending, a bitmap index scan of issues_search for the keyword search's issue arm is costed

@@ -35,7 +35,7 @@ assertion to get wrong, because the mux answers 404 for an absent route and the 
   fabricated id was refused by authentication before the record was ever looked up, so an id
   nobody holds exercises the auth layer and never reaches the route's own behaviour at all.
 
-## Evidence (sjawhar/legion#2649, INFRA-879)
+## Evidence (sjawhar/legion#2649, POMJU-879)
 
 The secrets broker's `GET /v1/credential-requests/{record}` went with the transition-era approval
 paths. `packages/envoy/internal/broker/api/api_test.go:1233` replaced the route's own test rather

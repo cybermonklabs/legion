@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Times Dispatch's six write routes against one running server, which is INFRA-325's A9: the
+# Times Dispatch's six write routes against one running server, which is POMJU-325's A9: the
 # median wall time of 50 requests to each of POST /api/v1/issues/{key}/comments, .../asks,
 # .../messages, .../artifacts under a name that already exists, that same upload over a document
 # whose latest version is 100-660 KB, and PATCH /api/v1/issues/{key} with a title alone.

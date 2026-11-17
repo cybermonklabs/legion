@@ -15,7 +15,7 @@ import { integerSetting, type StallLimitsLog } from "./stall-limits";
  */
 
 /** 30 seconds: three times the longest launch measured on this deployment, where the slowest
- * launch read took 10 seconds from the daemon's launch to the task it refused (INFRA-1573's
+ * launch read took 10 seconds from the daemon's launch to the task it refused (POMJU-1573's
  * spec, which reads 8 and 10 seconds for the two launches it measures). */
 export const DEFAULT_CLAIM_FIRST_TURN_BOUND_MS = 30_000;
 

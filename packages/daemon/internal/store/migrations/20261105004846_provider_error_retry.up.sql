@@ -1,5 +1,5 @@
 -- 20261105004846_provider_error_retry.up.sql — what the daemon keeps of a turn that ended in a
--- provider error (INFRA-956 R2).
+-- provider error (POMJU-956 R2).
 --
 -- Such a turn used to retire its task: the claim went idle with its work owed and only a store
 -- edit gave it back. The task is kept now, taken back unconfirmed and sent to the same session
@@ -20,7 +20,7 @@ alter table pending_task_deliveries add column provider_error_retries integer no
 -- and that the daemon is sending the task again. It is built from structured fields alone — the
 -- HTTP status the provider answered, else nothing but "a provider error" — because a
 -- refusal's own explanation is itself refused when it is sent back
--- (dispatch://INFRA-956/artifact/cause-evidence-md), so no provider text ever reaches a prompt.
+-- (dispatch://POMJU-956/artifact/cause-evidence-md), so no provider text ever reaches a prompt.
 -- '' is a task no provider error has taken back.
 alter table pending_task_deliveries add column provider_error_note text not null default '';
 

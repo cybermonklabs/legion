@@ -1,5 +1,5 @@
 -- 20261105183200_one_open_resume_per_role.up.sql — one open resume per role is the whole of
--- "this pod is already coming back for it" (dispatch://INFRA-714/artifact/review-rounds-md v52).
+-- "this pod is already coming back for it" (dispatch://POMJU-714/artifact/review-rounds-md v52).
 --
 -- Two dedupe layers stood where one rule serves. pod_wake_marks held a row per wake key, so a
 -- wake reported twice woke a pod once; a guard over pod_resumes held a second wake of the same

@@ -101,7 +101,7 @@ func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T
 // coming up by, alike — and the fourth restart is the pod's death. workspace-init is given no such
 // grace, and neither is a fetch in a pod that has already failed, where nothing is started again.
 // Reading a restart as a death threw away a download that was still arriving and launched the
-// issue again into the same wait (INFRA-495).
+// issue again into the same wait (POMJU-495).
 func TestAFetchsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

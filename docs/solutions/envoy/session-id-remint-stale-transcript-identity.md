@@ -173,7 +173,7 @@ fix is server-side (grace-period dual subscription vs listener aliasing) and nee
 decision.
 
 A held role follows the re-minted id, but not unconditionally. The new id's claim names the
-retired one as its predecessor, and since INFRA-404 the listener moves the role off that
+retired one as its predecessor, and since POMJU-404 the listener moves the role off that
 predecessor only when the predecessor has no live registry entry, when its live entry carries
 this client instance's own id (one Oh My Pi Envoy extension instance, one Claude Code
 channel-server process), or when either side carries no client instance id. So a fork or handoff

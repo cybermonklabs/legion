@@ -568,19 +568,19 @@ const (
 	// subtypeMaxTurns is Claude Code's own end of a turn it ran out of turns in, which is no
 	// provider failure: the provider took every request of that turn. No `result` line of the
 	// measurement carries this subtype
-	// (dispatch://INFRA-956/artifact/claude-code-2-1-310-refusal-measurement-tgz), so what
+	// (dispatch://POMJU-956/artifact/claude-code-2-1-310-refusal-measurement-tgz), so what
 	// `terminal_reason` it comes with is unmeasured, and it is excluded by name rather than by
 	// trusting a field nothing has measured.
 	subtypeMaxTurns = "error_max_turns"
 )
 
 // providerFailed is whether the provider failed the turn res ended, which is the one end the
-// prompt_result carries an error for (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d).
+// prompt_result carries an error for (dispatch://POMJU-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d).
 // A turn that ended any other way — Claude Code's own turn limit, a tool that failed — is a turn
 // the daemon retires the task on, as a turn that ended well is. It is also what the turn's own
 // outcome report carries (turnoutcome.go): counting a turn the agent worked to Claude Code's own
 // cap, or one a tool failed in, would walk a working claim to the launch failure limit and
-// abandon the session it is working in (dispatch://INFRA-714).
+// abandon the session it is working in (dispatch://POMJU-714).
 func providerFailed(res resultLine) bool {
 	return res.isError && res.terminalReason == terminalAPIError && res.subtype != subtypeMaxTurns
 }

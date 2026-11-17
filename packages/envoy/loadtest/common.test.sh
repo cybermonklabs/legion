@@ -26,7 +26,15 @@
 # (i) a root always gets the same set of ports, these two roots get two sets that share none (two
 # roots in general share all 7 when their paths hash into one block of the 200, which stack.sh
 # refuses), every port of every block lies in 1024-65535 and no two ports of two blocks meet, and a
-# LOADTEST_*_PORT overrides its own port alone.
+# LOADTEST_*_PORT overrides its own port alone; (j) the replay manifest (replay_fetch_manifest) is
+# downloaded as the pinned version of the file replay-2026-10-26.json of LOADTEST_REPLAY_ISSUE's
+# project (the key before its '-'), the token on curl's standard input and never on its command
+# line, kept when its sha256 matches and downloaded again when it does not, copied from --from-dir,
+# refused and deleted when its sha256 is another, and refused, writing and downloading nothing, with
+# no way to download it, a --from-dir that lacks it, no LOADTEST_REPLAY_ISSUE or one that is no issue
+# key; (k) stack.sh replay-get without --manifest is refused before any part when it can have no
+# manifest, downloads the manifest from the issue's project before the parts from the issue, and
+# with --manifest FILE fetches no manifest.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -497,6 +505,154 @@ case_stack_ports() {
   printf 'PASS: the default ports follow LOADTEST_ROOT, two roots in two blocks share no port, and each LOADTEST_*_PORT overrides its own\n'
 }
 
+# The replay manifest's fixture: a fake curl that serves served.json as version 3 of project
+# ACME's file replay-2026-10-26.json and fails every other call, recording each command line, and
+# what it read on its standard input, apart; a token; and served.json, a manifest whose one bundle
+# part no route serves.
+readonly manifest_dir="${temporary_dir}/manifest"
+mkdir -p "$manifest_dir/bin" "$manifest_dir/from" "$manifest_dir/empty"
+cat >"$manifest_dir/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${MANIFEST_CURL_LOG:?}"
+cat >>"${MANIFEST_CURL_STDIN:?}"
+out="" prev=""
+for a in "$@"; do
+  [[ "$prev" == -o ]] && out=$a
+  prev=$a
+done
+case ${*: -1} in
+  */api/v1/projects/ACME/artifacts/replay-2026-10-26-json/versions/3) cp "${MANIFEST_SERVED:?}" "$out" ;;
+  *) exit 22 ;;
+esac
+EOF
+chmod +x "$manifest_dir/bin/curl"
+printf 'common-test-token\n' >"$manifest_dir/token"
+printf '{"schema": 1, "bundle": {"tar_zst_sha256": "%s", "parts": [{"file": "b.part00", "slug": "b-part00", "version": 1, "sha256": "%s"}]}, "seed": null}\n' \
+  "$(printf '1%.0s' {1..64})" "$(printf '2%.0s' {1..64})" >"$manifest_dir/served.json"
+manifest_sha="$(sha256sum <"$manifest_dir/served.json" | cut -d' ' -f1)"
+readonly manifest_sha
+zero_sha="$(printf '0%.0s' {1..64})"
+readonly zero_sha
+
+# manifest_env [NAME=VALUE...] CMD...: CMD with the fake curl first on PATH and the replay's
+# variables of a manifest that can be downloaded, each NAME=VALUE replacing one; the curl records
+# start empty.
+manifest_env() {
+  : >"$manifest_dir/curl.log"
+  : >"$manifest_dir/curl.stdin"
+  env PATH="$manifest_dir/bin:$PATH" MANIFEST_CURL_LOG="$manifest_dir/curl.log" MANIFEST_CURL_STDIN="$manifest_dir/curl.stdin" \
+    MANIFEST_SERVED="$manifest_dir/served.json" LOADTEST_REPLAY_ISSUE=ACME-12 LOADTEST_REPLAY_MANIFEST_VERSION=3 \
+    LOADTEST_REPLAY_MANIFEST_SHA256="$manifest_sha" DISPATCH_URL=http://dispatch.invalid/ DISPATCH_TOKEN_FILE="$manifest_dir/token" "$@"
+}
+
+# fetch_manifest DIR FROM_DIR [NAME=VALUE...]: replay_fetch_manifest DIR FROM_DIR in a shell of its
+# own that sources common.sh, as the scripts do. Sets rc and out (its output, then the path it set).
+fetch_manifest() {
+  local dir=$1 from=$2
+  shift 2
+  rc=0
+  out=$(manifest_env "$@" bash -c 'source "$1"; replay_fetch_manifest "$2" "$3"; printf "REPLAY_MANIFEST_PATH=%s\n" "$REPLAY_MANIFEST_PATH"' \
+    _ "$helper" "$dir" "$from" 2>&1) || rc=$?
+}
+
+# curl_ran: the fake curl ran since manifest_env last emptied its record.
+curl_ran() { [[ -s "$manifest_dir/curl.log" ]]; }
+
+# case_replay_manifest_fetch: (j).
+case_replay_manifest_fetch() {
+  local parts="$manifest_dir/parts" want_url='.* http://dispatch.invalid/api/v1/projects/ACME/artifacts/replay-2026-10-26-json/versions/3'
+  fetch_manifest "$parts" ""
+  ((rc == 0)) || { fail "(j) replay_fetch_manifest did not download the manifest"; return; }
+  [[ $out == *"REPLAY_MANIFEST_PATH=$parts/replay-2026-10-26.json"* ]] || { fail "(j) REPLAY_MANIFEST_PATH is not $parts/replay-2026-10-26.json"; return; }
+  cmp -s "$manifest_dir/served.json" "$parts/replay-2026-10-26.json" || { fail "(j) the manifest kept is not the one served"; return; }
+  grep -qx -- "$want_url" "$manifest_dir/curl.log" ||
+    { out="$(cat "$manifest_dir/curl.log")" fail "(j) the manifest was not downloaded as version 3 of project ACME's file"; return; }
+  ! grep -qF common-test-token "$manifest_dir/curl.log" || { fail "(j) the token is on curl's command line"; return; }
+  grep -qx 'Authorization: Bearer common-test-token' "$manifest_dir/curl.stdin" ||
+    { fail "(j) curl did not read the bearer token on its standard input"; return; }
+
+  # Kept while its sha256 matches; downloaded again over a file of another sha256.
+  fetch_manifest "$parts" ""
+  { ((rc == 0)) && ! curl_ran && [[ $out == *"kept (sha256 matches)"* ]]; } || { fail "(j) a manifest whose sha256 matches was not kept"; return; }
+  printf '{"schema": 1}\n' >"$parts/replay-2026-10-26.json"
+  fetch_manifest "$parts" ""
+  { ((rc == 0)) && curl_ran && cmp -s "$manifest_dir/served.json" "$parts/replay-2026-10-26.json"; } ||
+    { fail "(j) a manifest of another sha256 at the kept path was kept, not downloaded again"; return; }
+
+  # Downloaded with another sha256 than the pinned one: refused, and deleted.
+  fetch_manifest "$manifest_dir/parts-other" "" LOADTEST_REPLAY_MANIFEST_SHA256="$zero_sha"
+  ((rc != 0)) || { fail "(j) a manifest of another sha256 was accepted"; return; }
+  [[ $out == *"the replay manifest replay-2026-10-26.json: sha256 $manifest_sha, not the $zero_sha it must have; deleted it"* ]] ||
+    { fail "(j) the refusal of a manifest of another sha256 does not name both"; return; }
+  [[ ! -e "$manifest_dir/parts-other/replay-2026-10-26.json" ]] || { fail "(j) the manifest of another sha256 was kept"; return; }
+
+  # Nothing to download it with: refused before anything is written or downloaded.
+  local what
+  for what in DISPATCH_URL= DISPATCH_TOKEN_FILE="$manifest_dir/no-such-token"; do
+    fetch_manifest "$manifest_dir/parts-none" "" "$what"
+    ((rc != 0)) || { fail "(j) replay_fetch_manifest went on with $what"; return; }
+    [[ $out == *"no replay manifest: give --manifest FILE, or set DISPATCH_URL and DISPATCH_TOKEN_FILE (a readable file) to download replay-2026-10-26.json"* ]] ||
+      { fail "(j) the refusal with $what does not name what is missing"; return; }
+    { [[ ! -e "$manifest_dir/parts-none" ]] && ! curl_ran; } || { fail "(j) the refusal with $what wrote or downloaded something"; return; }
+  done
+
+  # From --from-dir: copied, nothing downloaded; a --from-dir without it is refused.
+  cp -- "$manifest_dir/served.json" "$manifest_dir/from/replay-2026-10-26.json"
+  fetch_manifest "$manifest_dir/parts-from" "$manifest_dir/from" DISPATCH_URL=
+  { ((rc == 0)) && ! curl_ran && cmp -s "$manifest_dir/served.json" "$manifest_dir/parts-from/replay-2026-10-26.json"; } ||
+    { fail "(j) the manifest was not copied from --from-dir"; return; }
+  fetch_manifest "$manifest_dir/parts-empty" "$manifest_dir/empty"
+  { ((rc != 0)) && ! curl_ran && [[ $out == *"replay-2026-10-26.json is not in --from-dir $manifest_dir/empty"* ]]; } ||
+    { fail "(j) a --from-dir without the manifest was not refused, naming it"; return; }
+
+  # No issue, or a value that is no issue key, whose project it could not tell.
+  fetch_manifest "$manifest_dir/parts-noissue" "" LOADTEST_REPLAY_ISSUE=
+  { ((rc != 0)) && ! curl_ran && [[ $out == *"LOADTEST_REPLAY_ISSUE is not set"* ]]; } || { fail "(j) an unset LOADTEST_REPLAY_ISSUE was not refused"; return; }
+  fetch_manifest "$manifest_dir/parts-noissue" "" LOADTEST_REPLAY_ISSUE=acme
+  { ((rc != 0)) && ! curl_ran && [[ $out == *"LOADTEST_REPLAY_ISSUE 'acme' is not an issue key"* ]]; } ||
+    { fail "(j) a LOADTEST_REPLAY_ISSUE that is no issue key was not refused"; return; }
+  out=""
+  printf 'PASS: the replay manifest is downloaded from the issue'"'"'s project at the pinned version, kept, copied from --from-dir, and refused on another sha256 or with no way to have it\n'
+}
+
+# case_replay_get_manifest: (k), on a root that holds what replay-get looks for before the
+# manifest: stack.json and an executable bin/loadgen.
+case_replay_get_manifest() {
+  local root="$manifest_dir/root" stack="${here}/stack.sh"
+  mkdir -p "$root/bin"
+  printf '{}\n' >"$root/stack.json"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$root/bin/loadgen"
+  chmod +x "$root/bin/loadgen"
+
+  rc=0
+  out=$(manifest_env LOADTEST_ROOT="$root" DISPATCH_URL= bash "$stack" replay-get 2>&1) || rc=$?
+  { ((rc != 0)) && [[ $out == *"no replay manifest: give --manifest FILE"* ]]; } ||
+    { fail "(k) replay-get with no way to have a manifest was not refused, naming what is missing"; return; }
+  { [[ ! -e "$root/replay" ]] && ! curl_ran; } || { fail "(k) replay-get wrote or downloaded something before refusing"; return; }
+
+  rc=0
+  out=$(manifest_env LOADTEST_ROOT="$root" bash "$stack" replay-get 2>&1) || rc=$?
+  cmp -s "$manifest_dir/served.json" "$root/replay/parts/replay-2026-10-26.json" ||
+    { fail "(k) replay-get did not download the manifest beside the parts"; return; }
+  local calls=()
+  mapfile -t calls <"$manifest_dir/curl.log"
+  { ((${#calls[@]} == 2)) &&
+    [[ ${calls[0]} == *" http://dispatch.invalid/api/v1/projects/ACME/artifacts/replay-2026-10-26-json/versions/3" ]] &&
+    [[ ${calls[1]} == *" http://dispatch.invalid/api/v1/issues/ACME-12/artifacts/b-part00/versions/1" ]]; } ||
+    { out="$(cat "$manifest_dir/curl.log")" fail "(k) replay-get did not download the manifest from the issue's project, then its part from the issue"; return; }
+  { ((rc != 0)) && [[ $out == *"part b.part00: the download of /api/v1/issues/ACME-12/artifacts/b-part00/versions/1 failed"* ]]; } ||
+    { fail "(k) replay-get did not go on to the manifest's part"; return; }
+
+  rm -rf -- "$root/replay"
+  rc=0
+  out=$(manifest_env LOADTEST_ROOT="$root" DISPATCH_URL= bash "$stack" replay-get --manifest "$manifest_dir/served.json" 2>&1) || rc=$?
+  { ((rc != 0)) && [[ $out == *"DISPATCH_URL is not set: set it and DISPATCH_TOKEN_FILE to download the replay's parts"* ]] &&
+    [[ $out != *"no replay manifest"* ]]; } || { fail "(k) replay-get --manifest FILE did not take FILE and go on to its parts"; return; }
+  { [[ ! -e "$root/replay/parts/replay-2026-10-26.json" ]] && ! curl_ran; } || { fail "(k) replay-get --manifest FILE fetched a manifest"; return; }
+  out=""
+  printf 'PASS: stack.sh replay-get refuses before any part with no manifest to have, downloads it from the issue'"'"'s project before the parts, and takes --manifest FILE as it is\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -508,7 +664,9 @@ case_foreign_record_live_pid || failed=$((failed + 1))
 case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
+case_replay_manifest_fetch || failed=$((failed + 1))
+case_replay_get_manifest || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 10 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 12 cases failed\n' "$failed" >&2
   exit 1
 fi

@@ -50,7 +50,7 @@ left join (
 
 // lockProbeInterval is how often the lock probe reads. One second, because this read is not free
 // on the instance it measures: lockProbeQuery joins pg_locks to pg_stat_activity, and at 300
-// connections one call costs about 43 ms of database time. Measured over INFRA-988's 1x hour at
+// connections one call costs about 43 ms of database time. Measured over POMJU-988's 1x hour at
 // the 20 ms this was before, the probe alone ran 68,062 times for 2,938 s of database time - 7.3%
 // of every statement the window ran, about 0.82 of one of the instance's 8 cores, spent measuring
 // rather than serving. A second still gives 3,600 samples an hour, which is what the waiter curve

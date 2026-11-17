@@ -5,9 +5,9 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * How full a session's context window is, drawn at the right edge of the message box (INFRA-812,
+ * How full a session's context window is, drawn at the right edge of the message box (POMJU-812,
  * R3; the browser cases of the Verification document's k3,
- * dispatch://INFRA-812/artifact/verification-md).
+ * dispatch://POMJU-812/artifact/verification-md).
  *
  * The figures are the session's own: one `context` frame carrying the tokens it holds and the
  * window it holds them in, and the share between them is the viewer's to draw. A session that

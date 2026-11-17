@@ -1,5 +1,5 @@
 // Package subjectforms holds the readers of the message names the rename that put a project into
-// them moves (dispatch://INFRA-3862), for a caller outside this module: an issue event's name
+// them moves (dispatch://POMJU-3862), for a caller outside this module: an issue event's name
 // carries its key in either form, and a role lane's name its role in either form.
 //
 // It exists because the Legion daemon (packages/daemon, module
@@ -31,7 +31,7 @@ func IssueEventKey(subject string) (key string, legacy, ok bool) {
 }
 
 // CanonicalRole is contracts.CanonicalRole: a role read in either form, its project first
-// (INFRA.legion-infra-infra-12-architect) or its name alone (legacy true), which works for the
+// (POMJU.legion-pomju-pomju-12-architect) or its name alone (legacy true), which works for the
 // project the name says.
 func CanonicalRole(role string) (project, name string, legacy bool) {
 	return contracts.CanonicalRole(role)

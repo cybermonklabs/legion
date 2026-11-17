@@ -171,7 +171,7 @@ func TestLoadControllerRefuses(t *testing.T) {
 
 // A controller whose machine proves an identity of its own mints its own Dispatch token and
 // writes it under its state directory, so its configuration names no token file at all
-// (dispatch://INFRA-884/spec: the controller writes to Dispatch with its own token and its
+// (dispatch://POMJU-884/spec: the controller writes to Dispatch with its own token and its
 // configuration names no token file). Loading reads no environment, so dispatch_url alone is a
 // configuration the loader takes and the start decides on.
 func TestLoadControllerTakesADispatchURLWithNoTokenFile(t *testing.T) {

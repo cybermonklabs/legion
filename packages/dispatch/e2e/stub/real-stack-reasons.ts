@@ -1,6 +1,6 @@
 /** Why each spec file's remaining rows stay on the real stack, read by `e2e/tools/row-map.ts`.
  *
- *  dispatch://INFRA-1407's k2 asks, for every row the change did not move, the server behaviour
+ *  dispatch://POMJU-1407's k2 asks, for every row the change did not move, the server behaviour
  *  its assertion depends on. The reasons are here rather than as a comment in each of the
  *  hundred and forty spec files that keep rows, because a comment in each would touch every
  *  file of a suite several trees edit at once and conflict with all of them; gathering them

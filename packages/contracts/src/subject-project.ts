@@ -30,7 +30,7 @@ function projectOfToken(token: string | undefined): string {
   return token !== undefined && PROJECT_KEY_PATTERN.test(token) ? token : NO_PROJECT;
 }
 
-/** The project of an issue key (`INFRA` of `INFRA-12`), or undefined for a token that is no issue
+/** The project of an issue key (`POMJU` of `POMJU-12`), or undefined for a token that is no issue
  * key: `DISPATCH_KEY_PATTERN` with a project part that is a project key. */
 export function issueProject(key: string): string | undefined {
   const project = DISPATCH_KEY_PATTERN.exec(key)?.[1];
@@ -187,7 +187,7 @@ function keptLane(topic: string): { kind: string; rest: string[] } | undefined {
 
 /**
  * The new form of an old-form topic, and whether `topic` was in the old form: an issue's topic
- * naming its key alone (`notifications.dispatch.issue.INFRA-12.>`) gains its key's project, a
+ * naming its key alone (`notifications.dispatch.issue.POMJU-12.>`) gains its key's project, a
  * session's own agent subject (`notifications.agent.<session>`) gains a wildcard project, and a
  * role lane gains its role's project (`roleProject`); a failed-delivery report of one, and a kept
  * role lane, follow the name they carry. Every other topic, a wildcard where the old form's key,
@@ -242,9 +242,9 @@ function isProjectPosition(token: string | undefined): boolean {
  * with none: an issue's topic under its key's own project names its key alone; one session's agent
  * subject and one role's lane under any project name the session and the role alone; a
  * failed-delivery report and a kept lane follow the name they carry. A topic over every issue of a
- * project (`notifications.dispatch.issue.INFRA.>`) has no old form, since no subject pattern names
+ * project (`notifications.dispatch.issue.POMJU.>`) has no old form, since no subject pattern names
  * the issues of one project in the old form. Nor has an issue's topic under a wildcard project
- * (`notifications.dispatch.issue.*.INFRA-12.>`): its old form would overlap it, and a session
+ * (`notifications.dispatch.issue.*.POMJU-12.>`): its old form would overlap it, and a session
  * consumer handed both would be reduced to a filter over every project's issues; the new form alone
  * already reaches the key's own project.
  */
@@ -290,7 +290,7 @@ export function topicForms(topic: string): string[] {
 
 /**
  * A claimed role read in either form: the new form names its project and then the role
- * (`INFRA.legion-infra-infra-12-architect`, `_.lead-reviewer`), and the old form, the role alone,
+ * (`POMJU.legion-pomju-pomju-12-architect`, `_.lead-reviewer`), and the old form, the role alone,
  * works for the project its name says (`roleProject`). A role's name holds no dot
  * (`roles.PatternString`), so a name that is not the new form is the old one, and is left to the
  * role check to refuse.
@@ -319,8 +319,8 @@ const ISSUE_EVENT_KEY = /^([A-Z][A-Z0-9]*)-[0-9]+$/;
 
 /**
  * The issue key an issue event's name carries, in either form: the new form names the key's own
- * project and then the key (`notifications.dispatch.issue.INFRA.INFRA-12.<type>`), and the old form
- * the key alone (`notifications.dispatch.issue.INFRA-12.<type>`), with `legacy` true. Undefined for
+ * project and then the key (`notifications.dispatch.issue.POMJU.POMJU-12.<type>`), and the old form
+ * the key alone (`notifications.dispatch.issue.POMJU-12.<type>`), with `legacy` true. Undefined for
  * a name of the family whose key is in neither form, a project that is not the key's own among
  * them, and for a name of any other family. A key is read by `ISSUE_EVENT_KEY`, the shape every
  * daemon has accepted. The old form is read until it is refused only.

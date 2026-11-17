@@ -1,6 +1,6 @@
 package workflow
 
-// A worker that holds its issue's phase always has its task: dispatch://INFRA-714 R7. After a
+// A worker that holds its issue's phase always has its task: dispatch://POMJU-714 R7. After a
 // restart — the process relaunched, the claim retried, the session resumed — the start row that
 // moved the issue into this phase ran long ago, and nothing else sends the worker anything. 48
 // waits totalling 301 hours followed a restart after which the daemon sent nothing.
@@ -180,7 +180,7 @@ func TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted(t *testing.T) {
 
 // A failed claim's notices name both of the causes the claim recorded — why its process last died
 // and why its last start failed — since the architect reading them has no other way to learn
-// either (dispatch://INFRA-714 R6).
+// either (dispatch://POMJU-714 R6).
 func TestAFailedClaimsNoticesNameTheDeathAndTheFailedStart(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",

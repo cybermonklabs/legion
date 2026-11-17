@@ -28,7 +28,7 @@ import (
 // working takes none of them. This drives the durable workflow and outbox through phase changes,
 // an awaiting-person hand-back and answer, two child re-entries, boot/tick reconciliation, and a
 // pass of the idle tick with release on: no suspend, no issue-suspend and no idle release may
-// appear at any layer. The release (INFRA-945) is the one exception that acts on an issue still in
+// appear at any layer. The release (POMJU-945) is the one exception that acts on an issue still in
 // the workflow, so it is the one this case has to keep out, and it is told from every other stop
 // by its own kind and op: an `issue_release` row and `supervise` rows whose op is `release`,
 // against the `issue_suspend` row and the `suspend` op of a stop that ends a claim's phase.
@@ -251,7 +251,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 
 // TestOpenIssueSuspensionInvariantKeepsTheExceptions enumerates every stop an open issue's claims
 // may take: the tree move that carries a child, the three statuses that take an issue out of the
-// workflow, and the idle release (INFRA-945), the one of them that leaves the issue in the
+// workflow, and the idle release (POMJU-945), the one of them that leaves the issue in the
 // workflow and brings its pod back at the next wake for one of its roles. Each is told from the
 // others by the kind and op it writes. TestTheStoreRecordsWhoSuspendedAClaim covers the
 // operator's real POST /legion/v1/operator/claims/{token}/suspend route, and

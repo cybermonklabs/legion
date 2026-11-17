@@ -505,7 +505,7 @@ never happening: the one that adds each issue's repository (migration `0113`) ho
 until you clear the parent of an ancestor that still loads. That release was deployed with the
 running server stopped first, and no server older than it has run against the database since.
 
-The release that moves live updates onto one WebSocket per tab and keys every write (INFRA-258)
+The release that moves live updates onto one WebSocket per tab and keys every write (POMJU-258)
 is one of those changes: deploy it with no server of the earlier version running. An earlier
 server ignores a write's `Idempotency-Key`, so while both run a write whose answer was lost can be
 run once by each: the page and the `dispatch` command both retry such a write, and its retry can

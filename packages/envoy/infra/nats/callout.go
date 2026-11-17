@@ -7,7 +7,7 @@ import (
 )
 
 // AuthCalloutArgs are a NATS server's authorization callout, the schema type nats:AuthCallout: the
-// auth service (dispatch://INFRA-840) admits every client that is not one of the server's keyed
+// auth service (dispatch://POMJU-840) admits every client that is not one of the server's keyed
 // users. They mirror core.AuthCallout field for field.
 type AuthCalloutArgs struct {
 	Issuer      string `pulumi:"issuer"`      // the account public key whose seed signs the service's answers

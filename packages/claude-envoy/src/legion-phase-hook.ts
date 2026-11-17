@@ -22,7 +22,7 @@ import { z } from "zod"
 import { configuredValue } from "./claude-session"
 
 /**
- * The endless phase reminder's Claude Code host (INFRA-220). A Claude Code phase worker runs no Oh
+ * The endless phase reminder's Claude Code host (POMJU-220). A Claude Code phase worker runs no Oh
  * My Pi process, so the machine `packages/pi-shared/src/phase-reminder.ts` holds — the one
  * `packages/pi-legion/extensions/legion.ts` drives from Oh My Pi's session hooks — is driven here
  * instead, from Claude Code's own hooks: each fires an `mcp_tool` hook against `legion_phase_hook`
@@ -49,7 +49,7 @@ import { configuredValue } from "./claude-session"
  * this worker, so a single transient refusal would otherwise leave the issue idle. What stops
  * the reminding for good is the runner's record check, which drops every reminder once the
  * daemon has failed this role's claim — the refused turns themselves are counted by the bridge,
- * which reports each turn's outcome to the daemon (INFRA-714).
+ * which reports each turn's outcome to the daemon (POMJU-714).
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -177,7 +177,7 @@ export interface PhaseHookDeps {
   /** A turn of this session has started, whatever started it: the daemon's task, an Envoy
    * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
    * deferred role claim (`startLegionClaim`'s `onFirstTurn`), so the session takes its Envoy
-   * name inside a turn that is already running (INFRA-1573). It is called for every
+   * name inside a turn that is already running (POMJU-1573). It is called for every
    * `UserPromptSubmit`, and the server decides which of them counts: one before the boot
    * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
    * name is taken costs nothing. */
@@ -186,7 +186,7 @@ export interface PhaseHookDeps {
    * check's bound passes (`PhaseReminderDeps.readState`). */
   readonly readState: (signal: AbortSignal) => Promise<LegionState>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
-   * idle rule can decide whether the pane's pod may be released (INFRA-945). */
+   * idle rule can decide whether the pane's pod may be released (POMJU-945). */
   readonly reportActivity: (input: ActivityInput) => Promise<void>
   /** Writes one line into the session over the bridge's inbox, which turns it into a user turn,
    * and resolves once the bridge has queued it. Undefined for a session outside a Legion pane,
@@ -422,7 +422,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   reminder.restore(restored.entry)
 
   /**
-   * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
+   * POMJU-945: what this session is doing, reported to the daemon as each turn settles, so the
    * idle rule can decide whether the pane's pod may be released. Claude Code's only sight of
    * background work is the `Stop` hook's `${background_tasks}`, so this host reports at the
    * settle and nowhere else; the one kind it can name is a Claude Code background task.

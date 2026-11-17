@@ -1,6 +1,6 @@
 -- 20261111181500_pod_resume_seen_release.up.sql — a resume records the release it was taken
 -- after, so the heal of a stuck resume asks one question and the wake that wrote the row
--- answered it (dispatch://INFRA-714).
+-- answered it (dispatch://POMJU-714).
 --
 -- seen_release is the newest release of the issue, of whatever kind, at the moment the wake was
 -- taken. It is not the release the wake ends: release_id beside it is that one, and it is read

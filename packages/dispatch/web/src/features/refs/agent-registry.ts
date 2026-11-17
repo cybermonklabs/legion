@@ -18,7 +18,7 @@ import type { Agent } from "../../api/types";
 /** A session's running state, from the registry only. `running`: listed by the latest
  *  successful read, with the listener calling it live. `unresponsive`: listed, but past the
  *  listener's live window and inside its gone horizon - it has missed heartbeats, it has not
- *  ended, and it keeps its roles and claims (dispatch://INFRA-392). `not-running`: the latest
+ *  ended, and it keeps its roles and claims (dispatch://POMJU-392). `not-running`: the latest
  *  read succeeded and does not list it. `unknown`: no successful read yet, or the latest read
  *  failed. A row from a server that names no state is `running`, which is what membership alone
  *  ever meant. */

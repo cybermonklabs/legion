@@ -712,7 +712,7 @@ func TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue(t *testing.T) {
 	secret := func(name string) AuthorizationDetail {
 		return AuthorizationDetail{Type: KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	reason := "work on INFRA-1353 today"
+	reason := "work on POMJU-1353 today"
 	body := func(seconds *int) Body {
 		b := podBody("eyJ.fake.jws")
 		b.LifetimeSeconds = seconds
@@ -830,7 +830,7 @@ func TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound(t *testing.T)
 	}
 	one := []AuthorizationDetail{secret("DEEL_API_KEY")}
 	two := []AuthorizationDetail{secret("DEEL_API_KEY"), secret("SLACK_MCP_XOXP_TOKEN")}
-	issue := "unblock INFRA-1353"
+	issue := "unblock POMJU-1353"
 	for _, c := range []struct {
 		name         string
 		body         Body
@@ -915,14 +915,14 @@ func TestIssueKeyInReason(t *testing.T) {
 	for _, c := range []struct{ reason, want string }{
 		{"", ""},
 		{"deploying the broker", ""},
-		{"INFRA-1352", "INFRA-1352"},
-		{"work on INFRA-1352 today", "INFRA-1352"},
-		{"INFRA-1352 then LEGION-587", "INFRA-1352"},
-		{"blocked by LEGION-587, see INFRA-1352", "LEGION-587"},
-		{"(INFRA-1352) the airlock", "INFRA-1352"},
-		{"dispatch://INFRA-1352/ask/3", "INFRA-1352"},
+		{"POMJU-1352", "POMJU-1352"},
+		{"work on POMJU-1352 today", "POMJU-1352"},
+		{"POMJU-1352 then LEGION-587", "POMJU-1352"},
+		{"blocked by LEGION-587, see POMJU-1352", "LEGION-587"},
+		{"(POMJU-1352) the airlock", "POMJU-1352"},
+		{"dispatch://POMJU-1352/ask/3", "POMJU-1352"},
 		{"infra-1352 lower-cased is no key", ""},
-		{"INFRA- is no key, nor is -1352", ""},
+		{"POMJU- is no key, nor is -1352", ""},
 		{"an UPPERCASE word and 1352 apart", ""},
 	} {
 		if got := IssueKeyInReason(c.reason); got != c.want {

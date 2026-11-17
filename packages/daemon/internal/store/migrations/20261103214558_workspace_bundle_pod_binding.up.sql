@@ -1,6 +1,6 @@
 -- 20261103214558_workspace_bundle_pod_binding.up.sql — a saved workspace bundle names the pod its
 -- work came off, and its one restore attempt is bound to the first other pod that asks for it,
--- whether that pod is sent the work or refused (INFRA-945).
+-- whether that pod is sent the work or refused (POMJU-945).
 --
 -- source_pod_uid is the uid of the pod the release took the work off: the pod the save's own
 -- BundleWorkspace asked, as the claim's locator recorded it (sandbox's Runtime.BundleWorkspace,

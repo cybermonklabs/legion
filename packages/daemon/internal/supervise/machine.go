@@ -450,7 +450,7 @@ type Claim struct {
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row, and 0
 	// for a claim whose last turn ended with none (promptResulted). At providerErrorRunTold the
 	// project's controller is told once, and not again until a turn with no error puts it back to
-	// zero. It bounds nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a
+	// zero. It bounds nothing: R2 of dispatch://POMJU-956 forbids an attempt limit here, since a
 	// limit would fail every claim of a project at once in a provider outage.
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
@@ -543,7 +543,7 @@ func (h EntryHandshake) unconfirmed(d Delivery) (EntryHandshake, bool) {
 }
 
 // StepRecord is the claim's record of its agent's last step: the last call the agent made, when
-// the daemon saw it, and when the turn that call belongs to began (INFRA-1274). The backstop that
+// the daemon saw it, and when the turn that call belongs to began (POMJU-1274). The backstop that
 // ends a turn whose agent has stopped stepping reads this and guesses nothing. The call it names
 // is replaced by the next call and cleared by nothing, so after a recovery — the hung process
 // ended, the claim relaunched, a turn begun on the replacement — it still names the call that
@@ -698,7 +698,7 @@ type ClaimView struct {
 	// behind is already rewriting the working copy the issue's roles share. So a reader deciding
 	// who may adopt that working copy counts a send in flight as a turn (the daemon's
 	// claimInTurn, supervise's Deps.IssueInTurn): two roles of one issue that each read the other
-	// as idle would otherwise adopt it at the same moment (dispatch://INFRA-314).
+	// as idle would otherwise adopt it at the same moment (dispatch://POMJU-314).
 	SendInFlight bool
 	// WakeWaiting is the wake the pacing holds over this claim until its turn (reserveWake), nil
 	// while none waits. It travels on the published view rather than behind the machine's lock
@@ -850,7 +850,7 @@ type Deps struct {
 	// about to be, and reports whether there is one. The roles of an issue work one jj workspace,
 	// so the adoption a phase task makes of its working copy is not a private act: one run while
 	// another role is in a turn moves that role's worker onto a commit of this role's
-	// (dispatch://INFRA-714), and a task that would adopt waits instead (sendPending). The daemon
+	// (dispatch://POMJU-714), and a task that would adopt waits instead (sendPending). The daemon
 	// answers it from the state its machines publish — a claim is StateWorking from its turn's
 	// start to its turn's end, and carries a send in flight from the moment its own prompt and
 	// that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
@@ -952,7 +952,7 @@ type Deps struct {
 	// process behind it gone (died), or a suspension has landed over a process a report found
 	// gone that no such judgement reached (suspendOverADeadProcess): the daemon's clean stop of
 	// that session's registration, which makes the listener read it `gone` at once rather than at
-	// the end of its live window (dispatch://INFRA-392). The claim's own session id is what it
+	// the end of its live window (dispatch://POMJU-392). The claim's own session id is what it
 	// carries, read before any path that clears it (forgetSession). Nil tells no one — a daemon
 	// with no Envoy listener — and a claim that recorded no session tells nothing. It is called
 	// inside the machine's decision, so it returns at once and does the call elsewhere.
@@ -1500,7 +1500,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // flight, if one is running (stopStart), and then waits for the decision that start belongs to as
 // every event does. Without that, suspending a worker whose pod is coming up waited out the whole
 // launch — minutes under Kubernetes, and 120 seconds was not enough for an operator's
-// `legion claims suspend` to be answered at all (dispatch://INFRA-714 R10). The cancelled start
+// `legion claims suspend` to be answered at all (dispatch://POMJU-714 R10). The cancelled start
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
 // process to stop (holdSuspendUntilReady).
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
@@ -1664,7 +1664,7 @@ func (c Claim) ReleasedLaunch() bool {
 // supersedes): a tree's root architect's task of an earlier run, or of a lower entry of the same
 // run, that carries an entry of its own and that nothing of is in the agent's hands. Sent here,
 // it would be the re-admitted architect's first prompt — a task saying what was true of a run
-// that is over (dispatch://INFRA-2614 R3) — and the start's own task, the one the transition that
+// that is over (dispatch://POMJU-2614 R3) — and the start's own task, the one the transition that
 // raised the newer entry wrote (R4), would wait behind its turn. The start's delivery retires it
 // unsent instead (queue), which releases the decisions it names for the catch-up that follows to
 // tell. A start of no entry supersedes nothing, and a held task of no entry, a wake's
@@ -1836,7 +1836,7 @@ func deliveredCheckLook(d Delivery) CheckLook { return d.CheckLook }
 //     Oh My Pi's own agent_start names no prompt, so a turn that starts with no prompt of the task
 //     in flight or outstanding (Machine.outstanding) is indistinguishable from a turn of the
 //     agent's own and confirms nothing; and a turn an Envoy message starts can run the whole
-//     phase before the phase's task is sent at all, which is what INFRA-264's tester did — it
+//     phase before the phase's task is sent at all, which is what POMJU-264's tester did — it
 //     registered on a fresh claim, a message to its role topic started its first turn six
 //     seconds later, and its completion was refused as belonging to no run. A worker on its
 //     first task would otherwise have its completion refused. A task the daemon has not sent, or
@@ -2368,7 +2368,7 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 // intent that mark came from goes back on the machine where that retry runs, so the relaunch it
 // raises waits under the lane's own kind rather than under the launch kind every other launch
 // takes — the restoration a refused turn's retry takes, from the same wrapper (retryHolding,
-// runWake, reserveWake, dispatch://INFRA-2712 R4).
+// runWake, reserveWake, dispatch://POMJU-2712 R4).
 //
 // It is also where the process a relaunch replaces is let go, for cause, and what that process
 // ended is recorded before the first try's write moves the generation and clears the process's
@@ -2537,7 +2537,7 @@ func (m *Machine) stoppedAStart() bool {
 // again, and sessionStoreReport how often the issue and the controller are told while that lasts:
 // a store outage is a deployment fault a person fixes, so the claim keeps its session and waits
 // for it rather than spending a launch budget on it, and the people who can fix it hear of it at
-// once and then once an hour rather than every minute (dispatch://INFRA-714 R8).
+// once and then once an hour rather than every minute (dispatch://POMJU-714 R8).
 const (
 	sessionStoreRetry  = time.Minute
 	sessionStoreReport = time.Hour
@@ -2848,7 +2848,7 @@ type AbandonedSession struct {
 	// the first task it actually takes and in no later one, and ToldBy is the delivery whose
 	// confirmation told it, as confirm states. A sentence told twice is the harmless way round,
 	// where losing it strands a worker reading an empty transcript as a fresh start
-	// (dispatch://INFRA-714).
+	// (dispatch://POMJU-714).
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }
@@ -3041,7 +3041,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // make is the one this end replaces, and the credit of the refresh gate a refresh of the
 // stale-plugin lane held for that wake goes back at the end of this decision, which is where a
 // credit whose wake is gone goes back wherever that wake went (endRefreshLane,
-// dispatch://INFRA-2712 R1) — no send talks to it, no prompt of the pending task waits on a
+// dispatch://POMJU-2712 R1) — no send talks to it, no prompt of the pending task waits on a
 // result from it (Machine.outstanding: the process that would answer is gone, and the next one
 // is sent the task anew), no suspension is held for its turn,
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
@@ -3535,7 +3535,7 @@ func HoldsCapability(state ClaimState) bool {
 // or idle. A registered claim has not: the daemon records the registration before the agent's
 // plugin reports ready, so a publish then still reaches the session that held the role before.
 //
-// Since INFRA-1573 the ready comes before the Envoy role as well — the plugin claims the role at
+// Since POMJU-1573 the ready comes before the Envoy role as well — the plugin claims the role at
 // its session's first turn, or at a bound if no turn comes — so a claim this answers true for
 // may not answer to its name yet. The listener refuses a publish to a role no live session holds
 // with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not one rule:

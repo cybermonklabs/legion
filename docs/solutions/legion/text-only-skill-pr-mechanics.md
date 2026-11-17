@@ -132,7 +132,7 @@ and change every hit in the same commit; the tester's greps for the new phrase e
   filed it (LEGION-168), and had to decide whether the omission was concealment. Name the failed
   run and say why it is not yours; a reviewer who verifies on GitHub will find it either way.
 
-  **Superseded 2026-10-23 (dispatch://INFRA-83):** there is no `CI:` line to fill. The PR-body
+  **Superseded 2026-10-23 (dispatch://POMJU-83):** there is no `CI:` line to fill. The PR-body
   template (`skills/legion-worker/references/pr-body.md`) no longer carries one, and no role records
   a check result for a later step to trust: the tester and the reviewer each read CI on GitHub at the
   head they are judging and record none of it (the reviewer's own four GitHub reads are in

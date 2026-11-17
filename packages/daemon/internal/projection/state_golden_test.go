@@ -34,13 +34,13 @@ var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this 
 // schema parses it (packages/contracts/src/legion-api.test.ts), and the plugin's daemon-launched
 // controller reads it as its daemon's state (packages/pi-legion/extensions/legion.test.ts).
 //
-// It carries what Legion is waiting for too (INFRA-225), judged from the project's mirror: the
+// It carries what Legion is waiting for too (POMJU-225), judged from the project's mirror: the
 // child LEGION-209, held at `admitted` behind an issue still in progress, and the waiting root
 // LEGION-210, behind one the daemon has never observed and so cannot call finished. LEGION-211
 // waits in the same line on an issue of its own, and is in neither `blocked` nor any judgement:
 // a root carrying a run is work already under way.
 //
-// It carries the trees too (dispatch://INFRA-980): LEGION-208's lifecycle stands open under the
+// It carries the trees too (dispatch://POMJU-980): LEGION-208's lifecycle stands open under the
 // workflow, and the two roots waiting in the line are live trees of their own, so `trees` names
 // three roots while one issue alone holds a slot — which is the reading `active` can no longer
 // give. Each issue's `tree` names its root, so the child LEGION-209 is told from the three roots.
@@ -75,7 +75,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 	}
 	architectLocator := sandboxLocator(architect, "legion-legion-legion-208", "4b7e1c2a-0d93-4f6e-8a51-3c2f9e7d1b04", 1)
 	// The architect's session sent its live rows on a `claims/ready` of its own, measured at an
-	// idle tick of its own interval rather than at its boot (LEGION-663, INFRA-927), from the
+	// idle tick of its own interval rather than at its boot (LEGION-663, POMJU-927), from the
 	// process the locator names, so the fixture carries a claim's capability report; the
 	// controller measures nothing and sends none, and its claim is on no issue besides.
 	reports := map[claim.Token]capabilities.Report{

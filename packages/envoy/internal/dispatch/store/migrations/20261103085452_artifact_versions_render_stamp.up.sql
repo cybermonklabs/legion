@@ -1,7 +1,7 @@
 -- 20261103085452_artifact_versions_render_stamp.up.sql — what a version's markdown was rendered
 -- from, so a read serves it instead of rendering the document again.
 --
--- sjawhar/legion#2712 (INFRA-635): a version already stores the markdown of the tree its writer
+-- sjawhar/legion#2712 (POMJU-635): a version already stores the markdown of the tree its writer
 -- wrote, and a text read of the document renders that same tree over again (docs' TextWithToken).
 -- These four columns say which state the stored markdown is the rendering of, so a read that finds
 -- the document still standing in that state serves the stored text:

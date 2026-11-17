@@ -21,8 +21,8 @@ import (
 // test in this file starts from.
 func judgedGrant(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, lifetime int, names ...string) string {
 	t.Helper()
-	req := pendingJudgeable(t, m, enrollmentID, key, "INFRA-1353 wants it", lifetime, names...)
-	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "issue": "INFRA-1353"})
+	req := pendingJudgeable(t, m, enrollmentID, key, "POMJU-1353 wants it", lifetime, names...)
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "issue": "POMJU-1353"})
 	if err != nil || dec.GrantID == "" {
 		t.Fatalf("ApplyJudgeDecision(%v) = %+v, %v; want a grant", names, dec, err)
 	}
@@ -99,7 +99,7 @@ func TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner(t *testing.T) {
 			// Another session of the owner's holds a grant of the same secret that the owner
 			// approved themselves, which every assertion below answers for too.
 			own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-			pending := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+			pending := pendingJudgeable(t, m, own, ownKey, "POMJU-1353 wants it on the other box", 600, "DEEL_API_KEY")
 			byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
 			if err != nil || byOwner.GrantID == "" {
 				t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)
@@ -163,7 +163,7 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 		// Another session of the owner's holds a grant of the same secret that the owner
 		// approved themselves, which every assertion below answers for too.
 		own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-		pending := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+		pending := pendingJudgeable(t, m, own, ownKey, "POMJU-1353 wants it on the other box", 600, "DEEL_API_KEY")
 		byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
 		if err != nil || byOwner.GrantID == "" {
 			t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)
@@ -202,13 +202,13 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 	t.Run("the next request ends it rather than handing it back", func(t *testing.T) {
 		m, session, key := newJudgeFixture(t)
 		judged := judgedGrant(t, m, session, key, 600, "DEEL_API_KEY")
-		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it again", 600, "DEEL_API_KEY"), "", nil)
+		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "POMJU-1353 wants it again", 600, "DEEL_API_KEY"), "", nil)
 		if err != nil || reused.GrantID == nil || *reused.GrantID != judged {
 			t.Fatalf("a request for the same name and lifetime while the secret is an ordinary one = %+v, %v; want the judged grant %s handed back", reused, err, judged)
 		}
 
 		retag(t, m, deelAsAdmin())
-		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "", nil)
+		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "POMJU-1353 wants it once more", 600, "DEEL_API_KEY"), "", nil)
 		if err != nil || again.GrantID != nil || again.State != "pending" {
 			t.Fatalf("Create once the secret is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
 		}

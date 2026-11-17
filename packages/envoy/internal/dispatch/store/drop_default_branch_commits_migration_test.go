@@ -6,7 +6,7 @@ import (
 )
 
 // dropDefaultBranchCommitsVersion drops default_branch_commits, the per-repository commit cache
-// 20261107234701_branch_commits replaced with one keyed by the branch as well (INFRA-1700).
+// 20261107234701_branch_commits replaced with one keyed by the branch as well (POMJU-1700).
 const dropDefaultBranchCommitsVersion = 20261110004829
 
 // TestMigrationDropsTheDefaultBranchCommits runs the shipped files: the replaced cache's table is

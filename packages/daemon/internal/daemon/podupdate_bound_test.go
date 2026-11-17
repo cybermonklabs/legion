@@ -1,6 +1,6 @@
 package daemon
 
-// The round's bound (dispatch://INFRA-2981 R2, R3, R5, R6, R8): a round ends as soon as every
+// The round's bound (dispatch://POMJU-2981 R2, R3, R5, R6, R8): a round ends as soon as every
 // claim it asks has answered and no turn runs, and at its bound — pod_update_grace_minutes after
 // it opened — whatever its roles said. An operator's suspension is the one wait the bound does not
 // step over, and the controller is told only of a round something holds past its bound, once, at
@@ -424,7 +424,7 @@ func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenItsPodIsGone(t *testing
 // and the displaced path brings the tester back in the pod that replaced it. The claims record
 // that other pod in the round's own place, which says the round's pod went whatever the
 // operator's suspension says, so the round ends at that sweep before any hold is read
-// (reconcileIssuePodUpdate, dispatch://INFRA-3276 R5), with nothing lost and nothing told, and
+// (reconcileIssuePodUpdate, dispatch://POMJU-3276 R5), with nothing lost and nothing told, and
 // nothing is replaced. Read the hold first, the round would wait for the operator's resume over a
 // pod that is gone, and tell the controller of a suspension that holds nothing.
 func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenAnotherPodIsInItsPlace(t *testing.T) {

@@ -84,7 +84,7 @@ type Settings struct {
 	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
 	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
 	// project's controller once for that tree; which quiet trees are told is admit's
-	// tellStalledTrees (dispatch://INFRA-2560 R5). No value turns that notice off, since the
+	// tellStalledTrees (dispatch://POMJU-2560 R5). No value turns that notice off, since the
 	// loader refuses zero for every key in hours; a deployment that wants fewer notices raises the
 	// number.
 	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`

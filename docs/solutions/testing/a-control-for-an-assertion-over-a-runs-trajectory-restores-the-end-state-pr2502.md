@@ -15,7 +15,7 @@ related_issues:
 
 # A control for an assertion over a run's trajectory restores the end state, and spares the rows it does not name
 
-Extends docs/solutions/testing/a-regression-row-fails-for-the-mechanism-it-names-INFRA-66.md.
+Extends docs/solutions/testing/a-regression-row-fails-for-the-mechanism-it-names-POMJU-66.md.
 That document requires the row to fail **and** the failure to be attributable to the mechanism it
 names. The delta here is the shape of the fault you inject when the new assertion reads the
 samples a run passes through — a scroll trace, a frame log, a call sequence — while the row's

@@ -2993,15 +2993,15 @@ func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
 		// The Legion agent registry bounds and checks every name it keys before NATS sees it, so
 		// each is its 400 naming the field.
 		{"read a long legion agent's entry", http.MethodGet, "/v1/legion/agents/sessions/" + long, "", http.StatusBadRequest},
-		{"record a long legion agent", http.MethodPut, "/v1/legion/agents/sessions/" + long, legionEntry(long, "INFRA-1", "tester", "2026-10-26T03:15:00Z"), http.StatusBadRequest},
-		{"record a batch holding a long legion agent", http.MethodPut, "/v1/legion/agents", `{"entries":[` + legionEntry(long, "INFRA-1", "tester", "2026-10-26T03:15:00Z") + `]}`, http.StatusBadRequest},
+		{"record a long legion agent", http.MethodPut, "/v1/legion/agents/sessions/" + long, legionEntry(long, "POMJU-1", "tester", "2026-10-26T03:15:00Z"), http.StatusBadRequest},
+		{"record a batch holding a long legion agent", http.MethodPut, "/v1/legion/agents", `{"entries":[` + legionEntry(long, "POMJU-1", "tester", "2026-10-26T03:15:00Z") + `]}`, http.StatusBadRequest},
 		{"read a long role token's legion agents", http.MethodGet, "/v1/legion/agents/roles/legion-" + long + "-infra-1-tester", "", http.StatusBadRequest},
-		{"read a long issue's legion agents", http.MethodGet, "/v1/legion/agents?issue=INFRA-" + strings.Repeat("1", 5000), "", http.StatusBadRequest},
+		{"read a long issue's legion agents", http.MethodGet, "/v1/legion/agents?issue=POMJU-" + strings.Repeat("1", 5000), "", http.StatusBadRequest},
 		{"read the legion agent entry of a session id outside the key alphabet", http.MethodGet, "/v1/legion/agents/sessions/ses:bad", "", http.StatusBadRequest},
-		{"record a legion agent outside the key alphabet", http.MethodPut, "/v1/legion/agents/sessions/ses:bad", legionEntry("ses:bad", "INFRA-1", "tester", "2026-10-26T03:15:00Z"), http.StatusBadRequest},
+		{"record a legion agent outside the key alphabet", http.MethodPut, "/v1/legion/agents/sessions/ses:bad", legionEntry("ses:bad", "POMJU-1", "tester", "2026-10-26T03:15:00Z"), http.StatusBadRequest},
 		{"read the legion agent entry of a session id holding an empty token", http.MethodGet, "/v1/legion/agents/sessions/ses..x", "", http.StatusBadRequest},
 		{"read the legion agents of a role token holding an empty token", http.MethodGet, "/v1/legion/agents/roles/legion..infra-1-tester", "", http.StatusBadRequest},
-		{"read the legion agents of an issue outside the key alphabet", http.MethodGet, "/v1/legion/agents?issue=INFRA:1", "", http.StatusBadRequest},
+		{"read the legion agents of an issue outside the key alphabet", http.MethodGet, "/v1/legion/agents?issue=POMJU:1", "", http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
@@ -3820,7 +3820,7 @@ func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 // A registration naming a topic no stream subject captures keeps the rest of itself: the topic
 // is left out, the answer stays 200 and one warning names it, as a private stream subject beside
 // it is handled. The body here is the one a session on an older plugin build sends during the
-// rollout of INFRA-771: its stored row holds the bare notifications.team that build expanded
+// rollout of POMJU-771: its stored row holds the bare notifications.team that build expanded
 // notifications.team.> to, so it registers that topic beside the team topic it follows, and a
 // refusal would leave it with no session consumer at all, at every heartbeat.
 func TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest(t *testing.T) {
@@ -3909,7 +3909,7 @@ func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *t
 // The controller notice lane of the project whose controller role a session holds is the one
 // private stream subject its registration stores: a Legion controller receives those notices from
 // its own consumer, whose filter is built from the stored topics, and no longer from a core
-// subscription of its own (INFRA-771). The lane is answered, stored and routed by the listener's
+// subscription of its own (POMJU-771). The lane is answered, stored and routed by the listener's
 // fan-out (Registry.Match), with the issue topic the session also follows.
 func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *testing.T) {
 	rig := newInterestRig(t)
@@ -4474,7 +4474,7 @@ func TestSessionEntryRouteRefusesAViewValueItDoesNotKnow(t *testing.T) {
 
 // Every role answer names the holder's state under one field, holder_state: the 404 of a lapsed
 // holder named it already, and the 200 of a live one and the publish route's 200 now name it too
-// (dispatch://INFRA-392, R1, which puts the role lookup and the role publish among the answers
+// (dispatch://POMJU-392, R1, which puts the role lookup and the role publish among the answers
 // that carry the state). A client then reads one field from every role answer instead of
 // inferring live from the status code.
 func TestRoleAnswersNameALiveHoldersState(t *testing.T) {

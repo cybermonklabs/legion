@@ -358,7 +358,7 @@ const legionMergeState = z.enum([
  * testing, and an approval through retro and every phase after it; absent until a review in a
  * round decides. `state` is always present: a recorded pull request is open, merged or closed.
  * No CI verdict and no fix-attempt count ride here: a CI result moves no issue, so the daemon
- * keeps neither (dispatch://INFRA-714/spec R1), and `mergeState` is what says whether a check the
+ * keeps neither (dispatch://POMJU-714/spec R1), and `mergeState` is what says whether a check the
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
  * until contract 59 removed the count. */
 const legionPullRequestView = z.object({
@@ -620,7 +620,7 @@ const legionPendingStatusWrite = z.object({
  * Who suspended a suspended one is not here and must never be added: a session parses this body
  * with the schema of the contract its plugin was built at, and a Kubernetes deployment relaunches
  * no stale session, so a key added here refuses the whole state in every pod still on an image
- * whose plugin predates INFRA-1048, where the answer side still refused a key it did not name.
+ * whose plugin predates POMJU-1048, where the answer side still refused a key it did not name.
  * The operator claim routes serve it, and no plugin calls them
  * ("no session-facing response carries suspendedBy" in legion-api.test.ts). */
 const legionStrandedClaim = z.object({
@@ -924,7 +924,7 @@ const legionHeldIssue = z.object({
 
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
- * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
+ * the cap counts the issues the daemon has started rather than the trees (dispatch://POMJU-980):
  * `active` is every issue holding a slot and `waiting` the admission line, children as much as
  * roots, so one tree with three started children holds three slots. An issue holds one of the
  * cap's slots from the moment the daemon starts it until its work is past its review —
@@ -1702,7 +1702,7 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). */
+ * parent, whose own head proves their merged work (dispatch://POMJU-980). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

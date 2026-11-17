@@ -89,7 +89,7 @@ func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 // escaped and cut to shimwire.MemoryKillExecutableBytes (escaped). It holds none of p's arguments,
 // and the guard masks nothing: an argument is text the process chose, and it may hold a credential
 // no masking rule names, such as a positional password, while the role that started the process
-// already has its arguments (dispatch://INFRA-3557, W4).
+// already has its arguments (dispatch://POMJU-3557, W4).
 func processName(p *Process) string {
 	name := p.Name
 	if p.Exe != "" {

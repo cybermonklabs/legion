@@ -20,10 +20,10 @@ import (
 
 // A child of a running tree whose record never left todo, while its phase went on to implementing,
 // is the shape 12 issues of a deployment stood in: the board read todo for hours of work (read
-// 2026-11-07, dispatch://INFRA-714 R2). The repair takes it: the status of the issue's phase is
+// 2026-11-07, dispatch://POMJU-714 R2). The repair takes it: the status of the issue's phase is
 // written to Dispatch and the record is put level with it in the same transaction, so the next run
 // finds nothing to repair. The tree's own lifecycle is what says it runs, not the root's slot
-// (dispatch://INFRA-980): a running root can hold no slot, as while it waits on another issue
+// (dispatch://POMJU-980): a running root can hold no slot, as while it waits on another issue
 // (blockers.waitsOf), so a repair that read the root's slot passed such a child over, which is
 // why the deployment's twelve stood.
 func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {

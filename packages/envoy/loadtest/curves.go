@@ -21,7 +21,7 @@ import (
 // its grid, how near a knee's bracket must be before it needs no refinement step, which of
 // passCriteria it judges, and whether it voids a step whose generator was starved. Two load-test
 // series read by two rules, so the rule is the command's -series flag and not a package constant:
-// the cluster series of INFRA-598, whose curves must keep reading as they do, and the Verified
+// the cluster series of POMJU-598, whose curves must keep reading as they do, and the Verified
 // Linux spec loop's.
 type curveSeries struct {
 	name string
@@ -43,11 +43,11 @@ type curveSeries struct {
 	// series' own and is load-bearing there, where every step is scaled against a 1x baseline of
 	// 60 requests a second; inherited by the loop series it labelled a baseline that drove no
 	// loop load "factor 1", in the same table as a 1x step that failed at that factor
-	// (INFRA-988).
+	// (POMJU-988).
 	ownFactorsOnly bool
 }
 
-// clusterSeries is INFRA-598's cluster series: the grid 1, 2, 3, 5, 7, 10, a knee refined until
+// clusterSeries is POMJU-598's cluster series: the grid 1, 2, 3, 5, 7, 10, a knee refined until
 // its bracket is 1.0 wide, and the six criteria (a) to (f). It is -series' default, so a reading
 // of that series says what it has always said.
 var clusterSeries = &curveSeries{
@@ -250,10 +250,10 @@ func configFactor(c summaryConfig) float64 {
 // (ownFactorsOnly) a step without one drove no load of that series at all and reads 0: it is a
 // control row, and borrowing configFactor's requests-over-60 rule labelled such a step "factor 1"
 // in CURVES.md and curves.csv, in the same table as a 1x step that failed at that factor
-// (INFRA-988, read off a baseline offering exactly 60 requests a second).
+// (POMJU-988, read off a baseline offering exactly 60 requests a second).
 //
 // It reads no factor out of the step's name, though the series' own steps are named "<f>x":
-// measured over INFRA-988's run, 28 of its 30 step directories with a summary carry
+// measured over POMJU-988's run, 28 of its 30 step directories with a summary carry
 // config.loop_factor and the two without it are its baselines, so no real file needs the name
 // read — and a tree that parses "diag-1x-writepath" or "2x-rerun" for a number would eventually
 // give a step a factor its run never drove. A directory with no summary.json at all is the one
@@ -275,7 +275,7 @@ func (se *curveSeries) stepFactor(c summaryConfig) float64 {
 // ask it, and they are one predicate because they must answer together: a step that reads
 // factor 0 and is not a control joins the knee walk at 0, where a passing baseline in front of
 // a failing 1x brackets the knee at (0, 1) and writes a 0.5x refinement the series never asked
-// for (INFRA-988).
+// for (POMJU-988).
 func (se *curveSeries) noOwnFactor(c summaryConfig) bool {
 	return se.ownFactorsOnly && c.LoopFactor <= 0
 }
@@ -337,7 +337,7 @@ func (s *curveStep) classify() curveKind {
 // hour rule above, which is tested first, takes them and every other 60-minute step of that
 // run out of it. This rule reaches the step that drove no loop load in a window under an hour.
 // Comparing steps by the configuration each one ran rather than by a factor is
-// dispatch://INFRA-2719's to design.
+// dispatch://POMJU-2719's to design.
 func (s *curveStep) droveNoSeriesLoad() bool {
 	if s.noSummary {
 		return false
@@ -424,7 +424,7 @@ func (s *curveStep) judge() {
 	// (f) asks the same of the file: a cgroup.json that holds no dispatch role is a sampler that
 	// gave the step no reading of Dispatch, which is the failure (f) is here to report, and a
 	// file of no roles at all is that failure at its widest. The step directory holding a file
-	// named cgroup.json is not what (f) asks (dispatch://INFRA-988).
+	// named cgroup.json is not what (f) asks (dispatch://POMJU-988).
 	v[critFailed] = check(s.sampledDispatch())
 }
 
@@ -444,7 +444,7 @@ func (s *curveStep) sampledDispatch() bool { return s.role(dispatchRoleName) != 
 // A step whose files say nothing about its generator is void too, and this is why: "not void" is
 // the claim that the generator kept up, and a step that recorded no config.generator_role, or no
 // cgroup.json, or a generator role with no cores mean against its machine's processors, holds
-// nothing that supports it (dispatch://INFRA-988). The deployment records the role for every step
+// nothing that supports it (dispatch://POMJU-988). The deployment records the role for every step
 // it runs (vm/vm.sh:2545 passes -generator-role vm-<host>), so a step of this series that carries
 // none was not run the way the series runs steps, and what it measured is unknown rather than
 // good. Void is the verdict for unknown: the step measures nothing until it is run again.
@@ -716,7 +716,7 @@ var (
 	colPGPeak        = curveCol{"postgres_cores_peak_5s", "Postgres cores peak 5 s", 2, false, coresPeak("postgres")}
 )
 
-// curveTables are the tables of CURVES.md before the Pass table: the root's six series (INFRA-514
+// curveTables are the tables of CURVES.md before the Pass table: the root's six series (POMJU-514
 // acceptance 3), then the pool and commit-order lock waiters.
 var curveTables = []curveTable{
 	{

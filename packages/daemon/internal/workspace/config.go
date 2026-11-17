@@ -50,7 +50,7 @@ const FetchTimeout = 30 * time.Minute
 // when every stream the cache allows at once is running (repocache.maxStreams), so only a
 // transfer that has stopped falls below it. A clock in its place threw away a download that was
 // still arriving, killed at 30 minutes with the feed it had written, and launched the issue again
-// into the same wait (INFRA-495): what tells a dead transfer from a long one is its speed, not
+// into the same wait (POMJU-495): what tells a dead transfer from a long one is its speed, not
 // how long it has run.
 const (
 	CacheStreamLowSpeedBytes = 1 << 20
@@ -808,7 +808,7 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 	// and on the tmux runtime this fetch holds the one-shot credential. A failed fetch returns its
 	// own error: no clone this code makes borrows objects from the feed (clone.go makes a plain
 	// local clone), so the connectivity scan that once diagnosed a clone whose borrowed history had
-	// gone had no case left and was deleted with the disk that carried such a clone (INFRA-80).
+	// gone had no case left and was deleted with the disk that carried such a clone (POMJU-80).
 	fetch := []string{"git", "fetch"}
 	for _, branch := range source.branches {
 		fetch = append(fetch, "--branch", exactName(branch))

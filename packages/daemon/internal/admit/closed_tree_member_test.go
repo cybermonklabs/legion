@@ -17,7 +17,7 @@ import (
 )
 
 // The tree a release here takes a member out of and the tree that takes it: closedTree's root is
-// finished with no linger left to run, which is the tree C4 of dispatch://INFRA-3107 calls
+// finished with no linger left to run, which is the tree C4 of dispatch://POMJU-3107 calls
 // closed, and liveTree is the tree whose architect releases its members.
 const liveTree, liveTreeChild, closedTree = "LEGION-168", "LEGION-169", "LEGION-500"
 
@@ -151,7 +151,7 @@ func seedClosedTreeAndItsTaker(t *testing.T, pool *pgxpool.Pool) string {
 }
 
 // A member of a closed tree that never started a phase is adopted by the tree whose architect
-// releases it, and that release makes a root of none of them: C4 of dispatch://INFRA-3107. The
+// releases it, and that release makes a root of none of them: C4 of dispatch://POMJU-3107. The
 // record enters the taking tree admitted, keeps the repository it was recorded with and takes the
 // generation it had raised by one, and nothing moves it but an architect's release — a pass over
 // the same records adopts nothing, and until a release comes the member stands in admission.held

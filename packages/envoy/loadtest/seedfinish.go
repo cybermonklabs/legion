@@ -51,7 +51,7 @@ const searchCoveragePath = "/api/v1/search/coverage"
 
 // The queries seed-finish runs. Each names the schema of every table it reads, for the reason
 // loopIDsDDL gives (loopseed_write.go): a schema named as the database's login is shadows
-// public for every unqualified name (dispatch://INFRA-988). The block-index tables do not
+// public for every unqualified name (dispatch://POMJU-988). The block-index tables do not
 // exist in a build older than migration 0121, which owes nothing; Postgres resolves every table
 // a statement names before it runs, so the existence check is its own query.
 const (
@@ -332,7 +332,7 @@ type coveragePoll struct {
 // What it demands of the database before it reports coverage at all is one issue. "Every kind
 // lacks no vector" is true of a database that holds nothing, so over an empty one the gate used
 // to log "meaning search covers the seed: 0 items current" and let the seed finish 0: coverage
-// of nothing read as coverage of the seed (dispatch://INFRA-988). The gate is the only step of
+// of nothing read as coverage of the seed (dispatch://POMJU-988). The gate is the only step of
 // seed-finish that reads the deployment -url names rather than the database -pg names, so it is
 // the only check that can catch a seed written to one database while -url reads another, and a
 // judge that passes when it read nothing catches nothing. One issue is the demand because every
@@ -414,7 +414,7 @@ type coverageKind struct {
 }
 
 // coverageKinds is every kind of a coverage body, in the order model.SearchCoverageKinds declares
-// them. Since INFRA-370 (migration 20261102233625_block_embedding_windows) a vector covers a
+// them. Since POMJU-370 (migration 20261102233625_block_embedding_windows) a vector covers a
 // window of neighbouring blocks rather than an item's whole text, so what the gate waits on are
 // the window kinds: an issue, and a window of a document's, a comment's or a message's blocks,
 // or of an ask's parts.

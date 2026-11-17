@@ -20,7 +20,7 @@ import (
 // channel under the same mutex and only Stops the timer, which does not wait for a callback already
 // running. A callback that fires while the message handler holds the mutex - the handler blocks
 // holding it once the 256-entry updates channel is full, as it is while the cache is slow to take a
-// record - and loses the mutex to pDone sends on a closed channel and panics the process (INFRA-261).
+// record - and loses the mutex to pDone sends on a closed channel and panics the process (POMJU-261).
 //
 // Each round holds the cache's first record, so the updates channel fills and the handler blocks,
 // closes the connection the watcher reads through, and lets the record go at a moment swept across

@@ -3,7 +3,7 @@ import { completeLines, writtenLines } from "./transcript-lines";
 
 // The defect these exist for: a pane appends to its transcript while a case polls it, so a read
 // can land between a line's bytes and its newline. Reverting `completeLines` to a plain
-// `split("\n")` turns the first two cases below red (dispatch://INFRA-2188).
+// `split("\n")` turns the first two cases below red (dispatch://POMJU-2188).
 test("completeLines keeps every finished line and nothing after the last newline", () => {
   expect(completeLines("")).toEqual([]);
   expect(completeLines("{}")).toEqual([]);

@@ -1257,7 +1257,7 @@ function agentStreamTurnText(index: number, chars: number): string {
  * session's, whose prose together fills `AGENT_STREAM_LIMITS.historyBytes`
  * (`packages/contracts/src/agent-stream.ts`). Both caps are the publisher's own, so this is the
  * heaviest transcript a live view can ever be handed, which is what a check of what an open view
- * costs needs behind every session it opens (INFRA-812).
+ * costs needs behind every session it opens (POMJU-812).
  */
 export function agentStreamConversationAtLimit(sessionID: string): Record<string, unknown> {
   const chars =

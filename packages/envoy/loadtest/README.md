@@ -60,7 +60,7 @@ same step before and after its change, and compares the two rows.
 | `pgstats.go` | `loadgen pg-statements` and `loadgen pg-size`: the step's own `pg-statements.json` (the window's slowest statements, after a reset at its start, and the lock waits its samples of `pg_locks` saw) and `pg-size.json` (the database's size before and after the load) |
 | `cgrouptables.go` | How `tables` and `curves` read a step's `cgroup.json` and `step-failed.json` |
 | `curves.go` | `loadgen curves`: `CURVES.md`, `curves.csv`, `KNEES.md` and `refine.txt` from cluster step directories (the pass rule, the knee rule and the refinement factors) |
-| `stepcheck.go` | `loadgen step-check`: one step directory judged against acceptance A3 of dispatch://INFRA-988, one line per clause, exit 1 on a failed one (The step directory, below) |
+| `stepcheck.go` | `loadgen step-check`: one step directory judged against acceptance A3 of dispatch://POMJU-988, one line per clause, exit 1 on a failed one (The step directory, below) |
 | `curvetrend.go` | `TREND.md`: the hour step's least-squares trend of Dispatch's cores, working set and heap |
 | `codepaths.go` | `loadgen codepaths`: `CODEPATHS.md` and `codepaths.json`, Dispatch's CPU and memory by code path beside the outage |
 | `outage-2026-10-26-buckets.csv` | Production's 10-minute buckets of the outage (Dispatch's cores and memory, mean and max), the default of `codepaths -outage-buckets` |
@@ -71,7 +71,6 @@ same step before and after its change, and compares the two rows.
 | `replay_reconstruct.go` | What `replay-fetch`'s cached logs, listings and texts make of a bundle: the state at the instant, the window, each document's version sizes and blocks, the roster, the counts and the anchor rules |
 | `replay_pack.go` | `loadgen replay-pack` and `replay-unpack`: a bundle (not `raw/`) as deterministic zstd tar parts, and back |
 | `replay_get.go` | `loadgen replay-verify-bundle`: `readBundle` on an unpacked bundle (every file against `bundle.meta.json`'s sha256), then one line of counts; `stack.sh replay-get`'s last check |
-| `replay-2026-10-26.json` | The replay manifest (The replay, below): the bundle's and the seed dump's parts, each a file artifact of the replay's issue (`LOADTEST_REPLAY_ISSUE`; the manifest names no issue) with its slug, version, bytes and sha256 |
 | `replay_seed_plan.go` | What the replay seed sends, decided from the bundle alone: issue numbers and placeholders (`-keys-file`), which comments are recreated and in what order, the sentences an anchor may fall back to, approval and issue-field mappings |
 | `replay_anchor.go` | The rest of the seed's pure decisions: `chooseAnchor`, where an anchor lands (its logged quote, else a sentence of its logged block or of the nearest surviving one), which the replay source calls as `substituteAnchor`; and `planHistory`, the size of every synthetic version so each changes as many bytes as production's, built from a padding paragraph and a removed run of sections |
 | `replay_seed.go` | `loadgen replay-seed`: recreates a bundle's state through Dispatch's API, mapping every logged id to its local one in `public.loadtest_replay_ids` and each anchor's rule in `public.loadtest_replay_anchors` as it goes, so a killed seed resumes; `-ops-log` writes one CSV row per write with Dispatch's CPU ticks around it |
@@ -88,16 +87,16 @@ same step before and after its change, and compares the two rows.
 | `refs-sample-2026-10-27.json` | The reference seed's input: for each of 160 production issues sampled on 2026-10-27, the version count of every member of its references answer. 160 arrays of numbers, no issue key and no name. |
 | `routes-2026-10-26-1719Z.txt` | The default route mix |
 | `routes-spec-loop-2026-11-03.txt` | The spec loop's route mix: the seven routes of its driver's reads (Route mix, below) |
-| `routes-spec-loop-sensitivity-2026-11-07.txt` | That mix with its two meaning searches served by the proposal's own comment listing, for INFRA-988's report (The sensitivity mix, below) |
-| `stack.sh` | The local stack: `setup`, `start`, `seed`, `reset` (and `reset --replay`), `restart-dispatch`, `stop`, `status`, `build-info`, `loadgen`, `replay-seed-patch-check`, `replay-seed`, which seeds the LINUX replay, runs `replay-check-seed` and dumps the database only when it passed, and the replay's `replay-manifest`, `replay-get` and `replay-prepare` |
-| `replay.sh` | The LINUX replay's `stack.sh` commands, sourced by it: `replay-seed-patch-check`, `replay-seed`, `replay-manifest`, `replay-get`, `replay-prepare` and the `reset --replay` that resets from a prepared template |
+| `routes-spec-loop-sensitivity-2026-11-07.txt` | That mix with its two meaning searches served by the proposal's own comment listing, for POMJU-988's report (The sensitivity mix, below) |
+| `stack.sh` | The local stack: `setup`, `start`, `seed`, `reset` (and `reset --replay`), `restart-dispatch`, `stop`, `status`, `build-info`, `loadgen`, `replay-seed-patch-check`, `replay-seed`, which seeds the HAFJJ replay, runs `replay-check-seed` and dumps the database only when it passed, and the replay's `replay-manifest`, `replay-get` and `replay-prepare` |
+| `replay.sh` | The HAFJJ replay's `stack.sh` commands, sourced by it: `replay-seed-patch-check`, `replay-seed`, `replay-manifest`, `replay-get`, `replay-prepare` and the `reset --replay` that resets from a prepared template |
 | `run-step.sh` | The one command for a named step |
 | `run-series.sh` | The series of six steps, 0.25x to 10x |
 | `restart-step.sh` | One step whose listener is killed in the middle of the window, and its report (The listener restart, below) |
-| `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
+| `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. Also the replay's inputs: the manifest's name, version and sha256 and its fetch (`replay_fetch_manifest`), a project file of the project of `LOADTEST_REPLAY_ISSUE`, and the download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get`, `run-step.sh --replay` and `cluster/cluster.sh replay-prepare` and `all` call |
 | `*_test.go` | Unit tests. They need no Postgres and no NATS: `cd packages/envoy && go test ./loadtest/` |
-| `run-step.test.sh` | The test of the run lock. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
-| `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
+| `run-step.test.sh` | The test of the run lock, and of a `--replay` step's manifest: fetched before the build, refused before it when it cannot be had, not fetched with `--manifest`. It fakes `go`, `uv` and `curl` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
+| `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. And of the replay manifest's fetch (`replay_fetch_manifest`, `stack.sh replay-get`): downloaded from the issue's project with the token on curl's standard input, kept, copied from `--from-dir`, refused and deleted on another sha256, refused before anything is written when it cannot be had, and `--manifest FILE` taken instead. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
 | `cluster/cluster.sh` | The load test on a full-size copy in a Kubernetes namespace (Running on a cluster copy, below) |
 | `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
 | `cluster/render-nats.sh`, `cluster/nats-values.yaml`, `cluster/nats-2.15.1.tgz` | The render of `manifests/nats.yaml` from the chart's archive, vendored here so that no render downloads it and checked against its published sha256 before helm reads it, and from its values, with every image pinned by digest |
@@ -155,8 +154,9 @@ same step before and after its change, and compares the two rows.
 | `LOADTEST_DISPATCH_COMMIT` | unset | `stack.sh setup` builds `envoy-dispatch` alone from that commit of `LOADTEST_SRC`, ahead of `LOADTEST_DISPATCH_SRC` (`run-step.sh --replay --dispatch-commit`). |
 | `LOADTEST_DISPATCH_ENV` | unset | A file of `NAME=value` lines appended to Dispatch's environment when `stack.sh` starts it, which is how the spec loop's stack points Dispatch at `loadgen stub-embed` (The embedding gate and the stub embedder, below). A line that is not `NAME=value`, and a file that cannot be read, are refused naming the file. It is a file rather than a variable so a key never reaches another process's argv or environment listing. |
 | `LOADTEST_GOMAXPROCS` | nproc | Dispatch's `GOMAXPROCS` (`run-step.sh --replay --gomaxprocs`). |
-| `LOADTEST_REPLAY_ISSUE` | unset | The issue the replay's bundle and seed parts are file artifacts of. `stack.sh replay-get` and a `run-step.sh --replay` step require it and refuse before they start without it; the manifest names no issue. To find it, search Dispatch for the bundle parts' name before `.tar.zst` (the manifest's `bundle.parts[].file`; for this manifest, `dispatch search --query 'linux-replay-2026-10-26'`): among the hits is that issue's comment naming the parts. A search for the manifest's file name does not find it. |
-| `DISPATCH_URL`, `DISPATCH_TOKEN_FILE` | unset | Read by `stack.sh replay-get` alone, in its own shell, to download the replay's parts. |
+| `LOADTEST_REPLAY_ISSUE` | unset | The issue the replay's bundle and seed parts are file artifacts of; its project (the key before the `-`) holds the manifest, `replay-2026-10-26.json`, as a project file. `stack.sh replay-get`, a `run-step.sh --replay` step and `cluster.sh replay-prepare` and `all` require it and refuse before they start without it; the manifest names no issue. To find it, search the deployment's Dispatch for `replay-2026-10-26`: among the hits is the issue whose file artifacts are the parts (`*.tar.zst.part*`, `*.dump.part*`). |
+| `LOADTEST_REPLAY_MANIFEST_VERSION`, `LOADTEST_REPLAY_MANIFEST_SHA256` | `common.sh`'s | The version of the manifest's project file to download and the sha256 it must have (common.sh `REPLAY_MANIFEST_VERSION`, `REPLAY_MANIFEST_SHA256`). Set both to run a manifest uploaded since; pin them in `common.sh` to make it the default. |
+| `DISPATCH_URL`, `DISPATCH_TOKEN_FILE` | unset | Read by `stack.sh replay-get`, in its own shell, to download the replay's manifest and parts, and by `run-step.sh --replay`, to download the manifest before the step starts. |
 | `LOADTEST_NO_RESUME` | unset | `1`, under consumer delivery, leaves the resume point out of every registration's `delivery`, as a plugin sends that never wrote a frame. `stack.sh loadgen` passes it to `loadgen run`. |
 
 Every process listens on `127.0.0.1`. The default ports follow `LOADTEST_ROOT`: the root's block
@@ -507,7 +507,7 @@ packages/envoy/loadtest/run-step.sh editors-10x-over-0.25x --events 1 --sessions
 | `stack.sh reset --replay [LOG]` | The same from this build's prepared replay template (The replay, below), refused without one; before Dispatch starts, `loadgen replay-checksum -db dispatch` into `$LOADTEST_ROOT/replay/last-reset.json`. |
 | `stack.sh restart-dispatch` | Stops Dispatch by the pid in its pidfile (SIGTERM, then SIGKILL after 60 s) and starts it again as the last `reset` started it: the binary and database, the Postgres path (`pg_direct`), the listener path (`envoy_rtt`) and the log (`dispatch_log`) that `stack.json` recorded, the log appended after a `stack.sh: restart-dispatch` line. It waits for `/healthz`, and writes the new pid into `stack.json` and the pidfile. The listener's latency proxy keeps running. `loadgen run -restart-at` calls it. |
 | `stack.sh replay-manifest --bundle-pack FILE --bundle DIR [--seed-dir DIR] [--part-version N]` | Prints a replay manifest from `replay-pack`'s JSON, the bundle's `bundle.meta.json` and `replay-seed`'s `seed.meta.json` (`"seed": null` without `--seed-dir`), every part at version N (default 1). |
-| `stack.sh replay-get [--manifest FILE] [--from-dir DIR]` | Gets, verifies and unpacks the manifest's bundle, and restores its seed dump into the template `dispatch_replay_seed` (The replay, below). |
+| `stack.sh replay-get [--manifest FILE] [--from-dir DIR]` | Gets and verifies the manifest (FILE, else the project file `replay-2026-10-26.json`), gets, verifies and unpacks its bundle, and restores its seed dump into the template `dispatch_replay_seed` (The replay, below). |
 | `stack.sh replay-prepare` | Makes this build's replay template `dispatch_replay_<key>` from `dispatch_replay_seed` (The replay, below). |
 | `stack.sh stop [NAME...]` | Stops `dispatch`, `envoy_proxy`, `listener`, `nats`, `proxy` and `postgres`, or only the named ones. |
 | `stack.sh status` | Prints this root's ports and the `stack.json` that records them, each process's pid and ports, and the seed's migration, build commit, counts and event extension. |
@@ -666,7 +666,7 @@ bytes. Two builds' answers compare row by row.
 
 ## The spec loop's seed
 
-The Verified Linux spec loop has a seed of its own ([INFRA-988](dispatch://INFRA-988)), because
+The Verified Linux spec loop has a seed of its own ([POMJU-988](dispatch://POMJU-988)), because
 its records are not the shape of the one above: the loop's work is 891 proposals, each a Dispatch
 issue whose requirement ids are comment threads on the proposal's part documents, with review
 pages and a review index for each proposal its driver is live on.
@@ -778,7 +778,7 @@ named as the database's login is stands in front of `public` for every unqualifi
 `create schema` of this tool's under a login called `loadtest` made such a schema on the
 deployment; Dispatch's own `create table if not exists` then built a second, empty copy of its
 whole schema there at the next restart and served it, while the seed sat in `public`
-(dispatch://INFRA-988). This tool now creates no schema at all — `public.loadtest_loop_ids`,
+(dispatch://POMJU-988). This tool now creates no schema at all — `public.loadtest_loop_ids`,
 `public.loadtest_event_commits`, `public.loadtest_replay_ids` and
 `public.loadtest_replay_anchors` are its four tables — and names `public.` in every statement, so
 a login called anything at all reads the same tables.
@@ -1220,7 +1220,7 @@ counted. 25,000 is more than 600 req/s × the 30 s client timeout.
 #### The spec loop's route mix
 
 `routes-spec-loop-2026-11-03.txt` is the Verified Linux spec loop's own mix, the reads its driver
-makes over a driver day (decision D1 of [INFRA-988](dispatch://INFRA-988)'s plan). Every row's
+makes over a driver day (decision D1 of [POMJU-988](dispatch://POMJU-988)'s plan). Every row's
 caller is `loop`, as the default file names its callers `browser`, `cli`, `pod` and `other`, and
 every row is an `agent`. Each row's weight is that read's share of the loop's reads; the seven add
 up to 99, because the loop's remaining 1% is reads of no one shape.
@@ -1246,7 +1246,7 @@ needs a part document.
 
 `routes-spec-loop-sensitivity-2026-11-07.txt` is that same mix with its two meaning-search reads
 served by the cheapest existing route that returns the same threads.
-It measures one thing, for [INFRA-988](dispatch://INFRA-988)'s report, and is no part of the spec
+It measures one thing, for [POMJU-988](dispatch://POMJU-988)'s report, and is no part of the spec
 loop's own load: what the loop costs when the requirement queries by target and by status are
 served by a route that exists.
 Those two queries have no route of their own in Dispatch, so the loop's own mix stands them in
@@ -1344,7 +1344,7 @@ before the live-socket release (`--dispatch-commit`) therefore reports `dashboar
 ## The replay (`-source replay`)
 
 `loadgen run -source replay` replaces the request generator with a replay bundle's logged writes:
-LINUX's real write log of 2026-10-26 22:55:00Z-23:34:00Z, re-sent at the log's offsets from
+HAFJJ's real write log of 2026-10-26 22:55:00Z-23:34:00Z, re-sent at the log's offsets from
 22:55:00 as the dispatch CLI 10.25.1 sends each write, with read actions before each
 write at a stated assumption (no read was logged). It runs against a stack whose Dispatch database
 holds the restored replay seed (`stack.sh replay-seed`'s dump), whose
@@ -1353,7 +1353,8 @@ holds the restored replay seed (`stack.sh replay-seed`'s dump), whose
 
 ```bash
 # One replay step (setup, start, replay-get, replay-prepare, reset --replay, loadgen run, tables).
-# LOADTEST_REPLAY_ISSUE names the issue the bundle's and the seed's parts are file artifacts of:
+# LOADTEST_REPLAY_ISSUE names the issue the bundle's and the seed's parts are file artifacts of,
+# whose project holds the manifest; DISPATCH_URL and DISPATCH_TOKEN_FILE download them:
 LOADTEST_REPLAY_ISSUE=<issue> packages/envoy/loadtest/run-step.sh replay-f0.05 --replay --rate 0.05
 # The same on Dispatch at production's commit of 2026-10-26, Dispatch on one core:
 LOADTEST_REPLAY_ISSUE=<issue> packages/envoy/loadtest/run-step.sh replay-f0.05-35ef --replay --rate 0.05 --dispatch-commit 35efd326 --gomaxprocs 1
@@ -1361,7 +1362,7 @@ LOADTEST_REPLAY_ISSUE=<issue> packages/envoy/loadtest/run-step.sh replay-f0.05-3
 packages/envoy/loadtest/stack.sh loadgen replay-plan -replay-inputs "$LOADTEST_ROOT/replay/bundle" -replay-rate 0.05
 ```
 
-**The bundle** (`loadgen replay-fetch`, read-only from a Dispatch; `replay_bundle.go`) is LINUX's
+**The bundle** (`loadgen replay-fetch`, read-only from a Dispatch; `replay_bundle.go`) is HAFJJ's
 state at 22:55:00Z and its writes up to 23:34:00Z:
 
 | File | What it holds |
@@ -1373,7 +1374,7 @@ state at 22:55:00Z and its writes up to 23:34:00Z:
 | `roster.json` | The session ids the state and the window name. |
 | `bundle.meta.json` | The project, the instant, the window's end, `fetched_at`, `counts` and every other file's sha256. |
 
-The 2026-10-26 bundle (`replay-2026-10-26.json`'s `bundle.counts`) holds 1,047 issues, 1,760
+The 2026-10-26 bundle (its `bundle.meta.json`'s `counts`) holds 1,047 issues, 1,760
 documents (81 MB of markdown), 28 files, 18,899 open comments (10,350 of them anchored), 68 open or
 answered asks, 8 resolved typed ask blocks, 5,379 window events, 65 created documents, 109 created
 specs, 385 block maps and a roster of 452 sessions. No document version lacks a size.
@@ -1463,11 +1464,15 @@ cmp "$TMPDIR/stock.dump" "$TMPDIR/patched.dump"
 [--out DIR]` runs, in order (`LOADTEST_REPLAY_ISSUE` names the issue the manifest's parts are file
 artifacts of; a `--replay` step without it is refused before anything starts):
 
+0. Without `--manifest FILE`, the manifest: `replay-2026-10-26.json`, a project file of the
+   project of `LOADTEST_REPLAY_ISSUE`, kept at `$LOADTEST_ROOT/replay/parts/` once its sha256 is
+   the pinned one, else downloaded and checked (`stack.sh replay-get`, below). A step that can
+   have no manifest is refused here, before anything starts, naming what is missing.
 1. `stack.sh setup` (incremental). `--dispatch-commit REV` builds `envoy-dispatch` alone from REV
    (`LOADTEST_DISPATCH_COMMIT`); a REV that names no commit is refused before anything starts.
 2. `stack.sh start`. The synthetic seed (`dispatch_seed`) and its migration check are not used.
-3. `stack.sh replay-get --manifest FILE` (default `replay-2026-10-26.json`), which downloads the
-   parts from `LOADTEST_REPLAY_ISSUE`; once done, it only checks the sha256 of the parts and the
+3. `stack.sh replay-get [--manifest FILE]`, which downloads the parts from
+   `LOADTEST_REPLAY_ISSUE`; once done, it only checks the sha256 of the manifest, the parts and the
    bundle's files.
 4. `stack.sh replay-prepare`: this build's template, made once per build.
 5. `stack.sh reset --replay`, whose `last-reset.json` it copies into the step directory.
@@ -1488,13 +1493,17 @@ their count. The flags `run-step.sh` keeps for itself:
 | `--warmup D` | `30s` | The warm-up before the window: the roster registers, the dashboard streams open, no replay request. |
 | `--gomaxprocs N` | nproc | `LOADTEST_GOMAXPROCS`, Dispatch's `GOMAXPROCS`. |
 | `--dispatch-commit REV` | the checkout | `LOADTEST_DISPATCH_COMMIT`: `envoy-dispatch` alone is built from REV; `loadgen`, the listener and the manifest's seed stay the same. Every step's `meta.json` records that build as `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build`, beside the checkout's `build_commit`. |
-| `--manifest FILE` | `replay-2026-10-26.json` | The manifest `replay-get` reads. |
+| `--manifest FILE` | the project file `replay-2026-10-26.json` | The manifest `replay-get` reads, instead of the project file. |
 | `--out DIR` | `$LOADTEST_ROOT/runs/<name>` | The step directory. |
 
 Dispatch reaches Postgres directly (`LOADTEST_PG_DIRECT=1`) unless the environment sets
 `LOADTEST_PG_DIRECT`; `meta.json`'s `pg_direct` records it.
 
-**The manifest** (`replay-2026-10-26.json`, schema 1) names no URL, host or issue. It holds
+**The manifest** (schema 1) names no URL, host or issue. It is not in this repository: it is the
+project file `replay-2026-10-26.json` of the project of the issue `LOADTEST_REPLAY_ISSUE` names,
+at the version and sha256 that `common.sh` pins (`REPLAY_MANIFEST_VERSION`,
+`REPLAY_MANIFEST_SHA256`; `LOADTEST_REPLAY_MANIFEST_VERSION` and `LOADTEST_REPLAY_MANIFEST_SHA256`
+replace them for a run), and `--manifest FILE` gives another. It holds
 `project`, `window` {`from`, `to`}, `bundle` {`tar_zst_sha256`, `bytes`, `fetched_at`,
 `counts` (`bundle.meta.json`'s), `parts`} and `seed`, null or {`dump_sha256`, `bytes`,
 `compression`, `migration`, `dispatch_commit`, `dispatch_tree`, `patch`, `patch_sha256`,
@@ -1506,15 +1515,15 @@ manifest's. A manifest whose `seed` is null gets the bundle alone: `replay-plan`
 `replay-prepare` refuses, as no seed was restored.
 
 **Rebuilding the bundle and the seed.** Both are fixed inputs: rebuild them for another window, or
-when the bundle's format changes, then commit the new manifest. `replay-fetch` reads
+when the bundle's format changes, then upload the new manifest and pin it. `replay-fetch` reads
 `DISPATCH_URL` and `DISPATCH_TOKEN_FILE` from its own environment, so it runs as the bare binary,
 not through `stack.sh loadgen`:
 
 ```bash
 # 1. The bundle, read-only (-concurrency 1 to 4; every response is cached under BUNDLE/raw/, so a rerun resumes):
-"$LOADTEST_ROOT/bin/loadgen" replay-fetch -project LINUX -at 2026-10-26T22:55:00Z -until 2026-10-26T23:34:00Z -out BUNDLE
+"$LOADTEST_ROOT/bin/loadgen" replay-fetch -project HAFJJ -at 2026-10-26T22:55:00Z -until 2026-10-26T23:34:00Z -out BUNDLE
 # 2. Its deterministic zstd tar parts of at most 24 MiB, with their sha256 in pack.json:
-"$LOADTEST_ROOT/bin/loadgen" replay-pack -in BUNDLE -out PARTS/linux-replay-2026-10-26.tar.zst >pack.json
+"$LOADTEST_ROOT/bin/loadgen" replay-pack -in BUNDLE -out PARTS/replay-2026-10-26.tar.zst >pack.json
 # 3. The seed, on a started stack: the len16 patch's tests on the bundle, then the seed and its check,
 #    which writes the dump's parts, seed-check.json and seed.meta.json under SEED_OUT:
 packages/envoy/loadtest/stack.sh replay-seed-patch-check BUNDLE
@@ -1522,10 +1531,15 @@ packages/envoy/loadtest/stack.sh replay-seed --bundle BUNDLE --out SEED_OUT
 # 4. Each part (PARTS/*.part*, SEED_OUT/*.dump.part*) as a file artifact of the replay's issue.
 #    --force writes the next version of a part name the issue already holds, which an upload
 #    without it is refused for:
-dispatch artifact --issue <issue> --name linux-replay-2026-10-26.tar.zst.part00 --path PARTS/linux-replay-2026-10-26.tar.zst.part00 --force
-# 5. The manifest (without --seed-dir its seed is null; rerun with it once the seed is uploaded):
+dispatch artifact --issue <issue> --name replay-2026-10-26.tar.zst.part00 --path PARTS/replay-2026-10-26.tar.zst.part00 --force
+# 5. The manifest (without --seed-dir its seed is null; rerun with it once the seed is uploaded),
+#    as a project file of the issue's project; --force writes the next version of that name:
 packages/envoy/loadtest/stack.sh replay-manifest --bundle-pack pack.json --bundle BUNDLE --seed-dir SEED_OUT \
-  >packages/envoy/loadtest/replay-2026-10-26.json
+  >replay-2026-10-26.json
+dispatch artifact --project <project> --name replay-2026-10-26.json --path replay-2026-10-26.json --force
+# 6. The version the upload names and the file's sha256, pinned in common.sh as
+#    REPLAY_MANIFEST_VERSION and REPLAY_MANIFEST_SHA256 (REPLAY_MANIFEST_FILE for another name):
+sha256sum replay-2026-10-26.json
 ```
 
 `replay-manifest` writes `--part-version N` (default 1) as every part's `version`. A part uploaded
@@ -1534,7 +1548,15 @@ again under the same name is a new version of the same artifact: pass the versio
 `seed_seconds` in `seed.meta.json` and in the manifest's `seed`.
 
 **`stack.sh replay-get`** refuses before it reads or downloads anything unless
-`LOADTEST_REPLAY_ISSUE` names the issue the parts are file artifacts of, naming the variable. It
+`LOADTEST_REPLAY_ISSUE` names the issue the parts are file artifacts of, naming the variable.
+Without `--manifest FILE` it first gets the manifest (common.sh `replay_fetch_manifest`): kept at
+`$LOADTEST_ROOT/replay/parts/replay-2026-10-26.json` when its sha256 is the pinned one; else
+copied from `--from-dir DIR` or downloaded `GET
+$DISPATCH_URL/api/v1/projects/<project>/artifacts/replay-2026-10-26-json/versions/<version>`,
+where `<project>` is `LOADTEST_REPLAY_ISSUE`'s key before the `-`; a manifest of another sha256 is
+deleted and refused, naming both hashes. With no `--manifest`, no kept manifest, and neither a
+`--from-dir` that holds one nor `DISPATCH_URL` and a readable `DISPATCH_TOKEN_FILE`, it is refused
+before any part, naming what is missing. It
 keeps each part at `$LOADTEST_ROOT/replay/parts/<file>` when its sha256 matches; else it copies it
 from `--from-dir DIR` or downloads `GET
 $DISPATCH_URL/api/v1/issues/$LOADTEST_REPLAY_ISSUE/artifacts/<slug>/versions/<version>` with the
@@ -1628,7 +1650,7 @@ one action of one kind:
 | other issue update | `fields` | `GET /issues/{key}` -> `PATCH` with the fields that changed from the previous snapshot (title, status, labels, priority, route, assignee, parent, blocked_by, repo, external_links); a write that changed none of them (a rank, claim or components change) sends the unchanged status and is counted `patch_unchanged` |
 | message by the daemon | `daemon-message` | `GET /issues/{key}/events?order=desc&limit=200` -> `POST /issues/{key}/messages` |
 | message by a session | `message` | `POST /issues/{key}/messages` |
-| issue created | `issue-create` | `POST /issues {project, title, parent, spec, force}` -> `GET /projects/LINUX/architecture-sources` (404 at 35efd326, which does not fail the action) -> `GET /projects/LINUX/architecture-source`; the spec is its `created-docs/` version 1 (`bundle.meta.json`'s `created_specs`), else synthetic, of its first logged version's size, else of the window's created documents' median first version (counted in `spec_sizes`) |
+| issue created | `issue-create` | `POST /issues {project, title, parent, spec, force}` -> `GET /projects/HAFJJ/architecture-sources` (404 at 35efd326, which does not fail the action) -> `GET /projects/HAFJJ/architecture-source`; the spec is its `created-docs/` version 1 (`bundle.meta.json`'s `created_specs`), else synthetic, of its first logged version's size, else of the window's created documents' median first version (counted in `spec_sizes`) |
 | markdown artifact created | `doc-create` | `POST /issues/{key}/artifacts` with its `created-docs/` version 1 |
 | file artifact created, file version | `file-create`, `file-version` | multipart `POST /issues/{key}/artifacts` with deterministic bytes of the logged size |
 | comment resolved | `resolve` | `POST /comments/{id}/resolve` |
@@ -1658,7 +1680,7 @@ seed set when it answered.
 markdown the Dispatch it was fetched from served, and a build renders a stored document its own
 way, so a newer build can serve another text for the same document, and can refuse the older one:
 markdown it stores round-trips, markdown an older build rendered need not. At Dispatch 8a911ecc one
-of the LINUX bundle's documents is such a text. Its stored table row holds a code span with an
+of the HAFJJ bundle's documents is such a text. Its stored table row holds a code span with an
 unescaped `|`; 35efd326 served that row as it was and read it back with the cells past the table's
 width dropped, while 8a911ecc renders the same row with the pipe escaped outside the code span and
 refuses the older form (`400 INVALID_MARKDOWN`, "a table row holding 7 cells where its table has
@@ -1681,7 +1703,7 @@ for a created issue), read j of n sent (n - j) s before the write, never before 
 | `read` | `GET /issues/{key}` \|\| `GET /issues/{key}/references` -> `GET /issues/{key}/events?after=<last_seq-10>&limit=10` -> `GET /references?to=dispatch://KEY` \|\| `?from=...` (\|\| `GET /agents` when a session holds the issue's claim) |
 | `docread` | `GET /issues/{key}` -> `GET /artifacts/{id}/text` \|\| `GET /issues/{key}/comments?artifact={id}` |
 | `commentref` | `GET /comments/{id}` -> `GET /references?to=<comment ref>` \|\| `?from=...` |
-| `search` | `GET /search?q=<two synthetic words>&project=LINUX&limit=20&offset=0` |
+| `search` | `GET /search?q=<two synthetic words>&project=HAFJJ&limit=20&offset=0` |
 
 A `docread` or `commentref` on an issue with no document or comment is a `read`. The reads before
 a write are planned before it: they see the claim before the write, and pick only the comments and
@@ -1703,7 +1725,7 @@ created it (waited for) or to `public.loadtest_replay_ids`; an action naming an 
 neither has (a reply to a comment whose creation failed, say) is not sent and is counted in
 `skipped_missing_dep` by kind. The roster replaces the `ses-lg` sessions: the bundle's roster ids
 the listener accepts as a session key (the NATS KV key alphabet; an actor id such as
-`legion-daemon:LINUX` is no session id and is skipped, `roster_skipped`), then synthetic ids up to
+`legion-daemon:HAFJJ` is no session id and is skipped, `roster_skipped`), then synthetic ids up to
 `-replay-roster`. Each registers with a title, a directory and its home issue's topic (the issue
 its claim held at 22:55, else one of the kept issues) plus further issues' topics until its
 registration is about 458 bytes, and keeps the 90 s heartbeat; each subscribes the same topics on
@@ -1829,7 +1851,7 @@ command and the inputs (`replay.inputs`), and how many runs were saturated and r
   of the logged size (`spec_sizes`).
 - **The 22:47Z restart's warm-up.** Production's Dispatch restarted at 22:47Z, 8 minutes before the
   window. The replay starts on a quiet, prepared template after a 30 s warm-up.
-- **Other projects' writes and events with no issue key.** The bundle holds LINUX's issues' event
+- **Other projects' writes and events with no issue key.** The bundle holds HAFJJ's issues' event
   logs only: other projects' writes (2.6% of the window's) and events with no issue key are absent.
 - **Browser tabs.** Beyond the 2 dashboard streams, no browser: no document websockets, no browser
   document edits or settlements (not sent), no dashboard refetches.
@@ -2049,7 +2071,7 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | `envelope-agent.<type>.json` | The same for an agent topic. `envelope-agent.send.json` is a listener send there, which carries no event type: a mention under `--mention-frac`. |
 | `relay-frames.csv` | Under consumer delivery, one row per relay frame: the session, the stored subject, the stream sequence, `Envoy-Delivered`, the store time and the receipt time (Unix ns), the event id, whether it was a duplicate, the frame's dedupe identity (the envelope's `event_id`, else its `dedupe_key`) and whether the session answered it `done`. |
 | `lost-pairs.json` | Only in a step whose accounting found a `lost` (write, session) pair (`events.by_class.<class>.lost`, Sessions, above): one record per pair, by commit time, earliest first. `lost` counts every lost pair of the step, `written` those below, `limit` the bound of 1,000, and `truncated` says the bound was reached and the later `lost - written` pairs were left out. Each pair carries `event_id`, `kind` and `marker` (the write's counter in the run; with `config.marker_nonce` it is the marker the write carried), the `issue` whose topic it was owed on, `commit_ns`, the `session` and its `class`, the session's own `sub_sent_ns`, `sub_ack_ns`, `unsub_sent_ns` and `unsub_ack_ns` (so a reader sees for itself that the commit fell inside the session's life and on neither edge of it), the write's `write_status` and `write_error`, `event_receipts` and `event_relay_frames` (the receipts of that event any session took, and those of them that came as a relay frame: both 0 says the event reached no session at all, above 0 says this session alone missed it), and `session_received` with `session_last_recv_ns` (what this session did take, and when it last took anything). A step that lost no pair writes no such file. |
-| `pg-statements.json` | Postgres's slowest statements over the step's window and the lock waits beside them, which R6 of dispatch://INFRA-988 asks for; `loadgen pg-statements` writes it (The step's Postgres readings, below). `statements` is the slowest by total time first, each with `query` (normalized by `pg_stat_statements`), `queryid`, `calls`, `total_ms`, `mean_ms`, `rows`, `shared_blks_read` and `shared_blks_hit`, a column the installed extension does not offer being null. `lock_waits` is one entry per (lock, waiter, blocker) its samples of `pg_locks` saw, each with `lock_type`, `target`, `mode`, `waiter_query`, `blocker_query`, `observations`, `first_seen`, `last_seen`, `seen_for_s` and, where the server has `pg_locks.waitstart`, `wait_ms_max` and `wait_ms_mean`, longest wait first. `reset` records the reset at the window's start — its `call`, `result_type`, `ok`, `at`, `returned` and `error` — so a step whose reset failed is not read as a step with few statements, and `lock_samples`, `lock_sample_failures`, `lock_interval_s` and `lock_wait_source` say how the waits were sampled. `loadgen step-check` reads it: the file must be there with at least one statement, and `lock_waits` must be there and may be empty, which is a step where nothing waited. |
+| `pg-statements.json` | Postgres's slowest statements over the step's window and the lock waits beside them, which R6 of dispatch://POMJU-988 asks for; `loadgen pg-statements` writes it (The step's Postgres readings, below). `statements` is the slowest by total time first, each with `query` (normalized by `pg_stat_statements`), `queryid`, `calls`, `total_ms`, `mean_ms`, `rows`, `shared_blks_read` and `shared_blks_hit`, a column the installed extension does not offer being null. `lock_waits` is one entry per (lock, waiter, blocker) its samples of `pg_locks` saw, each with `lock_type`, `target`, `mode`, `waiter_query`, `blocker_query`, `observations`, `first_seen`, `last_seen`, `seen_for_s` and, where the server has `pg_locks.waitstart`, `wait_ms_max` and `wait_ms_mean`, longest wait first. `reset` records the reset at the window's start — its `call`, `result_type`, `ok`, `at`, `returned` and `error` — so a step whose reset failed is not read as a step with few statements, and `lock_samples`, `lock_sample_failures`, `lock_interval_s` and `lock_wait_source` say how the waits were sampled. `loadgen step-check` reads it: the file must be there with at least one statement, and `lock_waits` must be there and may be empty, which is a step where nothing waited. |
 | `pg-size.json` | The database's size in bytes at the step's start and at its end (`start_bytes`, `end_bytes`, with `start_at` and `end_at`), which R6 asks for; the two phases of `loadgen pg-size` write it. `end_bytes` is null until the end phase has run. `loadgen step-check` takes both above 0 and the end at or above the start: a step adds rows and drops no table. |
 | `dispatch.log` | Dispatch's log for the step. |
 | `listener.log`, `nats.log` | The listener's and NATS's logs since their restart in the reset. |
@@ -2066,7 +2088,7 @@ writes `cpu.top.txt`, `cpu.cum.txt`, `heap.top.txt` and `goroutines.summary.txt`
 directory. `-tops=false` does not write these files. `run-series.sh` uses `-tops=false` for the
 series `TABLES.md`, because `run-step.sh` already wrote them for each step.
 
-`loadgen step-check <step dir>` judges one step against acceptance A3 of dispatch://INFRA-988,
+`loadgen step-check <step dir>` judges one step against acceptance A3 of dispatch://POMJU-988,
 from the step's own files alone, so a step's conformance is read rather than asserted:
 
 ```bash
@@ -2318,7 +2340,7 @@ The lock probe reads once a second from 20 s after the window start to the windo
 window is shorter than 20 s, it starts at the window start. The lock is Dispatch's database-wide
 advisory lock `0x4449535041544348` (`internal/dispatch/events/broker.go`), which orders event
 commits.
-It read every 20 ms before INFRA-988 measured what that cost on the instance it was measuring:
+It read every 20 ms before POMJU-988 measured what that cost on the instance it was measuring:
 68,062 calls in one 1x hour for 2,938 s of database time, 7.3% of every statement the window ran
 and about 0.82 of one of the instance's 8 cores.
 
@@ -2412,7 +2434,7 @@ The sampler reads once a second, as the lock probe now does, because each read c
 on the box it measures. Read every 20 ms with about 45 waiters at 1x, one read took 75 to 180 ms
 of a Postgres backend, and 1x committed 0.29 to 0.82 events/s, against 1.63 to 1.81 without the
 sampler, on the same build and seed (2026-10-27). The lock probe kept its own 20 ms until
-INFRA-988 measured the same effect on it (Commit-order lock, above). It never calls
+POMJU-988 measured the same effect on it (Commit-order lock, above). It never calls
 `pg_blocking_pids`, which takes exclusive access to Postgres's lock manager.
 
 | Column | Unit | What it shows | Source |
@@ -2686,7 +2708,7 @@ Give `-nats-server-name` to keep the NATS check. The sampler gets no pids. `meta
 - **A smaller dataset.** 1,000 issues, and an event log of the 10,004 events of the issue and
   comment seed plus one per reference target version and source document, at the start of each
   step (`stack.sh seed --min-events N` raises it to N rows, the extra ones cloned comment events).
-  A replay step starts on LINUX's 1,047 issues at their real sizes (The replay, above).
+  A replay step starts on HAFJJ's 1,047 issues at their real sizes (The replay, above).
 - **Browser documents in editor steps only.** A step with `--editors` opens document websockets
   and types into specs (Editors, above); the others open none. The browser share of the route mix
   is plain GETs. The live sockets subscribe to the event feed alone (no delivery or agent views)
@@ -2728,11 +2750,11 @@ Compare the right rows:
 ## Running on a cluster copy
 
 `cluster/cluster.sh` runs this load on a full-size copy of Dispatch in a Kubernetes namespace
-([INFRA-598](dispatch://INFRA-598)). It runs from a Legion worker pod. The copy is Postgres at the
+([POMJU-598](dispatch://POMJU-598)). It runs from a Legion worker pod. The copy is Postgres at the
 Cloud SQL tier's size, Dispatch at the size of production's pod, the Envoy listener, a three-pod
 NATS JetStream hub, and a runner pod in which `loadgen` runs. Every pod of the copy carries the
 label `dispatch-loadtest/run=<run id>`. The copy holds the harness's synthetic seed and, for the
-replay, INFRA-639's seed of LINUX (The replay on the copy, below). It takes no production
+replay, POMJU-639's seed of HAFJJ (The replay on the copy, below). It takes no production
 credential: every token and password is random and made for the run.
 
 ### Prerequisites
@@ -2800,10 +2822,11 @@ credential: every token and password is random and made for the run.
   `--production-repo` names: `up` reads its main's `dispatch/main.go` (`databaseVersion`) and
   `dispatch/Pulumi.prod.yaml` (`<project>:listenerImage`).
 - **For the replay:** `LOADTEST_REPLAY_ISSUE`, the issue the parts are file artifacts of (the
-  manifest names none), and `DISPATCH_URL` and `DISPATCH_TOKEN_FILE` (a token that may read that
-  issue's artifacts), from which `replay-prepare` downloads the parts, as
-  `stack.sh replay-get` does. The copy's pods never reach production: the worker downloads, and
-  pushes into the copy.
+  manifest names none; the manifest is a project file of that issue's project), and `DISPATCH_URL`
+  and `DISPATCH_TOKEN_FILE` (a token that may read that issue's artifacts and that project's
+  files), from which `replay-prepare` and `all` download the manifest and `replay-prepare` the
+  parts, as `stack.sh replay-get` does. The copy's pods never reach production: the worker
+  downloads, and pushes into the copy.
 - **An image of the commit** (An image for a commit, below).
 - **For the stored-order check:** the `--dispatch-commit` in this checkout's git store (`jj git
   fetch` fills it), and, when its tree has no `packages/envoy/cmd/dispatch/storedorder.go`, a
@@ -2829,7 +2852,7 @@ r4: …`) and goes on. A replay-prepare that fails skips both replays the same w
 `down`, unless `--keep`, which instead holds the run for `--keep-for` (default 2h). A full run
 takes hours: start it with `setsid`, with its output in a file.
 `all` runs no browser typing, so its curves and replays are the load alone; the typing runs (for
-INFRA-514: `replay r16-typing`, `replay r4-typing` and `step 10x-typing 10`, each with `--typing`)
+POMJU-514: `replay r16-typing`, `replay r4-typing` and `step 10x-typing 10`, each with `--typing`)
 run on a copy that `up --browsertype-commit` (or `all --browsertype-commit --keep`) left up, whose
 hold `cluster.sh hold --namespace <ns> --for <duration>` extends while you type them
 (Browser typing, below).
@@ -2843,11 +2866,11 @@ hold `cluster.sh hold --namespace <ns> --for <duration>` extends while you type 
 | `--production-repo` | The deployment repository, `owner/repo`. Required. |
 | `--pg-volume` | The size of the Postgres data volume, a whole number of Gi (`100Gi`). Default `100Gi`. `up` refuses more than `240Gi`, which is what the namespace's quota leaves beside NATS's three 20Gi claims. `db-size` keeps the claim, so one run has one volume size. |
 | `--listener-image` | The listener's image. Default: production's `listenerImage` from the deployment repository. |
-| `--stored-order-source` | The full 40-hex commit whose INFRA-707 files (`internal/dispatch/docs/storedorder.go`, `cmd/dispatch/storedorder.go`) and `stored-order` registration are added to the `--dispatch-commit` tree to build the stored-order checker (The stored-order check, below). Required when that tree has no `cmd/dispatch/storedorder.go`; refused when it has one. For INFRA-598's 9b92ac14: INFRA-707's head. |
+| `--stored-order-source` | The full 40-hex commit whose POMJU-707 files (`internal/dispatch/docs/storedorder.go`, `cmd/dispatch/storedorder.go`) and `stored-order` registration are added to the `--dispatch-commit` tree to build the stored-order checker (The stored-order check, below). Required when that tree has no `cmd/dispatch/storedorder.go`; refused when it has one. For POMJU-598's 9b92ac14: POMJU-707's head. |
 | `--stored-order-checker-commit` | The escape: the full 40-hex commit the stored-order checker is built from wholly, in place of the `--dispatch-commit` tree. `up` warns that its renderer may differ from Dispatch's and records `renderer_matches: false`. Refused beside `--stored-order-source`. |
-| `--browsertype-commit` | The full 40-hex commit whose INFRA-707 `browsertype` types into documents for `step --typing` and `replay --typing` (Browser typing, below). Optional: without it, `--typing` is refused. `all` itself runs no typing. |
+| `--browsertype-commit` | The full 40-hex commit whose POMJU-707 `browsertype` types into documents for `step --typing` and `replay --typing` (Browser typing, below). Optional: without it, `--typing` is refused. `all` itself runs no typing. |
 | `--profile` | `quick` or `full` (Profiles, below). Required. |
-| `--manifest` | The replay's manifest. Default: the committed `replay-2026-10-26.json`. |
+| `--manifest` | The replay's manifest. Default: the project file `replay-2026-10-26.json` of the project of `LOADTEST_REPLAY_ISSUE`, fetched before `up` as `replay-prepare` fetches it (below). |
 | `--upload-issue` | A Dispatch issue key. Each phase's tar parts go to that issue with `dispatch artifact`. |
 | `--keep` | No `down` at the end or on a failure. The run stays up for debugging, held for `--keep-for`. |
 | `--keep-for` | How long `--keep` holds the run: a duration (`90s`, `30m`, `2h`). Default `2h`, and valid only with `--keep`. Until the hold expires the heartbeat renews the lock with no command of the run running, so no other worker's `up` calls it stale; `cluster.sh hold` extends it. |
@@ -2871,14 +2894,14 @@ so. A write (`drop database`, a `kubectl cp`, a start in the runner) is never re
 
 | Subcommand | What it does |
 | --- | --- |
-| `up <up's flags>` | Refuses, before it creates anything, a commit with no image, a `--pg-major` other than production's, a `--pg-volume` that is not a whole number of Gi or is above 240Gi, an image tag that does not resolve to a digest, stored-order flags it cannot build the checker from (The stored-order check, below: a `--dispatch-commit` the git store does not hold; a tree without `cmd/dispatch/storedorder.go` and no `--stored-order-source`, or one with it and a `--stored-order-source`; a source or checker commit the git store does not hold or whose tree lacks INFRA-707's files or registration), an overlay whose subcommand table lacks the registration's anchor, a checker that does not compile (naming the dispatch commit, the source commit and the compiler's first error), and a `--browsertype-commit` that the git store does not hold, whose tree has no `loadtest/browsertype` or whose `browsertype` has no `-protect` or no `-person` flag (Browser typing, below). Refuses with exit status 2 while the lock exists. Then takes the lock, installs the copy, builds `loadgen` and (with `--browsertype-commit`) `browsertype`, starts the heartbeat and the sampler, and prints each container's requests and limits and the size of the Postgres data volume. |
+| `up <up's flags>` | Refuses, before it creates anything, a commit with no image, a `--pg-major` other than production's, a `--pg-volume` that is not a whole number of Gi or is above 240Gi, an image tag that does not resolve to a digest, stored-order flags it cannot build the checker from (The stored-order check, below: a `--dispatch-commit` the git store does not hold; a tree without `cmd/dispatch/storedorder.go` and no `--stored-order-source`, or one with it and a `--stored-order-source`; a source or checker commit the git store does not hold or whose tree lacks POMJU-707's files or registration), an overlay whose subcommand table lacks the registration's anchor, a checker that does not compile (naming the dispatch commit, the source commit and the compiler's first error), and a `--browsertype-commit` that the git store does not hold, whose tree has no `loadtest/browsertype` or whose `browsertype` has no `-protect` or no `-person` flag (Browser typing, below). Refuses with exit status 2 while the lock exists. Then takes the lock, installs the copy, builds `loadgen` and (with `--browsertype-commit`) `browsertype`, starts the heartbeat and the sampler, and prints each container's requests and limits and the size of the Postgres data volume. |
 | `seed` | `loadgen seed` from the runner through Dispatch's Service, then `loadgen seed-finish`. Then it stops Dispatch and the listener and renames the database to the template `dispatch_seed`. |
 | `step NAME FACTOR [--duration 10m] [--reads-only] [--typing [--typing-peers 2] [--typing-rate 5] [--typing-docs 20]]` | The reset, the Postgres data volume read (The Postgres data volume, below), then one `loadgen run` at FACTOR × (4 events/s, 60 requests/s) with the `series-sessions` count, then the crash check, the stored-order check, `cgroup-merge` and `tables`. The run is given `-heap-samples`, so its samples carry the heap the curves and the trend show (Resources, above); a `replay` step is not. FACTOR can be fractional (`8.5`). `--reads-only` sends 0 events, and is refused with `--typing`. Postgres's write-out counters go into `pg-stats-before.json` and `pg-stats-after.json`. `--typing` adds browser typing (below), into the documents `loadgen plan-docs` says the step's own writes plan the most versions for. |
 | `series [--duration 10m]` | 1x, 2x, 3x, 5x, 7x, 10x and `10x-reads`, then the refinement (below). |
 | `soak [--duration 60m]` | The step `10x-hour`. |
 | `db-size CPU MEMORY` | Postgres at the Cloud SQL tier of CPU and MEMORY (for example `4 15Gi`), restarted on the same claim. Postgres's `cpu.max` must then read the new limit. |
 | `redeploy --dispatch-commit SHA` | Dispatch on the image of another commit, then a reset. A before-and-after pair runs on one copy. |
-| `replay-prepare [--manifest FILE] [--from-dir DIR]` | The replay's template `dispatch_replay` (The replay on the copy, below). It refuses, before it touches the copy, a manifest whose seed is null or whose seed check failed. |
+| `replay-prepare [--manifest FILE] [--from-dir DIR]` | The replay's template `dispatch_replay` (The replay on the copy, below). It refuses, before it touches the copy, an unset `LOADTEST_REPLAY_ISSUE`, no manifest, and a manifest whose seed is null or whose seed check failed. |
 | `replay NAME [--from 0] [--to 39m] [--typing [--typing-peers 2] [--typing-rate 5] [--typing-docs 20]]` | One replay step from `dispatch_replay` (refused without it) over the sub-window FROM to TO after 22:55, with the same Postgres data volume guard as a step (below), then the step's after-work and `loadgen codepaths` beside the outage. `--typing` adds browser typing (below). |
 | `collect [--upload-issue KEY]` | The cross-step outputs, with every step in the order the steps ran (`meta.json` `start`): `STORED-ORDER.md` (with each step's typing), `TABLES.md`, `loadgen curves` into `curves/` over every step but the phase `replay`'s and those that ran browser typing, and `loadgen codepaths` in each step directory that holds `summary.json` (a replay step's with the flags `replay` gives it). Then it packs each phase and the phase `results`. A failed command is reported, the rest still runs, and `collect` exits with status 1. |
 | `status` | The lock, the run, its PID namespace when it is not this one, its hold, its heartbeat and sampler, and its pods. It runs from any PID namespace. |
@@ -2925,15 +2948,18 @@ it never refuses a step by itself.
 
 ### The replay on the copy
 
-The replay (The replay, above) runs on INFRA-639's pieces: the manifest `replay-2026-10-26.json`,
-its bundle and seed dump parts on dispatch://INFRA-639, and `loadgen run -source replay`.
+The replay (The replay, above) runs on the manifest `replay-2026-10-26.json`, the bundle and seed
+dump parts it names, and `loadgen run -source replay`.
 
-**`replay-prepare`** (once per run) refuses, before it touches the copy, a manifest whose `seed`
-is null (it says that INFRA-639's seed is not uploaded yet), a seed whose check failed:
+**`replay-prepare`** (once per run) refuses, before it touches the copy, an unset
+`LOADTEST_REPLAY_ISSUE`, which names the issue the parts are file artifacts of, since the manifest
+names none (`--from-dir` included). Without `--manifest FILE` it then gets the manifest as
+`stack.sh replay-get` does (common.sh `replay_fetch_manifest`), kept in
+`$LOADTEST_CLUSTER_ROOT/replay-manifest/` (not yet in a run), and refuses, before it touches the
+copy, when it can have none, naming what is missing. It refuses too a manifest whose `seed` is
+null (it says that POMJU-639's seed is not uploaded yet), a seed whose check failed:
 `check.passed` not true, or `version_size_mismatches` or `anchors_outside_logged_block` not 0
-(INFRA-514's architect requires both counts to be 0), and an unset `LOADTEST_REPLAY_ISSUE`, which
-names the issue the parts are file artifacts of, since the manifest names none (`--from-dir`
-included). Then, on the worker, it gets the parts under
+(POMJU-514's architect requires both counts to be 0). Then, on the worker, it gets the parts under
 `<run>/replay/` with `stack.sh replay-get`'s own code (common.sh `replay_get_bundle` and
 `replay_fetch_parts`): each part's sha256 against the manifest, downloaded from `DISPATCH_URL` or
 copied from `--from-dir`; the joined bundle parts against `tar_zst_sha256`, unpacked and checked by
@@ -2963,7 +2989,7 @@ sets `LOADTEST_GOMAXPROCS` to Dispatch's container CPU limit, rounded up, so
   -copy-meta ... <every endpoint flag>
 ```
 
-The reads, their mix, the upload share and the roster are INFRA-639's defaults. After it: the
+The reads, their mix, the upload share and the roster are POMJU-639's defaults. After it: the
 step's after-work (the copy back, the crash check, the stored-order check, `cgroup-merge`,
 `tables`), then `loadgen codepaths -heap-start heap-start.pprof -heap-end heap-end.pprof
 -outage-cores 11.1,13.8 -outage-memory 13.8 -residual-notes <run>/replay-residual.md
@@ -2992,8 +3018,8 @@ the scaling curves.
 
 ### The stored-order check
 
-The check is INFRA-707's correctness oracle, `envoy-dispatch stored-order`
-([INFRA-707](dispatch://INFRA-707)). For each document, it folds the stored updates in version
+The check is POMJU-707's correctness oracle, `envoy-dispatch stored-order`
+([POMJU-707](dispatch://POMJU-707)). For each document, it folds the stored updates in version
 order and compares the result with every stored class and every version's markdown. It reads
 only, in read-only transactions, and runs no migration. Each step and each replay runs it, so
 every spec that the load wrote is checked after its runs.
@@ -3007,7 +3033,7 @@ packages/envoy` from this checkout's git store, then `CGO_ENABLED=0 GOWORK=off g
 `<run>/envoy-dispatch`. The runner gets the binary as `/work/envoy-dispatch` only when its sha256
 differs there, as with `loadgen`.
 
-A dispatch tree older than the command (INFRA-598's 9b92ac14 has no `stored-order`) needs
+A dispatch tree older than the command (POMJU-598's 9b92ac14 has no `stored-order`) needs
 `--stored-order-source <sha>`, which `up` refuses for a tree that has the command. The overlay is
 applied to the scratch copy only: it copies that commit's
 `packages/envoy/internal/dispatch/docs/storedorder.go` and
@@ -3016,7 +3042,7 @@ entry of the subcommand table (`packages/envoy/cmd/dispatch/subcommands.go`, fro
 `{"stored-order", func(` line to the `}},` that closes it) on the line after the dispatch tree's
 table opener `var subcommands = []subcommand{`. `up` refuses a source without that entry, and a
 dispatch table that holds the opener on other than exactly one line, naming the anchor. For
-9b92ac14 with INFRA-707's head, nothing else is needed: the build compiles, and the binary's
+9b92ac14 with POMJU-707's head, nothing else is needed: the build compiles, and the binary's
 `stored-order` without `DATABASE_URL` answers `stored-order: DATABASE_URL is required`.
 
 The escape `--stored-order-checker-commit <sha>` builds the checker wholly from another commit
@@ -3032,7 +3058,7 @@ without an overlay), `registration` (the file the overlay edited, or `null`), `r
 (`true` but for the escape) and `sha256`, the binary's.
 
 The check runs after the step's window, when `loadgen run` has finished and while Dispatch still
-runs: before the next reset or scale-down, so the document rooms are still resident, as INFRA-707
+runs: before the next reset or scale-down, so the document rooms are still resident, as POMJU-707
 asks. In the runner:
 
 ```bash
@@ -3048,7 +3074,7 @@ A step that typed (Browser typing, below) is checked twice, both calls inside th
 
 1. The typed documents alone, `stored-order --since <window_start> --artifact <id>` with one
    `--artifact` of each, into `stored-order-typed.txt` and `stored-order-typed.json` (the same
-   fields as `stored-order.json`). It runs first, so INFRA-707's own documents have a result even
+   fields as `stored-order.json`). It runs first, so POMJU-707's own documents have a result even
    when the run over every document then runs out of the bound.
 2. The run over every document, with what is left of the bound, into `stored-order.txt` and
    `stored-order.json`. With nothing left, it does not run: its `exit` is `null` and
@@ -3061,7 +3087,7 @@ writes:
 
 - `stored-order.txt`: the command's standard output and standard error. That is one line for each
   document, one line for each mismatch, and the summary line `stored-order: documents=N clean=N
-  mismatched=N refused=N failed=N`, which INFRA-707's checker from eb0fe0be on ends with
+  mismatched=N refused=N failed=N`, which POMJU-707's checker from eb0fe0be on ends with
   ` unchecked=N`: a document it compared no update and no version of, which it never counts as
   clean, and for which it exits 1.
 - `stored-order.json`: the checker's fields from `state.json` (`dispatch_commit`, `built_from`,
@@ -3122,16 +3148,16 @@ on the worker pod: `collect` leaves it out of the tar parts and uploads nothing 
 
 ### Browser typing
 
-INFRA-707's race is agent writes through the HTTP API against browsers typing into the same
-document over its websocket room ([INFRA-707](dispatch://INFRA-707)). Without typing, a step's
+POMJU-707's race is agent writes through the HTTP API against browsers typing into the same
+document over its websocket room ([POMJU-707](dispatch://POMJU-707)). Without typing, a step's
 documents get agent writes alone, and the stored-order check can only find what those writes
-break. `step --typing` and `replay --typing` add the browsers: INFRA-707's `browsertype` connects
+break. `step --typing` and `replay --typing` add the browsers: POMJU-707's `browsertype` connects
 `--typing-peers` peers (default 2) to each of the step's `--typing-docs` documents (default 20)
 and each types inside existing paragraph text at `--typing-rate` keystroke updates per second
 (default 5), each peer a person of its own, while `loadgen run` sends the step's own writes. The
 curves run without it: `all` runs no typing, and `collect` leaves a step that typed out of
 `curves/` (a replay is left out anyway), so typing never moves a knee. The steps that type are
-the caller's: for INFRA-514, the two replays and the step `10x-typing`, each named with
+the caller's: for POMJU-514, the two replays and the step `10x-typing`, each named with
 `-typing`.
 
 `up --browsertype-commit <sha>` builds `browsertype` from that commit with the stored-order
@@ -3142,7 +3168,7 @@ records the commit and the binary's sha256. The runner gets the binary as `/work
 when its sha256 differs there. Before it creates anything, `up` refuses, and names, a commit that
 git does not have or whose tree has no `packages/envoy/loadtest/browsertype`, and, after the
 build and still before the lock, a `browsertype` whose `-help` lists no `-protect` and one whose
-`-help` lists no `-person`. A `--browsertype-commit` before INFRA-707's `67ac05a4` is refused for
+`-help` lists no `-person`. A `--browsertype-commit` before POMJU-707's `67ac05a4` is refused for
 that second reason: its driver connects with the copy's agent token, which Dispatch's document
 room no longer admits (sjawhar/legion#2541), so its peers would type nothing. Give `67ac05a4` or
 a later commit. `--typing`
@@ -3172,7 +3198,7 @@ The documents are the ones the step writes most:
   artifact id. `cluster.sh` runs it with the step's own flags, the ones it then gives `loadgen
   run`: `-seed <run>/seed.json -sessions <series-sessions> -top <K> -events <4 × factor> -warmup
   30s -duration <--duration> -rng-seed 1`. When the Kth document has fewer than 10 planned
-  versions, the versions INFRA-707's acceptance 2 needs of every typed document, one warning line
+  versions, the versions POMJU-707's acceptance 2 needs of every typed document, one warning line
   names the count and the step runs on; `--reads-only` with `--typing` is refused, since a step
   with no agent write has nothing to rank its documents by.
 
@@ -3234,7 +3260,7 @@ the worker pod.
 | `cgroup.jsonl` | The sampler's reads: every 5 s, for each copy container (`dispatch`, `pprof`, `postgres`, `nats-0`, `nats-1`, `nats-2`, `listener`, `runner`), one line with `at` (the worker's clock), `role`, `pod`, `container`, `usage_usec`, `throttled_usec`, `cpu_max`, `memory_current` and `inactive_file`. A failed read is a line with `error` and no number. |
 | `steps/<name>/` | One step directory (below). |
 | `phases/<phase>` | The steps of each phase (`series`, `refinement`, `soak`, `replay`, `db4`, and `steps` for the `step` subcommand), in the order they started. |
-| `replay/` | `replay-prepare`'s inputs: `parts/` (INFRA-639's parts), `bundle/` and `bundle.unpacked.json`. |
+| `replay/` | `replay-prepare`'s inputs: `parts/` (POMJU-639's parts), `bundle/` and `bundle.unpacked.json`. |
 | `replay-prepared.json` | `replay-prepare`'s record: `template`, `manifest`, `seed_dump_sha256`, `bundle_tar_zst_sha256`, `bundle_meta_sha256`, `dispatch_commit`, `dispatch_image`, `migration_before`, `migration_after`, `schema_version` (`/healthz`'s), `checksum` (`loadgen replay-checksum` of the template), `postgres_version`, `prepared_at`, and `seconds` for `inputs`, `stream`, `restore`, `migrate`, `backfill`, `quiet`, `vacuum`, `checksum` and `total`. |
 | `TABLES.md` | The tables (The tables, above) of every step, in the order the steps ran. |
 | `STORED-ORDER.md` | The stored-order check (above): the commit its `envoy-dispatch` was built from, the commit `browsertype` was built from, and one row for each step, in the order the steps ran, with `since`, the exit, the counts, the typed call's counts (`none` for a step that typed into no document) and the typing (`sent`, or `none`). |
@@ -3275,7 +3301,7 @@ its cores and working set from `cgroup.json`. It also holds:
 - `loadgen curves -series cluster|loop` is the rule a set of steps is judged by: its grid, how
   narrow a knee's bracket is refined to, the criteria of its Pass table, and whether a starved
   generator voids a step. There are two load tests and two rules, so the rule is the flag and not
-  a constant: `cluster`, the default, is INFRA-598's series on a cluster copy, and reads as it
+  a constant: `cluster`, the default, is POMJU-598's series on a cluster copy, and reads as it
   always has; `loop` is the Verified Linux spec loop's on the deployment of virtual machines
   (Running on the deployment, below).
 
@@ -3344,7 +3370,7 @@ its cores and working set from `cgroup.json`. It also holds:
 
 ### Differences from production
 
-- The commit is `--dispatch-commit`. INFRA-598's run measures 9b92ac14, not the outage's 35efd326:
+- The commit is `--dispatch-commit`. POMJU-598's run measures 9b92ac14, not the outage's 35efd326:
   #2302's pipelined outbox and 64-connection pool, and every other change of
   `git log 35efd326..9b92ac14 -- packages/envoy/cmd/dispatch packages/envoy/internal/dispatch`.
 - GOMAXPROCS is 16, from the container's CPU limit, as in production.
@@ -3361,7 +3387,7 @@ its cores and working set from `cgroup.json`. It also holds:
 - The node CPU model is read in the containers. Production's machine type is not readable by the
   worker: nodes are outside the Role.
 - The curves use the harness's synthetic data set (1,000 issues, specs of 4 to 50 KB) and its event
-  mix from INFRA-512's counts (5 write kinds), not every event type of production.
+  mix from POMJU-512's counts (5 write kinds), not every event type of production.
 - The replay: reads assumed at ρ = 1; the edit and upload split assumed at U = 0.25; version
   history that holds the 22:55 text with a marker line; anchors placed on a substitute sentence
   where the logged quote is gone; not the 22:47Z restart's cold rooms; not other projects' writes
@@ -3468,12 +3494,12 @@ failed kill and the nap that would follow it included.
 
 ## Running on the deployment
 
-`vm/vm.sh` runs the spec loop's load on the deployment of [INFRA-988](dispatch://INFRA-988): the
+`vm/vm.sh` runs the spec loop's load on the deployment of [POMJU-988](dispatch://POMJU-988): the
 virtual machines its deployment file names and a Cloud SQL instance of its own
-([INFRA-1051](dispatch://INFRA-1051)), driven from a Legion worker pod over ssh.
+([POMJU-1051](dispatch://POMJU-1051)), driven from a Legion worker pod over ssh.
 `cluster/cluster.sh` is the model — the same subcommands, the same flag parsing and refusals, the
 same run directory — and only the deployment changes, from a Kubernetes namespace to a set of
-virtual machines and a managed instance. The machines and the instance are INFRA-1051's to create
+virtual machines and a managed instance. The machines and the instance are POMJU-1051's to create
 and to remove: no subcommand creates, resizes or removes one.
 
 Every subcommand needs `--config`, the deployment file (below); there is no default. After `up`,
@@ -3630,7 +3656,7 @@ No credential of the deployment is an argument anywhere, on either machine. `dow
 run's own directory from the load machine with every credential file in it, and says so: a
 deployment that is turned off should leave no token, no api-key and no database password on a
 disk that outlives it. The containers' environment files are their machines' own and stay with
-them, as the machines and the instance do (`dispatch://INFRA-1051`'s merge removes those).
+them, as the machines and the instance do (`dispatch://POMJU-1051`'s merge removes those).
 
 #### What reads each file on a machine, and at what mode
 
@@ -3640,7 +3666,7 @@ than that. The stub embedder's certificate — the one such file `put_file` writ
 once, and Dispatch, which reads it through `SSL_CERT_FILE`, opened nothing, trusted nothing, and
 answered every embedding of the seed `tls: bad certificate` — 12,412 of them, with the whole
 seed's embedding gate hanging on it — while the certificate itself was correct in every other way
-([INFRA-988](dispatch://INFRA-988)). The local stack cannot show that defect at all: there
+([POMJU-988](dispatch://POMJU-988)). The local stack cannot show that defect at all: there
 Dispatch runs as the user that writes the file. So `put_file` takes the mode its file's own
 reader needs, and these are the readers:
 
@@ -3679,8 +3705,8 @@ script does. What the example cannot carry is why each key is there, which is be
 - `production_addresses` are the addresses the deployment may never reach; `check` proves each one
   refuses a connection from every machine.
 - `load` holds what a step sends. A step drives two populations at once, because the question
-  INFRA-988 asks is whether production Dispatch carries the spec loop's load on top of
-  production's own usual traffic. The baseline population is INFRA-598's 1x, which every step
+  POMJU-988 asks is whether production Dispatch carries the spec loop's load on top of
+  production's own usual traffic. The baseline population is POMJU-598's 1x, which every step
   carries as it is: its writes are drawn from `seed.json`'s issues with `baseline.event_mix` and
   its reads from the production routes `loadgen run` holds embedded. The loop population's rates
   are multiplied by the step's factor: its writes are drawn from `loopseed.seed.json`'s
@@ -3794,7 +3820,7 @@ a session is attached to it (`database "dispatch" is being accessed by other use
 (force)` is no answer to that on its own: it signals the attached backends and then waits five
 seconds of the server's own, and refuses the whole statement when they outlast those seconds.
 That is what ended this issue's series at its 3x step, with 274 sessions still attached
-(dispatch://INFRA-988).
+(dispatch://POMJU-988).
 
 So the reset's drop, and the seed's rename of that same database to the template, clear the way
 before the statement: up to `DB_FREE_SECONDS` (60 s) for the sessions to go by themselves, read
@@ -3810,7 +3836,7 @@ deployment is ever given its name.
 The store is the NATS container's to write and the driver's to clear: that container makes
 `jetstream/` inside it as root at mode 700, which the ssh user cannot descend into, so `reset`
 removes the store with `sudo` and makes it again as the ssh user at the mode `up` leaves it at
-(dispatch://INFRA-988).
+(dispatch://POMJU-988).
 
 ### The profiling tunnel
 
@@ -3832,7 +3858,7 @@ reads there:
   a 5 s `box_busy` read and the registration of every session — so a driver reading "at the
   window's end" read inside the window it was measuring: a stop-the-world goroutine dump and
   a 500 MB `heap?debug=1` render inside `loadgen`'s own CPU profile, and three files a healthy
-  step then dropped for `loadgen`'s own, which are the ones it keeps (dispatch://INFRA-988).
+  step then dropped for `loadgen`'s own, which are the ones it keeps (dispatch://POMJU-988).
   `profiles.txt` in the step directory names the writer of each of the four files and what it
   covers, and names `none` with the reason for one the step does not hold.
 - The 5 s sampler inside `loadgen run` reads Dispatch's goroutines, its pool acquire waiters and
@@ -3896,7 +3922,7 @@ failure anywhere in it — takes its remote work with it: the `loadgen run` on t
 the profiling tunnel there, the VM sampler and the Postgres collector on this pod, and the pid
 file of each. Before this, a `series` stopped with a `TERM` left all of it running — the load
 with its whole window to go, loading the deployment the next step would measure — to be killed by
-hand on both machines ([INFRA-988](dispatch://INFRA-988)). Two things do it, because either alone
+hand on both machines ([POMJU-988](dispatch://POMJU-988)). Two things do it, because either alone
 leaves half:
 
 - `ssh` carries no signal to the command it runs, so killing the local `ssh` is nothing to the
@@ -3923,14 +3949,14 @@ leaves half:
     committed counts, receipts and the other latencies stay,
   - no reset per step. `cluster.sh` resets its copy before each step (Running on a cluster copy,
     above).
-- `cluster.sh` runs the 10-minute steps, the hour with its trend, and INFRA-639's replay of
-  LINUX's log on the 16 and the 4 vCPU database.
+- `cluster.sh` runs the 10-minute steps, the hour with its trend, and POMJU-639's replay of
+  HAFJJ's log on the 16 and the 4 vCPU database.
   Sampling of the production database is not in this package.
   Restarts during load are: `--restart-at` restarts Dispatch on the local stack (The restart
   scenario, above), and `restart-step.sh` restarts the listener (The listener restart, above).
 - The editors type only into paragraphs of specs, one word at a time; they neither format, delete,
   nor send awareness, and each editor keeps one document.
-- The replay of LINUX's write log is this package's second request source (`-source replay`). The
+- The replay of HAFJJ's write log is this package's second request source (`-source replay`). The
   route-mix file and `routes.go` stay its GET generator.
 - `run-series.sh` passes no `-replay-*` flag: a replay step is one `run-step.sh <name> --replay`
   (The replay, above).

@@ -33,7 +33,7 @@ symptoms:
 
 # A PR-Body Template That Names a CI Check the Repository Never Produces
 
-**Superseded 2026-10-23 (dispatch://INFRA-83):** the `CI:` line this learning is about no longer
+**Superseded 2026-10-23 (dispatch://POMJU-83):** the `CI:` line this learning is about no longer
 exists. The PR-body template (`skills/legion-worker/references/pr-body.md`) carries no `CI:` line at
 all, so neither the shape prescribed below nor any replacement wording is written into a body: no
 role records a check result for a later step to trust, and the tester and the reviewer each read CI

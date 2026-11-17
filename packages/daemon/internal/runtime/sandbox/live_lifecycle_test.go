@@ -140,7 +140,7 @@ func (r *liveRig) checkGVisor() error {
 // sandboxed pod reads nproc 2 whatever it reserves and whatever its host holds, so the cgroup's
 // own cpu.cfs_quota_us/cpu.cfs_period_us are read directly there instead: they tracked the
 // containers' summed cpu limits exactly at every size measured on 2026-11-05 (2, 2.5, 3, 4 and 6
-// CPU, each on an 8-vCPU node, dispatch://INFRA-928/artifact/measurements-2026-11-05-md).
+// CPU, each on an 8-vCPU node, dispatch://POMJU-928/artifact/measurements-2026-11-05-md).
 func (r *liveRig) checkResources() error {
 	root := r.claim("root")
 	if err := r.ensureRunning(root); err != nil {
@@ -192,7 +192,7 @@ func (r *liveRig) checkResources() error {
 	if r.gke() {
 		// gVisor on GKE Autopilot's container-optimized compute platform: a sandboxed pod reads
 		// nproc 2 whatever it reserves and whatever its host holds. Measured 2026-11-05
-		// (dispatch://INFRA-928/artifact/measurements-2026-11-05-md): probe pods at 2, 2.5, 3, 4
+		// (dispatch://POMJU-928/artifact/measurements-2026-11-05-md): probe pods at 2, 2.5, 3, 4
 		// and 6 CPU, each on an 8-vCPU node, all read nproc 2, while the pod's cgroup cpu quota —
 		// read from `/sys/fs/cgroup/cpu/cpu.cfs_quota_us` and `cpu.cfs_period_us`, identically
 		// presented by every container in the pod, since one gVisor sandbox covers the whole pod —
@@ -485,7 +485,7 @@ func (r *liveRig) checkWorkerSharesIssuePod() error {
 // suspend: stopping the worker's process leaves its issue Sandbox, pod, root role and the pod's
 // own disk intact — the disk lives and dies with the pod, and a role stop takes neither. The
 // stopped locator probes Gone; the root remains Alive in the same container. The issue's Sandbox
-// owns no claim of its own any more (INFRA-80), so there is no PVC under the name an issue's
+// owns no claim of its own any more (POMJU-80), so there is no PVC under the name an issue's
 // Sandbox-owned volume carried (IssueClaimName, now the project controller's alone): what is there
 // is the pod's, named for the pod and owned by it.
 func (r *liveRig) checkSuspend() error {
@@ -1425,7 +1425,7 @@ func templateNames(s *sandbox) []string {
 // pod at that name as NotRecordedProcess, never Gone, and the supervisor treats the two
 // identically (machine.go). The replacement pod's disk is a claim of its own: the same name, since
 // Kubernetes names it for the pod, owned by the new pod, and a new uid — the killed pod's went
-// with it (INFRA-80). The claim then resumes into that fresh disk from the session table, which is
+// with it (POMJU-80). The claim then resumes into that fresh disk from the session table, which is
 // where everything it carries across the replacement now lives.
 func (r *liveRig) checkReAdopt() error {
 	victim := r.claim("orphan")
@@ -1650,7 +1650,7 @@ func (r *liveRig) checkOrphanSweep() error {
 // which this direct runtime harness calls itself since it has no store or outbox — deletes every
 // issue Sandbox of the tree and hands none over (CleanupTree), and the issue is left nothing: its
 // pod goes with its Sandbox, and the disk goes with the pod. The check's name said the opposite
-// before INFRA-80, when a released role left the issue's volume for a cleanup that could hand it
+// before POMJU-80, when a released role left the issue's volume for a cleanup that could hand it
 // to another tree.
 func (r *liveRig) checkCleanupReapsTheIssue() error {
 	if err := r.startRuntimeOnce(); err != nil {
@@ -1752,7 +1752,7 @@ func (r *liveRig) checkCleanupReapsTheIssue() error {
 	return nil
 }
 
-// issue-suspend-resume: the whole of INFRA-80 on an issue of its own. Its role runs, its session is
+// issue-suspend-resume: the whole of POMJU-80 on an issue of its own. Its role runs, its session is
 // in the table, and the issue is then closed the way the daemon's durable close effect closes one:
 // SuspendIssue suspends the Sandbox, waits its pod out and deletes the Sandbox with the six role
 // Secrets it owned. Nothing of the issue is left — the Sandbox is gone, and the pod's own disk went

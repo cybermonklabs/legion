@@ -1,7 +1,7 @@
 //go:build e2e
 
 // The live proof that a completion the `legion` tool sends after the issue moved on is answered
-// for the phase the role left (dispatch://INFRA-3146): a finished implementer that completes
+// for the phase the role left (dispatch://POMJU-3146): a finished implementer that completes
 // again while the issue is in testing, with the tester's commit as the commit the shared
 // workspace stands on, is answered by the daemon and not by the tool's push checks, which a phase
 // the role left runs none of: `409 HANDOFF_NOT_CURRENT_PHASE` in one request, naming its own

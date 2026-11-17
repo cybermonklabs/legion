@@ -24,7 +24,7 @@ import (
 // merge. A read made before GitHub reports it answers the pull request open, and the merger is
 // told of a removal that was the merge: step 5 of its role prompt reads that removal's `merged`
 // reason as no removal, and the issue closes on the merge's own event (plan D12 of
-// dispatch://INFRA-3274, which adds no second read for it).
+// dispatch://POMJU-3274, which adds no second read for it).
 //
 // Each attempt first reads the issue, its tree's root and its pull request record, and finishes
 // the row without reading GitHub once the issue has left merging at the row's head (mergingAt,
@@ -45,7 +45,7 @@ import (
 // (record.MergeQueueRemoval) while the issue still merges at that head, Unread when no read
 // succeeded. The read applies nothing else: no mergeability and no synchronize of the head, since
 // a fact of that kind can move a phase (workflow's mergeability), and a removal moves none
-// (dispatch://INFRA-3274/spec R1).
+// (dispatch://POMJU-3274/spec R1).
 //
 // Both facts are applied under an event id that names the row, so a row run again after its finish
 // was lost applies neither a second time. The read and the wait are the runtime's, which attach

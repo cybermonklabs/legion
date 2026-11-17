@@ -1,6 +1,6 @@
 /** Every committed recording of the stubbed layer, held to the generated contract.
  *
- *  dispatch://INFRA-1406's generated types make a response shape a compiler reads, so a shape
+ *  dispatch://POMJU-1406's generated types make a response shape a compiler reads, so a shape
  *  that changes breaks the client in the same commit. A recording is not code: its bodies are
  *  JSON in a file nothing compiles, so a changed shape would leave every recording stale and
  *  every stubbed row green until the nightly re-records. This test is what closes that window -

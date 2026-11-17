@@ -17,7 +17,7 @@ import (
 
 // The spec's rule, restored: a root enters awaiting_person only while it holds an admission
 // row, so only a root whose design gate has never opened, whose architect is writing the spec
-// and holds the whole of the tree's work (dispatch://INFRA-980, "Which issue needs a slot",
+// and holds the whole of the tree's work (dispatch://POMJU-980, "Which issue needs a slot",
 // line 65).
 //
 // A root whose gate has opened waits for its children instead. While it holds its row, the row

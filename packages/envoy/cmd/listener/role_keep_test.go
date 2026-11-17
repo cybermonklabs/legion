@@ -162,7 +162,7 @@ func TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason(t *testing.T) {
 // holder_lapsed names them; kept_until is the end of the copy's hour, the time the stream stored
 // it plus roleKeepWindow. The copy waits on the role's kept lane for the next session that holds
 // the role live, and the claim still stands: nothing but the role reaper releases one
-// (dispatch://INFRA-392).
+// (dispatch://POMJU-392).
 func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
 	const role = "kept-lapsed"
 	for _, tc := range []struct {
@@ -985,7 +985,7 @@ func TestAKeptRoleMessageCarriesTheSenderThePublishStamped(t *testing.T) {
 // the 404 it can act on, with nothing stored.
 func TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing(t *testing.T) {
 	d, client := keptRoleDeps(t)
-	const role = "legion-infra-INFRA-839-architect"
+	const role = "legion-infra-POMJU-839-architect"
 
 	recorder, _ := publishThrough(d,
 		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"a token no claim can name"}`)

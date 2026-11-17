@@ -2,9 +2,9 @@
 // server and again when that test ends, so a connection that was not there at the start and is
 // still there at the end fails the test that left it. Before this check the drain found such a
 // connection at the start of the next test to take the server, failed that test after a
-// thirty-second wait, and named nobody (dispatch://INFRA-1964).
+// thirty-second wait, and named nobody (dispatch://POMJU-1964).
 //
-// It is a file of its own because dispatch://INFRA-1524's rewrite of nats.go replaces the shared
+// It is a file of its own because dispatch://POMJU-1524's rewrite of nats.go replaces the shared
 // server with one server per test: the arming, the settle and the report here hold whatever
 // answers which clients a server holds, and only clientConnections has to be re-pointed.
 //
@@ -116,7 +116,7 @@ func leakCheck(t testing.TB, armed map[uint64]bool) {
 	// Recorded here, before the close below narrows it, because the read after that close can
 	// fail: a record cleared by such a failure costs the next test the drain's whole
 	// thirty-second bound and a failure that names nobody, which is the fault this check exists
-	// to end (dispatch://INFRA-1964). The record holds the fixture's own clients as well as the
+	// to end (dispatch://POMJU-1964). The record holds the fixture's own clients as well as the
 	// others until the read below narrows it, and that is what leftByTheLastTest is written
 	// for: it asks only that every connection the next test finds is one of the recorded ids,
 	// and the fixture's own are closed by then, so the next test does not find them.

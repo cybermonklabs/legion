@@ -22,7 +22,7 @@ afterEach(cleanup);
 const MODELS = ["anthropic/model-a", "openai/model-c", "anthropic/model-b", "custom/model@v2:high"];
 
 /** The view the page passes for a session whose settings frame reports model-a at thinking `auto`
- *  and that runs `/model` and `/effort` from Dispatch (INFRA-195), unless `settings` and `view`
+ *  and that runs `/model` and `/effort` from Dispatch (POMJU-195), unless `settings` and `view`
  *  say otherwise. */
 function reportedView(
   settings: Partial<Omit<AgentStreamSettingsReported, "kind" | "reported" | "seq" | "v">> = {},
@@ -106,7 +106,7 @@ function stepWithKey(select: HTMLSelectElement, value: string): void {
   fireEvent.change(select, { target: { value } });
 }
 
-// The header shows the model and thinking level the session reports now (INFRA-195), and offers
+// The header shows the model and thinking level the session reports now (POMJU-195), and offers
 // a native picker for each where the session runs `/model` and `/effort` from Dispatch.
 test("the header shows the session's reported model and thinking level, with a picker for each", () => {
   const header = renderSettings();

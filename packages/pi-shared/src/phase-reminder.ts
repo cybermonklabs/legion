@@ -22,7 +22,7 @@ import type { SessionActivityPhase } from "./session-activity";
 import type { StallLimits } from "./stall-limits";
 
 /**
- * The endless phase reminder (INFRA-220): it owns the phase-stall machine (`src/phase-stall.ts`)
+ * The endless phase reminder (POMJU-220): it owns the phase-stall machine (`src/phase-stall.ts`)
  * for one session, decides how each reminder reaches the worker, and tells the architect when a
  * run of reminders changes nothing. It imports nothing of Oh My Pi — every collaborator is a
  * field, so a unit test drives it without a host, and `extensions/legion.ts` is the only place
@@ -481,7 +481,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
         // and the record check the timer runs drops the reminder, which is what stops the
         // reminding of a session the provider refuses for ever — the whole of
-        // dispatch://INFRA-264.
+        // dispatch://POMJU-264.
         advance(turn);
         continued = false;
         armReminder(reminderText(""), deps.limits.reminderMs);

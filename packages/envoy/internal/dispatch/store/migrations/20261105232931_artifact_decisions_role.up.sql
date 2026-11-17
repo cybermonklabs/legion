@@ -1,6 +1,6 @@
 -- 20261105232931_artifact_decisions_role.up.sql — the decisions document joins the roles.
 --
--- INFRA-1272: a Legion deployment's design gate becomes a list of steps, each naming one document
+-- POMJU-1272: a Legion deployment's design gate becomes a list of steps, each naming one document
 -- of a root issue, and the `decisions` step names the issue's decisions document. The daemon binds
 -- that step to a document by its role, so `decisions` joins `verification` and `plan` as a part
 -- `artifacts.role` holds (api/artifacts.go, roleSlugs).

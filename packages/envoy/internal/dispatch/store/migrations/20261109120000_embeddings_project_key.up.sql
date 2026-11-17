@@ -6,7 +6,7 @@
 -- predicate on a joined table - the issue's project through issues, a document's through
 -- artifacts and projects, a comment's and an ask's through coalesce(issues.project_key,
 -- projects.key), a message's through its issue - and the comment arm's ran above its candidate
--- limit, because the join below the ordering cost that arm the index entirely (INFRA-988, the
+-- limit, because the join below the ordering cost that arm the index entirely (POMJU-988, the
 -- measurement searchMeaningCommentArm holds). A filter above the limit is a filter of the
 -- wrong 1,000 rows: a project-scoped search reads the 1,000 nearest comment windows of every
 -- project and keeps the in-project ones, so a project holding 800 windows can be answered with
@@ -49,7 +49,7 @@
 -- labelled by the function, so no window written while both releases serve is left unlabelled
 -- and invisible to a scoped search until its text next changes. It costs one lookup by primary
 -- key per row written - a document of fifty windows pays fifty of them inside a statement
--- measured at 114.3 ms (INFRA-988) - which is the price of that property.
+-- measured at 114.3 ms (POMJU-988) - which is the price of that property.
 --
 -- A row's project never changes afterwards: nothing moves an object between projects, no
 -- `update ... set project_key` and no `update ... set issue_key` exists outside the migrations

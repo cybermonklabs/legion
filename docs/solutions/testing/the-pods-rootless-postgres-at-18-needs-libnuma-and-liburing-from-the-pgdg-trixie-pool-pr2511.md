@@ -14,7 +14,7 @@ module: packages/dispatch/e2e
 
 # The pod's rootless Postgres at 18 needs libnuma and liburing, from the PGDG trixie pool
 
-Extends docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md.
+Extends docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-POMJU-42.md.
 
 That document's package list stands up PostgreSQL **17** rootless, and names `libicu76` as the
 non-obvious one because the image ships no ICU and the `postgres` binary links it. Production and
@@ -36,7 +36,7 @@ change at 18.
 Keep the rest of the extended recipe: `initdb` with the ICU provider
 (docs/solutions/testing/a-pod-postgres-for-dispatch-tests-is-initialised-with-icu-collation-so-the-rank-order-test-runs-pr2397.md),
 the `pg_isready` guard on the start rather than `pg_ctl status`
-(docs/solutions/testing/the-shared-harness-script-starts-postgres-only-when-its-port-is-silent-and-no-spec-changes-while-a-run-loads-INFRA-304.md),
+(docs/solutions/testing/the-shared-harness-script-starts-postgres-only-when-its-port-is-silent-and-no-spec-changes-while-a-run-loads-POMJU-304.md),
 and everything on the issue volume.
 
 One step none of those documents names: build `packages/contracts/dist` before a Playwright run.

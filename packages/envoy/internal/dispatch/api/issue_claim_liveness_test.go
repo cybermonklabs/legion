@@ -1,7 +1,7 @@
 package api
 
 // The claim scenarios here drive the listener's per-session read (GET /v1/registry/{session_id})
-// that judges whether a claim's holder is still working (INFRA-249): a holder the live list has
+// that judges whether a claim's holder is still working (POMJU-249): a holder the live list has
 // dropped but whose record still answers, and a read that does not answer at all. Each stands up
 // a listener of its own that answers that read and the live list differently, which is the point
 // of the scenario, so they live apart from issue_claim_test.go, whose claimListener answers both
@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// INFRA-249. The live list is the listener's in-memory cache of the registry: a session that
+// POMJU-249. The live list is the listener's in-memory cache of the registry: a session that
 // is working while that cache refills is absent from it. A claim asks about the holder's own
 // record instead, so a holder the list has dropped keeps its issue - judged by the list, this
 // takeover was granted, and two sessions then worked the same issue.
@@ -74,7 +74,7 @@ func TestClaimRefusesAHolderTheLiveListDroppedButTheStoreStillHolds(t *testing.T
 	}
 }
 
-// INFRA-249. A read of the holder's record that did not answer says nothing about whether that
+// POMJU-249. A read of the holder's record that did not answer says nothing about whether that
 // session is working, so the claim is refused as unavailable. "Unknown, therefore free" would
 // hand a working session's issue to another on a transport error, which no later read undoes.
 func TestClaimRefusesWhenTheHoldersSessionReadDoesNotAnswer(t *testing.T) {
@@ -133,7 +133,7 @@ func unresponsiveHolder(holder *model.IssueClaim, state string, lastSeen time.Ti
 	}}}
 }
 
-// dispatch://INFRA-392. A session that misses its heartbeats under box load is unresponsive,
+// dispatch://POMJU-392. A session that misses its heartbeats under box load is unresponsive,
 // not gone: it is still working the issue it claimed, so neither another agent's claim nor
 // another agent's release takes it away, and the refusal says what state the holder is in and
 // since when, because the caller's real question is whether to wait. Once the holder has not
@@ -227,7 +227,7 @@ func TestAnUndatedSilenceKeepsTheClaim(t *testing.T) {
 	}
 }
 
-// dispatch://INFRA-392. The refusal a take gets and the instant an issue page shows come from
+// dispatch://POMJU-392. The refusal a take gets and the instant an issue page shows come from
 // one rule (judgeClaim), so they name one boundary and turn at one moment. That boundary is the
 // age the silence may reach, as contracts.IssueClaimUnresponsiveGrace itself reads - the claim
 // is held until the holder was last seen longer ago than the grace - so a holder exactly at the
@@ -360,7 +360,7 @@ func readIssueClaimLiveness(t *testing.T, handler http.Handler, key string) issu
 	return decodeBody[issueClaimLiveness](t, response)
 }
 
-// dispatch://INFRA-392, end to end. A session under box load misses its heartbeats; the
+// dispatch://POMJU-392, end to end. A session under box load misses its heartbeats; the
 // registry calls it unresponsive and keeps its record. Another agent may neither take its
 // issue nor release it until the silence outlasts the grace, and the refusal names the state
 // and the heartbeat it was last seen at, so the refused caller knows to wait.

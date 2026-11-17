@@ -54,7 +54,7 @@ export const linearSlack = 4;
  */
 const parseCpuBudgetMs = 12_000;
 
-// The figures behind the slack and the budget (INFRA-1629). The growth check reads two
+// The figures behind the slack and the budget (POMJU-1629). The growth check reads two
 // measurements, each wrong by up to 4 per cent from the clock (see `windowSteps`) before the
 // machine's own noise, and the highest healthy ratio measured is 17.20 against the bound of 32,
 // 1.9 times of room. The slack is that room: this pod's throughput moves by tens of per cent
@@ -153,7 +153,7 @@ function measureCpuClockStepMs(): number {
  * The cost and the throw come back together, as `Measure` in `packages/envoy/internal/cputest`
  * returns its duration beside its error, so a row can assert the cost of a parse that refuses its
  * input and then assert the refusal itself. A break can make a parse both dearer and throwing, and
- * what the row is for is the cost (INFRA-1629).
+ * what the row is for is the cost (POMJU-1629).
  */
 type CostReading = {
   /** The CPU time one run cost: the window the runs filled, divided by those runs. */
@@ -372,7 +372,7 @@ function expectRefusal(side: string, reading: CostReading, refused: RegExp): voi
  * read as the cost failure the row is for, not as a missing refusal. Both sides are then checked
  * against the pattern, because a side that failed with something else — a `RangeError` from a
  * stack it overflowed, say — is not the refusal this row measures, and reading it as one puts the
- * cost of another failure into the growth check (INFRA-1629).
+ * cost of another failure into the growth check (POMJU-1629).
  */
 export function refusalWithinCostBounds(
   what: string,

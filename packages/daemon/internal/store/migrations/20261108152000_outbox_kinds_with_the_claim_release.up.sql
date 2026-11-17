@@ -1,5 +1,5 @@
 -- 20261108152000_outbox_kinds_with_the_claim_release.up.sql — the outbox's kinds once the daemon
--- merges nothing (dispatch://INFRA-714 R2) and releases a parked issue's Dispatch claim
+-- merges nothing (dispatch://POMJU-714 R2) and releases a parked issue's Dispatch claim
 -- (claim_release, 20261108000545).
 --
 -- The check is one list, so whichever of two open branches merges last names both their kinds,

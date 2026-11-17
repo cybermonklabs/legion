@@ -360,7 +360,7 @@ func shapedComments(comments []model.Comment, reader *displayTreeReader) []shape
 // shapedMessage is a message as the dashboard reads it, shaped exactly as a comment is. It is not
 // called messageRead, which is main's own name for the conversation this package answers at
 // GET /api/v1/messages/{id} (messages.go): both carry a Message field, so code written against
-// one name under the other's meaning type-checks and decodes nothing (INFRA-635).
+// one name under the other's meaning type-checks and decodes nothing (POMJU-635).
 type shapedMessage struct {
 	model.Message
 	BodyTree   model.DisplayTree `json:"body_tree,omitempty"`

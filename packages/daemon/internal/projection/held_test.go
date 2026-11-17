@@ -47,7 +47,7 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 		ArtifactID: "artifact-" + root, LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}}
 }
 
-// C1 of dispatch://INFRA-3107: every issue of the project the daemon's record holds in the
+// C1 of dispatch://POMJU-3107: every issue of the project the daemon's record holds in the
 // workflow stands in admission.active, in admission.waiting or in admission.held, and no issue
 // stands in held and in one of the other two. The fixture carries one issue for each of the
 // eleven words of the ladder — a member of a closed tree, a member of a parked tree, a root
@@ -281,7 +281,7 @@ func heldRow(t *testing.T, state api.State, key string) api.HeldIssue {
 }
 
 // The word one issue reads is the first of the eleven that is true of it, and not whichever hold
-// a reader noticed first (C1 of dispatch://INFRA-3107). Each case below makes two of the words
+// a reader noticed first (C1 of dispatch://POMJU-3107). Each case below makes two of the words
 // true of one issue at once and requires the earlier one, so the order itself is what is proved
 // rather than the eleven clauses one at a time; the last case is the control, an issue one word
 // only is true of, which must read that word whatever the order says.

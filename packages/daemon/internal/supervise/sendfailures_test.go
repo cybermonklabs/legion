@@ -3,7 +3,7 @@ package supervise
 // A send that never reaches a turn leaves two marks: the claim's prompt budget, which only the
 // far side's own answer about this workspace spends, and the pending task's record of every
 // failed send, which is kept whether the failure was charged or not. These tests pin both
-// (INFRA-1480).
+// (POMJU-1480).
 
 import (
 	"context"
@@ -40,7 +40,7 @@ const staleLockRefusalWithRawByte = "Command failed (exit 1): jj metaedit: the g
 // and no adoption could fail. Every task sent through it names a phase, because a prompt that is
 // no phase task adopts nothing either (Machine.adopts): the adoption is made for the commits a
 // phase writes, and a message or a reminder would only take the workspace from whichever role is
-// working in it (dispatch://INFRA-714).
+// working in it (dispatch://POMJU-714).
 func adoptingHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
@@ -59,7 +59,7 @@ func adoptingHarness(t *testing.T) *harness {
 // workspace or the agent, cost nothing, and are retried for as long as they keep failing. Charging
 // them would retire a healthy worker for its cluster's weather; charging neither of the first two
 // leaves a claim re-sending for ever, which is what held two planning tasks 31 and 33 hours
-// (INFRA-1480).
+// (POMJU-1480).
 //
 // Each row names its own failure in the log, the uncharged ones included: an operator reading a
 // claim that waits is told whether the prompt was lost on the way or the GitHub App would mint
@@ -160,7 +160,7 @@ func TestDeliveryBudgets(t *testing.T) {
 	// a diagnosis, so a record the store will not take decides nothing about the charge. The write
 	// of that record used to return before the split that charges, and a refused adoption whose
 	// text the store refused was then charged nothing and re-sent with no bound — the very stall
-	// the split exists to end (INFRA-1480). The store refuses the write itself here, rather than
+	// the split exists to end (POMJU-1480). The store refuses the write itself here, rather than
 	// the text being one a UTF8 server rejects, so the claim holds for every reason a write can
 	// fail and not for one encoding's quirk.
 	t.Run("a refused adoption is charged though its record is not written", func(t *testing.T) {

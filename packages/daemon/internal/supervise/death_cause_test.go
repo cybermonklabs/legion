@@ -1,7 +1,7 @@
 package supervise
 
 // A worker the environment kills is restarted in its own session and told why, and the deaths that
-// restart it are counted against the work they interrupted: dispatch://INFRA-714 R6. A root
+// restart it are counted against the work they interrupted: dispatch://POMJU-714 R6. A root
 // architect died six times in 54 minutes, was never told why, and its claim kept nothing a reader
 // could have asked.
 
@@ -105,7 +105,7 @@ func TestADeathWithNoTurnOpenAndNothingPendingIsNotCounted(t *testing.T) {
 // the turns they find. Nothing else records the end of a turn whose agent died — only the agent's
 // own turn end does — so without this an interrupted turn stayed open for ever and the parked
 // relaunched agent, idle with nothing pending, had every later death charged against it until the
-// claim failed (dispatch://INFRA-714 finding 6).
+// claim failed (dispatch://POMJU-714 finding 6).
 func TestADeathEndsTheTurnItInterruptedSoLaterIdleDeathsAreNotCharged(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)

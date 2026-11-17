@@ -1,5 +1,5 @@
 -- 20261111001612_issue_release_kind.up.sql — a release's mark says which rule wrote it
--- (INFRA-1341).
+-- (POMJU-1341).
 --
 -- kind is the release rule the mark belongs to. `idle` is the rule this table was built for: a
 -- pod whose roles are all quiet, released with a save of the workspace's unpushed work and one

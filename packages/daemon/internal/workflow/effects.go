@@ -37,7 +37,7 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 }
 
 // RoleFor is phase.RoleFor, which is where the role that works a phase is decided
-// (dispatch://INFRA-2800 moved it there, because the state projection reads it and
+// (dispatch://POMJU-2800 moved it there, because the state projection reads it and
 // internal/workflow's own tests import internal/projection). This forwarder is kept under the
 // name this package carried it under for one reader that no build of this module reaches:
 // packages/pi-legion/scripts/skill-scenarios/daemon-pane.go, which `go run -overlay` builds as a
@@ -46,7 +46,7 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // name both carry, and this forwards to the one definition rather than restating the table —
 // a second table is what would drift.
 //
-// It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
+// It goes once no checkout a comparison run can name predates dispatch://POMJU-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
 // Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
@@ -429,7 +429,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
 // claim failed and holds no start of it queued that the outbox will act on: a failed sub-architect
-// starts again at its child's next phase start (dispatch://INFRA-3915 R2), and until then its
+// starts again at its child's next phase start (dispatch://POMJU-3915 R2), and until then its
 // child's notices go to the architect above it (record.OwningArchitect). The outbox's start
 // retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
 // or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
@@ -557,7 +557,7 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // that fact marked the issue moved where it wrote them (enter's two callers, start and
 // StartPromotedWorker, both come through started as news of the issue) — so the movement is the
 // fact that created the entry and not each delivery of it. R3 counts the daemon's own
-// re-assertions as no movement (dispatch://INFRA-2560), and these must be among them: the minute
+// re-assertions as no movement (dispatch://POMJU-2560), and these must be among them: the minute
 // sweep alone would otherwise reset a stuck tree's quiet time sixty times an hour, and the
 // measure would never reach the bound on the stop it most needs to see. It is set here, once,
 // rather than by each door, so no door can send an owed entry as news.
@@ -823,7 +823,7 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 	// rule, the cutover's one-time repair (cutoverMergerRepair) and the silence repair), and the
 	// phase's resume task the boot's resume, the cutover's repair and the silence repair send a
 	// claim level with its entry. A movement is a fact new to the record, and the
-	// daemon's own re-assertions are none (dispatch://INFRA-2560, R3): nothing outside the daemon
+	// daemon's own re-assertions are none (dispatch://POMJU-2560, R3): nothing outside the daemon
 	// happened, and the work is not new to the record. The fact that made it so is the one that
 	// raised the entry, and that fact marked the issue where it raised it: a transition's phase
 	// write (Engine.transition) and its start, which comes through here as news, and a

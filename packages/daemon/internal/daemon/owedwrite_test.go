@@ -1,7 +1,7 @@
 package daemon
 
 // What a database that has stopped answering costs one claim, and what it must not cost the rest
-// of the daemon (INFRA-1132). The parts only a real daemon over a real store can show are here:
+// of the daemon (POMJU-1132). The parts only a real daemon over a real store can show are here:
 // the claim-write deadline measured on a decision of a supervised machine, the other claims and
 // the readers that go on while one claim's write waits it out, the mark's loss with the process
 // that held it, and the owed report arriving at the daemon's own durable-state path rather than

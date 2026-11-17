@@ -1,4 +1,4 @@
-// The driver of scripts/e2e/dispatch-session-settings.sh (INFRA-195): it owns every Oh My Pi
+// The driver of scripts/e2e/dispatch-session-settings.sh (POMJU-195): it owns every Oh My Pi
 // process of the run, each in `--mode rpc` as a Legion pane runs it, and one held-open Chromium
 // page signed in to Dispatch as alice, and runs the checks in order. Each check prints
 // `== <name>`, what it observed, and `ok <name>`, and keeps a screenshot of the page in

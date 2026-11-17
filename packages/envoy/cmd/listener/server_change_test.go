@@ -1,6 +1,6 @@
 //go:build serverchange
 
-// The acceptance soak of INFRA-547: a message sent through an Envoy listener's POST
+// The acceptance soak of POMJU-547: a message sent through an Envoy listener's POST
 // /v1/messages/publish reaches its recipient, or its sender gets an error, while the NATS servers
 // of the hub change under the recipient. It runs the real envoy-listener binary twice, the holder's
 // listener and the sender's, over a three-server cluster in this process (testnats.StartCluster),
@@ -177,7 +177,7 @@ type serverChangeRun struct {
 	sendThroughHolder bool
 }
 
-// TestServerChange is the acceptance test of INFRA-547 (plan section "The acceptance test"). The
+// TestServerChange is the acceptance test of POMJU-547 (plan section "The acceptance test"). The
 // stand-in registers through the holder's listener H and claims the role there. Each disruption
 // closes the stand-in's gates, lame-ducks or kills the server it is on, opens the gates 1.5 s after
 // its connection drops, restarts the server, and waits for the cluster to be whole again before 3 s

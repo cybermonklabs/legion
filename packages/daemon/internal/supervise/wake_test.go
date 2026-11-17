@@ -271,7 +271,7 @@ func TestAWakeDroppedBeforeItsTurnLaunchesNothingAndTheNextKeepsItsMoment(t *tes
 	h.wantWakeLine(thirdToken, "waitedFor="+(2*wakeInterval+2*wakePart).String())
 }
 
-// R2 of dispatch://INFRA-976/spec: a wake that waits blocks nothing and loses nothing, and its
+// R2 of dispatch://POMJU-976/spec: a wake that waits blocks nothing and loses nothing, and its
 // claim "still decides a suspend, a stop, a tree close". A roll or a restart puts hundreds of
 // claims in the queue, so a claim far down it waits tens of minutes, and an operator's drain of
 // such a claim must not wait with it: the claim records no process, so the suspension has no
@@ -680,7 +680,7 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 	h.wantStarts(thirdToken, 1)
 }
 
-// Check c-nonblocking of dispatch://INFRA-976/spec, over a claim the gate parked above a process
+// Check c-nonblocking of dispatch://POMJU-976/spec, over a claim the gate parked above a process
 // that still runs. Such a claim is handed no task while its launch waits, because that launch
 // lets the process go at its turn (launchNow): a worker started on a task moments before its
 // process is killed loses both the turn and the work, and the task it had begun is retired as
@@ -736,7 +736,7 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 
 	// The stale process left no report the daemon took (a stale plugin's report is refused), so
 	// its let-go at the launch's turn recorded its background work as unknown, and the task
-	// carries that sentence in front of it (dispatch://INFRA-3276 R3).
+	// carries that sentence in front of it (dispatch://POMJU-3276 R3).
 	ended := h.claim().EndedWork
 	if ended.Cause != endStalePlugin || !ended.Tells() {
 		t.Fatalf("the launch's turn recorded %+v, want an untold end of the stale plugin's process", ended)
@@ -1700,7 +1700,7 @@ func TestARefusedRetryOfAProcesslessClaimKeepsItsPluginMark(t *testing.T) {
 	}
 }
 
-// Check c-spread of dispatch://INFRA-976/spec names two wakes that never wait, and one of them is
+// Check c-spread of dispatch://POMJU-976/spec names two wakes that never wait, and one of them is
 // the wake an operator asks for through the daemon's API. Its deliver route is one of those asks
 // (api.operator's deliver, which sends a task with no row id): a person is waiting on the task
 // they just gave a claim, as they are on the resume and the retry the same route sends. So an
@@ -1877,7 +1877,7 @@ func TestAnOperatorsDeliveryTheClaimRefusesRunsNoParkedRelaunch(t *testing.T) {
 // The same park, over a claim that owes the task a provider error took back. Nothing works that
 // task, the ladder's next step can be ten minutes away and a run of errors has no end of its
 // own, so a newer task does not wait behind it: the owed task is retired and the newer one takes
-// its place (replaceable, queue, dispatch://INFRA-956 R2). A task the claim takes this way is a
+// its place (replaceable, queue, dispatch://POMJU-956 R2). A task the claim takes this way is a
 // task a person is waiting on, exactly as one it takes over no delivery at all, so the launch
 // parked above the process that task would reach runs where it arrives rather than at a paced
 // turn tens of minutes away in a wave (runParkedLaunchNow).

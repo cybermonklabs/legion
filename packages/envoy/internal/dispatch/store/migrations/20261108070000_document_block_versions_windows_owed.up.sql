@@ -10,7 +10,7 @@
 -- embeddings, EXPLAIN (ANALYZE, BUFFERS) of that statement answers no rows in 112-122 ms with
 -- 67,496 buffer hits: the same O(table) shape that cost the comment listing 13.7 s, over a
 -- table fifty times smaller, and a tick runs it every 2 s while the arm has a full batch
--- (INFRA-988).
+-- (POMJU-988).
 --
 -- It will not get cheaper. Since the version write stopped writing a document's windows
 -- (refs.IndexBlocks), every edited document answers that read rather than none.

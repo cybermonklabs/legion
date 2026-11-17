@@ -1522,7 +1522,7 @@ const consumersPerSession = 2
 // holds the step's sessions and the consumers of sessions that stopped inside the step. Twice the
 // sessions leaves room for those and still refuses a step whose consumers follow the churn:
 // before this change production carried 6,100 to 6,450 consumers over 72 hours against about 650
-// live sessions, at 75 to 80 consumer births an hour (dispatch://INFRA-777), about ten times its
+// live sessions, at 75 to 80 consumer births an hour (dispatch://POMJU-777), about ten times its
 // fleet.
 //
 // A step that registered no session has no denominator, and a step whose start or end read failed

@@ -18,7 +18,7 @@ import (
 // asserts gitLockGuard and gitLockInterval in it: this package cannot read them, since the
 // launcher imports it.
 //
-// Every sentence has a role's failure behind it. The wording before INFRA-3098 said no process
+// Every sentence has a role's failure behind it. The wording before POMJU-3098 said no process
 // removes such a lock while the pod runs, told the role not to remove it, and offered replacing
 // the issue's pod — which costs the issue its pod and its disk — as the remedy; two roles read it
 // on 2026-11-11 and stopped to ask a person what to do. The launcher of an issue pod's roles

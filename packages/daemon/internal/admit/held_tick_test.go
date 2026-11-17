@@ -74,7 +74,7 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 // The tick notice carries what the project holds: every issue the daemon's own record holds in
 // the workflow that stands in neither the active set nor the waiting line, each with the one
 // word for why, beside the open capabilities and the blocked rows the notice carries already
-// (C3 of dispatch://INFRA-3107). A member of a parked tree, a child under a shut design gate and a
+// (C3 of dispatch://POMJU-3107). A member of a parked tree, a child under a shut design gate and a
 // member whose tree root the live read leaves out each take a row of their own, and a project holding nothing carries no field at all, as a tick with
 // nothing blocked carries no blocked field.
 //

@@ -37,7 +37,7 @@ machine gives it.
 
 ## Evidence
 
-sjawhar/legion#2699 (INFRA-436) replaced a fixed 60 s per-call bound in
+sjawhar/legion#2699 (POMJU-436) replaced a fixed 60 s per-call bound in
 `packages/envoy/internal/dispatch/pmdoc/linear_test.go` with `perCallDeadline(t)`:
 `t.Deadline()` less `perCallReportMargin`, capped at `perCallHangCap`. The comment carries the
 measurement — a healthy 1 MiB call took 50.26 s, 84 % of the bound it replaced, in a two-CPU gVisor

@@ -45,7 +45,7 @@ const CommitPullSettledFor = time.Hour
 // (api/results.go's readThroughPullRequests) must not: a result recorded while no pull request
 // carries its commit would leave a fresh read behind, and the read a moment after the pull
 // request opened would be refused a read-through of its own and answer `other_commit` — which
-// is the whole of what dispatch://INFRA-1240 repairs.
+// is the whole of what dispatch://POMJU-1240 repairs.
 //
 // One decision, one lock: Claim tests the moment held and records the next one together, so no
 // caller can hold the two apart and two reads that ask at once cannot both be granted. One

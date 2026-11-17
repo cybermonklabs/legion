@@ -59,7 +59,7 @@ func actorJSON(t *testing.T, actor model.Actor) json.RawMessage {
 // "Release sender", then one whose actor carries no origin at all (what postDeliveryReply
 // writes), then one whose origin carries an empty title -- and is still named by the title it
 // stamped. A session that wrote but never stamped a title is absent from the map, which is the
-// limit chosen for INFRA-1368: nothing here backfills a name, so SessionTitle answers its bare id.
+// limit chosen for POMJU-1368: nothing here backfills a name, so SessionTitle answers its bare id.
 func TestASessionKeepsItsNameAfterAWriteThatCarriesNoTitle(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedTitlesIssue(t, ctx, pool)

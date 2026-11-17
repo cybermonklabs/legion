@@ -7,7 +7,7 @@
 -- and prompt_retires, which only a charged failure spends, while these count every failed send,
 -- charged or not — and the operator's claim view serves them beside the queued, delivered and
 -- confirmed times (api.DeliveryView), so a claim waiting on a send that never lands says so
--- without a person opening a shell in its pod (INFRA-1480).
+-- without a person opening a shell in its pod (POMJU-1480).
 --
 -- Zero, null and empty for every existing delivery, which carries no such record, and each column
 -- has a default because the previous release's daemon writes this table without naming them. That

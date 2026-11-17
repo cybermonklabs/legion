@@ -45,7 +45,7 @@ import {
 const PINNED_AGENTS_ID = "rail-pinned-agents";
 
 /**
- * One pinned agent in the rail (INFRA-812, R1): its running state and name, both `AgentName`'s,
+ * One pinned agent in the rail (POMJU-812, R1): its running state and name, both `AgentName`'s,
  * its unread replies, what its live view is doing (`live`, `live 30s` or `asleep`, the word the
  * registry computes), and the control that unpins it.
  *
@@ -159,7 +159,7 @@ export function Sidebar({
     queryFn: () => api.listIssues({ pinned: true }),
   });
   const projects = useQuery(projectsQuery());
-  // The number beside Priorities (INFRA-2947, R8): the two faults added - the work in flight
+  // The number beside Priorities (POMJU-2947, R8): the two faults added - the work in flight
   // under no priority and the priority work parked in `backlog` or `icebox` - read from the
   // summary call alone, which answers neither list. An event that moves a relation, a status or
   // a parent refreshes it with the page (`api/event-refresh.ts`). A deployment that has written

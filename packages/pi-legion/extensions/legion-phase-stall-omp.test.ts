@@ -20,7 +20,7 @@ import {
 // CI's pi-envoy job installs; on the devbox, `mise where <pin>`/bin/omp. LEGION_TEST_NATS_URL
 // names the NATS server each pane runs against: a session's only inbound is the consumer the
 // listener builds for it, relayed on its own relay subject, so a pane with no NATS server
-// registers nothing and claims nothing (INFRA-771). A run without both skips, except on GitHub
+// registers nothing and claims nothing (POMJU-771). A run without both skips, except on GitHub
 // Actions, where a skip would hide the only run of the check on the host that ships it
 // (`ompNatsGuard`).
 // It is also the only check that the run-end nudge's hidden self-check starts no run: the nudge

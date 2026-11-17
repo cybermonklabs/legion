@@ -19,8 +19,8 @@
   "builders": [
     {
       "fn": "dispatchIssueSubject",
-      "args": ["INFRA", "INFRA-12", "comment.created"],
-      "want": "notifications.dispatch.issue.INFRA.INFRA-12.comment.created"
+      "args": ["POMJU", "POMJU-12", "comment.created"],
+      "want": "notifications.dispatch.issue.POMJU.POMJU-12.comment.created"
     },
     {
       "fn": "agentSubject",
@@ -42,18 +42,18 @@
     { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" }
   ],
   "issueProject": [
-    { "key": "INFRA-12", "project": "INFRA", "ok": true },
+    { "key": "POMJU-12", "project": "POMJU", "ok": true },
     { "key": "PRIV-1", "project": "PRIV", "ok": true },
-    { "key": "INFRA", "project": "", "ok": false },
-    { "key": "infra-12", "project": "", "ok": false },
+    { "key": "POMJU", "project": "", "ok": false },
+    { "key": "pomju-12", "project": "", "ok": false },
     { "key": "A-1", "project": "", "ok": false },
-    { "key": "INFRA-12-x", "project": "", "ok": false },
+    { "key": "POMJU-12-x", "project": "", "ok": false },
     { "key": "*", "project": "", "ok": false },
     { "key": "", "project": "", "ok": false }
   ],
   "roleProject": [
     { "role": "legion-priv-priv-1-architect", "project": "PRIV" },
-    { "role": "legion-infra-controller", "project": "INFRA" },
+    { "role": "legion-pomju-controller", "project": "POMJU" },
     { "role": "legion-legion-legion-208-reviewer", "project": "LEGION" },
     { "role": "lead-reviewer", "project": "_" },
     { "role": "legion-x-controller", "project": "_" },
@@ -62,10 +62,10 @@
     { "role": "legion-infra", "project": "_" },
     { "role": "legion-", "project": "_" },
     { "role": "", "project": "_" },
-    { "role": "legion-infra-\n", "project": "INFRA" },
-    { "role": "legion-infra-\r", "project": "INFRA" },
-    { "role": "legion-infra-\u2028", "project": "INFRA" },
-    { "role": "legion-INFRA-controller", "project": "_" },
+    { "role": "legion-pomju-\n", "project": "POMJU" },
+    { "role": "legion-pomju-\r", "project": "POMJU" },
+    { "role": "legion-pomju-\u2028", "project": "POMJU" },
+    { "role": "legion-POMJU-controller", "project": "_" },
     { "role": "legion-ßk-controller", "project": "_" }
   ],
   "subjectProject": [
@@ -129,7 +129,7 @@
     { "subject": "notifications.legion.priv.PRIV-1", "project": "PRIV", "repo": "", "ok": true },
     { "subject": "notifications.legion.priv.wake", "project": "PRIV", "repo": "", "ok": true },
     { "subject": "notifications.legion.wake", "project": "_", "repo": "", "ok": true },
-    { "subject": "notifications.legion.INFRA.wake", "project": "_", "repo": "", "ok": true },
+    { "subject": "notifications.legion.POMJU.wake", "project": "_", "repo": "", "ok": true },
     { "subject": "notifications.legion.ßk.wake", "project": "_", "repo": "", "ok": true },
     {
       "subject": "notifications.github.acme.widgets.pull_request.4.opened",
@@ -202,23 +202,23 @@
   ],
   "canonicalTopic": [
     {
-      "topic": "notifications.dispatch.issue.INFRA-12.>",
-      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.>",
+      "topic": "notifications.dispatch.issue.POMJU-12.>",
+      "canonical": "notifications.dispatch.issue.POMJU.POMJU-12.>",
       "legacy": true
     },
     {
-      "topic": "notifications.dispatch.issue.INFRA-12.comment.created",
-      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.comment.created",
+      "topic": "notifications.dispatch.issue.POMJU-12.comment.created",
+      "canonical": "notifications.dispatch.issue.POMJU.POMJU-12.comment.created",
       "legacy": true
     },
     {
-      "topic": "notifications.dispatch.issue.INFRA-12",
-      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12",
+      "topic": "notifications.dispatch.issue.POMJU-12",
+      "canonical": "notifications.dispatch.issue.POMJU.POMJU-12",
       "legacy": true
     },
     {
-      "topic": "notifications.dispatch.issue.INFRA.INFRA-12.>",
-      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.>",
+      "topic": "notifications.dispatch.issue.POMJU.POMJU-12.>",
+      "canonical": "notifications.dispatch.issue.POMJU.POMJU-12.>",
       "legacy": false
     },
     {
@@ -307,18 +307,18 @@
   ],
   "legacyTwin": [
     {
-      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12.>",
-      "twin": "notifications.dispatch.issue.INFRA-12.>"
+      "canonical": "notifications.dispatch.issue.POMJU.POMJU-12.>",
+      "twin": "notifications.dispatch.issue.POMJU-12.>"
     },
-    { "canonical": "notifications.dispatch.issue.*.INFRA-12.>", "twin": null },
-    { "canonical": "notifications.dispatch.issue.*.INFRA-12.comment.created", "twin": null },
+    { "canonical": "notifications.dispatch.issue.*.POMJU-12.>", "twin": null },
+    { "canonical": "notifications.dispatch.issue.*.POMJU-12.comment.created", "twin": null },
     {
-      "canonical": "notifications.dispatch.issue.INFRA.INFRA-12",
-      "twin": "notifications.dispatch.issue.INFRA-12"
+      "canonical": "notifications.dispatch.issue.POMJU.POMJU-12",
+      "twin": "notifications.dispatch.issue.POMJU-12"
     },
-    { "canonical": "notifications.dispatch.issue.PRIV.INFRA-12.>", "twin": null },
-    { "canonical": "notifications.dispatch.issue.INFRA.>", "twin": null },
-    { "canonical": "notifications.dispatch.issue.INFRA-12.>", "twin": null },
+    { "canonical": "notifications.dispatch.issue.PRIV.POMJU-12.>", "twin": null },
+    { "canonical": "notifications.dispatch.issue.POMJU.>", "twin": null },
+    { "canonical": "notifications.dispatch.issue.POMJU-12.>", "twin": null },
     { "canonical": "notifications.agent.*.ses_a", "twin": "notifications.agent.ses_a" },
     { "canonical": "notifications.agent.PRIV.ses_a", "twin": "notifications.agent.ses_a" },
     { "canonical": "notifications.agent._.ses_a", "twin": "notifications.agent.ses_a" },
@@ -362,8 +362,8 @@
     },
     { "role": "_.lead-reviewer", "project": "_", "name": "lead-reviewer", "legacy": false },
     {
-      "role": "INFRA.legion-priv-controller",
-      "project": "INFRA",
+      "role": "POMJU.legion-priv-controller",
+      "project": "POMJU",
       "name": "legion-priv-controller",
       "legacy": false
     },
@@ -373,17 +373,17 @@
   ],
   "topicForms": [
     {
-      "topic": "notifications.dispatch.issue.INFRA-12.>",
+      "topic": "notifications.dispatch.issue.POMJU-12.>",
       "forms": [
-        "notifications.dispatch.issue.INFRA-12.>",
-        "notifications.dispatch.issue.INFRA.INFRA-12.>"
+        "notifications.dispatch.issue.POMJU-12.>",
+        "notifications.dispatch.issue.POMJU.POMJU-12.>"
       ]
     },
     {
-      "topic": "notifications.dispatch.issue.INFRA.INFRA-12.>",
+      "topic": "notifications.dispatch.issue.POMJU.POMJU-12.>",
       "forms": [
-        "notifications.dispatch.issue.INFRA.INFRA-12.>",
-        "notifications.dispatch.issue.INFRA-12.>"
+        "notifications.dispatch.issue.POMJU.POMJU-12.>",
+        "notifications.dispatch.issue.POMJU-12.>"
       ]
     },
     {
@@ -405,7 +405,7 @@
     { "topic": "notifications.dispatch.issue.>", "forms": ["notifications.dispatch.issue.>"] }
   ],
   "roleClaimKey": [
-    { "project": "INFRA", "role": "legion-infra-controller", "key": "legion-infra-controller" },
+    { "project": "POMJU", "role": "legion-pomju-controller", "key": "legion-pomju-controller" },
     {
       "project": "PRIV",
       "role": "legion-priv-priv-1-architect",
@@ -413,13 +413,13 @@
     },
     { "project": "_", "role": "lead-reviewer", "key": "lead-reviewer" },
     { "project": "_", "role": "legion-x-controller", "key": "legion-x-controller" },
-    { "project": "INFRA", "role": "reviewer", "key": "INFRA.reviewer" },
+    { "project": "POMJU", "role": "reviewer", "key": "POMJU.reviewer" },
     { "project": "PRIV", "role": "reviewer", "key": "PRIV.reviewer" },
-    { "project": "_", "role": "legion-infra-controller", "key": "_.legion-infra-controller" },
+    { "project": "_", "role": "legion-pomju-controller", "key": "_.legion-pomju-controller" },
     {
       "project": "PRIV",
-      "role": "legion-infra-controller",
-      "key": "PRIV.legion-infra-controller"
+      "role": "legion-pomju-controller",
+      "key": "PRIV.legion-pomju-controller"
     },
     { "project": "LEGION", "role": "lead-reviewer", "key": "LEGION.lead-reviewer" }
   ],
@@ -449,26 +449,26 @@
       "ok": true
     },
     {
-      "subject": "notifications.dispatch.issue.INFRA-12.comment.created",
-      "key": "INFRA-12",
+      "subject": "notifications.dispatch.issue.POMJU-12.comment.created",
+      "key": "POMJU-12",
       "legacy": true,
       "ok": true
     },
     {
-      "subject": "notifications.dispatch.issue.INFRA.INFRA-12.comment.created",
-      "key": "INFRA-12",
+      "subject": "notifications.dispatch.issue.POMJU.POMJU-12.comment.created",
+      "key": "POMJU-12",
       "legacy": false,
       "ok": true
     },
     {
-      "subject": "notifications.dispatch.issue.INFRA-12",
-      "key": "INFRA-12",
+      "subject": "notifications.dispatch.issue.POMJU-12",
+      "key": "POMJU-12",
       "legacy": true,
       "ok": true
     },
     {
-      "subject": "notifications.dispatch.issue.INFRA.INFRA-12",
-      "key": "INFRA-12",
+      "subject": "notifications.dispatch.issue.POMJU.POMJU-12",
+      "key": "POMJU-12",
       "legacy": false,
       "ok": true
     },
@@ -479,51 +479,51 @@
       "ok": true
     },
     {
-      "subject": "notifications.dispatch.issue.INFRA.LINUX-5.comment.created",
+      "subject": "notifications.dispatch.issue.POMJU.HAFJJ-5.comment.created",
       "key": "",
       "legacy": false,
       "ok": false
     },
     {
-      "subject": "notifications.dispatch.issue._.INFRA-12.comment.created",
+      "subject": "notifications.dispatch.issue._.POMJU-12.comment.created",
       "key": "",
       "legacy": false,
       "ok": false
     },
     {
-      "subject": "notifications.dispatch.issue.INFRA.comment.created",
+      "subject": "notifications.dispatch.issue.POMJU.comment.created",
       "key": "",
       "legacy": false,
       "ok": false
     },
-    { "subject": "notifications.dispatch.issue.INFRA", "key": "", "legacy": false, "ok": false },
+    { "subject": "notifications.dispatch.issue.POMJU", "key": "", "legacy": false, "ok": false },
     {
-      "subject": "notifications.dispatch.issue.infra-12.comment.created",
+      "subject": "notifications.dispatch.issue.pomju-12.comment.created",
       "key": "",
       "legacy": false,
       "ok": false
     },
     { "subject": "notifications.dispatch.issue.", "key": "", "legacy": false, "ok": false },
     {
-      "subject": "notifications.dispatch.document.INFRA.INFRA-12.created",
+      "subject": "notifications.dispatch.document.POMJU.POMJU-12.created",
       "key": "",
       "legacy": false,
       "ok": false
     },
-    { "subject": "notifications.agent.INFRA-12", "key": "", "legacy": false, "ok": false }
+    { "subject": "notifications.agent.POMJU-12", "key": "", "legacy": false, "ok": false }
   ],
   "claimProject": [
-    { "role": "legion-infra-infra-12-architect", "requested": "", "project": "INFRA" },
-    { "role": "legion-infra-infra-12-architect", "requested": "INFRA", "project": "INFRA" },
-    { "role": "legion-infra-infra-12-architect", "requested": "PRIV", "error": true },
-    { "role": "legion-infra-infra-12-architect", "requested": "_", "error": true },
-    { "role": "legion-infra-controller", "requested": "INFRA", "project": "INFRA" },
+    { "role": "legion-pomju-pomju-12-architect", "requested": "", "project": "POMJU" },
+    { "role": "legion-pomju-pomju-12-architect", "requested": "POMJU", "project": "POMJU" },
+    { "role": "legion-pomju-pomju-12-architect", "requested": "PRIV", "error": true },
+    { "role": "legion-pomju-pomju-12-architect", "requested": "_", "error": true },
+    { "role": "legion-pomju-controller", "requested": "POMJU", "project": "POMJU" },
     { "role": "lead-reviewer", "requested": "", "project": "_" },
     { "role": "lead-reviewer", "requested": "_", "project": "_" },
-    { "role": "lead-reviewer", "requested": "INFRA", "project": "INFRA" },
+    { "role": "lead-reviewer", "requested": "POMJU", "project": "POMJU" },
     { "role": "reviewer", "requested": "PRIV", "project": "PRIV" },
     { "role": "reviewer", "requested": "infra", "error": true },
-    { "role": "reviewer", "requested": "INFRA.PRIV", "error": true },
+    { "role": "reviewer", "requested": "POMJU.PRIV", "error": true },
     { "role": "reviewer", "requested": "*", "error": true }
   ]
 }

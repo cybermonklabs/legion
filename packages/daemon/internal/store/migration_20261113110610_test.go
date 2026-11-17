@@ -69,7 +69,7 @@ func TestTheClaimsUpdateAnswerMarksAreGoneAfter20261113110610(t *testing.T) {
 	}
 }
 
-// 20261113110610 also starts every pod round open at the deploy again (dispatch://INFRA-2981
+// 20261113110610 also starts every pod round open at the deploy again (dispatch://POMJU-2981
 // I1). The earlier release wrote update_tasked_at when it queued its task, and this release reads
 // that column as the mark of its Envoy ask, so a tasked claim would never be asked. And a round
 // opened longer ago than pod_update_grace_minutes would be replaced at the first sweep, before

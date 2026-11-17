@@ -24,7 +24,7 @@ import (
 // repository — `jj git clone` and `jj git init --colocate` — open no workspace and so can take no
 // -R. A Legion issue pod runs these tests from inside $LEGION_WORKSPACE, a jj workspace of the
 // pod's real shared clone, so when a provisioning child inherited the test process's working
-// directory, jj opened and wrote that clone (dispatch://INFRA-623). The decoy below stands in for
+// directory, jj opened and wrote that clone (dispatch://POMJU-623). The decoy below stands in for
 // the pod's clone and t.Chdir puts the test where the pod's test process stands, which is the
 // whole of what a GitHub runner cannot reproduce: its checkout has no `.jj` anywhere above it.
 //

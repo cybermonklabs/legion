@@ -66,7 +66,7 @@ func PositiveDuration(logger *slog.Logger, environment func(string) (string, boo
 // declarations every reader of a session record judges its age against.
 //
 // The listener and Dispatch both judge the same holder, so both read these two the same way
-// (dispatch://INFRA-392). They are read here, once, rather than spelled out in each program, so
+// (dispatch://POMJU-392). They are read here, once, rather than spelled out in each program, so
 // a change to either variable's name, default or rules reaches both. environment is the caller's
 // own one reader of its environment, as everything in this package takes: the listener's
 // os.LookupEnv, and Dispatch's settings table.

@@ -13,7 +13,7 @@ module: packages/envoy
 
 # A waiter that abandons a shared read leaves its reservation with the read
 
-Extends docs/solutions/architecture-patterns/a-deadline-that-abandons-without-cancelling-makes-a-serial-queue-concurrent-INFRA-246.md.
+Extends docs/solutions/architecture-patterns/a-deadline-that-abandons-without-cancelling-makes-a-serial-queue-concurrent-POMJU-246.md.
 
 - When requests share one read (`singleflight.DoChan` on `context.WithoutCancel`, so one client
   leaving fails none of the others), a request that stops waiting must not release its semaphore

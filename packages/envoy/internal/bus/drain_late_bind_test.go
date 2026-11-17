@@ -35,7 +35,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			}
 			defer client.Close()
 			// The holder's agent subject, which the stream stores and acknowledges as a forward
-			// needs; no session subscribes it (INFRA-771), so the acknowledgement is the only
+			// needs; no session subscribes it (POMJU-771), so the acknowledgement is the only
 			// reply.
 			holderSubject := contracts.LegacyAgentSubject("drain-late-bind-holder")
 

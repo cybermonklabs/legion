@@ -182,7 +182,7 @@ test("the record a remembered role writes names this process, so another one tel
 })
 
 /** A second `claude` process sharing this state directory: the one that resumed a live session's
- *  id in dispatch://INFRA-783. */
+ *  id in dispatch://POMJU-783. */
 const OTHER_INSTANCE = "f0e1d2c3b4a596876543210fedcba987"
 
 test("a record another process wrote is left where it is while this process holds a role", async () => {
@@ -331,7 +331,7 @@ test("every role claim and every release carries that same instance id, not one 
     await session.unfollow([roleTopic])
 
     // Read back from the registration rather than named here: the process mints it once, and
-    // what matters is that the claim and the release say that same process (dispatch://INFRA-783),
+    // what matters is that the claim and the release say that same process (dispatch://POMJU-783),
     // since the listener frees a role claim only for the process that made it.
     const instance = subscribes[0]?.clientInstanceID
     expect(instance).toMatch(/^[0-9a-f]{32}$/)
@@ -362,7 +362,7 @@ test("a refused claim naming the predecessor itself as holder keeps that record 
   // left standing: the listener grants the claim the moment nobody has answered for it inside
   // its live window, so the restore stays pending and every heartbeat asks again. One claim at
   // boot and no more would cost a `--resume` inside the window its role for the life of the
-  // process (dispatch://INFRA-783).
+  // process (dispatch://POMJU-783).
   const setRoles: unknown[] = []
   let standingClaim = true
   const client = recordingClient([], {

@@ -145,7 +145,7 @@ export function orderAgents(
 
 /**
  * Every listed session in its group (`agent-groups.ts`), each group in `orderAgents` order. The
- * pin orders a group's rows and no longer moves a row between groups (INFRA-812's D3): a pinned
+ * pin orders a group's rows and no longer moves a row between groups (POMJU-812's D3): a pinned
  * session Dispatch has not heard from for ten minutes is first among the Quiet rows, not lifted
  * out of them.
  */
@@ -676,7 +676,7 @@ function AgentRow({
         {/* The directory. From `md` it takes the width the rest of the line leaves and keeps
             the segment that names the session's work, with the machine before it and the whole
             path one hover away. Below `md` it takes a line of its own under the name
-            (`order-last basis-full`, the shape the page drew before INFRA-812) and shows the
+            (`order-last basis-full`, the shape the page drew before POMJU-812) and shows the
             whole path: a phone has no hover to ask with, and on one line a 390 px row squeezed
             both this and the name button to nothing, which left the name untappable - the live
             link beside it took the press - and the directory unpainted. It is the row's one
@@ -1407,7 +1407,7 @@ export function AgentsPage(): ReactNode {
   const inbox = useQuery(inboxQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  // The pins are the person's, not this browser's (INFRA-812): the Agents page reads them from
+  // The pins are the person's, not this browser's (POMJU-812): the Agents page reads them from
   // the viewer's agent state and writes them to Dispatch, so a pin made here is in the rail and
   // in the person's other browsers at once.
   const pinned = usePinnedAgents();
@@ -1439,7 +1439,7 @@ export function AgentsPage(): ReactNode {
   // The free-text query and the machines are the page's own `?q=` and `?machine=`, both owned
   // by `agent-search.ts`; the group and role selections stay plain component state, as the
   // machine and role did before this box. A link in from the machines page of
-  // dispatch://INFRA-883 names one machine in `?machine=`, which is this filter with that one
+  // dispatch://POMJU-883 names one machine in `?machine=`, which is this filter with that one
   // host ticked.
   const [search, setSearch] = useAgentSearch();
   const [machines, setMachines] = useAgentMachines();

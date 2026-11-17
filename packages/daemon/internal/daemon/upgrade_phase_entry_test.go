@@ -58,7 +58,7 @@ const (
 // migrations above it up to that release's newest are the fixture's too, and two stand there.
 // 20261112180548_claim_leak_check_cause is the contract 87 release's own, so a database that
 // release migrated holds its row and its claims.leak_check_cause before the phase entry runs.
-// 20261112070503_pull_request_state_read_at (dispatch://INFRA-3027) is applied first as well,
+// 20261112070503_pull_request_state_read_at (dispatch://POMJU-3027) is applied first as well,
 // though that release records no such version, because its version stands below that release's
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
@@ -502,7 +502,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// The sweep loop runs on one hold mark, as workflowRuntime.run starts it
 	// (store.ForConcurrentWorker(running)), and every sweep the loop applies reuses that mark, so the
 	// pool's guard sees each sweep as it does in production rather than refusing nothing on an
-	// unmarked context (INFRA-3169). The three driven by hand take a fresh mark each, which the guard
+	// unmarked context (POMJU-3169). The three driven by hand take a fresh mark each, which the guard
 	// reads the same way, since a sweep gives back every connection it took before it returns.
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})

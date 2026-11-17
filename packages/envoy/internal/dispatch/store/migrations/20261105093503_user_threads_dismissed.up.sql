@@ -1,6 +1,6 @@
 -- 20261105093503_user_threads_dismissed.up.sql
 --
--- INFRA-450: the Dismissed view reads a person's dismissed threads
+-- POMJU-450: the Dismissed view reads a person's dismissed threads
 -- (`GET /api/v1/me/replies?state=dismissed`), newest dismissal first, 200 at a time from a cursor.
 -- Neither user_threads_unread (0095) nor user_threads_inbox (20261105093502) covers a dismissed
 -- row, and neither orders by the dismissal, so without this index that read is a scan of

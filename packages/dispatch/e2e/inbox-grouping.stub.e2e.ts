@@ -17,7 +17,7 @@ import { inboxList, selectedRow } from "./inbox-pane";
 import { stubbed } from "./stub/stub-test";
 
 /**
- * How the Inbox bands its one list (INFRA-450). The owner groups that once sat inside the turn
+ * How the Inbox bands its one list (POMJU-450). The owner groups that once sat inside the turn
  * bands, and the jump a grouped header offered across them, are gone: the bands are a choice of
  * **Group by**, priority by default and the turn bands under **Waiting on**, and whichever is
  * chosen the rows stay one flat list the keyboard walks top to bottom.

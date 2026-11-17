@@ -8,7 +8,7 @@ tags:
   - negative-control
   - smoke-repository
 date: 2026-10-10
-status: superseded by INFRA-714 — there is no armed and waiting merge to drive: the daemon submits no merge, and the merger merges the pull request itself at the head it read, so what a proof drives is the merger's own `gh pr merge --squash --match-head-commit` and the repository's own rules holding it
+status: superseded by POMJU-714 — there is no armed and waiting merge to drive: the daemon submits no merge, and the merger merges the pull request itself at the head it read, so what a proof drives is the merger's own `gh pr merge --squash --match-head-commit` and the repository's own rules holding it
 module: packages/daemon/internal/prompts
 related_issues:
   - "LEGION-631"

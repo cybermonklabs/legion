@@ -175,7 +175,7 @@ const defaultSessionReapInterval = time.Minute
 // stalled session's key is gone five minutes after its last heartbeat and the reaper then finds
 // its holder gone. Judged every minute, a stalled holder would lose its role up to five times
 // sooner than the fixed pass this change replaces, which is the opposite of what this change is
-// for; the raise of that maximum age past the gone horizon is dispatch://INFRA-887's, and it
+// for; the raise of that maximum age past the gone horizon is dispatch://POMJU-887's, and it
 // cannot land first. The grace a restored claim gets - and a claim the hand-back marked gets
 // none, since no registration renews a marked claim - is measured from the listener's own start
 // against the live window (store.Registry.releaseReadExpiredRoleClaim, which the reaper's pass
@@ -521,7 +521,7 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 //
 // A rewatch of the KV caches that keeps failing after a reconnect ends no watcher and clears no
 // cache, so every other check still passes while the caches follow buckets they no longer watch
-// (INFRA-743). The handler therefore reads the client's HookStall, how long the bus's reconnect
+// (POMJU-743). The handler therefore reads the client's HookStall, how long the bus's reconnect
 // hooks have been due without a run that succeeded, and reports the dependency "KV watch rebuild"
 // once it reaches bus.RepairGrace. It reads it last, below every 503 check and immediately before
 // the healthy answer, so a stall never stands in for a worse fault: a durable consumer that is

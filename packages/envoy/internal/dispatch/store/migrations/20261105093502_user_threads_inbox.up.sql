@@ -1,6 +1,6 @@
 -- 20261105093502_user_threads_inbox.up.sql
 --
--- INFRA-450: the Inbox list reads a person's undismissed threads, read or not
+-- POMJU-450: the Inbox list reads a person's undismissed threads, read or not
 -- (`GET /api/v1/me/replies?state=inbox`), newest reply first. user_threads_unread (0095) covers
 -- only their unread rows, so without this index that read is a scan of user_threads, a row per
 -- person per thread anyone ever wrote in. The column order is the read's own: the login it narrows

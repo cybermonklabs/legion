@@ -24,7 +24,7 @@
 // only when no transaction holds an id, because then nothing is holding the horizon and the
 // missing result is a defect. The one stall the wait refuses to wait out is a holder in the test's
 // own database that has itself stood OwnHoldBound: that is the defect class of
-// dispatch://INFRA-636 (a Dispatch write transaction left open across the horizon's proof). The
+// dispatch://POMJU-636 (a Dispatch write transaction left open across the horizon's proof). The
 // bound is what keeps that rule from failing on every other client of that database - the test's
 // own fixtures, an operator's psql session - whose ordinary short transaction holds the horizon
 // exactly as a foreign one does and is no defect. Each failure names the newest warning, so the
@@ -745,7 +745,7 @@ func verdictOf(s state) verdict {
 	switch {
 	// A hold in the test's own database that has stood the bound is the defect, whatever the
 	// elapsed time: waiting it out would pass a test whose job is to fail on it
-	// (dispatch://INFRA-636). A shorter one is some client's ordinary transaction and extends
+	// (dispatch://POMJU-636). A shorter one is some client's ordinary transaction and extends
 	// the wait, exactly as a foreign warning does.
 	case s.warnings > 0 && s.last.heldFor() >= OwnHoldBound && s.last.Named && s.last.Database == s.ownDatabase:
 		return ownHold

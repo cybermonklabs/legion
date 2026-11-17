@@ -43,7 +43,7 @@ finished the moment the one copy in front of you is right.
 
 ## Evidence
 
-sjawhar/legion#2726 (dispatch://INFRA-1052) corrected one paragraph of `docs/testing.md` three
+sjawhar/legion#2726 (dispatch://POMJU-1052) corrected one paragraph of `docs/testing.md` three
 times across three roles, over a figure that lives in two files.
 
 - The paragraph said `internal/daemon` "took up to 694 s without `-race`".

@@ -25,7 +25,7 @@ import (
 	// blank import. It is go-workflows' own PostgreSQL backend, which imports
 	// jackc/pgx/v5/stdlib: this evaluation already depends on go-workflows directly,
 	// while importing jackc/pgx here would add a third direct dependency, which
-	// INFRA-1546 pins against.
+	// POMJU-1546 pins against.
 	_ "github.com/cschleiden/go-workflows/backend/postgres"
 )
 

@@ -349,7 +349,7 @@ func readFaultCode(ctx context.Context, err error) string {
 // embed.RateLimitedEmbedder paces the embedder, sized at the tokens a minute with a burst of a
 // minute's quota, charged with the call's estimated tokens.
 //
-// The swap to agentloop (dispatch://INFRA-1311) moves the reservation rather than keeping this
+// The swap to agentloop (dispatch://POMJU-1311) moves the reservation rather than keeping this
 // wrapper: agentloop builds its own transport from an Endpoint whose Token closure it calls on
 // every HTTP attempt, so the reservation is taken in that closure, which paces the retries of a
 // call too - this wrapper cannot, since it sees one Chat and not the attempts inside it.

@@ -15,7 +15,7 @@ related_issues:
 
 # A control that could not have come out the other way is not a control
 
-Extends docs/solutions/best-practices/a-negative-control-that-cites-an-existing-test-is-read-before-it-is-cited-INFRA-188.md.
+Extends docs/solutions/best-practices/a-negative-control-that-cites-an-existing-test-is-read-before-it-is-cited-POMJU-188.md.
 
 That note says an assertion of absence can pass vacuously and must be paired with one that fails.
 This adds the two shapes in which a *control* is vacuous, and the question that catches both
@@ -35,7 +35,7 @@ before the work starts.
   green-on-both-sides control has already found the gap; it must then name the criterion that
   does discriminate, rather than leaving the weak one as the evidence.
 
-## Evidence (sjawhar/legion#2675, INFRA-609)
+## Evidence (sjawhar/legion#2675, POMJU-609)
 
 The change removed three fields from the Envoy listener's push envelope that no consumer reads.
 

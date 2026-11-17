@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The devbox proof that a person's decision on a parked Legion tree reaches the controller
-# (INFRA-214, A3 and A4). A scratch Dispatch, NATS, a real Envoy listener, the Go daemon and the
+# (POMJU-214, A3 and A4). A scratch Dispatch, NATS, a real Envoy listener, the Go daemon and the
 # operator-launched controller, all built from this checkout, run on this box with real agents.
 # Trees 1, 2 and 4 wait on their design gate and are parked: the operator's `legion status` parks
 # trees 1 and 2 (the daemon's session), with the controller's hold mark beside tree 1's park only,
@@ -27,7 +27,7 @@ usage() {
 usage: bash scripts/e2e/parked-decision-devbox.sh [--help]
 
 The devbox proof that a person's decision on a parked Legion tree reaches the controller, and
-that the controller's next start walks the parked roots (INFRA-214, A3 and A4). Devbox only.
+that the controller's next start walks the parked roots (POMJU-214, A3 and A4). Devbox only.
 
 Inputs (environment):
   LEGION_E2E_MODEL_ROUTE         gateway or key-file (required)
@@ -281,10 +281,10 @@ gates:
 # the peak again later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running
 # again (answer-readmits, approval-queues) and tree 3 taking one in walk-on-start. No root of
 # this lane reaches its own review, so no issue of it gives a row back where the rule before
-# dispatch://INFRA-2560 kept it.
+# dispatch://POMJU-2560 kept it.
 admission_cap: 4
 review_round_cap: 3
-# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# The wake pacing off (POMJU-976): this proof starts many roles and waits on bounded times, and at
 # the default of 8 wakes a minute every wake after the first would spend those waits queueing.
 worker_wakes_per_minute: 0
 # A day: the one tick is the boot's, before any tree exists, so no tick walk races the notice of

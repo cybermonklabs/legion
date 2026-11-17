@@ -251,7 +251,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // carry on from, so a member that runs there leaves the root at rule 5.
 //
 // Each shape ends in a closing sentence of its own, which says what starts the tree's next work,
-// and every clause of it holds of the root the shape is written for (dispatch://INFRA-2614, R3).
+// and every clause of it holds of the root the shape is written for (dispatch://POMJU-2614, R3).
 // Only the fresh tree is told that nothing else starts it and that no message is coming, and only
 // while no member of its tree runs: it holds no gate row, so no person has a step of it to review,
 // and a child released under its closed gate waits for that gate (api's WaveReleaseResponse). A

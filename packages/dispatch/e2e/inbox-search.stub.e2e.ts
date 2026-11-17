@@ -1,4 +1,4 @@
-/** The Inbox's search box (INFRA-963): one field beside the assignee filter that keeps the rows
+/** The Inbox's search box (POMJU-963): one field beside the assignee filter that keeps the rows
  *  holding every word a reader types and drops the rest, matching an ask's issue key, its issue
  *  title, the name of the document it stands on where it has no issue, its question and its
  *  author, whatever the case.
@@ -220,7 +220,7 @@ test.describe("inbox search", () => {
 
   // The counts a reader reads off the list are the narrowed list's: the band's own heading count
   // and the `ask N of M` each row's controls are named by (`features/inbox/ask-name.ts`).
-  // INFRA-450 took the owner groups out of the list, so the count that stands over a set of rows
+  // POMJU-450 took the owner groups out of the list, so the count that stands over a set of rows
   // is the View menu's own band; **Waiting on** is the banding the sections below stand for.
   test("the band counts and the row ordinals count the narrowed list @pr", async ({
     page,
@@ -266,7 +266,7 @@ test.describe("inbox search", () => {
     );
 
     // Cleared, every count is the whole list's again. The number is the list's own rather than
-    // the seed's: INFRA-450 bands the list by the View menu's own field, and a band below the
+    // the seed's: POMJU-450 bands the list by the View menu's own field, and a band below the
     // first is folded, so fewer rows are drawn than the eight the seed holds and what the
     // clearing must restore is what was drawn.
     await searchInbox(page, "");
@@ -285,7 +285,7 @@ test.describe("inbox search", () => {
 
     await selectRow(page, scene.clockAskId);
     await page.keyboard.press("x");
-    // INFRA-450's bar serves both kinds of row, so its own name is **Selected rows**.
+    // POMJU-450's bar serves both kinds of row, so its own name is **Selected rows**.
     const bar = page.getByRole("group", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await expect(inboxRow(page, scene.clockAskId).getByRole("checkbox")).toBeChecked();

@@ -317,7 +317,7 @@ test("an empty input lists the person's recent items and the actions of that pag
 // draws nothing while its architecture-sources read is pending, then redirects with `replace`
 // to Issues. The bar a person opened in that moment is theirs, and a redirect the page made on
 // its own is no navigation of theirs, so the bar stays open and stays typable
-// (dispatch://INFRA-2452).
+// (dispatch://POMJU-2452).
 // SLOW(>=2s): the seed of a project, two issues and a document, then a page held mid-redirect.
 test("the bar opened on a project page that has not settled survives that page's own redirect", async ({
   browser,

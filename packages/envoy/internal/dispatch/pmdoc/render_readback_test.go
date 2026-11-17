@@ -417,11 +417,11 @@ func TestURLReadingsAgreeWithTheEngine(t *testing.T) {
 		{"| a | b |\n| --- | --- |\n| x | \"https://x.test\" b |\n", false},
 		{"`c`;https://x.test b\n", false},
 		{"foo;\nhttps://x.test b\n", false},
-		// INFRA-172's wider comparison.
+		// POMJU-172's wider comparison.
 		{"See <http://e.test/a\\\\b now.\n", false},
 		{"www.e.test*b*\n", false},
 		{"`www.e.test_\n", false},
-		// A www address inside a link label that never forms a link (INFRA-534's corpus).
+		// A www address inside a link label that never forms a link (POMJU-534's corpus).
 		{"y [.a www.a.com/x]\\(u) z\n", false},
 		// An explicit link's destination, its escapes and character references decoded.
 		{"[a](<x\\>y\\\\>) [b](x\\_y) [c](<\\<z>) d\n", false},
@@ -430,7 +430,7 @@ func TestURLReadingsAgreeWithTheEngine(t *testing.T) {
 		{"[[www.a.com/~x[\\![ *.](u)\n", false},
 		{"[_~www.a.com/~x\\![**www.a.com/~x](u)\n", false},
 		// A name that is a character reference only with its `;` (`&copy`, `&amp`) is text to the
-		// engine, inside an address the transform reads as anywhere else (INFRA-531 testing).
+		// engine, inside an address the transform reads as anywhere else (POMJU-531 testing).
 		{"see http\\://x.test/?a=1&copy=2 b\n", false},
 		{"x;www.x.test/?a=1&amp=2 b\n", false},
 	}
@@ -468,7 +468,7 @@ func TestURLReadingsAgreeWithTheEngine(t *testing.T) {
 
 // A link Go reads from a bare address at a position the engine starts one is written back as Go
 // read it and the engine reads that writing alike, so a document holding it is stored rather than
-// refused (INFRA-531 testing): an address holding `>` after a closing parenthesis, one ending in a
+// refused (POMJU-531 testing): an address holding `>` after a closing parenthesis, one ending in a
 // backslash before an escaped character, and one between a text `<` and a later `>`. A text `<`
 // a task item's text opens with is escaped only where the engine opens an HTML block at it, and
 // those rows are also written back exactly as they are.

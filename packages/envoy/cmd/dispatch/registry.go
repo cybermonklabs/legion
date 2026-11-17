@@ -27,7 +27,7 @@ const deregisterTimeout = 5 * time.Second
 // first read (store.Pool.healthPool, MinConns 0), so whichever read comes first dials, and at
 // boot that read is this one, under the thirty seconds below. Without the probe the cold read is
 // the first /healthz a prober makes instead, which pays the dial inside those two seconds and
-// answers 503 whenever the dial outlasts them, as a loaded database's can (dispatch://INFRA-985).
+// answers 503 whenever the dial outlasts them, as a loaded database's can (dispatch://POMJU-985).
 // TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm dials three seconds late,
 // reads that first /healthz once, and requires 200 with db true.
 //
@@ -47,7 +47,7 @@ const deregisterTimeout = 5 * time.Second
 // bound is derived from the boot's own context, so a signal still ends the wait at once.
 const bootProbeTimeout = 30 * time.Second
 
-// joinRegistry enters this process into the registry of live server processes (INFRA-555) as
+// joinRegistry enters this process into the registry of live server processes (POMJU-555) as
 // instance, once it holds its listener (bound, or inherited as DISPATCH_LISTEN_FD) and before it
 // serves its first request, after one probe the database answers within bootProbeTimeout, and
 // starts the loops that run once it is registered. The kernel queues the connections that arrive

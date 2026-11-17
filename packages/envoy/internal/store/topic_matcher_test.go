@@ -31,7 +31,7 @@ func TestTopicMatcherMatchesLiteralStarAndRestPatterns(t *testing.T) {
 		{"notifications.team.deploy-squad.extra", []string{}},
 		{"notifications.github.sjawhar.legion.pr", []string{"ses_rest", "ses_star"}},
 		{"notifications.github.other.legion.issue", []string{"ses_rest"}},
-		{"notifications.dispatch.issue.INFRA-626.created", []string{}},
+		{"notifications.dispatch.issue.POMJU-626.created", []string{}},
 	} {
 		if got := matcherKeys(m, tc.topic); !slices.Equal(got, tc.want) {
 			t.Errorf("Match(%q) = %v, want %v", tc.topic, got, tc.want)

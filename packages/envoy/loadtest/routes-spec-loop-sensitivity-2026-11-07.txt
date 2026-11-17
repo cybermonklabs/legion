@@ -1,4 +1,4 @@
-# The sensitivity mix of dispatch://INFRA-988's R12 answer: the spec loop's mix
+# The sensitivity mix of dispatch://POMJU-988's R12 answer: the spec loop's mix
 # (routes-spec-loop-2026-11-03.txt) with its two meaning-search reads served by the cheapest
 # existing route that returns the same threads.
 #

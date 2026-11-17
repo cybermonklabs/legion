@@ -225,7 +225,7 @@ func (a *adoptionHarness) assertJoinedAndPlanning(key string, generation uint64)
 // whose re-parent event has not reached the daemon, is adopted by one release: Dispatch already
 // shows it todo, so the release writes nothing, and the answer comes once the record runs it in the
 // tree, planning under the open gate. Before, the release counted the record as released whatever
-// its tree, and park_child answered ISSUE_OUTSIDE_TREE (INFRA-214).
+// its tree, and park_child answered ISSUE_OUTSIDE_TREE (POMJU-214).
 func TestReleaseAdoptsAQueuedRootDispatchShowsTodo(t *testing.T) {
 	a := newAdoptionHarness(t, 1)
 	a.observe(adoptionChild, 1, "todo", "", true)
@@ -323,7 +323,7 @@ func TestReleaseAdoptsAQueuedRootFromBacklog(t *testing.T) {
 	a.assertParked(adoptionChild)
 }
 
-// The state INFRA-214 reached: queued with the label, moved to backlog (its own tree lingers), the
+// The state POMJU-214 reached: queued with the label, moved to backlog (its own tree lingers), the
 // label taken off, then todo again, which re-admits nothing without the label and leaves the record
 // todo at done, its linger's close and suspend still queued. One release runs it in the live tree,
 // and that old linger's expiry closes nothing of it.
@@ -532,7 +532,7 @@ func TestReleaseRefusesAChildItCannotAdopt(t *testing.T) {
 // record stands in the closed tree when the request starts, so the wave's own read of it after
 // the adoption fact (enterTodoChild) would answer CHILD_IN_OTHER_TREE had the adoption not
 // already moved it. That is what this proves — the adoption's write lands before that read — and
-// with it the rest of C4 of dispatch://INFRA-3107 end to end: the member joins the live tree at
+// with it the rest of C4 of dispatch://POMJU-3107 end to end: the member joins the live tree at
 // the generation it had raised by one, on the repository it was recorded with, a root of none,
 // and the open gate starts it planning at the slot that stands free.
 func TestReleaseOfAClosedTreesMemberIsAcceptedWhole(t *testing.T) {
@@ -642,13 +642,13 @@ func TestReleaseHoldsAClosedTreesMemberOnTheBlockersItsOwnReadShowed(t *testing.
 	}
 }
 
-// The three roots dispatch://INFRA-714 found started with their work blocked: a person re-parented
+// The three roots dispatch://POMJU-714 found started with their work blocked: a person re-parented
 // each under a running tree and linked it to an open issue in one edit of Dispatch, and the
 // daemon, judging by its own mirror of those links, which that edit's event had not reached,
 // answered them released and ran them. The release carries the blockers its own Dispatch read
 // showed into the adoption, so the root is held at admitted on them whatever the mirror holds; the
 // read is mirrored in the same request, so the passes that follow hold it too, and its blocker's
-// close starts it (dispatch://INFRA-714/spec R3).
+// close starts it (dispatch://POMJU-714/spec R3).
 func TestReleaseHoldsAnAdoptedRootOnTheBlockersItsOwnReadShowed(t *testing.T) {
 	a := newAdoptionHarness(t, 1)
 	const blocker = "LEGION-401"

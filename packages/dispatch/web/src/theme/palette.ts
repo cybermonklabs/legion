@@ -107,7 +107,7 @@ export const GRAY_400 = swatch("gray-400", 0.707, 0.022, 261.325);
 
 /**
  * The issue page's own colours, each the value the approved prototype's stylesheet declares
- * (dispatch://INFRA-1196/artifact/issue-page-prototype-html, version 3: its `:root` tokens, and
+ * (dispatch://POMJU-1196/artifact/issue-page-prototype-html, version 3: its `:root` tokens, and
  * the few literals its left pane, rail and waiting chip write), so the page is drawn in the
  * colours of the pictures its owner approved rather than in the nearest Tailwind shade. Each is
  * named for what it is on that page; its OKLCH triple renders to the prototype's hex exactly

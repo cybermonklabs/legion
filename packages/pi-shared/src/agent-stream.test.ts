@@ -69,7 +69,7 @@ describe("AgentStreamPublisher", () => {
   // spelling (`turnSaysBody`, `packages/dispatch/web/src/features/agent-view/conversation.ts`),
   // so the writer and the guard take it from `@legion/contracts`. Spelled in both files, a
   // change to the writer refused every honest picture row and the message showed twice, with no
-  // error anywhere (INFRA-1026 review).
+  // error anywhere (POMJU-1026 review).
   test("a picture a person's message carried is the shared placeholder, never its bytes", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
@@ -555,7 +555,7 @@ describe("the session's settings", () => {
   });
 });
 
-// How full the session's context window is, which a viewer draws as a ring (INFRA-812). The
+// How full the session's context window is, which a viewer draws as a ring (POMJU-812). The
 // figures come from the host's own `getContextUsage()`, and a reading that would draw a ring at
 // nought for a conversation that is nothing of the sort is not sent at all.
 describe("the session's context usage", () => {

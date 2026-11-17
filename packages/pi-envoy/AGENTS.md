@@ -124,7 +124,7 @@ the Legion entry's `session_start` has set the unsent mark (inside the Envoy ent
 `session_start`, when Oh My Pi runs that first) finds no mark.
 The limits: an Esc puts a person's queued Sends back in the
 input box merged and without their Dispatch ids, until the session runs an Oh My Pi release with
-dispatch://INFRA-498; an interrupt during a run's post-run steps other than compaction and a retry
+dispatch://POMJU-498; an interrupt during a run's post-run steps other than compaction and a retry
 backoff (its goal and usage bookkeeping, the todo check, a `session_stop` hook, which the Legion
 plugin registers) shows to no extension, so the cards it folds get one wake; a card sent while a
 prompt is set up, or after a run's `agent_end` while a continuation follows (`willContinue`), that
@@ -132,7 +132,7 @@ the host then folds with no interrupt an extension sees gets no wake: that fold 
 a latch an earlier interrupt still holds (a prompt refused before its run, a continuation the host
 skips), and pi-envoy cannot tell it apart at the pinned Oh My Pi, which needs a host signal (the
 interrupt latch, the setup's abort signal, or the prompt's refusal), Oh My Pi work like
-dispatch://INFRA-498, which dispatch://INFRA-577 tracks for pi-envoy; a run the host drops with
+dispatch://POMJU-498, which dispatch://POMJU-577 tracks for pi-envoy; a run the host drops with
 no `agent_end` still counts as running until the
 host is seen idle, so a card sent in a later prompt's setup before that, and an Esc there, gets a
 wake. That takes a failure path and then a prompt the host is not seen idle before: a manual
@@ -362,7 +362,7 @@ always carries it. A host without `sendUserInput` publishes no list, and its vie
 completion.
 
 The stream also reports the model and thinking level the session runs now (`kind: "settings"`,
-INFRA-195), read from the same live `AgentSession` (`liveAgentSession`, the lookup the commands use)
+POMJU-195), read from the same live `AgentSession` (`liveAgentSession`, the lookup the commands use)
 through the getters the host's `/model` and `/effort` read: `model` as `provider/id`, absent with no
 model selected; `models`, every `getAvailableModels()` entry as `provider/id` in the host's order;
 and `thinking`, with `level` the configured level `/effort` reports (`configuredThinkingLevel()`,
@@ -394,7 +394,7 @@ its `seq` beats the one it applied, and a page held open while the session is re
 `--resume` holds the earlier process's numbers, so every later process must count above them.
 
 The stream also says how much of its context window the session fills now (`kind: "context"`,
-INFRA-812), the two figures `tokens` and `contextWindow` and nothing else:
+POMJU-812), the two figures `tokens` and `contextWindow` and nothing else:
 the share they make is the viewer's to draw, and a ring drawn from a figure the session never
 gave is the one thing that change forbids.
 They travel in a frame of their own rather than beside the model on `settings`,
@@ -1353,4 +1353,4 @@ and arms nothing — an unknown ask state never nudges.
 - Nothing under `extensions/` or `src/` imports `packages/pi-legion`: what both plugins need lives in `@legion/pi-shared`, which each bundles (`src/no-cross-import.test.ts`).
 - `envoy_list` must report the union of locally live and registry-persisted topics, with each topic marked `live`, `registry`, or `both`.
 - Do not alter `~/.omp` from this package. The README documents the local developer symlink.
-- `scripts/smoke-delivery.sh`, `scripts/smoke-btw.sh` and `scripts/smoke-registration-stall.sh` are manual, real end-to-end smokes against a live listener; never wire any of them into CI without live Envoy/NATS, Dispatch, and a configured model provider. The first two run their session on their own tmux server, on a socket in their temp directory (`tmux() { command tmux -S "$tmux_socket" "$@"; }`), and print the `tmux -S <socket> attach -t <session>` line that watches it, so their cleanup's `tmux kill-session` can end only the session they started: on the shared default server that kill could end anyone's session. Keep new tmux calls on that wrapper rather than the default server. `smoke-registration-stall.sh` is the registration-stall proof (INFRA-246) no unit test can give, since it turns on a real pane's registration still reading live past the listener's own 300 s live window (`SESSION_LIVE_WINDOW_MS` in `@legion/contracts`): it runs one headless `omp --mode rpc` pane per arm (no tmux) with `scripts/stall-fixture.ts` loaded ahead of the plugin, which wraps `fetch` to wedge one registration post forever and records every registration and `logger.warn` line. `--arm stall` watches a wedged pane stay listed, keep refreshing and say the stall exactly once; `--arm recover` deletes a running pane's record and watches it re-register itself. Each arm has a `--control` that must fail the way the bug failed — the stall control runs the plugin at `--base-rev`, materialised by `jj file show` into a dot-prefixed file under `extensions/` (its imports resolve nowhere else) that the trap removes. `ENVOY_URL` and `ENVOY_TOKEN_FILE` are required operator inputs, never defaults in the file. `stall-fixture.ts` ships in no deployment: it is not in `omp.extensions` and nothing bundles it.
+- `scripts/smoke-delivery.sh`, `scripts/smoke-btw.sh` and `scripts/smoke-registration-stall.sh` are manual, real end-to-end smokes against a live listener; never wire any of them into CI without live Envoy/NATS, Dispatch, and a configured model provider. The first two run their session on their own tmux server, on a socket in their temp directory (`tmux() { command tmux -S "$tmux_socket" "$@"; }`), and print the `tmux -S <socket> attach -t <session>` line that watches it, so their cleanup's `tmux kill-session` can end only the session they started: on the shared default server that kill could end anyone's session. Keep new tmux calls on that wrapper rather than the default server. `smoke-registration-stall.sh` is the registration-stall proof (POMJU-246) no unit test can give, since it turns on a real pane's registration still reading live past the listener's own 300 s live window (`SESSION_LIVE_WINDOW_MS` in `@legion/contracts`): it runs one headless `omp --mode rpc` pane per arm (no tmux) with `scripts/stall-fixture.ts` loaded ahead of the plugin, which wraps `fetch` to wedge one registration post forever and records every registration and `logger.warn` line. `--arm stall` watches a wedged pane stay listed, keep refreshing and say the stall exactly once; `--arm recover` deletes a running pane's record and watches it re-register itself. Each arm has a `--control` that must fail the way the bug failed — the stall control runs the plugin at `--base-rev`, materialised by `jj file show` into a dot-prefixed file under `extensions/` (its imports resolve nowhere else) that the trap removes. `ENVOY_URL` and `ENVOY_TOKEN_FILE` are required operator inputs, never defaults in the file. `stall-fixture.ts` ships in no deployment: it is not in `omp.extensions` and nothing bundles it.

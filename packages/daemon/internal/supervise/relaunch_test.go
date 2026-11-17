@@ -1,7 +1,7 @@
 package supervise
 
 // The sentence a relaunched process is told of what the last let-go of its process ended
-// (dispatch://INFRA-3276 R3): in front of the task the claim holds, as the whole of a delivery of
+// (dispatch://POMJU-3276 R3): in front of the task the claim holds, as the whole of a delivery of
 // the daemon's own when it holds none, never to a fresh session for the old session's process and
 // behind the abandoned session's sentence for the fresh session's own, in front of a provider
 // error's, told only when a turn takes a prompt that carried it, and told again when that turn
@@ -647,7 +647,7 @@ func heldAtRelaunch(t *testing.T, task string) (*harness, string) {
 }
 
 // A confirmation taken back as another turn's takes back the telling it made (moveTelling), in the
-// order INFRA-264 showed: a relaunched worker holds a task that was not in the cut turn, so it is
+// order POMJU-264 showed: a relaunched worker holds a task that was not in the cut turn, so it is
 // not Interrupted, and the ready sends it behind the record's sentence. An Envoy notice starts a
 // turn while that prompt is on its way — in flight, or acknowledged and waiting for its turn — and
 // the start is taken for the task's, which confirms it and tells the record by that delivery. Oh My
@@ -865,7 +865,7 @@ func TestARelaunchSentenceStaysToldWhenTheTurnThatReadItIsInterrupted(t *testing
 // holds a task behind the untold record of launch 1, which cut off a turn and a subagent with it
 // (heldAtRelaunch), and the ready sends it. A turn starts and is taken for the task's (beginTurn),
 // which confirms the task and tells the record by its delivery: while that send is held in flight
-// (the INFRA-264 race), or once the send returned acknowledged and the prompt waits on its result.
+// (the POMJU-264 race), or once the send returned acknowledged and the prompt waits on its result.
 // Either way the turn may be an Envoy notice's, whose busy answer, at the send or as the prompt's
 // own answer, the let-go fences out. The turn is then cut off before that answer: the process dies
 // in it (died, which records the end before it takes the task back), a held suspension's deadline

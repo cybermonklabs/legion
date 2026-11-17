@@ -1,5 +1,5 @@
 /**
- * The live views a person has open (INFRA-812, R2): one entry per session whose view has been
+ * The live views a person has open (POMJU-812, R2): one entry per session whose view has been
  * opened, holding what that view keeps while the person is elsewhere - the unsent draft, the
  * place in the conversation and the unread count the view opened with - and which views are
  * live.

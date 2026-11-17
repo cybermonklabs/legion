@@ -177,7 +177,7 @@ func TestOnlyAPersonScopeRecordsADeclineAndNeverOnAnApprovalRequest(t *testing.T
 }
 
 // declineWordsFromTheVerification is R4's four sentences as the Verification document of
-// dispatch://INFRA-1282 writes them out in check c-record, word for word and taken from no
+// dispatch://POMJU-1282 writes them out in check c-record, word for word and taken from no
 // constant of the code. This test is the one c-record runs, and it is the one check of this
 // issue that may not read model.DeclineDispatchWords: every other check compares the words the
 // server served with that constant on both sides, so a sentence dropped from it would leave

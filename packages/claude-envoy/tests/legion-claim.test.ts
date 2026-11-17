@@ -300,7 +300,7 @@ test("a claim refused by a standing claim under this session's own id is asked a
   // its last heartbeat, so the listener refuses this one 409 naming this very session until
   // nobody has answered for that claim inside its live window. Throwing stops the pane, the
   // daemon launches it again, and it meets the same claim — a window of relaunches for every
-  // relaunch (dispatch://INFRA-783).
+  // relaunch (dispatch://POMJU-783).
   const configDir = await tempDir()
   await mkdir(join(configDir, "projects", "p"), { recursive: true })
   await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
