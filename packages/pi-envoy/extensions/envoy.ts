@@ -4095,10 +4095,15 @@ export default function envoyExtension(pi: PiApi): void {
     // Ends at once a role the host session's own records rule out, so the new session never
     // takes the old role's notices while an earlier pass finishes; the pass hands the hold back.
     // Only a record this process acts on ends anything (`recordedRole`): a release another
-    // process wrote on this transcript ends no role this one holds.
+    // process wrote on this transcript ends no role this one holds. The launch's role ends here
+    // too, as a recorded release would end it, when the launch did not name this session: a fork
+    // or a branch carries the named session's record of it, and would otherwise follow its notice
+    // subjects until its first pass, which waits on its registration.
+    const held = registrationState.heldRole();
+    const launchRoleRefused = held !== undefined && sessionRoleRefusal(host, held) !== undefined;
     registrationState.endUnwantedRole(
       host,
-      recordedRole(context.sessionManager.getBranch?.() ?? []),
+      launchRoleRefused ? null : recordedRole(context.sessionManager.getBranch?.() ?? []),
       continuedBy(host)
     );
     // With inbound messages off the session opens no agent subject; a heartbeat's pass, when a

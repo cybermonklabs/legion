@@ -11700,6 +11700,56 @@ console.log(JSON.stringify(args));
     expect(listener.claims()).toEqual([claim, claim, claim]);
   });
 
+  // A fork's switch event ends at once a role the fork may not hold, before the fork's first pass
+  // registers it: otherwise the fork would follow the role's notice subjects (a controller's Slack
+  // mentions) while that registration waits, and take their messages. With no launch role a fork
+  // carries its parent's role and its notices, as it always has, which is this row's control.
+  for (const launch of [true, false]) {
+    test(`a fork's switch event ${launch ? "ends the launch role's notices before its registration lands" : "carries a role and its notices when no launch role is named"}`, async () => {
+      const role = "legion-acme-controller";
+      const notice = "notifications.slack.*.C4266.mention";
+      if (launch) {
+        process.env.ENVOY_SESSION_ROLE = role;
+        process.env.ENVOY_SESSION_ROLE_SESSION = "ses_fw";
+      }
+      const h = await gatedRoleFixture(`fork-window-${launch}`, "ses_fw", { claimAtStart: false });
+      await claimEnvoyRole("ses_fw", role, h.context);
+      await subscribeLegionNotice("ses_fw", notice, h.context, role);
+      expect(await followedTopics(h.fixture.tools, h.context)).toContain(notice);
+      const held = h.holdRegistration("ses_fw_fork");
+      await h.fixture.handlers.get("session_before_switch")?.({ reason: "fork" }, h.context);
+      const moved = h.fixture.handlers.get("session_switch")?.(
+        { reason: "fork" },
+        h.live("ses_fw_fork")
+      );
+      await held.reached;
+      const during = await followedTopics(h.fixture.tools, h.context);
+      natsState.controls.get("notifications.slack.T4266.C4266.mention")?.push(
+        JSON.stringify({
+          ...JSON.parse(forwardedRoleEnvelope(role, "a mention after the fork", "fork-window")),
+          topic: "notifications.slack.T4266.C4266.mention",
+        })
+      );
+      for (let step = 0; step < 20; step += 1) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setImmediate(resolve);
+        await promise;
+      }
+      held.release();
+      await moved;
+      const landed = h.landed
+        .filter((message) => message.content.includes("a mention after the fork"))
+        .map((message) => message.session);
+      if (launch) {
+        expect(during).not.toContain(notice);
+        expect(landed).toEqual([]);
+      } else {
+        expect(during).toContain(notice);
+        expect(landed).toEqual(["ses_fw_fork"]);
+      }
+    });
+  }
+
   // A claim the model or a plugin asks for is no way round the rule: envoy_role_set and the Legion
   // plugin's claim refuse the launch's role to any session but the one the launch named, with the
   // line the pass logs, and take any other role as before.
