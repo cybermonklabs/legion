@@ -52,6 +52,12 @@ type fakeGitHub struct {
 	// zero is GitHub's hour. tokenExpiry records each minted token's expiry for tokenExpired.
 	tokenLifetime time.Duration
 	tokenExpiry   sync.Map
+	// installationOf names the installation GET /repos/{owner}/{repo}/installation answers for a
+	// repository other than installID's, set before newTestClient; notInstalled holds each
+	// repository ("owner/repo") the App is not installed on, which that lookup answers 404 for
+	// while it is held.
+	installationOf map[string]int64
+	notInstalled   sync.Map
 }
 
 // tokenExpired reports whether r's bearer is an installation token this fake minted whose expiry
@@ -69,8 +75,18 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		installationRepos: []string{"acme/widgets"},
 	}
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("owner") + "/" + r.PathValue("repo")
+		if _, missing := f.notInstalled.Load(name); missing {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		id := f.installID
+		if other, ok := f.installationOf[name]; ok {
+			id = other
+		}
 		if err := json.NewEncoder(w).Encode(map[string]any{
-			"id":          f.installID,
+			"id":          id,
 			"app_slug":    "delivery-test",
 			"permissions": f.permissions,
 		}); err != nil {
@@ -143,7 +159,7 @@ func (f *fakeGitHub) handle(pattern string, handler http.HandlerFunc) {
 	f.mux.HandleFunc(pattern, handler)
 }
 
-func (f *fakeGitHub) newTestClient() *githubapp.Client {
+func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Client {
 	t := f.t
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -152,7 +168,7 @@ func (f *fakeGitHub) newTestClient() *githubapp.Client {
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	base := githubtest.Server(t, githubtest.Spec{Handle: f.mux.ServeHTTP})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base, options...)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

@@ -46,7 +46,7 @@ func owedCount(t *testing.T, ctx context.Context, pool *store.Pool, repo string,
 // bearer can publish such envelopes (dispatch://INFRA-3911), so the owed reads of refusals must
 // take no read from the reads a failure owes. The forged envelopes go through the real intake and
 // are owed before the real one; the real one's read fails as it does in an outage (a 500), and the
-// cap's own record owes it (Intake.oweEnvelopesRead). forged_0 is the control. The reviewer's probe
+// delivery's own record owes it (Intake.oweEnvelopesRead). forged_0 is the control. The reviewer's probe
 // (TestReview2OwedQueueRealReadWaitsBehindForgedRefusals) measured, before the fix:
 // `forged=250 … pass_pull_reads=200 owed_after_pass=251 real_head_is_basis_after_one_pass=false`.
 func TestAnOutagesOwedReadIsNotHeldBehindForgedRefusals(t *testing.T) {
@@ -80,7 +80,7 @@ func TestAnOutagesOwedReadIsNotHeldBehindForgedRefusals(t *testing.T) {
 			}
 			raw := fmt.Sprintf(`{"kind":"pr","repo":"acme/widgets","number":"%d"}`, real)
 			if _, _, err := intake.oweEnvelopesRead(ctx, raw); err != nil {
-				t.Fatalf("owe the real pull request's read at the cap: %v", err)
+				t.Fatalf("owe the real pull request's read as its delivery does: %v", err)
 			}
 			github.mu.Lock()
 			github.failing = false
@@ -108,6 +108,8 @@ func TestAnOutagesOwedReadIsNotHeldBehindForgedRefusals(t *testing.T) {
 // GitHub answers again reads the failure and RefusedReadsPerPass refusals, and the failure's
 // pull request has its head after it. The refusals are written straight into the table, as
 // 10,000 forged envelopes through the intake leave them (the test above drives 250 through it).
+// They name numbers acme/widgets does not have, in a repository the App reads, so each refusal
+// the pass reads ends at that read (pullRequestAbsent).
 func TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -150,15 +152,15 @@ func TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure(t *testing.T) {
 		t.Errorf("the pass read GitHub %d times, want %d", reads, want)
 	}
 	if want := forged - RefusedReadsPerPass; left != want {
-		t.Errorf("%d refusals left after the pass, want %d: each refusal owed past owedReadRefusalFinalAfter settles at its read", left, want)
+		t.Errorf("%d refusals left after the pass, want %d: each refusal of a number a readable repository does not have ends at its read", left, want)
 	}
 }
 
 // Inside each kind, the row read the fewest times goes first, then the one owed longest; and a
-// read that gives the other answer changes the row's kind. #91 is owed a failure and GitHub now
-// refuses it (404): it becomes a refusal, read once. #92 is owed a refusal and GitHub now fails
-// it (500): it becomes a failure, read once. Neither is settled: a failure settles only at an
-// answer, and a refusal only past owedReadRefusalFinalAfter.
+// read that gives the other answer changes the row's kind. #91 is owed a failure and the App is
+// not installed on its repository now: it becomes a refusal, read once. #92 is owed a refusal and
+// GitHub now fails it (500): it becomes a failure, read once. Neither is settled: a failure
+// settles only at an answer, and a refusal only where the App can read the repository.
 func TestOwedReadsGoFewestReadsFirstAndTakeTheKindOfTheirLastAnswer(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -198,6 +200,7 @@ func TestOwedReadsGoFewestReadsFirstAndTakeTheKindOfTheirLastAnswer(t *testing.T
 	if err := owePullRequestRead(ctx, pool, "acme/gadgets", 92, owedRefusal); err != nil {
 		t.Fatal(err)
 	}
+	fake.notInstalled.Store("acme/widgets", true)
 	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
 	for _, want := range []struct {
 		repo   string

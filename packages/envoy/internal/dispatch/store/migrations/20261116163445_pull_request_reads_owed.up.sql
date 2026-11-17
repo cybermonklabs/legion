@@ -6,15 +6,15 @@
 --   repo, number  the pull request, as pull_request_heads names one: the repository under its
 --                 canonical name (refs.CanonicalRepo) and the number.
 --   reason        why the read is owed, as the last read of it answered: 'failure' where GitHub
---                 did not answer (a 5xx, a timeout, a rate limit, the intake's delivery cap), or
---                 where a read of this build wrote an answer older than the row it replaced;
---                 'refusal' where GitHub answered that it cannot give the pull request (a 404 or
---                 410, or a repository the App cannot read). A read that answers the other way
---                 changes it.
+--                 did not answer (a 5xx, a timeout, a rate limit, a head write that failed), or
+--                 where a write no read of GitHub has the last word on owes it (the triggers of
+--                 20261116182209); 'refusal' where GitHub answered that it cannot give the pull
+--                 request (a 404 or 410, or a repository the App cannot read). A read that
+--                 answers the other way changes it.
 --   reads         how many times the reconcile has read it; the intake's own read is not one.
 --   owed_at       when the read was last owed; recording it again moves it and keeps reads.
---                 The order a pass reads the rows in, and when a refusal becomes final: a
---                 schedule, never the proof of what a read covers.
+--                 The order a pass reads the rows in: a schedule, never the proof of what a
+--                 read covers, and never the end of a read.
 --   revision      a value of the column's own sequence, new at each owe (an insert, or an update
 --                 of the row by another owe). A read takes it before it reads GitHub and deletes
 --                 the row only while it still has that value (delivery.settleOwedRead), so an
@@ -22,14 +22,13 @@
 --                 stays. A sequence and not a count of the row: a row deleted and owed again
 --                 never gets back a revision a read took before.
 --
--- R2 makes GitHub's answer the only source of a pull request's head, so an event the intake gives
--- up on would leave its pull request with no head: the intake acknowledges an envelope after 30
--- failed deliveries (delivery.headWriteMaxDeliveries), which a GitHub outage of about five
--- minutes reaches, and acknowledges GitHub's 404 for a pull request, which a read made a moment
--- after GitHub's own webhook can get. The reconcile reads only the pull_request_heads rows that
--- exist, never reads a merged or closed row again, and the read-through runs only for a result's
--- commit. So the intake records the pull request here before it acknowledges such an envelope,
--- and the reconcile's head pass reads each one from GitHub until GitHub answers
+-- R2 makes GitHub's answer the only source of a pull request's head, so an event whose read of
+-- GitHub failed would leave its pull request with no head: the reconcile reads only the
+-- pull_request_heads rows that exist, never reads a merged or closed row again, and the
+-- read-through runs only for a result's commit; and a read made a moment after GitHub's own
+-- webhook can get GitHub's 404. So the intake records the pull request here before it
+-- acknowledges such an envelope, and the reconcile's head pass reads each one from GitHub until
+-- GitHub answers, or until GitHub's 404 comes from a repository the App can read
 -- (delivery.Reconcile.readOwedPullRequests). A row holds no head, no state and no issue, and no
 -- reader of a head reads this table, so an owed read is never a head, a basis or a merge.
 --

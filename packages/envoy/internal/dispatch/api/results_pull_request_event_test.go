@@ -177,7 +177,14 @@ func requireTheEventsHeadWithinTheBound(t *testing.T, poisonBefore int) {
 		time.Sleep(100 * time.Millisecond)
 		read = readResults(t, handler, issue.Key)
 	}
-	t.Logf("the results route compared k1 with the event's head %s after the publish", time.Since(published).Round(time.Millisecond))
+	// The answer accepted is held to the bound too, and not only the answers that had no basis:
+	// a route that answers right but late passes no bound.
+	took := time.Since(published)
+	if took > headAfterEventBound {
+		t.Fatalf("the results route compared k1 with the event's head %s after the publish, past the %s of v-head-no-settings",
+			took.Round(time.Millisecond), headAfterEventBound)
+	}
+	t.Logf("the results route compared k1 with the event's head %s after the publish", took.Round(time.Millisecond))
 	stands := standsAt(t, read, "k1", recorded.Result.ID,
 		"a result at the head of the pull request the event reported", model.CommitAtBasis, false)
 	if stands.Basis == nil || stands.Basis.PullRequest == nil || *stands.Basis.PullRequest != 7 {

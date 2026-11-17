@@ -2,61 +2,67 @@ package delivery
 
 // A pull request whose read of GitHub has not yet answered for a change Dispatch knows of is held
 // in pull_request_reads_owed until a read of GitHub answers for it (dispatch://INFRA-3992, R1 to
-// R4). R2 makes GitHub's answer the only source of a head, so an event the intake gives up on
+// R4). R2 makes GitHub's answer the only source of a head, so an event whose read of GitHub failed
 // would otherwise leave its pull request with no head for good: the reconcile reads only rows
 // that exist, a merged or closed row is never read again, and the read-through runs only for a
 // result's commit. The row holds which pull request changed, why its read is owed, how often the
 // reconcile has read it, when it was last owed and its revision, and nothing an envelope says: no
 // head, no state, no issue.
 //
-// Three writers record one. Intake.deliver records a failure at each delivery of an envelope whose
-// head write failed, so that one refused write at one moment is never the only record, and
-// acknowledges it at the delivery cap (headWriteMaxDeliveries), which a GitHub outage of about five
-// minutes reaches, and a rate limit after thirty of its waits; a later delivery that writes the
-// head deletes what the earlier ones owed (settleOwedRead). recordPullRequestHead records a
-// refusal for GitHub's refusal of a read, a pull request it does not know or a repository the App
-// cannot read, since GitHub's answer to a read made a moment after its own webhook may not know
-// the pull request yet. And upsertHeadRow records a failure in the same statement as a write of
-// GitHub's answer that replaces a row no read of GitHub wrote whose time is later than the answer's,
-// or a row of the same GitHub second with other facts: during a roll the release before stores
-// GitHub's newer answer from an envelope, and a slower read of this build can land an older answer
-// after it, and two answers of one second say nothing of which is the newer, so GitHub is read
-// again. An envelope leaves the intake with no record of its pull request only where no delivery
-// of the cap could write one. Every other way an envelope leaves the intake unacknowledged keeps
-// it with NATS: a stop hands it back (Intake.deliver), and a hold that has lapsed leaves it
-// outstanding for the next holder.
+// Three writers record one. Intake.deliver records a failure at the delivery of an envelope whose
+// head write failed, and acknowledges the envelope once that record is written; a later read that
+// writes the head deletes what was owed before it began (settleOwedRead). recordPullRequestHead
+// records a refusal for GitHub's refusal of a read, a pull request it does not know or a repository
+// the App cannot read, since GitHub's answer to a read made a moment after its own webhook may not
+// know the pull request yet. And two triggers of pull_request_heads record a failure in the same
+// statement as a write no read of GitHub has the last word on: pull_request_heads_older_read, for
+// upsertHeadRow's write of GitHub's answer over a row no read of GitHub wrote whose time is later
+// than the answer's, or over a row of the same GitHub second with other facts (during a roll the
+// release before stores GitHub's newer answer from an envelope, and a slower read of this build can
+// land an older answer after it, and two answers of one second say nothing of which is the newer);
+// and pull_request_heads_unread_write, for a write of the release before that changes a fact of a
+// row a read of GitHub wrote. An insert of the release before, and its update of a row no read
+// marked, owe nothing: the reconcile's open arm reads such an open row, its merged arm a merged
+// one once, and a closed one stays closed, which is no basis. An envelope leaves the intake with
+// no record of its pull request only where it names no pull request a row can hold or Postgres
+// refuses its values (Intake.deliver); an envelope whose record cannot be written is handed back,
+// and so stays with NATS, as one a stop hands back and one a lapsed hold leaves outstanding for the
+// next holder do.
 //
 // No time decides which owed read a read answers. Each owe gives the row a new revision, a value
 // of the table's own sequence, and a read deletes the row only at the revision it read before it
 // read GitHub (settleOwedRead): the owes that row recorded were made before the read began, so the
 // read's answer covers them, and an owe made after that moment, by any transaction and whatever
 // any clock says, gave the row another revision and stays for the next read. owed_at is when the
-// read was last owed: the order a pass reads the rows in and the moment a refusal becomes final,
-// a schedule and nothing more.
+// read was last owed: the order a pass reads the rows in, a schedule and nothing more.
 //
 // The reconcile's head pass reads the owed pull requests from GitHub before the stored rows
 // (Reconcile.readOwedPullRequests): first the failures, at most PullRequestHeadBatch of them, then
 // the refusals, at most RefusedReadsPerPass, each kind the row read the fewest times first and
 // then the one owed longest. An answer writes the row, creating it where none existed, and
 // settles the read; a failure is read again by the next pass, so it is read every pass until
-// GitHub answers; a refusal settles once it has been owed owedReadRefusalFinalAfter. A read that
-// answers the other way moves the row to the other kind (recordOwedReadOutcome).
+// GitHub answers. A refusal settles on evidence and never by its age: where the installation that
+// read it can read the repository, GitHub's 404 says the repository has no such pull request
+// (pullRequestAbsent), and the read ends; where it cannot, Dispatch cannot tell a missing pull
+// request from one it is not let see, and the read stays owed. The intake takes the events of
+// every repository (githubIntakeSubject), so no repository leaves its rule and ends a read either.
+// A read that answers the other way moves the row to the other kind (recordOwedReadOutcome).
 //
 // The two budgets are what keep a forged envelope from costing a real one its head. Any bearer of
 // Envoy's /v1 publish route can name a pull request GitHub never had, and each such envelope owes
 // a refusal (dispatch://INFRA-3911 owns forged envelopes). Outside a GitHub outage, refusals take
-// no read from a failure, so the head of a pull request an outage or a slow read left owed is
-// written by the first pass after GitHub answers again. During an outage, a pass reads up to
-// RefusedReadsPerPass refusals and each read fails, so each such row becomes a failure with fewer
-// reads than the real failure and goes before it: after the outage, each PullRequestHeadBatch of
-// such rows can delay the real head by one more pass. A real pull request whose own read was
-// refused, because GitHub's answer had not caught up with its webhook, is a refusal itself, and
-// refusals go fewest reads first, then owed longest. So the first pass after the lag reads it,
-// where no pass has read it yet, only when fewer than RefusedReadsPerPass refusals with no reads
-// were owed before it, and each further RefusedReadsPerPass of them delay it by one pass. Where a
-// pass read it while GitHub still lagged, every later refusal with no reads goes before it, so a
-// flood that continues can hold it back with no fixed bound. Its next event reads GitHub at once
-// regardless.
+// no read from a failure. During an outage, a pass reads up to RefusedReadsPerPass refusals and
+// each read fails, so each such row becomes a failure with fewer reads than the real failure and
+// goes before it: after the outage, each PullRequestHeadBatch of such rows can delay the real head
+// by one more pass. A real pull request whose own read was refused, because GitHub's answer had
+// not caught up with its webhook, is a refusal itself, and refusals go fewest reads first, then
+// owed longest. So the first pass after the lag reads it, where no pass has read it yet, only when
+// fewer than RefusedReadsPerPass refusals with no reads were owed before it, and each further
+// RefusedReadsPerPass of them delay it by one pass. Where a pass reads it while GitHub still lags
+// and the repository is readable, that 404 ends the read, and the head waits for the pull request's
+// next event; where the repository is not readable, every later refusal with no reads goes before
+// it, so a flood that continues can hold it back with no fixed bound. Its next event reads GitHub
+// at once regardless.
 //
 // No reader of a head reads this table. The results read, the CI-proved checks and the delivery
 // timeline read pull_request_heads and delivery_pull_requests alone, so an owed read is never a
@@ -79,8 +85,8 @@ import (
 type owedReason string
 
 const (
-	// owedFailure is a read GitHub did not answer: a 5xx, a timeout, a rate limit, the intake's
-	// delivery cap; or a write of GitHub's answer older than the row it replaced (upsertHeadRow).
+	// owedFailure is a read GitHub did not answer: a 5xx, a timeout, a rate limit, a head write
+	// that failed; or a write no read of GitHub has the last word on (the triggers above).
 	// GitHub will answer it once it answers at all, so it is read before any refusal.
 	owedFailure owedReason = "failure"
 	// owedRefusal is a read GitHub answered with a refusal: it does not have the pull request
@@ -90,18 +96,13 @@ const (
 
 // RefusedReadsPerPass is how many pull requests owed a refusal one reconcile pass reads, after
 // every failure it reads. Outside a GitHub outage it bounds what forged envelopes cost: at most 50
-// reads of the App's installation a pass, about 600 an hour, however many are owed, and none of
-// them taken from a failure. During an outage the refusals a pass reads fail and become failures,
-// so they take failure reads after it. A refusal is settled at its first read past
-// owedReadRefusalFinalAfter, so a run of N forged envelopes is gone after about N/50 passes.
+// reads of a pull request a pass, and one read of each repository among them that GitHub answers
+// 404 in (pullRequestAbsent), however many are owed, and none of them taken from a failure.
+// During an outage the refusals a pass reads fail and become failures, so they take failure reads
+// after it. A refusal of a number a repository the App reads does not have ends at its first read
+// (pullRequestAbsent), so N such forged envelopes are gone after about N/50 passes; a refusal in a
+// repository the App cannot read stays, and is read at most once a pass, the fewest reads first.
 const RefusedReadsPerPass = 50
-
-// owedReadRefusalFinalAfter is how long a pull request must have been owed a read before
-// GitHub's refusal of the reconcile's read (a pull request it does not have, a repository the App
-// cannot read) settles it. A refusal earlier than that may be GitHub's answer catching up with its
-// own webhook, and is read again by the next pass. It is the reconcile's own period
-// (ReconcileInterval), so a pull request GitHub never had is read by the reconcile at most twice.
-const owedReadRefusalFinalAfter = ReconcileInterval
 
 // owedReadWriteTimeout bounds the write of an owed read the intake makes at each delivery whose
 // head write failed (Intake.oweEnvelopesRead), which runs on a context of its own: the message's
@@ -111,7 +112,7 @@ const owedReadWriteTimeout = 5 * time.Second
 // owedRevisionReadTimeout bounds the intake's read of the revision of a pull request's owed read
 // (owedRevision), which a healthy database answers in milliseconds. It is how long a head read
 // waits for that table before it goes on with no revision, so a session that holds the table
-// locked, as a migration of it would, holds no head read and no acknowledgement at the cap.
+// locked, as a migration of it would, holds no head read and no acknowledgement.
 const owedRevisionReadTimeout = time.Second
 
 // owedRevision is the revision of the read repoFull's pull request number is owed as a read of
@@ -164,22 +165,16 @@ func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, num
 
 // settleOwedRead deletes the read repoFull's pull request number is owed where the row's revision
 // is still revision, the one a read took before it read GitHub (owedRevision,
-// listOwedPullRequestReads), and answers whether it deleted the row. That read's answer covers
-// every owe that row recorded, and every owe made since gave the row another revision
-// (owePullRequestRead, the trigger pull_request_heads_older_read), so its record stays for the next
-// read. A refusal (refused) deletes the row only once the pull request has been owed
-// owedReadRefusalFinalAfter, by the database's own clock: GitHub's refusal of a read made a moment
-// after its own webhook may be GitHub catching up.
-func settleOwedRead(ctx context.Context, pool *store.Pool, repoFull string, number int, revision int64, refused bool) (bool, error) {
-	tag, err := pool.Exec(ctx, `
-		delete from pull_request_reads_owed
-		where repo = $1 and number = $2 and revision = $3
-		  and (not $4::boolean or owed_at < now() - make_interval(secs => $5))
-	`, repoFull, number, revision, refused, owedReadRefusalFinalAfter.Seconds())
-	if err != nil {
-		return false, fmt.Errorf("settle the read %s#%d is owed: %w", repoFull, number, err)
+// listOwedPullRequestReads). That read's answer covers every owe that row recorded, and every owe
+// made since gave the row another revision (owePullRequestRead, the triggers of
+// pull_request_heads), so its record stays for the next read.
+func settleOwedRead(ctx context.Context, pool *store.Pool, repoFull string, number int, revision int64) error {
+	if _, err := pool.Exec(ctx, `
+		delete from pull_request_reads_owed where repo = $1 and number = $2 and revision = $3
+	`, repoFull, number, revision); err != nil {
+		return fmt.Errorf("settle the read %s#%d is owed: %w", repoFull, number, err)
 	}
-	return tag.RowsAffected() > 0, nil
+	return nil
 }
 
 // owedRead is one pull request owed a read: its repository, its number, why, when the read was
@@ -225,27 +220,25 @@ func listOwedPullRequestReads(ctx context.Context, pool *store.Pool, reason owed
 type owedReadOutcome int
 
 const (
-	// owedReadAnswered: GitHub answered for the pull request, and its row is written.
+	// owedReadAnswered: GitHub answered for the pull request, and its row is written; or a
+	// repository the App reads has no such pull request (pullRequestAbsent).
 	owedReadAnswered owedReadOutcome = iota
 	// owedReadFailed: GitHub did not answer (owedFailure).
 	owedReadFailed
-	// owedReadRefused: GitHub answered that it cannot give the pull request (owedRefusal).
+	// owedReadRefused: GitHub answered that it cannot give the pull request, and nothing shows
+	// the refusal final (owedRefusal).
 	owedReadRefused
 )
 
-// recordOwedReadOutcome records how the reconcile's read of read ended. An answer deletes it. A
-// refusal deletes it once the pull request has been owed owedReadRefusalFinalAfter. Any other
-// outcome counts the read and moves the row to the kind the read gave, so a failure GitHub now
-// refuses becomes a refusal and a refusal GitHub now fails becomes a failure. Every statement names
-// the revision the list read (settleOwedRead), so an event owed again while the reconcile read
-// GitHub keeps its record, as that event recorded it, for the next pass. The count is no owe and
-// gives no new revision, so an intake's read that read the row before it still deletes it.
+// recordOwedReadOutcome records how the reconcile's read of read ended. An answer deletes it. Any
+// other outcome counts the read and moves the row to the kind the read gave, so a failure GitHub
+// now refuses becomes a refusal and a refusal GitHub now fails becomes a failure. Every statement
+// names the revision the list read (settleOwedRead), so an event owed again while the reconcile
+// read GitHub keeps its record, as that event recorded it, for the next pass. The count is no owe
+// and gives no new revision, so an intake's read that read the row before it still deletes it.
 func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead, outcome owedReadOutcome) error {
-	if outcome != owedReadFailed {
-		settled, err := settleOwedRead(ctx, pool, read.Repo, read.Number, read.Revision, outcome == owedReadRefused)
-		if err != nil || settled || outcome == owedReadAnswered {
-			return err
-		}
+	if outcome == owedReadAnswered {
+		return settleOwedRead(ctx, pool, read.Repo, read.Number, read.Revision)
 	}
 	reason := owedFailure
 	if outcome == owedReadRefused {

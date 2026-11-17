@@ -53,7 +53,7 @@ type pullRequestHold struct {
 // their fetches at once names the second number here rather than installing a fake of its own.
 // Every fetch answers GitHub's 404, a pull request it does not have: the intake writes no head
 // row for one and acknowledges its envelope, as these rows want of every message they publish.
-// (A 5xx would be a read that failed, which the intake hands back for redelivery.)
+// (A 5xx would be a read that failed, which the intake owes the reconcile and acknowledges.)
 func holdPullRequestOne(fake *fakeGitHub, also ...string) *heldPullRequests {
 	held := newHeldPullRequests(append([]string{"1"}, also...))
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {

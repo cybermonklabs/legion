@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,10 +61,16 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	// pass an earlier run recorded inside ReconcileInterval would make this run's pass skip for
 	// a period it did not serve (duty.Exclusive). duty_holds too: an intake an earlier test
 	// abandoned leaves its durable's hold to lapse, and this test's intake would stand by for it.
-	for _, table := range []string{"delivery_run_jobs", "delivery_runs", "delivery_pull_requests", "pull_request_heads", "pull_request_reads_owed", "branch_commits", "delivery_reconcile_progress", "delivery_settings", "duty_passes", "duty_holds"} {
+	// github_rate_limits too: a limit an earlier test recorded would refuse this test's reads of
+	// the same installation for its whole wait.
+	for _, table := range []string{"delivery_run_jobs", "delivery_runs", "delivery_pull_requests", "pull_request_heads", "pull_request_reads_owed", "branch_commits", "delivery_reconcile_progress", "delivery_settings", "duty_passes", "duty_holds", "github_rate_limits"} {
 		if _, err := pool.Exec(ctx, "delete from "+table); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)
 		}
+	}
+	// A run that died inside refuseOwedReads left its trigger behind.
+	if _, err := pool.Exec(ctx, refuseOwedReadsUndo); err != nil {
+		t.Fatalf("drop the trigger a dead run left refusing owed reads: %v", err)
 	}
 	return pool, ctx
 }
@@ -112,6 +119,39 @@ func repairDroppedTables(t *testing.T, ctx context.Context, pool *store.Pool) {
 		t.Fatalf("forget the migration of branch_commits, which a run that died left dropped: %v", err)
 	}
 }
+
+// refuseOwedReads makes every write of pull_request_reads_owed fail at once, as a database that
+// takes no write of the owed record does, until restore: a trigger that raises SQLSTATE 55P03
+// (lock_not_available), a failure no value causes, so the intake hands the envelope back. A lock
+// of the table would do the same in owedReadWriteTimeout; this fails in milliseconds, so a
+// handler held to a stop's budget still answers through deliver's own path. A run killed before
+// restore leaves the trigger, which the next deliveryTestPool drops after its truncate.
+func refuseOwedReads(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		create function delivery_test_refuse_owed() returns trigger language plpgsql as $$
+		begin
+		  raise exception 'the test refuses writes of pull_request_reads_owed' using errcode = '55P03';
+		end $$;
+		create trigger delivery_test_refuse_owed before insert or update on pull_request_reads_owed
+		  for each row execute function delivery_test_refuse_owed();
+	`); err != nil {
+		t.Fatalf("make pull_request_reads_owed refuse writes: %v", err)
+	}
+	restore = sync.OnceFunc(func() {
+		if _, err := pool.Exec(context.WithoutCancel(ctx), refuseOwedReadsUndo); err != nil {
+			t.Errorf("let pull_request_reads_owed take writes again: %v", err)
+		}
+	})
+	t.Cleanup(restore)
+	return restore
+}
+
+// refuseOwedReadsUndo drops what refuseOwedReads made, and nothing where it made nothing.
+const refuseOwedReadsUndo = `
+	drop trigger if exists delivery_test_refuse_owed on pull_request_reads_owed;
+	drop function if exists delivery_test_refuse_owed();
+`
 
 // A table a test dropped and never put back is made again by the next deliveryTestPool, so the
 // run after the one `-timeout` killed mid-test runs against the schema its migrations describe.
@@ -329,17 +369,6 @@ func shrinkIntakeFlowControl(t *testing.T) {
 	messageTimeout := intakeMessageTimeout
 	intakeMessageTimeout = 5 * time.Second
 	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
-}
-
-// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test, the way
-// shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
-// headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a test of the
-// cap measures is that there is one at all, which two deliveries show as well as thirty.
-func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
-	t.Helper()
-	was := headWriteMaxDeliveries
-	headWriteMaxDeliveries = deliveries
-	t.Cleanup(func() { headWriteMaxDeliveries = was })
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and

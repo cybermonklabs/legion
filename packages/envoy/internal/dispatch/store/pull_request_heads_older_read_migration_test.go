@@ -15,13 +15,15 @@ const pullRequestHeadsOlderReadVersion = 20261116182209
 // update that writes a mark (github_read_at) over an unmarked row whose event_at is later than
 // the update's own records the pull request as owed a read of kind failure. So does an update of
 // the same event_at that changes a fact GitHub answers (the head, the state, the title) of a row
-// GitHub's answer is in before or after it: a marked answer over a marked or an unmarked row, and
-// a write of the release before (which keeps the mark) over a marked row. An update writing a mark
-// over an older unmarked row, a write of the release before over an older marked row, an update
-// over a row that is marked already with an older time, an update of the same event_at that
-// changes no fact, one that changes only the attribution (Dispatch's own judgement of GitHub's
-// facts, which a later rule changes at the same second), and a write of the release before over
-// its own row of the same second, record nothing. Each owe gives the record a new revision.
+// GitHub's answer is in before or after it: a marked answer over a marked or an unmarked row. And
+// so does a write of the release before (which keeps the mark) over a marked row, at any time:
+// pull_request_heads_unread_write, as this migration replaces it, owes the read in the statement
+// that takes the mark away (acceptance round 4 of cybermonklabs/legion#4209, D8). An update writing
+// a mark over an older unmarked row, an update over a row that is marked already with an older
+// time, an update of the same event_at that changes no fact, one that changes only the
+// attribution (Dispatch's own judgement of GitHub's facts, which a later rule changes at the same
+// second), and a write of the release before over its own row of the same second, record nothing.
+// Each owe gives the record a new revision.
 func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -77,6 +79,8 @@ func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testin
 	update(6, "bbbb", "closed", now, true)
 	insert(7, now, true)
 	update(7, "bbbb", "closed", now, false)
+	insert(3, now, true)
+	update(3, "bbbb", "closed", now.Add(-5*time.Minute), false)
 	insert(11, now, true)
 	restate(11, "title", "A title GitHub changed in the same second")
 	for number, why := range map[int]string{
@@ -84,6 +88,7 @@ func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testin
 		5:  "a marked answer over a marked row of the same second with other facts",
 		6:  "a marked answer over an unmarked row of the same second with other facts",
 		7:  "a write of the release before over a marked row of the same second with other facts",
+		3:  "a write of the release before over a marked row, at an older time (D8)",
 		11: "a marked answer of the same second whose title alone changed",
 	} {
 		if got, _ := owed(number); got != "failure" {
@@ -93,8 +98,6 @@ func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testin
 
 	insert(2, now, false)
 	update(2, "bbbb", "closed", now.Add(5*time.Minute), true)
-	insert(3, now, true)
-	update(3, "bbbb", "closed", now.Add(-5*time.Minute), false)
 	insert(4, now, true)
 	update(4, "bbbb", "closed", now.Add(-5*time.Minute), true)
 	insert(8, now, true)
@@ -103,7 +106,7 @@ func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testin
 	update(9, "bbbb", "closed", now, false)
 	insert(10, now, true)
 	restate(10, "attribution_source", "branch")
-	for _, number := range []int{2, 3, 4, 8, 9, 10} {
+	for _, number := range []int{2, 4, 8, 9, 10} {
 		if got, _ := owed(number); got != "" {
 			t.Errorf("#%d owed %q, want nothing", number, got)
 		}

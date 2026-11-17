@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -102,24 +103,22 @@ func PullRequestHeadState(state string, merged bool) string {
 
 // ErrHeadNotStored marks a failure that left a pull request's head row unwritten and that
 // making the same attempt again may get past. The `pull_request` envelope's handler tests for it
-// and hands the envelope back for redelivery rather than acking it
-// (Intake.handlePullRequestEnvelope, Intake.deliver), up to headWriteMaxDeliveries deliveries of
-// it, since both of the statements behind the write are `on conflict … do update` and a
-// redelivery writes the same pair. The reconcile's passes read the rows that exist, so past that
-// bound the envelope's pull request is owed a read the reconcile makes instead
-// (owePullRequestRead): a row no write ever made is offered to nothing else. A failure Postgres
-// gives for the values themselves (valuesRefused) is marked as well, and deliver acknowledges it
-// at once instead, since no redelivery hands Postgres other values.
+// (Intake.handlePullRequestEnvelope), and Intake.deliver then records that the envelope's pull
+// request is owed a read (owePullRequestRead), which the reconcile makes, and acknowledges the
+// envelope: the reconcile's passes read the rows that exist, so a row no write ever made is
+// offered to nothing else. Where that record cannot be written either, the envelope is handed
+// back for redelivery instead, since both of the statements behind the write are `on conflict …
+// do update` and a redelivery writes the same pair. A failure Postgres gives for the values
+// themselves (valuesRefused) is marked as well, and deliver acknowledges it at once instead,
+// since no redelivery hands Postgres other values.
 //
 // It marks every failure on the way to that write that a later attempt may get past, because
 // they all end the same way: a read of Postgres (the repository's canonical name, the stored row
 // recordPullRequestHead compares the event with, and the attribution's read of the issues its
 // candidates name) and a read of GitHub that failed (a 5xx, a network failure, a rate limit).
-// A rate limit keeps its *githubapp.RateLimitError inside the mark, so Intake.deliver hands the
-// envelope back after the limit's own wait: while the limit stands githubapp.Client sends no
-// request at all, so the hand-back costs no GitHub call. GitHub's refusals are not marked: a
-// pull request it does not know and a repository the App cannot read write no row, are owed a
-// read the reconcile makes, and are acknowledged (recordPullRequestHead).
+// GitHub's refusals are not marked: a pull request it does not know and a repository the App
+// cannot read write no row, are owed a read the reconcile makes, and are acknowledged
+// (recordPullRequestHead).
 var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
 
 // markHeadNotStored marks err as ErrHeadNotStored, keeping err itself inside the mark.
@@ -968,14 +967,15 @@ func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.C
 }
 
 // RefreshPullRequestHead reads one pull request through the App and writes its head row: the
-// reconcile's per-row step. It answers whether GitHub answered for the pull request, which the
-// reconcile's read of a pull request an event owes a read of needs (readOwedPullRequests), since
-// only an answer settles such a read at once; the pass over the stored rows does not. A pull
-// request GitHub cannot find, and a repository the App cannot read (no installation, or a
-// repository or resource its token is refused), answer false and leave the row as it is, stamped
-// so the batch moves on and does not warn about the same row every pass; a rate limit comes back
-// as the *githubapp.RateLimitError, which stops the batch. The row is stamped even when the commit
-// messages could not be read: this pass is itself the retry, so the next one reads it again in
+// reconcile's per-row step. It answers GitHub's refusal to give the pull request, nil where GitHub
+// answered it, which the reconcile's read of a pull request an event owes a read of needs
+// (readOwedPullRequests): only an answer, or a refusal that pullRequestAbsent proves final,
+// settles such a read; the pass over the stored rows reads no refusal. A pull request GitHub
+// cannot find (ErrPullRequestNotFound), and a repository the App cannot read (no installation,
+// or a repository or resource its token is refused), are refusals and leave the row as it is,
+// stamped so the batch moves on and does not warn about the same row every pass; a rate limit
+// comes back as the *githubapp.RateLimitError. The row is stamped even when the commit messages
+// could not be read: this pass is itself the retry, so the next one reads it again in
 // PullRequestHeadStaleAfter rather than holding the front of every batch, and that write, being
 // incomplete, leaves any attribution the row already carries standing.
 //
@@ -993,34 +993,80 @@ func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.C
 func RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull string, number int, now time.Time,
-) (answered bool, err error) {
+) (refused error, err error) {
 	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	owner, repo, err := splitRepo(canonical)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	token, err := client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
 		if repositoryUnreadable(err) {
-			return false, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
+			return err, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
-		return false, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
+		return nil, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
 	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
 	if err != nil {
 		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
-			return false, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
+			return err, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
-		return false, err
+		return nil, err
 	}
 	attributed, err := attributePayload(ctx, pool, client, token, canonical, payload)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return true, upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
+	return nil, upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
+}
+
+// pullRequestAbsent answers whether GitHub's refusal of a read of repoFull's pull request is
+// final: GitHub has no such pull request (ErrPullRequestNotFound), and the installation that read
+// it can read the repository (`GET /repos/{owner}/{repo}`, one more call, made once a pass for each
+// repository: repositories). Then GitHub says the repository has no such pull request, and
+// Dispatch keeps nothing for it. Any other refusal, and a repository read that does not answer,
+// is no evidence: the App cannot tell a pull request that is missing from one it is not let see,
+// so the read stays owed (Reconcile.readOwedPullRequests). No age makes a refusal final.
+func pullRequestAbsent(ctx context.Context, pool *store.Pool, client *githubapp.Client, repositories *repositoryReads, repoFull string, refused error) bool {
+	if !errors.Is(refused, ErrPullRequestNotFound) {
+		return false
+	}
+	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
+	if err != nil {
+		return false
+	}
+	return repositories.readable(canonical, func() bool {
+		owner, repo, token, err := repositoryRead(ctx, client, canonical)
+		if err != nil {
+			return false
+		}
+		_, err = client.RepositoryIdentity(ctx, token, owner, repo, "")
+		return err == nil
+	})
+}
+
+// repositoryReads is whether the App could read each repository, by its canonical name, as one
+// reconcile pass read it: the pass reads a repository once however many refusals of it it reads,
+// so a run of forged envelopes that name one repository costs the pass one more call, not one
+// more for each.
+type repositoryReads struct{ known sync.Map }
+
+// repositoryAnswer is one repository's read of a pass, made once.
+type repositoryAnswer struct {
+	once     sync.Once
+	readable bool
+}
+
+// readable is read's answer for the repository canonical, which only the first caller of the
+// pass makes; the others wait for it.
+func (r *repositoryReads) readable(canonical string, read func() bool) bool {
+	entry, _ := r.known.LoadOrStore(canonical, &repositoryAnswer{})
+	repository := entry.(*repositoryAnswer)
+	repository.once.Do(func() { repository.readable = read() })
+	return repository.readable
 }
 
 // repositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
@@ -1135,13 +1181,13 @@ func ReadThroughCommitPulls(
 // are acknowledged, and both record that the pull request is owed a read
 // (owePullRequestRead): GitHub's answer to a read made a moment after its own webhook may not
 // know the pull request yet, so the reconcile reads it again, and settles the read once GitHub
-// answers for it or still refuses past owedReadRefusalFinalAfter. A record that could not be
-// written is marked ErrHeadNotStored, so the envelope stays the record and is handed back. Every
-// other failure is marked ErrHeadNotStored (markHeadNotStored), so the envelope is handed back;
-// a rate limit is handed back after the limit's own wait, and a failure Postgres gives for the
-// values themselves is acknowledged at once (Intake.deliver, valuesRefused). The name and the
-// number were checked before this runs (pullRequestNamed); a canonical name that is not
-// `owner/repo` is returned bare, since the same envelope delivered again fails on it again.
+// answers for it, or once a repository the App can read has no such pull request
+// (pullRequestAbsent). A record that could not be written is marked ErrHeadNotStored, as every
+// other failure is (markHeadNotStored): Intake.deliver then owes the read as a failure and
+// acknowledges the envelope, or hands it back where that record cannot be written either, and a
+// failure Postgres gives for the values themselves is acknowledged at once (valuesRefused). The
+// name and the number were checked before this runs (pullRequestNamed); a canonical name that
+// is not `owner/repo` is returned bare, since the same envelope delivered again fails on it again.
 //
 // The read is spared where GitHub has already answered for the event (headReadCovers): the
 // stored row is GitHub's answer to a read whose updated_at is a later second than the envelope's.
@@ -1212,7 +1258,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	// delivery of this envelope or any other writer, is settled. A failure to delete it costs the
 	// reconcile one read, and no more.
 	if owed != nil {
-		if _, err := settleOwedRead(ctx, in.pool, repoFull, number, *owed, false); err != nil {
+		if err := settleOwedRead(ctx, in.pool, repoFull, number, *owed); err != nil {
 			slog.Warn("dispatch delivery: delete the read owed before this read; the reconcile reads the pull request once more",
 				"repo", repoFull, "number", number, "error", err)
 		}
@@ -1223,7 +1269,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 // oweRefusedRead records that repoFull's pull request number is owed a read of kind refusal
 // (owePullRequestRead) after GitHub refused the intake's read with refused, and answers that
 // refusal as what the intake read. A record that could not be written is marked
-// ErrHeadNotStored, so the envelope stays the record and is handed back.
+// ErrHeadNotStored, so Intake.deliver owes the read as a failure, or hands the envelope back.
 func (in *Intake) oweRefusedRead(ctx context.Context, repoFull string, number int, refused error) (headRead, error) {
 	if err := owePullRequestRead(ctx, in.pool, repoFull, number, owedRefusal); err != nil {
 		return headRead{}, markHeadNotStored(err)

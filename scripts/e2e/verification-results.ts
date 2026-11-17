@@ -291,7 +291,9 @@ async function passStandsOf(key: string, blockID: string): Promise<string> {
 
 /** Waits, until the deadline `by` (milliseconds since the epoch), for the commit of the result at
  *  `commit` to stand where `want` says, and answers what it last read. Where a commit stands is
- *  computed while the results are read, so this writes nothing and polls the read. */
+ *  computed while the results are read, so this writes nothing and polls the read. The answer it
+ *  accepts is held to the deadline too: a read that answers `want` after `by` answers that it was
+ *  late, so a route that answers right but late meets no bound. */
 async function awaitCommitStands(
   key: string,
   blockID: string,
@@ -304,7 +306,8 @@ async function awaitCommitStands(
     await Bun.sleep(pollMs);
     seen = await commitStandsAt(key, blockID, commit);
   }
-  return seen;
+  const late = Date.now() - by;
+  return seen === want && late > 0 ? `${seen}, read ${late} ms past the deadline` : seen;
 }
 
 /** Records one result through `POST /api/v1/issues/{key}/results`, and answers what Dispatch
@@ -970,7 +973,8 @@ A result stands while its commit is the head of a pull request of this repositor
     afterEvent(forked)
   );
   note(`the commit of the result at the fork's head ${commits.fork.slice(0, 12)} stands ${atFork}`);
-  if (atFork === "at_basis") return "a fork's pull request was taken for a basis";
+  if (atFork.startsWith("at_basis"))
+    return `a fork's pull request was taken for a basis (${atFork})`;
   const compared = await checkOf(forkIssue, "fork");
   note(
     `the check compared with ${compared.compared_with.length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`

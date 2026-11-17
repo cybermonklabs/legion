@@ -23,15 +23,16 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// A pull-request envelope whose head row could not be stored at all is handed back for
-// redelivery. The reconcile's passes over the stored rows read the rows that exist
-// (ListStalePullRequestHeads), so only the redelivery writes that head within seconds; the read
-// the envelope's pull request is owed once the delivery cap is spent waits for the reconcile's
-// next pass (owePullRequestRead).
+// A pull-request envelope whose head row could not be stored, and whose owed read could not be
+// recorded either, is handed back for redelivery: it is then the only record of its change. The
+// reconcile's passes over the stored rows read the rows that exist (ListStalePullRequestHeads),
+// so nothing else would write that head; where the owed read is recorded, the envelope is
+// acknowledged instead (TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed).
 //
 // The write that cannot be made is the one UpsertPullRequestHead reports as ErrHeadNotStored,
 // which handlePullRequestEnvelope returns; here branch_commits is away, so the transaction that
-// writes the head row and the merge's seed together rolls back and no head row lands.
+// writes the head row and the merge's seed together rolls back and no head row lands, and
+// pull_request_reads_owed refuses every write (refuseOwedReads).
 //
 // The test asks NATS, not the handler: the durable must deliver the message again. Measured by
 // the consumer's delivery count rather than by its pending count, because a message is pending
@@ -41,6 +42,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
 	withoutBranchCommits(t, ctx, pool)
+	refuseOwedReads(t, ctx, pool)
 
 	natsClient := intakeTestClient(t)
 	fake := newFakeGitHub(t)
@@ -222,8 +224,9 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // the read is released the moment the holder reports the hold lost and begins to stop
 // delivering (keyedRunnerStopped): the handler returns inside the budget that stop gives it, so
 // it answers through deliver's own path rather than the stop's, with a hold that has already
-// lapsed. Its head write fails because branch_commits is away, which is the failure the
-// hand-back is for.
+// lapsed. Its head write fails because branch_commits is away, and its owed read fails because
+// pull_request_reads_owed refuses writes (refuseOwedReads), which is the failure the hand-back is
+// for: where the owed read is recorded, the envelope is acknowledged instead.
 //
 // What it measures is the answers published to the durable, read from the ack subject itself
 // rather than from the consumer's counts: a hand-back is a publish, and whether the server
@@ -231,14 +234,33 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // be a hand-back. The keeper's own acknowledgement is there to be read beside them, so a
 // recorder that saw nothing at all cannot pass the row by silence.
 //
-// The table is put back once the holder has stopped delivering and before the keeper is handed
-// anything, so the keeper's handling is the ordinary one: it writes the head row the holder
-// could not, acknowledges the envelope, and is handed it exactly once.
+// The tables are put back once the holder has stopped delivering and before the keeper is
+// handed anything, so the keeper's handling is the ordinary one: it writes the head row the
+// holder could not, acknowledges the envelope, and is handed it exactly once.
+//
+// The second case takes no table away: the holder's head write succeeds after its hold has
+// lapsed, and its acknowledgement is withheld as its hand-back is (intakeDelivery.holdCovers), so
+// the keeper is handed the envelope once and writes the same row again; there the holder's own
+// write lands the row, so what checks the keeper's handling is its read count. Without that
+// fence the lapsed holder acknowledged the envelope and the keeper was handed nothing (the
+// package run of this round's tree before it: `holder 1 read(s), keeper 0; … delivered=1
+// ack_floor=1`).
 func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce(t *testing.T) {
+	t.Run("head_not_stored", func(t *testing.T) { holdLapseRow(t, false) })
+	t.Run("head_stored", func(t *testing.T) { holdLapseRow(t, true) })
+}
+
+// holdLapseRow is one case of the row above: headStored leaves branch_commits and
+// pull_request_reads_owed in place, so the holder's own handling succeeds.
+func holdLapseRow(t *testing.T, headStored bool) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
-	restoreBranchCommits := withoutBranchCommits(t, ctx, pool)
+	restoreBranchCommits, restoreOwedReads := func() {}, func() {}
+	if !headStored {
+		restoreBranchCommits = withoutBranchCommits(t, ctx, pool)
+		restoreOwedReads = refuseOwedReads(t, ctx, pool)
+	}
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 	answers := durableAnswers(t, publisher)
@@ -278,6 +300,7 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 		return "the holder has not let the durable go: " + consumerState(publisher)
 	})
 	restoreBranchCommits()
+	restoreOwedReads()
 
 	// 60 s: the hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s)
 	// and its take-over's delete, subscribe and create under the consumer lease.
@@ -313,7 +336,7 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 		t.Fatalf("read the head rows: %v", err)
 	}
 	if stored != 1 {
-		t.Errorf("head rows of the pull request the holder could not store = %d, want the one the keeper wrote: the envelope was lost with the hold", stored)
+		t.Errorf("head rows of #%d = %d, want 1: the envelope was lost with the hold", headWriteHoldNumber, stored)
 	}
 }
 

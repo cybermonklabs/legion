@@ -23,10 +23,11 @@ import (
 // githubPulls is what the fake GitHub answers about each pull request of one repository: `GET
 // /repos/{owner}/{repo}/pulls/{number}` from the answer a row last set, and 404 for a number it
 // was never given, as GitHub answers a pull request it does not have. Each pull request's commits
-// are an empty page. It counts both reads, so a row can show what an envelope cost. limited
-// answers every pull request read with a rate limit, and failing with a 500. holdFirst, where a
-// test sets it before any read, runs at the first pull request read after its answer is taken and
-// before it is sent: a test moves GitHub on there, or holds the answer back.
+// are an empty page, and `GET /repos/{owner}/{repo}` answers the repository, as GitHub answers an
+// installation that can read it. It counts the three reads, so a row can show what an envelope
+// cost. limited answers every pull request read with a rate limit, and failing with a 500.
+// holdFirst, where a test sets it before any read, runs at the first pull request read after its
+// answer is taken and before it is sent: a test moves GitHub on there, or holds the answer back.
 type githubPulls struct {
 	mu          sync.Mutex
 	pulls       map[int]map[string]any
@@ -35,6 +36,7 @@ type githubPulls struct {
 	holdFirst   func()
 	reads       atomic.Int32
 	commitReads atomic.Int32
+	repoReads   atomic.Int32
 }
 
 func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls {
@@ -71,6 +73,10 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 	fake.handle("GET /repos/"+repo+"/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		g.commitReads.Add(1)
 		mustEncode(t, w, []any{})
+	})
+	fake.handle("GET /repos/"+repo, func(w http.ResponseWriter, _ *http.Request) {
+		g.repoReads.Add(1)
+		mustEncode(t, w, map[string]any{"full_name": repo, "id": 1, "default_branch": "main"})
 	})
 	return g
 }
@@ -249,10 +255,11 @@ func TestABacklogOfOnePullRequestsEventsCostsOneReadAndOneForItsLastSecond(t *te
 	}
 }
 
-// A rate limit met in the middle writes no row and is handed back with the limit's own wait:
-// the error is ErrHeadNotStored, which Intake.deliver hands back, and carries GitHub's wait,
-// which it waits out. Once GitHub answers again, the same envelope writes the row.
-func TestARateLimitedPullRequestReadIsHandedBackWithTheLimitsWait(t *testing.T) {
+// A rate limit met in the middle writes no row and is ErrHeadNotStored with GitHub's wait kept
+// inside it, which Intake.deliver owes a read for and acknowledges (the read is the reconcile's,
+// after the limit: githubapp.Client sends nothing while it stands). Once GitHub answers again, a
+// read of the same envelope writes the row.
+func TestARateLimitedPullRequestReadWritesNoRowAndIsAHeadNotStored(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
@@ -280,37 +287,31 @@ func TestARateLimitedPullRequestReadIsHandedBackWithTheLimitsWait(t *testing.T) 
 		t.Fatalf("end the recorded limit, as its wait running out does: %v", err)
 	}
 	if _, err := intake.handlePullRequestEnvelope(ctx, nil, envelope); err != nil {
-		t.Fatalf("the envelope handed back once the limit ended: %v", err)
+		t.Fatalf("the envelope read again once the limit ended: %v", err)
 	}
 	if got := readHead(t, ctx, pool, "acme/widgets", 74); got.HeadSHA != head {
 		t.Errorf("#74 after the limit = %+v, want head %s", got, head)
 	}
 }
 
-// A GitHub outage longer than the hand-backs an envelope is allowed loses no pull request's
-// head: once GitHub answers again, the reconcile's next pass writes the head of a pull request
-// that opened during the outage, and of one that was pushed during it, with no later event of
-// either (acceptance of cybermonklabs/legion#4209, round 2, defect 3; R1 and R2 of
-// dispatch://INFRA-3992).
+// A GitHub outage loses no pull request's head: the intake owes each failed read and
+// acknowledges its envelope, and once GitHub answers again the reconcile's next pass writes the
+// head of a pull request that opened during the outage, and of one that was pushed during it,
+// with no later event of either (acceptance of cybermonklabs/legion#4209, round 2, defect 3; R1,
+// R2 and R4 of dispatch://INFRA-3992).
 //
 // Taken from the acceptance tester's TestAcceptAGitHubOutageLongerThanTheCapLosesNoHead, with
 // three changes. The step after the outage runs one reconcile pass, since the fix is that the
-// reconcile reads every pull request whose read the intake gave up on, and nothing else does;
-// the tester's test starts no reconcile, which reads only the rows that exist. The outage ends
-// once the intake has acknowledged both envelopes, not after a fixed sleep, so the cap is spent
-// while GitHub is still down. And a second pull request, #9202, stands at an earlier head GitHub
-// answered just before the outage, so its row is one the reconcile's own five-minute arm would
-// not read yet: what reads it is the read its event is owed.
-//
-// The cap is shrunk to 3 deliveries, so the outage it outlasts is 2 hand-backs of
-// headWriteRedeliverAfter (about 20 s) rather than the 30 deliveries and about 4 min 50 s of a
-// deployment; the row is the same at either size. With no delivery settings, as the deployment
-// the pull request fixes holds none.
-func TestAGitHubOutageLongerThanTheCapLosesNoHead(t *testing.T) {
+// reconcile reads every pull request whose read the intake owed, and nothing else does; the
+// tester's test starts no reconcile, which reads only the rows that exist. The outage ends once
+// the intake has acknowledged both envelopes, not after a fixed sleep. And a second pull request,
+// #9202, stands at an earlier head GitHub answered just before the outage, so its row is one the
+// reconcile's own five-minute arm would not read yet: what reads it is the read its event is owed.
+// With no delivery settings, as the deployment the pull request fixes holds none.
+func TestAGitHubOutageLosesNoHead(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 9202)
-	capHeadWriteDeliveriesAt(t, 3)
 	const (
 		opened     = 9201
 		openedHead = "9201920192019201920192019201920192019201"
@@ -344,7 +345,7 @@ func TestAGitHubOutageLongerThanTheCapLosesNoHead(t *testing.T) {
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", pushed,
 		prEnvelope("acme/widgets", pushed, "synchronize", headPushed, branch, body, during))
 
-	// GitHub stays down until the intake has spent the cap on both envelopes and acknowledged them.
+	// GitHub stays down until the intake has owed both reads and acknowledged both envelopes.
 	waitFor(t, 90*time.Second, func() bool {
 		stream, err := natsClient.JS().StreamInfo(bus.Stream)
 		if err != nil {
@@ -375,7 +376,7 @@ func TestAGitHubOutageLongerThanTheCapLosesNoHead(t *testing.T) {
 		return count
 	}
 	waitFor(t, 30*time.Second, func() bool { return stored(opened, openedHead) == 1 && stored(pushed, headPushed) == 1 }, func() string {
-		return fmt.Sprintf("after GitHub answers again and the reconcile's next pass, acme/widgets#%d has %d head rows at %s and #%d %d at %s, want one each: the envelopes that named them were acknowledged at the cap during the outage; the durable is %+v",
+		return fmt.Sprintf("after GitHub answers again and the reconcile's next pass, acme/widgets#%d has %d head rows at %s and #%d %d at %s, want one each: the envelopes that named them were acknowledged with their reads owed during the outage; the durable is %+v",
 			opened, stored(opened, openedHead), openedHead[:12], pushed, stored(pushed, headPushed), headPushed[:12], deliveryConsumerInfo(t, natsClient))
 	})
 	if attributed, err := HeadAttributedTo(ctx, pool, issue, headPushed); err != nil || !attributed {
@@ -389,9 +390,9 @@ func TestAGitHubOutageLongerThanTheCapLosesNoHead(t *testing.T) {
 // GitHub's 404 for a pull request its own event names is read again by the reconcile: GitHub's
 // answer to a read made a moment after its webhook may not know the pull request yet, and a 404
 // writes no row, so without the read it is owed the pull request would have no head until a
-// later event of it. A pull request GitHub never had costs the reconcile a bounded number of
-// reads: its owed read stays only until it has been owed owedReadRefusalFinalAfter, and the next
-// refusal settles it, with no row written.
+// later event of it. A pull request GitHub never had, in a repository the App reads, is settled
+// at that read with one more call, the repository's (pullRequestAbsent): GitHub then says the
+// repository has no such pull request.
 func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -432,20 +433,13 @@ func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *t
 		}
 		return count
 	}
-	if owed(lagged) != 0 || owed(never) != 1 {
-		t.Fatalf("after one pass #%d is owed %d read(s) and #%d %d, want 0 and 1: GitHub answered for the first, and still refuses the second inside owedReadRefusalFinalAfter", lagged, owed(lagged), never, owed(never))
+	if owed(lagged) != 0 || owed(never) != 0 {
+		t.Fatalf("after one pass #%d is owed %d read(s) and #%d %d, want none of either: GitHub answered for the first, and for the second the repository it can read has no such pull request", lagged, owed(lagged), never, owed(never))
 	}
-
-	if _, err := pool.Exec(ctx, "update pull_request_reads_owed set owed_at = owed_at - make_interval(secs => $1) where number = $2",
-		(owedReadRefusalFinalAfter + time.Minute).Seconds(), never); err != nil {
-		t.Fatalf("age #%d's owed read past owedReadRefusalFinalAfter: %v", never, err)
+	if reads := github.repoReads.Load(); reads != 1 {
+		t.Errorf("the pass read the repository %d times, want once: the one more call of #%d's refusal", reads, never)
 	}
-	readsBefore := github.reads.Load()
-	reconcile.runOnce(ctx)
-	if reads := github.reads.Load() - readsBefore; reads != 1 {
-		t.Errorf("the pass read GitHub %d times, want once: #%d's refusal past the bound is its answer", reads, never)
-	}
-	if owed(never) != 0 || headRowCount(t, ctx, intake, "acme/widgets", never) != 0 {
-		t.Fatalf("#%d after a refusal past owedReadRefusalFinalAfter is owed %d read(s) and has %d head rows, want none of either", never, owed(never), headRowCount(t, ctx, intake, "acme/widgets", never))
+	if count := headRowCount(t, ctx, intake, "acme/widgets", never); count != 0 {
+		t.Fatalf("#%d has %d head rows, want none", never, count)
 	}
 }

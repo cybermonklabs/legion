@@ -34,7 +34,9 @@
 -- trigger below takes it away instead: an update that changes a fact of a marked row and leaves
 -- github_read_at as it was is a write of no read of GitHub, so the row is marked unread
 -- (github_read_at null), unchecked (checked_at null, which the reconcile's open arm reads first)
--- and judged by no rule (attribution_rule 0, which the reconcile's merged arm offers once). This
+-- and judged by no rule (attribution_rule 0, which the reconcile's merged arm offers once); and
+-- 20261116182209 replaces this function with one that also owes the pull request a read, since the
+-- reconcile reads no closed row (pull_request_reads_owed does not exist yet here). This
 -- release's own writes set github_read_at on every write: the database's clock at the statement
 -- for a write of GitHub's answer, null for any other, so a write of this release never leaves it
 -- as it was. An update that changes no fact (a stamp of checked_at, a write of the same answer)
@@ -48,7 +50,9 @@
 -- a row, so the time the locks are held does not grow with the table, and the census admits all
 -- three as catalog-only statements. The release before reads no github_read_at and writes it in
 -- no statement. Rolling back past this migration is an image rollback alone: the release before
--- reads none of it, and its writes keep running the trigger, which only ever clears the column.
+-- reads none of it, and its writes keep running the trigger, which only ever clears the column
+-- (and, once 20261116182209 replaces it, owes a read in pull_request_reads_owed, which that
+-- release never reads).
 alter table pull_request_heads add column github_read_at timestamptz;
 
 create function pull_request_heads_unread_write() returns trigger language plpgsql as $$

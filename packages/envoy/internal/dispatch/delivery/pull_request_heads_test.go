@@ -1514,28 +1514,27 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 	}
 }
 
-// An envelope whose head row fails the same way at every attempt is acknowledged once it has
-// had every delivery the cap allows, rather than handed back for ever. A hand-back with a
-// delay leaves the message in the consumer's ack-pending set until it is redelivered, so an
-// envelope handed back without end holds one of the four in-flight slots (intakeMaxAckPending)
-// for the life of the process, and four of them stop the intake being given anything at all.
+// An envelope whose head row fails the same way at every attempt is acknowledged at its first
+// delivery once the read its pull request is owed is recorded, rather than handed back for ever.
+// A hand-back with a delay leaves the message in the consumer's ack-pending set until it is
+// redelivered, so an envelope handed back without end holds one of the four in-flight slots
+// (intakeMaxAckPending) for the life of the process, and four of them stop the intake being
+// given anything at all; the owed read is what keeps the pull request (R4 of
+// dispatch://INFRA-3992), and the reconcile reads it every pass.
 //
 // Driven as the hand-back's own test drives it: branch_commits is away, so the transaction
 // that writes a merge's head row and its branch seed together rolls back at every delivery and
-// no attempt can ever store the row. The cap is shrunk to two deliveries, since what is
-// measured here is that there is a cap at all and not the number it is shipped at
-// (headWriteMaxDeliveries).
+// no attempt can ever store the row.
 //
-// The measure is the consumer's delivery count, read twice: once when the cap has been spent,
-// and again after two whole redelivery delays, which is when the third delivery would have
-// arrived had the envelope been handed back again. An acknowledged message is delivered no
-// more, and the count is the one number no other test's leftovers move for this envelope.
-func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
+// The measure is the consumer's delivery count, read once the envelope is acknowledged and
+// again after two whole redelivery delays, which is when a second delivery would have arrived
+// had the envelope been handed back. An acknowledged message is delivered no more, and the count
+// is the one number no other test's leftovers move for this envelope.
+func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
 	withoutBranchCommits(t, ctx, pool)
-	capHeadWriteDeliveriesAt(t, 2)
 
 	natsClient := intakeTestClient(t)
 	fake := newFakeGitHub(t)
@@ -1556,16 +1555,19 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	var info *natsgo.ConsumerInfo
 	waitFor(t, 45*time.Second, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
-		return info.Delivered.Consumer-before >= 2
+		return info.Delivered.Consumer-before >= 1 && info.NumAckPending == 0
 	}, func() string {
-		return fmt.Sprintf("the envelope was delivered %d time(s), though a cap of 2 wants both of them: %+v",
+		return fmt.Sprintf("the envelope was delivered %d time(s) and is not acknowledged: %+v",
 			info.Delivered.Consumer-before, info)
 	})
 
 	time.Sleep(2 * headWriteRedeliverAfter)
-	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 2 {
-		t.Fatalf("deliveries of an envelope whose head row never stores, %s after the cap of 2 was spent = %d, want the 2 the cap allows: it is being handed back for ever",
+	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 1 {
+		t.Fatalf("deliveries of an envelope whose head row never stores, %s after it was acknowledged = %d, want 1: it is being handed back",
 			2*headWriteRedeliverAfter, delivered)
+	}
+	if owed := owedCount(t, ctx, pool, "acme/widgets", 9102); owed != 1 {
+		t.Fatalf("#9102 is owed %d read(s) after its envelope was acknowledged, want 1: the record is what lets the intake let go", owed)
 	}
 
 	var stored int
@@ -1588,9 +1590,8 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 // line it draws. A repository name that is not `owner/repo` never reaches markHeadNotStored at
 // all: recordPullRequestHead splits the canonical name for itself, before any read, and returns
 // that failure bare, which is the line this case covers; every redelivery of the envelope
-// carries the same name. A rate limit is marked, and keeps GitHub's wait inside the mark, which
-// Intake.deliver hands the envelope back after: githubapp.Client sends nothing while the limit
-// stands, so the hand-back spends nothing of it.
+// carries the same name. A rate limit is marked, and keeps GitHub's wait inside the mark, so the
+// line deliver logs as it owes the read names the limit.
 func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
