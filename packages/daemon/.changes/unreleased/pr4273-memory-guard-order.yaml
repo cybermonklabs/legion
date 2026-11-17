@@ -47,7 +47,15 @@ body: |-
     `reason=not fallen` only once the wait has passed with nothing grown. A killed process that has
     not exited is never ended or reported again. The hourly line's high and low, its counter read
     and its scan for the largest process now come only after the guard has decided on the reading.
-    The settings, their defaults and the guard's lines are unchanged.
+    The `stopped for this rise` line now ends with `unread_processes=`, which names each process the
+    guard could not read, in pid order: `<pid>:<bytes>` where its `stat` reads a state other than
+    `Z` and its `smaps` reads, a bare `<pid>` otherwise, and `none` where there is none; every
+    other field is unchanged. The guard never ends such a process, and a process whose `exe` or
+    `ns/pid` answers `ENOENT` now counts unread unless it has ended, where the scan used to leave
+    it out with no line. Under gVisor three kinds stay unread, a stated limit: a process whose main
+    thread exited while another thread holds its memory, a process that is not dumpable outside the
+    role namespaces (such as what a `kubectl exec` shell runs), and a process being killed. The
+    settings, their defaults and the guard's other lines are unchanged.
 time: 2026-11-17T09:37:25Z
 custom:
     Issue: pr4273

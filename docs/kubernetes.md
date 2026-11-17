@@ -5540,7 +5540,7 @@ At each reading in the band or above it, before a kill and after one, the guard 
 It reads no size below the band, none while it is off, and none after it has given a rise up until the reading goes below the mark: a pod below its band pays for its readings alone.
 The list leaves out a zombie or a dead process, state `Z` or `X` in its `stat`, whose `status` counts one thread or none:
 it holds no memory, and under gVisor its `exe` link answers `EACCES`, which would otherwise count it unread.
-A process in either state whose other threads still run is one whose main thread alone has exited, and the guard reads it as a live process ("What it does not do", below).
+A process in either state whose other threads still run is one whose main thread alone has exited: the guard keeps it in the list as a live process, and counts it unread, since its `exe` does not read ("What it does not do", below).
 It measures each process it may end from its `/proc/<pid>/smaps`: the sum of its `Anonymous:` lines, plus the resident size (`Rss:`) of each of its shared maps of memory-backed files, which are `/dev/zero (deleted)` (shared anonymous memory), `/memfd:…`, `/dev/shm/…` and `/SYSV…` (`smapsSize`, `proc.go`).
 Shared anonymous memory and a memfd raise `AnonPages` while their pages read 0 in `Anonymous:`, so without the second term a process that grows that way would not be seen.
 It also adds each memfd the process holds open by a file descriptor and has not mapped shared, at its size as `stat` reads it through that descriptor or the pod's `Shmem` reading at the decision, whichever is less (`heldMemfdBytes`, `proc.go`):
@@ -5598,8 +5598,9 @@ it never gives a rise up on the band's sizes alone.
 The guard acts only when the processes it may end hold at least `floor_percent` of the limit between them (10 by default): below that, the memory is mostly in processes it may not end, and ending one of the rest frees too little to matter.
 It then holds the first process in its order through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
 Nor is a process that exited by itself after the scan, whether its parent has reaped it yet or not: its pidfd reads it as exited, and the guard writes no `ended` line and sends no report for it, since an exited process that is not reaped keeps its start time, and a kill of it answers no error.
-A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart, and is logged once.
-When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now an exited zombie) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
+A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart (unread), and is logged once; a `stopped for this rise` line names it ("The lines", below).
+When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now a zombie or dead process with no thread left) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
+An `exe` or `ns/pid` that answers `ENOENT` is read the same way, and the process counts unread unless it has ended, since on Linux, by the kernel's source, the `exe` of a process whose main thread alone has exited answers `ENOENT` while its other threads hold its memory.
 A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the guard ends the next in the order: at that same reading, by its own sizes, where it chose the process before it listed the processes, and otherwise at the next reading.
 
 **After a kill: the rise rule.**
@@ -5694,7 +5695,7 @@ launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> inte
 launcher: memory guard: off: the daemon's acknowledgement carries no settings
 launcher: memory guard: settings refused: <why>; nothing changes
 launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
-launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n>
+launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n> unread_processes=<none|pid[:bytes][,pid[:bytes]]…>
 launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_executable="<name>"
 launcher: memory guard: off reason=<why>
 launcher: memory guard: unread pid=<pid> reason=<why>
@@ -5709,17 +5710,22 @@ For a process started since the band's last reading it is the `smaps` the readin
 `endable` counts the processes the guard may end at the sizes it ranks them by, the memfds their descriptors hold included;
 `protected` and `unread` count their processes' smaps alone, since the line reads none of their descriptors.
 A positive `unheld` is memory no process holds, such as the pages of a memory filesystem, or that only a descriptor of a protected or unread process holds, such as a memfd it has not mapped, and a negative one is what the sizes counted more than once, such as the pages a parent shares with the child it forked.
+`unheld` also holds the memory of a process the guard counts unread whose `smaps` does not show it ("What it does not do", below).
+`unread_processes` names each process the guard could not read, in pid order and separated by commas: `<pid>:<bytes>` where the process's `stat` reads a state other than `Z` and its `smaps` reads, with the size its `smaps` gives; a bare `<pid>` where its `smaps` or its `stat` does not read, or its `stat` reads `Z`; and `none` where there is none.
+`unread` is the sum of the sizes the field names.
+A process whose `stat` reads `Z` is written as a bare `<pid>` even where its `smaps` reads, since under gVisor the `smaps` of a process whose main thread has exited reads 0 while a live thread holds its memory.
+The field comes after every field the line carried before it, so a reader of those fields reads them as before.
 A stop that repeats
 — the rise given up, the reading below the mark and back above it, the rise given up again —
 writes this line at most once a minute by the guard's clock, and leaves the stops in between out of the log:
 the next line written carries in `left_out` how many stops it left out since the line before it, and `left_out=0` when it left out none.
-The sizes of the protected and unread processes are read only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
+The sizes of the protected and unread processes, and the list of `unread_processes`, are read and built only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
 the process scan and the smaps of the processes the guard may end still run at each reading in the band, at or above the mark and after a kill, since they decide whether it acts and what it ends.
 `hour` comes once an hour from the guard's start, with the highest and lowest readings and counters of that hour, the time of the highest reading, and the largest process the guard saw, protected processes included.
 The guard measures that largest process again, in a goroutine of its own that delays no reading, each time a new high of the hour is at least 1% of the limit above the high it last measured at.
 It takes the reading into the hour's highest and lowest, reads the counter every 5 seconds and starts that measure only once it has decided on the reading, so none of them comes between a reading at the mark and its kill.
 `off reason=` turns the guard off while the launcher runs, for one of the reasons in "What it reads" above, and a launcher that is not its container's first process writes it as `off reason=the launcher is pid <n>, not the container's first process, …`.
-`unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on.
+`unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on, which counts unread from then on; the guard ends no such process, and each is in the `unread_processes` of a `stopped for this rise` line written while it lives.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
 
 The launcher writes three lines of its own about the reports below, each behind the role's `<role>: ` prefix:
@@ -5794,9 +5800,17 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   It reads each such process's `smaps` whole as well, and under gVisor `vm.max_map_count` reads 2147483647, so the kernel's mapping limit does not bound that read either.
   What it does bound is a process's arguments: it reads at most their first 4 KiB, more than the rules of "What it protects, and why" read of them, and prints none of them.
 
-- It does not see the memory of a process whose main thread alone has exited.
-  Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
-  On Linux, though, its `exe` and its `smaps`, read through the exited main thread, answer nothing, so the guard counts it as ended or as unread and never ends it.
+- It does not end a process it cannot read, and under gVisor three kinds of process read so.
+  A process counts unread where its `stat`, `exe`, `ns/pid` or `smaps` does not read, or where a kill of it failed ("What it ends", above); the guard never ends one, since it cannot tell what the process is or rank it, and a `stopped for this rise` line names it in `unread_processes`.
+  INFRA-3531's implementer measured the three kinds under gVisor on 2026-11-17, in a Job at `8f4ff73f` whose PID 1 ran as uid 1000 with the launcher's two nested role namespaces (dispatch://INFRA-3531/artifact/unread-probe-8f4ff73f-2026-11-17-tar-gz).
+  The first is a process whose main thread has exited while another thread holds its memory.
+  Its `stat` reads `Z` with `Threads: 2` in its `status`, so the guard does not take it for an exited process; its `exe` and `ns/pid` answer `EACCES`, and its `smaps` reads no anonymous memory while it holds 256 MiB.
+  Its live thread's `/proc/<tid>` would read it whole, but nothing the guard can read names that thread: no entry of the main thread's holds the thread's id, `/proc` lists no thread, and the listing of its `task/` answers `ENOENT`, so the guard does not read it.
+  The second is a process that is not dumpable (`PR_SET_DUMPABLE` 0) in the container's own user namespace, outside the role namespaces, such as what a `kubectl exec` shell runs.
+  Its `exe` and `smaps` answer `EACCES`, because the launcher runs unprivileged and holds no `CAP_SYS_PTRACE` there; the same process inside a role's namespaces reads, because the launcher owns them.
+  The third is a process being killed, for a few milliseconds (0.2 to 5.5 ms measured) before its `stat` reads `Z`.
+  The first two hold memory that a `stopped for this rise` line counts in no sum but `unheld`.
+  A survey of the guard's lines in 784 pod logs of the `legion` namespace on 2026-11-17 found 11 `unread` lines in 8 pods, none naming a process the guard had ended, and every stop after them read `unread=0`.
 
 ### The memory guard in the controller's pod
 
@@ -5896,7 +5910,7 @@ Under `enabled: false` the daemon's answer carries no settings, the same answer 
 The launcher's own check of the ranges, the `settings` line, and the readings and hourly lines of a guard that is off are as "The settings" above says.
 
 **The lines.**
-The guard writes the lines of "The lines" above, and a line that names a role names `controller` (`role=controller`, `largest_role=controller`).
+The guard writes the lines of "The lines" above, and a line that names a role names `controller` (`role=controller`, `largest_role=controller`); its `stopped for this rise` line names the processes it could not read in `unread_processes`, as there.
 In this container the launcher's three lines about the reports carry no `<role>: ` prefix.
 
 **How a running controller pod takes it.**
@@ -5917,7 +5931,8 @@ A suspend and resume of the controller's claim (`legion claims suspend`, then `l
   A process that a `kubectl exec` started, and an orphan under PID 1, are the controller's to the guard, so the controller is told of their kill as of its own command's.
 
 - It does not lift any limit of the issue pod's guard ("What it does not do" above).
-  Among them, it never ends memory that Oh My Pi holds in its own process, and it does not stop a fill faster than its margin.
+  Among them, it never ends memory that Oh My Pi holds in its own process, it never ends a process it cannot read, and it does not stop a fill faster than its margin.
+  The controller's pod has no role namespaces, so a process that is not dumpable reads as the second kind of "It does not end a process it cannot read" above wherever it runs in that pod.
   When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
 
 ### The disk dies with its pod
