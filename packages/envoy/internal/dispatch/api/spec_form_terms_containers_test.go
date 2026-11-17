@@ -121,3 +121,45 @@ func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTermsOnTheRoute(t *testing.T)
 			want: []string{`heading "Terms:" terms-heading`, "term_line lease term-second-definition"}},
 	})
 }
+
+// A heading opens or closes a part of Terms only among the blocks of its own container, and a
+// footnote starts outside every part (form slice 1's walk), so the rule of a second definition
+// follows the part where its line stands. With lease in the list, a term line of lease is a second
+// definition (Kind definition) where its part is Terms, and a term line that is no definition
+// (Kind term_line) elsewhere: either way the request is refused, and each row names which. Each
+// row goes through the approval request route, and only the findings that name lease are compared.
+func TestASecondDefinitionFollowsThePartOfItsContainer(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	listed := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
+	second := "- " + termLine("lease", otherLease)
+	const definition, line = "definition lease term-second-definition", "term_line lease term-second-definition"
+	for _, row := range []struct{ name, spec, want string }{
+		{"a second definition in a block quote under Terms", "## Terms\n\n> " + second + "\n", definition},
+		{"a second definition in a callout under Terms", "## Terms\n\n:::callout{kind=\"note\"}\n" + second + "\n:::\n", definition},
+		{"a heading Terms inside a block quote, the line inside it", "> ## Terms\n>\n> " + second + "\n", definition},
+		{"a heading Terms inside a block quote, the line after it", "> ## Terms\n\n" + second + "\n", line},
+		{"a heading Terms inside a callout, the line after it", ":::callout{kind=\"note\"}\n## Terms\n:::\n\n" + second + "\n", line},
+		{"a heading inside a block quote under Terms closes no outer part", "## Terms\n\n> ## Example\n>\n> A note.\n\n" + second + "\n", definition},
+		{"a definition in a footnote under Terms", ":::requirement{#keep}\nDispatch keeps each comment.[^1]\n:::\n\n## Terms\n\n- " +
+			termLine("sirocco", "The wind of one desert.") + "\n\n[^1]: " + second + "\n", line},
+		{"a definition in a footnote under another heading", ":::requirement{#keep}\nDispatch keeps each comment.[^1]\n:::\n\n## Notes\n\n[^1]: " + second + "\n", line},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			issue := createFormIssue(t, tree.handler, tree.root, row.name, "# Spec\n\n"+row.spec)
+			response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
+			if response.Code != http.StatusConflict {
+				t.Fatalf("request: status=%d body=%s, want 409 SPEC_FORM naming %q", response.Code, response.Body.String(), row.want)
+			}
+			var leases []string
+			for _, finding := range decodeBody[specFormError](t, response).Findings {
+				if specform.TermKey(finding.Node) == "lease" {
+					leases = append(leases, string(finding.Kind)+" "+finding.Node+" "+string(finding.Rule))
+				}
+			}
+			if len(leases) != 1 || leases[0] != row.want {
+				t.Fatalf("the findings of lease = %q, want only %q: %s", leases, row.want, response.Body.String())
+			}
+		})
+	}
+}
