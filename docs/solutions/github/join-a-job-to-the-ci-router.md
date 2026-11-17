@@ -394,7 +394,9 @@ the fills live in workflows that run there.
   job.
 - The release workflows' Go builds (release.yaml's `legion_build`, release-envoy-infra.yaml's
   `build`) restore `go-daemon` and `go-envoy-infra` and save nothing, so they keep the prefix as
-  `restore-keys` on main too: an entry they never save cannot grow.
+  `restore-keys` on main too: an entry they never save cannot grow. `check-ci-filters.sh` holds
+  their keys and paths to ci-caches.yaml's save as it holds ci.yaml's, and so it does any other
+  workflow's restore of a family ci-caches.yaml fills.
 - `.github/actions/setup-bun` reads and writes its cache only on main; use it as it is.
 
 ## The merge queue runs the router too

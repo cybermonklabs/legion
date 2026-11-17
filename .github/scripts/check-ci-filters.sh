@@ -166,9 +166,11 @@
 #  11. a cache family .github/workflows/ci-caches.yaml saves whose `key:` or `path:` is not
 #      exactly that of the matching actions/cache/restore of ci.yaml or of a workflow ci.yaml
 #      calls - dispatch-browser.yaml holds the browser and apt archive restores of the
-#      dispatch-browser job - (the keys compared as text,
+#      dispatch-browser job - or of any other workflow of .github/workflows that restores it
+#      (the release builds, the nightly browser re-record, ci-caches.yaml's own lookups), since
+#      a drift there misses as silently (the keys compared as text,
 #      trailing whitespace aside, the paths as ordered lists of stripped lines), naming the file
-#      the restore is in, or that none of those files
+#      the restore is in, or that none of ci.yaml's files
 #      restores, and an actions/cache/restore of ci-caches.yaml that is not
 #      `lookup-only: true` or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml
 #      restores, and a key or a path that drifts apart makes every restore miss silently: nothing

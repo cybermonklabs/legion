@@ -254,11 +254,20 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 
     The restores are collected from every document of the set, ci.yaml and each workflow its
     jobs call, since a job that gives its steps to a called file takes its restore there with
-    them and the entry it reads is the same one; each refusal names the file the restore is in."""
+    them and the entry it reads is the same one; each refusal names the file the restore is in.
+
+    The key and the paths are held for every other workflow of the directory too: a release
+    build (release.yaml's go-daemon, release-envoy-infra.yaml's go-envoy-infra), the nightly
+    browser re-record (go-envoy) and this workflow's own lookups restore the entries it fills,
+    and a restore there that drifts from the save misses as silently as one of ci.yaml's. Only
+    the existence check above stays ci.yaml's: a fill is for ci.yaml's run, so a family only
+    another workflow restores is still a fill ci.yaml does not read."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
     caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
     restores = restores_of(documents)
+    elsewhere = restores_of({path: document for path, document in directory_workflows().items()
+                             if path not in documents})
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
         if family not in restores:
@@ -268,7 +277,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                                                   f"family nothing restores is a fill nobody reads: restore it there, "
                                                   f"or drop the save"))
             continue
-        for restore_where, restored in restores[family]:
+        for restore_where, restored in restores[family] + elsewhere.get(family, []):
             restored_key = str(restored.get("key", "")).rstrip()
             restored_paths = path_lines(restored.get("path", ""))
             if key != restored_key:

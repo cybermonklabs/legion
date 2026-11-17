@@ -17,7 +17,8 @@
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
 # cache family must carry
-# the key and the paths ci.yaml's restore of that family names, its own restores being lookups,
+# the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
+# its own restores being lookups,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
@@ -1908,6 +1909,65 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
+
+# release_restore <root> <key>: a workflow ci.yaml does not call - a release build, as
+# release.yaml and release-envoy-infra.yaml are here - restoring the go-app entry ci-caches.yaml
+# fills, under <key>. Its restore misses as silently as one of ci.yaml's when its key drifts, so
+# the save is held to it too; only the existence check stays ci.yaml's.
+release_restore() {
+  cat > "$1/.github/workflows/release.yaml" <<YAML
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: $2
+          restore-keys: go-app-\${{ runner.os }}-
+YAML
+}
+
+echo "case: a release workflow restoring a filled family under the key ci-caches.yaml saves"
+root=$(fixture cache-release-same)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a release workflow's restore key that drifted from the key ci-caches.yaml saves"
+root=$(fixture cache-release-drift)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}-v2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the release workflow's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-app under key .*, but job build of .github/workflows/release.yaml restores it under .*-v2')"
+
+echo "case: a family only a release workflow restores"
+root=$(fixture cache-release-only)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}'
+replace "$root/.github/workflows/ci.yaml" 'key: go-app-${{ runner.os }}' 'key: go-other-${{ runner.os }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "still names the family ci.yaml restores nowhere" \
+  "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
+
+echo "case: a lookup of ci-caches.yaml whose key drifted from the key its own save writes"
+root=$(fixture cache-lookup-drift)
+cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" $'          key: go-app-${{ runner.os }}\n          lookup-only: true' $'          key: go-app-${{ runner.os }}-v2\n          lookup-only: true'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the lookup's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-app under key .*, but job fill of .github/workflows/ci-caches.yaml restores it under .*-v2')"
 
 echo "case: a lookup of ci-caches.yaml that downloads the entry"
 root=$(fixture cache-lookup-only)
