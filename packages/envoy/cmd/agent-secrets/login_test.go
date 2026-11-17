@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,6 +48,14 @@ type loginBroker struct {
 	enrollments int
 	live        string
 	settings    map[string]any
+	// refusal, once set (refuseTrades), answers every trade.
+	refusal *loginRefusal
+}
+
+// loginRefusal is the answer refuseTrades makes the token endpoint give.
+type loginRefusal struct {
+	status int
+	body   map[string]any
 }
 
 func newLoginBroker(t *testing.T) *loginBroker {
@@ -62,7 +69,14 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		b.mu.Lock()
 		b.sessions = append(b.sessions, r.PostForm.Get("session"))
 		b.forms = append(b.forms, r.PostForm)
+		refusal := b.refusal
 		b.mu.Unlock()
+		if refusal != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(refusal.status)
+			_ = json.NewEncoder(w).Encode(refusal.body)
+			return
+		}
 		writeLoginJSON(w, map[string]any{
 			"access_token": "access-token", "token_type": "DPoP", "expires_in": 3600,
 			"credential_id": "credential-1", "credential_expires_at": "2099-01-01T00:00:00Z",
@@ -109,6 +123,13 @@ func (b *loginBroker) lapse() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.live = ""
+}
+
+// refuseTrades answers every later trade with status and body.
+func (b *loginBroker) refuseTrades(status int, body map[string]any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refusal = &loginRefusal{status: status, body: body}
 }
 
 // liveEnrollment is the enrollment the broker holds a lease for.
@@ -317,20 +338,60 @@ func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
 	}
 }
 
-// TestAHeldSignInsTradeIsAnsweredInTheBrokersWords: a trade of a kept sign-in that the broker
-// refuses membership_held fails in the broker's own words, which say that the person's next
-// Dispatch sign-in, or the next refresh that confirms them, ends it, and not with "run: agent-secrets
-// login": a new sign-in on the box would make a second box key and change nothing. A refusal no
-// retry cures still tells the person to sign in again.
-func TestAHeldSignInsTradeIsAnsweredInTheBrokersWords(t *testing.T) {
-	held := &brokerclient.RefusedError{Status: http.StatusBadRequest, Code: "membership_held",
-		Description: "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"}
-	if got := signInTradeFailure(held); got != error(held) || strings.Contains(got.Error(), brokerclient.SignInCommand) {
-		t.Errorf("the failure of a held sign-in's trade reads %q; want the broker's refusal as it came, naming no %q", got, brokerclient.SignInCommand)
-	}
-	final := &brokerclient.RefusedError{Status: http.StatusBadRequest, Code: "invalid_grant", Description: "the sign-in was revoked"}
-	if got := signInTradeFailure(final); !errors.Is(got, final) || !strings.HasSuffix(got.Error(), "; run: "+brokerclient.SignInCommand) {
-		t.Errorf("the failure of a revoked sign-in's trade reads %q; want the refusal and then %q", got, "run: "+brokerclient.SignInCommand)
+// TestASignInsFailedTradeNamesOnlyTheCureOfItsClass: a kept sign-in whose session lapsed trades
+// again on the next call (registerSignInSession), and a trade the broker refuses tells the person
+// only what cures that refusal. A refusal no retry cures says to run `agent-secrets login`, once.
+// A person Dispatch holds gets the broker's own words, which say how the hold ends, and no login:
+// a new sign-in on the box makes a second box key and changes nothing. A broker that answers 503
+// gets no login either, since the next trade may be served.
+func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
+	const held = "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   map[string]any
+		login  bool // whether the error ends by telling the person to run agent-secrets login
+	}{
+		{"a sign-in the broker refuses for good", http.StatusBadRequest, map[string]any{"error": "invalid_grant", "error_description": "the sign-in was revoked"}, true},
+		{"a person Dispatch holds", http.StatusBadRequest, map[string]any{"error": "membership_held", "error_description": held}, false},
+		{"a broker that answers 503", http.StatusServiceUnavailable, map[string]any{"error": "unavailable"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const person = "ada@example.com"
+			broker := newLoginBroker(t)
+			issuer := loginIssuer(t, person)
+			keyDir := t.TempDir()
+			t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
+			t.Setenv(brokerclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
+			t.Setenv(brokerclient.BrokerURLVar, broker.server.URL)
+			t.Setenv(brokerclient.SessionVar, "")
+			forceMetadataMachine(t)
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "absent.sock"))
+			if err := login(context.Background(), io.Discard, &approvingWriter{t: t, issuer: issuer}); err != nil {
+				t.Fatalf("login: %v", err)
+			}
+			broker.lapse()
+			broker.refuseTrades(tc.status, tc.body)
+
+			_, signer, err := selectSigner(keyDir)
+			if err == nil {
+				_, _, err = newClient(broker.server.URL).Self(context.Background(), signer)
+			}
+			if err == nil {
+				t.Fatal("a call whose trade the broker refused succeeded")
+			}
+			got := err.Error()
+			told := strings.Count(got, "run: "+brokerclient.SignInCommand)
+			switch {
+			case tc.login && (told != 1 || !strings.HasSuffix(got, "; run: "+brokerclient.SignInCommand)):
+				t.Fatalf("the error reads %q; want it to end telling the person once to run %s", got, brokerclient.SignInCommand)
+			case !tc.login && strings.Contains(got, "run: "):
+				t.Fatalf("the error reads %q; want no login named, which would not cure it", got)
+			}
+			if tc.body["error_description"] != nil && !strings.Contains(got, tc.body["error_description"].(string)) {
+				t.Errorf("the error reads %q; want the broker's own words %q", got, tc.body["error_description"])
+			}
+		})
 	}
 }
 

@@ -1,5 +1,8 @@
 kind: Fixed
-body: '`agent-secrets-helper` signs a revoke again with the machine''s own credential only when the broker answers that the enrolment is not the person''s credential''s (`OPERATOR_MISMATCH`, `NOT_ENROLLING_CREDENTIAL`), so another refusal, such as `MEMBERSHIP_HELD`, is no longer hidden; in identity mode its drop line says the trade loop brings a credential back, rather than telling anyone to run `agent-secrets machine login`; and `agent-secrets` no longer tells a person to run `agent-secrets login` when the broker refused their sign-in''s trade with a refusal a later trade may cure.'
+body: |-
+  What `agent-secrets` and `agent-secrets-helper` tell a person now names only a cure for the failure in front of them, from one rule: `run: agent-secrets login` for a sign-in refused for good or missing, `run: agent-secrets machine login, and have a human approve it` for a helper in machine-login mode with no live credential, and, for a helper in identity mode, that its trade loop is trading for a new credential. A person Dispatch holds, a broker that did not answer, and any other failure get no login hint. The CLI prints the helper's own no-credential answer, and `agent-secrets machine login-status` reads the helper's mode from it.
+  A broker refusal names the identity it refused, for example `the secrets broker refused ada@example.com's sign-in on this machine`, rather than `this machine's identity`.
+  `agent-secrets-helper` signs a revoke again with the machine's own credential only when the broker answers that the enrolment is not the person's credential's (`OPERATOR_MISMATCH`, `NOT_ENROLLING_CREDENTIAL`), so another refusal, such as `MEMBERSHIP_HELD`, is no longer hidden.
 time: 2026-11-17T17:55:39.597655452Z
 custom:
     Issue: pr4330

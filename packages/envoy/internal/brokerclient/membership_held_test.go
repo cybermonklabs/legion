@@ -13,8 +13,11 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
 // heldDescription is the broker's description of its membership_held refusal, with the person's
@@ -47,7 +50,7 @@ func TestMembershipHeldIsNotPermanent(t *testing.T) {
 			row.Name, row.Answer.Status, row.Expect.Outcome, row.Expect.Permanent)
 	}
 	description, _ := row.Answer.Body["error_description"].(string)
-	if got := newRefusedError(row.Answer.Status, "membership_held", description).Permanent(); got != row.Expect.Permanent {
+	if got := newRefusedError("ada@example.com's sign-in on this machine", row.Answer.Status, "membership_held", description).Permanent(); got != row.Expect.Permanent {
 		t.Errorf("the client reads the corpus row %q as permanent=%t; the row says %t", row.Name, got, row.Expect.Permanent)
 	}
 }
@@ -74,6 +77,9 @@ func TestMembershipHeldKeepsTheSignInAuthority(t *testing.T) {
 		if authority != nil || !errors.As(err, &refused) || refused.Code != "membership_held" {
 			t.Fatalf("enrolment %d while %s is held answered %+v, %v; want no authority and the broker's membership_held refusal, so the session neither enrols under this machine nor loses the sign-in", i, person, authority, err)
 		}
+		if want := "the secrets broker refused " + person + "'s sign-in on this machine: HTTP 400 membership_held"; !strings.Contains(err.Error(), want) {
+			t.Fatalf("enrolment %d while %s is held answered %q; want it to name the identity refused, %q", i, person, err, want)
+		}
 		if n := len(rig.broker.Requests()); n != i+1 {
 			t.Fatalf("enrolment %d while %s is held: %d trades; want %d, each enrolment trading again rather than remembering the sign-in as refused", i, person, n, i+1)
 		}
@@ -89,5 +95,36 @@ func TestMembershipHeldKeepsTheSignInAuthority(t *testing.T) {
 	}
 	if n := len(rig.broker.Requests()); n != 3 {
 		t.Fatalf("%d trades; want three: the two refused while held and the one after the release", n)
+	}
+}
+
+// TestARefusalNamesTheIdentityItRefused: a refusal names the identity the broker refused as its
+// Source describes it, through the client's real trade: a person's sign-in names that person, and
+// a pod's projected token names its file. Neither reads "this machine's identity", which a person
+// whose own sign-in was refused would take for a fault of the machine.
+func TestARefusalNamesTheIdentityItRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source Source
+	}{
+		{"a person's sign-in", &scriptedSource{token: "person.google.identity.token", tokenType: oauthwire.SubjectTokenTypeGoogle,
+			describe: (&PersonIdentity{Person: "ada@example.com"}).Describe()}},
+		{"a pod's projected token", &scriptedSource{token: "projected.service.account.token", tokenType: oauthwire.SubjectTokenTypeKubernetes,
+			describe: NewProjectedToken("/var/run/secrets/tokens/broker").Describe()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := newStubBroker(t, func(int, url.Values) (int, map[string]any) {
+				return 400, map[string]any{"error": "invalid_grant", "error_description": "no entry lists this identity"}
+			})
+			client, err := New(Config{BrokerURL: broker.URL(), Key: testKey(t), Subject: tc.source})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Token(context.Background())
+			want := "the secrets broker refused " + tc.source.Describe() + ": HTTP 400 invalid_grant: no entry lists this identity"
+			if err == nil || err.Error() != want {
+				t.Fatalf("the refusal reads %v; want %q", err, want)
+			}
+		})
 	}
 }

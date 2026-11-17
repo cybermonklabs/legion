@@ -94,15 +94,20 @@ type RefusedError struct {
 	Status int
 	// Code and Description are the OAuth error the broker answered.
 	Code, Description string
+	// Identity names the identity the broker refused, as its Source describes it
+	// (Source.Describe): a person's sign-in on this machine, this machine's Google identity, a
+	// pod's projected token. Empty is a refusal of an identity no Source named.
+	Identity string
 	// answer is this same refusal as x/oauth2's own token-endpoint error, which Unwrap says
 	// why it is kept.
 	answer oauth2.RetrieveError
 }
 
-// newRefusedError is the refusal a broker answered with an OAuth error body.
-func newRefusedError(status int, code, description string) *RefusedError {
+// newRefusedError is the refusal a broker answered with an OAuth error body to a trade of
+// identity, the trading Source's own description of it.
+func newRefusedError(identity string, status int, code, description string) *RefusedError {
 	return &RefusedError{
-		Status: status, Code: code, Description: description,
+		Status: status, Code: code, Description: description, Identity: identity,
 		answer: oauth2.RetrieveError{
 			Response:         &http.Response{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status))},
 			ErrorCode:        code,
@@ -111,11 +116,17 @@ func newRefusedError(status int, code, description string) *RefusedError {
 	}
 }
 
+// Error names the identity refused, as the Source that traded it describes itself, so a person
+// whose own sign-in the broker refused reads their sign-in named, and never "this machine".
 func (e *RefusedError) Error() string {
-	if e.Description == "" {
-		return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s", e.Status, e.Code)
+	identity := e.Identity
+	if identity == "" {
+		identity = "the identity traded"
 	}
-	return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s: %s", e.Status, e.Code, e.Description)
+	if e.Description == "" {
+		return fmt.Sprintf("the secrets broker refused %s: HTTP %d %s", identity, e.Status, e.Code)
+	}
+	return fmt.Sprintf("the secrets broker refused %s: HTTP %d %s: %s", identity, e.Status, e.Code, e.Description)
 }
 
 // Unwrap is this refusal as the answered OAuth token-endpoint error it is, which is how every
@@ -514,7 +525,7 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.logf(ctx, "traded this machine's identity for one of the broker's access tokens",
+	c.logf(ctx, "traded an identity for one of the broker's access tokens", "identity", c.subject.Describe(),
 		"session", c.session, "credential", answer.CredentialID, "expires", answer.Expiry.UTC().Format(time.RFC3339))
 	return answer, nil
 }
@@ -565,7 +576,7 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	}
 	if resp.StatusCode/100 != 2 {
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
-			return nil, newRefusedError(resp.StatusCode, answer.Error, answer.ErrorDescription)
+			return nil, newRefusedError(c.subject.Describe(), resp.StatusCode, answer.Error, answer.ErrorDescription)
 		}
 		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", endpoint, resp.StatusCode, answer.Error)
 	}

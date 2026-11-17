@@ -18,7 +18,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -206,11 +205,11 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	switch {
 	case flow == nil:
-		return record, fmt.Errorf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then run: %s",
-			record.Person, brokerclient.SignInClientIDVar, brokerclient.SignInClientSecretFileVar, brokerclient.SignInCommand)
+		return record, brokerclient.WithHint(fmt.Errorf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then sign in again",
+			record.Person, brokerclient.SignInClientIDVar, brokerclient.SignInClientSecretFileVar), brokerclient.FailureSignInRefused)
 	case record.ClientID != "" && record.ClientID != flow.ClientID:
-		return record, fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed; run: %s",
-			record.Person, record.ClientID, brokerclient.SignInCommand)
+		return record, brokerclient.WithHint(fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed",
+			record.Person, record.ClientID), brokerclient.FailureSignInRefused)
 	}
 	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
@@ -232,7 +231,10 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
-		return record, signInTradeFailure(err)
+		// The hint follows the trade's class: a sign-in no retry renews is told to sign in again,
+		// and a person Dispatch holds or a broker that did not answer is told nothing a login
+		// would not cure.
+		return record, brokerclient.WithHint(err, brokerclient.TradeFailure(err))
 	}
 	if token.CredentialID == "" {
 		return record, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)
@@ -241,17 +243,4 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 		return record, err
 	}
 	return record, brokerclient.SignIns(homeGetenv).Write(record)
-}
-
-// signInTradeFailure is the error of a failed trade of a kept sign-in. A refusal a later trade may
-// cure (brokerclient.RefusedError.Permanent false: a person Dispatch holds, a broker that is busy
-// or wants a fresh proof) is answered in the broker's own words, which say what ends it, since a new
-// sign-in would not: a person Dispatch holds is restored by their next Dispatch sign-in, or the
-// next refresh that confirms them. Every other failure tells the person to sign in again.
-func signInTradeFailure(err error) error {
-	var refused *brokerclient.RefusedError
-	if errors.As(err, &refused) && !refused.Permanent() {
-		return err
-	}
-	return fmt.Errorf("%w; run: %s", err, brokerclient.SignInCommand)
 }

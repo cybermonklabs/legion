@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
 // cmdMachineLogin implements "machine login". It asks agent-secrets-helper to start a machine
@@ -134,7 +135,7 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 		case "expired":
 			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", resp.Code, held)
 		}
-		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now()))
+		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now(), resp.NoCredentialFailure()))
 		return 0
 	}
 	fmt.Fprintln(stdout, state)
@@ -142,15 +143,16 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 	if state == "pending" {
 		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, resp.Code)
 	} else {
-		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s; run: agent-secrets machine login\n", reason)
+		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s; %s\n", reason, brokerclient.Hint(resp.NoCredentialFailure()))
 	}
 	return 1
 }
 
 // credentialExpiry is login-status's line about when the held launcher credential lapses: the
 // machine login renews itself while the helper's refresh reaches the broker, so the time is when
-// it lapses only if no refresh does.
-func credentialExpiry(expiresAt string, now time.Time) string {
+// it lapses only if no refresh does. A credential past its expiry is followed by the hint of
+// failure, the class of the helper's mode (helper.Response.NoCredentialFailure).
+func credentialExpiry(expiresAt string, now time.Time, failure brokerclient.Failure) string {
 	if expiresAt == "" {
 		return "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"
 	}
@@ -160,7 +162,7 @@ func credentialExpiry(expiresAt string, now time.Time) string {
 	}
 	left := at.Sub(now)
 	if left <= 0 {
-		return fmt.Sprintf("the launcher credential expired at %s; run: agent-secrets machine login", expiresAt)
+		return fmt.Sprintf("the launcher credential expired at %s; %s", expiresAt, brokerclient.Hint(failure))
 	}
 	return fmt.Sprintf("the machine login renews itself; without a refresh it lapses at %s (in %s)", expiresAt, roughDuration(left))
 }
@@ -280,7 +282,7 @@ func operatorFail(stderr io.Writer, form string, src source, err error) int {
 	case errors.As(err, &refused):
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, refused)
 	case errors.As(err, &broker) && broker.Status == http.StatusUnauthorized && broker.Code == "LAUNCHER_INVALID":
-		fmt.Fprintf(stderr, "agent-secrets %s: %v; this machine's login to %s is expired or revoked (run: agent-secrets machine login)\n", form, broker, src)
+		fmt.Fprintf(stderr, "agent-secrets %s: %v; this machine's login to %s is expired or revoked; %s\n", form, broker, src, brokerclient.Hint(brokerclient.FailureNoMachineLogin))
 	default:
 		fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, refusalText(src, err))
 	}

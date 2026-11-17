@@ -143,9 +143,9 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		// can sign with it, and the renew that confirms it is signed by that same key, so a
 		// login is not what stands between this session and its own enrollment. What the
 		// helper cannot do without one is make a REPLACEMENT if the broker has ended it.
-		fmt.Fprintln(stderr, "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway with the enrollment this session had, which the helper cannot replace if the broker has ended it until it is (run: agent-secrets machine login)")
+		fmt.Fprintf(stderr, "agent-secrets register: launching anyway with the enrollment this session had, which the helper cannot replace if the broker has ended it until it holds a credential again: %v\n", noCredential(resp))
 	case *wait > 0 && resp.State != "enrolled" && resp.Code == helper.CodeNoCredential:
-		fmt.Fprintln(stderr, "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway, and until it is (run: agent-secrets machine login) this session's agent-secrets calls fail")
+		fmt.Fprintf(stderr, "agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: %v\n", noCredential(resp))
 	case *wait > 0 && resp.State != "enrolled":
 		fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet (%s); launching anyway, and this session's secrets calls fail until the helper enrolls it\n", resp.Error)
 	}

@@ -185,13 +185,24 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		if status := b.LoginStatus(); status.Dropped != dropExpired {
 			t.Fatalf("login-status once the credential lapsed: %+v; want it dropped at its expiry (%q)", status, dropExpired)
 		}
-		// The drop line says what brings a credential back on this machine: the trade loop, not a
-		// machine login a human approves.
-		lapsed := waitForRecord(t, &out, dropExpired+"; cleared: no session can enroll until the trade loop trades this machine's identity for a new credential")
+		// What the helper says while it holds none names the cure of identity mode, its own trade
+		// loop, and no machine login a human approves: the drop line, and the answer to a session
+		// that asks to enrol during the lapse.
+		const tradeLoop = "the helper's trade loop is trading this machine's identity for a new credential"
+		lapsed := waitForRecord(t, &out, dropExpired+"; cleared: no session can enroll; "+tradeLoop)
 		if lapsed["level"] != "ERROR" || lapsed["credential_id"] != first.id {
 			t.Fatalf("the drop line in identity mode: %v; want an ERROR naming %s", lapsed, first.id)
 		}
-		if strings.Contains(out.String(), "agent-secrets machine login") {
+		_, _, lapseErr := b.EnrollSessionKey(ctx, "box-during-the-lapse", sessionThumbprint(t), nil)
+		if !errors.Is(lapseErr, errNoCredential) || lapseErr.Error() != "no machine credential; "+tradeLoop {
+			t.Fatalf("an enrolment during the lapse answered %v; want %q", lapseErr, "no machine credential; "+tradeLoop)
+		}
+		// login-status tells the CLI the helper's mode, so `machine login-status` names the same
+		// cure the helper does.
+		if status := (&Server{Broker: b}).loginStatus(); !status.MachineIdentity || brokerclient.Hint(status.NoCredentialFailure()) != tradeLoop {
+			t.Fatalf("login-status during the lapse: %+v; want machine_identity set, so its hint is %q", status, tradeLoop)
+		}
+		if strings.Contains(out.String(), "machine login") {
 			t.Fatalf("the helper in identity mode told someone to run a machine login, which is not how this machine gets a credential:\n%s", out.String())
 		}
 

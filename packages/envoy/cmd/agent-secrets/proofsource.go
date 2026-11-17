@@ -97,9 +97,25 @@ type helperSigner struct {
 }
 
 // errNoCredential is what a machine session gets from a helper that holds no launcher credential
-// (NO_CREDENTIAL): never logged in, or its login lapsed or was refused, until the operator logs the machine in, the helper enrolls no one, so the session has no broker identity. identity prints it, and
-// reportError prints it the same way for every command that meets it.
-var errNoCredential = errors.New("this machine is not logged in to the secrets broker; not an agent session (run: agent-secrets machine login)")
+// (NO_CREDENTIAL): until the helper holds one it enrolls no one, so the session has no broker
+// identity. What cures it is the helper's to say (noCredential), since only the helper knows its
+// mode: in machine-login mode a machine login a human approves, in identity mode its own trade
+// loop. identity prints it, and reportError prints it the same way for every command that meets it.
+var errNoCredential = errors.New("this machine's agent-secrets-helper holds no credential at the secrets broker; not an agent session")
+
+// noCredentialError is errNoCredential with the helper's own NO_CREDENTIAL answer, which ends with
+// the hint of the helper's mode (brokerclient.Hint). errors.Is finds errNoCredential in it, and
+// reportError prints it whole however deep a command wrapped it.
+type noCredentialError struct{ helper string }
+
+func (e *noCredentialError) Error() string {
+	return errNoCredential.Error() + " (the helper: " + e.helper + ")"
+}
+
+func (e *noCredentialError) Is(target error) bool { return target == errNoCredential }
+
+// noCredential is the error for a helper's NO_CREDENTIAL answer resp.
+func noCredential(resp helper.Response) error { return &noCredentialError{helper: resp.Error} }
 
 // helperAnswer is what the helper said to the identity probe: sock is the socket asked, there
 // whether its file exists, err a socket that is there and did not answer within
@@ -131,7 +147,7 @@ func probeHelper() helperAnswer {
 // helperRefusal is the error for a helper answer that is not OK.
 func helperRefusal(resp helper.Response) error {
 	if resp.Code == helper.CodeNoCredential {
-		return errNoCredential
+		return noCredential(resp)
 	}
 	return fmt.Errorf("%s: %s", resp.Code, resp.Error)
 }
@@ -213,7 +229,7 @@ func (l *launcherSigner) Sign(method, url string) (string, error) {
 		l.credentialID = resp.CredentialID
 		return resp.Proof, nil
 	case resp.Code == helper.CodeNoCredential:
-		return "", &launcherRefusal{"this machine is not logged in to the secrets broker; run: agent-secrets machine login"}
+		return "", &launcherRefusal{noCredential(resp).Error()}
 	case resp.Code == helper.CodeBadRequest && resp.Error == "unknown op sign-launcher":
 		return "", &launcherRefusal{"this machine's agent-secrets-helper is older than this client and cannot sign for machine and grant commands; restart it on this release"}
 	}

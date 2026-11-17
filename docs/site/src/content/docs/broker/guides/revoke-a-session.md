@@ -290,17 +290,18 @@ agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVAL
 Nothing tells the machine's helper; it finds out the next time it calls the broker. A session's
 renewal, within a third of `BROKER_LEASE_SECONDS`, is refused; revoking that session's enrollment is
 refused too, and the helper drops the credential and logs at ERROR `the broker refused the launcher
-credential (…); cleared: no session can enroll until a human approves a new machine login`. A
-helper with no session running finds out at its next refresh, within a day, or when it restarts:
-the broker refuses the refresh, and the helper drops the login, deletes its machine file and logs
-at ERROR `the broker refused the machine login's refresh: it was revoked, lapsed, or its refresh
-token was reused; cleared: no session can enroll until a human approves a new machine login`. From
-then `agent-secrets machine login-status` exits 1 and prints the cause, here a refused session call:
+credential (…); cleared: no session can enroll; run: agent-secrets machine login, and have a human
+approve it`. A helper with no session running finds out at its next refresh, within a day, or when
+it restarts: the broker refuses the refresh, and the helper drops the login, deletes its machine
+file and logs at ERROR `the broker refused the machine login's refresh: it was revoked, lapsed, or
+its refresh token was reused; cleared: no session can enroll; run: agent-secrets machine login, and
+have a human approve it`. From then `agent-secrets machine login-status` exits 1 and prints the
+cause, here a refused session call:
 
 ```console
 $ agent-secrets machine login-status
 expired
-agent-secrets machine login-status: the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login
+agent-secrets machine login-status: the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it
 ```
 
 The Legion daemon finds out when it next enrolls or ends a pod: the broker refuses its credential
