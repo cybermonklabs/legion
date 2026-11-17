@@ -2,7 +2,6 @@ package specform
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -24,11 +23,11 @@ const closingMarks = "\"'\u201d\u2019)]"
 const openingMarks = "\"'\u201c\u2018(["
 
 // initialism is a word of single letters, each with its stop, such as "U.S." or "e.g.".
-var initialism = regexp.MustCompile(`^(?:\pL\.){2,}$`)
+var initialism = wordRegexp(`^(?:\pL\.){2,}$`)
 
 // addressStart is the start of an address that the words show: a scheme and "//", or "www.", as
 // in "https://example.com/Web.Config" or "www.example.com/Web.Config".
-var addressStart = regexp.MustCompile(`(?i)^(?:[a-z][a-z0-9+.-]*://|www\.)`)
+var addressStart = wordRegexp(`(?i)^(?:[a-z][a-z0-9+.-]*://|www\.)`)
 
 // sentencesOf is each sentence of line, as its words, that a rule of the form counts. It is the
 // one place that says where a sentence ends: after a word that ends in ".", "!" or "?" and then
@@ -102,8 +101,10 @@ func joinedStop(word string) bool {
 	if isInitialism(word) {
 		return false
 	}
+	afterLetter := false
 	for index, letter := range word {
-		if !isStop(letter) || !strings.ContainsFunc(word[:index], isLetterOrDigit) {
+		if !isStop(letter) || !afterLetter {
+			afterLetter = afterLetter || isLetterOrDigit(letter)
 			continue
 		}
 		if next, _ := utf8.DecodeRuneInString(strings.TrimLeft(word[index+1:], closingMarks)); unicode.IsUpper(next) {

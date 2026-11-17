@@ -764,10 +764,13 @@ func listedWhere(document string, version int, issue string) string {
 
 // approvedSpecTexts reads the latest approved version of each covered document under root: the
 // root's terms.md, and the spec and the Verification document of each issue whose nearest named
-// root is root (refs.IssueDescendants, less each named root below root and its own subtree). Only
-// a person approves a covered document: a plan review approves a plan document alone
-// (createArtifactPlanReview), whose role its slug gives (documentRole). So an agent's version adds
-// nothing to the list until the person approves it.
+// root is root (refs.IssueDescendants, less each named root below root and its own subtree). One
+// statement reads every such document with the markdown of that version, in the order of
+// docs.LatestApprovedReview, so the statements of a judgment do not grow with the documents under
+// its root; a document that no person approved has no row. Only a person approves a covered
+// document: a plan review approves a plan document alone (createArtifactPlanReview), whose role
+// its slug gives (documentRole). So an agent's version adds nothing to the list until the person
+// approves it.
 //
 // The list holds one definition of each term (R50), by specform.TermKey. A term that one document
 // alone defines, or that the root's terms.md defines, has that definition. Of the definitions of a
@@ -803,39 +806,58 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) 
 		issues = slices.DeleteFunc(issues, func(issue string) bool { return issue == inner || slices.Contains(below, issue) })
 	}
 	rows, err := q.Query(ctx, `
-		select `+artifactColumns+` from artifacts
-		where kind = 'doc' and (
-			(issue_key = any($1::text[]) and (is_primary or `+documentRolePredicate("", model.ArtifactRoleVerification)+`))
-			or (issue_key = $2 and slug = $3)
+		select `+artifactColumns+`, approved.version, approved.number, approved.markdown
+		from artifacts covered
+		cross join lateral (
+			select latest.version, stored.number, coalesce(stored.markdown, '') as markdown
+			from (
+				select artifact_reviews.version from artifact_reviews
+				where artifact_reviews.artifact_id = covered.id and artifact_reviews.state = 'approved'
+				order by `+docs.ReviewOrder+`
+				limit 1
+			) latest
+			left join artifact_versions stored on stored.artifact_id = covered.id and stored.number = latest.version
+		) approved
+		where covered.kind = 'doc' and (
+			(covered.issue_key = any($1::text[]) and (covered.is_primary or `+documentRolePredicate("covered", model.ArtifactRoleVerification)+`))
+			or (covered.issue_key = $2 and covered.slug = $3)
 		)
-		order by issue_key, id
 	`, issues, root, termsSlug)
 	if err != nil {
-		return approvedSpec{}, fmt.Errorf("list the covered documents under %s: %w", root, err)
+		return approvedSpec{}, fmt.Errorf("read the approved documents under %s: %w", root, err)
 	}
-	covered, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.Artifact, error) { return scanArtifact(row) })
+	type approvedVersion struct {
+		artifact model.Artifact
+		version  int
+		stored   *int
+		markdown string
+	}
+	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (approvedVersion, error) {
+		var each approvedVersion
+		var err error
+		each.artifact, err = scanArtifact(rowThen{Row: row, then: []any{&each.version, &each.stored, &each.markdown}})
+		return each, err
+	})
 	if err != nil {
-		return approvedSpec{}, fmt.Errorf("list the covered documents under %s: %w", root, err)
+		return approvedSpec{}, fmt.Errorf("read the approved documents under %s: %w", root, err)
 	}
+	// The documents come in the order of their issues, then of their ids. The statement orders no
+	// rows of its own, since it reads the reviews: an order by of another id in it is one that the
+	// review-order guard refuses (TestEveryReviewReadOrdersByReviewOrder).
+	slices.SortFunc(versions, func(a, b approvedVersion) int {
+		return cmp.Or(strings.Compare(deref(a.artifact.IssueKey), deref(b.artifact.IssueKey)), strings.Compare(a.artifact.ID, b.artifact.ID))
+	})
 	var (
 		approved  = approvedSpec{unread: []specFormUnread{}} // an answer with no unread version answers [], not null
 		documents []approvedSpecDocument
 	)
-	for _, artifact := range covered {
-		review, err := docs.LatestApprovedReview(ctx, q, artifact.ID)
-		if err != nil {
-			return approvedSpec{}, err
+	for _, each := range versions {
+		if each.stored == nil {
+			return approvedSpec{}, errorf(http.StatusNotFound, "VERSION_NOT_FOUND", "%s has no version %d", each.artifact.Name, each.version)
 		}
-		if review == nil {
-			continue
-		}
-		markdown, err := specFormMarkdown(ctx, q, artifact, review.Version)
-		if err != nil {
-			return approvedSpec{}, err
-		}
-		extracted, err := specform.ExtractDocument(artifact.Name, review.Version, markdown)
+		extracted, err := specform.ExtractDocument(each.artifact.Name, each.version, each.markdown)
 		if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
-			approved.unread = append(approved.unread, unreadApproved(artifact, review.Version, err, false))
+			approved.unread = append(approved.unread, unreadApproved(each.artifact, each.version, err, false))
 			continue
 		}
 		if err != nil {
@@ -843,10 +865,10 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) 
 		}
 		for _, text := range extracted.Texts {
 			if text.Kind == specform.KindName {
-				approved.names = append(approved.names, approvedName{artifactID: artifact.ID, name: text.Body})
+				approved.names = append(approved.names, approvedName{artifactID: each.artifact.ID, name: text.Body})
 			}
 		}
-		documents = append(documents, approvedSpecDocument{artifact: artifact, version: review.Version, terms: extracted.Terms})
+		documents = append(documents, approvedSpecDocument{artifact: each.artifact, version: each.version, terms: extracted.Terms})
 	}
 	isTermsMd := func(document int) bool {
 		return *documents[document].artifact.IssueKey == root && documents[document].artifact.Slug == termsSlug
@@ -937,6 +959,17 @@ type approvedSpecDocument struct {
 	artifact model.Artifact
 	version  int
 	terms    []specform.Term
+}
+
+// rowThen is Row, whose columns after those that a caller scans go to then, so that scanArtifact
+// reads the artifactColumns of a row that holds more (approvedSpecTexts).
+type rowThen struct {
+	pgx.Row
+	then []any
+}
+
+func (r rowThen) Scan(dest ...any) error {
+	return r.Row.Scan(append(dest, r.then...)...)
 }
 
 // moment is a place in the order of Dispatch's writes: the id of an event (events.id), which
