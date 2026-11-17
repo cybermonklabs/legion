@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -290,4 +291,29 @@ func TestAChunkedKnownSessionRecordWithAMissingChunkIsNoRecordNotAPartialOne(t *
 	if record, ok := fresh.Get("ses_known_damaged"); ok {
 		t.Fatalf("a store that read the bucket afresh answered a record of %d topics for a record missing a chunk", len(record.Topics))
 	}
+}
+
+// A manifest no write of this build makes - here one claiming more chunks than the record has
+// bytes, which a store that allocated by the claim would crash on - is a record the store cannot
+// decode: a store that reads the bucket afresh keeps running and answers no record, and the
+// session's next write replaces it.
+func TestAForgedKnownSessionManifestIsNoRecordAndTheNextWriteReplacesIt(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	forged := `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}`
+	known := openKnownOn(t, conn, time.Now)
+	if _, err := rawKnown(t, conn).Put("ses_known_forged", []byte(forged)); err != nil {
+		t.Fatalf("store the forged manifest: %v", err)
+	}
+	fresh := openKnownOn(t, conn, time.Now)
+	if record, ok := fresh.Get("ses_known_forged"); ok {
+		t.Fatalf("a store that read the bucket afresh answered a record of %d topics for a forged manifest", len(record.Topics))
+	}
+	topics := kvchunktest.Topics("replacing", 10)
+	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: "ses_known_forged", Topics: topics}); err != nil {
+		t.Fatalf("the write over the forged manifest: %v", err)
+	}
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "a store that read the bucket afresh to answer the record that replaced it", func() bool {
+		record, ok := fresh.Get("ses_known_forged")
+		return ok && slices.Equal(record.Topics, topics)
+	})
 }

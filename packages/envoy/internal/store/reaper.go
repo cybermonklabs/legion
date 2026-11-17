@@ -316,23 +316,25 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 // a channel closed once it has returned: a pass in flight when ctx ends finishes first. A pass
 // lists the bucket through watchers whose consumers nats.go creates and deletes, so the listener's
 // shutdown waits for it before it drains NATS (kvwatch.Watcher.End says what a drain does to such
-// a delete). After Reap, each pass collects the chunks no interest record names
-// (collectInterestChunks), within ctx. Each pass logs how many interests it reaped, how many
+// a delete). Each pass then collects the chunks no interest record names (collectInterestChunks),
+// within ctx, whether or not the reap failed, since the collection reads only the cache and the
+// reap's failure says nothing about it. Each pass logs how many interests it reaped, how many
 // chunks it collected and how long it took (elapsed_ms).
 func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) (bool, error), interval, graceWindow time.Duration) <-chan struct{} {
 	return everyInterval(ctx, interval, func() {
 		started := time.Now()
-		count, err := r.Reap(live, graceWindow)
-		if err != nil {
-			r.logger().Error("reaper cycle failed", slog.String("error", err.Error()))
-			return
+		count, reapErr := r.Reap(live, graceWindow)
+		if reapErr != nil {
+			r.logger().Error("reaper cycle failed", slog.String("error", reapErr.Error()))
 		}
 		collected, err := r.collectInterestChunks(ctx)
 		if err != nil {
 			r.logger().Error("reaper could not collect the chunks no interest record names",
 				slog.Int("chunks_collected", collected), slog.String("error", err.Error()))
 		}
-		r.logger().Info("reaper cycle", slog.Int("reaped", count), slog.Int("chunks_collected", collected), slog.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		if reapErr == nil {
+			r.logger().Info("reaper cycle", slog.Int("reaped", count), slog.Int("chunks_collected", collected), slog.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		}
 	})
 }
 

@@ -9,5 +9,9 @@ body: |-
   registration was answered `503` with `Retry-After: 1` at every retry, its role claims were never
   renewed, and once it stopped a send to it was refused and a publish did not count it. A KV write the
   bus refuses for its size, and a registration whose session consumer filter is past the max payload,
-  are now answered `413` naming the size and the bound, with no `Retry-After`. A listener of an
-  earlier build reads a chunked record as one it cannot decode.
+  are now answered `413` naming the size and the bound, with no `Retry-After`. A compare-and-swap that
+  lost to another write on a replicated bucket (code 10164) is now read again instead of answered
+  `503`. A listener of an earlier build reads a chunked record as one it cannot decode. A rollback to
+  an earlier build leaves the chunks and manifests in `envoy_interests` and `envoy_known_sessions`,
+  where that build removes none of them and they hold the interest bucket's marker collection back:
+  delete each `=chunk.` key and each value that starts `chunked ` with `nats kv del` after it.

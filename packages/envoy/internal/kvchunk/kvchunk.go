@@ -107,14 +107,19 @@ type Layout struct {
 // Chunked reports whether the record is stored in chunks.
 func (l Layout) Chunked() bool { return l.Generation != "" }
 
-// Keys is the key of each of the layout's chunks, none for a record stored whole.
+// Keys is the key of each of the layout's chunks, none for a record stored whole. It is called
+// only for a layout this build laid out (Write) or one whose chunks a read joined (Read,
+// Chunks.Join), whose count is the chunks that exist: a manifest's own claim of its count is never
+// trusted to size anything (join, DeleteStored).
 func (l Layout) Keys() []string {
 	keys := make([]string, l.Chunks)
 	for i := range keys {
-		keys[i] = Prefix + l.Generation + "." + strconv.Itoa(i)
+		keys[i] = l.key(i)
 	}
 	return keys
 }
+
+func (l Layout) key(index int) string { return Prefix + l.Generation + "." + strconv.Itoa(index) }
 
 // IsChunkKey reports whether key is a chunk's, which no record's key is.
 func IsChunkKey(key string) bool { return strings.HasPrefix(key, Prefix) }
@@ -141,15 +146,19 @@ func (ReservedKey) Is(target error) bool { return target == bus.ErrRefused }
 
 // layOut lays record out for a bucket whose messages take at most maxPayload bytes: the value for
 // the record's key and the chunks it names. A record that fits one message with room for its
-// headers is that value itself; a larger one is chunks of that size under a new generation, and a
-// manifest naming them.
+// headers is that value itself. A larger one is chunks under a new generation, and a manifest
+// naming them; a chunk is three quarters of that room less HeaderBytes, so the answer of the
+// leader's read of it (Read), which carries the chunk in base64 inside a JSON object, fits under
+// the max payload too, and a server that holds an answer to it - a leafnode connection does - takes
+// it.
 func layOut(record []byte, maxPayload int) ([]byte, Layout, [][]byte, error) {
-	limit := maxPayload - HeaderBytes
+	whole := maxPayload - HeaderBytes
+	limit := whole*3/4 - HeaderBytes
 	if limit <= 0 {
 		return nil, Layout{}, nil, fmt.Errorf("%w: the server's max payload of %d bytes leaves no room for a value beside %d bytes of headers",
 			bus.ErrTooLarge, maxPayload, HeaderBytes)
 	}
-	if len(record) <= limit {
+	if len(record) <= whole {
 		return record, Layout{}, nil, nil
 	}
 	sum := sha256.Sum256(record)
@@ -163,9 +172,17 @@ func layOut(record []byte, maxPayload int) ([]byte, Layout, [][]byte, error) {
 	return append(slices.Clone(manifestPrefix), manifest...), layout, chunks, nil
 }
 
+// generationLength is the length of a generation, the 26 characters of crypto/rand.Text, from the
+// alphabet of RFC 4648 base32 (A to Z and 2 to 7), every one of them a character a KV key and a
+// subject token take.
+const generationLength = 26
+
 // ReadLayout is the layout a value under a record's key names: the zero layout for a record stored
-// whole, and the manifest's for a manifest. A manifest this build cannot decode, or one that names
-// no chunk, is ErrDamaged.
+// whole, and the manifest's for a manifest. A manifest is ErrDamaged unless it is one a write of
+// this build can make: a generation of crypto/rand.Text's length and alphabet, a length of at
+// least one byte, between one chunk and one chunk per byte, and a SHA-256 in lower-case hex. Any
+// writer of the bucket can store a value under a record's key, so nothing a reader does - an
+// allocation, a key it builds - is sized or named by a manifest that fails this.
 func ReadLayout(value []byte) (Layout, error) {
 	manifest, ok := bytes.CutPrefix(value, manifestPrefix)
 	if !ok {
@@ -175,19 +192,45 @@ func ReadLayout(value []byte) (Layout, error) {
 	if err := json.Unmarshal(manifest, &layout); err != nil {
 		return Layout{}, fmt.Errorf("%w: decode its manifest: %w", ErrDamaged, err)
 	}
-	if layout.Generation == "" || layout.Chunks <= 0 {
-		return Layout{}, fmt.Errorf("%w: its manifest names no chunks: %s", ErrDamaged, manifest)
+	if !validGeneration(layout.Generation) || layout.Bytes < 1 || layout.Chunks < 1 || layout.Chunks > layout.Bytes || !lowerHex(layout.SHA256, sha256.Size) {
+		return Layout{}, fmt.Errorf("%w: its manifest is no write's: %.200s", ErrDamaged, manifest)
 	}
 	return layout, nil
 }
 
+func validGeneration(generation string) bool {
+	if len(generation) != generationLength {
+		return false
+	}
+	for _, c := range []byte(generation) {
+		if (c < 'A' || c > 'Z') && (c < '2' || c > '7') {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerHex(text string, size int) bool {
+	if len(text) != 2*size {
+		return false
+	}
+	for _, c := range []byte(text) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // join joins the layout's chunks, each read by chunk, and returns the record when it is the one the
 // manifest names: its length and its SHA-256, ErrDamaged otherwise. An error chunk returns,
-// errMissing among them, is returned as it is.
+// errMissing among them, is returned as it is. It allocates by the bytes the chunks hold, never by
+// the manifest's claim, and builds each chunk's key as it reads it, so a manifest that claims more
+// than its record holds ends at its first missing chunk.
 func (l Layout) join(chunk func(key string) ([]byte, error)) ([]byte, error) {
-	record := make([]byte, 0, l.Bytes)
-	for _, key := range l.Keys() {
-		value, err := chunk(key)
+	var record []byte
+	for index := range l.Chunks {
+		value, err := chunk(l.key(index))
 		if err != nil {
 			return nil, err
 		}
@@ -213,15 +256,19 @@ func (l Layout) join(chunk func(key string) ([]byte, error)) ([]byte, error) {
 // replaced the manifest since, or the record is damaged, and the manifest the leader holds now says
 // which: one at another revision is read in its place, up to readAttempts times (ErrMoved past
 // them), none at all is nats.ErrKeyNotFound, and one at the same revision is ErrDamaged. A
-// record whose chunks do not join into what its manifest names is ErrDamaged too, and carries its
-// layout, so the write that replaces it deletes its chunks. Any other error is a read that did not
-// answer. Each read waits no longer than ctx.
+// record whose chunks do not join into what its manifest names is ErrDamaged too. A damaged
+// record's layout is not returned: the chunks it names were never proved to be its, so the write
+// that replaces it deletes none of them, and the store's collection removes the ones the bucket
+// holds. Any other error is a read that did not answer. Each read waits no longer than ctx.
 func Read(ctx context.Context, kv bus.KeyValue, key string, entry nats.KeyValueEntry) ([]byte, Layout, uint64, error) {
 	for attempt := 1; ; attempt++ {
 		revision := entry.Revision()
 		layout, err := ReadLayout(entry.Value())
-		if err != nil || !layout.Chunked() {
-			return entry.Value(), layout, revision, err
+		if err != nil {
+			return nil, Layout{}, revision, err
+		}
+		if !layout.Chunked() {
+			return entry.Value(), layout, revision, nil
 		}
 		record, err := layout.join(func(chunk string) ([]byte, error) {
 			read, err := kv.GetFromLeader(ctx, chunk)
@@ -233,6 +280,9 @@ func Read(ctx context.Context, kv bus.KeyValue, key string, entry nats.KeyValueE
 			}
 			return read.Value(), nil
 		})
+		if errors.Is(err, ErrDamaged) {
+			return nil, Layout{}, revision, err
+		}
 		if !errors.Is(err, errMissing) {
 			return record, layout, revision, err
 		}
@@ -243,7 +293,7 @@ func Read(ctx context.Context, kv bus.KeyValue, key string, entry nats.KeyValueE
 		case readErr != nil:
 			return nil, Layout{}, 0, fmt.Errorf("read %s again after a chunk was not there: %w", key, readErr)
 		case latest.Revision() == revision:
-			return nil, layout, revision, fmt.Errorf("%w: %w", ErrDamaged, err)
+			return nil, Layout{}, revision, fmt.Errorf("%w: %w", ErrDamaged, err)
 		case attempt == readAttempts:
 			return nil, Layout{}, 0, fmt.Errorf("read %s: %w (%d reads)", key, ErrMoved, attempt)
 		}
@@ -267,13 +317,17 @@ type Written struct {
 // the record it would have replaced as it was.
 //
 // What the write leaves unnamed it deletes once the bucket has answered for it (Delete): the
-// chunks of replaced once head landed, and its own chunks once the bucket refused head
-// (nats.ErrKeyExists, Written.Stored false and no error), once a chunk write after them answered an
-// error, and once the write passed WriteBound before sending head. A call that did not answer
-// deletes nothing, since what it sent can still land, and leaves its chunks to the store's
-// collection, as a crash does. head's other errors are returned as they are. Each call waits no
-// longer than ctx (bus.Bounded), and now is the store's clock, which WriteBound is read on. what
-// names the record in the line a chunk left behind logs (Delete).
+// chunks of replaced once head landed, and its own chunks once the bucket refused head - a
+// compare-and-swap another write beat (nats.ErrKeyExists, Written.Stored false and no error), any
+// other refusal the server answered (a *nats.APIError) or one this client made before sending
+// (bus.ErrRefused), none of which stores anything - once a chunk write after them answered an
+// error, and once the write passed WriteBound before sending head. A call that did not answer, or
+// failed in any other way, deletes nothing, since what it sent can still land, and leaves its
+// chunks to the store's collection, as a crash does. head's
+// other errors are returned as they are. Each call waits no longer than ctx (bus.Bounded). now is
+// the store's clock, and WriteBound is read off its wall time, so a host that slept between the
+// chunks and the head counts the sleep. what names the record in the line a chunk left behind
+// logs (Delete).
 func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, replaced Layout, head func(value []byte) (uint64, error),
 	now func() time.Time, log *slog.Logger, what string) (Written, error) {
 	if IsChunkKey(key) {
@@ -283,7 +337,7 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, repl
 	if err != nil {
 		return Written{}, fmt.Errorf("write the %s %s of %d bytes: %w", what, key, len(record), err)
 	}
-	started := now()
+	started := now().Round(0)
 	keys := layout.Keys()
 	for index, chunk := range chunks {
 		_, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Create(keys[index], chunk) })
@@ -294,7 +348,7 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, repl
 			return Written{}, fmt.Errorf("write chunk %d of %d of the %s %s: %w", index+1, len(chunks), what, key, err)
 		}
 	}
-	if took := now().Sub(started); took > WriteBound {
+	if took := now().Round(0).Sub(started); took > WriteBound {
 		Delete(ctx, kv, keys, log, what, key)
 		return Written{}, fmt.Errorf("write the %s %s: its %d chunks took %s, past the %s a write may take before its manifest",
 			what, key, len(chunks), took, WriteBound)
@@ -306,6 +360,10 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, repl
 	if errors.Is(err, nats.ErrKeyExists) {
 		Delete(ctx, kv, keys, log, what, key)
 		return Written{}, nil
+	}
+	var refused *nats.APIError
+	if errors.As(err, &refused) || errors.Is(err, bus.ErrRefused) {
+		Delete(ctx, kv, keys, log, what, key)
 	}
 	if err != nil {
 		return Written{}, err
@@ -324,6 +382,27 @@ func Delete(ctx context.Context, kv bus.KeyValue, chunks []string, log *slog.Log
 		if !answered || err != nil {
 			log.Warn("chunks of a record are left to the store's collection",
 				slog.String("record", what), slog.String("key", key), slog.String("chunk", chunk), slog.String("error", fmt.Sprint(err)))
+			return
+		}
+	}
+}
+
+// DeleteStored deletes the chunks of layout the bucket holds, for a layout read from a manifest no
+// read joined (the value a delete of the record answered): it deletes them in order, each at the
+// revision it reads (bus.KeyValue.DeleteAtRead), and stops at the first the bucket does not hold,
+// so a manifest's own claim of its chunk count - any writer of the bucket can store one - never
+// makes it send more deletes than there are chunks. A chunk it could not delete is logged at WARN
+// and left to the store's collection, as Delete's is.
+func DeleteStored(ctx context.Context, kv bus.KeyValue, layout Layout, log *slog.Logger, what, key string) {
+	for index := range layout.Chunks {
+		chunk := layout.key(index)
+		deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.DeleteAtRead(chunk) })
+		if !answered || err != nil {
+			log.Warn("chunks of a record are left to the store's collection",
+				slog.String("record", what), slog.String("key", key), slog.String("chunk", chunk), slog.String("error", fmt.Sprint(err)))
+			return
+		}
+		if deleted == nil {
 			return
 		}
 	}

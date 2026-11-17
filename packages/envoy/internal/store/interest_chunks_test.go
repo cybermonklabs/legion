@@ -106,6 +106,9 @@ func TestARecordPastTheMaxPayloadIsStoredInChunksAndReadWhole(t *testing.T) {
 		if len(chunk.Value()) > kvchunktest.MaxPayload {
 			t.Fatalf("chunk %s holds %d bytes, past the server's max payload of %d", key, len(chunk.Value()), kvchunktest.MaxPayload)
 		}
+		if answer := kvchunktest.LeaderReadAnswer(t, conn, bus.InterestBucket, key); answer > kvchunktest.MaxPayload {
+			t.Fatalf("the leader's answer to a read of chunk %s is %d bytes, past the server's max payload of %d, which a leafnode hop refuses", key, answer, kvchunktest.MaxPayload)
+		}
 	}
 	t.Logf("a record of %d topics stored as a manifest of %d bytes and %d chunks", len(want), len(head.Value()), len(chunks))
 }
@@ -607,4 +610,292 @@ func TestADeleteThatFindsAChunkedRecordStoredSinceLogsNoUndecodableRecord(t *tes
 	if text := logs.String(); strings.Contains(text, "evicted malformed value") {
 		t.Fatalf("the delete logged an undecodable record for a manifest whose chunks its watcher had not delivered:\n%s", text)
 	}
+}
+
+// forgedManifests are values under a record's key that no write of this build makes and any
+// writer of the bucket can store: manifests whose numbers no record has, one whose generation is no
+// key nats.go accepts, and two whose numbers are a write's shape but claim far more than the bucket
+// holds, which only a reader that sizes nothing by a manifest's claim reads without crashing.
+var forgedManifests = map[string]string{
+	"a negative length":         `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":1,"bytes":-1,"sha256":"` + strings.Repeat("0", 64) + `"}`,
+	"more chunks than bytes":    `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}`,
+	"a generation with a space": `chunked {"generation":"bad gen","chunks":1,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}`,
+	"a length no record has":    `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":1,"bytes":4611686018427387904,"sha256":"` + strings.Repeat("0", 64) + `"}`,
+	"a chunk count no record has": `chunked {"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":4611686018427387904,"sha256":"` +
+		strings.Repeat("0", 64) + `"}`,
+}
+
+// A manifest no write of this build makes is a record this build cannot decode, wherever it is
+// read, and it never stops a listener: a listener that reads the bucket afresh stores no row for
+// it and keeps running, a read from the bucket answers ErrMalformedInterest, the session's next
+// write replaces it, as a write replaces any record this build cannot decode, and a deregistration
+// of another session holding the same manifest deletes it.
+func TestAForgedManifestIsARecordThisBuildCannotDecodeAndTheNextWriteReplacesIt(t *testing.T) {
+	for what, manifest := range forgedManifests {
+		t.Run(what, func(t *testing.T) {
+			conn := kvchunktest.SmallPayloadNATS(t)
+			reg := openRegistry(t, conn)
+			kv := rawInterests(t, conn)
+			for _, id := range []string{"ses_forged", "ses_forged_deregistered"} {
+				if _, err := kv.Put(id, []byte(manifest)); err != nil {
+					t.Fatalf("store the forged manifest under %s: %v", id, err)
+				}
+			}
+			fresh := openRegistry(t, conn)
+			if item, ok := fresh.Cached("ses_forged"); ok {
+				t.Fatalf("a listener that read the bucket afresh stored a row of %d topics for a manifest with %s", len(item.Topics), what)
+			}
+			if _, _, err := reg.RefreshAt(t.Context(), "ses_forged"); !errors.Is(err, ErrMalformedInterest) {
+				t.Fatalf("a bucket read of a manifest with %s answered %v, want ErrMalformedInterest", what, err)
+			}
+			topics := kvchunktest.Topics("replacing", 10)
+			if _, err := reg.Upsert(Interest{SessionID: "ses_forged", MachineID: "m1"}, topics); err != nil {
+				t.Fatalf("the write over a manifest with %s answered %v, want it stored", what, err)
+			}
+			row, _, err := reg.RefreshAt(t.Context(), "ses_forged")
+			if err != nil {
+				t.Fatalf("read the record that replaced the manifest with %s: %v", what, err)
+			}
+			requireTopics(t, "the record that replaced the manifest with "+what, row, sortedTopics(topics))
+			if _, err := reg.Remove(t.Context(), "ses_forged_deregistered", nil, RoleReleaseAuthority{}); err != nil {
+				t.Fatalf("the deregistration of a session holding a manifest with %s answered %v", what, err)
+			}
+			if ops := kvchunktest.LiveKeys(t, kv); ops["ses_forged_deregistered"] == natsgo.KeyValuePut {
+				t.Fatalf("after its deregistration the bucket still holds the manifest with %s", what)
+			}
+		})
+	}
+}
+
+// missingGetKeyValue is the interest bucket as a copy behind the leader answers a direct get of
+// key that it has not applied: as no record at all.
+type missingGetKeyValue struct {
+	natsgo.KeyValue
+	key string
+}
+
+func (kv missingGetKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
+	if key == kv.key {
+		return nil, natsgo.ErrKeyNotFound
+	}
+	return kv.KeyValue.Get(key)
+}
+
+// A delete whose read of the record found nothing deletes nothing, and its read-back finds the
+// manifest the cache already holds: the cache keeps that row, since the chunk copy holds its chunks,
+// and so no collection takes the chunks of a record that still stands.
+func TestADeleteThatReadNothingKeepsTheChunkedRowItsCacheHolds(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	clock := &manualClock{at: time.Now()}
+	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(reg.StopWatch)
+	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	topics := kvchunktest.Topics("kept", 400)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_kept", MachineID: "m1"}, topics); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	legacy := reg.watcher.KV().Legacy()
+	useKV(t, reg, missingGetKeyValue{KeyValue: legacy, key: "ses_kept"})
+	if err := reg.deleteInterest(t.Context(), "ses_kept"); err != nil {
+		t.Fatalf("the delete whose read found nothing: %v", err)
+	}
+	cached, ok := reg.Cached("ses_kept")
+	if !ok {
+		t.Fatal("after a delete that deleted nothing the cache holds no row for the record that still stands")
+	}
+	requireTopics(t, "the row the cache kept", cached, sortedTopics(topics))
+	useKV(t, reg, legacy)
+	clock.Set(time.Now().Add(kvchunk.Grace + time.Minute))
+	if collected, err := reg.collectInterestChunks(t.Context()); err != nil || collected != 0 {
+		t.Fatalf("the collection took %d chunks (%v) of a record that still stands, want none", collected, err)
+	}
+	row, _, err := reg.RefreshAt(t.Context(), "ses_kept")
+	if err != nil {
+		t.Fatalf("read the record: %v", err)
+	}
+	requireTopics(t, "the record after the collection", row, sortedTopics(topics))
+}
+
+// A deregistration or an unsubscribe naming a chunk's key as its session is refused, as a write of
+// one is, so no route deletes a chunk a stored manifest names.
+func TestARemovalNamingAChunksKeyIsRefusedAndDeletesNothing(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	reg := openRegistry(t, conn)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_named", MachineID: "m1"}, kvchunktest.Topics("named", 400)); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	kv := rawInterests(t, conn)
+	chunks := kvchunktest.LiveChunkKeys(t, kv)
+	for what, remove := range map[string]func() error{
+		"a deregistration": func() error {
+			_, err := reg.Remove(t.Context(), chunks[0], nil, RoleReleaseAuthority{})
+			return err
+		},
+		"an unsubscribe": func() error {
+			_, err := reg.Remove(t.Context(), chunks[0], []string{"notifications.team.x"}, RoleReleaseAuthority{})
+			return err
+		},
+	} {
+		if err := remove(); !errors.Is(err, bus.ErrRefused) {
+			t.Fatalf("%s naming chunk %s answered %v, want bus.ErrRefused", what, chunks[0], err)
+		}
+	}
+	if after := kvchunktest.LiveChunkKeys(t, kv); !slices.Equal(after, chunks) {
+		t.Fatalf("after the refused removals the bucket holds chunks %v, want %v", after, chunks)
+	}
+	if _, _, err := reg.RefreshAt(t.Context(), "ses_named"); err != nil {
+		t.Fatalf("read the record whose chunk the removals named: %v", err)
+	}
+}
+
+// deleteFailingKeyValue is the interest bucket whose deletes of key fail as a bus that stopped
+// answering does.
+type deleteFailingKeyValue struct {
+	natsgo.KeyValue
+	key string
+}
+
+func (kv deleteFailingKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) error {
+	if key == kv.key {
+		return natsgo.ErrTimeout
+	}
+	return kv.KeyValue.Delete(key, opts...)
+}
+
+// The reaper's pass collects the chunks no record names even when its reap of dead sessions failed,
+// so a bucket whose reap keeps failing still loses its stale chunks.
+func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	clock := &manualClock{at: time.Now()}
+	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(reg.StopWatch)
+	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	kv := rawInterests(t, conn)
+	legacy := reg.watcher.KV().Legacy()
+	if _, err := reg.Upsert(Interest{SessionID: "ses_dead", MachineID: "m1"}, []string{"notifications.team.dead"}); err != nil {
+		t.Fatalf("store the dead session's record: %v", err)
+	}
+	useKV(t, reg, &kvchunktest.HeadFailing{KeyValue: legacy, Key: "ses_orphaning"})
+	if _, err := reg.Upsert(Interest{SessionID: "ses_orphaning", MachineID: "m1"}, kvchunktest.Topics("orphaned", 400)); err == nil {
+		t.Fatal("the write whose manifest failed answered success")
+	}
+	if len(kvchunktest.LiveChunkKeys(t, kv)) == 0 {
+		t.Fatal("the write whose manifest failed left no chunk, so there is nothing to collect")
+	}
+	useKV(t, reg, deleteFailingKeyValue{KeyValue: legacy, key: "ses_dead"})
+	clock.Set(time.Now().Add(InterestReapAllowance(InterestReapGrace) + kvchunk.Grace))
+	if _, err := reg.Reap(func(string) (bool, error) { return false, nil }, InterestReapGrace); err == nil {
+		t.Fatal("the reap whose delete fails answered no error, so the pass below is not the failing one")
+	}
+	ctx, stop := context.WithCancel(t.Context())
+	done := reg.StartReaper(ctx, func(string) (bool, error) { return false, nil }, 20*time.Millisecond, InterestReapGrace)
+	t.Cleanup(func() { stop(); <-done })
+	waitFor(t, 10*time.Second, func() bool { return len(kvchunktest.LiveChunkKeys(t, kv)) == 0 })
+}
+
+// headRefusingKeyValue is the interest bucket whose writes of key's record the server refuses, as a
+// stream past its storage bound refuses a message (JetStream's insufficient resources), so a write
+// of that record stops at its head with an answer the server gave.
+type headRefusingKeyValue struct {
+	natsgo.KeyValue
+	key string
+}
+
+var errStorageRefused = &natsgo.APIError{Code: 503, ErrorCode: 10047, Description: "insufficient storage resources available"}
+
+func (kv headRefusingKeyValue) Create(key string, value []byte) (uint64, error) {
+	if key == kv.key {
+		return 0, errStorageRefused
+	}
+	return kv.KeyValue.Create(key, value)
+}
+
+func (kv headRefusingKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
+	if key == kv.key {
+		return 0, errStorageRefused
+	}
+	return kv.KeyValue.Update(key, value, revision)
+}
+
+// A write whose head the bus refused stored nothing that names its chunks, so it deletes them
+// before it answers, whatever the refusal: a server's (a stream past its storage bound) or this
+// client's own before sending (a session id too long for the head's subject, which the chunks'
+// short keys did not meet). The write's error is the refusal itself.
+func TestAWriteWhoseHeadTheBusRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	reg := openRegistry(t, conn)
+	kv := rawInterests(t, conn)
+	legacy := reg.watcher.KV().Legacy()
+	longID := "ses_" + strings.Repeat("l", 4100)
+	for what, write := range map[string]func() error{
+		"by the server": func() error {
+			useKV(t, reg, headRefusingKeyValue{KeyValue: legacy, key: "ses_head_refused"})
+			_, err := reg.Upsert(Interest{SessionID: "ses_head_refused", MachineID: "m1"}, kvchunktest.Topics("refused", 400))
+			if !errors.Is(err, errStorageRefused) {
+				t.Fatalf("the write the server refused answered %v, want its refusal", err)
+			}
+			return err
+		},
+		"by this client": func() error {
+			useKV(t, reg, legacy)
+			_, err := reg.Upsert(Interest{SessionID: longID, MachineID: "m1"}, kvchunktest.Topics("long", 400))
+			if !errors.Is(err, bus.ErrRefused) {
+				t.Fatalf("the write of a session id of %d bytes answered %v, want a bus.ErrRefused", len(longID), err)
+			}
+			return err
+		},
+	} {
+		err := write()
+		t.Logf("the head refused %s: %v", what, err)
+		if chunks := kvchunktest.LiveChunkKeys(t, kv); len(chunks) != 0 {
+			t.Fatalf("after its head was refused %s the bucket still holds chunks %v", what, chunks)
+		}
+	}
+}
+
+// A damaged manifest names chunks that were never proved to be its own, so the write that replaces
+// it deletes none of them: a manifest under one session's key that names another session's live
+// chunks with a SHA-256 they do not join into is replaced by that session's next write, and the
+// other session's record still reads whole.
+func TestAWriteOverADamagedManifestDeletesNoChunkItNames(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	reg := openRegistry(t, conn)
+	kv := rawInterests(t, conn)
+	topics := kvchunktest.Topics("owner", 400)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_owner", MachineID: "m1"}, topics); err != nil {
+		t.Fatalf("store the owner's record: %v", err)
+	}
+	head, err := kv.Get("ses_owner")
+	if err != nil {
+		t.Fatalf("read the owner's manifest: %v", err)
+	}
+	layout, err := kvchunk.ReadLayout(head.Value())
+	if err != nil || !layout.Chunked() {
+		t.Fatalf("the owner's key holds %.60q (%v), want a manifest", head.Value(), err)
+	}
+	layout.SHA256 = strings.Repeat("0", 64)
+	forged, err := json.Marshal(layout)
+	if err != nil {
+		t.Fatalf("encode the forged manifest: %v", err)
+	}
+	if _, err := kv.Put("ses_borrower", append([]byte("chunked "), forged...)); err != nil {
+		t.Fatalf("store the forged manifest: %v", err)
+	}
+	if _, _, err := reg.RefreshAt(t.Context(), "ses_borrower"); !errors.Is(err, ErrMalformedInterest) {
+		t.Fatalf("a bucket read of the borrowed manifest answered %v, want ErrMalformedInterest", err)
+	}
+	if _, err := reg.Upsert(Interest{SessionID: "ses_borrower", MachineID: "m1"}, []string{"notifications.team.borrower"}); err != nil {
+		t.Fatalf("the write over the borrowed manifest: %v", err)
+	}
+	row, _, err := reg.RefreshAt(t.Context(), "ses_owner")
+	if err != nil {
+		t.Fatalf("after the write over the borrowed manifest the owner's record reads %v, want it whole", err)
+	}
+	requireTopics(t, "the owner's record", row, sortedTopics(topics))
 }

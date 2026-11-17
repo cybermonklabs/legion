@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -74,6 +75,23 @@ func LiveKeys(t *testing.T, kv natsgo.KeyValue) map[string]natsgo.KeyValueOp {
 	}
 	t.Fatal("the bucket's scan ended before it had delivered every key")
 	return nil
+}
+
+// LeaderReadAnswer is the size of the answer the stream's leader sends to a read of key from bucket
+// (STREAM.MSG.GET by last subject, the read bus.KeyValue.GetFromLeader makes): JSON carrying the
+// value in base64, which a server enforcing its max payload on that hop - a leafnode connection
+// does - takes only when it fits.
+func LeaderReadAnswer(t *testing.T, conn *natsgo.Conn, bucket, key string) int {
+	t.Helper()
+	request := fmt.Sprintf(`{"last_by_subj":"$KV.%s.%s"}`, bucket, key)
+	answer, err := conn.Request("$JS.API.STREAM.MSG.GET.KV_"+bucket, []byte(request), 10*time.Second)
+	if err != nil {
+		t.Fatalf("read %s from the stream's leader: %v", key, err)
+	}
+	if !strings.Contains(string(answer.Data), `"data":`) {
+		t.Fatalf("the leader's answer to a read of %s carries no value: %.200s", key, answer.Data)
+	}
+	return len(answer.Data)
 }
 
 // Generations is the distinct generations chunk keys name.

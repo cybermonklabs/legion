@@ -16,8 +16,9 @@ import (
 )
 
 // deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead),
-// each bucket call waiting no longer than ctx (bus.Bounded), and then the chunks the record it
-// deleted was stored in (deleteChunks). A delete ctx abandoned may still land after this answer,
+// each bucket call waiting no longer than ctx (bus.Bounded), and then the chunks the manifest it
+// deleted names that the bucket holds (kvchunk.DeleteStored, since no read joined that manifest).
+// A delete ctx abandoned may still land after this answer,
 // and that is safe: it deletes only the revision it read, so a write that landed since is kept,
 // and its chunks are left to the reaper's collection. A record the read found absent is left
 // alone, delete and all, so a registration that stored the session's row between that read and
@@ -39,8 +40,8 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	}
 	if deleted != nil {
 		revision = max(revision, deleted.Revision())
-		if layout, err := kvchunk.ReadLayout(deleted.Value()); err == nil {
-			r.deleteChunks(ctx, kv, sessionID, layout)
+		if layout, err := kvchunk.ReadLayout(deleted.Value()); err == nil && layout.Chunked() {
+			kvchunk.DeleteStored(ctx, kv, layout, r.logger(), interestRecord, sessionID)
 		}
 	}
 	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
@@ -86,10 +87,13 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 // reconcileDeleted brings sessionID's cache entry in line with the bucket after a delete through
 // kv, a handle of epoch, that succeeded past revision: it applies the key's latest history entry,
 // which is the delete marker unless a write has landed since, or, when the history cannot be read
-// within ctx, evicts the entry behind a fence just past revision. A write since that stored a
-// manifest is evicted behind that fence too, rather than applied: the copy joins a manifest only
-// from the chunks its watcher delivered (decodeStoredLocked), which may not have reached it yet,
-// and the watcher delivers that manifest after its chunks.
+// within ctx, evicts the entry behind a fence just past revision. A manifest as that latest entry
+// is applied only when the chunk copy holds every chunk it names (kvchunk.Chunks.Join): the one
+// the cache already holds, which a delete that read nothing and so deleted nothing leaves
+// standing, is kept with its row, so its chunks stay named and no collection takes them. A manifest
+// another listener stored since, whose chunks the watcher has not delivered yet, is evicted behind
+// that fence instead of being judged a record this build cannot decode: the watcher delivers it
+// after its chunks, past the fence.
 func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, revision uint64) {
 	// A history that does not answer falls back to the fence below: the delete itself answered.
 	// ReadHistory ends with ctx; bus.RequestTimeout bounds it for a caller that answers no request
@@ -102,7 +106,12 @@ func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch 
 	if err == nil && len(entries) > 0 {
 		latest = kvwatch.JetStreamEntry(entries[len(entries)-1])
 	}
-	if err != nil || len(entries) == 0 || (latest.Op == kvwatch.OpPut && kvchunk.IsManifest(latest.Value)) {
+	unjoined := latest.Op == kvwatch.OpPut && kvchunk.IsManifest(latest.Value)
+	if unjoined {
+		_, _, joinErr := r.chunks.Join(latest.Value)
+		unjoined = joinErr != nil
+	}
+	if err != nil || len(entries) == 0 || unjoined {
 		// KeyValue.Delete does not return its revision. A successful delete must
 		// still fence off any watcher update from the preceding revision while the
 		// delete marker remains pending.
@@ -523,7 +532,14 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // a process frees the claims of that process and leaves another process's alone, and the
 // administrator's force frees them all; neither leaves a mark, since a mark is for the hand-back
 // that could free nothing.
+//
+// A session id under the chunk keys' prefix (kvchunk.Prefix) names no session, and a delete of it
+// would delete a chunk a stored manifest names, so its removal is refused (kvchunk.ReservedKey, a
+// bus.ErrRefused the routes answer 400) before anything is read or released.
 func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
+	if kvchunk.IsChunkKey(sessionID) {
+		return nil, kvchunk.ReservedKey(sessionID)
+	}
 	if len(topics) == 0 {
 		record, _, err := r.getWithRevision(ctx, sessionID, true)
 		if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
