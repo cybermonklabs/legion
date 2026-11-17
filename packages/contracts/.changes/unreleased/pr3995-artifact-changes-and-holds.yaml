@@ -10,3 +10,7 @@ body: |-
   always carries `holds: null | boolean`. `ArtifactChanges.unchanged` says the two versions hold no change at all, and an
   `ArtifactSectionChange` of the text outside every section carries its `place`
   (`before_first_section` or `after_section`, with `after_heading` and `after_occurrence`).
+
+  The `dispatch_request_approval` tool's `summary` says a Legion architect adds a sentence with
+  its two spec reviews' results, then a last sentence naming the measurements and test results the
+  design rests on.

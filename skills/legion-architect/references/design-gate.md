@@ -224,7 +224,7 @@ and the `spec` step together (step 4), and each of them is registered on its own
    them to answer: give such a point its own decision block first, or take it out of the spec.
 
    ```bash
-   dispatch request-approval --issue <root issue> --include-verification --summary '<what the human is approving> Reviews: <gap result>, <claim result>; <what they do not show>.'
+   dispatch request-approval --issue <root issue> --include-verification --summary '<what the human is approving> Reviews: <gap result>, <claim result>. <the measurements and test results the design rests on>.'
    ```
 
    `--include-verification` asks for the spec and the Verification document in one request, each
@@ -237,13 +237,15 @@ and the `spec` step together (step 4), and each of them is registered on its own
    spec alone and any other document is refused `NOT_SPEC_DOCUMENT`:
 
    ```bash
-   dispatch request-approval --issue <root issue> --artifact decisions.md --summary '<what the human is approving> Reviews: <gap result>, <claim result>; <what they do not show>.'
+   dispatch request-approval --issue <root issue> --artifact decisions.md --summary '<what the human is approving> Reviews: <gap result>, <claim result>. <the measurements and test results the design rests on>.'
    ```
 
    `--summary` says in one to three sentences what the human is approving and nothing else (no
-   commentary and no open question), then one sentence with both reviews' results and what they do
-   not show, for example `Reviews: no open gap, 14 of 14 claims verified; neither shows that the
-   design works once built.` The primary document is the default; the
+   commentary and no open question). Then one sentence gives both reviews' results. The last
+   sentence names the measurements and test results the design rests on. Measure before you
+   request approval, so that this sentence has a result to name. For example: `Reviews: no open
+   gap, 14 of 14 claims verified. The design rests on a median of 2.1 s over 40 runs, and on a
+   reproduction test that fails on the default branch.` The primary document is the default; the
    command prints `Approval requested for spec.md (document id <UUID>) at version <N> (ask <id>)`.
 5. Register each gated step's document and version with the daemon, one call for each step:
 
@@ -377,7 +379,8 @@ to the version it writes. Once they have answered:
   child because of it.
 - When the answer changes the Summary, a requirement, a check or the tree's scope, rewrite that
   text and repeat steps 3 to 5 on the new version, with a one-sentence `--summary` naming what
-  changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
+  changed since the earlier approval, then the reviews' sentence and the last sentence of step 4,
+  which names the measurements and test results the design rests on (the card shows `Approved at
   version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
   closes the gate until they approve. Release no further child until the `design-approved` after
   it. Work already in flight, including what the daemon started at the answer, carries on while

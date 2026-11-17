@@ -53,8 +53,9 @@ decomposition before you request approval, and, where your `Design gate steps` l
 step, before `register_gate`: the gate's opening starts the root's own first phase unless the root
 waits on another issue, an open child under it or a `blocked_by` link to an issue that is not
 `done`, so a child filed later leaves the root working beside its children. Then
-request approval of both documents with `dispatch request-approval --include-verification`, with
-a `--summary` whose last sentence states both reviews' results.
+request approval of both documents with `dispatch request-approval --include-verification`.
+Its `--summary` gives both reviews' results in one sentence. Its last sentence names the
+measurements and test results the design rests on.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
 to them, end your turn: that hand-back moves the root to `awaiting_person`, which keeps its
 admission slot, while you stay live to
@@ -179,8 +180,9 @@ must make, yours or one a worker escalated, is a decision block you write in the
 approval its new version closes the gate until the human answers. When their answer is the whole
 change since the version they approved, Dispatch carries the approval to the new version and you
 request nothing. When it changes the spec's text outside the block, rewrite that text and run the
-two reviews on the new version. Then request approval again with a `--summary` of one sentence
-naming what changed since the earlier approval and one sentence with both reviews' results. A
+two reviews on the new version. Then request approval again with a `--summary` of three
+sentences: what changed since the earlier approval, both reviews' results, and the measurements
+and test results the design rests on. A
 to-do only a human can do is a `dispatch ask`.
 
 The merge is the close: once a pull request merges while its issue awaits the merge, the daemon

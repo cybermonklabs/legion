@@ -93,19 +93,32 @@ until this round, where its head must meet it.
 Then, in one turn:
 
 1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
-   test round of every check of the issue with no `ci_check`, not the forward-merge re-check." The
-   backward move's reason reaches only the implementer.
-2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
-   branch your addressing line names into the branch, push, end your forward-merge comment with
-   `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
-   counts a review round, or a conflict round, which `review_round_cap` leaves out, where the
-   record holds the head conflicting with its base.
+   test round of every check of the issue with no `ci_check`, not the forward-merge re-check." A
+   move to `implementing` gives its reason to the implementer alone.
+2. Read whether the approved head, `<head>`, carries each child's merge. For each child in this
+   repository whose merge those checks need, read the merge commit of its pull request `<n>`
+   (`gh pr view <n> -R <owner>/<repo> --json mergeCommit --jq .mergeCommit.oid`). Run
+   `jj -R "$LEGION_WORKSPACE" git fetch`, then
+   `git -C "$LEGION_WORKSPACE" merge-base --is-ancestor <that merge commit> <head>`.
+   - Where it exits nonzero for a child, the implementer merges the default branch:
+     `request_backward_move` to `implementing`, with the reason "Last round: merge the default
+     branch your addressing line names into the branch, push, end your forward-merge comment with
+     `parent's last round: full test round`, and complete." Never use a hard-coded `main`. That
+     merge meets the parent's-last-round condition of *Reintegrating the base*
+     (`skill://legion-worker/references/conflicts-and-rewrites.md`).
+   - Where it exits 0 for every child, merge nothing: `request_backward_move` to `testing`, with
+     the reason "Last round: a full test round at <head>; no merge, because the head carries every
+     child's merge."
+
+   Either move counts a review round, or a conflict round, which `review_round_cap` leaves out,
+   where the record holds the head conflicting with its base.
 
 While the parent waits in `accepting`, a conflict on its head or a child's merge needs no move of
-its own: the last round's forward merge resolves them all, so spend no backward move per child.
+its own: the last round's forward merge, where it is needed, resolves them all, so spend no
+backward move per child.
 A move for a child's merge counts toward `review_round_cap`, since the record holds no conflict on
 the head to leave it out; a move for a conflict the record does hold is left out, and still costs
-the implementer a forward merge the last round makes anyway.
+the implementer a forward merge the last round makes where it is needed.
 
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's
 deploy skill says.

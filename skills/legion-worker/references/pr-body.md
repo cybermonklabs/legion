@@ -225,7 +225,11 @@ and decides there, the only gate on such an issue.
   `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean`. A search that finds an instance is a failure, not a re-check: record it under `failures` and run a full test round. The
   real-surface verification is not repeated, except in a parent's last round, which the architect
   or the implementer's forward-merge comment names to you: then run a full test round. Different:
-  a full test round.
+  a full test round. Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2`
+  exits 0 for the merge commit `<sha>` (its parents merge with no conflict), and its forward-merge
+  comment names no reason *Reintegrating the base* allows
+  (`skill://legion-worker/references/conflicts-and-rewrites.md`), send the architect the finding
+  `forward merge <sha>: no conflict and no reason the rule allows`.
 - **The implementer runs `skill://simplify-settled-diff` once per pull request, in its first
   implementing round, after its own results and before it completes that round,
   whatever the diff touches, a docs-only diff included.** The daemon starts no implementing round

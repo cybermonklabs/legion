@@ -182,6 +182,11 @@ as the fingerprint decides (*The reviewer*, below, and
   that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
   nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
   one review.
+  Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2` exits 0 for the
+  merge commit `<sha>` (its parents merge with no conflict), and its forward-merge comment names
+  no reason *Reintegrating the base* allows
+  (`skill://legion-worker/references/conflicts-and-rewrites.md`), send the architect the finding
+  `forward merge <sha>: no conflict and no reason the rule allows`.
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role
   Apps, as `skill://legion-worker/references/review-threads.md` says; the same reference says
   when every thread is settled enough to approve, and resolving one never gates your approval.

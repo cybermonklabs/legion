@@ -1,21 +1,27 @@
 # Conflicts, retargets, fingerprints, and a wrong pushed commit
 
-Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, the
-controller asks you to resolve a conflict, the change needs something only the base has, the pull
-request is retargeted to a new base, you compare two heads after such a merge, or a commit you
-already pushed is wrong.
+Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, a
+message asks you to merge the base or resolve a conflict, the change needs something only the base
+has, the pull request is retargeted to a new base, you compare two heads after such a merge, or a
+commit you already pushed is wrong.
 Every path it cites is in cybermonklabs/legion.
 
 ## Reintegrating the base
 
 - **Merge the base forward only on a real conflict, a need only the base meets, a retarget, or a
   parent's last round, and never with `jj rebase`.**
-  The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the controller asks
-  because of a conflict, the architect's backward move names a parent's last round,
+  The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`,
+  a message from the controller, an architect or any other session asks for it and names the
+  conflict GitHub reports, the architect's backward move names a parent's last round,
   the change needs something that exists only on the base (a fix for its
   only red check, or a sentence it must change), or after the pull request is retargeted to a new
   base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI. Each
-  merge is a new head, reruns CI and can void a review. A single failed CI job is re-run on its
+  merge is a new head, reruns CI and can void a review. A message that names no conflict is no
+  reason to merge: answer it with this rule, and merge nothing. Never merge the base to carry it
+  along with a push, at a round's start, or to check what a merge would read. Before you merge,
+  read `gh pr view <n> -R <owner>/<repo> --json mergeable,mergeStateStatus` and quote it in the
+  forward-merge comment below. `UNKNOWN` is no conflict. That comment also names the condition
+  above that the merge meets. A single failed CI job is re-run on its
   own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`). After any forward merge, build the branch and
   record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge can change a
   function's signature under the branch's own callers. Before you race another tree's pull request on

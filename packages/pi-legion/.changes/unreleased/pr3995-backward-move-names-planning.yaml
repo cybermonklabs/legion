@@ -20,3 +20,16 @@ body: |-
   `--include-verification` request opens both steps. `legion-retro` says how retro answers a news
   task. `legion-controller` says that a `criteria` step a root registers holds its tree too, and
   that `gatedSteps` and the `design_gate` hold word count it.
+
+  Merges of the base change too. `legion-controller` tells no role to merge the base, to fold
+  another pull request in, or to merge once more before a slot, a restart or the merge queue.
+  Where GitHub reads a pull request `CONFLICTING`, it says so and quotes the read. In
+  `legion-worker`, a message is a reason to merge only when it names the conflict GitHub reports,
+  and a role answers any other with the rule and merges nothing. The implementer quotes
+  `gh pr view --json mergeable,mergeStateStatus` and names the condition the merge meets in its
+  forward-merge comment. The tester and the reviewer send the architect each forward merge whose
+  parents merge with no conflict and whose comment names no reason the rule allows. In
+  `legion-architect`, a parent's last round merges the default branch only where the head lacks
+  a needed child's merge. Otherwise the architect sends the issue back to testing for a full round
+  with no merge. An approval request's `--summary` ends with the measurements and test results
+  the design rests on, in place of what the reviews do not show.
