@@ -181,7 +181,8 @@ func Err(err error) error {
 // and only when the start succeeded. The pod's launcher is its container's PID 1 and reaps every
 // exited child it does not hold, so it passes one that holds the child out of that reaper until
 // its own wait has read the exit (internal/launcher's pidGuard): a child that reaper took first
-// fails its own wait with `waitid: no child processes`. nil starts cmd with cmd.Start.
+// fails its own wait with `waitid: no child processes`, or under gVisor at times `waitid: no such
+// process`. nil starts cmd with cmd.Start.
 type Starter func(cmd *exec.Cmd) (done func(), err error)
 
 // Run is cmd.Run with the start the caller chose (Starter; nil is cmd.Start): a start that fails

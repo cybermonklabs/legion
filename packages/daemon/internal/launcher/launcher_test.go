@@ -1009,6 +1009,13 @@ func awaitZombie(t *testing.T, pid int) {
 	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })
 }
 
+// reapedByAnother is whether err is a child's own wait answering that another wait of the process
+// reaped it first: Linux answers ECHILD (`waitid: no child processes`), and gVisor, which a pod
+// runs under, answers ESRCH (`waitid: no such process`) for about half of them.
+func reapedByAnother(err error) bool {
+	return errors.Is(err, syscall.ECHILD) || errors.Is(err, syscall.ESRCH)
+}
+
 // A reap through the guard (pidGuard.reap, which the orphan reaper and the controller pod's drain
 // both run) leaves an exited child the launcher holds for a wait of its own (the leak-check
 // install's run, say) to that wait, which reads its own exit, and reaps any other exited child.
@@ -1027,8 +1034,8 @@ func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
 	if _, err := guard.reap(); err != nil {
 		t.Fatal(err)
 	}
-	if err := other.Wait(); !errors.Is(err, syscall.ECHILD) {
-		t.Errorf("the unheld child's own wait answered %v, want ECHILD: the reap left it unreaped", err)
+	if err := other.Wait(); !reapedByAnother(err) {
+		t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the reap left it unreaped", err)
 	}
 	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
 		t.Errorf("the held child reads %v (%v), want its own exit 5: the reap took it", held.ProcessState, err)
@@ -1067,8 +1074,8 @@ func TestControllerDrainPIDOneHelper(t *testing.T) {
 	awaitZombie(t, held.Process.Pid)
 	awaitZombie(t, other.Process.Pid)
 	m.cleanExitedGeneration()
-	if err := other.Wait(); !errors.Is(err, syscall.ECHILD) {
-		t.Errorf("the unheld child's own wait answered %v, want ECHILD: the drain left it unreaped", err)
+	if err := other.Wait(); !reapedByAnother(err) {
+		t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the drain left it unreaped", err)
 	}
 	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
 		t.Errorf("the held child reads %v (%v), want its own exit 5: the drain took it", held.ProcessState, err)

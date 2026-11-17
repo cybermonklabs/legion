@@ -514,10 +514,11 @@ func testerRolesDir(t *testing.T) string {
 // waiting, so it starts a new pass as soon as it ends one, until the stop it answers. Before the
 // reaper starts it starts a child of the test process that exits at once and that the reaper must
 // take. stop ends the reaper, waits for it, and fails t unless the reaper took that child, which
-// the child's own wait says by answering ECHILD: a reaper that took nothing raced nothing. The
-// wait is the child's own rather than a probe of its pid, which another process may have taken by
-// then. The reaper takes every exited child of the test process, so a test that runs it is not
-// parallel, and runs its own commands through guard or while the reaper is stopped.
+// the child's own wait says by answering ECHILD or ESRCH (reapedByAnother): a reaper that took
+// nothing raced nothing. The wait is the child's own rather than a probe of its pid, which another
+// process may have taken by then. The reaper takes every exited child of the test process, so a
+// test that runs it is not parallel, and runs its own commands through guard or while the reaper
+// is stopped.
 func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func()) {
 	t.Helper()
 	orphan := exec.Command("/bin/sh", "-c", "exit 0")
@@ -541,8 +542,8 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 		t.Helper()
 		cancel()
 		reaping.Wait()
-		if err := orphan.Wait(); !errors.Is(err, syscall.ECHILD) {
-			t.Errorf("the orphan %d's own wait answered %v, want ECHILD: the reaper left it unreaped, so it never ran while the test's commands did", orphan.Process.Pid, err)
+		if err := orphan.Wait(); !reapedByAnother(err) {
+			t.Errorf("the orphan %d's own wait answered %v, want ECHILD or ESRCH: the reaper left it unreaped, so it never ran while the test's commands did", orphan.Process.Pid, err)
 		}
 	}
 }
@@ -614,21 +615,22 @@ const installsUnderReaper = 200
 // hold (reapOrphans), and the install's one run of the served check (`--help`, leakguard's
 // verifyServed) is the launcher's own child. It starts through the guard the reaper skips
 // (pidGuard.starter, which newManagers gives the pod's install): a run whose exit the reaper took
-// first fails its own wait with `waitid: no child processes`, and the role's launch is refused
-// with it. The race needs a pod's shape: PID 1 of a PID namespace whose /proc lists a handful of
-// processes, so a reaper's pass is short. Under a host's /proc of thousands, a pass took long
-// enough that 200 unguarded installs met no reap at all, so the installs run in the test binary as
-// PID 1 of a PID namespace of its own (TestLeakCheckInstallPIDOneHelper).
+// first fails its own wait with `waitid: no child processes`, or under gVisor at times `waitid: no
+// such process`, and the role's launch is refused with it. The race needs a pod's shape: PID 1 of
+// a PID namespace whose /proc lists a handful of processes, so a reaper's pass is short. Under a
+// host's /proc of thousands, a pass took long enough that 200 unguarded installs met no reap at
+// all, so the installs run in the test binary as PID 1 of a PID namespace of its own
+// (TestLeakCheckInstallPIDOneHelper).
 func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
 	t.Logf("%s", runAsPIDOne(t, "TestLeakCheckInstallPIDOneHelper"))
 }
 
 // TestLeakCheckInstallPIDOneHelper is TestTheLeakCheckInstallSurvivesPID1sReaper's body, run as
 // PID 1 under relentlessReaper. The control comes first: the same check installed with no
-// starter, as an install outside a launcher runs it, must be refused with no child processes
-// within installsUnderReaper tries, or the reaper never met a run's exit and the installs after it
-// prove nothing. Then the check is installed installsUnderReaper times, each by a container's
-// managers as newManagers wires them, and every install must succeed.
+// starter, as an install outside a launcher runs it, must be refused, its run reaped by the
+// reaper (reapedByAnother), within installsUnderReaper tries, or the reaper never met a run's exit
+// and the installs after it prove nothing. Then the check is installed installsUnderReaper times,
+// each by a container's managers as newManagers wires them, and every install must succeed.
 func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
@@ -661,7 +663,7 @@ func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 		case err == nil:
 			// Each install is read once, so it goes before the next: the fixture is large.
 			_ = os.RemoveAll(dir)
-		case errors.Is(err, syscall.ECHILD), errors.Is(err, syscall.ESRCH):
+		case reapedByAnother(err):
 			controlCause = err.Error()
 		default:
 			stop()
