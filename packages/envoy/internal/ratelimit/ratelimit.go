@@ -72,11 +72,13 @@ func (k *Keyed) AllowAt(key string, now time.Time) bool {
 // complete. A refused take answers false and spends nothing.
 //
 // giveBack(at) returns the request at at, the time of the give-back: the bucket refills to at,
-// gains the one request and is capped at its burst. So it holds what it would hold had the
-// request never been taken, with every other take of key allowed meanwhile still taken, however
-// long after this one it came. Only where another take came while the bucket would have been
-// full without this one can it hold more than that, by up to one request. giveBack runs under
-// k's lock, and only its first call gives anything back.
+// gains the one request and is capped at its burst. Where at is before the bucket's last update,
+// because the caller read it before a later take of key or change of rate (SetRatesAt) won k's
+// lock, the request is added at that update's time instead, so no time is refilled twice. So the
+// bucket holds what it would hold had the request never been taken, with every other take of key
+// allowed meanwhile still taken, however long after this one it came. Only where another take
+// came while the bucket would have been full without this one can it hold more than that, by up
+// to one request. giveBack runs under k's lock, and only its first call gives anything back.
 func (k *Keyed) TakeAt(key string, now time.Time) (giveBack func(at time.Time), ok bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -260,7 +262,13 @@ func (b *tokenBucket) setRateAt(now time.Time, rate float64) {
 }
 
 // giveBackAt returns one request to b at now: b refills to now, gains the request and is capped
-// at its burst (Keyed.TakeAt says what that leaves it holding).
+// at its burst (Keyed.TakeAt says what that leaves it holding). A give-back stamped before b's
+// last update adds its request at that update's time: b already holds the refill up to last, so
+// last stays where it is, since moving it back to now would refill the time from now to last a
+// second time.
 func (b *tokenBucket) giveBackAt(now time.Time) {
-	b.tokens, b.last = min(b.tokensAt(now)+1, float64(b.burst)), now
+	b.tokens = min(b.tokensAt(now)+1, float64(b.burst))
+	if now.After(b.last) {
+		b.last = now
+	}
 }

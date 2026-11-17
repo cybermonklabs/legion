@@ -116,7 +116,10 @@ func TestAGivenBackRequestCanBeTakenAgain(t *testing.T) {
 // TakeAt gave back with before, returned nothing once that take came a whole Every later, so a
 // message the listener gives back cost its sender one all the same. In a bucket the key all but
 // emptied, the give-back returns the whole request; in one refilled close to its burst, it fills
-// the bucket to its burst and no further. A second call of the give-back returns nothing more.
+// the bucket to its burst and no further. A give-back stamped before that later take, as the
+// listener's and the broker's are when such a take wins the lock after they read the clock and
+// before their give-back takes it, returns the whole request and refills no time twice. A second
+// call of the give-back returns nothing more.
 func TestAGivenBackRequestComesBackAfterALaterTake(t *testing.T) {
 	limit := Limit{Every: time.Minute / 60, Burst: 60}
 	later := 3 * limit.Every // the key's next take, three requests' refill after the one given back
@@ -124,8 +127,8 @@ func TestAGivenBackRequestComesBackAfterALaterTake(t *testing.T) {
 		name string
 		// spent is how many requests the key takes at t0 before the take it gives back.
 		spent int
-		// givenBack is how long after t0 the give-back comes, and want how many requests the
-		// bucket then holds.
+		// givenBack is how long after t0 the give-back is stamped, and want how many requests the
+		// bucket holds at the later of that stamp and the key's later take.
 		givenBack time.Duration
 		want      int
 	}{
@@ -134,6 +137,9 @@ func TestAGivenBackRequestComesBackAfterALaterTake(t *testing.T) {
 		// The two takes leave 59 at the later one, 59.5 half an Every on, and the give-back fills
 		// the bucket to its 60 and not to 60.5.
 		{"a bucket refilled close to its burst", 0, later + limit.Every/2, limit.Burst},
+		// The two takes leave 2 requests at the later one, and the give-back stamped an Every
+		// before it makes them 3 there, and not the 4 a refill of that Every a second time would.
+		{"a give-back stamped before the later take", limit.Burst - 1, later - limit.Every, 3},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			k := NewKeyed(limit)
@@ -147,9 +153,11 @@ func TestAGivenBackRequestComesBackAfterALaterTake(t *testing.T) {
 			if _, ok := k.TakeAt("a", t0.Add(later)); !ok {
 				t.Fatal("the key's later take was refused")
 			}
-			at := t0.Add(row.givenBack)
-			giveBack(at)
-			giveBack(at)
+			giveBack(t0.Add(row.givenBack))
+			giveBack(t0.Add(row.givenBack))
+			// The bucket is counted at its last event: the give-back, or the later take where the
+			// give-back is stamped before it.
+			at := t0.Add(max(row.givenBack, later))
 			taken := 0
 			for taken <= limit.Burst && k.AllowAt("a", at) {
 				taken++

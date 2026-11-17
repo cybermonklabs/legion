@@ -117,7 +117,7 @@ func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCha
 		return nil, nil
 	}
 	now := l.now()
-	giveBack, ok := l.counts.TakeAt(sender, now)
+	giveBackAt, ok := l.counts.TakeAt(sender, now)
 	if !ok {
 		// The wait is read at the instant the take was refused at, so the seconds the answer
 		// names are the ones until this count holds a message again.
@@ -128,7 +128,7 @@ func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCha
 			retryAfterSeconds: ratelimit.RetryAfterSeconds(l.counts.WaitAt(sender, now)),
 		}
 	}
-	return &senderCharge{sender: sender, giveBack: giveBack, now: l.now}, nil
+	return &senderCharge{sender: sender, giveBack: func() { giveBackAt(l.now()) }}, nil
 }
 
 // admit takes item from its sender's count (take) for a route that answers through record, and
@@ -167,9 +167,7 @@ func (l *senderLimit) admit(w http.ResponseWriter, r *http.Request, record *requ
 // the request's own goroutine marks and settles a charge.
 type senderCharge struct {
 	sender   string
-	giveBack func(at time.Time)
-	// now is the limit's clock, which settle reads the time of the give-back from.
-	now func() time.Time
+	giveBack func()
 	// woken is woke's mark, spent stored's and forgiven forgive's.
 	woken    bool
 	spent    bool
@@ -237,7 +235,7 @@ func (c *senderCharge) counted() string {
 // after the answer.
 func (c *senderCharge) settle() {
 	if c != nil && c.counted() == "" {
-		c.giveBack(c.now())
+		c.giveBack()
 	}
 }
 
