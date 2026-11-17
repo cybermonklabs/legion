@@ -70,11 +70,12 @@ describe.concurrent("outside-path-reach.sh", () => {
   // round into the next, and the last round's into the end of the run. The row reads the run's
   // order, not its duration: the fake curl writes `probe` to a log as it starts a probe of the
   // blackholed address and `ended` once that probe is over, and the `sleep` first on PATH writes
-  // `slept 6` once the sleep between two rounds is over. The script starts a round's probes in
-  // the background and then sleeps 6 s before the next round. So a probe's `ended` comes before
-  // `slept 6` only because curl's 3 s connect timeout ends the probe before that sleep is over.
-  // The row's margin is the 3 s between the two. Each probe of the address ends before the next
-  // round starts, and the last before the run ends.
+  // `slept 6` once the sleep between two rounds is over. Without its `slept 6` lines the log reads
+  // `probe`, `ended` five times: each probe was over before the next round's probe started, and
+  // the last before the run ended. Without its `ended` lines it reads `probe`, `slept 6` four
+  // times, then `probe`: the rounds waited the whole 6 s. The margin is 3 s: a probe must end, at
+  // curl's 3 s connect timeout, before the next round's probe starts, after the round's 6 s sleep.
+  // A probe that started late under load may still end after the `slept 6` beside it.
   row(withoutTools || blackholeSkip !== null)(
     "reads a blackholed address as unreachable and passes, each probe of it ending within its own round",
     async () => {
@@ -98,8 +99,12 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "blackhole")).toContain(" unreachable; curl exit 28,");
         expect(verdict(run)).toStartWith("PASS");
         expect(run.code).toBe(0);
-        expect(readFileSync(order, "utf8")).toBe(
-          `${"probe\nended\nslept 6\n".repeat(4)}probe\nended\n`
+        const log = readFileSync(order, "utf8").split("\n");
+        expect(log.filter((line) => line !== "slept 6").join("\n")).toBe(
+          "probe\nended\n".repeat(5)
+        );
+        expect(log.filter((line) => line !== "ended").join("\n")).toBe(
+          `${"probe\nslept 6\n".repeat(4)}probe\n`
         );
       } finally {
         origin.stop(true);
