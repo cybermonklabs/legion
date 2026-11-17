@@ -429,3 +429,182 @@ func TestAnInterestWriteForASessionIDInTheChunkKeysIsRefused(t *testing.T) {
 		t.Fatalf("the refusal %q does not name the chunk keys' prefix %q", err, kvchunk.Prefix)
 	}
 }
+
+// racingHeadKeyValue is the interest bucket with race run once, just before the first
+// compare-and-swap of key's record is sent: another writer storing the record between a write's
+// read and its manifest, so the bucket refuses that manifest.
+type racingHeadKeyValue struct {
+	natsgo.KeyValue
+	key   string
+	race  func()
+	raced bool
+}
+
+func (kv *racingHeadKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
+	if key == kv.key && !kv.raced {
+		kv.raced = true
+		kv.race()
+	}
+	return kv.KeyValue.Update(key, value, revision)
+}
+
+// A write whose manifest the bucket refuses, because another writer stored the record under it,
+// deletes the chunks it wrote before it reads and writes again, so once both writes have landed the
+// bucket holds the chunks of the one record stored and of no write it refused.
+func TestAWriteTheBucketRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	reg := openRegistry(t, conn)
+	other := openRegistry(t, conn)
+	kv := rawInterests(t, conn)
+	base := kvchunktest.Topics("base", 400)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_refused", MachineID: "m1"}, base); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	racing := &racingHeadKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: "ses_refused", race: func() {
+		if _, err := other.Upsert(Interest{SessionID: "ses_refused", MachineID: "m2"}, kvchunktest.Topics("other", 10)); err != nil {
+			t.Errorf("the write that lands under the refused one: %v", err)
+		}
+	}}
+	useKV(t, reg, racing)
+	stored, err := reg.Upsert(Interest{SessionID: "ses_refused", MachineID: "m1"}, kvchunktest.Topics("mine", 10))
+	if err != nil {
+		t.Fatalf("the write the bucket refused once, then took: %v", err)
+	}
+	if !racing.raced {
+		t.Fatal("the other writer never stored the record under this write, so nothing was refused")
+	}
+	head, err := kv.Get("ses_refused")
+	if err != nil {
+		t.Fatalf("read the session's key: %v", err)
+	}
+	layout, err := kvchunk.ReadLayout(head.Value())
+	if err != nil || !layout.Chunked() {
+		t.Fatalf("the session's key holds %.60q (%v), want a manifest", head.Value(), err)
+	}
+	if chunks := kvchunktest.LiveChunkKeys(t, kv); !slices.Equal(chunks, slices.Sorted(slices.Values(layout.Keys()))) {
+		t.Fatalf("the bucket holds chunks %v, want only the %d its manifest names", chunks, layout.Chunks)
+	}
+	requireTopics(t, "the record both writes merged into", stored, sortedTopics(base, kvchunktest.Topics("other", 10), kvchunktest.Topics("mine", 10)))
+}
+
+// The two deletes fenced on a revision the caller read - an unsubscribe that removes every topic a
+// record holds, and the reaper's delete of a gone session's record - delete the record's chunks
+// with it, as the delete that reads its own revision does (the deregistration of
+// TestARewriteThatShrinksGrowsOrDeletesARecordLeavesNoStaleChunk).
+func TestAFencedDeleteOfAChunkedRecordLeavesNoChunk(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	clock := &manualClock{at: time.Now()}
+	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(reg.StopWatch)
+	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	kv := rawInterests(t, conn)
+	requireNoKey := func(how string) {
+		t.Helper()
+		for key, op := range kvchunktest.LiveKeys(t, kv) {
+			if op == natsgo.KeyValuePut {
+				t.Fatalf("after %s the bucket still holds %s", how, key)
+			}
+		}
+	}
+
+	topics := kvchunktest.Topics("unsubscribed", 400)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_unsubscribed", MachineID: "m1"}, topics); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	if err := reg.removeInterestTopics(t.Context(), "ses_unsubscribed", topics); err != nil {
+		t.Fatalf("remove every topic the record holds: %v", err)
+	}
+	requireNoKey("an unsubscribe of every topic")
+
+	if _, err := reg.Upsert(Interest{SessionID: "ses_reaped", MachineID: "m1"}, kvchunktest.Topics("reaped", 400)); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	clock.Set(clock.Now().Add(InterestReapAllowance(InterestReapGrace) + time.Minute))
+	reaped, err := reg.Reap(func(string) (bool, error) { return false, nil }, InterestReapGrace)
+	if err != nil || reaped != 1 {
+		t.Fatalf("the reaper reaped %d records (%v), want the gone session's one", reaped, err)
+	}
+	requireNoKey("the reaper's delete")
+}
+
+// laggingCopyKeyValue is the interest bucket as a copy of its stream that is behind the leader
+// answers a direct get: it has not applied the chunks a write stored a moment ago, so a direct get
+// of one answers that it is not there (bus.KeyValue.Get says why a direct get can be answered by
+// such a copy).
+type laggingCopyKeyValue struct{ natsgo.KeyValue }
+
+func (kv laggingCopyKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
+	if kvchunk.IsChunkKey(key) {
+		return nil, natsgo.ErrKeyNotFound
+	}
+	return kv.KeyValue.Get(key)
+}
+
+// A read of a chunked record from the bucket reads its chunks from the stream's leader, so a copy
+// of the stream behind the leader, which answers a direct get of a chunk it has not applied as no
+// chunk at all, cannot make the record read as damaged.
+func TestAChunkedRecordReadsWholeWhereADirectGetOfItsChunksWouldMissThem(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	reg := openRegistry(t, conn)
+	topics := kvchunktest.Topics("lagging", 400)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_lagging", MachineID: "m1"}, topics); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	useKV(t, reg, laggingCopyKeyValue{KeyValue: reg.watcher.KV().Legacy()})
+	row, _, err := reg.RefreshAt(t.Context(), "ses_lagging")
+	if err != nil {
+		t.Fatalf("a read whose direct gets miss the chunks answered %v, want the record", err)
+	}
+	requireTopics(t, "the record read past a lagging copy", row, sortedTopics(topics))
+}
+
+// writingAfterDeleteKeyValue is the interest bucket with after run once a delete of key has landed:
+// another listener's registration storing the record again before the deleting listener reads the
+// key's history back.
+type writingAfterDeleteKeyValue struct {
+	natsgo.KeyValue
+	key   string
+	after func()
+}
+
+func (kv *writingAfterDeleteKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) error {
+	err := kv.KeyValue.Delete(key, opts...)
+	if err == nil && key == kv.key && kv.after != nil {
+		kv.after()
+		kv.after = nil
+	}
+	return err
+}
+
+// A delete whose read-back finds that another listener stored the record again since, as a
+// manifest, leaves the deleting listener's cache without the row until its watcher delivers that
+// manifest after its chunks: it does not join the manifest from chunks the watcher has not
+// delivered yet, which would evict the row as a record it cannot decode and log that it did. The
+// watcher is stopped here, so no chunk of the new record reaches the copy.
+func TestADeleteThatFindsAChunkedRecordStoredSinceLogsNoUndecodableRecord(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	logs := captureRegistryLogs(t)
+	reg := openRegistry(t, conn)
+	other := openRegistry(t, conn)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_stored_again", MachineID: "m1"}, kvchunktest.Topics("first", 10)); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	useKV(t, reg, &writingAfterDeleteKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: "ses_stored_again", after: func() {
+		if _, err := other.Upsert(Interest{SessionID: "ses_stored_again", MachineID: "m2"}, kvchunktest.Topics("again", 400)); err != nil {
+			t.Errorf("store the record again: %v", err)
+		}
+	}})
+	reg.watcher.Stop()
+	if err := reg.deleteInterest(t.Context(), "ses_stored_again"); err != nil {
+		t.Fatalf("delete the record: %v", err)
+	}
+	if item, ok := reg.Cached("ses_stored_again"); ok {
+		t.Fatalf("the deleting listener's cache holds a row of %d topics after the delete, want none until its watcher delivers the new record", len(item.Topics))
+	}
+	if text := logs.String(); strings.Contains(text, "evicted malformed value") {
+		t.Fatalf("the delete logged an undecodable record for a manifest whose chunks its watcher had not delivered:\n%s", text)
+	}
+}
