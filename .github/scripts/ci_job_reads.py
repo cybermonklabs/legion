@@ -3082,9 +3082,11 @@ GATES = [
         (BROWSER_SITE, "ci_filter_coverage.py looks the dispatch_browser gate's step citations up in it"),
         (BROWSER_NIGHTLY, "dispatch-browser.yaml's other caller: a change to either must re-run this check, which "
                           "holds the dispatch_browser filter to that gate"),
-        (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to ci.yaml's restores"),
-        (".github/workflows/**", "ci_workflow_rules.check_one_merge_group_workflow reads every workflow of the "
-                                 "directory, and a rule that refuses a new one has to run on the change that adds it"),
+        (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to every workflow's restores"),
+        (".github/workflows/**", "ci_workflow_rules.py reads every workflow of the directory: "
+                                 "check_one_merge_group_workflow, which refuses a new one and so has to run on the change "
+                                 "that adds it, and check_cache_round_trip, which holds every restore of a filled family to "
+                                 "the fill's key"),
         # Rule 17 computes each gate filter's generated block from two sets: the repository's Go
         # test files and the ones each gate reads. A test file added or deleted anywhere changes
         # what that rule writes, so the change that adds one has to start this job - otherwise

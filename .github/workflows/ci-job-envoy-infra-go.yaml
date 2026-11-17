@@ -36,9 +36,10 @@ jobs:
     # job took 537 s (run 44016277498, from an entry a dispatched fill saved on its branch), the live
     # tests 423 s of it. A run whose module files main has not filled, such as a pull request that
     # changes them, restores an entry built from older module versions and rebuilds what moved. At
-    # worst that is both vets nearly from nothing: 959 and 1059 s in runs 44013632169 and
-    # 43996496498, whose entry was eleven days old and held no darwin objects. This limit is for
-    # that case.
+    # worst that is both vets nearly from nothing, and the whole job then took 959 and 1059 s in
+    # runs 44013632169 and 43996496498, whose entry was eleven days old and held no darwin objects.
+    # With no entry at all, as after an eviction, the job took 921 s (run 44026580304). This limit
+    # is for those cases.
     timeout-minutes: 20
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"

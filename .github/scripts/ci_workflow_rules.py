@@ -9,7 +9,9 @@ engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14
 ci_filter_coverage.main()
 is what runs them, over the documents it already loaded - the rerun-guard rule over ci.yaml
 alone, since the `if:` it reads is the caller job's; the cache rule over ci.yaml and every
-workflow its jobs call, since a job's restore moves with its steps; the push-condition rule over
+workflow its jobs call, since a job's restore moves with its steps, and over every other
+workflow of the directory for the key and paths, since a release build's restore misses as
+silently; the push-condition rule over
 ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says why not the
 others) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
@@ -78,8 +80,9 @@ WORKFLOW_SUFFIXES = (".yaml", ".yml")
 @cache
 def directory_workflows() -> dict:
     """Every workflow of this repository, as {its repository-relative path: the parsed document},
-    in path order. The two rules that walk the directory read this one answer: parsing each file
-    for each of them is a second read of every workflow in the repository."""
+    in path order. The three rules that walk the directory - the push-condition rule (through
+    ci_only_documents), the cache rule and the merge-group rule - read this one answer: parsing
+    each file for each of them is a second read of every workflow in the repository."""
     try:
         paths = sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES)
     except Exception as exc:
@@ -224,12 +227,13 @@ def cache_steps(document: dict, action: str) -> list:
 
 
 def restores_of(documents: dict) -> dict:
-    """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
-    can be is where its job's steps are, which is the document set the engine loads: ci.yaml,
-    and each local workflow one of its jobs calls - dispatch-browser.yaml's shard and alone jobs
-    restore the browser and apt archive families for ci.yaml's dispatch-browser job - so a save
-    paired against ci.yaml alone would read as a fill nobody wants. The set holds each called
-    file once however many of ci.yaml's jobs name it, so each restore is taken once."""
+    """Every restore of the given workflows, as family -> [(where it is, its with:)]. Given the
+    document set the engine loads - ci.yaml, and each local workflow one of its jobs calls:
+    dispatch-browser.yaml's shard and alone jobs restore for ci.yaml's dispatch-browser job - it is
+    every restore of ci.yaml's run, so a save paired against ci.yaml alone would not read as a fill
+    nobody wants; given the rest of the directory, it is the restores of the release builds and
+    the other workflows. The set holds each file once however many of ci.yaml's jobs name it, so
+    each restore is taken once."""
     restores = defaultdict(list)
     for path, document in documents.items():
         for job_id, family, given in cache_steps(document, "restore"):

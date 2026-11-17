@@ -4288,9 +4288,10 @@ jobs:
               # The directory rather than the four workflows the check names one by one (this
               # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
               # workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
-              # this one that runs on merge_group - and a rule that refuses a new workflow has to
-              # run on the change that adds one, which a list of the names already there cannot
-              # select.
+              # this one that runs on merge_group, and check_cache_round_trip holds every
+              # workflow's restore of a family ci-caches.yaml fills to the fill's key - and a rule
+              # that reads a workflow has to run on the change that adds or edits one, which a
+              # list of the names already there cannot select.
               - '.github/workflows/**'
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
