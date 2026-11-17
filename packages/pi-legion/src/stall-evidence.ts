@@ -570,8 +570,8 @@ export interface StallTellerDeps {
   readonly log: StallWatchdogLog;
   /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
   readonly recordBoundMs?: number;
-  /** Waits before a notice the listener refused for this session's send rate is sent again; a
-   * `setTimeout` promise when it is left out. */
+  /** Waits before a notice the listener refused for this session's send rate is sent again;
+   * `Bun.sleep` when it is left out. */
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
@@ -674,13 +674,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
     }
   };
 
-  const sleep =
-    deps.sleep ??
-    ((ms: number) => {
-      const wait = Promise.withResolvers<void>();
-      setTimeout(wait.resolve, ms);
-      return wait.promise;
-    });
+  const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
 
   /** One publish of a notice, and what it came to. Nothing here throws. */
   const attempt = async (send: SendNotice): Promise<NoticeAttempt> => {

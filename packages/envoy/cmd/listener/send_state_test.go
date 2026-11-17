@@ -565,14 +565,14 @@ func awaitAgentWake(t *testing.T, wakes *natsgo.Subscription, sessionID string) 
 		if err != nil {
 			t.Fatalf("no wake report named %s: %v", sessionID, err)
 		}
-		if wakeReportSession(t, msg) == sessionID {
+		if kind, name := wakeReportNames(t, msg); kind == wakeKindAgent && name == sessionID {
 			return
 		}
 	}
 }
 
-// wakeReportSession is the session an agent wake report names, empty for any other report.
-func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
+// wakeReportNames is the kind of a wake report and the role or the session it names.
+func wakeReportNames(t *testing.T, msg *natsgo.Msg) (kind, name string) {
 	t.Helper()
 	var item contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &item); err != nil {
@@ -582,10 +582,7 @@ func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
 	if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
 		t.Fatalf("decode a wake report's payload %s: %v", item.Payload, err)
 	}
-	if report.Kind != wakeKindAgent {
-		return ""
-	}
-	return report.Session
+	return report.Kind, report.Role + report.Session
 }
 
 // A send to a session with no entry within the gone horizon raises the wake report, on the 200
@@ -655,7 +652,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 		if err != nil {
 			t.Fatalf("read the wake reports: %v", err)
 		}
-		if named := wakeReportSession(t, msg); named == unheld {
+		if kind, name := wakeReportNames(t, msg); kind == wakeKindAgent && name == unheld {
 			t.Fatalf("the send to the probe-stopped %s raised a wake report", unheld)
 		}
 	}

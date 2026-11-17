@@ -49,16 +49,15 @@ func requireSenderLimit(t *testing.T, limit *senderLimit, perMinute, burst int) 
 	if limit.now == nil {
 		t.Fatal("the limit reads no clock")
 	}
-	at := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 	for i := range burst {
-		if _, ok := limit.counts.TakeAt("ses_sender", at); !ok {
+		if _, ok := limit.counts.TakeAt("ses_sender", senderLimitStart); !ok {
 			t.Fatalf("message %d of a burst of %d was refused", i+1, burst)
 		}
 	}
-	if _, ok := limit.counts.TakeAt("ses_sender", at); ok {
+	if _, ok := limit.counts.TakeAt("ses_sender", senderLimitStart); ok {
 		t.Fatalf("message %d at the same instant was taken past a burst of %d", burst+1, burst)
 	}
-	if wait, want := limit.counts.WaitAt("ses_sender", at), time.Minute/time.Duration(perMinute); wait != want {
+	if wait, want := limit.counts.WaitAt("ses_sender", senderLimitStart), time.Minute/time.Duration(perMinute); wait != want {
 		t.Fatalf("after the burst the sender waits %s, want %s at %d messages a minute", wait, want, perMinute)
 	}
 }
@@ -77,7 +76,7 @@ func requireOneSenderAccepted(t *testing.T, deps *listenerDeps, messages int) {
 	started := time.Now()
 	for i := range recorders {
 		body := fmt.Sprintf(`{"source":"agent","source_session":"ses_sender","topic":%q,"message":"message %d"}`, topic, i+1)
-		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(body))
+		request := postJSON("/v1/messages/publish", body)
 		recorders[i] = httptest.NewRecorder()
 		sent.Go(func() { handler.ServeHTTP(recorders[i], request) })
 	}
@@ -204,7 +203,7 @@ var senderLimitStart = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 // countedMessage is the text of every message below that names none of its own.
 const countedMessage = "a message the sender limit counts"
 
-// senderLimitSentence is the error of R5 with its values filled in: what a refused agent reads.
+// senderLimitSentence is the 429's error with its values filled in: what a refused agent reads.
 func senderLimitSentence(perMinute, burst, seconds int) string {
 	return fmt.Sprintf("Your sending is rate limited. This message was not sent. This listener lets one session send %d messages a minute and %d at once. You can send it again after %d seconds.",
 		perMinute, burst, seconds)
@@ -222,13 +221,7 @@ type senderLimitRig struct {
 // newSenderLimitRig is a senderLimitRig on the package's shared server.
 func newSenderLimitRig(t *testing.T) *senderLimitRig {
 	t.Helper()
-	url := testnats.URL(t)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("connect the listener: %v", err)
-	}
-	t.Cleanup(client.Close)
-	return newSenderLimitRigOn(t, client, url)
+	return newSenderLimitRigOn(t, setupPublishTestClient(t), testnats.URL(t))
 }
 
 // newSenderLimitRigOnServer is a senderLimitRig on a server of its own, which the test can stop
@@ -334,17 +327,17 @@ func (rig *senderLimitRig) requireCount(t *testing.T, sender string, has bool) {
 	next.requireNamed(t, sender+"'s next message", sender)
 }
 
-// awaitWake reads the rig's wake reports until one of kind names name, and fails when none has
-// within 10 s.
-func (rig *senderLimitRig) awaitWake(t *testing.T, kind, name string) {
+// awaitRoleWake reads the rig's wake reports until one names role, and fails when none has within
+// 10 s. An agent wake is awaited on rig.wakes with awaitAgentWake.
+func (rig *senderLimitRig) awaitRoleWake(t *testing.T, role string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		msg, err := rig.wakes.NextMsg(time.Until(deadline))
 		if err != nil {
-			t.Fatalf("no %s wake report named %s: %v", kind, name, err)
+			t.Fatalf("no role wake report named %s: %v", role, err)
 		}
-		if gotKind, gotName := wakeNames(t, msg); gotKind == kind && gotName == name {
+		if kind, name := wakeReportNames(t, msg); kind == wakeKindRole && name == role {
 			return
 		}
 	}
@@ -363,24 +356,10 @@ func (rig *senderLimitRig) requireNoWake(t *testing.T, kind, name string) {
 		if err != nil {
 			t.Fatalf("read the wake reports: %v", err)
 		}
-		if gotKind, gotName := wakeNames(t, msg); gotKind == kind && gotName == name {
+		if gotKind, gotName := wakeReportNames(t, msg); gotKind == kind && gotName == name {
 			t.Fatalf("a %s wake report named %s, want none", kind, name)
 		}
 	}
-}
-
-// wakeNames is the kind of a wake report and the role or the session it names.
-func wakeNames(t *testing.T, msg *natsgo.Msg) (kind, name string) {
-	t.Helper()
-	var item contracts.Envelope
-	if err := json.Unmarshal(msg.Data, &item); err != nil {
-		t.Fatalf("decode a wake report: %v", err)
-	}
-	var report wakeReport
-	if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
-		t.Fatalf("decode a wake report's payload %s: %v", item.Payload, err)
-	}
-	return report.Kind, report.Role + report.Session
 }
 
 // messageJSON is body with fields over it, a nil value removing a field, as a request's JSON.
@@ -478,9 +457,10 @@ func (a limitedAnswer) requireUnnamed(t *testing.T, what string) {
 	}
 }
 
-// requireRefused fails unless the answer is the 429 of R5 for a message past sender's count, at a
-// limit of perMinute messages a minute and burst at once: Retry-After, retry_after_seconds and
-// the sentence each name seconds, and the line records sender_rate_limited and names sender.
+// requireRefused fails unless the answer is the sender limit's 429 for a message past sender's
+// count, at a limit of perMinute messages a minute and burst at once: Retry-After,
+// retry_after_seconds and the sentence each name seconds, and the line records
+// sender_rate_limited and names sender.
 func (a limitedAnswer) requireRefused(t *testing.T, what, sender string, perMinute, burst, seconds int) {
 	t.Helper()
 	a.requireStatus(t, what, http.StatusTooManyRequests)
@@ -503,7 +483,7 @@ func (a limitedAnswer) requireRefused(t *testing.T, what, sender string, perMinu
 
 // requireRoleSendLinesNameNoSender fails unless logs hold a role send's delivery line, and fails
 // when any of those lines has the field sender: the request's own line is the one line of the
-// listener that names it (R6).
+// listener that names it.
 func requireRoleSendLinesNameNoSender(t *testing.T, logs string) {
 	t.Helper()
 	lines := linesIn(logs, "listener publish role send", nil)
@@ -518,8 +498,9 @@ func requireRoleSendLinesNameNoSender(t *testing.T, logs string) {
 }
 
 // TestSenderLimitRoutes is check a-routes: a message past its sender's count is refused whole on
-// both routes, with the 429 of R5 and the line of R6, before it reaches the stream, a role's kept
-// lane, a holder or the wake reports; and a send and a publish spend one count.
+// both routes, with the 429 and a request line that alone names its sender, before it reaches the
+// stream, a role's kept lane, a holder or the wake reports; and a send and a publish spend one
+// count.
 func TestSenderLimitRoutes(t *testing.T) {
 	rig := newSenderLimitRig(t)
 
@@ -569,7 +550,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 		// so the rig is shown to read the role's wake reports, and that one is the only one.
 		unkept := rig.publishFrom(t, other, contracts.RoleTopicPrefix+role, map[string]any{"keep": false})
 		unkept.requireStatus(t, "another sender's message with keep false", http.StatusNotFound)
-		rig.awaitWake(t, wakeKindRole, role)
+		rig.awaitRoleWake(t, role)
 		rig.requireNoWake(t, wakeKindRole, role)
 		assertNothingKept(t, rig.harness.client, role)
 
@@ -609,7 +590,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 		// Another sender's send to the same session is answered 404 with its wake reported, so the
 		// rig is shown to read the session's wake reports, and that one is the only one.
 		rig.sendFrom(t, other, gone, nil).requireStatus(t, "another sender's send", http.StatusNotFound)
-		rig.awaitWake(t, wakeKindAgent, gone)
+		awaitAgentWake(t, rig.wakes, gone)
 		rig.requireNoWake(t, wakeKindAgent, gone)
 		rig.requireCount(t, sender, false)
 	})
@@ -662,10 +643,10 @@ func TestSenderLimitRoutes(t *testing.T) {
 	})
 }
 
-// TestSenderLimitCost is check a-cost and the rows of D3: a message costs its sender one where the
-// listener stores it, may have stored it or reports a wake for it, and nothing where it refuses it
-// before both, or finds it a repeat or an echo. Each case reads what the message cost off the
-// count with the sender's next message, and off the field sender on the message's own line.
+// TestSenderLimitCost is check a-cost: a message costs its sender one where the listener stores
+// it, may have stored it or reports a wake for it, and nothing where it refuses it before both, or
+// finds it a repeat or an echo. Each case reads what the message cost off the count with the
+// sender's next message, and off the field sender on the message's own line.
 func TestSenderLimitCost(t *testing.T) {
 	rig := newSenderLimitRig(t)
 	logs := rig.harness.logs.String
@@ -728,13 +709,13 @@ func TestSenderLimitCost(t *testing.T) {
 		first := rig.sendFrom(t, sender, target, key)
 		first.requireStatus(t, "the first send", http.StatusOK)
 		first.requireNamed(t, "the first send", sender)
-		rig.awaitWake(t, wakeKindAgent, target)
+		awaitAgentWake(t, rig.wakes, target)
 		repeat := rig.sendFrom(t, sender, target, key)
 		repeat.requireStatus(t, "the repeated send", http.StatusOK)
 		if !repeat.Duplicate {
 			t.Fatalf("the repeated send under one UUID key answered %s, want duplicate", repeat.raw)
 		}
-		rig.awaitWake(t, wakeKindAgent, target)
+		awaitAgentWake(t, rig.wakes, target)
 		repeat.requireUnnamed(t, "the repeated send")
 		rig.requireCount(t, sender, true)
 	})
@@ -762,13 +743,13 @@ func TestSenderLimitCost(t *testing.T) {
 		first := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key)
 		first.requireStatus(t, "the first kept message", http.StatusAccepted)
 		first.requireNamed(t, "the first kept message", sender)
-		rig.awaitWake(t, wakeKindRole, role)
+		rig.awaitRoleWake(t, role)
 		repeat := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key)
 		repeat.requireStatus(t, "the repeated kept message", http.StatusAccepted)
 		if !repeat.Kept || repeat.EventID != first.EventID {
 			t.Fatalf("the repeat answered %s, want kept with the first copy's event %s", repeat.raw, first.EventID)
 		}
-		rig.awaitWake(t, wakeKindRole, role)
+		rig.awaitRoleWake(t, role)
 		repeat.requireUnnamed(t, "the repeated kept message")
 		requireRoleSendLinesNameNoSender(t, logs()[before:])
 		rig.requireCount(t, sender, true)
@@ -865,7 +846,7 @@ func TestSenderLimitCost(t *testing.T) {
 			t.Fatalf("the message to a role nobody holds answered %s, want kept", kept.raw)
 		}
 		kept.requireNamed(t, "the kept message", sender)
-		rig.awaitWake(t, wakeKindRole, role)
+		rig.awaitRoleWake(t, role)
 		requireRoleSendLinesNameNoSender(t, logs()[before:])
 		rig.requireCount(t, sender, false)
 	})
@@ -878,7 +859,7 @@ func TestSenderLimitCost(t *testing.T) {
 		unkept.requireStatus(t, "the message with keep false", http.StatusNotFound)
 		unkept.requireOutcome(t, "the message with keep false", outcomeRoleUnclaimed)
 		unkept.requireNamed(t, "the message with keep false", sender)
-		rig.awaitWake(t, wakeKindRole, role)
+		rig.awaitRoleWake(t, role)
 		assertNothingKept(t, rig.harness.client, role)
 		requireRoleSendLinesNameNoSender(t, logs()[before:])
 		rig.requireCount(t, sender, false)
@@ -891,7 +872,7 @@ func TestSenderLimitCost(t *testing.T) {
 		missing.requireStatus(t, "the send to a session nobody knows", http.StatusNotFound)
 		missing.requireOutcome(t, "the send to a session nobody knows", outcomeNoLiveSession)
 		missing.requireNamed(t, "the send to a session nobody knows", sender)
-		rig.awaitWake(t, wakeKindAgent, gone)
+		awaitAgentWake(t, rig.wakes, gone)
 		rig.requireCount(t, sender, false)
 	})
 
@@ -903,7 +884,7 @@ func TestSenderLimitCost(t *testing.T) {
 		refused.requireStatus(t, "the steer to a record that takes aside alone", http.StatusForbidden)
 		refused.requireOutcome(t, "the steer to a record that takes aside alone", outcomeCapabilityRefused)
 		refused.requireNamed(t, "the steer to a record that takes aside alone", sender)
-		rig.awaitWake(t, wakeKindAgent, target)
+		awaitAgentWake(t, rig.wakes, target)
 		rig.requireCount(t, sender, false)
 	})
 
@@ -915,18 +896,13 @@ func TestSenderLimitCost(t *testing.T) {
 		stopped.requireStatus(t, "the connected_only send to a record", http.StatusConflict)
 		stopped.requireOutcome(t, "the connected_only send to a record", outcomeSessionStopped)
 		stopped.requireNamed(t, "the connected_only send to a record", sender)
-		rig.awaitWake(t, wakeKindAgent, target)
+		awaitAgentWake(t, rig.wakes, target)
 		rig.requireCount(t, sender, false)
 	})
 
 	t.Run("send to a session with only a record while the stream is full (503 stream_full after the wake) costs one", func(t *testing.T) {
-		url := testnats.URL(t)
-		client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithStreamMaxBytes(16<<10))
-		if err != nil {
-			t.Fatalf("connect the listener on a small stream: %v", err)
-		}
-		t.Cleanup(client.Close)
-		full := newSenderLimitRigOn(t, client, url)
+		client := setupPublishTestClient(t, bus.WithStreamMaxBytes(16<<10))
+		full := newSenderLimitRigOn(t, client, testnats.URL(t))
 		full.limit(4, 1)
 		const sender, target = "ses_cost_full", "ses_cost_full_target"
 		full.recorded(t, target, nil)
@@ -935,7 +911,7 @@ func TestSenderLimitCost(t *testing.T) {
 		refused.requireStatus(t, "the send to a full stream", http.StatusServiceUnavailable)
 		refused.requireOutcome(t, "the send to a full stream", outcomeStreamFull)
 		refused.requireNamed(t, "the send to a full stream", sender)
-		full.awaitWake(t, wakeKindAgent, target)
+		awaitAgentWake(t, full.wakes, target)
 		full.requireCount(t, sender, false)
 	})
 

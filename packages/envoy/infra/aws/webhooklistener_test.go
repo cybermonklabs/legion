@@ -568,15 +568,14 @@ func TestWebhookListenerRefusesAnInvalidInputBeforeRegistering(t *testing.T) {
 // validate returns through rendering.ListenerEnv.Check, before anything but the provider
 // registers.
 func TestWebhookListenerSenderMessageLimit(t *testing.T) {
-	n := func(v int) *int { return &v }
 	for _, row := range []struct {
 		name        string
 		rate, burst *int
 		want        []string
 	}{
 		{"no limit", nil, nil, nil},
-		{"a rate alone", n(4), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4"}},
-		{"a rate and a burst", n(4), n(8), []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=8"}},
+		{"a rate alone", pulumi.IntRef(4), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4"}},
+		{"a rate and a burst", pulumi.IntRef(4), pulumi.IntRef(8), []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=8"}},
 	} {
 		t.Run("aws:WebhookListener renders "+row.name, func(t *testing.T) {
 			args := exampleListenerArgs()
@@ -602,10 +601,10 @@ func TestWebhookListenerSenderMessageLimit(t *testing.T) {
 		rate, burst *int
 		input       string
 	}{
-		{"a rate of 0", n(0), nil, "senderMessagesPerMinute"},
-		{"a rate of 60001", n(60001), nil, "senderMessagesPerMinute"},
-		{"a burst of 0", n(4), n(0), "senderMessageBurst"},
-		{"a burst with no rate", nil, n(8), "senderMessageBurst"},
+		{"a rate of 0", pulumi.IntRef(0), nil, "senderMessagesPerMinute"},
+		{"a rate of 60001", pulumi.IntRef(60001), nil, "senderMessagesPerMinute"},
+		{"a burst of 0", pulumi.IntRef(4), pulumi.IntRef(0), "senderMessageBurst"},
+		{"a burst with no rate", nil, pulumi.IntRef(8), "senderMessageBurst"},
 	} {
 		t.Run("aws:WebhookListener refuses "+row.name, func(t *testing.T) {
 			args := exampleListenerArgs()

@@ -95,7 +95,7 @@ func describeSenderLimit(l *senderLimit) string {
 // take counts item against its sender's count at the limit's clock, and answers the charge the
 // route marks as it answers (senderCharge), or the refusal it answers 429 with when the count is
 // empty. Both routes call it after their own checks and before they read a session, resolve a
-// role, report a wake or store anything, so a refused message reaches nobody (R2).
+// role, report a wake or store anything, so a refused message reaches nobody.
 //
 // The sender is the session a secrets-broker token proved, else the request's trimmed
 // source_session: sessionNotBound has already refused a body that names a session the token does
@@ -135,7 +135,7 @@ func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCha
 // and forgive where the stream or the role's kept lane answers that the message repeats one
 // already stored. settle, which the route defers right after the take, gives the take back unless
 // the charge is spent and not forgiven, so a path that marks nothing costs nothing: a refusal
-// before any store or wake, an echo, a repeat the role route's own record answers (R3). Each mark
+// before any store or wake, an echo, a repeat the role route's own record answers. Each mark
 // comes before the route writes its answer, because the request's log line names the sender of a
 // charge that cost one (counted) at the moment it is written.
 //
@@ -190,7 +190,7 @@ type senderRefusal struct {
 	retryAfterSeconds int
 }
 
-// senderRateLimitedAnswer is the 429's body (R5). Error is what the agent reads: each client shows
+// senderRateLimitedAnswer is the 429's body. Error is what the agent reads: each client shows
 // a refusal's error as it is written and sends nothing below 500 again
 // (packages/envoy-client/src/transport.ts), so the sentence alone tells the agent that its sending
 // is limited, that this message went nowhere, and when to send it again. Reason is the outcome the

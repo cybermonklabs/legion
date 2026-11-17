@@ -382,15 +382,14 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 // variable printed exactly when its flag is given, and a value the component refuses is refused
 // naming the flag that set it.
 func TestWebhookListenerEnvSenderMessageFlags(t *testing.T) {
-	n := func(v int) *int { return &v }
 	for _, c := range []struct {
 		name        string
 		rate, burst *int
 		want        []string // the sender limit's lines
 	}{
 		{"no sender flag", nil, nil, nil},
-		{"a rate alone", n(4), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4"}},
-		{"a rate and a burst", n(4), n(8), []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=8"}},
+		{"a rate alone", pulumi.IntRef(4), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4"}},
+		{"a rate and a burst", pulumi.IntRef(4), pulumi.IntRef(8), []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=8"}},
 	} {
 		t.Run("webhook-listener-env prints "+c.name, func(t *testing.T) {
 			var set []string

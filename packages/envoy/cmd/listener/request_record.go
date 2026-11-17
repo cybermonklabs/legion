@@ -175,7 +175,7 @@ func (rec *requestRecord) refuseRoleHolder(w http.ResponseWriter, role string, r
 }
 
 // refuseSenderRateLimited answers a message whose sender's count was empty (senderLimit.take)
-// with the 429 of R5: Retry-After and the body's retry_after_seconds name the same whole seconds,
+// with the 429: Retry-After and the body's retry_after_seconds name the same whole seconds,
 // until the count holds one message again. It records the request under outcomeSenderRateLimited
 // with the sender the limit refused.
 func (rec *requestRecord) refuseSenderRateLimited(w http.ResponseWriter, refusal *senderRefusal) {

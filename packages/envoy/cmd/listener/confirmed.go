@@ -154,6 +154,12 @@ func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
 // rather than the holder's. It publishes no delivery exception: the sender has the answer. Every
 // answer goes through record, the route's one line per request (request_record.go), and is then
 // settled: counted, and logged on the send's own delivery line.
+//
+// Each answer marks the message's take from its sender's count (record.charge) before it is
+// written: a wake reported, a forward the stream stored, and a window that ended or a refusal
+// after an earlier attempt, each of which may have stored it, cost one. A repeat the kept lane
+// answers is forgiven, and any other answer marks nothing, so the route's deferred settle gives
+// the take back.
 type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
@@ -178,13 +184,6 @@ type roleSend struct {
 	// unresponsive or gone (kept).
 	holderState session.State
 	attempts    int
-	// charge is the message's take from its sender's count (senderLimit.take), which each answer
-	// below marks before it is written: a wake reported (noHolder), a forward the stream stored
-	// (sendDelivered), and a window that ended or a refusal after an earlier attempt, each of which
-	// may have stored it, cost one. A repeat the kept lane answers is forgiven, and an echo, a
-	// repeat in the route's own record, a holder that refuses the delivery mode and a resolution
-	// that failed mark nothing, so the route's deferred settle gives the take back.
-	charge *senderCharge
 }
 
 // settle counts and logs the send's outcome, the one delivery line a send writes, once its answer
@@ -235,7 +234,7 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 func (s *roleSend) noHolder(result roles.Resolution) {
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
-	s.charge.spend()
+	s.record.charge.spend()
 	if s.keep && roleKeepable(result) {
 		if kept, ok := keepForNextHolder(*s.d.delivery, s.role, s.item); ok {
 			s.kept(result, kept)
@@ -273,7 +272,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // fallback must run. INFRA-514's architect decided it on 2026-10-31.
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
-		s.charge.forgive()
+		s.record.charge.forgive()
 	}
 	s.item = kept.item
 	s.holder = result.Holder
@@ -317,7 +316,7 @@ func (s *roleSend) unresolved(err error) {
 // forward of the same send may have stored the message.
 func (s *roleSend) refused(err error) {
 	if s.attempts > 1 {
-		s.charge.spend()
+		s.record.charge.spend()
 	}
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
@@ -328,7 +327,7 @@ func (s *roleSend) refused(err error) {
 // holder, recorded delivery_failed. It costs its sender one, since a forward whose
 // acknowledgement did not arrive may still have been stored.
 func (s *roleSend) timedOut() {
-	s.charge.spend()
+	s.record.charge.spend()
 	s.record.holder = s.holder
 	s.record.refuseWith(s.w, http.StatusGatewayTimeout, outcomeDeliveryFailed, roleSendFailure{
 		Error: fmt.Sprintf("role %s: event %s was not stored for its holder %s within %s (%s)",
@@ -396,10 +395,9 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
 // none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
 // its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
-// send forwards and keeps carries the envelope's own value. charge is the message's take from its
-// sender's count, which the send marks as it answers (roleSend.charge).
-func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, charge *senderCharge) {
-	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, charge: charge}
+// send forwards and keeps carries the envelope's own value.
+func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
+	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
@@ -463,7 +461,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
 				d.confirm(item.DedupeKey, send.holder)
-				send.charge.spend()
+				send.record.charge.spend()
 				send.delivered(sendDelivered)
 				return
 			}
