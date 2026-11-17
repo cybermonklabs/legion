@@ -935,14 +935,8 @@ func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
 		bus.WithStreamMaxBytes(cfg.StreamMaxBytes),
 		bus.WithKeptBuckets(bus.ListenerBuckets()...),
 		bus.WithSilentCutDetection(),
-		// The connection's name in the server's /connz, which `envoy-infra buckets` reads to name
-		// a running listener that no inventory it was given lists (its census).
-		bus.WithName(listenerConnectionName),
 	}
 }
-
-// listenerConnectionName is the name the listener's main connection carries on the server.
-const listenerConnectionName = "envoy-listener"
 
 // registerListGauges registers the two gauges that count a list /v1 answers: envoy_active_sessions
 // counts listedSessions, the listing GET /v1/sessions answers, and envoy_active_interests the
@@ -1243,7 +1237,7 @@ func main() {
 	// a start that finds one missing waits here, every route behind its starting gate answering
 	// 503 and /healthz naming the bucket, until the operator's `envoy-infra buckets` creates it.
 	if err := awaitCopiedBuckets(context.Background(), logger, client.JS(), client.Conn,
-		listenerCopiedBuckets(webhookCfg.GitHub != nil), missing, os.Getenv(throwawayNATSEnv) == "1", cfg.NATSReplicas); err != nil {
+		startCopiedBuckets(webhookCfg.GitHub != nil), missing, os.Getenv(throwawayNATSEnv) == "1", cfg.NATSReplicas); err != nil {
 		log.Fatalf("await the copied KV buckets: %v", err)
 	}
 	// CI-summary aggregation state. Its WatchAll cache warms asynchronously like the registries
@@ -1405,12 +1399,17 @@ func main() {
 	// (session.OpenKnownSessions), so a grant applied after this start is picked up with no
 	// restart. This line is the one failure that leaves no store at all, a connection that gives
 	// no JetStream context, which answers as an empty store does.
-	known, knownErr := session.OpenKnownSessions(
-		client.Conn,
+	knownOptions := []session.KnownSessionsOption{
 		session.WithKnownSessionReplicas(cfg.NATSReplicas),
 		session.WithKnownSessionLogger(logger.Slog()),
-		session.WithExistingKnownSessionBucket(),
-	)
+	}
+	// No listener creates the bucket (missing_buckets.go), but one on a throwaway server
+	// (ENVOY_THROWAWAY_NATS=1), whose store creates it in the background as a start creates the
+	// others, since the start does not wait for this one (startCopiedBuckets).
+	if os.Getenv(throwawayNATSEnv) != "1" {
+		knownOptions = append(knownOptions, session.WithExistingKnownSessionBucket())
+	}
+	known, knownErr := session.OpenKnownSessions(client.Conn, knownOptions...)
 	if knownErr != nil {
 		logger.Error("the known-session store was not built; no session's 30-day record is written or read for the life of this listener",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", knownErr.Error()))
@@ -1821,10 +1820,10 @@ func main() {
 				// bucket is gone is left out of the checks and the rebuild (bucketMissing), and
 				// logs missingBucketLine for the alarm while it stays gone. A read that fails says
 				// nothing and keeps the last finding.
-				if names, err := readMissingBuckets(client.JS(), listenerCopiedBuckets(ciStore != nil)); err == nil {
-					missing.record(names)
-					logMissingBuckets(logger, names)
-				}
+				// A bucket whose read failed (a grant that lacks it, say) counts as neither.
+				names, _ := readMissingBuckets(client.JS(), listenerCopiedBuckets(ciStore != nil))
+				missing.record(names)
+				logMissingBuckets(logger, names)
 				if err := checkSelfHealth(caches, probeDurable); err != nil {
 					return err
 				}

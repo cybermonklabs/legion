@@ -262,10 +262,12 @@ func (f fence) writerProcesses() []string {
 	return names
 }
 
-// writerConnections are the names a writer's NATS connections carry: the listener's main
-// connection, its role lane and its session consumers' (internal/bus), and Dispatch's.
+// writerConnections are the names a writer's NATS connections carry: every listener's role lane
+// and its session consumers' (internal/bus), and Dispatch's. The listener's main connection carries
+// the bus's default name, which other programs share, so the role lane, which every listener
+// opens, is what names it.
 func (f fence) writerConnections() []string {
-	names := []string{"envoy-listener", "envoy-role-lane", "envoy-session-consumers"}
+	names := []string{"envoy-role-lane", "envoy-session-consumers"}
 	if f.dispatch {
 		names = append(names, "dispatch")
 	}

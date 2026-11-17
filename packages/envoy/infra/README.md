@@ -2673,8 +2673,8 @@ without one:
   unreachable machine blocks, and so does a query that did not run to its end or read no process.
   A dev box whose listener connects to the hub is such a machine.
 - `--connz <url>`, a hub server's monitoring URL, adds to the proof: each page of its
-  `/connz?auth=true` is read, and an open connection named `envoy-listener`, `envoy-role-lane` or
-  `envoy-session-consumers` (or `dispatch`) blocks. An empty census proves nothing absent: a
+  `/connz?auth=true` is read, and an open connection named `envoy-role-lane` (every listener opens
+  one) or `envoy-session-consumers` (or `dispatch`) blocks. An empty census proves nothing absent: a
   frozen process holds no connection.
 - `--first-deployment`, instead of an inventory: the server holds no `ENVOY_NOTIFICATIONS` stream
   and none of the buckets, so no listener or envoy-dispatch has connected to it.

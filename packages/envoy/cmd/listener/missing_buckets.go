@@ -122,6 +122,15 @@ func listenerCopiedBuckets(ci bool) []string {
 	return slices.DeleteFunc(bus.CopiedBuckets(), func(bucket string) bool { return bucket == bus.CIStateBucket && !ci })
 }
 
+// startCopiedBuckets are the copied buckets a start waits for (awaitCopiedBuckets): all of
+// listenerCopiedBuckets but the known-session bucket, whose store opens it in the background and
+// answers as an empty store until it does (session.OpenKnownSessions), as it always has for a
+// listener whose grant does not carry it yet. That store creates the bucket no more than the start
+// does (session.WithExistingKnownSessionBucket), and the self-health monitor names it when missing.
+func startCopiedBuckets(ci bool) []string {
+	return slices.DeleteFunc(listenerCopiedBuckets(ci), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
+}
+
 // readMissingBuckets asks the server for each bucket's stream and answers those it says it does
 // not hold. A read that fails any other way is returned as the error, after every bucket was
 // asked, and says nothing of that bucket.
