@@ -68,6 +68,28 @@ jobs:
             exit 1
           fi
           echo "The architecture-check action judged $COUNT notes."
+      # The spec-file action, run over this repository's own .dispatch/spec (its default path) for
+      # the reasons and in the place the architecture-note action above runs: every part of it is
+      # exercised here, and it runs before this job's own setup-go. Its own setup-go adds the `go`
+      # matcher again and it removes it again. Main holds no spec file yet, so the directory does
+      # not exist and allow-empty reads it as the empty tree; a pull request that adds a spec file
+      # is judged by every rule. A refused tree fails the job before its other checks run.
+      - id: spec-files
+        name: Check this repository's spec files with the composite action
+        uses: ./.github/actions/spec-check
+        with:
+          allow-empty: 'true'
+      # It runs only when the action succeeded: a valid tree, or with allow-empty the empty one, so
+      # 0 is a count, and a count that is missing or not a whole number is the action's fault.
+      - name: Read the statement count the spec-file action hands to the job
+        env:
+          COUNT: ${{ steps.spec-files.outputs.count }}
+        run: |
+          if ! [[ $COUNT =~ ^(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::the spec-check action's count output is '$COUNT', not a whole number"
+            exit 1
+          fi
+          echo "The spec-check action read $COUNT statements."
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - id: setup-go
@@ -91,11 +113,11 @@ jobs:
             exit 1
           fi
         working-directory: packages/envoy
-      # These two packages need no database, so they run here on every push. This is their one
-      # run: envoy-go's unit step leaves both out, its `grep -Ev` and this step's package list
-      # built from ARCHITECTURE_CHECK_PACKAGES in .github/scripts/ci_job_reads.py.
-      - name: Test the architecture-note rules and their command
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/
+      # These five packages need no database, so they run here on every push. This is their one
+      # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
+      # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
+      - name: Test the architecture-note and spec-file rules and their commands
+        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
@@ -130,6 +152,9 @@ jobs:
         working-directory: packages/envoy
       - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
         run: bash scripts/listener-deploy-probe.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
+        run: bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: bash loadtest/run-step.test.sh

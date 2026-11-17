@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
@@ -147,6 +148,7 @@ var settingsEmitted = map[string]string{
 	"AgentSecretsConfig.URL":                         "runtime.kubernetes.agent_secrets.url",
 	"AgentSecretsConfig.Audience":                    "runtime.kubernetes.agent_secrets.audience",
 	"AgentSecretsConfig.TokenExpirySeconds":          "runtime.kubernetes.agent_secrets.token_expiry_seconds",
+	"AgentSecretsConfig.ExchangeAudience":            "runtime.kubernetes.agent_secrets.exchange_audience",
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
@@ -160,6 +162,7 @@ var settingsEmitted = map[string]string{
 	"Experiment.Name":                                "projects.<KEY>.experiments.<name> (the mapping key the block is declared under)",
 	"Experiment.Mode":                                "projects.<KEY>.experiments.<name>.mode",
 	"Experiment.Unit":                                "projects.<KEY>.experiments.<name>.unit",
+	"Experiment.Roles":                               "projects.<KEY>.experiments.<name>.roles",
 	"Experiment.OnVariant":                           "projects.<KEY>.experiments.<name>.on_variant",
 	"Experiment.Variants":                            "projects.<KEY>.experiments.<name>.variants",
 	"Variant.Name":                                   "projects.<KEY>.experiments.<name>.variants[].name",
@@ -587,8 +590,9 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 }
 
 // A project's `experiments` ride the settings as the file writes them: every block in the file's
-// order, under the name it is declared with, with its mode, its unit, the arm `on` would give and
-// its arms in the file's order, each with its weight and its overlays. The paths are the
+// order, under the name it is declared with, with its mode, its unit, the roles its arms reach
+// (absent where it names none), the arm `on` would give and its arms in the file's order, each
+// with its weight and its overlays. The paths are the
 // operator's own file names, as the `memory` block's are (settingsEmitted). A project that
 // declares none under the key carries `[]`, never no key at all, which the census above reads off
 // the fixture.
@@ -602,6 +606,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
           - name: long
       review-depth:
         mode: on
+        roles: [planner, implementer]
         on_variant: deep
         variants:
           - {name: deep}
@@ -617,7 +622,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 			{Name: "short", Weight: 3, ConfigFiles: []string{}},
 			{Name: "long", Weight: 1, ConfigFiles: []string{}},
 		}},
-		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, OnVariant: "deep", Variants: []VariantSettings{
+		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, Roles: []claim.Role{claim.RolePlanner, claim.RoleImplementer}, OnVariant: "deep", Variants: []VariantSettings{
 			{Name: "deep", Weight: 1, ConfigFiles: []string{}},
 			{Name: "shallow", Weight: 1, ConfigFiles: []string{}},
 		}},
@@ -816,4 +821,31 @@ func nullKeys(document any, prefix string) []string {
 		}
 	}
 	return keys
+}
+
+// runtime.kubernetes.agent_secrets.exchange_audience reaches the settings as the block's
+// exchange_audience where the file sets it, an audience and no credential, and is absent where it
+// does not, so a deployment that never set it reads byte for byte as before the key existed.
+func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
+	for name, tc := range map[string]struct{ audience, want string }{
+		"set":   {"legion-broker-exchange", `"exchange_audience":"legion-broker-exchange"`},
+		"unset": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := settingsFixtureConfig(t)
+			cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = tc.audience
+			encoded, err := json.Marshal(SettingsOf(cfg).Runtime.Kubernetes.AgentSecrets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const before = `{"url":"https://agent-secrets.internal.example","audience":"fixture-broker-audience","token_expiry_seconds":1800`
+			want := before + "}"
+			if tc.want != "" {
+				want = before + "," + tc.want + "}"
+			}
+			if string(encoded) != want {
+				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
+	}
 }

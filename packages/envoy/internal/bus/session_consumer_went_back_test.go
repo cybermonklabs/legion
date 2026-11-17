@@ -53,11 +53,11 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	ctx := context.Background()
 	// before is how many messages the stream holds when the consumer is created (N).
 	const before = 20
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 
 	for i := range before {
-		publishStored(t, owner, contracts.AgentSubject(session+"_bystander"), fmt.Sprintf("before %02d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject(session+"_bystander"), fmt.Sprintf("before %02d", i))
 	}
 	id := streamIDOf(t, consumers)
 	start, err := consumers.Ensure(ctx, session, filters, 0)

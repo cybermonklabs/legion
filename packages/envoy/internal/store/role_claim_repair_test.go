@@ -311,7 +311,7 @@ func TestTheFirstReadOfAnEpochCountsNoRepair(t *testing.T) {
 	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: 1, Storage: natsgo.FileStorage})
 	putRoleClaim(t, recreated, "reviewer", "ses_a")
 	putRoleClaim(t, recreated, "lead", "ses_c")
-	if err := rig.reg.Rewatch(rig.conn); err != nil {
+	if err := rig.reg.Rewatch(context.Background(), rig.conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	want := map[string][]string{"ses_a": {"reviewer"}, "ses_c": {"lead"}}

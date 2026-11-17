@@ -519,6 +519,9 @@ provider_keys:
   `on_variant` names, or `random`, which draws among the arms by their weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
+  issue role where the block names none; a pane of a role the list leaves out loads none of this
+  experiment's overlays or instructions while its unit keeps the arm it drew.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
