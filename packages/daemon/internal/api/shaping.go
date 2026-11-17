@@ -92,8 +92,8 @@ var ownBody = placement{restore: DaemonAPIVersion, strip: DaemonAPIVersion}
 //     reader loses no key it loses today.
 //   - A contract above DaemonAPIVersion takes the body this contract writes, on both sides.
 //   - A contract between the floor and this daemon's own that SupportedContracts does not hold —
-//     47 and 50, the two numbers no change ever shipped under — takes the nearest recorded
-//     contract below it, on both sides.
+//     a number version.go carries no numbered entry for — takes the nearest recorded contract
+//     below it, on both sides.
 //   - The first and the last write one log line each (servedContracts).
 //
 // What the shaping takes off the body is written to the log after it is applied, by
@@ -176,8 +176,9 @@ func stripContract(n int) int {
 }
 
 // recordedContractAtOrBelow is n itself where SupportedContracts records it, the nearest recorded
-// contract below n where it does not (47 takes 46 and 50 takes 49), and DaemonAPIVersion for an n
-// above this daemon's own. Its callers hand it nothing below ServingFloor.
+// contract below n where it does not (a number between two entries takes the lower), and
+// DaemonAPIVersion for an n above this daemon's own. Its callers hand it nothing below
+// ServingFloor.
 func recordedContractAtOrBelow(n int) int {
 	if n >= DaemonAPIVersion {
 		return DaemonAPIVersion

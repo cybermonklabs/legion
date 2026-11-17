@@ -92,8 +92,8 @@ func numberedEntries(t *testing.T) map[int]bool {
 // and version.go's numbered entries are what say which contracts exist. The two are held
 // together in both directions: an entry between the floor and this daemon's own contract that
 // the list omits is a contract no answer is shaped for, and a number in the list that no entry
-// names is a contract nothing ever shipped under. 47 and 50 are the second case, which is why
-// they are in no list.
+// names is a contract nothing ever shipped under. A number with no entry would be the second
+// case, which is why none is in the list.
 func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
 	entries := numberedEntries(t)
 	listed := map[int]bool{}

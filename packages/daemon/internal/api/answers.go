@@ -32,11 +32,12 @@ import (
 // requires, whatever this daemon stopped writing.
 const ServingFloor = 46
 
-// SupportedContracts is every contract this daemon describes a shape for, from ServingFloor up
-// to DaemonAPIVersion. It is the numbers version.go carries a numbered entry for, and nothing
-// else: 47 and 50 have no entry, because no change ever shipped under either, so they are in no
-// list. `version_test.go` reads the entry headers out of version.go and holds this list to them
-// in both directions.
+// SupportedContracts is every contract this daemon describes a shape for: each number version.go
+// carries a numbered entry for, from ServingFloor up to DaemonAPIVersion, and nothing else. A
+// number in that range with no entry is in no list, and a caller at it takes the nearest recorded
+// contract below it (recordedContractAtOrBelow).
+// TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
+// headers out of version.go and holds this list to them in both directions.
 //
 // The last is the constant rather than its number, because this change's own entry is the last
 // one: a renumber of this change moves shapedAnswersContract and this list with it, and moving

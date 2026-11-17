@@ -792,6 +792,61 @@ test("a refusal of an answer carrying no contract says the daemon stated none", 
   expect(refused.message).not.toContain(BODY_SECRET);
 });
 
+test("a non-success answer that is not the daemon's refusal names both contracts and quotes no more than its first bytes", async () => {
+  // A proxy's page in front of the daemon, longer than the start the refusal quotes, with a value
+  // only its end carries. `state` is not wrapped in the restart retry, so its 503 comes straight
+  // back.
+  const page = `<html>503 Service Unavailable</html>${"x".repeat(4000)}${BODY_SECRET}`;
+  const proxied = (daemonContract: number, body = page): LegionDaemonClient =>
+    createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: (async (_input, _init) =>
+        new Response(body, {
+          status: 503,
+          headers: {
+            "Content-Type": "text/html",
+            "Legion-Daemon-Contract": String(daemonContract),
+          },
+        })) as typeof fetch,
+    });
+
+  const behind = await proxied(CONTRACT + 1)
+    .state()
+    .catch((error: unknown) => error);
+  expect(behind).toBeInstanceOf(LegionDaemonApiError);
+  expect(behind).toMatchObject({ status: 503, code: undefined });
+  // Still a dropped attempt to the restart retry: the class, status and missing code are kept.
+  expect(daemonUnreachable(behind)).toBe("dropped");
+  const detail = (behind as LegionDaemonApiError).detail;
+  expect(detail).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
+  expect(detail).toContain(`The daemon speaks ${CONTRACT + 1}.`);
+  expect(detail).toContain("This pod is behind the daemon, and it waits for its update round.");
+  expect(detail).toContain(`${new TextEncoder().encode(page).length} bytes`);
+  expect(detail).toContain('"<html>503 Service Unavailable</html>x');
+  expect(detail).toContain("not the daemon's refusal shape");
+  expect(detail).not.toContain(BODY_SECRET);
+  expect(detail).not.toContain("x".repeat(64));
+
+  const ahead = await proxied(CONTRACT - 1)
+    .state()
+    .catch((error: unknown) => error);
+  expect(ahead).toBeInstanceOf(LegionDaemonApiError);
+  expect(ahead).toMatchObject({ status: 503, code: undefined });
+  expect((ahead as LegionDaemonApiError).detail).toContain(`The daemon speaks ${CONTRACT - 1}.`);
+  expect((ahead as LegionDaemonApiError).detail).toContain(
+    "The daemon is the older of the two, and the update round will not cure it."
+  );
+  expect((ahead as LegionDaemonApiError).detail).not.toContain(BODY_SECRET);
+
+  // One bare word, which a JSON parser's own message quotes far past the start the refusal shows.
+  const word = await proxied(CONTRACT + 1, `${"a".repeat(180)}${BODY_SECRET}`)
+    .state()
+    .catch((error: unknown) => error);
+  expect(word).toBeInstanceOf(LegionDaemonApiError);
+  expect((word as LegionDaemonApiError).detail).not.toContain(BODY_SECRET);
+  expect((word as LegionDaemonApiError).detail).not.toContain("a".repeat(65));
+});
+
 test("a refusal raised on the retry of a dropped attempt says the earlier attempt may have been applied", async () => {
   // The first attempt loses its connection before the daemon answers, as a restart makes it;
   // the second reaches a daemon whose answer this build cannot read.

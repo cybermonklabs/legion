@@ -14,12 +14,11 @@ const (
 	// column of the claim (supervise's clearUpdate), so this is also every claim whose last
 	// round ended.
 	UpdateStateNone UpdateState = "none"
-	// UpdateStateOpen is a round open over this claim whose ask the daemon has not published
-	// yet.
+	// UpdateStateOpen is a round open over this claim whose ask the daemon has not queued yet.
 	UpdateStateOpen UpdateState = "open"
-	// UpdateStateAsked is a round that published its ask on this claim's role topic over Envoy
-	// and waits for the answer. UpdateTaskedAt marks that publish (record.UpdateAsk,
-	// supervise's Machine.PodUpdateAsked).
+	// UpdateStateAsked is a round that queued its ask in the outbox, which publishes it on this
+	// claim's role topic over Envoy, and waits for the answer. UpdateTaskedAt marks that queueing
+	// (record.UpdateAsk, supervise's Machine.PodUpdateAsked).
 	UpdateStateAsked UpdateState = "asked"
 	// UpdateStateAnswered is a claim whose worker answered the round that is open over it. The
 	// daemon holds the claim's next task from this moment. The round ends when every claim of
@@ -34,7 +33,7 @@ const (
 // answers:
 //
 //   - An answer stands wherever UpdateSignalledAt is set, whatever the ask clock holds. A worker
-//     may answer before the daemon publishes the round's ask, with UpdateTaskedAt still empty,
+//     may answer before the daemon queues the round's ask, with UpdateTaskedAt still empty,
 //     so the answer is asked for first and the clock decides nothing after it.
 //   - A claim with no round is `none`. It is asked after the answer, so a claim that somehow
 //     holds an answer without a round still reads `answered` rather than `none`.
