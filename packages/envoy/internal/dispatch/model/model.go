@@ -2594,8 +2594,8 @@ const (
 // MentionCopyHolderSQL reads the earlier event a copy of a mention waits behind before it reaches
 // the session it is bound for - its id and its publish_error, the reason its last publish attempt
 // failed - and no row while the copy waits for nothing. The copy is of the comment whose
-// comment.created event is the bigint expression event, and recipientKey is the text expression
-// of that session's key (the subject OwedTopicFamily's doc names). It waits while an earlier event
+// comment.created event's id is $1, and $2 is that session's key (the subject OwedTopicFamily's
+// doc names). It waits while an earlier event
 // of the same owner - an issue, a document or a project, spelled as the outbox orders an owner's
 // events - is unpublished, is no pending subscription command, and still owes a send that session
 // may take before the copy: one to the owner's topic family, which any session may follow and
@@ -2614,19 +2614,19 @@ const (
 // mention's copy takes outside the outbox's chains: the API's send of the mention
 // (deliverResolvedCommentMention in internal/dispatch/api) and the outbox's fallback pass
 // (decideFallbackCopy). The read walks the partial index events_outbox_owner, whose predicate the
-// query's own clauses spell, so it reads the owner's unpublished events and no other.
-func MentionCopyHolderSQL(event, recipientKey string) string {
-	return `select k.id, k.publish_error
+// query's own clauses spell, so it reads the owner's unpublished events and no other. It is a
+// constant so that a guard reading a statement's SQL can read it (the keyed-write guard of
+// internal/dispatch/api).
+const MentionCopyHolderSQL = `select k.id, k.publish_error
 		from events c
 		join events k on coalesce(k.issue_key, k.artifact_id::text, k.project_key) = coalesce(c.issue_key, c.artifact_id::text, c.project_key)
-		where c.id = ` + event + `
+		where c.id = $1::bigint
 		  and k.id < c.id
 		  and k.published_at is null
 		  and (k.payload ->> 'pending') is distinct from 'true'
-		  and (k.owed_keys is null or k.owed_keys && array['` + OwedTopicFamily + `', '` + OwedAnySession + `', ` + recipientKey + `]::text[])
+		  and (k.owed_keys is null or k.owed_keys && array['` + OwedTopicFamily + `', '` + OwedAnySession + `', $2::text]::text[])
 		order by k.id
 		limit 1`
-}
 
 // MentionCopyHolder is the earlier event a copy of a mention waits behind (MentionCopyHolderSQL):
 // its id, and why its last publish attempt failed, nil while none has.

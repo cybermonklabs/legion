@@ -1765,10 +1765,6 @@ func fallbackCopyKey(subject string, forward *roleForward) string {
 	return destination{subject: subject, forward: forward}.key()
 }
 
-// copyHolderQuery is model.MentionCopyHolderSQL bound to a comment.created event's id ($1) and a
-// session's key ($2), the statement every read of the rule runs (copyHolder).
-var copyHolderQuery = model.MentionCopyHolderSQL("$1::bigint", "$2::text")
-
 // copyHolder is the earlier event of its owner a copy of the comment whose comment.created event
 // is eventID, bound for the session key key, waits behind - one that still owes a send that
 // session may take: to the owner's topic family, to that key, or, its recipient read having
@@ -1778,7 +1774,7 @@ var copyHolderQuery = model.MentionCopyHolderSQL("$1::bigint", "$2::text")
 // them.
 func copyHolder(ctx context.Context, deps Deps, eventID int64, key string) (*model.MentionCopyHolder, error) {
 	var by model.MentionCopyHolder
-	err := deps.Store.Pool.QueryRow(ctx, copyHolderQuery, eventID, key).Scan(&by.EventID, &by.PublishError)
+	err := deps.Store.Pool.QueryRow(ctx, model.MentionCopyHolderSQL, eventID, key).Scan(&by.EventID, &by.PublishError)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil, nil

@@ -846,10 +846,6 @@ func (s *server) mentionCopyHolder(ctx context.Context, created model.Event, tar
 	return s.mentionCopyHolderFor(ctx, created, *target.SessionID)
 }
 
-// mentionCopyHolderQuery is model.MentionCopyHolderSQL bound to a comment.created event's id ($1)
-// and a session's key ($2), the statement every read of the rule runs (mentionCopyHolderFor).
-var mentionCopyHolderQuery = model.MentionCopyHolderSQL("$1::bigint", "$2::text")
-
 // mentionCopyHolderFor is mentionCopyHolder for a send to sessionID, the one statement a send held
 // before reads again before it tries once more (sendCommentMention).
 func (s *server) mentionCopyHolderFor(ctx context.Context, created model.Event, sessionID string) (*model.MentionCopyHolder, error) {
@@ -857,7 +853,7 @@ func (s *server) mentionCopyHolderFor(ctx context.Context, created model.Event, 
 		return nil, nil
 	}
 	var by model.MentionCopyHolder
-	err := s.deps.Store.Pool.QueryRow(ctx, mentionCopyHolderQuery,
+	err := s.deps.Store.Pool.QueryRow(ctx, model.MentionCopyHolderSQL,
 		created.ID, contracts.LegacyAgentSubject(sessionID),
 	).Scan(&by.EventID, &by.PublishError)
 	switch {
