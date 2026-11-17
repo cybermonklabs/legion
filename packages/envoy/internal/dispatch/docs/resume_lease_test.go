@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // Two envoy-dispatch processes run the settlement resumption, each through
@@ -31,9 +32,7 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 	first, _ := newTestServiceInstance(t, database)
 	other, _ := newTestServiceInstance(t, second)
 	logs := &storetest.LockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 
 	// Both first ticks land in one period of the database's clock, not on either side of a
 	// boundary, where each would serve a period of its own.

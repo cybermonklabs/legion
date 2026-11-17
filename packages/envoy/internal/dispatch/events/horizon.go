@@ -138,10 +138,11 @@ const persistedHorizonSQL = `
 		where h.id = 1), 0)
 `
 
-// horizonStallHolderSQL names the oldest open transaction holding a transaction id, a backend's
-// or a prepared transaction's: the oldest running id is the one every snapshot's xmin waits on,
-// so it is what keeps a pending observation from being proven safe.
-const horizonStallHolderSQL = `
+// StallHolderSQL names the oldest open transaction holding a transaction id, a backend's or a
+// prepared transaction's: the oldest running id is the one every snapshot's xmin waits on, so it
+// is what keeps a pending observation from being proven safe. warnStall reads it, and a test's
+// wait on the horizon reads it too (internal/dispatch/horizontest), when the warning is late.
+const StallHolderSQL = `
 	select kind, pid, started, state, application_name, database, query from (
 		select 'backend' as kind, pid, xact_start as started, coalesce(state, '') as state,
 			coalesce(application_name, '') as application_name, coalesce(datname::text, '') as database,
@@ -819,7 +820,7 @@ func (h *Horizon) warnStall(oldest horizonObservation, pendingFor time.Duration,
 	var kind, state, application, database, query string
 	var pid int32
 	var started *time.Time
-	err := h.db.QueryRow(diagnosis, horizonStallHolderSQL).
+	err := h.db.QueryRow(diagnosis, StallHolderSQL).
 		Scan(&kind, &pid, &started, &state, &application, &database, &query)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):

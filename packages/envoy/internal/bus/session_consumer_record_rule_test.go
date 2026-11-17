@@ -38,6 +38,7 @@ func TestAPendingStartIsNotLoweredToAnOlderResumeRecord(t *testing.T) {
 	}
 	pull.Stop()
 	waitForAckFloor(t, consumers, session, first)
+	waitForStoredState(t, owner, session)
 	recordFloor, err := consumers.Delete(ctx, session, nil)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -59,6 +60,7 @@ func TestAPendingStartIsNotLoweredToAnOlderResumeRecord(t *testing.T) {
 	requireNext(t, pull, held, "the message the session holds unacked")
 	pull.Stop()
 	waitForAckPending(t, consumers, session, 1)
+	waitForStoredState(t, owner, session)
 
 	consumers.SetCreateFault(func(string) error { return errors.New("the create faulted") })
 	if _, err := consumers.RestartAtFloor(ctx, session, filters); err == nil {
@@ -105,6 +107,7 @@ func TestTheRecordRuleLogsEachStartItLoweredAndNoOther(t *testing.T) {
 	}
 	pull.Stop()
 	waitForAckFloor(t, consumers, session, seq)
+	waitForStoredState(t, owner, session)
 
 	floor, err := consumers.Delete(ctx, session, nil)
 	if err != nil {
