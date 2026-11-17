@@ -114,7 +114,7 @@ Each item below names a task and where its code is, then notes on it.
   a bucket raise's refusal also names the bucket (`refusedSettings`, `raiseReplicas`)
 
 - **No listener creates a bucket it copies**:
-  `cmd/listener/missing_buckets.go`, `internal/bus/kv.go` (`EnsureKeyValue`, `CreateCopiedBucketsOn`, `CreateCopiedBucket`, `ErrBucketMissing`), `internal/bus/stream.go` (`CopiedBuckets`, `CopiedBucketConfig`), `internal/bus/bustest/fixture.go`, `internal/testnats/cmd/fixturebuckets/`, `infra/buckets/`
+  `cmd/listener/missing_buckets.go`, `internal/bus/kv.go` (`EnsureKeyValue`), `internal/bus/kv_copied.go` (`CreateCopiedBucketsOn`, `CreateCopiedBucket`, `CreateMissingCopiedBucket`, `ErrBucketMissing`), `internal/bus/stream.go` (`CopiedBuckets`, `CopiedBucketConfig`), `internal/bus/bustest/fixture.go`, `internal/testnats/cmd/fixturebuckets/`, `infra/buckets/`
 
   A write a bucket's stream acknowledged is lost when the bucket is deleted and created again, and the listener that made it answered its caller that it landed: the ack names the stream and its sequence, never the bucket's incarnation (Prove4238's case b, ten of ten on NATS 2.15.1).
   So no bucket a listener copies (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `envoy_ci_state`) may be deleted and created again while a writer of it runs, and no program of a deployment creates one: `bus.EnsureKeyValue`, which every store opens through (`store.Open`, `session.OpenSessionRegistry`, `session.OpenKnownSessions` and its background repair, `cistore.Open`), answers `bus.ErrBucketMissing` for a missing copied bucket and creates every other, and no configuration changes that.

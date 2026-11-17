@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 	"weak"
 
@@ -236,60 +234,6 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	return openKeyValue(conn, js, config, mode)
 }
 
-// fixtureConns are the connections a test fixture marked as its own (CreateCopiedBucketsOn), each
-// held by a weak pointer, so a connection a test is done with is collected with all it references,
-// and its entry removed then, rather than kept for the rest of the test process.
-var fixtureConns sync.Map
-
-// CreateCopiedBucketsOn marks conn as a test fixture's connection to a server of its own: an open
-// through it (EnsureKeyValue) creates a copied bucket it finds missing, with the caller's
-// configuration, as it creates every other bucket. Only a test's fixture calls it
-// (internal/bus/bustest); no program of a deployment does, so no listener creates a bucket it
-// copies.
-func CreateCopiedBucketsOn(conn *nats.Conn) {
-	key := weak.Make(conn)
-	if _, marked := fixtureConns.LoadOrStore(key, struct{}{}); !marked {
-		runtime.AddCleanup(conn, func(key weak.Pointer[nats.Conn]) { fixtureConns.Delete(key) }, key)
-	}
-}
-
-// ErrBucketMissing is a bucket a listener copies that an open found missing (EnsureKeyValue). It
-// wraps nats.ErrBucketNotFound, so a caller that reads that error reads this one too.
-var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets` creates it: `create --break-glass` while its writers run, or the normal create once every writer of it has ended: %w", nats.ErrBucketNotFound)
-
-// ErrBucketExists is a bucket a create-only open found there (CreateMissingCopiedBucket): at its
-// lookup, or in the answer "stream name already in use" to its create, when another client made
-// the bucket between the two. The open leaves it as it is.
-var ErrBucketExists = errors.New("bucket exists; a create-only open creates only a missing bucket, and leaves one that is there as it is")
-
-// CreateCopiedBucket creates bucket, one a listener copies, with its configuration at replicas
-// copies (CopiedBucketConfig), or opens it as it is when it exists: the operator's creation,
-// `envoy-infra buckets`, and a test fixture's (internal/bus/bustest), on a server of its own.
-func CreateCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
-	return openCopiedBucket(conn, js, bucket, replicas, openOrCreate)
-}
-
-// CreateMissingCopiedBucket creates bucket, one a listener copies, with its configuration at
-// replicas copies (CopiedBucketConfig), only when the server does not hold it: a bucket its lookup
-// finds, or one another client makes between that lookup and its create, is ErrBucketExists, and is
-// neither opened, raised nor updated (createOnly). As CreateCopiedBucket does, it sends a lookup or
-// a create the server leaves unanswered again (sentAgain), and opens the handle it answers with
-// once the member answering has applied the create (wrapKeyValue). `envoy-infra buckets create
-// --break-glass` calls it.
-func CreateMissingCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
-	return openCopiedBucket(conn, js, bucket, replicas, createOnly)
-}
-
-// openCopiedBucket opens bucket, one a listener copies, with its configuration at replicas copies
-// (CopiedBucketConfig), as mode says: CreateCopiedBucket's and CreateMissingCopiedBucket's one body.
-func openCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int, mode bucketOpen) (KeyValue, error) {
-	config, ok := CopiedBucketConfig(bucket, replicas)
-	if !ok {
-		return KeyValue{}, fmt.Errorf("%s is no bucket a listener copies", bucket)
-	}
-	return openKeyValue(conn, js, &config, mode)
-}
-
 // bucketOpen is what openKeyValue does with a bucket the server holds and with one it does not.
 type bucketOpen int
 
@@ -417,105 +361,6 @@ func openKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyVal
 		return KeyValue{}, err
 	}
 	return wrapKeyValue(context.Background(), conn, kv, created, startSendsAgain)
-}
-
-// raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
-// returns the copies it had then, 0 when it left the bucket alone. The update writes back the
-// stream's deployed configuration with only its replicas changed, so the bucket's TTL, history,
-// discard policy, direct get, rollup, delete settings, metadata and the rest stay as they are. A
-// bucket with as many copies or more is left alone, and one copy needs no read: every stream has at
-// least one. As for the stream (ensureStreamWithConfig), two starts raising at once each write the
-// deployment's one count. A raise whose answer never came succeeds when the stream, read again,
-// has the copies, and one the server refused as overlapping the bucket's own stream is sent again
-// until the stream has them or its sends run out (updateStream). Its error names the bucket's
-// stream and, for a refused raise, the setting (refusedSettings):
-// `raise KV_envoy_interests: ENVOY_NATS_REPLICAS=3: ...`, so the keeper's line says which bucket
-// it could not raise.
-func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, error) {
-	if replicas <= 1 {
-		return 0, nil
-	}
-	stream := "KV_" + bucket
-	info, err := js.StreamInfo(stream)
-	if err != nil {
-		return 0, fmt.Errorf("raise %s: %w", stream, err)
-	}
-	if info.Config.Replicas >= replicas {
-		return 0, nil
-	}
-	raised := info.Config
-	raised.Replicas = replicas
-	if err := updateStream(js, &raised, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas }); err != nil {
-		return 0, fmt.Errorf("raise %s: %w", stream, refusedSettings(err, &info.Config, &raised))
-	}
-	return info.Config.Replicas, nil
-}
-
-// awaitReplicasCurrent waits until the bucket's stream reports replicas copies, each one current
-// with its leader and none of them offline or lagging, read every bucketAppliedInterval and given
-// up at bucketAppliedDeadline. It is what EnsureKeyValue runs after a raise that added copies, and
-// nothing else needs it: a bucket nobody raised has no copy that is behind.
-//
-// The deadline is an error naming the bucket's stream, the copies it asked for and what each copy
-// that was not current had to say (copiesBehind), the way a refused raise names its setting, and
-// the caller fails its start on it. Carrying on instead would hand the caller a bucket whose
-// direct gets a copy that is 90% caught up may answer "key not found" for a key that is there
-// (server/jetstream_cluster.go:2622-2641, v2.10.29), and a start that reads one wrong answer is
-// worse than a start that does not come up: the webhook redelivery sweep reads its records the
-// moment this call answers, and a stale miss there asks GitHub for a redelivery it already made.
-//
-// A read that fails is returned as it is, since the stream is there: this runs only after a raise
-// of it answered.
-func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int) error {
-	stream := "KV_" + bucket
-	start := time.Now()
-	for attempt := 1; ; attempt++ {
-		info, err := js.StreamInfo(stream)
-		if err != nil {
-			return fmt.Errorf("raise %s: read the raised stream: %w", stream, err)
-		}
-		behind := copiesBehind(info, replicas)
-		if behind == "" {
-			return nil
-		}
-		if time.Since(start) >= bucketAppliedDeadline {
-			return fmt.Errorf("raise %s: %d copies were not current within %s: %s", stream, replicas, bucketAppliedDeadline, behind)
-		}
-		if attempt == 1 {
-			slog.Warn("envoy nats kv raised copies not current yet, waiting",
-				slog.String("bucket", bucket),
-				slog.Int("replicas", replicas),
-				slog.String("behind", behind),
-				slog.String("retry_in", bucketAppliedInterval.String()),
-				slog.String("deadline", bucketAppliedDeadline.String()))
-		}
-		time.Sleep(bucketAppliedInterval)
-	}
-}
-
-// copiesBehind says what keeps the stream info describes short of replicas copies that are all
-// current, and is empty when none does: the stream has a leader, as many copies as were asked for,
-// and every copy of it is current, online and not lagging. Each copy that is not is named with
-// what it reported, so a start that gave up says which member it waited for.
-func copiesBehind(info *nats.StreamInfo, replicas int) string {
-	if info.Cluster == nil || info.Cluster.Leader == "" {
-		return "the stream has no leader yet"
-	}
-	var behind []string
-	if copies := 1 + len(info.Cluster.Replicas); copies != replicas {
-		behind = append(behind, fmt.Sprintf("%d copies of %d", copies, replicas))
-	}
-	for _, peer := range info.Cluster.Replicas {
-		switch {
-		case peer.Offline:
-			behind = append(behind, peer.Name+" offline")
-		case !peer.Current:
-			behind = append(behind, fmt.Sprintf("%s not current, lag %d", peer.Name, peer.Lag))
-		case peer.Lag > 0:
-			behind = append(behind, fmt.Sprintf("%s lag %d", peer.Name, peer.Lag))
-		}
-	}
-	return strings.Join(behind, ", ")
 }
 
 // SetKeyValueMaxAge sets the maximum age of the existing bucket's stream to maxAge when it carries
