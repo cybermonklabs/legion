@@ -20,6 +20,7 @@ package main
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -172,7 +173,9 @@ func launcherKeyDir(dir string) bool {
 	return (exists(filepath.Join(dir, keyFile)) && !exists(filepath.Join(dir, machineSessionMarker))) || freshMarker(dir)
 }
 
-// enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait.
+// enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait. A value that is
+// no duration of zero or more is refused naming the variable and its rule, never the value, which
+// the environment holds whatever was put there.
 func enrollWait() (time.Duration, error) {
 	v := os.Getenv("AGENT_SECRETS_ENROLL_WAIT")
 	if v == "" {
@@ -180,7 +183,7 @@ func enrollWait() (time.Duration, error) {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d < 0 {
-		return 0, fmt.Errorf("AGENT_SECRETS_ENROLL_WAIT=%q is not a duration such as 20s", v)
+		return 0, errors.New("AGENT_SECRETS_ENROLL_WAIT is not a Go duration of zero or more, such as 20s")
 	}
 	return d, nil
 }

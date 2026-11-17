@@ -1,0 +1,385 @@
+// packages/envoy/cmd/agent-secrets/cli_printed_test.go
+//
+// What the forms print about a value a person typed or set: a flag's value that does not parse,
+// the default a flag reads from AGENT_SECRETS_KEY_DIR, AGENT_SECRETS_ENROLL_WAIT, and key.pem, the
+// file that holds a session key. Each names the flag, the variable or the setting that names the
+// file, and never the value or the path: a URL flag's value can carry a credential, and a setting
+// meant for a path is where a person who pasted the credential itself puts it. Each test runs the
+// form in-process with a made-up secret where a person could put one, and a control row that
+// shows the clean case still works.
+package main
+
+import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/x509"
+	"encoding/pem"
+	"flag"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/broker/proof"
+)
+
+// useBareEnvironment gives the rest of t an environment of its own: HOME, XDG_STATE_HOME and
+// XDG_RUNTIME_DIR empty directories (so no settings file, sign-in, machine cache or helper socket
+// of the developer's is read), AGENT_SECRETS_KEY_DIR an empty directory, and no broker, helper
+// socket, machine identity, person or enrollment wait named.
+func useBareEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("AGENT_SECRETS_KEY_DIR", t.TempDir())
+	for _, name := range []string{"AGENT_SECRETS_URL", "AGENT_SECRETS_HELPER_SOCK", "AGENT_SECRETS_SIGNIN_DIR", "AGENT_SECRETS_MACHINE_IDENTITY", "AGENT_SECRETS_PERSON", "AGENT_SECRETS_ENROLL_WAIT"} {
+		t.Setenv(name, "")
+	}
+}
+
+// runIn runs `agent-secrets args...` in-process.
+func runIn(args ...string) (stdout, stderr string, code int) {
+	var out, errOut bytes.Buffer
+	code = run(args, &out, &errOut)
+	return out.String(), errOut.String(), code
+}
+
+// requireSays fails t where text holds any of leaked or lacks any of want.
+func requireSays(t *testing.T, what, text string, leaked, want []string) {
+	t.Helper()
+	for _, l := range leaked {
+		if strings.Contains(text, l) {
+			t.Errorf("%s %q holds %q", what, text, l)
+		}
+	}
+	for _, w := range want {
+		if !strings.Contains(text, w) {
+			t.Errorf("%s %q does not say %q", what, text, w)
+		}
+	}
+}
+
+// TestAFlagValueThatDoesNotParseIsNotPrinted: a flag whose value does not parse is refused naming
+// the flag, and an argument whose flag syntax does not parse is refused as one, never quoting the
+// value or the argument, which Go's flag package does; both print the form's usage and exit 2, as
+// before. A flag not defined and a flag given no value are still named as Go names them, and
+// values that parse still parse (the controls).
+func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
+	const secret = "hunter2pw-flagvalue-5e0b32"
+	for _, row := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"a duration given as the next argument", []string{"request", "GRANT_ME", "--ttl", secret}, []string{"invalid value for flag -ttl", "usage: agent-secrets request"}},
+		{"a duration given after =", []string{"request", "GRANT_ME", "--ttl=" + secret}, []string{"invalid value for flag -ttl", "usage: agent-secrets request"}},
+		{"a boolean", []string{"request", "GRANT_ME", "--json=" + secret}, []string{"invalid boolean value for flag -json", "usage: agent-secrets request"}},
+		{"a number", []string{"register", "--wait=" + secret}, []string{"invalid value for flag -wait", "usage: agent-secrets register"}},
+		{"a URL flag of three dashes", []string{"sign", "---url=https://tokuser9f3:" + secret + "@broker.example/v1/x"}, []string{"bad flag syntax: a flag that does not parse", "usage: agent-secrets sign"}},
+		{"control: a flag not defined", []string{"request", "GRANT_ME", "--no-such-flag"}, []string{"flag provided but not defined: -no-such-flag"}},
+		{"control: a flag given no value", []string{"request", "GRANT_ME", "--ttl"}, []string{"flag needs an argument: -ttl"}},
+		{"control: values that parse", []string{"request", "GRANT_ME", "--ttl", "1h", "--json=true"}, []string{"AGENT_SECRETS_URL is required"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			useBareEnvironment(t)
+			stdout, stderr, code := runIn(row.args...)
+			if code != exitUsageError {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
+			}
+			requireSays(t, "stderr", stdout+stderr, []string{secret, "tokuser9f3"}, row.want)
+			if strings.HasPrefix(row.name, "control: values") && strings.Contains(stderr, "invalid") {
+				t.Errorf("stderr %q refuses a value that parses", stderr)
+			}
+		})
+	}
+	t.Run("the error Parse answers", func(t *testing.T) {
+		var stderr bytes.Buffer
+		flags := newFlagSet("request", &stderr)
+		flags.Duration("ttl", 0, "a lifetime")
+		err := flags.Parse([]string{"--ttl=" + secret})
+		if err == nil || err.Error() != "invalid value for flag -ttl" {
+			t.Fatalf("Parse = %v, want the fixed refusal naming -ttl", err)
+		}
+		if strings.Contains(stderr.String(), secret) {
+			t.Errorf("stderr %q holds the value", stderr.String())
+		}
+		if err := flags.Parse([]string{"--ttl=90s"}); err != nil || flags.Lookup("ttl").Value.String() != "1m30s" {
+			t.Fatalf("Parse(--ttl=90s) = %v with -ttl %q, want 1m30s", err, flags.Lookup("ttl").Value)
+		}
+		if _, ok := flags.Lookup("ttl").Value.(flag.Getter); !ok {
+			t.Errorf("-ttl's value is %T after Parse, not the flag package's own", flags.Lookup("ttl").Value)
+		}
+	})
+}
+
+// TestHelpNamesTheKeyDirVariableNotItsValue: keygen's --out defaults to AGENT_SECRETS_KEY_DIR, the
+// directory of key.pem, and a help text is pasted wherever a person asks for help, so -h and the
+// usage a parse failure prints give the variable's name as the default, never its value. A default
+// that is the program's own constant still prints as it is (the control).
+func TestHelpNamesTheKeyDirVariableNotItsValue(t *testing.T) {
+	const secret = "hunter2pw-helpdir-80c4f1"
+	for _, row := range []struct {
+		args []string
+		code int
+		want []string
+	}{
+		{[]string{"keygen", "-h"}, 0, []string{`-out string`, `(default "$AGENT_SECRETS_KEY_DIR")`}},
+		{[]string{"keygen", "--no-such-flag"}, exitUsageError, []string{"flag provided but not defined: -no-such-flag", `(default "$AGENT_SECRETS_KEY_DIR")`}},
+		{[]string{"enroll", "-h"}, 0, []string{`(default "` + defaultPodTokenFile + `")`}},
+	} {
+		t.Run(strings.Join(row.args, " "), func(t *testing.T) {
+			useBareEnvironment(t)
+			t.Setenv("AGENT_SECRETS_KEY_DIR", filepath.Join(t.TempDir(), secret))
+			stdout, stderr, code := runIn(row.args...)
+			if code != row.code {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
+			}
+			requireSays(t, "the help", stdout+stderr, []string{secret}, row.want)
+		})
+	}
+}
+
+// TestEnrollWaitRefusalNamesTheRuleNotTheValue: an AGENT_SECRETS_ENROLL_WAIT that is no duration
+// is refused naming the variable and the rule it broke, never its value, by a use command and by
+// `identity --source` alike, exit 2; a duration still bounds the wait (the control).
+func TestEnrollWaitRefusalNamesTheRuleNotTheValue(t *testing.T) {
+	const secret = "hunter2pw-enrollwait-6a2d90"
+	for _, row := range []struct {
+		name, wait string
+		args       []string
+		code       int
+	}{
+		{"a use command", secret, []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self"}, exitUsageError},
+		{"identity --source", secret, []string{"identity", "--source"}, exitUsageError},
+		{"control: a duration", "3s", []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self"}, 0},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			useBareEnvironment(t)
+			t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
+			t.Setenv("AGENT_SECRETS_ENROLL_WAIT", row.wait)
+			_, stderr, code := runIn(row.args...)
+			if code != row.code {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
+			}
+			if row.code == 0 {
+				if strings.Contains(stderr, "AGENT_SECRETS_ENROLL_WAIT") {
+					t.Errorf("stderr %q refuses a duration", stderr)
+				}
+				return
+			}
+			requireSays(t, "stderr", stderr, []string{secret}, []string{"AGENT_SECRETS_ENROLL_WAIT", "Go duration"})
+		})
+	}
+}
+
+// keyPemFaults are the key.pem contents a loader refuses, each with the reason it names: a
+// directory where the file should be (the system's reason, through redact.File), bytes that are
+// no PEM, and a PEM block that holds no PKCS#8 key (fixed text, never x509's or asn1's words).
+var keyPemFaults = []struct {
+	name  string
+	write func(t *testing.T, path string)
+	want  string
+}{
+	{"key.pem is a directory", func(t *testing.T, path string) {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}, "read: is a directory"},
+	{"key.pem is not PEM", func(t *testing.T, path string) {
+		if err := os.WriteFile(path, []byte("hunter2pw-keybytes-1e8f60\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}, "not a PEM file"},
+	{"key.pem is no PKCS#8 key", func(t *testing.T, path string) {
+		block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("hunter2pw-keybytes-1e8f60")})
+		if err := os.WriteFile(path, block, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}, "not a PKCS#8 private key"},
+}
+
+// keyPemLeaks are what no refusal of a key.pem prints: the key's bytes and the parsers' words.
+var keyPemLeaks = []string{"hunter2pw-keybytes-1e8f60", "x509:", "asn1:"}
+
+// TestKeyPemInTheKeyDirIsNamedByItsSettingNeverItsPath: a key.pem in AGENT_SECRETS_KEY_DIR that
+// cannot be read, or holds no session key, is refused naming key.pem in AGENT_SECRETS_KEY_DIR,
+// with the system's reason or fixed text, by the chain's key-dir source and by sign --enrollment
+// alike, and neither the directory's path nor the key's bytes print. A key dir that holds a key
+// still signs (the control).
+func TestKeyPemInTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
+	const secret = "hunter2pw-keydir-b51e07"
+	for _, fault := range keyPemFaults {
+		for _, form := range []struct {
+			name string
+			args []string
+			code int
+		}{
+			{"the key-dir source", []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self"}, 1},
+			{"sign --enrollment", []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self", "--enrollment", "enr-other"}, exitUsageError},
+		} {
+			t.Run(fault.name+", "+form.name, func(t *testing.T) {
+				useBareEnvironment(t)
+				dir := filepath.Join(t.TempDir(), secret)
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				fault.write(t, filepath.Join(dir, keyFile))
+				t.Setenv("AGENT_SECRETS_KEY_DIR", dir)
+				stdout, stderr, code := runIn(form.args...)
+				if code != form.code {
+					t.Fatalf("exit %d, stderr %q; want %d", code, stderr, form.code)
+				}
+				requireSays(t, "the output", stdout+stderr, append([]string{secret}, keyPemLeaks...), []string{"key.pem in AGENT_SECRETS_KEY_DIR", fault.want})
+			})
+		}
+	}
+	t.Run("control: a key dir that holds a key", func(t *testing.T) {
+		useBareEnvironment(t)
+		t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
+		stdout, stderr, code := runIn("sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self")
+		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
+		}
+	})
+}
+
+// TestKeygenNamesKeyPemByItsFlagNeverItsPath: a key keygen cannot write, into the directory --out
+// names or, without --out, AGENT_SECRETS_KEY_DIR, is refused naming that directory by the flag and
+// the variable, with the system's reason, and never its path. A directory keygen can write into
+// still gets the key (the control).
+func TestKeygenNamesKeyPemByItsFlagNeverItsPath(t *testing.T) {
+	const secret = "hunter2pw-keygen-3c7a55"
+	blockedKey := func(t *testing.T) string {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), secret)
+		if err := os.MkdirAll(filepath.Join(dir, keyFile, "taken"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	underAFile := func(t *testing.T) string {
+		t.Helper()
+		file := filepath.Join(t.TempDir(), secret)
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(file, "keys")
+	}
+	for _, row := range []struct {
+		name  string
+		dir   func(t *testing.T) string
+		byEnv bool
+		want  []string
+	}{
+		{"key.pem cannot be put in place in --out", blockedKey, false, []string{"write key.pem in the directory --out (or AGENT_SECRETS_KEY_DIR) names", "rename: "}},
+		{"key.pem cannot be put in place in AGENT_SECRETS_KEY_DIR", blockedKey, true, []string{"write key.pem in the directory --out (or AGENT_SECRETS_KEY_DIR) names", "rename: "}},
+		{"--out cannot be made", underAFile, false, []string{"the directory --out (or AGENT_SECRETS_KEY_DIR) names", "mkdir: not a directory"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			useBareEnvironment(t)
+			dir := row.dir(t)
+			args := []string{"keygen", "--out", dir}
+			if row.byEnv {
+				t.Setenv("AGENT_SECRETS_KEY_DIR", dir)
+				args = []string{"keygen"}
+			}
+			stdout, stderr, code := runIn(args...)
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			requireSays(t, "the output", stdout+stderr, []string{secret}, row.want)
+		})
+	}
+	t.Run("control: a directory keygen can write into", func(t *testing.T) {
+		useBareEnvironment(t)
+		dir := filepath.Join(t.TempDir(), "keys")
+		stdout, stderr, code := runIn("keygen", "--out", dir)
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, keyFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			t.Fatalf("key.pem %q is not PEM", data)
+		}
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		public, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
+			t.Fatalf("key.pem holds a %T, want an ECDSA key", key)
+		}
+		if thumb, err := proof.Thumbprint(&public.PublicKey); err != nil || strings.TrimSpace(stdout) != thumb {
+			t.Fatalf("keygen printed %q, want the thumbprint of the key it wrote, %q (%v)", stdout, thumb, err)
+		}
+	})
+}
+
+// TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath: the machine cache's key.pem, in
+// ${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine, holds the machine session's key, so
+// a key there that cannot be read or holds no key, and a key that cannot be written there, are
+// refused naming key.pem in the machine cache, never its path. A cache that holds a session still
+// signs, and one that can be written still keeps the key (the controls).
+func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
+	const secret = "hunter2pw-statehome-9d61c2"
+	useCache := func(t *testing.T) string {
+		t.Helper()
+		useBareEnvironment(t)
+		t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), secret))
+		dir := machineCacheDir()
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	for _, fault := range keyPemFaults {
+		t.Run("read: "+fault.name, func(t *testing.T) {
+			dir := useCache(t)
+			fault.write(t, filepath.Join(dir, keyFile))
+			if err := os.WriteFile(filepath.Join(dir, enrollmentFile), []byte("enr-machine\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, code := runIn("sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			requireSays(t, "the output", stdout+stderr, append([]string{secret}, keyPemLeaks...), []string{"key.pem in the machine cache", fault.want})
+		})
+	}
+	t.Run("write: key.pem cannot be put in place", func(t *testing.T) {
+		dir := useCache(t)
+		if err := os.MkdirAll(filepath.Join(dir, keyFile, "taken"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		key, err := proof.NewKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = writeMachineCache(dir, key, "enr-machine")
+		if err == nil {
+			t.Fatal("writeMachineCache put a key where a directory is")
+		}
+		requireSays(t, "the error", err.Error(), []string{secret}, []string{"write key.pem in the machine cache", "rename: "})
+	})
+	t.Run("control: a cache that holds a session", func(t *testing.T) {
+		useCache(t)
+		key, err := proof.NewKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeMachineCache(machineCacheDir(), key, "enr-machine"); err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now()
+		stdout, stderr, code := runIn("sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self")
+		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 || time.Since(started) > 10*time.Second {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
+		}
+	})
+}

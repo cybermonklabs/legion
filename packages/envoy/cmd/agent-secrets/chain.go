@@ -123,7 +123,7 @@ func keyDirSource(dir string) signerSource {
 			}
 			return "", nil, absent("no key.pem in %s (AGENT_SECRETS_KEY_DIR; a launcher puts one there for a box or a pod)", dir)
 		}
-		key, err := loadKey(keyPath)
+		key, err := loadKey(keyPath, keyDirKeyFile)
 		if err != nil {
 			return "", nil, err
 		}

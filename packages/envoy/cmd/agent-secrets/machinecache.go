@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -71,6 +72,10 @@ func machineCacheHolds(dir string) bool {
 	return dir != "" && exists(filepath.Join(dir, keyFile)) && exists(filepath.Join(dir, enrollmentFile))
 }
 
+// machineCacheKeyFile is how a message names the machine cache's key.pem: by where the cache is,
+// never by its path, since the file holds the machine session's key (loadKey).
+const machineCacheKeyFile = "key.pem in the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)"
+
 // readMachineCache is the signer of the session the machine cache holds, or nil and no error
 // where it holds none, read under the cache's shared lock. A session there that cannot be read
 // is an error naming the file: the source is present but broken.
@@ -92,7 +97,7 @@ func readMachineCacheHeld(dir string) (*fileSigner, error) {
 	if !machineCacheHolds(dir) {
 		return nil, nil
 	}
-	key, err := loadKey(filepath.Join(dir, keyFile))
+	key, err := loadKey(filepath.Join(dir, keyFile), machineCacheKeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +188,7 @@ func writeMachineCache(dir string, key *ecdsa.PrivateKey, enrollmentID string) e
 		return err
 	}
 	if err := writeFileAtomic(filepath.Join(dir, keyFile), pemBytes, 0o600); err != nil {
-		return err
+		return fmt.Errorf("write %s: %w", machineCacheKeyFile, redact.File(err))
 	}
 	return writeFileAtomic(filepath.Join(dir, enrollmentFile), []byte(enrollmentID+"\n"), 0o600)
 }

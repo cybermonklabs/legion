@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/netip"
@@ -182,7 +181,7 @@ var secretFlagValues = map[string]bool{"owner": true, "tier": true, "type": true
 
 // secretFlags is form's flag set. The store credential comes from the environment, never a flag
 // (cmdSecret refuses --profile), so no form registers one for it.
-func secretFlags(form string, stderr io.Writer) *flag.FlagSet {
+func secretFlags(form string, stderr io.Writer) *flagSet {
 	return newFlagSet(form, stderr)
 }
 

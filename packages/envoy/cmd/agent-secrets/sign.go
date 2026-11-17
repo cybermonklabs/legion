@@ -82,5 +82,5 @@ func fileModeKeyForSign() (*ecdsa.PrivateKey, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, errors.New("--enrollment works only with a key dir; the helper signs only its own enrollment")
 	}
-	return loadKey(path)
+	return loadKey(path, keyDirKeyFile)
 }

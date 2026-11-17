@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"math"
 	"time"
@@ -19,7 +18,7 @@ const ttlFlag = "how long the grant lasts, a whole number of seconds such as 2m 
 // set it, and an error for a value that is not a positive whole number of seconds or is past the
 // most the broker records (record.ValidLifetime), so `--ttl 0` is refused rather than read as
 // unset.
-func ttlSeconds(flags *flag.FlagSet, ttl time.Duration) (*int, error) {
+func ttlSeconds(flags *flagSet, ttl time.Duration) (*int, error) {
 	if !flagGiven(flags, "ttl") {
 		return nil, nil
 	}

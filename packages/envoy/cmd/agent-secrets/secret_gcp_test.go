@@ -550,7 +550,7 @@ func useCloudPlatformToken(t *testing.T) {
 			return "", err
 		}
 		if token.AccessToken == cloudPlatformToken {
-			return "", errors.New("read the Google sign-in's email: 401 Unauthorized: Request is missing required authentication credential")
+			return "", errors.New("read the Google sign-in's email from " + googleUserinfoURL + ": the server answered HTTP 401 UNAUTHENTICATED")
 		}
 		return restoreUserinfo(context.Background(), creds)
 	}
@@ -872,7 +872,7 @@ func TestGCPSecretWriteUnderAMachineIdentityRunsUnderIt(t *testing.T) {
 			gcloud := useGcloud(t, "ada@example.com")
 			useGCPIdentity(t, kind, machineEmail)
 			bearer := "Bearer fake"
-			identity := fmt.Sprintf("the credentials file GOOGLE_APPLICATION_CREDENTIALS names (%s): %s", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), machineEmail)
+			identity := "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: " + machineEmail
 			if kind == "" {
 				bearer = "Bearer " + stubTokenPrefix + "ada@example.com"
 				identity = "the active gcloud account (gcloud configuration default): ada@example.com"
@@ -1835,8 +1835,8 @@ func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
 		}},
 		{"lent token", "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN: principal unknown", lent, func(t *testing.T) { t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-token") }},
-		{"credentials file", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names (", file, useCredentialsFile},
-		{"credentials file, an account exported", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names (", fileAccount, func(t *testing.T) {
+		{"credentials file", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: gac@example.iam.gserviceaccount.com", file, useCredentialsFile},
+		{"credentials file, an account exported", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: gac@example.iam.gserviceaccount.com", fileAccount, func(t *testing.T) {
 			useCredentialsFile(t)
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
 		}},

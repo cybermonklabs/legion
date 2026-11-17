@@ -403,10 +403,11 @@ func writeCommandHelp(w io.Writer, c command) {
 // newFlagSet is the flag set of the form named name: its errors and its -h go to stderr, and -h
 // prints the form's synopsis and summary, then its flags when it defines any. A form with no
 // flags parses its arguments with it too, so its -h answers as every other form's does and any
-// flag is a usage error.
-func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
+// flag is a usage error. A failure names the flag and never the value (flagSet.Parse), and a
+// default read from AGENT_SECRETS_KEY_DIR prints as the variable (printDefaults).
+func newFlagSet(name string, stderr io.Writer) *flagSet {
 	c := lookupCommand(name)
-	flags := flag.NewFlagSet(strings.TrimSpace("agent-secrets "+name), flag.ContinueOnError)
+	flags := &flagSet{flag.NewFlagSet(strings.TrimSpace("agent-secrets "+name), flag.ContinueOnError)}
 	flags.SetOutput(stderr)
 	flags.Usage = func() {
 		writeCommandHelp(flags.Output(), c)
@@ -414,10 +415,99 @@ func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 		flags.VisitAll(func(*flag.Flag) { hasFlags = true })
 		if hasFlags {
 			fmt.Fprintln(flags.Output(), "\nflags:")
-			flags.PrintDefaults()
+			flags.printDefaults()
 		}
 	}
 	return flags
+}
+
+// flagSet is a form's flag set (newFlagSet): a flag.FlagSet whose Parse says a failure in words
+// of its own. Go's flag package quotes the value that did not parse ("invalid value %q for flag
+// -%s") and the argument whose syntax did not ("bad flag syntax: %s"), in the line it prints and
+// the error it answers, and a URL flag's value can carry a credential.
+type flagSet struct{ *flag.FlagSet }
+
+// Parse parses arguments as flag.FlagSet.Parse does, except that a failure prints and answers
+// fixed text: "invalid value for flag -<name>" (or "invalid boolean value for flag -<name>") for
+// a value the flag refused, "bad flag syntax: a flag that does not parse" for an argument whose
+// syntax does not, and Go's own words only for a flag not defined and a flag given no value,
+// which name the flag alone. The form's usage follows each on the flag set's output, and -h
+// prints the usage and answers flag.ErrHelp, as before. While Go's parse runs its output is
+// discarded, and each flag's value records whether it refused its text (parsingValue).
+func (f *flagSet) Parse(arguments []string) error {
+	var refused *flag.Flag
+	f.VisitAll(func(named *flag.Flag) { named.Value = parsingValue{named.Value, named, &refused} })
+	out := f.Output()
+	f.SetOutput(io.Discard)
+	err := f.FlagSet.Parse(arguments)
+	f.SetOutput(out)
+	f.VisitAll(func(named *flag.Flag) { named.Value = named.Value.(parsingValue).Value })
+	switch text := fmt.Sprint(err); {
+	case err == nil:
+		return nil
+	case errors.Is(err, flag.ErrHelp):
+		f.Usage()
+		return err
+	case refused != nil && isBoolFlag(refused.Value):
+		err = fmt.Errorf("invalid boolean value for flag -%s", refused.Name)
+	case refused != nil:
+		err = fmt.Errorf("invalid value for flag -%s", refused.Name)
+	case !strings.HasPrefix(text, "flag provided but not defined: -") && !strings.HasPrefix(text, "flag needs an argument: -"):
+		err = errors.New("bad flag syntax: a flag that does not parse")
+	}
+	fmt.Fprintln(out, err)
+	f.Usage()
+	return err
+}
+
+// parsingValue is a flag's Value while flagSet.Parse runs: it sets as the value it wraps does, and
+// records named in refused where that value refuses its text, so Parse names the flag without it.
+type parsingValue struct {
+	flag.Value
+	named   *flag.Flag
+	refused **flag.Flag
+}
+
+func (v parsingValue) Set(text string) error {
+	err := v.Value.Set(text)
+	if err != nil {
+		*v.refused = v.named
+	}
+	return err
+}
+
+// IsBoolFlag is the wrapped value's, so a boolean flag still takes no argument.
+func (v parsingValue) IsBoolFlag() bool { return isBoolFlag(v.Value) }
+
+// isBoolFlag reports whether value is a boolean flag's, which Go's flag package sets with no
+// argument.
+func isBoolFlag(value flag.Value) bool {
+	b, ok := value.(interface{ IsBoolFlag() bool })
+	return ok && b.IsBoolFlag()
+}
+
+// keyDirDefaultVariables are the variables a flag's default is read from whose value is the
+// directory of a file that holds a credential: keygen's and enroll's --out default to
+// AGENT_SECRETS_KEY_DIR, the directory of key.pem.
+var keyDirDefaultVariables = []string{"AGENT_SECRETS_KEY_DIR"}
+
+// printDefaults is PrintDefaults with each default that is the value of a keyDirDefaultVariables
+// variable shown as that variable ("$AGENT_SECRETS_KEY_DIR"), so neither -h nor the usage a
+// failure prints spells the directory: a help text is pasted wherever a person asks for help.
+func (f *flagSet) printDefaults() {
+	shown := map[*flag.Flag]string{}
+	f.VisitAll(func(named *flag.Flag) {
+		for _, variable := range keyDirDefaultVariables {
+			if value := os.Getenv(variable); value != "" && named.DefValue == value {
+				shown[named] = named.DefValue
+				named.DefValue = "$" + variable
+			}
+		}
+	})
+	f.PrintDefaults()
+	for named, value := range shown {
+		named.DefValue = value
+	}
 }
 
 func exitUsage(err error) int {
@@ -429,7 +519,7 @@ func exitUsage(err error) int {
 
 // flagGiven reports whether flags' command line gave the flag name, so a flag given an empty or
 // zero value is told apart from one not given.
-func flagGiven(flags *flag.FlagSet, name string) bool {
+func flagGiven(flags *flagSet, name string) bool {
 	given := false
 	flags.Visit(func(f *flag.Flag) { given = given || f.Name == name })
 	return given
@@ -517,16 +607,26 @@ func encodeKeyPEM(key *ecdsa.PrivateKey) ([]byte, error) {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
-func loadKey(path string) (*ecdsa.PrivateKey, error) {
+// keyDirKeyFile is how a message names the key dir's key.pem (keyDir): by the setting that names
+// its directory, never by its path. key.pem holds a session key, and a setting meant for its
+// directory is where a person who pasted a credential itself puts it. pod.go's outKeyFile names
+// the one in the directory keygen's and enroll --pod's --out names the same way.
+const keyDirKeyFile = "key.pem in AGENT_SECRETS_KEY_DIR"
+
+// loadKey is the session key the key.pem at path holds, which every refusal names as file
+// (keyDirKeyFile, outKeyFile, machineCacheKeyFile) and never by its path: a file it cannot read
+// prints the system's reason alone (redact.File), and content that is no key prints parseKeyPEM's
+// fixed text.
+func loadKey(path, file string) (*ecdsa.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", file, redact.File(err))
 	}
-	return parseKeyPEM(data, path)
+	return parseKeyPEM(data, file)
 }
 
-// parseKeyPEM is a session key as its PKCS#8 PEM bytes hold it, named for the refusal: a key dir's
-// key.pem, or the box key inside a person's sign-in record (brokerclient.SignInRecord).
+// parseKeyPEM is a session key as its PKCS#8 PEM bytes hold it, named for the refusal as name
+// names it. Each refusal is fixed text: the PKCS#8 parser's words describe the key's bytes.
 func parseKeyPEM(data []byte, name string) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
@@ -534,7 +634,7 @@ func parseKeyPEM(data []byte, name string) (*ecdsa.PrivateKey, error) {
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, fmt.Errorf("%s: not a PKCS#8 private key", name)
 	}
 	key, ok := parsed.(*ecdsa.PrivateKey)
 	if !ok {
@@ -691,12 +791,14 @@ func cmdKeygen(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets keygen: %v\n", err)
 		return 1
 	}
+	// The directory and the key are named by the flag and the variable, never by their path:
+	// key.pem holds the session key (outKeyFile).
 	if err := os.MkdirAll(*out, 0o700); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets keygen: %v\n", err)
+		fmt.Fprintf(stderr, "agent-secrets keygen: make the directory --out (or AGENT_SECRETS_KEY_DIR) names: %v\n", redact.File(err))
 		return 1
 	}
 	if err := writeFileAtomic(filepath.Join(*out, keyFile), pemBytes, 0o600); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets keygen: %v\n", err)
+		fmt.Fprintf(stderr, "agent-secrets keygen: write %s: %v\n", outKeyFile, redact.File(err))
 		return 1
 	}
 	thumb, err := proof.Thumbprint(&key.PublicKey)

@@ -53,6 +53,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // checkSettingsKMSKeyName refuses, before any GCP call, settings whose secrets_prefix is not a
@@ -79,7 +80,9 @@ func checkSettingsKMSKeyName(settings Settings) error {
 
 // gcpCredentialsFile loads the credentials file at path, of whatever type it names, scoped for
 // Secret Manager: the file GOOGLE_APPLICATION_CREDENTIALS names and the well-known credentials
-// file. A file it cannot read or parse is an error. Tests replace it.
+// file. A file it cannot read is the os error, and one it cannot load errUnloadableCredentials,
+// never x/oauth2's or encoding/json's error, which quote the file's fields (credentialsFileRefusal).
+// Tests replace it.
 var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -88,10 +91,30 @@ var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credent
 	var file struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("it is not a JSON credentials file: %w", err)
+	if json.Unmarshal(data, &file) != nil {
+		return nil, errUnloadableCredentials
 	}
-	return google.CredentialsFromJSONWithType(ctx, data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)
+	creds, err := google.CredentialsFromJSONWithType(ctx, data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)
+	if err != nil {
+		return nil, errUnloadableCredentials
+	}
+	return creds, nil
+}
+
+// errUnloadableCredentials is a credentials file gcpCredentialsFile read but could not load: not
+// JSON, or no credential Google's libraries make a token source of.
+var errUnloadableCredentials = errors.New("holds no Google Cloud credential this command can load")
+
+// credentialsFileRefusal is the refusal of the credentials file file names (a phrase, such as
+// "the credentials file GOOGLE_APPLICATION_CREDENTIALS names") whose load failed with err
+// (gcpCredentialsFile): fixed text for a file it could not load, else the system's reason alone
+// (redact.File), which drops the path. The file holds a credential, and a variable meant for its
+// path is where a person who pasted the credential itself puts it.
+func credentialsFileRefusal(file string, err error) error {
+	if errors.Is(err, errUnloadableCredentials) {
+		return fmt.Errorf("%s %w", file, errUnloadableCredentials)
+	}
+	return fmt.Errorf("read %s: %w", file, redact.File(err))
 }
 
 // metadataGenericPrincipal is how a refusal and the "using" line name the metadata server's
@@ -128,19 +151,25 @@ var gcpMetadataPrincipal = func(ctx context.Context) string {
 	return email
 }
 
+// googleUserinfoURL is Google's userinfo endpoint, which gcpUserinfo reads.
+const googleUserinfoURL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
 // gcpUserinfo reads the email of the account behind creds from Google's userinfo endpoint, which
 // answers only a token that carries an email scope. Only --owner me asks for it
-// (gcpBackend.personEmail). Tests replace it so no form makes a network call for it.
+// (gcpBackend.personEmail). A failure names the endpoint and its status and registered code
+// (redact.Answered), or the failure's class (redact.Class), and never Google's body or x/oauth2's
+// words: a Google error body has carried a token, and x/oauth2 keeps the token endpoint's body in
+// the error a refused refresh answers. Tests replace it so no form makes a network call for it.
 var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, error) {
 	httpClient := oauth2.NewClient(ctx, creds.TokenSource)
-	resp, err := httpClient.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	resp, err := httpClient.Get(googleUserinfoURL)
 	if err != nil {
-		return "", fmt.Errorf("read the Google sign-in's email: %w", err)
+		return "", fmt.Errorf("read the Google sign-in's email from %s: %w", googleUserinfoURL, redact.Class(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("read the Google sign-in's email: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("read the Google sign-in's email from %s: %s", googleUserinfoURL, redact.Answered(resp.StatusCode, body))
 	}
 	var userinfo struct {
 		Email string `json:"email"`
@@ -561,12 +590,15 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 	}
 	skip(sourceLentToken, "unset")
 
+	// The file holds a credential, so neither its refusal nor the phrase that names it in the
+	// "using" line and a store's refusal spells its path (credentialsFileRefusal).
 	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
+		const file = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names"
 		creds, err := gcpCredentialsFile(ctx, path)
 		if err != nil {
-			return fmt.Errorf("load the credentials file GOOGLE_APPLICATION_CREDENTIALS names (%s): %w", path, err)
+			return credentialsFileRefusal(file, err)
 		}
-		b.source, b.sourcePhrase, b.principal, b.creds = sourceCredentialsFile, fmt.Sprintf("the credentials file GOOGLE_APPLICATION_CREDENTIALS names (%s)", path), credentialsFilePrincipal(creds), creds
+		b.source, b.sourcePhrase, b.principal, b.creds = sourceCredentialsFile, file, credentialsFilePrincipal(creds), creds
 		return nil
 	}
 	skip(sourceCredentialsFile, "unset")
@@ -591,7 +623,7 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 	} else {
 		creds, err := gcpCredentialsFile(ctx, path)
 		if err != nil {
-			return fmt.Errorf("load the well-known credentials file %s: %w", path, err)
+			return credentialsFileRefusal("the well-known credentials file "+path, err)
 		}
 		b.source, b.sourcePhrase, b.principal, b.creds = sourceWellKnownFile, "the well-known credentials file "+path, credentialsFilePrincipal(creds), creds
 		return nil
@@ -791,16 +823,19 @@ func (b *gcpBackend) chooseAnother() string {
 }
 
 // signInPrefix is the shell assignments a command line a form prints for running again
-// (pipeCommand) needs to sign in as this one did, each shell-quoted, where a variable chose the
-// source and may have been set for this one command: GOOGLE_APPLICATION_CREDENTIALS for the file
-// it names, and CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT, as set, for the gcloud login
-// they chose; "" for every other source. It never writes CLOUDSDK_AUTH_ACCESS_TOKEN: a printed
-// command carries no token.
+// (pipeCommand) needs to sign in as this one did, where a variable chose the source and may have
+// been set for this one command: GOOGLE_APPLICATION_CREDENTIALS for the file it names, and
+// CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT, as set and shell-quoted, for the gcloud
+// login they chose; "" for every other source. It never writes CLOUDSDK_AUTH_ACCESS_TOKEN: a
+// printed command carries no token. Nor does it spell the credentials file's path, which a person
+// may have set to the credential itself: it writes GOOGLE_APPLICATION_CREDENTIALS as the shell
+// expands it, `"$GOOGLE_APPLICATION_CREDENTIALS"`, so the command runs as this one did in the shell
+// that set the variable.
 func (b *gcpBackend) signInPrefix() string {
 	prefix := ""
 	switch b.source {
 	case sourceCredentialsFile:
-		prefix = "GOOGLE_APPLICATION_CREDENTIALS=" + shellWord(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")) + " "
+		prefix = `GOOGLE_APPLICATION_CREDENTIALS="$GOOGLE_APPLICATION_CREDENTIALS" `
 	case sourceChosenGcloud:
 		for _, name := range []string{"CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_ACCOUNT"} {
 			if value := os.Getenv(name); value != "" {

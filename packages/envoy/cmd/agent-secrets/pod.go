@@ -362,7 +362,7 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	}
 	path := filepath.Join(dir, keyFile)
 	if exists(path) {
-		return loadOutKey(path)
+		return loadKey(path, outKeyFile)
 	}
 	key, err := proof.NewKey()
 	if err != nil {

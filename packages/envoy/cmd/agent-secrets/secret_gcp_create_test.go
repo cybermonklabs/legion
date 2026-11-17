@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -724,8 +723,7 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 		{"a key file", func(t *testing.T) {
 			useGCPIdentity(t, "service_account", "robot@acme.iam.gserviceaccount.com")
 		}, func() (string, string) {
-			path := shellWord(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-			return "GOOGLE_APPLICATION_CREDENTIALS=" + path + " ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + path + " "
+			return `GOOGLE_APPLICATION_CREDENTIALS="$GOOGLE_APPLICATION_CREDENTIALS" `, `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$GOOGLE_APPLICATION_CREDENTIALS" `
 		}},
 		{"a named gcloud login", func(t *testing.T) {
 			useNoADC(t)
