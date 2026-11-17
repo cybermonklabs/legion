@@ -13,18 +13,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
-const launcherUsage = "usage: legion launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)"
-
 // newLauncherCommand is PID 1 of an issue pod's one container, which serves every resident role,
 // or of the controller pod's one container, which serves its one role. It has no workflow policy:
 // it only authenticates to the daemon, once per role, and starts or stops that role's
 // worker-shim on daemon commands. Its own hidden subcommand, `role-init`, is what it runs as the
-// init of a role's namespaces; nothing else ever runs it.
+// init of a role's namespaces; nothing else ever runs it. It takes no word of its own: a word is
+// a command under it or a usage error naming the word (commandNamed).
 func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    strings.TrimPrefix(launcherUsage, "usage: legion "),
+		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
 		Short:  "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command",
 		Hidden: true,
+		Args:   commandNamed,
 	}
 	flags := cmd.Flags()
 	connect := flags.String("connect", "", "the daemon launcher stream: tcp://host:port")
@@ -42,11 +42,7 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	sessionUser := flags.String("session-user", "", "the IAM login this pod signs in to the session database as")
 	sessionAccount := flags.String("session-impersonate-service-account", "", "the Google service account the session proxy impersonates with this pod's own credentials and signs in as; optional, and given only with the three other session flags")
 	testPostgres := flags.Bool("test-postgres", false, "serve the pod's own PostgreSQL for tests from the worker image's legion-testpg, before any role starts and again whenever its postmaster exits (an issue pod's container, with --roles-dir)")
-	cmd.RunE = runs(func(ctx context.Context, args []string) int {
-		if len(args) != 0 {
-			fmt.Fprintln(stderr, launcherUsage)
-			return 2
-		}
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		cfg := launcher.Config{
 			Connect: *connect, Sandbox: *sandbox, PodUID: *podUID, StopGrace: *stopGrace,
 			Stdout: stdout, Stderr: stderr,
