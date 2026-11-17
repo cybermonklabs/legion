@@ -115,10 +115,10 @@ func subscribeCore(t *testing.T, url, subject string) *natsgo.Subscription {
 // listener is stamped with the second registration's machine and directory.
 //
 // The stamp is the part that moves with the session only once the interest row does
-// (internal/store's mergeForUpsert): senderStamp reads sender.Machine and sender.Cwd from that row,
-// and a row pinned to the first registration names a listener the session no longer registers
-// through and a directory it no longer runs in. The deliveries read the session's entry, which
-// every registration rewrites, so they follow the session already.
+// (internal/store's mergeForUpsert): senderStamp reads sender.Machine and sender.Cwd from that row
+// wherever it reads the row, and a row pinned to the first registration names a listener the
+// session no longer registers through and a directory it no longer runs in. The deliveries read the
+// session's entry, which every registration rewrites, so they follow the session already.
 func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThroughThatRegistration(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
