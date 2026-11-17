@@ -4282,6 +4282,7 @@ jobs:
               - 'packages/envoy/docs/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
+              - 'packages/envoy/listenerwire/**'
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/loadtest/**'
               - 'packages/envoy/migrationid/**'
