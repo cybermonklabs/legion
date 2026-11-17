@@ -505,7 +505,8 @@ The last line goes to standard error, so the table stays one row per secret for 
 `VALUE` says whether a version of the secret carries `AWSCURRENT`, the label Secrets Manager reads
 a value from. The broker serves a secret only while one does, so a secret another tool created
 without a value shows `no` until someone runs `secret set` on it. A missing tag shows as `-`.
-`show` prints one secret's store, tags, dates and versions:
+`show` prints one secret's store, tags, dates, who decides a request for it and the guidance the
+model judge decides it on, and its versions:
 
 ```console
 $ agent-secrets secret show DEMO_DEPLOY_TOKEN
@@ -524,6 +525,8 @@ max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
 last_changed: 2026-10-06T20:31:08Z
+decides: nobody, for a session its tags allow; otherwise a person, on the broker page
+guidance: -
 version: 8ae2ea20-8e93-4f1a-b3d1-2e5396ecef72 AWSCURRENT
 ```
 
