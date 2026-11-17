@@ -203,14 +203,15 @@ put(path.join(work, "services/dispatch-token"), "e2e-token\n");
 /** The tag rig.sh names the work directory's containers with. */
 const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
 
-/** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
- * and config directories (and its global config file, when it names one), as mise resolves them
- * (`callerMiseEnvironment`). bun and jq can be mise shims on a devbox, which find no version under
- * a fresh HOME without them: where the caller's PATH reaches bun only through mise's shim, rig.sh's
- * settings check fails with "No version is set for shim: bun". They are passed whatever the caller
- * sets, since a caller that sets no XDG_CONFIG_HOME still has a config in its own ~/.config/mise.
- * XDG_CONFIG_HOME itself is not passed, so no other tool's configuration of the caller's reaches
- * the rig, whether the caller sets it or not. */
+/** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise
+ * configuration: its data, config and state directories, and the global config, system config and
+ * trusted paths it names, as mise resolves them (`callerMiseEnvironment`). bun and jq can be mise
+ * shims on a devbox, which find no version under a fresh HOME without them: where the caller's
+ * PATH reaches bun only through mise's shim, rig.sh's settings check fails with "No version is set
+ * for shim: bun". They are passed whatever the caller sets, since a caller that sets no
+ * XDG_CONFIG_HOME still has a config in its own ~/.config/mise. XDG_CONFIG_HOME itself is not
+ * passed, so no other tool's configuration of the caller's reaches the rig, whether the caller sets
+ * it or not. */
 const env = {
   PATH: `${bin}:${process.env.PATH ?? ""}`,
   HOME: path.join(scratch, "home"),

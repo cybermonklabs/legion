@@ -139,13 +139,16 @@ itself, whose tests import its sources by relative path.
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
 - A suite that starts a program under a HOME of its own, on the caller's PATH, passes it the
-  caller's mise directories: `callerMiseEnvironment()` (`@legion/test-fixtures/mise-environment`)
-  resolves MISE_DATA_DIR, MISE_CONFIG_DIR and a named MISE_GLOBAL_CONFIG_FILE as mise does, from
-  mise's own variables, the XDG base directories and the caller's home. On a dev box bun, jq and jj
-  on PATH can be mise shims, and under a fresh HOME a shim finds no version and fails ("No version
-  is set for shim: bun"). Passing XDG_CONFIG_HOME only when the caller sets it is not enough: a
-  caller that leaves it unset keeps its mise config in its own `~/.config/mise`
-  (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts` and `rig-isolation.test.ts`).
+  caller's mise configuration: `callerMiseEnvironment()` (`@legion/test-fixtures/mise-environment`)
+  resolves MISE_DATA_DIR, MISE_CONFIG_DIR and MISE_STATE_DIR, and the MISE_GLOBAL_CONFIG_FILE,
+  MISE_SYSTEM_CONFIG_DIR, MISE_SYSTEM_CONFIG_FILE and MISE_TRUSTED_CONFIG_PATHS the caller names, as
+  mise does, from mise's own variables, the XDG base directories and the caller's home. On a dev box
+  bun, jq and jj on PATH can be mise shims, and under a fresh HOME a shim finds no version and fails
+  ("No version is set for shim: bun"), and a project config the caller trusted is refused, since
+  its trust record is in the caller's state directory. Passing XDG_CONFIG_HOME only when the caller
+  sets it is not enough: a caller that leaves it unset keeps its mise config in its own
+  `~/.config/mise` (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts` and
+  `rig-isolation.test.ts`).
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the

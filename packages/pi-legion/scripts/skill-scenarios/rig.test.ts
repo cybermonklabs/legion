@@ -41,15 +41,16 @@ beforeAll(() => {
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
 });
 /** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
- * own, and the caller's mise data and config directories (and its global config file, when it
- * names one), as mise resolves them (`callerMiseEnvironment`). A tool on PATH can be a mise shim
- * (bun, jq and jj are, on a devbox). Under a fresh HOME such a shim finds neither its installs nor
- * its global config, so it fails. They are passed whatever the caller sets, since a caller that
- * sets no XDG_CONFIG_HOME still has a config in its own ~/.config/mise. make_omp_home keeps the
- * operator's mise data directory and XDG_CONFIG_HOME for the processes it starts for the same
- * reason, and base_env passes MISE_DATA_DIR to every agent. XDG_CONFIG_HOME itself is not passed,
- * so no other tool's configuration of the caller's reaches a child, whether the caller sets it or
- * not. */
+ * own, and the caller's mise configuration: its data, config and state directories, and the global
+ * config, system config and trusted paths it names, as mise resolves them
+ * (`callerMiseEnvironment`). A tool on PATH can be a mise shim (bun, jq and jj are, on a devbox).
+ * Under a fresh HOME such a shim finds neither its installs nor its global config, so it fails, and
+ * a project config loads only where the caller's trust records or trusted paths reach. They are
+ * passed whatever the caller sets, since a caller that sets no XDG_CONFIG_HOME still has a config
+ * in its own ~/.config/mise. make_omp_home keeps the operator's mise data directory and
+ * XDG_CONFIG_HOME for the processes it starts for the same reason, and base_env passes
+ * MISE_DATA_DIR to every agent. XDG_CONFIG_HOME itself is not passed, so no other tool's
+ * configuration of the caller's reaches a child, whether the caller sets it or not. */
 const childEnv = {
   PATH: process.env.PATH ?? "",
   HOME: operatorHome,
