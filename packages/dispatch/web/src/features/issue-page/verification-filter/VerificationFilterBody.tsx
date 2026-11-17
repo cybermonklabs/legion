@@ -90,6 +90,13 @@ export interface FailedRead {
   readonly retrying: boolean;
 }
 
+/** Whether a words query is typed: not empty once trimmed, which is how `presetView` reads a
+ *  query, so a query of spaces alone is no query. The body is given the view with no query
+ *  (`whole`) only where this holds, and the slot and the body's tests build it by this one rule. */
+export function queryTyped(query: string): boolean {
+  return query.trim() !== "";
+}
+
 /**
  * The Verification filter's body, as the approved picture `page-v3-verification-1440.png` and the
  * prototype's `.ver` draw it.

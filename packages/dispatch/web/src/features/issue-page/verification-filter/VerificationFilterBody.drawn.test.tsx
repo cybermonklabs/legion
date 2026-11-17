@@ -46,6 +46,7 @@ import { useVerificationReads } from "../slots/view-verification";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
+  queryTyped,
   VerificationFilterBody,
   type VerificationRead,
   type VerificationReads,
@@ -124,7 +125,7 @@ function bodyOf(
   const view = presetView(issue, "verification", query, new Set(named));
   const whole =
     given ??
-    (query.trim() === "" ? undefined : presetView(issue, "verification", "", new Set(named)).root);
+    (queryTyped(query) ? presetView(issue, "verification", "", new Set(named)).root : undefined);
   const slot = (
     <NoTooltips>
       <VerificationFilterBody

@@ -14,6 +14,7 @@ import type { SlotProps } from "../slot-props";
 import { useIssueTree } from "../useIssueTree";
 import {
   type FailedRead,
+  queryTyped,
   VerificationFilterBody,
   type VerificationRead,
   type VerificationReads,
@@ -35,11 +36,10 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
   );
-  // The view with no words query, where a query is typed: what the issue holds whatever the query
-  // left of it. A query is typed where it is not empty once trimmed, as `presetView` reads it, so
-  // a query of spaces alone draws as no query does; with none typed the body reads the view
-  // itself, and nothing is built a second time.
-  const typed = address.filter.trim() !== "";
+  // The view with no words query, where a query is typed (`queryTyped`, the body's one rule): what
+  // the issue holds whatever the query left of it. A query of spaces alone draws as no query does;
+  // with none typed the body reads the view itself, and nothing is built a second time.
+  const typed = queryTyped(address.filter);
   const whole = useMemo(
     () => (typed ? presetView(root, "verification", "", named).root : undefined),
     [named, root, typed]
@@ -78,10 +78,8 @@ export function useVerificationReads(issueKey: string): {
   // app's 30 s (`main.tsx`), pressing the view more than 30 s after the page read them read both
   // again. Each holds what it read until an event refreshes its key (`staleTime: Infinity`), and
   // the window's focus asks again only a read in error (`refetchFailedOnFocus`), as the page's
-  // reference reads do. These are this slot's observers alone: `useIssueTree`'s own observers of
-  // the same keys still ask again after the app's 30 s until they are given the same options, so
-  // in the page a view pressed more than 30 s after the page read them can still read them
-  // again, through those observers.
+  // reference reads do. `useIssueTree`'s own observers of the same keys take the same two
+  // options, so no observer of them reads them again by age.
   const coverage = useQuery({
     ...issueCoverageQuery(issueKey),
     staleTime: Number.POSITIVE_INFINITY,
