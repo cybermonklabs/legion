@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -656,9 +657,11 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // A store whose bucket is not open because its user may not read it yet - a hub whose users were
 // rendered before that bucket's grant (#2643) - writes nothing and answers nil, as a nil store
 // does: its reads answer no record either, so nothing it could write would be read. One whose last
-// attempt found the bucket missing answers bus.ErrBucketMissing instead: the record is owed and
-// cannot be written, so the registration that asks for it is refused rather than answered as if
-// it had been.
+// attempt found the bucket missing answers bus.ErrBucketMissing instead, and so does a write that
+// failed where a read of the bucket's stream then finds none: the record is owed and cannot be
+// written, so the registration that asks for it is refused rather than answered as if it had
+// been. Any other failure, a write past ctx among them, is answered as itself, and the registration
+// logs it and is answered.
 func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) error {
 	return s.writeWithin(ctx, record, true)
 }
@@ -667,8 +670,9 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
 // clean stop is one write per session lifetime and the whole point of it is to move last_seen.
 //
-// A registration (RecordWithin) is refused when this answers an error, as every other write the
-// registration needs is; a subscription change and a clean stop (TouchWithin) log it.
+// A registration (RecordWithin) is refused when this answers bus.ErrBucketMissing, as every other
+// write of the registration to a missing bucket is, and logs any other error; a subscription change
+// and a clean stop (TouchWithin) log every error.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
 	watcher := s.watch()
 	if record.SessionID == "" {
@@ -708,6 +712,12 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		return fmt.Errorf("write the known-session record of %s: %w", record.SessionID, err)
 	}
 	if err != nil {
+		// A write the bucket's stream did not take is the bucket missing only when a read of that
+		// stream says the server holds none: a bucket deleted under the store's watcher. Any other
+		// failure is that failure, which the registration's caller logs and answers over.
+		if _, read := kv.ReadStreamState(ctx); errors.Is(read, nats.ErrStreamNotFound) {
+			return fmt.Errorf("write %s's 30-day record: %w: %w", record.SessionID, bus.ErrBucketMissing, err)
+		}
 		return err
 	}
 	// Write through, as the session registry's Put does: the next heartbeat then finds this
