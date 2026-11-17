@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+    The memory guard in an issue pod's launcher now ends first the process that grew the most over
+    the last 300 ms, by 1 MiB or more, and the largest only where none grew. Under gVisor a forked
+    child reports the pages it shares with its parent as its own, so the largest could be a
+    sleeping fork whose end freed nothing while another process filled the pod. To know what grew,
+    the guard reads the sizes of what it may end at each reading in the band of 10% of the limit
+    below the mark and after a kill, and none below the band. After a kill that lowered nothing
+    within `wait_seconds`, it ends the next process only while one it may end still grows and they
+    hold the floor between them; otherwise it stops for that rise with `reason=not fallen`, as
+    before. The `issue_pods` settings, their defaults and the guard's lines are unchanged.
+time: 2026-11-17T09:37:25Z
+custom:
+    Issue: pr4273

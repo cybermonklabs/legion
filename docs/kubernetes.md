@@ -2794,7 +2794,7 @@ runtime:
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
     memory_guard:               # optional: the memory guard in each issue pod's launcher and in the controller pod's (The memory guard in an issue pod, and The memory guard in the controller's pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
-      controller_pod: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults; read by the controller's pod under controller: daemon
+      controller_pod: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 1, interval_milliseconds: 100 }   # the defaults; read by the controller's pod under controller: daemon
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
 advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<namespace>.svc, every pod dials instead of bind, at worker_stream_port>
 worker_stream_port: <the port advertise_host or bind serves it on>
@@ -3509,7 +3509,7 @@ architect, planner, implementer, tester, reviewer, merger):
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
-   As that PID 1 it also runs the pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+   As that PID 1 it also runs the pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the process that grew the most, or the largest where none grew, of those that are neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
    Only as that PID 1 does it sweep the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
    A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
@@ -4855,7 +4855,7 @@ the issue pod's whole 10Gi, shared by its six roles.
 An issue pod's six roles share one memory limit, and under gVisor the host kernel sees the pod's sandbox and not the processes in it:
 a container that passes its limit is stopped whole, `OOMKilled`, and every role's turn ends with it ([Liveness rules](#liveness-rules)).
 The memory guard in the pod's launcher, where the deployment runs it (it is on by default), acts before that point.
-When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor an agent's own, and the daemon tells that process's role why, on the role's own topic.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the process that grew the most, or the largest where none grew, of those that are neither Legion's own nor an agent's own, and the daemon tells that process's role why, on the role's own topic.
 The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 
@@ -4876,10 +4876,13 @@ Each of the two reads took 0.025 to 0.044 ms at the median in the read-cost Job 
 The guard never acts on the cgroup's counter, `memory.usage_in_bytes`, because the counter also counts the pages of the files a process maps, which the kernel can take back:
 in the tester's `wc-gvisor` result at `bebc420b` a file mapped and read raised the counter to 97.2% to 105.4% of the limit, and an LMDB map larger than the limit raised it to 107.4% to 134.9%, while `AnonPages` stayed under 11% and the guard ended neither process.
 One read of the counter took about 18 ms at the median in a running INFRA issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
+In the band below the mark and after a kill it also lists the container's processes and reads the sizes of those it may end, by which it chooses what to end ("What it ends", below).
 Where `AnonPages` or the limit cannot be read, where the limit reads as no limit (2^62 bytes or more), where the system has no `pidfd_open`, through which the guard ends a process, or where the guard cannot list the processes of `/proc`, the guard writes one `off` line and does nothing more while the launcher runs.
 
 **What it ends.**
-At or above the mark, `act_percent` of the limit (85 by default), the guard lists every process of the container and finds the ones it may end (below).
+The mark is `act_percent` of the limit (85 by default), and the band is the 10% of the limit below the mark, from 75% to 85% of the limit at the default.
+At each reading in the band or above it, before a kill and after one, the guard lists every process of the container, finds the ones it may end (below) and reads their sizes.
+It reads no size below the band, none while it is off, and none after it has given a rise up until the reading goes below the mark: a pod below its band pays for its readings alone.
 The list leaves out a zombie or a dead process, state `Z` or `X` in its `stat`, whose `status` counts one thread or none:
 it holds no memory, and under gVisor its `exe` link answers `EACCES`, which would otherwise count it unread.
 A process in either state whose other threads still run is one whose main thread alone has exited, and the guard reads it as a live process ("What it does not do", below).
@@ -4891,20 +4894,35 @@ ending the process frees that memfd's pages too, and no line of its smaps shows 
 A memfd counts once: one that a process the guard measures maps shared counts through that map's `Rss:` alone, and one that several of them hold by a descriptor counts for the largest of them by its smaps.
 A map of a file on disk adds nothing, which is why a process that maps a database is not ended for its map.
 A region that several processes map counts in each of them, since gVisor gives no `Pss` that would divide it.
+The guard keeps the sizes it reads of each process for 300 ms, by the process's pid and start time, so a process that takes the pid of one that ended has no earlier read.
+It ends the most grown process first.
+A process's growth is its size at this reading less its size at its oldest read in the last 300 ms, and a growth under 1 MiB is none.
+A process with no earlier read in that window, a fresh fork among them, has not grown.
+The processes that did not grow come after the ones that grew, largest first, so where none grew the guard ends the largest.
+At an `interval_milliseconds` above 300 no earlier read is in the window, so the guard always ends the largest.
+Of two processes of the same growth and size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
+Growth comes first because under gVisor a forked child reports the pages it shares with its parent as its own, and no line of its smaps tells them apart, so the largest process can be a sleeping fork whose end frees nothing while another process fills the pod.
+INFRA-3531's tester measured that on 2026-11-17 in gVisor pods of 4 GiB and 8 GiB (dispatch://INFRA-3531/comment/487c6241-44e5-4be8-8fcf-394c3eb67209):
+a Python parent wrote a block of 3/8 of the limit and forked three children that only sleep, and a separate Python process then grew beside them.
+Each sleeper read larger than the grower, so the guard, which then ended the largest first, ended one sleeper at 4 GiB and two at 8 GiB, freed almost nothing and never ended the grower, and both pods ended `OOMKilled`.
+The guard reads the sizes in the band so that it knows what grew when the reading reaches the mark: the fastest rise the tester measured, six growers at once at about 1.5 GiB a second, crosses the band of a 4 GiB limit, about 410 MiB, in about 267 ms, which is two readings or more at the default interval.
+At the first reading at or above the mark it acts on that reading's sizes and the ones it kept, with no wait for another reading, so the first kill comes within one interval of the memory reaching the mark.
 The guard acts only when the processes it may end hold at least `floor_percent` of the limit between them (10 by default): below that, the memory is mostly in processes it may not end, and ending one of the rest frees too little to matter.
-It then holds the largest through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
+It then holds the first process in its order through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
 Nor is a process that exited by itself after the scan, whether its parent has reaped it yet or not: its pidfd reads it as exited, and the guard writes no `ended` line and sends no report for it, since an exited process that is not reaped keeps its start time, and a kill of it answers no error.
-Of two processes of the same size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
 A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart, and is logged once.
 When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now an exited zombie) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
-A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the next reading ends the next largest.
+A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the next reading ends the next in the order.
 
 **After a kill: the rise rule.**
-After a kill the guard takes a reading each interval.
+After a kill the guard takes a reading each interval and reads the sizes at each one.
 The reading has fallen when it is below the reading at the kill by any amount, or when it is below the mark.
-When it has fallen and is still at or above the mark, the guard ends the next largest process once the killed one has exited or once the wait has passed, `wait_seconds` (5 by default).
+When it has fallen and is still at or above the mark, the guard ends the next process in its order, by that reading's sizes, once the killed one has exited or once the wait has passed, `wait_seconds` (5 by default).
 So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox.
-When the wait passes and a kill has not lowered the reading at all, or when no process may be ended, the guard gives the rise up with a `stopped for this rise` line, which a stop that repeats writes at most once a minute ("The lines", below), and ends nothing more for that rise:
+When the wait passes and the kill has not lowered the reading at all, the guard ends the next process in its order only while a process it may end grew over the last 300 ms and the processes it may end hold at least the floor between them.
+So a rise that is a protected process's own, such as an agent's, in which nothing the guard may end grows, costs at most one kill.
+Otherwise the guard gives the rise up with a `stopped for this rise` line, `reason=not fallen`, and it gives it up with `reason=nothing to end` when the processes it may end hold less than the floor at a reading it would end one at.
+A stop that repeats writes that line at most once a minute ("The lines", below), and once a rise is given up the guard ends nothing more for it:
 it acts again only after the reading has gone below the mark.
 
 **What it protects, and why.**
@@ -4996,8 +5014,8 @@ A stop that repeats
 — the rise given up, the reading below the mark and back above it, the rise given up again —
 writes this line at most once a minute by the guard's clock, and leaves the stops in between out of the log:
 the next line written carries in `left_out` how many stops it left out since the line before it, and `left_out=0` when it left out none.
-The sizes of the protected and unread processes, and after a kill that freed nothing the scan they are counted from, are read only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
-the process scan and the smaps of the processes the guard may end still run at every crossing, since they decide whether it acts.
+The sizes of the protected and unread processes are read only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
+the process scan and the smaps of the processes the guard may end still run at each reading in the band, at or above the mark and after a kill, since they decide whether it acts and what it ends.
 `hour` comes once an hour from the guard's start, with the highest and lowest readings and counters of that hour, the time of the highest reading, and the largest process the guard saw, protected processes included.
 The guard measures that largest process again, in a goroutine of its own that delays no reading, each time a new high of the hour is at least 1% of the limit above the high it last measured at.
 `off reason=` turns the guard off while the launcher runs, for one of the reasons in "What it reads" above, and a launcher that is not its container's first process writes it as `off reason=the launcher is pid <n>, not the container's first process, …`.
@@ -5057,8 +5075,8 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   Where a process holds a written memfd and an unwritten one, or two processes hold different ones, each counts up to the whole `Shmem` reading, so their sizes may together count the same pages more than once.
   The guard can then end a holder whose end frees less than its size said.
 
-- It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait.
-  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing, `reason=not fallen`.
+- It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait while nothing it may end grows.
+  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing and nothing it may end grew over the last 300 ms, or what it may end holds less than the floor, `reason=not fallen`.
   Either way it waits for the reading to fall below the mark, a process that grows in that wait is not ended, and the kernel can still stop the sandbox in that wait.
   A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
 
@@ -5068,8 +5086,8 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14 (the tester's at `8c24499c`), the longest gap between two readings was 1082 ms, where the longest gap of any growth run was 115.8 ms in the tester's result at `bebc420b` and 228.9 ms in the implementer's result at that head;
   the kill still came at 85.23% of the limit, below every kill point measured in those results (95.4% and above).
 
-- It does not bound the reads of a decision by what a process holds.
-  Each decision walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to a decision, the one after a kill included.
+- It does not bound the reads of its sizes by what a process holds.
+  Each reading in the band, at or above the mark and after a kill walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to each of those readings.
   It reads each such process's `smaps` whole as well, and under gVisor `vm.max_map_count` reads 2147483647, so the kernel's mapping limit does not bound that read either.
   What it does bound is a process's arguments: it reads at most their first 4 KiB, more than the rules of "What it protects, and why" read of them, and prints none of them.
 
@@ -5082,16 +5100,19 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
 The daemon-launched controller runs in a pod of its own, whose one container, `controller`, has one memory limit ([Daemon-launched controller](#daemon-launched-controller)).
 Under gVisor a container that passes its limit is stopped whole, `OOMKilled`, and the controller's turn ends with it.
 The launcher of that container runs the same memory guard as an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and the guard acts before that point.
-When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor the agent's own, and the daemon tells the controller why.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the process that grew the most, or the largest where none grew, of those that are neither Legion's own nor the agent's own, and the daemon tells the controller why.
 The rest of the pod goes on: the guard never ends the launcher, the shim or Oh My Pi, so the controller's turn does not end for the kill, and the command that was ended fails in the turn that ran it.
 The launcher runs the guard with the controller pod's rules (`serveMemoryGuard` and `controllerClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
-"What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, with the controller pod's own list of what the guard spares (below).
+"What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, the order of ends and the band among them, with the controller pod's own list of what the guard spares (below) and its own wait after a kill, 1 second by default ("The settings", below).
 
 **What gVisor measured.**
-Measured on 2026-11-17 in gVisor pods of 4 GiB and of 8 GiB, each with its memory request equal to its limit, by `TestControllerPodMemoryGuardLiveSandbox` (`packages/daemon/internal/launcher/memoryguard_live_test.go`), whose binary was the container's PID 1 and ran the launcher's single-role form at the defaults, with the test binary in the shim's place, run as `worker-shim`, and a copy of it in Oh My Pi's place, run as Oh My Pi is run (dispatch://INFRA-3531/comment/01974a85-5eac-4267-b88d-01e42bb972c4).
-A Python process that grew by 64 MiB every quarter of a second was ended alone at a reading of 85.48% of the 4 GiB limit and 85.06% of the 8 GiB limit, the shim and the agent lived on, one kill reached the daemon, and the reading fell within 22 ms and 94 ms of the kill.
+Measured on 2026-11-17 in gVisor pods of 4 GiB and of 8 GiB, each with its memory request equal to its limit, by `TestControllerPodMemoryGuardLiveSandbox` (`packages/daemon/internal/launcher/memoryguard_live_test.go`), whose binary was the container's PID 1 and ran the launcher's single-role form at the controller pod's defaults, with the test binary in the shim's place, run as `worker-shim`, and a copy of it in Oh My Pi's place, run as Oh My Pi is run (dispatch://INFRA-3531/comment/002dd114-e24d-45aa-b1de-a8d0ffa9ecac).
+A Python process that grew by 64 MiB every quarter of a second was ended alone at 85.07% of the 4 GiB limit and 85.37% of the 8 GiB limit, within 6 ms of the first reading at the mark, and the reading fell within 72 ms and 76 ms of the kill.
+Beside a parent holding a block of 3/8 of the limit and three forks that only slept, each reporting that block as its own, the same grower was the one process ended, although it was smaller than the block.
+Six such growers at once, about 1.5 GiB a second together, were ended one by one at 85.06% to 87.59% of the limit, the first within 76 ms of the mark, and the pod lived.
 A file of 1.275 times the limit, mapped and read for 60 seconds, raised the memory counter to 159% and 156% of the limit while `AnonPages` stayed under 30%, and the guard ended nothing.
-With no guard, the last `AnonPages` reading before the sandbox was stopped `OOMKilled` was 96.92% of the 4 GiB limit and 98.57% of the 8 GiB limit, so the default act share plus one interval of the fastest rise measured (43 MiB) stays 445 MiB and 1,069 MiB below the point where the pod ends.
+With the reading held in the band for a minute and nothing growing, the guard's reads cost 1.4 ms and 1.7 ms of CPU a reading.
+With no guard, the last `AnonPages` reading before the sandbox was stopped `OOMKilled` was 96.92% of the 4 GiB limit and 98.57% of the 8 GiB limit, so the default act share plus one interval of the fastest single rise measured (43 MiB) stays 445 MiB and 1,068 MiB below the point where the pod ends.
 
 **Where it runs.**
 Only the launcher's single-role form runs this guard, and only as the first process of its container, PID 1: the `legion launcher --role controller` of the controller's pod, under `runtime: kubernetes` and `controller: daemon`.
@@ -5152,16 +5173,17 @@ runtime:
         enabled: true
         act_percent: 85
         floor_percent: 10
-        wait_seconds: 5
+        wait_seconds: 1
         interval_milliseconds: 100
 ```
 
 Those are the defaults, and the guard is on in the controller's pod wherever the file says nothing.
-The block has the five members of `issue_pods`, with the same defaults and ranges, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 95`).
+The block has the five members of `issue_pods`, with the same ranges and the same defaults but the wait, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 95`).
+The wait after a kill is 1 second here, where an issue pod's is 5: in the 4 GiB run of the tester's shared-page probe ("What it ends" above), the pod ended 3.4 seconds after a kill that freed nothing, before a wait of 5 seconds had passed, and a wait of 1 second has the guard decide on the next process before that end.
 Each block is settled from its own members and its own defaults: a value under `issue_pods` never moves the controller's pod, and a value under `controller_pod` never moves an issue pod.
 The daemon hands the controller pod's launcher this block alone, on its answer to each hello (`memoryGuard` in `launcher_hello_ack`, `launcherHelloAck` in `packages/daemon/internal/runtime/sandbox/launcher_auth.go`).
 So a change applies at the launcher's next connection, which every daemon restart gives it, and replaces no pod.
-Before the first answer the guard runs at the defaults, so the pod is guarded while the daemon is away.
+Before the first answer the guard runs at these defaults, its wait of 1 second included, so the pod is guarded while the daemon is away.
 Under `enabled: false` the daemon's answer carries no settings, the same answer a daemon built before this guard gives: the guard turns off with one line, and a later answer that carries settings turns it on again.
 The launcher's own check of the ranges, the `settings` line, and the readings and hourly lines of a guard that is off are as "The settings" above says.
 
@@ -6931,7 +6953,7 @@ Its one container, the launcher, carries the controller's reservation
 — `runtime.kubernetes.resources.controller` where the file sets a field, the daemon's default of 1 CPU and 4Gi otherwise
 — as request and limit alike unless the file sets a lower `cpu_request` or `memory_request`, so at the default the pod is `Guaranteed`, never the class the kubelet evicts first under node memory pressure (a lower request makes it `Burstable`, [Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable");
 the image probe pod carries its own, smaller reservation, not the controller's, so a controller reservation the pool cannot place leaves the probe, and the boot, unaffected ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
-Its launcher, as PID 1 of that container, runs the memory guard, which near the limit ends the largest process that is neither Legion's own nor the agent's own ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
+Its launcher, as PID 1 of that container, runs the memory guard, which near the limit ends the process that grew the most, or the largest where none grew, of those that are neither Legion's own nor the agent's own ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
 
 The Sandbox is the claim's alone, where an issue's is its tree's.
 A release of the claim (a switch back, or `legion claims stop`) deletes it, and its role Secret and volume with it.
