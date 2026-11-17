@@ -442,7 +442,9 @@ func startListenerConfig(t *testing.T, binary, uri, seed string, held *cmdtest.H
 	env, err := config.Env([]string{uri})
 	require.NoError(t, err)
 	cmd := exec.Command(binary)
-	cmd.Env = append(env, core.EnvNATSSeed+"="+seed)
+	// The test's server is a throwaway one, so the listener creates the buckets it copies, as no
+	// deployment's listener does (cmd/listener/missing_buckets.go); config renders no such setting.
+	cmd.Env = append(env, core.EnvNATSSeed+"="+seed, "ENVOY_THROWAWAY_NATS=1")
 	held.Pass(cmd, "ENVOY_LISTEN_FD")
 	return cmdtest.Start(t, "the listener", cmd)
 }

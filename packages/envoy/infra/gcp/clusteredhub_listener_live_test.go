@@ -100,7 +100,9 @@ func liveListenerEnv(t *testing.T, port int, natsURL string, allowUnauthenticate
 	if allowUnauthenticated {
 		env = append(env, "ENVOY_API_ALLOW_UNAUTHENTICATED=1")
 	}
-	return env
+	// The test's server is a throwaway one, so the listener creates the buckets it copies, as no
+	// deployment's listener does (cmd/listener/missing_buckets.go); the pod renders no such setting.
+	return append(env, "ENVOY_THROWAWAY_NATS=1")
 }
 
 // startLiveListener starts a listener of the pod's environment on a port drawn from ports and
