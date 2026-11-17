@@ -1684,8 +1684,8 @@ repository root or from a subdirectory.
 Each lane prints its own ` --seed=<n>` in its summary.
 To reproduce a failing row, run its file alone with that seed:
 `bun run test:web web/src/<file> --seed=<n>` or
-`bun run test:harness e2e/__tests__/<file> --seed=<n>`, with `--rerun-each=2` added for a row
-that fails only on a rerun.
+`bun run test:harness e2e/__tests__/<file> --seed=<n>`, with `--rerun-each=<k>` added for a row
+that first failed on run k, which the report of `bun run test:repeat` names.
 This works because the order of the tests in a file depends only on the seed and on that file,
 not on the other files of the run.
 Random order cannot be turned off: `--randomize=false` is refused, and `--no-randomize` still

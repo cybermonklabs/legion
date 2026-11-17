@@ -6,8 +6,11 @@
  *  packages/dispatch, so the package's bunfig.toml does not reach that run. HOME is the same
  *  directory, so no global bunfig of the host reaches it either.
  *
- *  A module's own state starts again on each rerun in Bun 1.4.4. Only `globalThis` carries over,
- *  so a row that must fail on a later run counts its runs there.
+ *  On each rerun Bun 1.4.4 runs the test file's own top-level code again, so a counter declared
+ *  there starts again at 0. A module the file imports keeps its state between reruns (measured
+ *  for INFRA-1511's plan), and so does `globalThis`. Each scratch file here is a single file with
+ *  no module of its own to import, so a row that must fail on a later run counts its runs on
+ *  `globalThis`.
  *
  *  Each row says which lie of a weekly result it catches.
  */
@@ -122,6 +125,8 @@ async function laneRun(
     junit: junitAt(junit),
     log: output,
     environment,
+    // Bun runs here without runLane, which is what reads /proc/meminfo, so there is no reading.
+    memory: [],
   };
 }
 
@@ -331,6 +336,46 @@ test(
         `fails on two lines failed 1/1 runs (seed ${SEED}): first line%0Asecond line, 100%25 sure`
     );
     expect(annotations(report).every((line) => !line.includes("\n"))).toBe(true);
+  },
+  ROW_TIMEOUT_MS
+);
+
+test(
+  "the report gives the machine's memory from its readings, and says when there were none",
+  async () => {
+    // The lie: a run that took no reading shows 0 MiB, which reads as a measurement. Or the
+    // report takes the first or the last reading, not the lowest MemAvailable, and shows less
+    // than the most memory in use.
+    const run = await laneRun({ "steady.test.ts": passes }, 1);
+    const gibibyte = 1024 * 1024; // in KiB, as /proc/meminfo counts
+    const measured = summarise({
+      ...run,
+      memory: [
+        { memTotalKiB: 16 * gibibyte, memAvailableKiB: 12 * gibibyte },
+        { memTotalKiB: 16 * gibibyte, memAvailableKiB: 6 * gibibyte },
+        { memTotalKiB: 16 * gibibyte, memAvailableKiB: 10 * gibibyte },
+      ],
+    });
+    expect(measured.machineMemory).toEqual({
+      memTotalMiB: 16384,
+      lowestAvailableMiB: 6144,
+      mostInUseMiB: 10240,
+      samples: 3,
+    });
+    const reading =
+      "MemTotal 16384 MiB, lowest MemAvailable 6144 MiB, so 10240 MiB in use at the most, " +
+      "from 3 readings of /proc/meminfo, one at the start and then one every 5 s";
+    expect(markdown(measured)).toContain(
+      `- Machine memory, which counts every process on the machine and not Bun's alone: ${reading}`
+    );
+    expect(annotations(measured).at(-1)).toContain(reading);
+
+    const unmeasured = summarise({ ...run, memory: [] });
+    expect(unmeasured.machineMemory).toBeNull();
+    for (const text of [markdown(unmeasured), annotations(unmeasured).at(-1) ?? ""]) {
+      expect(text).toContain("not measured, because /proc/meminfo could not be read");
+      expect(text).not.toMatch(/\b0 MiB/);
+    }
   },
   ROW_TIMEOUT_MS
 );

@@ -16,6 +16,12 @@
  *  Actions the tool prints one `::error` per failing row, one `::error` per failure that belongs
  *  to no row, and one `::notice` with the totals.
  *
+ *  While Bun runs, the tool reads MemTotal and MemAvailable from /proc/meminfo, once at the start
+ *  and then every 5 s. The report gives MemTotal, the lowest MemAvailable, and the difference,
+ *  which is the most memory in use that a reading saw. That is the whole machine's memory: it
+ *  counts every process on the machine, not Bun's alone. Where /proc/meminfo cannot be read, as
+ *  on a machine that is not Linux, the report says that memory was not measured.
+ *
  *  The reader reads the junit file Bun 1.4.4 writes, and only that grammar. It was measured on
  *  real runs:
  *
@@ -75,6 +81,8 @@ const DEFAULT_RERUNS = 20;
 const MESSAGE_LIMIT = 500;
 /** How many lines of bun.log the report shows when a failure belongs to no row. */
 const LOG_TAIL_LINES = 40;
+/** How often the tool reads /proc/meminfo while Bun runs. */
+const MEMORY_SAMPLE_MS = 5_000;
 
 export const usage =
   "usage: bun run test:repeat --lane <web|harness> [--reruns <k>] [--seed <n>] --out <dir>\n" +
@@ -370,6 +378,14 @@ export interface LaneRun {
   readonly log: string;
   /** The variables GitHub Actions sets. `main` passes its own environment. */
   readonly environment: Readonly<Record<string, string | undefined>>;
+  /** The readings of /proc/meminfo taken while Bun ran. It is empty where none could be read. */
+  readonly memory: readonly MemorySample[];
+}
+
+/** One reading of /proc/meminfo, in KiB, which the file writes as `kB`. */
+export interface MemorySample {
+  readonly memTotalKiB: number;
+  readonly memAvailableKiB: number;
 }
 
 export interface GithubRun {
@@ -419,6 +435,18 @@ export interface RowlessFailure {
   readonly text: string;
 }
 
+/** The memory of the whole machine while Bun ran, in MiB. It counts every process on the
+ *  machine, not Bun's alone. */
+export interface MachineMemory {
+  readonly memTotalMiB: number;
+  /** The lowest MemAvailable of the readings. */
+  readonly lowestAvailableMiB: number;
+  /** MemTotal minus the lowest MemAvailable: the most memory in use that a reading saw. */
+  readonly mostInUseMiB: number;
+  /** How many readings of /proc/meminfo were taken. */
+  readonly samples: number;
+}
+
 export interface Report {
   readonly github: GithubRun;
   readonly lane: Lane;
@@ -437,6 +465,8 @@ export interface Report {
   readonly rowlessFailures: readonly RowlessFailure[];
   /** The last lines of bun.log. It is empty unless a failure belongs to no row. */
   readonly bunLogTail: readonly string[];
+  /** The whole machine's memory while Bun ran. It is null where no reading could be taken. */
+  readonly machineMemory: MachineMemory | null;
   readonly exitCode: 0 | 1;
 }
 
@@ -469,6 +499,24 @@ function perRun(total: number, reruns: number): number {
 function bunErrors(log: string): number {
   const counts = [...log.matchAll(/^ (\d+) errors?$/gm)];
   return counts.length === 0 ? 0 : Number(counts[counts.length - 1][1]);
+}
+
+/** The most memory in use that the readings saw: MemTotal minus the lowest MemAvailable, in MiB.
+ *  It answers null for no reading, so that a run with no reading never shows a 0. */
+function machineMemory(samples: readonly MemorySample[]): MachineMemory | null {
+  if (samples.length === 0) return null;
+  let lowest = samples[0];
+  for (const sample of samples) {
+    if (sample.memAvailableKiB < lowest.memAvailableKiB) lowest = sample;
+  }
+  const memTotalMiB = Math.round(lowest.memTotalKiB / 1024);
+  const lowestAvailableMiB = Math.round(lowest.memAvailableKiB / 1024);
+  return {
+    memTotalMiB,
+    lowestAvailableMiB,
+    mostInUseMiB: memTotalMiB - lowestAvailableMiB,
+    samples: samples.length,
+  };
 }
 
 /** The report of one run of a lane. */
@@ -581,6 +629,7 @@ export function summarise(run: LaneRun): Report {
     failingRows,
     rowlessFailures: rowless,
     bunLogTail: rowless.length === 0 ? [] : logLines.slice(-LOG_TAIL_LINES),
+    machineMemory: machineMemory(run.memory),
     exitCode: failed ? 1 : 0,
   };
 }
@@ -618,6 +667,16 @@ function testcasesText(report: Report): string {
   return `${passed} passed, ${failed} failed and ${skipped} skipped testcases`;
 }
 
+function memoryText(memory: MachineMemory | null): string {
+  if (memory === null) return "not measured, because /proc/meminfo could not be read";
+  const { memTotalMiB, lowestAvailableMiB, mostInUseMiB, samples } = memory;
+  return (
+    `MemTotal ${memTotalMiB} MiB, lowest MemAvailable ${lowestAvailableMiB} MiB, so ` +
+    `${mostInUseMiB} MiB in use at the most, from ${counted(samples, "reading")} of ` +
+    `/proc/meminfo, one at the start and then one every ${MEMORY_SAMPLE_MS / 1000} s`
+  );
+}
+
 /** The report as markdown, for report.md and the step summary. */
 export function markdown(report: Report): string {
   const lines = [`## Repeated unit tests: ${report.lane} lane`, ""];
@@ -636,6 +695,8 @@ export function markdown(report: Report): string {
     `- Wall time: ${report.wallSeconds.toFixed(1)} s`,
     `- One run: ${oneRunText(report)}`,
     `- All runs: ${testcasesText(report)}`,
+    `- Machine memory, which counts every process on the machine and not Bun's alone: ` +
+      memoryText(report.machineMemory),
     ""
   );
 
@@ -726,7 +787,9 @@ export function annotations(report: Report): string[] {
       `Seed ${report.seed}, ${report.reruns} reruns, ${report.wallSeconds.toFixed(1)} s. ` +
         `One run: ${oneRunText(report)}. All runs: ${testcasesText(report)}. ` +
         `${counted(report.failingRows.length, "row")} failed. ` +
-        `${counted(report.rowlessFailures.length, "failure belongs", "failures belong")} to no row.`
+        `${counted(report.rowlessFailures.length, "failure belongs", "failures belong")} to no ` +
+        `row. Machine memory, which counts every process and not Bun's alone: ` +
+        `${memoryText(report.machineMemory)}.`
     )
   );
   return lines;
@@ -750,6 +813,21 @@ async function relay(stream: ReadableStream<Uint8Array>, log: number): Promise<v
   }
   pending += decoder.decode();
   if (summaryLine.test(pending)) console.log(pending);
+}
+
+/** MemTotal and MemAvailable from /proc/meminfo. It answers undefined where the file or either
+ *  field cannot be read, as on a machine that is not Linux. */
+function readMeminfo(): MemorySample | undefined {
+  let text: string;
+  try {
+    text = readFileSync("/proc/meminfo", "utf8");
+  } catch {
+    return undefined;
+  }
+  const total = /^MemTotal:\s+(\d+) kB$/m.exec(text);
+  const available = /^MemAvailable:\s+(\d+) kB$/m.exec(text);
+  if (total === null || available === null) return undefined;
+  return { memTotalKiB: Number(total[1]), memAvailableKiB: Number(available[1]) };
 }
 
 /** Runs the lane once with `options` and writes its report. `target` is the path the lane tests,
@@ -784,10 +862,18 @@ export async function runLane(
     ],
     { cwd: packageDirectory, stdin: "ignore", stdout: "pipe", stderr: "pipe" }
   );
+  const memory: MemorySample[] = [];
+  const sample = () => {
+    const reading = readMeminfo();
+    if (reading !== undefined) memory.push(reading);
+  };
+  sample();
+  const sampler = setInterval(sample, MEMORY_SAMPLE_MS);
   try {
     await Promise.all([relay(child.stdout, log), relay(child.stderr, log)]);
     await child.exited;
   } finally {
+    clearInterval(sampler);
     closeSync(log);
   }
   const wallMs = performance.now() - started;
@@ -803,6 +889,7 @@ export async function runLane(
     junit: junitAt(junitPath),
     log: readFileSync(logPath, "utf8"),
     environment: process.env,
+    memory,
   });
   const text = markdown(report);
   writeFileSync(join(out, "report.json"), `${JSON.stringify(report, null, 2)}\n`);

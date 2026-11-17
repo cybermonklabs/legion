@@ -30,6 +30,7 @@ name: Dispatch unit suite repeated
 #
 # MEASURED LEGS, filled in by a later commit from this workflow's first run on its pull request:
 # the wall time and the peak memory of one leg of each lane.
+# The peak is the "in use at the most" figure on the report's "Machine memory" line.
 #   web:     <minutes> min, <MiB> MiB peak
 #   harness: <minutes> min, <MiB> MiB peak
 #

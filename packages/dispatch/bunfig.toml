@@ -10,8 +10,9 @@
 # alone with that seed:
 #   bun run test:web web/src/<file> --seed=<n>
 #   bun run test:harness e2e/__tests__/<file> --seed=<n>
-# Add `--rerun-each=2` for a row that fails only on a rerun. This works because the order of the
-# tests in a file depends only on the seed and on that file, not on the other files of the run.
+# Add `--rerun-each=<k>` for a row that first failed on run k, which the report of
+# `bun run test:repeat` names. This works because the order of the tests in a file depends only
+# on the seed and on that file, not on the other files of the run.
 # A `--seed` on the command line takes the place of the random seed this file gives.
 # Nothing turns random order off once this file sets it: `--randomize=false` is refused, and
 # `--no-randomize` still shuffles.
