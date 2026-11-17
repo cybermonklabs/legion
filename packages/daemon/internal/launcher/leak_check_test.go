@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -376,7 +377,7 @@ func TestTwoCallersOfOneCheckInstallInstallItOnce(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
 	frames := servedLeakCheck(t, leakCheckPin, runs)
-	c := newCheckInstall(leakCheckPin, dir, nil)
+	c := newCheckInstall(leakCheckPin, dir, procgroup.NoReaper)
 	var mu sync.Mutex
 	var logged []string
 	logf := func(format string, args ...any) {
@@ -468,7 +469,7 @@ func TestARefusedLeakCheckLeavesTheDirectoryAsItWas(t *testing.T) {
 			parent := t.TempDir()
 			dir := filepath.Join(parent, "leak-check")
 			earlier := packedLeakCheck(t, leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "earlier-runs")))
-			if err := leakguard.InstallServed(context.Background(), leakguard.ServedInstall{Dir: dir, Tag: leakCheckPin, Body: earlier}); err != nil {
+			if err := leakguard.InstallServed(context.Background(), leakguard.ServedInstall{Dir: dir, Tag: leakCheckPin, Body: earlier, Start: procgroup.NoReaper}); err != nil {
 				t.Fatal(err)
 			}
 			before := tree(t, parent)
@@ -626,11 +627,12 @@ func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
 }
 
 // TestLeakCheckInstallPIDOneHelper is TestTheLeakCheckInstallSurvivesPID1sReaper's body, run as
-// PID 1 under relentlessReaper. The control comes first: the same check installed with no
-// starter, as an install outside a launcher runs it, must be refused, its run reaped by the
-// reaper (reapedByAnother), within installsUnderReaper tries, or the reaper never met a run's exit
-// and the installs after it prove nothing. Then the check is installed installsUnderReaper times,
-// each by a container's managers as newManagers wires them, and every install must succeed.
+// PID 1 under relentlessReaper. The check is installed installsUnderReaper times, each by a
+// container's managers as newManagers wires them, and every install must succeed. The control
+// comes after them, with the reaper still running: the same check installed with
+// procgroup.NoReaper, as an install outside a launcher runs it, must be refused, its run reaped by
+// the reaper (reapedByAnother), within installsUnderReaper tries, or the reaper never met a run's
+// exit and the installs before it prove nothing.
 func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
@@ -654,28 +656,6 @@ func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 	}
 	stop := relentlessReaper(t, managers, guard)
 
-	controlTries, controlCause := 0, ""
-	for controlTries < installsUnderReaper && controlCause == "" {
-		controlTries++
-		dir := filepath.Join(installs, fmt.Sprintf("control-%d", controlTries))
-		err := leakguard.InstallServed(context.Background(), leakguard.ServedInstall{Dir: dir, Tag: leakCheckPin, Body: body})
-		switch {
-		case err == nil:
-			// Each install is read once, so it goes before the next: the fixture is large.
-			_ = os.RemoveAll(dir)
-		case reapedByAnother(err):
-			controlCause = err.Error()
-		default:
-			stop()
-			t.Fatalf("the control's install %d failed otherwise: %v", controlTries, err)
-		}
-	}
-	if controlCause == "" {
-		stop()
-		t.Fatalf("none of %d installs with no starter was reaped: the reaper never met a run's exit, so the installs below would prove nothing", controlTries)
-	}
-	t.Logf("control: install %d with no starter was refused: %s", controlTries, controlCause)
-
 	var refused []string
 	for index := range installsUnderReaper {
 		dir := filepath.Join(installs, fmt.Sprintf("install-%d", index))
@@ -693,7 +673,29 @@ func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 		}
 		_ = os.RemoveAll(dir)
 	}
+
+	controlTries, controlCause := 0, ""
+	for controlTries < installsUnderReaper && controlCause == "" {
+		controlTries++
+		dir := filepath.Join(installs, fmt.Sprintf("control-%d", controlTries))
+		err := leakguard.InstallServed(context.Background(), leakguard.ServedInstall{Dir: dir, Tag: leakCheckPin, Body: body, Start: procgroup.NoReaper})
+		switch {
+		case err == nil:
+			// Each install is read once, so it goes before the next: the fixture is large.
+			_ = os.RemoveAll(dir)
+		case reapedByAnother(err):
+			controlCause = err.Error()
+		default:
+			stop()
+			t.Fatalf("the control's install %d failed otherwise: %v", controlTries, err)
+		}
+	}
 	stop()
+
+	if controlCause == "" {
+		t.Fatalf("none of %d installs with no guard was reaped: the reaper never met a run's exit, so the installs before them prove nothing", controlTries)
+	}
+	t.Logf("control: install %d with no guard was refused: %s", controlTries, controlCause)
 
 	if len(refused) != 0 {
 		t.Errorf("%d of %d installs under the reaper were refused, want none:\n%s", len(refused), installsUnderReaper, strings.Join(refused, "\n"))

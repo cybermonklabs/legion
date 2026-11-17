@@ -61,9 +61,17 @@ type bundleRestore struct {
 	// carries it and sent again on every connection until one does (manager.reportRestore).
 	confirm *shimwire.LauncherRestored
 	// start starts each jj and git of the restore (restoreWorkspace): the launcher's pidGuard,
-	// which holds each one out of PID 1's reaper until its own wait has read its exit. nil, a
-	// test's, starts them with cmd.Start.
+	// which holds each one out of PID 1's reaper until its own wait has read its exit.
 	start procgroup.Starter
+}
+
+// newBundleRestore is a pod's restore, whose jj and git start starts. A nil start panics here, at
+// the launcher's start, rather than at the pod's first put-back.
+func newBundleRestore(start procgroup.Starter) *bundleRestore {
+	if start == nil {
+		panic("launcher: the workspace restore was given no starter")
+	}
+	return &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: start}
 }
 
 // restoreResult is what one start's call on the pod's restore answers: whether the workspace

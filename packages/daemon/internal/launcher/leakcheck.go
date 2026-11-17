@@ -28,7 +28,6 @@ type checkInstall struct {
 	pin, dir string
 	// start starts the install's run of the check (leakguard.ServedInstall.Start): the launcher's
 	// pidGuard, which holds that run out of PID 1's reaper until its own wait has read its exit.
-	// nil, a test's, starts it with cmd.Start.
 	start procgroup.Starter
 	// done is whether this process has installed its pin, which every hello says
 	// (LauncherHello.LeakCheckInstalled). It is read apart from mu, so a role's reconnect is not
@@ -48,8 +47,12 @@ type checkInstall struct {
 }
 
 // newCheckInstall is the install of a launcher whose environment pins tag pin ("" for none), into
-// dir ("" for leakguard.InstallDir), whose run of the check start starts.
+// dir ("" for leakguard.InstallDir), whose run of the check start starts. A nil start panics here,
+// at the launcher's start, rather than at the pod's first install.
 func newCheckInstall(pin, dir string, start procgroup.Starter) *checkInstall {
+	if start == nil {
+		panic("launcher: the leak-check install was given no starter")
+	}
 	if dir == "" {
 		dir = leakguard.InstallDir
 	}

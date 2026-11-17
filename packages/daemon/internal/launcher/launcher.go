@@ -180,7 +180,7 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// this process's children, and the reaper would otherwise take an exit before the restore's
 	// own wait read it, which then fails with `waitid: no child processes` (under gVisor at times
 	// `waitid: no such process`) and puts nothing back.
-	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: guard.starter()}
+	restore := newBundleRestore(guard.starter())
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed. Its one run of the check starts through

@@ -212,9 +212,9 @@ type ServedInstall struct {
 	Body []byte
 	// Log receives the install's one line where it replaced what Dir held. Nil logs nothing.
 	Log func(format string, args ...any)
-	// Start starts the install's one run of the check (verifyServed). The pod's launcher passes the
-	// starter that holds the run out of its PID 1 reaper (procgroup.Starter says why); nil is
-	// cmd.Start.
+	// Start starts the install's one run of the check (verifyServed), and is required: the pod's
+	// launcher passes the starter that holds the run out of its PID 1 reaper, and any other caller
+	// procgroup.NoReaper (procgroup.Starter says why there is no default).
 	Start procgroup.Starter
 }
 
@@ -246,6 +246,9 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	}
 	if in.Dir == "" {
 		return errors.New("the pod's launcher named no directory to install the check into")
+	}
+	if in.Start == nil {
+		return errors.New("the pod's launcher named no starter for the check's run")
 	}
 	dir := in.Dir
 	ctx, cancel := context.WithTimeout(ctx, installBound)

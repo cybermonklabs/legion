@@ -154,7 +154,8 @@ func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) 
 
 // Run starts cmd through the caller's Starter and calls its done only once the wait has read the
 // exit, which is what keeps a PID 1 reaper's hold on the child until then; a start that fails is
-// answered as it is, with no wait and no done; and a nil Starter is cmd.Run.
+// answered as it is, with no wait and no done; NoReaper is cmd.Run's own start; and no Starter at
+// all panics before anything starts, rather than run the command under one nobody chose.
 func TestRunStartsThroughTheStarterAndIsDoneOnceTheExitIsRead(t *testing.T) {
 	t.Run("a starter", func(t *testing.T) {
 		cmd := exec.Command("sh", "-c", "exit 3")
@@ -186,11 +187,20 @@ func TestRunStartsThroughTheStarterAndIsDoneOnceTheExitIsRead(t *testing.T) {
 			t.Fatalf("Run = %v, process %v, done called %v; want the start's own error, no process and no done", err, cmd.Process, doneCalled)
 		}
 	})
-	t.Run("no starter", func(t *testing.T) {
+	t.Run("NoReaper", func(t *testing.T) {
 		cmd := exec.Command("sh", "-c", "exit 4")
-		if err := Run(cmd, nil); Err(err) != nil || cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 4 {
-			t.Fatalf("Run(nil starter) = %v with exit %v, want cmd.Run's own exit 4", err, cmd.ProcessState)
+		if err := Run(cmd, NoReaper); Err(err) != nil || cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 4 {
+			t.Fatalf("Run(NoReaper) = %v with exit %v, want the command's own exit 4", err, cmd.ProcessState)
 		}
+	})
+	t.Run("no starter", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "exit 0")
+		defer func() {
+			if recover() == nil || cmd.Process != nil {
+				t.Fatalf("Run(nil) started %v and did not panic, want a panic before any start", cmd.Process)
+			}
+		}()
+		_ = Run(cmd, nil)
 	})
 }
 

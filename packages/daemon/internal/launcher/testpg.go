@@ -2,12 +2,14 @@ package launcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -197,14 +199,15 @@ func CheckTestPostgres(dir string) error {
 	return run(testPGProgram, "stop")
 }
 
-// pidGuard holds the pids of the launcher's own children that are no generation's, so PID 1's
-// reaper leaves each exit to the wait that started it (reapOrphans skips them as it skips a
-// manager's generation, and the controller pod's drain skips them too, reap). A pid is recorded
-// before its process exists, under the lock every reap holds for its whole pass, so no pass can
-// read /proc between a child's start and its record. Every child the launcher's process starts
+// pidGuard holds the pids of the launcher's own children that are no generation's, so a reap of
+// PID 1's leaves each exit to the wait that started it (pidGuard.reap: the orphan reaper's passes,
+// which skip them as they skip a manager's generation, and the controller pod's drain). A pid is
+// recorded as its process starts, under the lock every reap holds for its whole pass, so no pass
+// can read /proc between a child's start and its record. Every child the launcher's process starts
 // and waits for itself, but a generation, starts here: the test database's script (runTestPG), the
 // put-back's jj and git (bundleRestore) and the leak-check install's run of the check
-// (checkInstall).
+// (checkInstall). TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every
+// start that process reaches.
 type pidGuard struct {
 	mu   sync.Mutex
 	pids map[int]bool
@@ -255,13 +258,53 @@ func (g *pidGuard) held() []int {
 	return pids
 }
 
-// reap is one pass of reapNamespace that leaves the guard's children, and skip, to their own
-// waits, under the guard's lock for the whole pass, and answers whether any other process of the
-// namespace is left. Every reap of the launcher's process runs here: the orphan reaper's passes
-// (reapOrphans, which skips each manager's generation) and the controller pod's drain of an exited
-// generation (cleanExitedGeneration).
+// reap is one pass of reapNamespace that leaves the guard's children, with their descendants and
+// process groups (heldWithTheirs), and skip, to their own waits, under the guard's lock for the
+// whole pass, and answers whether any other process of the namespace is left. Every reap of the
+// launcher's process runs here: the orphan reaper's passes (reapOrphans, which skips each
+// manager's generation) and the controller pod's drain of an exited generation
+// (cleanExitedGeneration), which so waits for no process of a held child's.
 func (g *pidGuard) reap(skip ...int) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return reapNamespace(append(g.held(), skip...)...)
+	spared, err := heldWithTheirs("/proc", g.held())
+	if err != nil {
+		return false, fmt.Errorf("list the processes the launcher holds: %w", err)
+	}
+	for pid := range spared {
+		skip = append(skip, pid)
+	}
+	return reapNamespace(skip...)
+}
+
+// signalNamespace sends sig to every process of PID 1's namespace but PID 1 and the guard's
+// children with theirs (heldWithTheirs), which the controller pod's drain leaves to finish and to
+// their own waits. While the guard holds nothing it is kill(-1), which reaches every process at
+// once, a setsid or daemonized one included; while it holds a child the signal goes process by
+// process, under the guard's lock, so no guarded child starts between the read of /proc and the
+// signals.
+func (g *pidGuard) signalNamespace(sig syscall.Signal) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	held := g.held()
+	if len(held) == 0 {
+		return signalGeneration(0, sig)
+	}
+	spared, err := heldWithTheirs("/proc", held)
+	if err != nil {
+		return fmt.Errorf("list the processes the launcher holds: %w", err)
+	}
+	pids, err := procPIDs("/proc")
+	if err != nil {
+		return fmt.Errorf("list role namespace processes: %w", err)
+	}
+	for _, pid := range pids {
+		if pid <= 1 || spared[pid] {
+			continue
+		}
+		if err := syscall.Kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("signal role process %d: %w", pid, err)
+		}
+	}
+	return nil
 }

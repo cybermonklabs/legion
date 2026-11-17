@@ -74,8 +74,8 @@ func pidNamespace(t *testing.T) []string {
 const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 
 // runAsPIDOne runs the test binary's helper test as PID 1 of a PID namespace of its own
-// (pidNamespace), with only PATH and pidOneHelperEnv in its environment, fails t unless the helper
-// ran and passed, and answers what it printed.
+// (pidNamespace), with only the test's own PATH, where its jj and git are, and pidOneHelperEnv in
+// its environment, fails t unless the helper ran and passed, and answers what it printed.
 func runAsPIDOne(t *testing.T, helper string) string {
 	t.Helper()
 	prefix := pidNamespace(t)
@@ -83,7 +83,7 @@ func runAsPIDOne(t *testing.T, helper string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", pidOneHelperEnv+"=1",
+	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1",
 		self, "-test.run=^"+helper+"$", "-test.v", "-test.count=1")
 	output, err := exec.Command("sudo", args...).CombinedOutput()
 	if err != nil || !bytes.Contains(output, []byte("--- PASS: "+helper)) {

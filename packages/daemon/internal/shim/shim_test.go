@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -602,7 +603,7 @@ func installedCheck(t *testing.T, tag string) string {
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
 	defer cancel()
-	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body}); err != nil {
+	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper}); err != nil {
 		t.Fatal(err)
 	}
 	return dir

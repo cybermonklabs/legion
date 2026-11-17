@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -49,6 +50,66 @@ func procPIDs(root string) ([]int, error) {
 	return pids, nil
 }
 
+// heldWithTheirs is held and every process of the /proc mounted at root that is one of theirs: a
+// descendant by its parent chain (a held child's own children, as the install's --help run starts
+// python), or a member of a process group a held child leads (procgroup.Configure gives each of
+// the launcher's guarded commands one). A process whose stat cannot be read, gone in between,
+// counts as none of theirs.
+func heldWithTheirs(root string, held []int) (map[int]bool, error) {
+	spared := make(map[int]bool, len(held))
+	for _, pid := range held {
+		spared[pid] = true
+	}
+	if len(held) == 0 {
+		return spared, nil
+	}
+	pids, err := procPIDs(root)
+	if err != nil {
+		return nil, err
+	}
+	parent := make(map[int]int, len(pids))
+	for _, pid := range pids {
+		ppid, pgid, ok := statParentAndGroup(root, pid)
+		if !ok {
+			continue
+		}
+		parent[pid] = ppid
+		if spared[pgid] {
+			spared[pid] = true
+		}
+	}
+	for _, pid := range pids {
+		for ancestor, steps := parent[pid], 0; ancestor > 1 && steps < len(pids); ancestor, steps = parent[ancestor], steps+1 {
+			if spared[ancestor] {
+				spared[pid] = true
+				break
+			}
+		}
+	}
+	return spared, nil
+}
+
+// statParentAndGroup is pid's parent and process group, as /proc/<pid>/stat holds them after the
+// command name, which may itself hold spaces and parentheses, so the fields are read from after
+// its last `)`: state, ppid, pgrp.
+func statParentAndGroup(root string, pid int) (ppid, pgid int, ok bool) {
+	stat, err := os.ReadFile(root + "/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, 0, false
+	}
+	end := strings.LastIndexByte(string(stat), ')')
+	if end < 0 {
+		return 0, 0, false
+	}
+	fields := strings.Fields(string(stat[end+1:]))
+	if len(fields) < 3 {
+		return 0, 0, false
+	}
+	ppid, errParent := strconv.Atoi(fields[1])
+	pgid, errGroup := strconv.Atoi(fields[2])
+	return ppid, pgid, errParent == nil && errGroup == nil
+}
+
 // reapNamespace leaves each process of skip, a direct child exec.Cmd.Wait reads, to that wait.
 // Every other adopted child belongs to PID 1; Wait4 with WNOHANG reaps exited orphans without
 // delaying a resident worker's next turn, and never takes the exit status a generation's own wait
@@ -63,6 +124,9 @@ func reapNamespace(skip ...int) (bool, error) {
 		if pid <= 1 || slices.Contains(skip, pid) {
 			continue
 		}
+		// No __WCLONE or __WALL: a child that sends no SIGCHLD when it exits, such as the clone
+		// Go's os package makes to probe for pidfd support (CLONE_VFORK|CLONE_PIDFD, no exit
+		// signal, waited with WCLONE), is never one this reaps.
 		reaped, err := syscall.Wait4(pid, nil, syscall.WNOHANG, nil)
 		if err != nil && !errors.Is(err, syscall.ECHILD) && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EINTR) {
 			return false, fmt.Errorf("reap role process %d: %w", pid, err)
@@ -76,14 +140,15 @@ func reapNamespace(skip ...int) (bool, error) {
 // PID namespace but the generations its managers run, whose exits their own waits read, and the
 // launcher's own children (the test database's script, the put-back's jj and git and the
 // leak-check install's run of the check, pidGuard), whose exits their own waits read too. Every
-// manager's lock and the guard's are held across the pass, and a manager records its generation's
-// pid under its lock as it starts it, as the guard records its child's, so the reaper never waits
-// on a process it has not seen yet. In the controller's pod a pass that fails leaves the role's
-// namespace unobservable, so the launcher fails its container loudly. In an issue pod's container
-// the container's /proc still lists every role's processes, since a role's PID namespace is nested
-// in it, but none is the launcher's child except each role's role-init, which the pass skips: the
-// rest are their role-init's to reap, and Wait4 on them answers ECHILD. So a failed pass costs no
-// role anything, and it is logged and the next pass tries again.
+// manager's lock and then the guard's are held across the pass (pidGuard.reap), and a manager
+// records its generation's pid under its lock as it starts it, as the guard records its child's,
+// so the reaper never waits on a process it has not seen yet. In the controller's pod a pass that
+// fails leaves the role's namespace unobservable, so the launcher fails its container loudly. In an
+// issue pod's container the container's /proc still lists every role's processes, since a role's
+// PID namespace is nested in it, but none is the launcher's child except each role's role-init and
+// the launcher's own held children, which the pass skips: the rest are their role-init's to reap,
+// and Wait4 on them answers ECHILD. So a failed pass costs no role anything, and it is logged and
+// the next pass tries again.
 func reapOrphans(ctx context.Context, signals <-chan os.Signal, managers []*manager, guard *pidGuard) {
 	for {
 		select {
@@ -123,17 +188,21 @@ const namespaceReapPoll = 10 * time.Millisecond
 // Cleanup finishes before the exit is reported, credentials are removed or a new generation is
 // admitted. A namespace whose processes cannot be observed is not safe to reuse: fail the launcher
 // loudly so Kubernetes replaces this container rather than reporting a false completed stop. Only
-// the single-role form runs it; an issue pod's roles end with their own namespace's init. Its
-// passes leave the launcher's own children to their waits, as the orphan reaper's do (pidGuard).
+// the single-role form runs it; an issue pod's roles end with their own namespace's init. It
+// leaves the launcher's own children, with their descendants and process groups, alone: its
+// SIGTERM and SIGKILL do not reach them (pidGuard.signalNamespace), its reap passes leave their
+// exits to their own waits, and it waits for none of them (pidGuard.reap). None can run then
+// today, since in the controller's pod the leak-check install runs before the first start and a
+// restore inside a start, which is refused while a generation is still the manager's; the drain
+// leaves them alone all the same, so a step that one day runs then keeps its child.
 func (m *manager) cleanExitedGeneration() {
 	if os.Getpid() != 1 {
 		return
 	}
-	if err := signalGeneration(0, syscall.SIGTERM); err != nil {
+	if err := m.guard.signalNamespace(syscall.SIGTERM); err != nil {
 		panic(err)
 	}
 	deadline := time.Now().Add(m.cfg.StopGrace)
-	killed := false
 	for {
 		remaining, err := m.guard.reap()
 		if err != nil {
@@ -142,11 +211,13 @@ func (m *manager) cleanExitedGeneration() {
 		if !remaining {
 			return
 		}
-		if !killed && !time.Now().Before(deadline) {
-			if err := signalGeneration(0, syscall.SIGKILL); err != nil {
+		// Past the grace every pass kills what is left again: a signal sent process by process
+		// (signalNamespace, while the guard holds a child) misses a process forked after the read
+		// of /proc it went by, which the next pass finds.
+		if !time.Now().Before(deadline) {
+			if err := m.guard.signalNamespace(syscall.SIGKILL); err != nil {
 				panic(err)
 			}
-			killed = true
 		}
 		time.Sleep(namespaceReapPoll)
 	}
