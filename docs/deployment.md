@@ -678,7 +678,7 @@ Rotate the keys in the broker's `github-app` secrets, not on the daemon's machin
 
 2. Update the matching broker secret, `LEGION_IMPLEMENT_APP` or `LEGION_REVIEW_APP`, as [Store the App key](site/src/content/docs/broker/guides/github-app-for-a-dev-box.md) shows:
    its value is the JSON document `{"app_id": …, "private_key": "<the new PEM>"}`, set with `agent-secrets secret set <NAME> < app-key.json`, never the bare PEM.
-   Keep the secret's `github-app` kind and its GitHub owners.
+   Keep the secret's `github-app` type and its GitHub owners.
 
 3. Open a registered shell of your own (`agent-secrets register --wait 10 --exec -- sh`; the daemon's session cannot be entered from another terminal), then run each role's `token_command` from [the App section](#the-legion-implementer-and-legion-reviewer-apps) there, with `LEGION_GITHUB_OWNER` and `LEGION_GITHUB_READ_ONLY` unset, and confirm it prints the installations' tokens (`LEGION_REVIEW_APP` waits for a person's approval).
    Then confirm a fresh worker pane's `gh auth status` succeeds with account `x-access-token`.

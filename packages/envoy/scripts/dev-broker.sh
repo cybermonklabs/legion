@@ -395,13 +395,13 @@ else
        {name: ($prefix + "demo-service-token"), kms_key_id: $kms,
         tags: {owner: $service, tier: "agent"}, value: "demo-service-token-value"},
        {name: ($prefix + "demo-github-app"), kms_key_id: $kms,
-        tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $owner},
+        tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner},
         value: ({app_id: $appid, private_key: $appkey} | tojson)},
        {name: ($prefix + "demo-github-app-case-pair"), kms_key_id: $kms,
-        tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $casepair},
+        tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $casepair},
         value: ({app_id: $appid, private_key: $appkey} | tojson)},
        {name: ($prefix + "demo-github-app-human"), kms_key_id: $kms,
-        tags: {owner: $approver, tier: "human", kind: "github-app", "github-owners": $owner},
+        tags: {owner: $approver, tier: "human", type: "github-app", "github-owners": $owner},
         value: ({app_id: $appid, private_key: $appkey} | tojson)}
      ]}' >"$FAKE_SECRETS_FILE"
 fi

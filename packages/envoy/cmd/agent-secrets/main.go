@@ -148,11 +148,11 @@ var commands = []command{
 	{"grant list", "agent-secrets grant list [--json]",
 		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
-		"End a grant as its operator or approver, under this machine's login, as Dispatch's Live\ngrants page does. Ending an automatic grant also makes its session ask before it gets those\nsecrets again."},
+		"End a grant. From your own shell, end it as its operator or approver, under this\nmachine's login, as Dispatch's Live grants page does; ending an automatic grant also\nmakes its session ask before it gets those secrets again. Inside a session, end a grant\ngiven to the broker identity this session signs as, as `revoke` does; any other grant is\nrefused NOT_YOURS."},
 	{"login", "agent-secrets login",
 		"Sign in on this machine as yourself: print the code to type in at Google, then record the\nsign-in at the secrets broker, which binds it to a box key this machine makes. Every session\nof yours on this machine then acts as you. A second person signs in beside you, and\nAGENT_SECRETS_PERSON then says which of you a session acts for."},
 	{"register", "agent-secrets register [--wait SECONDS] [--session-id ID] [--exec -- COMMAND [ARGS...]]",
-		"Register this process with agent-secrets-helper as a machine session. With --exec, run COMMAND\nas this same process, so it and everything it starts are that session. With --session-id, the\nsession keeps one broker identity — and the requests and grants bound to it — across a restart\nof the helper or of the machine, rather than enrolling afresh as a new pid; run it again with\nthe id from inside a session that could not name one at launch."},
+		"Register a machine session with agent-secrets-helper. With --exec, register this process and\nrun COMMAND as this same process, so it and everything it starts are that session. Without\n--exec, name the session this process runs inside, or else the session launcher (omp) above\nit, never this process, which ends with the command; with neither, exit 1 and say to relaunch\nunder --exec. With --session-id, the session keeps one broker identity — and the requests and\ngrants bound to it — across a restart of the helper or of the machine, rather than enrolling\nafresh as a new pid; run it again with the id from inside a session that could not name one\nat launch."},
 	{"identity", "agent-secrets identity [--source]",
 		"Exit 0 when this process has a launcher's key dir or a helper session and 1 when it does not,\nasking the broker nothing. With --source, print the source of the broker identity a use\ncommand would take (key-dir, sign-in, helper or machine) and what it is, asking the broker\nand the metadata server where it must and registering nothing; exit 1 with every source's\nreason when none has one."},
 	{"--version", "agent-secrets --version",
@@ -960,18 +960,31 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets revoke: exactly one grant_id is required")
 		return exitUsageError
 	}
-	base, _, signer, err := sessionContext()
-	if err != nil {
-		return sessionFailed(stderr, "agent-secrets revoke", err)
-	}
-	ctx := context.Background()
-	c := newClient(base)
-	if err := c.RevokeGrant(ctx, signer, positional[0]); err != nil {
-		refuse(stderr, "agent-secrets revoke", c.source(ctx), err)
+	c, failed, err := revokeAsSession(positional[0])
+	switch {
+	case failed != nil:
+		return sessionFailed(stderr, "agent-secrets revoke", failed)
+	case err != nil:
+		refuse(stderr, "agent-secrets revoke", c.source(context.Background()), err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "revoked at %s\n", brokerSource(base))
+	fmt.Fprintf(stdout, "revoked at %s\n", brokerSource(c.baseURL))
 	return 0
+}
+
+// revokeAsSession is the session's own revoke of grantID (POST /v1/grants/{id}/revoke), which
+// `revoke` and `grant revoke` inside a session both make, under the identity, the enrollment wait
+// and the exit codes of every session command (sessionContext, sessionFailed). failed is why this
+// process has no such identity, for the form to report through sessionFailed, so the exit code
+// comes from a function broker-refgen follows; otherwise err is the broker's answer to c's call,
+// unreported, for the form to word.
+func revokeAsSession(grantID string) (c *client, failed, err error) {
+	base, _, signer, failed := sessionContext()
+	if failed != nil {
+		return nil, failed, nil
+	}
+	c = newClient(base)
+	return c, nil, c.RevokeGrant(context.Background(), signer, grantID)
 }
 
 // ---------------------------------------------------------------------------
