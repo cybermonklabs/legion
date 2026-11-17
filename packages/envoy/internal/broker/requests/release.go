@@ -179,13 +179,33 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 // giveBack hands each value in read that a kind's minter made back to that kind's upstream
 // (Machine.GiveBacks), for a release that minted it and hands it to nobody: one that failed, or a
 // name the airlock holds back, whose session gets placeholders (heldBack). A stored value, and a
-// value of a kind with no GiveBack, is left as it is.
+// value of a kind with no GiveBack, is left as it is. It runs in the background, detached from
+// ctx, and the release answers at once: nothing the release answers depends on it, and a
+// give-back that waited on GitHub, up to its bound for each installation of each value, could
+// hold a session's release past the time its client gives the call. Each GiveBack bounds its own
+// revokes; one a stopping broker cuts short leaves its token to lapse, as before the give-back.
 func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
+	type minted struct {
+		giveBack    GiveBack
+		name, value string
+	}
+	var back []minted
 	for _, released := range read {
 		if giveBack := m.GiveBacks[released.kind]; giveBack != nil && released.value != "" {
-			giveBack(ctx, released.name, released.value)
+			back = append(back, minted{giveBack, released.name, released.value})
 		}
 	}
+	if len(back) == 0 {
+		return
+	}
+	detached := context.WithoutCancel(ctx)
+	m.givingBack.Add(1)
+	go func() {
+		defer m.givingBack.Done()
+		for _, each := range back {
+			each.giveBack(detached, each.name, each.value)
+		}
+	}()
 }
 
 // heldBack is the names in read the airlock holds back. A session's release reads or mints each

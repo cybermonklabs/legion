@@ -498,8 +498,9 @@ check_k1() {
 
 	local demo_value github_token
 	demo_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-demo-token")"
-	# The stand-in GitHub App mints ghs_standin_<owner> for each installation it is configured
-	# with, and the stack configures acme-org (dev-airlock.sh's GITHUB_OWNER).
+	# The stand-in GitHub App mints ghs_standin_<owner>_<n> for each installation it is configured
+	# with, a token of its own for every request, and the stack configures acme-org
+	# (dev-airlock.sh's GITHUB_OWNER), so every token it mints for this run holds this string.
 	github_token="ghs_standin_acme-org"
 
 	k1_case AIRLOCK_DEMO_TOKEN stored "$demo_value" true

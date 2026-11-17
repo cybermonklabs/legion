@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -225,12 +226,55 @@ func TestAReleaseThatFailsGivesBackTheTokensItMinted(t *testing.T) {
 			case tc.want == errAnyFailure && err == nil, tc.want != nil && tc.want != errAnyFailure && !errors.Is(err, tc.want):
 				t.Fatalf("the release answered %v, want %v", err, tc.want)
 			}
+			f.WaitGiveBacks()
 			minted, live := f.live(t)
 			if len(minted) != 1 || len(live) != tc.live {
 				t.Fatalf("the release minted %d tokens, %d of them live afterwards; want one, %d live", len(minted), len(live), tc.live)
 			}
 			if err != nil && strings.Contains(err.Error(), minted[0]) {
 				t.Fatalf("the refusal holds the token: %v", err)
+			}
+		})
+	}
+}
+
+// TestAReleaseDoesNotWaitOnItsGiveBack: a give-back runs in the background, so a release answers
+// at once however long GitHub takes to answer the revoke. The give-back here holds until the test
+// lets it go, and the session's release of APP_KEY behind the airlock, which gives APP_KEY's token
+// back, and the release whose grant.used row fails, which gives it back too, each answer while
+// it is still held; once it is let go it runs, with the secret's name and the value minted.
+func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
+	appBehind := airlock.Rules{Secrets: []airlock.SecretRule{{Name: "APP_KEY", Hosts: []string{"api.example.com"}}}}
+	for _, failing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("a release that fails: %t", failing), func(t *testing.T) {
+			f := newGiveBackFixture(t, appBehind)
+			held := make(chan struct{})
+			var gaveBack []string
+			f.GiveBacks = map[string]requests.GiveBack{policy.KindGitHubApp: func(ctx context.Context, name, value string) {
+				<-held
+				gaveBack = append(gaveBack, name)
+			}}
+			if failing {
+				renameTable(t, f, "audit")
+			}
+			answered := make(chan error, 1)
+			go func() {
+				_, err := f.Values(t.Context(), f.grantID, f.enrollmentID, nil, requests.ReleaseCall{})
+				answered <- err
+			}()
+			select {
+			case err := <-answered:
+				if (err != nil) != failing {
+					t.Fatalf("the release answered %v, want a failure %t", err, failing)
+				}
+			case <-time.After(10 * time.Second):
+				close(held)
+				t.Fatal("the release did not answer while its give-back was held")
+			}
+			close(held)
+			f.WaitGiveBacks()
+			if len(gaveBack) != 1 || gaveBack[0] != "APP_KEY" {
+				t.Fatalf("the give-back ran for %q, want APP_KEY once", gaveBack)
 			}
 		})
 	}

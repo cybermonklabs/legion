@@ -328,6 +328,9 @@ type Machine struct {
 	// (narrowingCheckLimiter).
 	narrowingChecks     *ratelimit.Keyed
 	narrowingChecksOnce sync.Once
+	// givingBack counts the give-backs running in the background (giveBack, release.go), which a
+	// test waits on before it reads what they did.
+	givingBack sync.WaitGroup
 	// leftOut is, by record id, each pending record PendingForApprover has logged as left out of
 	// a list because it does not verify for this broker, with when to forget it: the later of the
 	// record's expiry and leftOutRetention after the last list that left it out. It is logged once
