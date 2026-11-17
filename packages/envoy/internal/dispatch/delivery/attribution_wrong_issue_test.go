@@ -1,0 +1,372 @@
+package delivery
+
+// A merged pull request, #2808 of acme/tools, whose head branch names ACME-2250 and whose body
+// names ACME-3044 first. A build whose rule ranked the title and the body above the branch
+// credited it to ACME-3044; the rule of this build credits it to ACME-2250, from the branch.
+// Two issues of one repository are made, as the older build held them: ACME-2250 (done, the
+// pull request's own work) and ACME-3044 (in progress, made before the merge), both children of
+// ACME-455, both with the repository acme/tools as their own.
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+)
+
+const (
+	pr2808Repo   = "acme/tools"
+	pr2808Number = 2808
+	pr2808URL    = "https://github.com/acme/tools/pull/2808"
+	pr2808Branch = "legion/ACME-2250"
+	pr2808Head   = "7eb591d9b576102a47e1d80618c7955aa4077602"
+	// pr2808Earlier is a commit of #2808's branch before its head, where ACME-2250 recorded
+	// results; GitHub names #2808 for it (`GET /repos/.../commits/2a010bc1.../pulls`), so a
+	// results read of ACME-2250 reads #2808 through for it.
+	pr2808Earlier = "2a010bc19afcbfda8187db93d48fb73bb8abfff0"
+	pr2808Merge   = "e761bc74f5d4d03ee9f42299ed749e5cb3b251c3"
+	pr2808Title   = "ci-review: the model's job moves to a file of its own"
+	// pr2808Right is the issue #2808's branch names; pr2808Wrong the one its body names first.
+	pr2808Right = "ACME-2250"
+	pr2808Wrong = "ACME-3044"
+	// pr2808Judged is the read time the wrong row carried, as the older build stored it.
+	pr2808Judged = "2026-11-13T09:35:42.863384Z"
+)
+
+// pr2808Body has the keys of #2808's body in the order they first appear there (ACME-3044,
+// ACME-2250, ACME-455, ACME-519, ACME-2199, ACME-1522, ACME-49) and its four bare references
+// (#3091, #2493, #2287, #3018). The title names no key. The body's first 2048 runes, which a
+// `pull_request` envelope carries (contracts' capBody), name ACME-3044 alone.
+var pr2808Body = "## What this changes\n\nThe model's job runs in a file of its own. " +
+	"The ref credential ACME-3044 names stays a risk until that issue lands.\n\n" +
+	strings.Repeat("A paragraph of the description with no key in it. ", 50) + "\n\n" +
+	"Dispatch: ACME-2250, a child of ACME-455. It follows ACME-519 and ACME-2199, and the " +
+	"attribution of ACME-1522; the reviewer failure is ACME-49. See #3091, #2493, #2287 and #3018.\n"
+
+// seedPR2808Issues makes project ACME, maps acme/tools to it as its default, and makes every
+// issue #2808's body names, as the older build held them.
+func seedPR2808Issues(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	seedProjectRepository(t, ctx, pool, "ACME", "Acme", pr2808Repo)
+	type issue struct {
+		key, status, parent, repo string
+		closed                    bool
+	}
+	for _, seeded := range []issue{
+		{key: "ACME-455", status: "in_progress"},
+		{key: "ACME-2250", status: "done", parent: "ACME-455", repo: pr2808Repo, closed: true},
+		{key: "ACME-3044", status: "in_progress", parent: "ACME-455", repo: pr2808Repo},
+		{key: "ACME-519", status: "todo"},
+		{key: "ACME-2199", status: "todo"},
+		{key: "ACME-1522", status: "todo"},
+		{key: "ACME-49", status: "todo"},
+	} {
+		var number int
+		if _, err := fmt.Sscanf(seeded.key, "ACME-%d", &number); err != nil {
+			t.Fatalf("issue key %q: %v", seeded.key, err)
+		}
+		if _, err := pool.Exec(ctx, `
+			insert into issues (key, project_key, number, title, status, created_by, rank, parent_key, repo, closed_at)
+			values ($1, 'ACME', $2, $1, $3, '{"kind":"system","id":"test"}'::jsonb, $1,
+				nullif($4, ''), nullif($5, ''), case when $6 then '2026-11-11T23:10:28Z'::timestamptz end)
+			on conflict do nothing
+		`, seeded.key, number, seeded.status, seeded.parent, seeded.repo, seeded.closed); err != nil {
+			t.Fatalf("seed issue %s: %v", seeded.key, err)
+		}
+	}
+}
+
+// pr2808Payload is #2808 as GitHub answers it: the single form of `GET .../pulls/2808`, or the
+// list form of `GET .../commits/{sha}/pulls`, which carries merged_at and no merged.
+func pr2808Payload(listForm bool) map[string]any {
+	payload := map[string]any{
+		"number": pr2808Number, "title": pr2808Title, "body": pr2808Body, "html_url": pr2808URL,
+		"state": "closed", "merged_at": "2026-11-11T23:10:25Z", "updated_at": "2026-11-12T00:49:50Z",
+		"merge_commit_sha": pr2808Merge, "user": map[string]any{"login": "legion-implementer[bot]"},
+		"head": map[string]any{
+			"ref": pr2808Branch, "sha": pr2808Head,
+			"repo": map[string]any{"full_name": pr2808Repo},
+		},
+		"base": map[string]any{"ref": "main"},
+	}
+	if !listForm {
+		payload["merged"] = true
+	}
+	return payload
+}
+
+// pr2808GitHub answers #2808's three reads the writers make, and counts the commit-message
+// pages read: the fifth source, which two of #2808's 32 commit messages fill with ACME-3044.
+func pr2808GitHub(t *testing.T) (*fakeGitHub, *atomic.Int32) {
+	t.Helper()
+	fake := newFakeGitHub(t)
+	fake.installationRepos = []string{pr2808Repo}
+	fake.handle("GET /repos/acme/tools/pulls/2808", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, pr2808Payload(false))
+	})
+	fake.handle("GET /repos/acme/tools/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, []any{pr2808Payload(true)})
+	})
+	var commitPages atomic.Int32
+	fake.handle("GET /repos/acme/tools/pulls/2808/commits", func(w http.ResponseWriter, _ *http.Request) {
+		commitPages.Add(1)
+		mustEncode(t, w, []any{
+			map[string]any{"sha": pr2808Head, "commit": map[string]any{"message": "ci-review: the split\n\nDispatch: ACME-3044", "author": map[string]any{"date": "2026-11-09T12:00:00Z"}}},
+		})
+	})
+	return fake, &commitPages
+}
+
+// pr2808Envelope is the `pull_request` envelope of #2808's merge, as contracts' githubPayload
+// makes it from GitHub's webhook.
+func pr2808Envelope() map[string]string {
+	return map[string]string{
+		"kind": "pr", "action": "closed", "repo": pr2808Repo, "number": "2808",
+		"title": pr2808Title, "author": "legion-implementer[bot]", "url": pr2808URL,
+		"head_sha": pr2808Head, "head_ref": pr2808Branch, "head_repo": pr2808Repo, "base_ref": "main",
+		"merged": "true", "merge_commit_sha": pr2808Merge, "merged_by": "legion-merger[bot]",
+		"updated_at": "2026-11-11T23:10:25Z", "body": pr2808Body,
+	}
+}
+
+// storePR2808AsAnOlderRuleJudgedIt writes #2808's row as the older build left it: credited to
+// ACME-3044 from the title and the body, judged by a rule older than this build's, read at
+// pr2808Judged.
+func storePR2808AsAnOlderRuleJudgedIt(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	wrong := pr2808Wrong
+	updated := time.Date(2026, 11, 12, 0, 49, 50, 0, time.UTC)
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		Repo: pr2808Repo, Number: pr2808Number, HeadSHA: pr2808Head, HeadRef: pr2808Branch,
+		BaseRef: "main", State: "merged", IssueKey: &wrong, AttributionSource: string(sourceTitleBody),
+		AttributionComplete: true, Title: pr2808Title, URL: pr2808URL, EventAt: &updated,
+	}); err != nil {
+		t.Fatalf("store #2808 as the older rule judged it: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		update pull_request_heads set attribution_rule = $3, checked_at = $4::timestamptz
+		where repo = $1 and number = $2
+	`, pr2808Repo, pr2808Number, AttributionRuleVersion-1, pr2808Judged); err != nil {
+		t.Fatalf("make #2808 a row of the rule before this one: %v", err)
+	}
+}
+
+// pr2808Credit is the issue and the source #2808's stored row credits, "none" for nobody.
+func pr2808Credit(t *testing.T, ctx context.Context, pool *store.Pool) (string, string) {
+	t.Helper()
+	head := readHead(t, ctx, pool, pr2808Repo, pr2808Number)
+	if head.IssueKey == nil {
+		return "none", head.AttributionSource
+	}
+	return *head.IssueKey, head.AttributionSource
+}
+
+func dropPR2808(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `delete from pull_request_heads where repo = $1 and number = $2`, pr2808Repo, pr2808Number); err != nil {
+		t.Fatalf("drop #2808's row: %v", err)
+	}
+}
+
+// Every writer of pull_request_heads, given #2808's true facts, credits ACME-2250 from the head
+// branch (rank 3), above ACME-3044, the first key of the body (rank 4), and reads no commit
+// message, since rank 3 already holds a candidate.
+func TestPR2808EveryWriterGivesTheBranchsIssue(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	seedPR2808Issues(t, ctx, pool)
+	fake, commitPages := pr2808GitHub(t)
+	client := fake.newTestClient()
+	broker := events.NewBroker()
+
+	for _, writer := range []struct {
+		name  string
+		write func(t *testing.T)
+	}{
+		{"the pull_request envelope of the merge", func(t *testing.T) {
+			intake := newIntake(nil, pool, nil, client, broker, nil)
+			if _, err := intake.recordPullRequestHead(ctx, pr2808Envelope(), pr2808Number); err != nil {
+				t.Fatalf("record the envelope's head: %v", err)
+			}
+		}},
+		{"the read-through of the head commit, which a recorded result makes", func(t *testing.T) {
+			if _, _, err := ReadThroughCommitPulls(ctx, pool, client, broker, pr2808Repo, pr2808Head, time.Now()); err != nil {
+				t.Fatalf("read the head commit through: %v", err)
+			}
+		}},
+		{"the read-through of an earlier commit of the branch, which a results read makes", func(t *testing.T) {
+			if _, _, err := ReadThroughCommitPulls(ctx, pool, client, broker, pr2808Repo, pr2808Earlier, time.Now()); err != nil {
+				t.Fatalf("read the earlier commit through: %v", err)
+			}
+		}},
+		{"the reconcile, judging again the row an older rule credited", func(t *testing.T) {
+			storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
+			if err := NewReconcile(pool, client, broker).reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+				t.Fatalf("reconcile the pull request heads: %v", err)
+			}
+		}},
+	} {
+		t.Run(writer.name, func(t *testing.T) {
+			dropPR2808(t, ctx, pool)
+			commitPages.Store(0)
+			writer.write(t)
+			issue, source := pr2808Credit(t, ctx, pool)
+			t.Logf("#2808 credits %s from %s", issue, source)
+			if issue != pr2808Right || source != string(sourceBranch) {
+				t.Errorf("#2808 credits %s from %q, want %s from the branch %s", issue, source, pr2808Right, pr2808Branch)
+			}
+			if pages := commitPages.Load(); pages != 0 {
+				t.Errorf("the write read %d pages of commit messages, want none: the branch already names a held issue", pages)
+			}
+		})
+	}
+}
+
+// A `pull_request` envelope that names no head branch but does name the head repository was a
+// complete read to the envelope writer of the builds that wrote what the envelope says: the
+// branch's candidate is gone, so the body's first key wins at rank 4 and the write may replace
+// the stored issue. GitHub's own webhook always carries head_ref (contracts' githubPayload), so
+// only another publisher of `notifications.github.` subjects sends this; any Envoy /v1 bearer
+// may. This build writes nothing the envelope says and reads the pull request from GitHub.
+func TestPR2808AnEnvelopeWithoutItsBranchGivesTheBodysFirstKey(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	seedPR2808Issues(t, ctx, pool)
+	fake, _ := pr2808GitHub(t)
+	intake := newIntake(nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil)
+
+	envelope := pr2808Envelope()
+	delete(envelope, "head_ref")
+	if _, err := intake.recordPullRequestHead(ctx, envelope, pr2808Number); err != nil {
+		t.Fatalf("record the envelope's head: %v", err)
+	}
+	issue, source := pr2808Credit(t, ctx, pool)
+	t.Logf("#2808 credits %s from %s", issue, source)
+	if issue != pr2808Right {
+		t.Errorf("an envelope naming no branch credits #2808 to %s from %q, want %s, which GitHub's own answer names in its branch", issue, source, pr2808Right)
+	}
+}
+
+// The class. A pull request's stored issue is a verdict of the rule of the build that wrote it.
+// A later build that ranks the sources otherwise reaches a stored merged row only by reading
+// that row from GitHub again, at most RejudgedHeadsPerPass rows a pass, the rows read longest
+// ago first; until then the results read compares the check of the old verdict's issue with that
+// row, and the check of the right issue with nothing. The test stores one pass's worth of
+// older-rule rows read before #2808, then runs one reconcile pass.
+func TestPR2808AStoredVerdictOfAnOlderRuleStandsNoLongerThanOnePass(t *testing.T) {
+	issue, source, comparedWithWrong := judgePR2808BehindOlderRows(t, RejudgedHeadsPerPass)
+	if issue != pr2808Right {
+		t.Errorf("after the first pass of a build of rule %d, #2808 still credits %s from %q, the verdict of rule %d; want %s from its branch",
+			AttributionRuleVersion, issue, source, AttributionRuleVersion-1, pr2808Right)
+	}
+	if comparedWithWrong {
+		t.Errorf("the results read compares %s's before_merge checks with #2808 at %s", pr2808Wrong, pr2808Head)
+	}
+}
+
+// judgePR2808BehindOlderRows stores ahead merged rows an older rule judged, each read before
+// #2808, then #2808 as the older build left it, runs one reconcile pass, and answers what
+// #2808's row credits and whether the results read compares ACME-3044 with it.
+func judgePR2808BehindOlderRows(t *testing.T, ahead int) (issue, source string, comparedWithWrong bool) {
+	t.Helper()
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	seedPR2808Issues(t, ctx, pool)
+	fake, _ := pr2808GitHub(t)
+	// The rows ahead of #2808 are other merged pull requests of the repository that name no issue.
+	fake.handle("GET /repos/acme/tools/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		number, err := strconv.Atoi(r.PathValue("number"))
+		if err != nil {
+			t.Errorf("pull request number %q: %v", r.PathValue("number"), err)
+			return
+		}
+		mustEncode(t, w, map[string]any{
+			"number": number, "title": "chore: tidy", "body": "", "html_url": fmt.Sprintf("https://github.com/%s/pull/%d", pr2808Repo, number),
+			"state": "closed", "merged": true, "merged_at": "2026-11-10T00:00:00Z", "updated_at": "2026-11-10T00:00:00Z",
+			"head": map[string]any{"ref": fmt.Sprintf("chore/tidy-%d", number), "sha": fmt.Sprintf("%040d", number), "repo": map[string]any{"full_name": pr2808Repo}},
+			"base": map[string]any{"ref": "main"},
+		})
+	})
+	fake.handle("GET /repos/acme/tools/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, []any{})
+	})
+	earlier := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	for number := 1; number <= ahead; number++ {
+		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: pr2808Repo, Number: number, HeadSHA: fmt.Sprintf("%040d", number), HeadRef: fmt.Sprintf("chore/tidy-%d", number),
+			BaseRef: "main", State: "merged", AttributionSource: string(sourceNone), AttributionComplete: true,
+		}); err != nil {
+			t.Fatalf("store merged row #%d: %v", number, err)
+		}
+		if _, err := pool.Exec(ctx, `
+			update pull_request_heads set attribution_rule = $3, checked_at = $4 where repo = $1 and number = $2
+		`, pr2808Repo, number, AttributionRuleVersion-1, earlier.Add(time.Duration(number)*time.Second)); err != nil {
+			t.Fatalf("make #%d a row of the rule before this one: %v", number, err)
+		}
+	}
+	storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
+
+	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+		t.Fatalf("reconcile the pull request heads: %v", err)
+	}
+	issue, source = pr2808Credit(t, ctx, pool)
+	t.Logf("with %d older-rule rows read before it, after one pass #2808 credits %s from %s", ahead, issue, source)
+	wrongHeads, err := HeadsAttributedTo(ctx, pool, pr2808Wrong)
+	if err != nil {
+		t.Fatalf("read the heads of %s: %v", pr2808Wrong, err)
+	}
+	for _, head := range wrongHeads {
+		comparedWithWrong = comparedWithWrong || head.Number == pr2808Number
+	}
+	return issue, source, comparedWithWrong
+}
+
+// Dispatch stores two attributions of one pull request: delivery_pull_requests, for the
+// delivery timeline, and pull_request_heads, which the results read compares a check with. The
+// first stores its inputs and every reconcile pass judges a batch of them again from the
+// database alone (AttributePullRequests), so a change of the ranking reaches it without a
+// GitHub read. The second stores no inputs and is judged again only by a read of GitHub. After
+// that pass the two must name one issue.
+func TestPR2808TheTwoStoredAttributionsOfOnePullRequestAgree(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedPR2808Issues(t, ctx, pool)
+	merged := time.Date(2026, 11, 11, 23, 10, 25, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+		insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at, partial,
+			issue_key, attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys)
+		values ($1, $2, $3, $4, 'legion-implementer[bot]', $5, $5, false, $6, $7, $8, $9, '{}')
+	`, pr2808Repo, pr2808Number, pr2808Title, pr2808URL, merged, pr2808Wrong,
+		uniqueKeys(pr2808Title+"\n"+pr2808Body), citedIssues(pr2808Repo, pr2808Body), uniqueKeys(strings.ToUpper(pr2808Branch))); err != nil {
+		t.Fatalf("store #2808's delivery row as the older rule judged it: %v", err)
+	}
+	storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
+
+	if _, err := AttributePullRequests(ctx, pool, AttributionResolveBatch); err != nil {
+		t.Fatalf("attribute the stored pull requests: %v", err)
+	}
+	var timeline *string
+	if err := pool.QueryRow(ctx, `select issue_key from delivery_pull_requests where repo = $1 and number = $2`,
+		pr2808Repo, pr2808Number).Scan(&timeline); err != nil {
+		t.Fatalf("read #2808's delivery row: %v", err)
+	}
+	results, source := pr2808Credit(t, ctx, pool)
+	t.Logf("delivery_pull_requests credits %v; pull_request_heads credits %s from %s", pr2808KeyOf(timeline), results, source)
+	if pr2808KeyOf(timeline) != results {
+		t.Errorf("one pull request, two issues: the delivery timeline credits #2808 to %s, the results read to %s (from %q)",
+			pr2808KeyOf(timeline), results, source)
+	}
+}
+
+func pr2808KeyOf(key *string) string {
+	if key == nil {
+		return "none"
+	}
+	return *key
+}
