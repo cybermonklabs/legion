@@ -91,7 +91,10 @@ A daemon that gets its tokens from the secrets broker through `token_command`, a
 A daemon that mints with its own App key counts every installation and keeps no list of owners.
 There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
 The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.
-The one exception is the account that holds the pane's own issue repository, or the controller's default owner: that directory cannot be left out, so every bundle built for the pane fails, no refresh writes any of its directories, and the pane keeps its last tokens until they expire within the hour.
+The one exception is the account that holds the pane's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
+Until then every bundle built for the pane succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
+The first build that mints that owner for real fails, naming the owner; from then every bundle built for the pane fails, no refresh writes any of its directories, and the pane keeps its last tokens until they expire.
+The controller's default owner is refused at once instead, because `ControllerCredential` reads the installations before it mints anything.
 The account's name is among the owners that each later launch of that App's roles is told in its `Legion addressing` line.
 What an install changes for a running pod is in `docs/kubernetes.md`.
 

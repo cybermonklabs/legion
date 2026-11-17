@@ -879,10 +879,11 @@ func kubeletEscape(text string) string {
 // root (GitHubPairsKey as ghconfig.PairsFile, which `legion gh` and `legion git-credential` route
 // a moved repository by), read-only to the pod's user, from the same Secret as the
 // launcher token, so the refresher's one Update reaches the role's gh directory. A directory
-// names a GitHub owner or one of its repositories, `<owner>/<repo>`, which projects as a
-// directory under the owner's own. A projection's items are fixed for the pod's life, so a pod
-// holds the directories of its creation, and a pod created before the pairs file existed holds
-// no item for it, which the drift check reads and replaces the pod for (movedGhDirs). A launch
+// names one GitHub owner account, never one of its repositories, since a bundle holds no
+// repository directory (ghconfig refuses one). A projection's items are fixed for the pod's
+// life, so a pod holds the directories of its creation, and a pod created before the pairs file
+// existed holds no item for it, which the drift check reads and replaces the pod for
+// (movedGhDirs). A launch
 // with no
 // directory — a controller whose project has no GitHub owner to mint for, and the Sandbox's first
 // template (sandboxManifest), which never runs — gets an empty directory instead, the pairs file

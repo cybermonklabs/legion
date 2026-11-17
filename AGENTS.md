@@ -598,7 +598,10 @@ Under the tmux runtime a running pane holds the new directory within a minute, a
 Under `runtime: kubernetes` the daemon opens one update round over each live issue pod once both role Apps are installed on the account, since an issue pod projects only the directories that both Apps' bundles hold.
 The controller's pod runs the review App alone and no round covers it: after the review App's install it is replaced at its next launch.
 An uninstall opens no round and replaces no pod: the next bundle holds no directory for the account, a pane loses its directory at the next refresh, and a running pod keeps one that the daemon refreshes no more.
-The one exception is the account that holds the role's own issue repository, or the controller's default owner: that directory cannot be left out, so every bundle built for that role fails, no refresh writes any of its directories, and the pane or pod keeps its last tokens until they expire within the hour.
+The one exception is the account that holds the role's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
+Until then every bundle built for that role succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
+The first build that mints that owner for real fails, naming the owner; from then every bundle built for that role fails, no refresh writes any of its directories, and the pane or pod keeps its last tokens until they expire.
+The controller's default owner is refused at once instead, because `ControllerCredential` reads the installations before it mints anything.
 A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing there.
 `projects.<KEY>.commit_issue_trailer_repos` is the one key of `legion.yaml` that names repositories: the ones whose commits carry their issue key, as a `Dispatch: <KEY>` trailer the pane's jj appends.
 A pane stamps the commit when its launch's repository is one of those names, and boot checks each name against the mapping alone, which catches a typo.

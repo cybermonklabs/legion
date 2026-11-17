@@ -219,10 +219,16 @@ install it is replaced at its next launch.
 An uninstall opens no round and replaces no pod: the next bundle holds no directory for the
 account, a pane loses its directory at the next refresh, and a running pod keeps one that the
 daemon refreshes no more.
-The one exception is the account that holds the role's own issue repository, or the controller's
-default owner: that directory cannot be left out, so every bundle built for that role fails, no
-refresh writes any of its directories, and the pane or pod keeps its last tokens until they
-expire within the hour.
+The one exception is the account that holds the role's own issue repository: that directory cannot
+be left out, and its token is that owner's cached lease, which stays in use until its expiry is no
+more than `refreshWindow` (20 minutes) away.
+Until then every bundle built for that role succeeds and the refresh keeps writing all of its
+directories, that one holding a token GitHub would no longer mint.
+The first build that mints that owner for real fails, naming the owner; from then every bundle built
+for that role fails, no refresh writes any of its directories, and the pane or pod keeps its last
+tokens until they expire.
+The controller's default owner is refused at once instead, because `ControllerCredential` reads the
+installations before it mints anything.
 All of that is true of a daemon that mints with its own App key (`private_key`,
 `private_key_command` or `private_key_secret`).
 A daemon that takes its tokens from the secrets broker through `token_command` gets a token only

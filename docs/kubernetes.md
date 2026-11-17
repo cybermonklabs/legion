@@ -3547,7 +3547,10 @@ The account's name joins the owners that each later launch of that App's roles i
 An issue pod gets one update round once both role Apps are installed on the account, as said above, and until the round replaces it the new directory is in its roles' Secrets and in no pod.
 The controller's pod runs the review App alone and no round covers it: after the review App's install it is replaced at its next launch.
 An uninstall opens no round and replaces no pod: the next bundle holds no directory for the account, and a running pod keeps the directory, whose token the refresh writes no more.
-The one exception is the account that holds the role's own issue repository, or the controller's default owner: that directory cannot be left out, so every bundle built for that role fails, the refresh writes none of the role's Secret, and the pod keeps its last tokens until they expire within the hour.
+The one exception is the account that holds the role's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
+Until then every bundle built for that role succeeds and the refresh keeps writing the role's Secret, that directory holding a token GitHub would no longer mint.
+The first build that mints that owner for real fails, naming the owner; from then every bundle built for that role fails, the refresh writes none of the role's Secret, and the pod keeps its last tokens until they expire.
+The controller's default owner is refused at once instead, because `ControllerCredential` reads the installations before it mints anything.
 A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing there.
 The issue's `-boot` Secret holds the provisioning token, projected into `workspace-fetch` alone.
 
