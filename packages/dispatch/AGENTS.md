@@ -1709,8 +1709,15 @@ To reproduce a failing row, run its file alone with that seed:
 that first failed on run k, which the report of `bun run test:repeat` names.
 This works because the order of the tests in a file depends only on the seed and on that file,
 not on the other files of the run.
-Random order cannot be turned off: `--randomize=false` is refused, and `--no-randomize` still
-shuffles.
+That repeats the order of the file's tests, and so a failure that came from that order.
+A row that failed from the lane's load, such as one that times a real process, or from another
+file that ran beside it, need not fail when its file runs alone: repeat it with the files that
+ran beside it, or under the same load.
+No flag of `bun test` turns random order off: `--randomize=false` is refused, and
+`--no-randomize` still shuffles.
+A `bun test` started as `bun --config=<file> test …` reads that file in place of this package's
+`bunfig.toml`, so with a file that does not set `randomize` it runs in file order: use that to
+read a failure, never to make a row pass.
 A row is never pinned to an order or skipped to make it pass.
 It is fixed at its cause.
 Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not

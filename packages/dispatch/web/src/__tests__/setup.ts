@@ -44,10 +44,11 @@ expect.extend(reportableJestDomMatchers());
 //
 // The per-test deadline is `--timeout 60000`, carried by both of package.json's scripts that run
 // tests: `test:web` for `web/src`, and `test:harness` for `e2e/__tests__`.
-// Bun's own default is 5000 ms, which the lane test of `e2e/__tests__/harness-lanes.test.ts`
-// ("the Playwright config refuses a --workers that is not the lane count") fails on a 2-core
-// pod, where it reads 4.45 s idle and 6.55 s loaded; the suite's slowest test,
-// `row-configurations.test.ts`'s "no row runs twice in one configuration", reads 13.83 s loaded.
+// Bun's own default is 5000 ms, which a lane test failed on a 2-core pod, where it read 4.45 s
+// idle and 6.55 s loaded: "the Playwright config refuses a --workers that is not the lane count",
+// of `e2e/__tests__/harness-lanes.test.ts`, a file pull request #3435 later deleted. The suite's
+// slowest test, `row-configurations.test.ts`'s "no row runs twice in one configuration", read
+// 13.83 s loaded.
 // The number is twice the slowest loaded test, and it is sized on the slower of the two pod
 // shapes this suite runs in rather than on the one that measured 13.83 s: at code that does not
 // differ, dispatch://INFRA-983's pod reads 335 s for the whole suite where this one reads 156 s,

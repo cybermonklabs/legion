@@ -61,10 +61,11 @@ test("a run has passed only once a row was recorded and no recorded row failed",
 });
 
 test("an error that belongs to no row fails a run whose every row passed", async () => {
-  // A tally of its own, because the test above has failed its own for good: the module is
-  // imported under a second query, which Bun answers with a second instance of it. The green
-  // assertion below is also the check that it IS a second instance - the first reads red from
-  // there on, so a shared one would fail that line rather than pass this test vacuously.
+  // A tally of its own, because the test above leaves its own failed for good: the module is
+  // imported under a second query, which Bun answers with a second instance of it. The rows run
+  // in random order, and in either order a shared instance fails one of them rather than passing
+  // this test vacuously: after the test above it reads red at the green assertion below, and
+  // before it the error this test records leaves it red at the test above's second assertion.
   const fresh = await tally("a-second-tally");
   fresh.recordRow(false);
   expect(fresh.runPassed(), "the import under a query answered with the first tally").toBe(true);
