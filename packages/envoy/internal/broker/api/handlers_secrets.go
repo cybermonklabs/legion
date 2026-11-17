@@ -36,6 +36,15 @@ type settingsResponse struct {
 	// With gcp-secret-manager, the number of the project every agent secret is in, the one the
 	// prefix names; absent otherwise.
 	GCPProject string `json:"gcp_project,omitempty"`
+	// JudgeKeys is each key the airlock rules give the model judge, by name, with its judge
+	// seconds and the guidance the judge decides it on — the rules file's own words, never a
+	// value — and absent where the rules give the judge nothing. It is what `agent-secrets secret
+	// show` reads to say who decides a request for a key and what the judge will look for, so an
+	// agent can meet the guidance on its first request. It is the rules' answer and the same on
+	// every broker with the same rules; one that runs no judge sends such a request to its
+	// person. An administrator's key is named here when the rules give it seconds, and its
+	// person decides it all the same; `secret show` reads its tag.
+	JudgeKeys map[string]judgeKey `json:"judge_keys,omitempty"`
 	// The audience a machine's Google identity token must carry at the token exchange
 	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where no machine can trade one, which
 	// is a broker that lists no VM service (cmd/broker's googleExchangeAudience). A machine's
@@ -43,13 +52,27 @@ type settingsResponse struct {
 	// exchange audience is named beside it: a pod's trade mints no launcher credential, so no
 	// machine could register a session under it.
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
+	// Always true: this broker reads a secret's type from the type tag (policy.TagType), and the
+	// old kind tag only where type is absent. A broker from before the type tag sends no such
+	// field and reads no type tag, so it serves a secret that carries type alone as a stored
+	// secret, and `agent-secrets` writes no typed secret through a broker that does not say this.
+	SecretTypeTag bool `json:"secret_type_tag"`
 }
 
-// readSettings is GET /v1/settings: public, since it answers only the broker's own configuration,
-// which names no secret.
+// judgeKey is one key in settingsResponse.JudgeKeys.
+type judgeKey struct {
+	// Seconds is the longest grant the judge makes of the key, its default lifetime too.
+	Seconds int64 `json:"seconds"`
+	// Guidance is the key owner's instruction to the judge, "" for an entry that gives none.
+	Guidance string `json:"guidance,omitempty"`
+}
+
+// readSettings is GET /v1/settings: public, since it answers only the broker's own configuration —
+// where the secrets live, and which names the judge decides and on what guidance — and no secret's
+// value.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
-		GoogleExchangeAudience: s.deps.GoogleExchangeAudience}
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true}
 	switch s.deps.SecretsStore {
 	case secrets.StoreGCP:
 		resp.KMSKeyName = s.deps.SecretsKMSKey
@@ -57,6 +80,16 @@ func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		resp.KMSKeyARN = s.deps.SecretsKMSKey
 		resp.AWSRegion, resp.AWSAccountID = secrets.AWSKeyARNParts(s.deps.SecretsKMSKey)
+	}
+	if m := s.deps.Machine; m != nil {
+		for _, rule := range m.Airlock.Secrets {
+			if rule.Judge != nil {
+				if resp.JudgeKeys == nil {
+					resp.JudgeKeys = map[string]judgeKey{}
+				}
+				resp.JudgeKeys[rule.Name] = judgeKey{Seconds: int64(*rule.Judge), Guidance: rule.Guidance}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -72,11 +105,11 @@ type rereadResponse struct {
 	// refused the secret, the one its policy-refused log line names (such as owner-tag-missing or
 	// no-current-value).
 	Reason string `json:"reason,omitempty"`
-	// The kind the broker serves the secret as, while it serves it: github-app or google-login, or
+	// The type the broker serves the secret as, while it serves it: github-app or google-login, or
 	// absent for a stored secret, whose grants release its stored value. A person who retags a
-	// secret to a kind reads it here before storing the key the kind mints from: a stale store read
+	// secret to a type reads it here before storing the key the type mints from: a stale store read
 	// can still serve the secret as stored.
-	Kind string `json:"kind,omitempty"`
+	Type string `json:"type,omitempty"`
 }
 
 // rereadSecret is POST /v1/secrets/{name}/reread: public and rate-limited per source address and
@@ -115,7 +148,7 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 	s.notifyPeers(r, name)
 	resp := rereadResponse{Name: name, Served: lk.Served, Reason: lk.Reason}
 	if lk.Served {
-		resp.Kind = lk.Secret.Kind()
+		resp.Type = lk.Secret.Type()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

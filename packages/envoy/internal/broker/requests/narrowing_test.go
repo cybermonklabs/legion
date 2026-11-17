@@ -49,10 +49,10 @@ func usedAudits(t *testing.T, machine *Machine, grantID string) []map[string]any
 // in for each other. Each release's audit row records the narrowing it applied.
 func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	retag(t, machine, requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
+	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var got []*secrets.GitHubNarrowing
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			got = append(got, req.GitHubNarrowing)
 			if req.GitHubNarrowing != nil {
 				return secrets.Minted{Value: "narrowed-token"}, nil
@@ -85,24 +85,24 @@ func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 }
 
 // TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing: a release that asks to narrow a
-// GitHub App token from a grant that holds none (a stored secret, another kind) is refused and
+// GitHub App token from a grant that holds none (a stored secret, another type) is refused and
 // releases nothing, rather than every value whole as though no narrowing were asked for. In a grant
 // that holds one, the narrowing reaches its github-app minter, and every other value is released
 // as it is.
 func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine,
-		requestKindSecret("LOGIN_KEY", policy.KindGoogleLogin, policy.TierAgent, ""),
-		requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""),
+		requestTypeSecret("LOGIN_KEY", policy.TypeGoogleLogin, policy.TierAgent, ""),
+		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
 		policytest.Secret("PLAIN_KEY", fixtureOperator, policy.TierAgent, "plain-v1"),
 	)
 	var googleNarrowings, githubNarrowings []*secrets.GitHubNarrowing
 	machine.Minters = map[string]Minter{
-		policy.KindGoogleLogin: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGoogleLogin: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			googleNarrowings = append(googleNarrowings, req.GitHubNarrowing)
 			return secrets.Minted{Value: "access-token"}, nil
 		},
-		policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			githubNarrowings = append(githubNarrowings, req.GitHubNarrowing)
 			return secrets.Minted{Value: "narrowed-token"}, nil
 		},
@@ -143,12 +143,12 @@ func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine,
-		requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""),
+		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
 		policytest.Secret("PLAIN_KEY", fixtureOperator, policy.TierAgent, "plain-v1"),
 	)
 	minted := 0
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			minted++
 			return secrets.Minted{Value: "token"}, nil
 		},
@@ -179,9 +179,9 @@ func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 // refusal and not as ErrMintFailed, the class whose ERROR line tells the operator to fix the App.
 func TestANarrowingTheMinterRefusesIsNotAMintFailure(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	retag(t, machine, requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
+	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			return secrets.Minted{}, fmt.Errorf("%w: GitHub answered HTTP 422", secrets.ErrMintNarrowingRefused)
 		},
 	}
@@ -206,12 +206,12 @@ func TestANarrowingTheMinterRefusesIsNotAMintFailure(t *testing.T) {
 func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
 	machine, enrollmentID, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("APP_KEY", "")}})
 	retag(t, machine,
-		requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""),
-		requestKindSecret("OPEN_APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""),
+		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
+		requestTypeSecret("OPEN_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
 	)
 	var narrowings []*secrets.GitHubNarrowing
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			narrowings = append(narrowings, req.GitHubNarrowing)
 			return secrets.Minted{Value: `{"installations":{"ada":{"installation_id":7,"token":"ghs_the_real_installation_token"}}}`}, nil
 		},

@@ -426,18 +426,20 @@ provider_keys:
   attributes are the operator's to begin and the runtime's to finish.
   The operator sets the attributes this deployment's spend is billed
   under, and each pane carries them with its own `legion.issue` and `legion.role` after them,
-  so a pane's own attributes name the issue it serves. The agent keeps the last value a key is
-  given, so the daemon's two pairs come last. Both keys reach the spend collector today, and
-  its keep-list of six `theorem.*` attributes drops every other key, so no spend row names an
-  issue yet. A row grouped by issue follows when the collector keeps them, which
-  dispatch://INFRA-1835 adds to that list. A controller pane serves no issue and carries the
+  so a pane's own attributes name the issue it serves. A pane of a unit drawn into arms of the
+  project's experiments carries `legion.arms` after those, one `<experiment>:<variant>` for each
+  arm it runs in (`legion.arms=memory:memory` once decoded), so each model call says which arm's
+  files it ran with. The agent keeps the last value a key is
+  given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
+  where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
+  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it
   refuses a member the agent's OpenTelemetry detector would throw on — one that is no single
   `key=value`, one with an empty key, one whose key or value does not percent-decode or is longer
-  than 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the
-  runtime writes itself — and names that member and what is wrong with it, never the rest of the
+  than 255 characters once decoded, and one naming `legion.issue`, `legion.role` or
+  `legion.arms`, which the runtime writes itself — and names that member and what is wrong with it, never the rest of the
   value. One such member costs the pane every attribute of the variable, the operator's own among
   them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
@@ -672,7 +674,7 @@ Rotate the keys in the broker's `github-app` secrets, not on the daemon's machin
 
 2. Update the matching broker secret, `LEGION_IMPLEMENT_APP` or `LEGION_REVIEW_APP`, as [Store the App key](site/src/content/docs/broker/guides/github-app-for-a-dev-box.md) shows:
    its value is the JSON document `{"app_id": …, "private_key": "<the new PEM>"}`, set with `agent-secrets secret set <NAME> < app-key.json`, never the bare PEM.
-   Keep the secret's `github-app` kind and its GitHub owners.
+   Keep the secret's `github-app` type and its GitHub owners.
 
 3. Open a registered shell of your own (`agent-secrets register --wait 10 --exec -- sh`; the daemon's session cannot be entered from another terminal), then run each role's `token_command` from [the App section](#the-legion-implementer-and-legion-reviewer-apps) there, with `LEGION_GITHUB_OWNER` and `LEGION_GITHUB_READ_ONLY` unset, and confirm it prints the installations' tokens (`LEGION_REVIEW_APP` waits for a person's approval).
    Then confirm a fresh worker pane's `gh auth status` succeeds with account `x-access-token`.

@@ -60,14 +60,17 @@ only takes power away, so unlike approving a secret request it needs no sign-in 
 From your own shell on a machine that is logged in (not from inside an agent session),
 `agent-secrets grant list` lists the same grants as **Live grants**, and `agent-secrets grant revoke`
 ends one as **Revoke** does, withholding included. Both call the broker under the machine's login:
-the helper signs each call with the machine's credential, and refuses a process inside a registered
-session's process tree (`IN_SESSION`), so an agent's own commands cannot act as you. The check
-covers that process tree only. A process a session sends out of it, with `( cmd & )`, `setsid -f`
-or a tmux server the session started, passes it, and any process running as your user can stop the
-helper anyway. Through these commands such a process can list and revoke your own machine logins,
-never a service's machine login, and your grants, which include every grant whose approver is
-you, on any session, a service's pod among them — those you approved, and those the model judge
-approved in your stead — and every grant the judge approved in anyone's stead.
+the helper signs each call with the machine's credential. It refuses that to a process inside a
+registered session's process tree (`IN_SESSION`), so an agent's own commands cannot act as you:
+`grant list` is refused there, and `grant revoke` run there is the session's own revoke instead,
+as `agent-secrets revoke` is, which ends only a grant given to the broker identity (enrollment)
+the session signs as. The check covers that process tree only. A process a session sends out of
+it, with `( cmd & )`, `setsid -f` or a tmux server the session started, passes it, and any
+process running as your user can stop the helper anyway. Through these commands such a process
+can list and revoke your own machine logins, never a service's machine login, and your grants,
+which include every grant whose approver is you, on any session, a service's pod among them —
+those you approved, and those the model judge approved in your stead — and every grant the judge
+approved in anyone's stead.
 `agent-secrets enroll --helper` is open to any process of your user, so such a process can also
 enroll a box and read your agent secrets.
 

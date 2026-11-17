@@ -66,8 +66,12 @@ type recordView struct {
 	// MayDecide is whether the signed-in person may decide it (record.MayDecide).
 	MayDecide bool
 	// Buttons is whether the page offers Approve and Deny for it: a pending agent_secret record
-	// the person may decide.
+	// the person may decide, and not one the model judge holds.
 	Buttons bool
+	// JudgeDeciding is whether the model judge holds this record now. The page prints such a
+	// record read-only: nobody decides it here until the judge has given it up, and if the judge
+	// cannot decide it, it comes back to its person as an ordinary card.
+	JudgeDeciding bool
 }
 
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
@@ -233,7 +237,8 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	if d.State == "pending" && !v.Pending {
 		v.State = "expired"
 	}
-	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide
+	v.JudgeDeciding = v.Pending && d.JudgeDeciding
+	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide && !v.JudgeDeciding
 	return v
 }
 
@@ -512,6 +517,8 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "already decided", false
 	case errors.Is(err, record.ErrNotApprover), errors.Is(err, requests.ErrGrantChainInvalid):
 		return "refused: " + err.Error(), false
+	case errors.Is(err, requests.ErrJudgeHolds):
+		return "refused: the model judge is deciding this request", false
 	}
 	slog.Error("approval page: decide the record", "record", id, "error", err)
 	return "error", false

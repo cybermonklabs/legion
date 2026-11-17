@@ -111,7 +111,7 @@ import (
 // this command is listed here so broker-refgen can document it.
 const (
 	exitUsageError   = 2   // usage error: a flag, argument, token file, or required environment value is invalid
-	exitPending      = 75  // request still waiting for a person to approve it
+	exitPending      = 75  // request still waiting for a person or for the model judge
 	exitRenewRefused = 76  // renew reached a refusal in terminalRenewal; the worker shim must not restart it
 	exitDenied       = 77  // request denied
 	exitCannotRun    = 126 // register --exec command exists but could not run
@@ -148,11 +148,11 @@ var commands = []command{
 	{"grant list", "agent-secrets grant list [--json]",
 		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
-		"End a grant as its operator or approver, under this machine's login, as Dispatch's Live\ngrants page does. Ending an automatic grant also makes its session ask before it gets those\nsecrets again."},
+		"End a grant. From your own shell, end it as its operator or approver, under this\nmachine's login, as Dispatch's Live grants page does; ending an automatic grant also\nmakes its session ask before it gets those secrets again. Inside a session, end a grant\ngiven to the broker identity this session signs as, as `revoke` does; any other grant is\nrefused NOT_YOURS."},
 	{"login", "agent-secrets login",
 		"Sign in on this machine as yourself: print the code to type in at Google, then record the\nsign-in at the secrets broker, which binds it to a box key this machine makes. Every session\nof yours on this machine then acts as you. A second person signs in beside you, and\nAGENT_SECRETS_PERSON then says which of you a session acts for."},
 	{"register", "agent-secrets register [--wait SECONDS] [--session-id ID] [--exec -- COMMAND [ARGS...]]",
-		"Register this process with agent-secrets-helper as a machine session. With --exec, run COMMAND\nas this same process, so it and everything it starts are that session. With --session-id, the\nsession keeps one broker identity — and the requests and grants bound to it — across a restart\nof the helper or of the machine, rather than enrolling afresh as a new pid; run it again with\nthe id from inside a session that could not name one at launch."},
+		"Register a machine session with agent-secrets-helper. With --exec, register this process and\nrun COMMAND as this same process, so it and everything it starts are that session. Without\n--exec, name the session this process runs inside, or else the session launcher (omp) above\nit, never this process, which ends with the command; with neither, exit 1 and say to relaunch\nunder --exec. With --session-id, the session keeps one broker identity — and the requests and\ngrants bound to it — across a restart of the helper or of the machine, rather than enrolling\nafresh as a new pid; run it again with the id from inside a session that could not name one\nat launch."},
 	{"identity", "agent-secrets identity [--source]",
 		"Exit 0 when this process has a launcher's key dir or a helper session and 1 when it does not,\nasking the broker nothing. With --source, print the source of the broker identity a use\ncommand would take (key-dir, sign-in, helper or machine) and what it is, asking the broker\nand the metadata server where it must and registering nothing; exit 1 with every source's\nreason when none has one."},
 	{"--version", "agent-secrets --version",
@@ -863,7 +863,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", result.RequestID, result.State, c.source(ctx))
 		printDetail(stdout, result.Detail)
 		if result.State == "pending" {
-			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL))
+			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 		}
 	}
 	switch result.State {
@@ -908,7 +908,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", result.State, c.source(ctx))
 	if result.State == "pending" {
-		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL))
+		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
 		fmt.Fprintf(stdout, "grant_id: %s\n", *result.GrantID)
@@ -960,18 +960,31 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets revoke: exactly one grant_id is required")
 		return exitUsageError
 	}
-	base, _, signer, err := sessionContext()
-	if err != nil {
-		return sessionFailed(stderr, "agent-secrets revoke", err)
-	}
-	ctx := context.Background()
-	c := newClient(base)
-	if err := c.RevokeGrant(ctx, signer, positional[0]); err != nil {
-		refuse(stderr, "agent-secrets revoke", c.source(ctx), err)
+	c, failed, err := revokeAsSession(positional[0])
+	switch {
+	case failed != nil:
+		return sessionFailed(stderr, "agent-secrets revoke", failed)
+	case err != nil:
+		refuse(stderr, "agent-secrets revoke", c.source(context.Background()), err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "revoked at %s\n", brokerSource(base))
+	fmt.Fprintf(stdout, "revoked at %s\n", brokerSource(c.baseURL))
 	return 0
+}
+
+// revokeAsSession is the session's own revoke of grantID (POST /v1/grants/{id}/revoke), which
+// `revoke` and `grant revoke` inside a session both make, under the identity, the enrollment wait
+// and the exit codes of every session command (sessionContext, sessionFailed). failed is why this
+// process has no such identity, for the form to report through sessionFailed, so the exit code
+// comes from a function broker-refgen follows; otherwise err is the broker's answer to c's call,
+// unreported, for the form to word.
+func revokeAsSession(grantID string) (c *client, failed, err error) {
+	base, _, signer, failed := sessionContext()
+	if failed != nil {
+		return nil, failed, nil
+	}
+	c = newClient(base)
+	return c, nil, c.RevokeGrant(context.Background(), signer, grantID)
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,7 +1122,8 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
 	if state == "pending" {
-		reportPending(stderr, requestID, result.Approver, result.ApproveURL, *wait, src())
+		reportPending(stderr, requestID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
+		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
 		backoff := 2 * time.Second
 		for state == "pending" {
@@ -1124,6 +1138,12 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			state, grantID, detail = status.State, status.GrantID, status.Detail
+			// The judge held the request and has given it up: it is its person's now, and the
+			// agent is told who that is and where they decide it, once.
+			if judging && !status.JudgeDeciding && state == "pending" {
+				fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(status.Approver, status.ApproveURL, false))
+				judging = false
+			}
 			backoff = nextBackoff(backoff)
 		}
 	}
@@ -1218,12 +1238,12 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	return 0 // unreachable: syscall.Exec replaces this process on success
 }
 
-// reportPending says, once, before the exec form's wait, that a person must decide the request,
-// where the secrets it would inject come from (src), and who decides it, and on which page of the
-// broker when its answer names one (waitingOn).
-func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, wait time.Duration, src source) {
+// reportPending says, once, before the exec form's wait, who decides the request — a person, or
+// the model judge while it holds the request — where the secrets it would inject come from (src),
+// and on which page of the broker a person decides it when its answer names one (waitingOn).
+func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
 	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", requestID, src, wait)
-	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage))
+	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage, judging))
 }
 
 // waitingOn is the sentence that says whom a pending request waits on and where they decide it:
@@ -1238,7 +1258,15 @@ func reportPending(stderr io.Writer, requestID string, approver *string, brokerP
 // sentence names the approver alone, with no page - the request waits on the same person, who
 // opens the broker themselves. The broker names an approver for every pending request; one from
 // before it did names none, and the sentence says so rather than guessing.
-func waitingOn(approver *string, brokerPage string) string {
+//
+// A request the model judge holds (judging, the answer's judge_deciding) carries no page: its
+// keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
+// is asked, and never that its approver must approve it. If the judge cannot decide it, a later
+// answer carries the page, and the exec form says so.
+func waitingOn(approver *string, brokerPage string, judging bool) string {
+	if judging {
+		return "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
+	}
 	where := ""
 	if brokerPage != "" {
 		where = ": " + brokerPage

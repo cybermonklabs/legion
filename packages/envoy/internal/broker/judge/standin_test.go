@@ -25,79 +25,141 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
-// testSecret is the one secret these tests ask for, testIssue the issue every signed reason
-// names, and shortJudgeSecret the second secret with a judge of its own, whose 300 seconds are
-// the bound a request asks past in the one case the class's own 15 minutes would let through.
+// testSecret is the key most tests ask for, with the guidance testGuidance; testIssue the issue
+// a reason names when it names one; and shortJudgeSecret the second judge key, whose 300 seconds
+// are the bound a request asks past in the one case the class's own 15 minutes would let
+// through. testApprover is the person the policy answers as the approver of testSecret, and
+// testAsk the ask on testIssue they answered, which a reason cites when it cites one.
 const (
 	testSecret        = "DEEL_API_KEY"
+	testGuidance      = "grant only to post text the key's owner approved in Dispatch; the reason must cite that answer"
 	testIssue         = "INFRA-1353"
 	testModel         = "claude-standin"
 	shortJudgeSecret  = "SHORT_JUDGE_KEY"
+	shortGuidance     = "grant for the broker's own release job"
 	shortJudgeSeconds = 300
+	testApprover      = "approver@example.com"
+	testAsk           = "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+	testQuestion      = "Spend the Deel key on the broker's own tests?"
+	testAnswerText    = "Yes, on this issue's own runs."
 )
 
-// testRules give the judge 900 seconds of testSecret, 300 of shortJudgeSecret — a bound of its
-// own well inside the class's 15 minutes, which is what a request can ask past while still
-// asking for less than the class allows — and nothing of any other name.
+// testRules give the judge 900 seconds of testSecret and 300 of shortJudgeSecret, each with its
+// guidance, and nothing of any other name. shortJudgeSecret binds no host, as an entry that only
+// says who decides a key does.
 func testRules() airlock.Rules {
 	return airlock.Rules{Secrets: []airlock.SecretRule{
-		{Name: testSecret, Hosts: []string{"api.deel.example"}, Judge: new(uint32(900))},
-		{Name: shortJudgeSecret, Hosts: []string{"api.short.example"}, Judge: new(uint32(shortJudgeSeconds))},
+		{Name: testSecret, Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: testGuidance},
+		{Name: shortJudgeSecret, Judge: new(uint32(shortJudgeSeconds)), Guidance: shortGuidance},
 		{Name: "NO_JUDGE_KEY", Hosts: []string{"other.example"}},
 	}}
 }
 
-// pending is a request inside the class the judge decides: one secret whose entry has a judge,
-// a signed lifetime of 15 minutes, and a reason naming an open issue.
+// agentKey is a key the requesting session gets at once, which a request names beside a judge
+// key: it needs no decision, the judge decides nothing of it, and the rules give it no entry.
+const agentKey = "AGENT_KEY"
+
+// pending is a request the judge holds: one judge key, which is the key it decides, a signed
+// lifetime of 15 minutes, and a reason naming an issue. citedPending is the same request whose
+// reason also cites the ask its approver answered on that issue.
 func pending() requests.PendingRequest {
 	return requests.PendingRequest{
 		RecordID: "record-1", RequestID: "request-1", EnrollmentID: "enrollment-1",
-		SessionID: "legion-1353", Secrets: []string{testSecret},
-		LifetimeSeconds: new(900), Reason: "Running the broker's own tests for " + testIssue,
-		Approver: "sami@example.com",
+		SessionID: "legion-1353", Secrets: []string{testSecret}, Decided: []string{testSecret},
+		LifetimeSeconds: new(900),
+		Reason:          "Running the broker's own tests for " + testIssue,
+		Approver:        testApprover,
+	}
+}
+
+func citedPending() requests.PendingRequest {
+	p := pending()
+	p.Reason = "Posting the approved notes for " + testIssue + ", approved at dispatch://" + testIssue + "/ask/" + testAsk
+	return p
+}
+
+// answeredAsk is the body GET /api/v1/asks/{id} answers for an ask testApprover answered on
+// testIssue: the ask beside its thread, of which the judge reads the ask alone.
+func answeredAsk() map[string]any {
+	return map[string]any{
+		"ask": map[string]any{
+			"id": testAsk, "issue_key": testIssue, "state": "answered",
+			"question": testQuestion,
+			"options": []any{
+				map[string]any{"label": "Spend it", "description": "on this issue's runs"},
+				map[string]any{"label": "Leave it"},
+			},
+			"answer": map[string]any{
+				"user": testApprover, "selected": []any{"Spend it"}, "text": testAnswerText,
+				"at": "2026-11-16T00:00:00Z",
+			},
+		},
+		"replies": []any{}, "edits": []any{}, "followers": []any{},
 	}
 }
 
 // dispatchCall is one request the Dispatch stand-in got.
 type dispatchCall struct{ method, path, authorization string }
 
-// dispatchStandIn answers the issue read and the spec read, and records every request it got so
-// a test can see which routes the judge called and what it presented.
+// dispatchStandIn answers the issue read, the spec read and the ask read, and records every
+// request it got so a test can see which routes the judge called and what it presented.
 type dispatchStandIn struct {
 	server *httptest.Server
 
 	mu    sync.Mutex
 	calls []dispatchCall
-	// issueStatus and specStatus are what each route answers, and issue and spec the JSON
-	// bodies it answers with when that status is 200.
-	issueStatus, specStatus int
-	issue, spec             map[string]any
+	// issueStatus, specStatus and askStatus are what each route answers, and issue, spec and
+	// ask the JSON bodies it answers with when that status is 200.
+	issueStatus, specStatus, askStatus int
+	issue, spec, ask                   map[string]any
+	// askRaw, when it is not empty, is written as the ask read's whole 200 body in place of
+	// ask, which is how a test drives an answer that is no JSON object.
+	askRaw string
 	// delay holds each answer back, which is how a test spends the Dispatch phase's
 	// bound. A read the judge gave up on ends the handler at once, so a stand-in told to
 	// wait longer than the bound never keeps the server from closing.
 	delay time.Duration
 }
 
-// newDispatch is a Dispatch holding one open issue with a spec document.
+// newDispatch is a Dispatch holding one open issue with a spec document, and the ask on it that
+// testApprover answered.
 func newDispatch(t *testing.T, status, markdown string) *dispatchStandIn {
 	t.Helper()
 	d := &dispatchStandIn{
-		issueStatus: http.StatusOK, specStatus: http.StatusOK,
+		issueStatus: http.StatusOK, specStatus: http.StatusOK, askStatus: http.StatusOK,
 		issue: map[string]any{"key": testIssue, "title": "The broker's model judge", "status": status,
 			"project": "INFRA", "number": 1353},
 		spec: map[string]any{"markdown": markdown, "version": 12, "token": "sha256:standin"},
+		ask:  answeredAsk(),
 	}
 	d.server = httptest.NewServer(http.HandlerFunc(d.serve))
 	t.Cleanup(d.server.Close)
 	return d
 }
 
+// askField sets one field of the ask this stand-in answers with, and askAnswerField one field of
+// that ask's answer, so a test says only how its own case differs from an answered ask.
+func (d *dispatchStandIn) askField(name string, value any) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ask["ask"].(map[string]any)[name] = value
+}
+
+func (d *dispatchStandIn) askAnswerField(name string, value any) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ask["ask"].(map[string]any)["answer"].(map[string]any)[name] = value
+}
+
 func (d *dispatchStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	d.calls = append(d.calls, dispatchCall{r.Method, r.URL.Path, r.Header.Get("Authorization")})
-	status, body, delay := d.issueStatus, d.issue, d.delay
-	if strings.HasSuffix(r.URL.Path, "/artifacts/spec/text") {
+	status, body, delay, raw := d.issueStatus, d.issue, d.delay, ""
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/artifacts/spec/text"):
 		status, body = d.specStatus, d.spec
+	case strings.HasPrefix(r.URL.Path, "/api/v1/asks/"):
+		status, body, raw = d.askStatus, d.ask, d.askRaw
 	}
 	d.mu.Unlock()
 	if delay > 0 {
@@ -113,6 +175,10 @@ func (d *dispatchStandIn) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"error":{"code":"REFUSED","message":"the stand-in refuses"}}`)
 		return
 	}
+	if raw != "" {
+		_, _ = io.WriteString(w, raw)
+		return
+	}
 	_ = json.NewEncoder(w).Encode(body)
 }
 
@@ -120,6 +186,18 @@ func (d *dispatchStandIn) got() []dispatchCall {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]dispatchCall(nil), d.calls...)
+}
+
+// askReads is how many ask reads this stand-in got, which is what a test of a shared secret —
+// whose approver is nobody — reads to see that the judge asked Dispatch about no ask at all.
+func (d *dispatchStandIn) askReads() int {
+	reads := 0
+	for _, call := range d.got() {
+		if strings.HasPrefix(call.path, "/api/v1/asks/") {
+			reads++
+		}
+	}
+	return reads
 }
 
 // modelStandIn is a model endpoint speaking Chat Completions: it answers each call with the same
@@ -275,38 +353,59 @@ func contentText(t *testing.T, content json.RawMessage) string {
 type fakeRequests struct {
 	mu sync.Mutex
 	// decision, withheld, admin and policyErr are what JudgePolicy answers, and
-	// policyAsked the names it was asked about.
-	decision    policy.Decision
-	withheld    bool
-	admin       bool
-	policyErr   error
-	policyAsked []string
+	// policyAsked the names it was asked about. withheldName, when set, is the one name
+	// withheld answers true for, which is how a test withholds one key of several;
+	// automaticName is the one name the policy answers automatic for, and deniedName the one
+	// it answers deny for.
+	decision                                policy.Decision
+	withheld                                bool
+	withheldName, automaticName, deniedName string
+	admin                                   bool
+	policyErr                               error
+	policyAsked                             []string
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
 	// times a run asked it.
 	state      string
 	stateErr   error
 	stateAsked int
-	// applyErr is what ApplyJudgeDecision answers, and logErr what LogJudged answers.
-	applyErr, logErr error
-	// writeTakes is how long each of the two writes takes before it commits, which is how
-	// a test gives the run's own transaction something to need its remaining budget for.
+	// applyErr is what ApplyJudgeDecision answers, logErr what LogJudged answers and denyErr
+	// what DenyJudged answers.
+	applyErr, logErr, denyErr error
+	// writeTakes is how long each write takes before it commits, which is how a test gives
+	// the run's own transaction something to need its remaining budget for.
 	writeTakes time.Duration
-	// applied and logged are the detail objects of each write, in order.
-	applied, logged []map[string]any
+	// applied, logged and denied are the detail objects of each write, in order, and refusals
+	// the reason each denial gave its agent.
+	applied, logged, denied []map[string]any
+	refusals                []string
 }
 
 func newRequests() *fakeRequests {
 	return &fakeRequests{
-		decision: policy.Decision{Outcome: policy.Approval, Approver: "sami@example.com"},
+		decision: policy.Decision{Outcome: policy.Approval, Approver: testApprover},
 		state:    "pending",
 	}
 }
 
+// JudgePolicy answers as the machine's own does (requests.Machine.JudgePolicy): the policy folds a
+// withheld name into its outcome, so a withheld name the policy would give at once comes back as
+// its approval, with the withheld flag beside it.
 func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.Decision, bool, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.policyAsked = append(f.policyAsked, name)
-	return f.decision, f.withheld, f.admin, f.policyErr
+	withheld := f.withheld || (f.withheldName != "" && f.withheldName == name)
+	decision := f.decision
+	switch name {
+	case f.automaticName:
+		decision = policy.Decision{Outcome: policy.Automatic}
+	case f.deniedName:
+		decision = policy.Decision{Outcome: policy.Deny}
+	}
+	if withheld && decision.Outcome == policy.Automatic {
+		decision = policy.Decision{Outcome: policy.Approval, Approver: testApprover}
+	}
+	return decision, withheld, f.admin, f.policyErr
 }
 
 func (f *fakeRequests) JudgeRequestState(_ context.Context, _ string) (string, error) {
@@ -353,6 +452,27 @@ func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[st
 	defer f.mu.Unlock()
 	f.logged = append(f.logged, judged)
 	return f.logErr
+}
+
+func (f *fakeRequests) DenyJudged(ctx context.Context, recordID, modelID string, judged map[string]any, why string) (requests.Decision, error) {
+	if err := f.transact(ctx); err != nil {
+		return requests.Decision{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.denied = append(f.denied, judged)
+	f.refusals = append(f.refusals, why)
+	if f.denyErr != nil {
+		return requests.Decision{}, f.denyErr
+	}
+	return requests.Decision{RequestID: recordID, State: "denied"}, nil
+}
+
+// refused is what the judge refused: the verdict each denial carried and the reason it gave.
+func (f *fakeRequests) refused() (denied []map[string]any, refusals []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]any(nil), f.denied...), append([]string(nil), f.refusals...)
 }
 
 // rows is what the judge wrote: the details it approved with and the details it logged alone.
@@ -402,46 +522,58 @@ func waitFor(t *testing.T, what string, within time.Duration, done func() bool) 
 	t.Fatalf("waited %s for %s", within, what)
 }
 
-// theOneRow is the single detail object a run wrote through LogJudged, and fails when the run
-// wrote anything else.
+// theOneRow is the single detail object a run wrote through LogJudged — a run that decided
+// nothing, which hands the request to its person — and fails when the run wrote anything else, a
+// refusal included.
 func theOneRow(t *testing.T, f *fakeRequests) map[string]any {
 	t.Helper()
 	applied, logged := f.rows()
-	if len(applied) != 0 || len(logged) != 1 {
-		t.Fatalf("the run applied %d decisions and logged %d rows; want no decision and one row", len(applied), len(logged))
+	denied, _ := f.refused()
+	if len(applied) != 0 || len(logged) != 1 || len(denied) != 0 {
+		t.Fatalf("the run applied %d decisions, logged %d rows and refused %d requests; want one row and nothing else", len(applied), len(logged), len(denied))
 	}
 	return logged[0]
 }
 
-// failedCheck is the first check a detail object reports as failed, and "" when every check it
-// names passed.
+// theOneRefusal is the single refusal a run wrote through DenyJudged — the judge's final no — as
+// the verdict it carried and the reason it gave the agent, and fails when the run wrote anything
+// else.
+func theOneRefusal(t *testing.T, f *fakeRequests) (map[string]any, string) {
+	t.Helper()
+	applied, logged := f.rows()
+	denied, refusals := f.refused()
+	if len(applied) != 0 || len(logged) != 0 || len(denied) != 1 {
+		t.Fatalf("the run applied %d decisions, logged %d rows and refused %d requests; want one refusal and nothing else", len(applied), len(logged), len(denied))
+	}
+	return denied[0], refusals[0]
+}
+
+// failedCheck is the check a detail object reports as the one the run ended at (decidingFailure):
+// the first that failed for good, else the first that failed, and "" when every check it names
+// passed.
 func failedCheck(t *testing.T, detail map[string]any) string {
 	t.Helper()
 	checks, ok := detail["checks"].([]check)
 	if !ok {
 		t.Fatalf("the detail's checks are %T, want the judge's own checks", detail["checks"])
 	}
-	for _, c := range checks {
-		if !c.Passed {
-			return c.Check
-		}
+	if c := decidingFailure(checks); c != nil {
+		return c.Check
 	}
 	return ""
 }
 
-// failedDetail is what the first failed check of a detail object says it read, and "" when every
-// check passed. It is the sentence GET /v1/grant-log then serves a person, so a test that must
-// tell two failures of one check apart reads it rather than the check's name.
+// failedDetail is what that same check of a detail object says it read, and "" when every check
+// passed. It is the sentence GET /v1/grant-log then serves a person, so a test that must tell two
+// failures of one check apart reads it rather than the check's name.
 func failedDetail(t *testing.T, detail map[string]any) string {
 	t.Helper()
 	checks, ok := detail["checks"].([]check)
 	if !ok {
 		t.Fatalf("the detail's checks are %T, want the judge's own checks", detail["checks"])
 	}
-	for _, c := range checks {
-		if !c.Passed {
-			return c.Detail
-		}
+	if c := decidingFailure(checks); c != nil {
+		return c.Detail
 	}
 	return ""
 }

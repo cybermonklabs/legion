@@ -1,0 +1,13 @@
+# The spec job of ACME, with one step that compares the files with the approved spec.
+name: spec
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  spec:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the tree of the spec files
+        run: spec-check tree --dir .dispatch/spec
+      - name: Compare the spec files with the approved spec
+        run: spec-check compare --dir .dispatch/spec --approved a.json

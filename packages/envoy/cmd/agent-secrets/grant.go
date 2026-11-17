@@ -3,16 +3,20 @@
 // "agent-secrets grant list|revoke": the live grants of the operator's sessions and those the
 // operator approved, listed and ended under this machine's login (the broker's operator routes,
 // signed by the helper's sign-launcher op), as Dispatch's Live grants page lists and ends them.
-// groupForms (main.go) dispatches them.
+// Inside a session, grant revoke is the session's own revoke instead (cmdGrantRevoke). groupForms
+// (main.go) dispatches them.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/broker/helper"
 )
 
 // cmdGrantList implements "grant list": every live grant of a session the operator runs, given
@@ -102,9 +106,29 @@ func orDashPtr(s *string) string {
 	return orDash(*s)
 }
 
-// cmdGrantRevoke implements "grant revoke GRANT_ID": it ends a grant as the operator, as Dispatch's
-// Live grants page does. The operator's revoke of a grant a session got automatically also
-// withholds those secrets from that session: it asks before it gets them again.
+// inSession reports whether this process is inside a session: its key dir is a launcher's
+// (launcherKeyDir, the rule identity reads it by), or the helper's identity probe answers that it
+// is (OK, or NOT_ENROLLED while it is still enrolling). It asks the broker nothing. A process in
+// no session — the operator's own shell — is false, and takes the operator route below.
+func inSession(dir string) bool {
+	if launcherKeyDir(dir) {
+		return true
+	}
+	answer := probeHelper()
+	if !answer.answered() {
+		return false
+	}
+	return answer.resp.OK || answer.resp.Code == helper.CodeNotEnrolled
+}
+
+// cmdGrantRevoke implements "grant revoke GRANT_ID". Inside a session it is the session's own
+// revoke, which `agent-secrets revoke` makes too (revokeAsSession): the broker ends only a grant
+// of the enrollment that signs and refuses any other NOT_YOURS. So a session ends the grant its
+// use command was given, and so does every session that signs as the same broker identity, such
+// as each session of a person who ran `agent-secrets login`. Outside a session it is the
+// operator's revoke, as Dispatch's Live grants page does it: the operator's revoke of a grant a
+// session got automatically also withholds those secrets from that session, so it asks before it
+// gets them again. One run never tries both routes.
 func cmdGrantRevoke(args []string, stdout, stderr io.Writer) int {
 	const form = "grant revoke"
 	flagArgs, positional := splitArgs(args, nil)
@@ -115,6 +139,10 @@ func cmdGrantRevoke(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets %s: exactly one GRANT_ID is required\n", form)
 		return exitUsageError
 	}
+	grantID := positional[0]
+	if inSession(keyDir()) {
+		return grantRevokeInSession(form, grantID, stdout, stderr)
+	}
 	base, signer, err := machineContext()
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -122,9 +150,31 @@ func cmdGrantRevoke(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx := context.Background()
 	c := newClient(base)
-	if err := c.RevokeOperatorGrant(ctx, signer, positional[0]); err != nil {
+	if err := c.RevokeOperatorGrant(ctx, signer, grantID); err != nil {
 		return operatorFail(stderr, form, c.source(ctx), err)
 	}
-	fmt.Fprintf(stdout, "revoked %s at %s\n", positional[0], brokerSource(base))
+	fmt.Fprintf(stdout, "revoked %s at %s\n", grantID, brokerSource(base))
 	return 0
+}
+
+// grantRevokeInSession is grant revoke inside a session: the session's own revoke, with
+// NOT_YOURS named for a reader and no operator route tried after it, so a session can never end
+// another broker identity's grant by falling through to the operator's revoke.
+func grantRevokeInSession(form, grantID string, stdout, stderr io.Writer) int {
+	prefix := "agent-secrets " + form
+	c, failed, err := revokeAsSession(grantID)
+	var broker *apiError
+	switch {
+	case failed != nil:
+		return sessionFailed(stderr, prefix, failed)
+	case err == nil:
+		fmt.Fprintf(stdout, "revoked %s at %s\n", grantID, brokerSource(c.baseURL))
+		return 0
+	case errors.As(err, &broker) && broker.Code == "NOT_YOURS":
+		fmt.Fprintf(stderr, "%s: grant %s was given to another broker identity (enrollment) than the one this process signs as; its holder ends it, or its operator from their own shell (agent-secrets grant revoke %s), or its approver on Dispatch's Live grants page\n", prefix, grantID, grantID)
+		return 1
+	default:
+		refuse(stderr, prefix, c.source(context.Background()), err)
+		return 1
+	}
 }
