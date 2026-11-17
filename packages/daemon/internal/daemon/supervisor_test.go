@@ -538,6 +538,10 @@ func (e *recordingEnroller) Revoke(_ context.Context, enrollment string) error {
 	return nil
 }
 
+func (*recordingEnroller) Carried(context.Context, []string) ([]supervise.CarriedEnrollment, error) {
+	return nil, errors.New("unexpected carry question")
+}
+
 func (e *recordingEnroller) revocations() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -540,7 +540,13 @@ const maxJSONBodyBytes = 1 << 20
 // REQUEST_TOO_LARGE), no field v does not declare and nothing after the value (400 with
 // invalidCode). It writes the refusal itself and reports whether decoding succeeded.
 func readJSON(w http.ResponseWriter, r *http.Request, v any, invalidCode string) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	return readJSONUpTo(w, r, v, invalidCode, maxJSONBodyBytes)
+}
+
+// readJSONUpTo is readJSON with a cap of limit bytes in place of maxJSONBodyBytes, for a route
+// whose longest valid body is longer than that.
+func readJSONUpTo(w http.ResponseWriter, r *http.Request, v any, invalidCode string, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	err := decoder.Decode(v)
@@ -552,7 +558,7 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any, invalidCode string)
 	case err == nil:
 		return true
 	case errors.As(err, &tooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", fmt.Sprintf("request body exceeds %d bytes", maxJSONBodyBytes))
+		writeError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", fmt.Sprintf("request body exceeds %d bytes", limit))
 	default:
 		writeError(w, http.StatusBadRequest, invalidCode, "body must be one valid JSON object: "+err.Error())
 	}

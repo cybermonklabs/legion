@@ -432,9 +432,9 @@ func TestAnAdoptedPredecessorIsNoLongerDormantSoTheCarrySweepTakesNothing(t *tes
 		t.Fatalf("Revoke: %v", err)
 	}
 	_, moved := movedTo(t, svc, issuer, key, "session", session, session+"-2")
-	// A carry window of 0 is the sweep's floor: it ends every dormant enrollment it finds, so
-	// what it does not end here is not a row whose window is still running.
-	ended, err := svc.EndCarried(ctx, 0)
+	// A carry window of 0 (the Service's Carry unset) is the sweep's floor: it ends every dormant
+	// enrollment it finds, so what it does not end here is not a row whose window is still running.
+	ended, err := svc.EndCarried(ctx)
 	if err != nil {
 		t.Fatalf("EndCarried: %v", err)
 	}

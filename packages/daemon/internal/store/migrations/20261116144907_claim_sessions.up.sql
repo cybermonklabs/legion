@@ -11,7 +11,8 @@
 -- E's t-e-54). The claims row keeps only the session a claim resumes now and the one it last
 -- abandoned, so nothing recorded which names the other claims had recorded before: this table
 -- does, one row per project, kind and name, written when a claim first records the name
--- (supervise's holdRecorded, through Store.HoldSessions), and never deleted, so a retired, failed or
+-- (supervise's holdRecorded, through Store.HoldSessions), and deleted only by an operator's release
+-- of its own claim (`legion claims release-names`), so a retired, failed or
 -- suspended claim keeps every name it recorded. A registration, a resume or an enrollment under a
 -- name another claim of the project holds is refused.
 --
@@ -75,8 +76,8 @@ create table claim_sessions (
   recorded_at timestamptz not null default now(),
   primary key (project, kind, name));
 
--- A claim holds at most supervise.MaxHeldNamesPerClaim names: nothing deletes a hold, so without a
--- bound one role could grow the table without end. A registration that adds names counts the
+-- A claim holds at most supervise.MaxHeldNamesPerClaim names: a hold ends only by an operator's
+-- release, so without a bound one role could grow the table without end. A registration that adds names counts the
 -- claim's rows (store.HoldSessions), which this index serves.
 create index claim_sessions_claim on claim_sessions (project, claim);
 

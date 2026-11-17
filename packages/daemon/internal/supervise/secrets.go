@@ -37,10 +37,33 @@ type AgentSecretsIdentity struct {
 
 // Enroller is the secrets broker's enrollment routes as the machine uses them. Nil in Deps means
 // this deployment enrolls no process: no identity is kept, nothing is enrolled or revoked.
+//
+// Carried is the broker's answer to a release (Machine.ReleaseNames): every enrollment this
+// daemon's login launched, of one of sessionIDs, that is live or still carries a grant or a
+// request the next enrollment of its session id would take (envoy's POST /v1/enrollments/carried);
+// none is an empty answer.
 type Enroller interface {
 	Enroll(ctx context.Context, e PodEnrollment) (string, error)
 	Revoke(ctx context.Context, id string) error
+	Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnrollment, error)
 }
+
+// CarriedEnrollment is one enrollment the secrets broker still carries something for (Enroller.
+// Carried): its session id and its own id, whether it is CarriedLive or CarriedDormant, and when
+// its lease ends (a live one, unless its process renews it) or its carry ends (a dormant one).
+type CarriedEnrollment struct {
+	SessionID, EnrollmentID, State string
+	EndsAt                         time.Time
+}
+
+const (
+	// CarriedLive is an enrollment no end has reached yet: its process may still run, and it can be
+	// granted something until it ends.
+	CarriedLive = "live"
+	// CarriedDormant is an ended enrollment whose end left its grants or requests for the next
+	// enrollment of its session id, until its carry ends.
+	CarriedDormant = "dormant"
+)
 
 // PermanentError is a broker refusal a retry cannot change (a broker 4xx other than an expired
 // token): an Enroll refusal drops the identity and waits for the shim's next hello; a Revoke
