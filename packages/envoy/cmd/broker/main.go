@@ -634,10 +634,11 @@ func main() {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: cfg.SecretsStore, SecretsPrefix: cfg.SecretsPrefix,
-		SecretsKMSKey:      cfg.SecretsKMSKey,
-		TrustedProxyHeader: cfg.TrustedProxyHeader,
-		Approval:           page,
-		Draining:           draining.Load,
+		SecretsKMSKey:          cfg.SecretsKMSKey,
+		GoogleExchangeAudience: googleExchangeAudience(cfg),
+		TrustedProxyHeader:     cfg.TrustedProxyHeader,
+		Approval:               page,
+		Draining:               draining.Load,
 		NotifyReread: func(ctx context.Context, name string) {
 			// This pod reread the name itself and merged what it read (the reread route's
 			// notifyPeers), so the value behind the name may be a new version: dropped from
@@ -1091,17 +1092,17 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // one retry policy and process-wide retry budget of the three minters that call an upstream over
 // HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which kindMinters' copies keep.
+// unretried too: each holds the one pointer, which typeMinters' copies keep.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
-		// The two kinds whose minter calls an endpoint of its own carry the local stack's
+		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
-		Minters: kindMinters(
+		Minters: typeMinters(
 			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry},
 			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
 			secrets.AzureLogin{TokenFile: cfg.AzureTokenFile, SecretName: cfg.AzureLoginSecret},
@@ -1176,6 +1177,18 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	m.Judge = runner.Consider
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
 		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
+}
+
+// googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
+// where BROKER_VM_SERVICES lists a machine the exchange may mint a launcher credential for, and ""
+// where the audience is set for an API caller alone (a google: entry in BROKER_API_ACCOUNTS). The
+// exchange refuses every machine then, and a client that read the audience would mint a token, be
+// refused and stop on every command, where with none published it skips the machine source.
+func googleExchangeAudience(cfg config.Config) string {
+	if len(cfg.ExchangeGoogleAccounts) == 0 {
+		return ""
+	}
+	return cfg.GoogleOIDCAudience
 }
 
 // serviceNames is every registered service, sorted and each once: BROKER_SERVICES' and
@@ -1318,20 +1331,20 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 	return oidc.NewKeys(discovery, issuer)
 }
 
-// kindMinters is the broker's minter for each kind. Its arguments are the production minters in
+// typeMinters is the broker's minter for each type. Its arguments are the production minters in
 // newRequestMachine; a test passes ones aimed at its own endpoints and projected token file, and
 // its own binding of each google-service-account secret to the account that minter may mint for,
 // which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
-// no secret of that kind. The google-service-account minter is a pointer: its method value would
+// no secret of that type. The google-service-account minter is a pointer: its method value would
 // otherwise copy the credentials it caches away from the minter every later mint reads. The other
 // two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
 // from its one budget.
-func kindMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
+func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
 	return map[string]requests.Minter{
-		policy.KindGitHubApp:            githubApp.Mint,
-		policy.KindGoogleLogin:          googleLogin.Mint,
-		policy.KindAzureLogin:           azureLogin.Mint,
-		policy.KindGoogleServiceAccount: googleServiceAccount.Mint,
+		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGoogleLogin:          googleLogin.Mint,
+		policy.TypeAzureLogin:           azureLogin.Mint,
+		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
 	}
 }
 
