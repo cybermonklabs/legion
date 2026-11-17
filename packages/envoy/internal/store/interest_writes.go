@@ -112,11 +112,10 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 // which is the delete marker unless a write has landed since, or, when the history cannot be read
 // within ctx, evicts the entry behind a fence just past revision. A latest entry at a revision the
 // cache's fence already holds is no news - a delete that read nothing and so deleted nothing - and
-// the cache is left as it is, its row and that row's chunks named. A manifest as that latest entry
-// is applied only when the chunk copy holds every chunk it names (kvchunk.Chunks.Join). A manifest
-// another listener stored since, whose chunks the watcher has not delivered yet, is evicted behind
-// that fence instead of being judged a record this build cannot decode: the watcher delivers it
-// after its chunks, past the fence.
+// the cache is left as it is, its row and that row's chunks named. A manifest another listener
+// stored since is evicted behind that fence rather than applied: the copy joins a manifest only
+// from the chunks its watcher delivered, which may not have reached it yet, and the watcher
+// delivers that manifest after its chunks, past the fence.
 func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, revision uint64) {
 	// A history that does not answer falls back to the fence below: the delete itself answered.
 	// ReadHistory ends with ctx; bus.RequestTimeout bounds it for a caller that answers no request
@@ -133,12 +132,7 @@ func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch 
 			return
 		}
 	}
-	unjoined := latest.Op == kvwatch.OpPut && kvchunk.IsManifest(latest.Value)
-	if unjoined {
-		_, _, joinErr := r.chunks.Join(latest.Value)
-		unjoined = joinErr != nil
-	}
-	if err != nil || len(entries) == 0 || unjoined {
+	if err != nil || len(entries) == 0 || (latest.Op == kvwatch.OpPut && kvchunk.IsManifest(latest.Value)) {
 		// KeyValue.Delete does not return its revision. A successful delete must
 		// still fence off any watcher update from the preceding revision while the
 		// delete marker remains pending.

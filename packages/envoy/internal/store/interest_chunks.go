@@ -54,16 +54,16 @@ func decodeRecord(record []byte, layout kvchunk.Layout) (storedRow, error) {
 // decodeEntry decodes entry, the value under sessionID that a read through kv answered, into the
 // row it stores, with the revision of the entry it was read from (kvchunk.Read, which reads a
 // record's chunks from the stream's leader and a manifest a rewrite replaced under it again). A
-// record this build cannot decode is ErrMalformedInterest, logged at WARN naming the session. A
-// damaged chunked record (kvchunk.ErrDamaged) carries no layout, since its chunks were never proved
-// to be its own, so the write that replaces it deletes none of them; a record whose chunks joined
-// but whose JSON does not decode carries its layout, so that write deletes its chunks.
+// record this build cannot decode is ErrMalformedInterest, logged at WARN naming the session, with
+// the layout kvchunk.Read answered: none for a damaged chunked record (kvchunk.ErrDamaged), whose
+// chunks were never proved to be its own, so the write that replaces it deletes none of them, and
+// the joined layout for a record whose JSON does not decode, so that write deletes its chunks.
 // nats.ErrKeyNotFound is a record deleted while it was read, and any other error a read that did
 // not answer.
 func (r *Registry) decodeEntry(ctx context.Context, kv bus.KeyValue, sessionID string, entry nats.KeyValueEntry) (storedRow, uint64, error) {
 	record, layout, revision, err := kvchunk.Read(ctx, kv, sessionID, entry)
 	if errors.Is(err, kvchunk.ErrDamaged) {
-		return storedRow{}, revision, r.malformedRecord(sessionID, revision, err)
+		return storedRow{layout: layout}, revision, r.malformedRecord(sessionID, revision, err)
 	}
 	if err != nil {
 		return storedRow{}, 0, err
