@@ -20,11 +20,11 @@ package appauth
 // The release reaches every repository the account's installation holds, here as in key mode: the
 // account that installs the App chooses them, and the daemon asks for no narrowing of them
 // (INFRA-2543). A read-only token holds what the command's read-only release gives: the broker's
-// holds contents, metadata, pull requests and Actions read, which is key mode's ReadToken set
-// less its issues read, and less the Actions read an installation that is not granted it does not
-// hold. What a release leaves out is the command's own business: the daemon reads what an
-// installation is granted only where it mints with a key of its own (exchangeGranted), and asks a
-// command for no permission at all.
+// read-only narrowing asks for key mode's ReadToken set (githubread), cut to what the
+// installation holds, so a permission of the set that an installation does not hold is left out
+// of the release. What a release leaves out is the command's own business: the daemon reads what
+// an installation is granted only where it mints with a key of its own (exchangeGranted), and
+// asks a command for no permission at all.
 //
 // No token reaches a log or an error: the command's stdout is never quoted, and its stderr, which
 // `agent-secrets` uses for the names and the request it waits on, goes to the daemon's stderr and

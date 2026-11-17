@@ -28,11 +28,17 @@ import (
 // pushing its own commits; pull_requests:write is the pull request, its comments and its reviews;
 // actions:write is `gh run rerun`, a re-run being a write even though the role only reads what it
 // produces; metadata:read is every read of the repository itself, which GitHub requires of any
-// token. checks and statuses are the check runs and commit statuses a tester posts, and differ by
-// App: the review App's set asks for checks:write, its reviewer creating the check runs, and
-// names no statuses permission at all, where the implement App's asks for checks:read, what its
-// roles read of those check runs, and statuses:write, the commit status its own tester posts
+// token. checks and statuses are the check runs and commit statuses of a head, and differ by App:
+// the review App's set asks for checks:write, its reviewer creating the check runs, and
+// statuses:read, because its roles read the commit statuses of a head and none of them posts one,
+// where the implement App's asks for checks:read, what its roles read of those check runs, and
+// statuses:write, the commit status its own tester posts
 // (docs/solutions/legion/one-role-keyed-table-decides-which-github-app-acts.md).
+//
+// attestations:read is in both sets, because a role reads the attestations of an artifact, such
+// as to check that an image was built from the default branch, and no role makes one: a release
+// workflow does. Neither set asks for more than read of it (githubread says where a token without
+// it was refused).
 //
 // The set says what the App's roles use, never what an installation holds: what an account has
 // approved is the account's, and the cut takes each mint's request down to it (exchangeGranted),
@@ -47,7 +53,7 @@ import (
 // harm; giving the review App's other roles issues read alone would mean keying the set by
 // workflow role rather than by App, a larger change for no measured risk. A token whose request
 // names no issues permission is refused an issue of a private repository with 403 "Resource not
-// accessible by integration" (readPermissions says where that was measured).
+// accessible by integration" (githubread says where that was measured).
 //
 // Repository projects and packages are in neither set, though both Apps' installations hold
 // them: Legion writes no project and no package.
@@ -68,8 +74,8 @@ import (
 // token carrying what the request names. A deployment in token mode asks its command for no
 // permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
 var writePermissions = map[AppRole]map[string]string{
-	Implement: {"actions": "write", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
-	Review:    {"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
+	Implement: {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
+	Review:    {"actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
 }
 
 // accessOrder ranks GitHub's three accesses, each holding every one below it: a permission
