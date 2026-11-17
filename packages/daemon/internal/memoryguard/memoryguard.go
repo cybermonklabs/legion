@@ -53,20 +53,26 @@
 // sleeping forks of a 1.5 GiB block, lost a sleeper first to a guard that decided on the held reads
 // alone, since the grower's step before the crossing one was older than the window at the mark
 // (INFRA-3531 T17); a sleeping fork flat through the band is not read again, since its read changes
-// no answer. So the first kill comes within one interval of the reading reaching the mark, also
-// where the pod's CPU is throttled (INFRA-3531 R1 of spec version 25, T16): under gVisor, with six
-// growers faulting their pages in, the host throttles the whole pod by its CFS quota, so a band
-// reading that costs about 2 ms of work took 80 to 270 ms of wall time, and a read of a growing
-// process's /proc files at times waits on its memory locks. This issue's tester measured 194 ms
-// from the reading at the mark to the first kill, where R1 asks for one interval (100 ms), with a
-// mark reading that read every size again; deciding on the band's reads brought 9 of 9 runs in 19
-// builds Jobs to 1.3 to 71.8 ms. The guard assesses the reading at the mark and acts on it as on
-// any later reading where nothing is held (the reading crossed the whole band within one interval,
-// or the reading before was not an armed guard's in the band), where the held first has exited or
-// its pid names another process (its start time changed), or where the held sizes, or the sizes
-// once read again, are under the floor or name no process: it never gives a rise up on held sizes
-// alone. Below the band, while it is off and once it has given a rise up, it reads no size and
-// keeps none: a pod that sits below its band pays for nothing but its readings.
+// no answer. It reads the band's growers first, the most grown across the stay first, then those
+// with one band read, the largest first, for half the interval from the reading at the mark by its
+// clock, the first of them always and none after the read in hand once that has passed, and those
+// it has not read keep their held sizes: at 9d6d24df, `4g-latepool-lmnt5`'s six growers each had
+// one band read, and reading all six again under the pod's CPU throttle put the first kill 100.68
+// ms after the reading at the mark. So the first kill comes within one interval of the reading
+// reaching the mark, also where the pod's CPU is throttled (INFRA-3531 R1 of spec version 25,
+// T16): under gVisor, with six growers faulting their pages in, the host throttles the whole pod by
+// its CFS quota, so a band reading that costs about 2 ms of work took 80 to 270 ms of wall time,
+// and a read of a growing process's /proc files at times waits on its memory locks. This issue's
+// tester measured 194 ms from the reading at the mark to the first kill, where R1 asks for one
+// interval (100 ms), with a mark reading that read every size again; deciding on the band's reads
+// brought 9 of 9 runs in 19 builds Jobs to 1.3 to 71.8 ms. The guard assesses the reading at the
+// mark and acts on it as on any later reading where nothing is held (the reading crossed the whole
+// band within one interval, or the reading before was not an armed guard's in the band), where the
+// held first has exited or its pid names another process (its start time changed), or where the
+// held sizes, or the sizes once read again, are under the floor or name no process: it never gives
+// a rise up on held sizes alone. Below the band, while it is off and once it has given a rise up,
+// it reads no size and keeps none: a pod that sits below its band pays for nothing but its
+// readings.
 //
 // After a kill the guard reads the sizes at each interval too, and waits only while the killed
 // process has not exited (its Handle's Exited), and no longer than the wait (INFRA-3531 R1 of spec
@@ -805,7 +811,7 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	if len(g.held) == 0 || heldBytes < floor {
 		return false
 	}
-	if !grew && (g.rereadHeld(now) < floor || len(g.held) == 0) {
+	if !grew && (g.rereadHeld(now, s.Interval/2) < floor || len(g.held) == 0) {
 		return false
 	}
 	rank(g.held)
@@ -868,24 +874,72 @@ func (g *Guard) orderHeld(now time.Time) (grew bool, heldBytes uint64) {
 // process flat through the whole band that grows only at the mark is not ended first for that. A
 // held process whose smaps it cannot read, gone or not, it leaves out of the held processes, and
 // so out of this decision; the assessment of the reading that follows reads it again.
-func (g *Guard) rereadHeld(now time.Time) uint64 {
+//
+// It reads them one at a time, in a fixed order (rereadOrder): first those that grew in the band,
+// the most grown across the stay first, then those with a single band read, the largest held first,
+// the newest by start time first among equals. It reads them for budget from now by the guard's
+// clock, which it reads between two smaps reads and at no other time: it reads the first however
+// much of the budget the reading at the mark itself took, and once the budget has passed it stops
+// after the read in hand. Those it has not read keep their held sizes and no growth, so the
+// decision is made on what it read. At 9d6d24df, `4g-latepool-lmnt5` sent its first kill 100.68 ms
+// after the reading at the mark, past one interval: its six growers had one band read each, and the
+// guard read all six growing processes' smaps again before the kill under the pod's CPU throttle.
+// endHeld gives it half the interval.
+func (g *Guard) rereadHeld(now time.Time, budget time.Duration) uint64 {
 	defer g.releaseSmaps()
+	slices.SortFunc(g.held, func(x, y candidate) int {
+		xTier, xKey := g.rereadOrder(x)
+		yTier, yKey := g.rereadOrder(y)
+		return cmp.Or(cmp.Compare(xTier, yTier), cmp.Compare(yKey, xKey),
+			cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
+	})
+	deadline := now.Add(budget)
 	kept := g.held[:0]
 	var total uint64
+	read, passed := false, false
 	for _, c := range g.held {
-		if stay := g.stays[procKey{pid: c.PID, start: c.StartTime}]; stay.reads < 2 || stay.grew {
-			size, err := g.size(c.PID, nil)
-			if err != nil {
-				continue
+		if tier, _ := g.rereadOrder(c); !passed && tier < notReread {
+			passed = read && !g.clock.Now().Before(deadline)
+			if !passed {
+				read = true
+				size, err := g.size(c.PID, nil)
+				if err != nil {
+					continue
+				}
+				c.size = size + c.descriptorBytes
+				g.keepSize(now, &c)
 			}
-			c.size = size + c.descriptorBytes
-			g.keepSize(now, &c)
 		}
 		total += c.size
 		kept = append(kept, c)
 	}
 	g.held = kept
 	return total
+}
+
+// The tiers of the held processes' reads again at the mark (rereadOrder), in the order the guard
+// reads them: those that grew in the band, those with a single band read, and those it does not
+// read again.
+const (
+	grewInTheBand = iota
+	oneBandRead
+	notReread
+)
+
+// rereadOrder is c's place in the order the reads again at the mark take (rereadHeld): its tier,
+// and within the tier the key that orders it, the most first. A held process that grew in the band
+// is first, by its growth across the stay, its held size less the least of its band reads; one with
+// a single band read follows, by its held size; one with two band reads or more that never grew
+// between them is not read again.
+func (g *Guard) rereadOrder(c candidate) (tier int, key uint64) {
+	stay := g.stays[procKey{pid: c.PID, start: c.StartTime}]
+	switch {
+	case stay.grew:
+		return grewInTheBand, c.size - min(stay.least, c.size)
+	case stay.reads < 2:
+		return oneBandRead, c.size
+	}
+	return notReread, 0
 }
 
 // watch decides on a reading at or above the mark while the guard waits after a kill, by the rule

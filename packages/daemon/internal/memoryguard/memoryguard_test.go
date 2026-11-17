@@ -1676,6 +1676,118 @@ func TestMemoryGuardReadsAgainAtTheMarkOnlyTheHeldProcessesThatGrewInTheBandOrHa
 	}
 }
 
+// The guard's reads again at the mark (rereadHeld) take at most half the interval, 50 ms at the
+// defaults, from the reading at the mark by its clock, which the rig moves on by some time at each
+// smaps read there, as a pod whose CPU the host throttles does (INFRA-3531 T17, `4g-latepool-lmnt5`).
+// Six growers each have one band read, so the guard would read all six again: it reads them the
+// largest held first, and once the budget has passed it stops after the read in hand and decides
+// on what it read, the rest at their held sizes and no growth. Pids 800 to 805 are held at 150 down
+// to 100 MiB, and as the reading reaches the mark they grow 10, 20, 30, 40, 50 and 200 MiB. At 20
+// ms a read, it reads pids 800, 801 and 802 and ends pid 802, the most grown of those; at 60 ms a
+// read, it reads pid 800 alone and ends it; where the reading at the mark itself took 80 ms, more
+// than the budget, it still reads pid 800, the first, and ends it; where the reads take no time,
+// the budget is never reached, it reads all six, and ends pid 805, the most grown, as with no
+// budget.
+func TestMemoryGuardReadsAgainAtTheMarkForHalfTheIntervalAndDecidesOnWhatItRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// mark is how long the reading at the mark takes before the reads again, and perRead how
+		// long each smaps read at it takes, by the guard's clock.
+		mark, perRead time.Duration
+		reread        []int
+		want          int
+	}{
+		{"20 ms a read", 0, 20 * time.Millisecond, []int{800, 801, 802}, 802},
+		{"60 ms a read", 0, 60 * time.Millisecond, []int{800}, 800},
+		{"the reading at the mark past the budget", 80 * time.Millisecond, 0, []int{800}, 800},
+		{"no time a read", 0, 0, []int{800, 801, 802, 803, 804, 805}, 805},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(agent(2 * gib))
+			held := map[int]uint64{}
+			growth := map[int]uint64{805: 200 * mib}
+			growers := map[int]*fakeProcess{}
+			for i := range 6 {
+				pid := 800 + i
+				held[pid] = (150 - 10*uint64(i)) * mib
+				if pid != 805 {
+					growth[pid] = (10 + 10*uint64(i)) * mib
+				}
+				growers[pid] = &fakeProcess{pid: pid, ppid: 100, start: uint64(6000 + i), args: []string{"python3", "-c", "grow"}, anon: held[pid]}
+				pod.add(*growers[pid])
+			}
+			pod.setAnon(3300 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			reads := recordReads(h)
+			var atMark, perRead atomic.Int64
+			record := h.g.smapsRead
+			h.g.smapsRead = func(pid int) {
+				record(pid)
+				h.clock.advance(time.Duration(perRead.Load()))
+			}
+			h.g.observe = func(time.Time, uint64, uint64) { h.clock.advance(time.Duration(atMark.Load())) }
+			h.run()
+			inTheBand := len(reads())
+			for pid, g := range growers {
+				pod.resize(g, g.anon+growth[pid])
+			}
+			pod.setAnon(3500 * mib)
+			atMark.Store(int64(tc.mark))
+			perRead.Store(int64(tc.perRead))
+			h.tick()
+			requireMarkKill(h, tc.want, held[tc.want]+growth[tc.want])
+			if got := readBeforeTheKill(reads()[inTheBand:]); !slices.Equal(got, tc.reread) {
+				t.Fatalf("before the kill the guard read the smaps of %v, want %v", got, tc.reread)
+			}
+		})
+	}
+}
+
+// The reads again at the mark (rereadHeld) take the held processes in a fixed order: first those
+// that grew in the band, the most grown across the stay first, then those with one band read, the
+// largest held first and the newest by start time among equal sizes; one flat through two band
+// reads or more is not read. Pid 710 grows 50 MiB and pid 711 20 MiB between the band's first two
+// readings, and pid 700 sleeps through all four; pids 720 and 721, both of 300 MiB, pid 721 the
+// newer, and pid 722, of 200 MiB, start at the band's last reading. Nothing grows at the mark, and
+// the guard reads pids 710, 711, 721, 720 and 722 in that order, and ends pid 700, the largest.
+func TestMemoryGuardReadsAgainAtTheMarkTheBandsGrowersFirstThenTheSingleReadsLargestFirst(t *testing.T) {
+	pod := newFakePod(t)
+	most := fakeProcess{pid: 710, ppid: 100, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	less := fakeProcess{pid: 711, ppid: 100, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	pod.add(agent(2*gib), most, less, fakeProcess{pid: 700, ppid: 100, args: []string{"python3", "pool.py"}, anon: 900 * mib})
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	reads := recordReads(h)
+	h.run()
+	pod.resize(&most, 350*mib)
+	pod.resize(&less, 320*mib)
+	pod.setAnon(3200 * mib)
+	h.tick()
+	pod.setAnon(3300 * mib)
+	h.tick()
+	pod.add(
+		fakeProcess{pid: 720, ppid: 100, start: 7000, args: []string{"python3", "late.py"}, anon: 300 * mib},
+		fakeProcess{pid: 721, ppid: 100, start: 7100, args: []string{"python3", "late.py"}, anon: 300 * mib},
+		fakeProcess{pid: 722, ppid: 100, start: 6900, args: []string{"python3", "late.py"}, anon: 200 * mib},
+	)
+	pod.setAnon(3400 * mib)
+	h.tick()
+	inTheBand := len(reads())
+	pod.setAnon(3500 * mib)
+	h.tick()
+	requireMarkKill(h, 700, 900*mib)
+	var order []int
+	for _, r := range reads()[inTheBand:] {
+		if r.killsBefore == 0 {
+			order = append(order, r.pid)
+		}
+	}
+	if want := []int{710, 711, 721, 720, 722}; !slices.Equal(order, want) {
+		t.Fatalf("before the kill the guard read the smaps of %v in that order, want %v", order, want)
+	}
+}
+
 // A process's reads of its stay in the band keep their storage from one reading to the next:
 // counting the band reads of processes read before allocates nothing, and keeps one stay for each.
 func TestMemoryGuardCountsBandReadsAllocatingNothingForAProcessReadBefore(t *testing.T) {
