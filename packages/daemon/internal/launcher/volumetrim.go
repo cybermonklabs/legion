@@ -782,6 +782,12 @@ func (t *trimmer) intervalReading(set shimwire.LauncherVolumeTrim) (volumeUsage,
 // docs/kubernetes.md, in the paragraph on `runtime.kubernetes.volume_trim` under "Configuration"
 // of "Kubernetes runtime: the Go daemon on Agent Sandbox".
 func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
+	// Marked before either line below is written, so a panic of that line leaves the volume
+	// marked: a reading at or above the high mark can raise no recovery, the low mark being below
+	// the high one, so the order changes nothing else.
+	if percent >= float64(set.HighPercent) {
+		t.aboveHigh = true
+	}
 	switch {
 	case t.episode == 0:
 		if percent < float64(set.HighPercent) {
@@ -794,9 +800,6 @@ func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 		t.episode, t.raisedBy, t.aboveHigh, t.anchored = t.episode+1, shimwire.VolumeEpisodeRecovery, false, false
 		t.logf(volumeTrimLog+"episode %d (%s): the volume fell to %.1f%%, at or below the low mark %d%%",
 			t.episode, t.raisedBy, percent, set.LowPercent)
-	}
-	if percent >= float64(set.HighPercent) {
-		t.aboveHigh = true
 	}
 }
 

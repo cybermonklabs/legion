@@ -559,6 +559,39 @@ func TestARiseWhoseLinePanicsHasRecordedItsStartForTheNextRise(t *testing.T) {
 	}
 }
 
+// The first reading at or above the high mark marks the volume above it before the line that
+// raises episode 1 is written, so a panic of that line, which tick recovers, still leaves a later
+// reading at or below the low mark read as a recovery. The readings are 90% and then 65%, and the
+// line of the first episode panics once. At c7700af9 episodeOf marked the volume only after that
+// line, so the fall to 65% raised no recovery and the episode whose notices were spent went on.
+func TestAPanicOfTheFirstEpisodesLineLeavesALaterFallARecovery(t *testing.T) {
+	const fell = "the log fell over writing the line of the first episode"
+	f := newTrimFixture(t, 0)
+	f.useVolume(script(90, 65))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	var fallen atomic.Bool
+	tr.logf = func(format string, args ...any) {
+		if strings.Contains(format, "the volume reached the high mark") && fallen.CompareAndSwap(false, true) {
+			panic(fell)
+		}
+		f.log(format, args...)
+	}
+	set := *trimSettings()
+	for reading := range 2 {
+		if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+			t.Fatalf("reading %d ended the trimmer (%v), want it passed over at worst", reading+1, ending)
+		}
+	}
+	if !fallen.Load() || f.logged("recovered a panic") != 1 {
+		t.Fatalf("the trimmer wrote %q, want the line of the first episode fallen over and recovered", f.linesWritten())
+	}
+	if tr.episode != 2 || tr.raisedBy != shimwire.VolumeEpisodeRecovery {
+		t.Errorf("after the fall to 65%% the trimmer is in episode %d raised by %q, want 2 by %q: the first reading at the high mark marks the volume above it before its line",
+			tr.episode, tr.raisedBy, shimwire.VolumeEpisodeRecovery)
+	}
+}
+
 // A held report whose resend panics at three intervals in a row switches the trimmer off in the
 // sweep row, and R1 then has the trimmer send one last report saying so. The resend here panics
 // on the held report alone (a report that is not the switched-off one), so the switched-off
