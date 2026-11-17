@@ -593,41 +593,18 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
-	// (namingTheReviewRound). Two rules say which deciding review moves it. Where either fails, the
-	// commit stays where it stands, and the cost is a next round that reads more: from an older
-	// commit, or the whole change.
-	//
-	// The review is the reviewer's own: a review-App review whose Legion footer names the session
-	// the reviewer's claim records (byReviewer). A person's review decides the round and leaves the
-	// commit where it stands, since the reviewer never read the commit the person did. While the
-	// reviewer's claim records no session, no review-App review gets here: it waits
-	// (RoundRefusal.Waits).
-	//
-	// And it is a review of the entry that stands. The reviewer's row holds the task of an entry,
-	// which a new generation's clear empties until the next entry is raised
-	// (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review's footer names that
-	// entry (intake.PullRequestReview.LegionEntry), the number every task the reviewer is given in
-	// reviewing ends with (ReviewEntryLabel). The number is never reset and each entry raises it,
-	// so a review of an earlier entry - submitted before a re-admission and applied after it,
-	// however late, or before a carried hand-over's promotion and applied after it - names a
-	// number the row has left and moves nothing, and the first review of a new generation reads
-	// the whole change. No time is compared: a review's submission time is GitHub's clock and an
-	// entry's is the daemon's, and nothing orders the two. A row that the entry upgrade filled
-	// (20261111225552_phase_entry) can hold no task, and a review of that round moves nothing.
-	// Who decides the round is not changed by any of this.
-	if head := reviewer.Decision.Head; head != "" && e.byReviewer(fact, reviewerSession) {
-		switch named := fact.LegionEntry(); {
-		case reviewer.EntryTask == "":
-			e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: the reviewer's row holds no entry's task",
-				"issue", issue.Key, "pull_request", pr.Number, "head", head, "footer_entry", named, "entry", reviewer.Entry)
-		case named == 0:
-			e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: its footer names no entry",
-				"issue", issue.Key, "pull_request", pr.Number, "head", head, "entry", reviewer.Entry)
-		case named != reviewer.Entry:
-			e.logOnCommit(ctx, fmt.Sprintf("workflow: the reviewer's own review moves no reviewed commit: its footer names entry %d and the reviewer's row stands at entry %d", named, reviewer.Entry),
-				"issue", issue.Key, "pull_request", pr.Number, "head", head, "footer_entry", named, "entry", reviewer.Entry)
-		default:
-			reviewer.ReviewedHead = head
+	// (namingTheReviewRound). Only the reviewer's own review moves it: a review-App review whose
+	// Legion footer names the session the reviewer's claim records (byReviewer). A person's review
+	// decides the round and leaves the commit where it stands, since the reviewer never read the
+	// commit the person did; while the reviewer's claim records no session, no review-App review
+	// gets here, since it waits (RoundRefusal.Waits). And the review must be of the entry that
+	// stands (reviewedCommitStays).
+	if e.byReviewer(fact, reviewerSession) {
+		if why := reviewedCommitStays(fact, reviewer); why != "" {
+			e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: "+why,
+				"issue", issue.Key, "pull_request", pr.Number, "head", reviewer.Decision.Head, "footer_entry", fact.LegionEntry(), "entry", reviewer.Entry)
+		} else {
+			reviewer.ReviewedHead = reviewer.Decision.Head
 		}
 	}
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
@@ -635,6 +612,38 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	}
 	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
 	return intake.Result{}, err
+}
+
+// reviewedCommitStays is why review, a deciding review of the reviewer's own session (byReviewer)
+// that its round has just taken, leaves the commit the reviewer read where it stands
+// (record.PhaseRow.ReviewedHead), reviewer being the reviewer's row, and "" where the review moves
+// it to the head its footer names. That head is never empty here: the round took the review, so
+// RefusesRound gave no reason for it, and it refuses a review-App review whose footer names no
+// head (refusesRound).
+//
+// A review moves the commit only when it is of the entry that stands. The reviewer's row holds the
+// task of an entry, which a new generation's clear empties until the next entry is raised
+// (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review's footer names that
+// entry (intake.PullRequestReview.LegionEntry), the number every task the reviewer is given in
+// reviewing ends with (ReviewEntryLabel). The number is never reset and each entry raises it, so a
+// review of an earlier entry - submitted before a re-admission and applied after it, however
+// late, or before a carried hand-over's promotion and applied after it - names a number the row
+// has left and moves nothing, and the first review of a new generation reads the whole change. No
+// time is compared: a review's submission time is GitHub's clock and an entry's is the daemon's,
+// and nothing orders the two. A row that the entry upgrade filled (20261111225552_phase_entry) can
+// hold no task, and a review of that round moves nothing. Where the commit stays, the cost is a
+// next round that reads more: from an older commit, or the whole change. Who decides the round is
+// not changed by any of this.
+func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseRow) string {
+	switch named := review.LegionEntry(); {
+	case reviewer.EntryTask == "":
+		return "the reviewer's row holds no entry's task"
+	case named == 0:
+		return "its footer names no entry"
+	case named != reviewer.Entry:
+		return fmt.Sprintf("its footer names entry %d and the reviewer's row stands at entry %d", named, reviewer.Entry)
+	}
+	return ""
 }
 
 // reviewHead is the head review read, which is the head its decision is recorded against and the

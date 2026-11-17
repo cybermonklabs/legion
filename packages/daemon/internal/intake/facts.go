@@ -701,7 +701,7 @@ func (r PullRequestReview) LegionEntry() int64 {
 		}
 	}
 	entry, err := strconv.ParseUint(digits, 10, 64)
-	if err != nil || entry == 0 || entry > math.MaxInt64 {
+	if err != nil || entry > math.MaxInt64 {
 		return 0
 	}
 	return int64(entry)
