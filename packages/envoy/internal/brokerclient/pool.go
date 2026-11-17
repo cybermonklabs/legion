@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -69,9 +70,23 @@ type PoolIdentity struct {
 	HTTP *http.Client
 }
 
+// Describe names the identity in every trade log line and error, by what its settings are where
+// they are plainly that, and by the variable that names them otherwise: the token audience as
+// internal/redact's allow-list prints a URL, beside MachineAudienceVar; the pool audience whole
+// where it is a workload identity pool provider's resource name (poolProvider), else by
+// PoolAudienceVar alone, since it is no http URL the allow-list could print; and the account as
+// written, a label. A setting is where a person who pasted a credential in the wrong place puts it.
 func (p *PoolIdentity) Describe() string {
-	return "a Google identity token for " + p.TokenAudience + " minted through the workload identity pool " + p.Audience + " as " + p.ServiceAccount
+	pool := "that " + PoolAudienceVar + " names"
+	if poolProvider.MatchString(p.Audience) {
+		pool = p.Audience + " (" + PoolAudienceVar + " names it)"
+	}
+	return "a Google identity token for " + redact.URL(p.TokenAudience) + " (" + MachineAudienceVar + " names the audience) minted through the workload identity pool " + pool + " as " + p.ServiceAccount
 }
+
+// poolProvider is a workload identity pool provider's full resource name, as Google spells it:
+// the one shape of AGENT_SECRETS_POOL_AUDIENCE Describe prints.
+var poolProvider = regexp.MustCompile(`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+$`)
 
 // Token trades the external credential for a federated access token and spends it on one
 // generateIdToken, answering the identity token that mint produced. Every error names the call
