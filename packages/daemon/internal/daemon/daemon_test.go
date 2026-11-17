@@ -1376,7 +1376,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 			}
 		})
 	})
-	github := newBranchGitHub(t, nil, branchCreated)
+	github := workflowBranchGitHub(t, branchCreated)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

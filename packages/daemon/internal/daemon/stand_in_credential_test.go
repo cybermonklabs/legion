@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 // fromTheDaemon reports whether r carries bearer, the credential the daemon under test presents to
@@ -42,28 +42,47 @@ func dispatchBoard(t *testing.T, handler http.HandlerFunc) string {
 	return server.URL
 }
 
+// workflowBranchGitHub is newBranchGitHub for a daemon whose GitHub App leases a
+// workflowTokenRecorder mints: it serves each request that carries their token (workflowAppToken)
+// and answers any other request 404 (fromTheDaemon), so it records no read or create of another
+// process's.
+func workflowBranchGitHub(t *testing.T, answer func() (int, string)) *branchGitHub {
+	t.Helper()
+	g := &branchGitHub{answer: answer, defaultBranch: "main"}
+	handle := g.handle(t, nil)
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if fromTheDaemon(t, w, r, workflowAppToken) {
+			handle(w, r)
+		}
+	}})
+	return g
+}
+
 // A stand-in that holds the daemon to its requests answers a stranger's request 404, fails
 // nothing, and counts nothing of it, in each form the request takes: with no credential, with
-// another process's bearer, with the daemon's token under another scheme, and with more after the
-// daemon's token. A Dispatch board (dispatchBoard) does not reach its handler. The dequeue rig's
-// GitHub takes no hold of a held read and counts no read of the pull request or of its reviews,
-// the counts TestADequeuedPullRequestReachesItsMerger reads. Its Envoy listener counts no refusal
-// on a merger's topic no session holds and delivers nothing on one a session holds. The first
-// row's request is the one a helper of the machine sent to a reused port: a read of its metadata
-// server's identity token. The daemon's own credential, sent last, is served and counted, so each
-// count can move.
+// another process's bearer, with the daemon's token under another scheme, with more after the
+// daemon's token, and with a prefix of it. A Dispatch board (dispatchBoard) does not reach its
+// handler. The dequeue rig's GitHub takes no hold of a held read and counts no read of the pull
+// request or of its reviews, the counts TestADequeuedPullRequestReachesItsMerger reads. Its Envoy
+// listener counts no refusal on a merger's topic no session holds and delivers nothing on one a
+// session holds. The moved issue's GitHub (workflowBranchGitHub) records no create of a branch,
+// the record TestAnIssueMovedWhileBootListsIsStillAdmitted reads. The first row's request is the
+// one a helper of the machine sent to a reused port: a read of its metadata server's identity
+// token. The daemon's own credential, sent last, is served and counted, so each count can move.
 func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 	var reached atomic.Int64
 	board := dispatchBoard(t, func(http.ResponseWriter, *http.Request) { reached.Add(1) })
 	github := newDequeueGitHub(t)
 	issue := dequeueIssue{key: "ACME-1", number: 301, head: dequeueHead(301)}
 	github.serve(issue)
-	t.Cleanup(github.holdRead(issue.number))
+	release := github.holdRead(issue.number)
+	t.Cleanup(release)
 	var cfg config.Config
 	listener := newDequeueListener(t, &cfg)
 	const unheld, held = "notifications.legion.ACME.role.merger-1", "notifications.legion.ACME.role.merger-2"
 	listener.unheld(unheld)
 	listener.holds(held)
+	branches := workflowBranchGitHub(t, branchCreated)
 	pull := github.url + "/repos/" + startedAgainRepo + "/pulls/301"
 
 	type stand struct{ name, token, method, url, body string }
@@ -74,6 +93,8 @@ func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 		cfg.EnvoyURL + "/v1/messages/publish", `{"topic":"` + unheld + `","message":"m"}`}
 	delivery := stand{"the dequeue rig's Envoy listener on a held merger's topic", dequeueEnvoyToken, http.MethodPost,
 		cfg.EnvoyURL + "/v1/messages/publish", `{"topic":"` + held + `","message":"m"}`}
+	branch := stand{"the moved issue's GitHub at a create of its branch", workflowAppToken, http.MethodPost,
+		branches.url + "/repos/acme/widgets/git/refs", `{"ref":"refs/heads/legion/ACME-1","sha":"` + branchBaseCommit + `"}`}
 	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(t *testing.T, s stand, authorization string) int {
 		t.Helper()
@@ -92,12 +113,13 @@ func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 		return response.StatusCode
 	}
 
-	for _, s := range []stand{dispatch, heldRead, reviews, refusal, delivery} {
+	for _, s := range []stand{dispatch, heldRead, reviews, refusal, delivery, branch} {
 		for _, stranger := range []struct{ name, authorization string }{
 			{"with no credential", ""},
 			{"with another process's bearer", "Bearer another-process-token-not-a-secret"},
 			{"with the daemon's token under another scheme", "token " + s.token},
-			{"with more after the daemon's token", "Bearer " + s.token + "-read"},
+			{"with more after the daemon's token", "Bearer " + s.token + "-x"},
+			{"with a prefix of the daemon's token", "Bearer " + s.token[:len(s.token)-1]},
 		} {
 			t.Run(s.name+" "+stranger.name, func(t *testing.T) {
 				if status := send(t, s, stranger.authorization); status != http.StatusNotFound {
@@ -106,23 +128,39 @@ func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 			})
 		}
 	}
-	// counts is what each stand-in has counted: the board's handler calls, GitHub's reads, review
-	// reads and held reads of the pull request and whether its hold is still set, and the
-	// listener's refusals on the unheld topic and deliveries on the held one.
-	counts := func() string {
+	type counted struct {
+		handler, reads, reviewReads, heldReads int
+		holdSet                                bool
+		refusals, deliveries, creates          int
+	}
+	counts := func() counted {
 		github.mu.Lock()
 		p := github.pulls[issue.number]
-		read := fmt.Sprintf("handler %d, reads %d, review reads %d, held reads %d, hold set %t", reached.Load(), p.reads, p.reviewReads, p.heldReads, p.hold != nil)
+		c := counted{handler: int(reached.Load()), reads: p.reads, reviewReads: p.reviewReads, heldReads: p.heldReads, holdSet: p.hold != nil}
 		github.mu.Unlock()
-		return fmt.Sprintf("%s, refusals %d, deliveries %d", read, listener.refused(unheld), len(listener.accepted(held)))
+		c.refusals, c.deliveries, c.creates = listener.refused(unheld), len(listener.accepted(held)), len(branches.created())
+		return c
 	}
-	if got, want := counts(), "handler 0, reads 0, review reads 0, held reads 0, hold set true, refusals 0, deliveries 0"; got != want {
-		t.Errorf("after the strangers' requests the stand-ins counted %s, want %s", got, want)
+	if got, want := counts(), (counted{holdSet: true}); got != want {
+		t.Errorf("after the strangers' requests the stand-ins counted %+v, want %+v", got, want)
 	}
-	for _, s := range []stand{dispatch, reviews, refusal, delivery} {
+	for _, s := range []stand{dispatch, reviews, refusal, delivery, branch} {
 		send(t, s, "Bearer "+s.token)
 	}
-	if got, want := counts(), "handler 1, reads 0, review reads 1, held reads 0, hold set true, refusals 1, deliveries 1"; got != want {
-		t.Errorf("after the daemon's own requests the stand-ins counted %s, want %s", got, want)
+	// The daemon's own read of the held pull request waits for the hold, which is released once it
+	// holds the read.
+	go func() {
+		for github.heldReads(issue.number) == 0 {
+			select {
+			case <-t.Context().Done():
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		release()
+	}()
+	send(t, heldRead, "Bearer "+heldRead.token)
+	if got, want := counts(), (counted{handler: 1, reads: 1, reviewReads: 1, heldReads: 1, refusals: 1, deliveries: 1, creates: 1}); got != want {
+		t.Errorf("after the daemon's own requests the stand-ins counted %+v, want %+v", got, want)
 	}
 }
