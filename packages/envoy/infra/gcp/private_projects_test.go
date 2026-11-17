@@ -144,6 +144,9 @@ func requirePrivateProjectsRefusal(t *testing.T, row privateProjectsRefusal, err
 //   - Let a private clustered hub open its monitoring port: delete gcp/clusteredhub.go's refusal
 //     of monitorNamespaces beside privateProjects. The monitorNamespaces row fails with
 //     "privateProjects was taken beside the monitoring port open to the namespace "legion"".
+//   - Let a private VM hub open its monitoring port to IAP: delete gcp/natshub.go's refusal of
+//     monitorThroughIap beside privateProjects. The monitorThroughIap row fails with
+//     "privateProjects was taken beside the monitoring port open to IAP's TCP forwarding".
 func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		for _, row := range privateProjectsRefusals() {
@@ -156,6 +159,21 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 				require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
 			})
 		}
+		// The same port, through an IAP tunnel, answers every principal IAM lets open one to the
+		// VM, so a private VM hub opens it to none.
+		t.Run("beside monitorThroughIap", func(t *testing.T) {
+			args := privateNatsHub()
+			args.MonitorThroughIap = true
+			const want = `monitorThroughIap and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication`
+			err := gcp.ResolveNatsHub(args)
+			require.ErrorContains(t, err, want, "privateProjects was taken beside the monitoring port open to IAP's TCP forwarding")
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "monitorThroughIap", input.Input, "%v", err)
+			m, err := run(t, args, nil, true)
+			require.ErrorContains(t, err, want)
+			require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
+		})
 		t.Run("with authCallout and the service's user alone, it registers", func(t *testing.T) {
 			require.NoError(t, gcp.ResolveNatsHub(privateNatsHub()))
 			m, err := run(t, privateNatsHub(), nil, true)

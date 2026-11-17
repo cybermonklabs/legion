@@ -83,7 +83,7 @@ func TestSchemaTypes(t *testing.T) {
 		"envoy-infra:host:Watchdog", "envoy-infra:host:Adopt",
 		"envoy-infra:aws:Authorization", "envoy-infra:aws:User", "envoy-infra:nats:Rules", "envoy-infra:nats:AuthCallout",
 		"envoy-infra:gcp:NatsUser", "envoy-infra:gcp:Permissions", "envoy-infra:gcp:HubListener", "envoy-infra:gcp:SessionUser",
-		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener",
+		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener", "envoy-infra:gcp:ClusteredHubRouteAuthorization",
 	}, slices.Collect(maps.Keys(s.Types)))
 	// One callout type for every NATS component, the AWS one's authorization and the hubs', so a
 	// consumer running both writes it alike; core refuses a callout without its issuer, its xkey or
@@ -113,7 +113,7 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"users", "tailnetAuthKey", "hostname", "tailnetDnsName", "tags", "zone", "machineType", "diskType",
 		"diskSizeGb", "natsImage", "tailscaleImage", "network", "subnetwork", "listener", "sessionUser",
-		"authCallout", "privateProjects",
+		"authCallout", "privateProjects", "monitorThroughIap",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{"tailnetAuthKey", "hostname", "tags", "zone", "natsImage", "tailscaleImage"},
 		hub.RequiredInputs)
@@ -125,6 +125,7 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.Equal(t, "#/types/envoy-infra:gcp:SessionUser", hub.InputProperties["sessionUser"].Ref)
 	require.Equal(t, "#/types/envoy-infra:nats:AuthCallout", hub.InputProperties["authCallout"].Ref)
 	require.Equal(t, "boolean", hub.InputProperties["privateProjects"].Type)
+	require.Equal(t, "boolean", hub.InputProperties["monitorThroughIap"].Type)
 	// The listener's whole property set is pinned, not its required inputs alone, so a property
 	// added to it cannot stay invisible here.
 	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey", "allowedHosts", "agentSecretsUrl", "agentSecretsAudience", "publicUrl"},
@@ -161,7 +162,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage",
 		"natsReplicas", "streamMaxBytes", "maxFileStoreGb", "diskSizeGb", "storageClassName", "natsCpu", "natsMemory",
 		"priorityClassName", "clientNamespaces", "monitorNamespaces", "metricsNamespaces", "users", "sessionUser",
-		"authCallout", "privateProjects", "tailnet", "tailnetAuthKey",
+		"authCallout", "privateProjects", "routeAuthorization", "tailnet", "tailnetAuthKey",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage", "clientNamespaces",
@@ -189,6 +190,15 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.ElementsMatch(t, []string{"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "allowedHosts", "cpu", "memory"},
 		slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	// The route credential is a Secret's name and key, never a value, so no property of it is a
+	// secret and the schema holds no password field.
+	require.Equal(t, "#/types/envoy-infra:gcp:ClusteredHubRouteAuthorization", hub.InputProperties["routeAuthorization"].Ref)
+	route := s.Types["envoy-infra:gcp:ClusteredHubRouteAuthorization"]
+	require.ElementsMatch(t, []string{"secretName", "secretKey", "stage"}, slices.Collect(maps.Keys(route.Properties)))
+	require.ElementsMatch(t, []string{"secretName", "secretKey", "stage"}, route.Required)
+	for name, in := range route.Properties {
+		require.False(t, in.Secret, "routeAuthorization.%s is no secret", name)
+	}
 
 	require.ElementsMatch(t, []string{"serviceUrl", "podSelector", "statefulSetName", "tailnetNatsUrl", "tailnetEnvoyUrl"},
 		slices.Collect(maps.Keys(hub.Properties)))

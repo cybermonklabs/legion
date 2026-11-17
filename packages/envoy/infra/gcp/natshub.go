@@ -109,6 +109,11 @@ var (
 // healthCheckRanges are the source ranges of Google Cloud's health checks.
 var healthCheckRanges = []string{"130.211.0.0/22", "35.191.0.0/16"}
 
+// iapTunnelRange is the source range of Identity-Aware Proxy's TCP forwarding
+// (https://cloud.google.com/iap/docs/using-tcp-forwarding), which monitorThroughIap admits to the
+// monitoring port.
+const iapTunnelRange = "35.235.240.0/20"
+
 // NatsHubArgs are the inputs of an envoy-infra:gcp:NatsHub.
 type NatsHubArgs struct {
 	Users          []NATSUserArgs     `pulumi:"users,optional"` // see authorization for what may be empty
@@ -141,6 +146,13 @@ type NatsHubArgs struct {
 	// The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862): it needs
 	// authCallout and no user but authCallout.serviceUser, so no session user and no listener.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
+	// IAP TCP forwarding reaches NATS's monitoring port, 8222: a firewall rule admits
+	// iapTunnelRange to it on the VM's own service account alone, and the VM's host firewall
+	// admits the range to it, beside the health checks. Who may open a tunnel is IAM's, which the
+	// consumer grants: the component grants no one. Refused beside privateProjects
+	// (monitorBesidePrivateProjects's reason). Unset, the VM's user data is as before this input
+	// existed. A change of it rewrites the user data, so the group replaces the VM.
+	MonitorThroughIap bool `pulumi:"monitorThroughIap,optional"`
 }
 
 // NATSUserArgs are one nkey user of the hub. Exactly one of machineId, listenerMachineId,
@@ -309,6 +321,9 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	if args.Listener != nil && args.AuthCallout != nil {
 		return settings{}, listenerBesideCallout("listener")
 	}
+	if args.PrivateProjects && args.MonitorThroughIap {
+		return settings{}, iapMonitorBesidePrivateProjects()
+	}
 	var hubListener *listenerUser
 	if args.Listener != nil {
 		hubListener = &listenerUser{machineID: args.Hostname, nkey: args.Listener.NKey}
@@ -328,6 +343,7 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 		natsImage:      args.NatsImage,
 		tailscaleImage: args.TailscaleImage,
 		natsConf:       conf,
+		iapMonitor:     args.MonitorThroughIap,
 	}
 	if s.vm.listener, err = resolveListener(args); err != nil {
 		return settings{}, err
@@ -336,6 +352,16 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 		return settings{}, fmt.Errorf("render the cloud-config: %w", err)
 	}
 	return s, nil
+}
+
+// iapMonitorBesidePrivateProjects refuses monitorThroughIap beside privateProjects, for the reason
+// gcp:ClusteredNatsHub refuses monitorNamespaces there (monitorBesidePrivateProjects): nats-server's
+// monitoring port answers /connz, /subsz and /jsz with no authentication, and through the tunnel it
+// answers every principal IAM lets open one to the VM, which the component cannot see or bound.
+func iapMonitorBesidePrivateProjects() error {
+	return core.InputErrorf("monitorThroughIap", "monitorThroughIap and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication, "+
+		"naming the subjects, connections and consumers of every client, a private project's among them, to every principal IAM lets open an IAP tunnel to the hub's VM; "+
+		"leave monitorThroughIap unset beside privateProjects: the health checks read the port from their own ranges, which need no tunnel")
 }
 
 // resolveListener checks the hub's listener input and returns the listener it gives, or nil for a
@@ -655,7 +681,8 @@ func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserAr
 
 // NewNatsHub registers a hub: its service account, the secret holding the tailnet auth key and
 // the account's access to it, a network unless the consumer names one, the firewall rule letting
-// Google's health checks reach NATS's monitoring port, the health check, the VM's template and its
+// Google's health checks reach NATS's monitoring port, with monitorThroughIap the rule letting IAP
+// TCP forwarding reach it on the hub's own account, the health check, the VM's template and its
 // group of one. It refuses invalid inputs and a missing gcp provider before it registers anything.
 //
 // Each child's logical name starts with the hostname rather than the component's name: GCP names
@@ -752,6 +779,23 @@ func NewNatsHub(ctx *pulumi.Context, name string, args *NatsHubArgs, opts ...pul
 		TargetTags:   pulumi.StringArray{pulumi.String(hubName)},
 	}, child); err != nil {
 		return nil, err
+	}
+	// IAP TCP forwarding's range, on the monitoring port alone, to the instances that run as the
+	// hub's own account, the one the component creates and attaches to this hub's template: only a
+	// principal that may act as that account can start another VM the rule reaches, where a
+	// network tag is any VM creator's to set. The health checks' rule above stays as it is.
+	if args.MonitorThroughIap {
+		if _, err := compute.NewFirewall(ctx, hostname+"-iap-monitor", &compute.FirewallArgs{
+			Network: network,
+			Allows: compute.FirewallAllowArray{compute.FirewallAllowArgs{
+				Protocol: pulumi.String("tcp"),
+				Ports:    pulumi.StringArray{pulumi.String(strconv.Itoa(monitorPort))},
+			}},
+			SourceRanges:          pulumi.StringArray{pulumi.String(iapTunnelRange)},
+			TargetServiceAccounts: pulumi.StringArray{account.Email},
+		}, child); err != nil {
+			return nil, err
+		}
 	}
 
 	health, err := compute.NewHealthCheck(ctx, hostname+"-healthz", &compute.HealthCheckArgs{

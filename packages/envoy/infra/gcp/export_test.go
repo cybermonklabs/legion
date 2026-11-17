@@ -44,6 +44,9 @@ type ClusteredNatsHubSettings struct {
 	AuthConf                                 string
 	PodSelector                              map[string]string
 	Tailnet                                  *ClusteredHubTailnetSettings
+	// RouteSecretName, RouteSecretKey and RouteStage are routeAuthorization's, all empty without
+	// it.
+	RouteSecretName, RouteSecretKey, RouteStage string
 }
 
 // ClusteredHubTailnetSettings is the resolved tailnet entry, its listener's environment included.
@@ -86,8 +89,14 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 			ListenerEnv: l.env, TailnetNatsURL: t.natsURL, TailnetEnvoyURL: t.envoyURL,
 		}
 	}
+	if r := s.route; r != nil {
+		settings.RouteSecretName, settings.RouteSecretKey, settings.RouteStage = r.secretName, r.secretKey, clusteredHubRouteStages[r.stage]
+	}
 	return settings, nil
 }
+
+// ClusteredHubRouteStages are routeAuthorization.stage's names, in their order.
+var ClusteredHubRouteStages = clusteredHubRouteStages
 
 // RefuseClusteredHubSecret is gcp:ClusteredNatsHub's check of a secret Input once it resolves.
 var RefuseClusteredHubSecret = refuseClusteredHubSecret

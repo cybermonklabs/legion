@@ -191,11 +191,26 @@ func renderClusteredHubArgs(t *testing.T, keys liveHubKeys, args *gcp.ClusteredN
 	archive := filepath.Join("testdata", chart.Inputs["chart"].StringValue()+"-"+chart.Inputs["version"].StringValue()+".tgz")
 	require.Equal(t, clusteredHubChartSHA256, fileSHA256(t, archive), "%s is the archive the chart index publishes", archive)
 
+	r := &clusteredHubRender{
+		keys: keys, settings: settings, archive: archive, release: release, namespace: namespace,
+		manifests: helmTemplate(t, archive, release, namespace, chartValues(t, m)),
+	}
+	data := r.one(t, "ConfigMap", release+"-config")["data"].(map[string]any)
+	r.natsConf, r.authConf = data["nats.conf"].(string), data[clusteredHubAuthConfKey].(string)
+	t.Logf("%s rendered release %s in namespace %s from %s (sha256 %s) with the values of the hub's chart registration: %d manifests",
+		helmTool, release, namespace, archive, clusteredHubChartSHA256, len(r.manifests))
+	return r
+}
+
+// helmTemplate is helm template's manifests of the chart archive under release name release in
+// namespace, from values, with helm at helmTool's version installed into a directory of its own.
+func helmTemplate(t *testing.T, archive, release, namespace string, values any) []map[string]any {
+	t.Helper()
 	dir := t.TempDir()
-	values, err := json.Marshal(chartValues(t, m))
+	encoded, err := json.Marshal(values)
 	require.NoError(t, err)
 	valuesFile := filepath.Join(dir, "values.json")
-	require.NoError(t, os.WriteFile(valuesFile, values, 0o600))
+	require.NoError(t, os.WriteFile(valuesFile, encoded, 0o600))
 	helm, err := installTool(dir, helmTool, "helm")
 	require.NoError(t, err)
 	home := filepath.Join(dir, "helm-home")
@@ -205,16 +220,7 @@ func renderClusteredHubArgs(t *testing.T, keys liveHubKeys, args *gcp.ClusteredN
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	require.NoError(t, err, "helm template: %s", stderr.String())
-
-	r := &clusteredHubRender{
-		keys: keys, settings: settings, archive: archive, release: release, namespace: namespace,
-		manifests: decodeManifests(t, out),
-	}
-	data := r.one(t, "ConfigMap", release+"-config")["data"].(map[string]any)
-	r.natsConf, r.authConf = data["nats.conf"].(string), data[clusteredHubAuthConfKey].(string)
-	t.Logf("%s rendered release %s in namespace %s from %s (sha256 %s) with the values of the hub's chart registration: %d manifests",
-		helmTool, release, namespace, archive, clusteredHubChartSHA256, len(r.manifests))
-	return r
+	return decodeManifests(t, out)
 }
 
 // clusteredHubAuthConfKey is the ConfigMap key holding the users' authorization, which nats.conf

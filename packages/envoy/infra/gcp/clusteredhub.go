@@ -174,6 +174,11 @@ type ClusteredNatsHubArgs struct {
 	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
 	// The deployment may make a Dispatch project private, as gcp:NatsHub's privateProjects.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
+	// The credential the hub's servers present to one another on their routes, from a Kubernetes
+	// Secret the component names by reference and never reads, and how far the hub requires it
+	// (clusteredHubRoute). Unset, routes carry no credential and any server that reaches the route
+	// port joins the cluster, as before this input existed.
+	RouteAuthorization *ClusteredHubRouteAuthorizationArgs `pulumi:"routeAuthorization,optional"`
 	// The hub's tailnet entry: a Tailscale Service serving NATS and the session listener.
 	Tailnet *ClusteredHubTailnetArgs `pulumi:"tailnet,optional"`
 	// The tailnet auth key the tailnet hosts join with: required with tailnet, refused without.
@@ -225,6 +230,27 @@ func (l *ClusteredHubListenerArgs) Annotate(a infer.Annotator) {
 	a.SetToken("gcp", "ClusteredHubListener")
 }
 
+// ClusteredHubRouteAuthorizationArgs are the route credential of the hub's servers: the existing
+// Kubernetes Secret in the hub's namespace, and the key in it, holding the route password, which
+// the component names by reference (a secretKeyRef) and never reads, and the stage of its rollout,
+// env, routes or authorization, each one apply after the one before has finished
+// (clusteredHubRouteStages says what each renders and why the order holds). The password is
+// written into the route URLs whole, and nats-server types a variable's value as it types a
+// literal of nats.conf, so a password of digits alone is an integer it refuses and one such as 1k
+// is a size: the password holds letters and digits only, a letter first. The component never sees
+// it, so its minter holds it to that.
+type ClusteredHubRouteAuthorizationArgs struct {
+	SecretName string `pulumi:"secretName"`
+	SecretKey  string `pulumi:"secretKey"`
+	Stage      string `pulumi:"stage"`
+}
+
+// Annotate names the type gcp:ClusteredHubRouteAuthorization in the schema, for the reason
+// NATSUserArgs's gives.
+func (r *ClusteredHubRouteAuthorizationArgs) Annotate(a infer.Annotator) {
+	a.SetToken("gcp", "ClusteredHubRouteAuthorization")
+}
+
 // ClusteredNatsHub is NATS with JetStream as a three-server cluster on a Kubernetes cluster, with
 // an optional tailnet entry.
 type ClusteredNatsHub struct {
@@ -262,7 +288,9 @@ type clusteredHubSettings struct {
 	// ping lines (core.Authorization.CalloutLines), "" without authCallout: the hub pods'
 	// auth-callout annotation, which rolls them when it changes (clusteredHubAuthCalloutAnnotation).
 	calloutDigest string
-	tailnet       *clusteredHubTailnet
+	// route is the resolved route credential, nil without routeAuthorization.
+	route   *clusteredHubRoute
+	tailnet *clusteredHubTailnet
 }
 
 // clusteredHubSize is each hub pod's volume, JetStream's file store within it, nats-server's
@@ -270,6 +298,13 @@ type clusteredHubSettings struct {
 type clusteredHubSize struct {
 	diskSizeGb, maxFileStoreGb      int
 	natsCPU, natsMemory, goMemLimit string
+}
+
+// clusteredHubRoute is the resolved routeAuthorization: the Secret and key the nats container's
+// route password comes from, and the stage the rendering has reached.
+type clusteredHubRoute struct {
+	secretName, secretKey string
+	stage                 clusteredHubRouteStage
 }
 
 // clusteredHubTailnet is the resolved tailnet entry, nil without tailnet.
@@ -328,6 +363,10 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 				fields = append(fields, field{fmt.Sprintf("users[%d].%s", i, kind.input), *kind.id})
 			}
 		}
+	}
+	if r := args.RouteAuthorization; r != nil {
+		fields = append(fields, field{"routeAuthorization.secretName", r.SecretName},
+			field{"routeAuthorization.secretKey", r.SecretKey}, field{"routeAuthorization.stage", r.Stage})
 	}
 	if t := args.Tailnet; t != nil {
 		fields = append(fields, field{"tailnet.serviceName", t.ServiceName}, field{"tailnet.tailnetDnsName", t.TailnetDnsName},
@@ -432,6 +471,9 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	}
 	if args.PrivateProjects && len(s.monitorNamespaces) > 0 {
 		return clusteredHubSettings{}, monitorBesidePrivateProjects(s.monitorNamespaces)
+	}
+	if s.route, err = newClusteredHubRoute(args.RouteAuthorization, s.namespace); err != nil {
+		return clusteredHubSettings{}, err
 	}
 	if args.AuthCallout != nil && args.Tailnet != nil && args.Tailnet.Listener != nil {
 		return clusteredHubSettings{}, listenerBesideCallout("tailnet.listener")
