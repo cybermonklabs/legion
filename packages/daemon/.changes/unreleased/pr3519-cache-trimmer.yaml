@@ -50,12 +50,13 @@ body: |-
   to 93% and 94%, 76 at 57 minutes (12.4 GiB an hour); with pauses and starts of 86%, 91% to 94%
   and 96% to 99%, two rise episodes a cycle, 86 at 101 minutes (8.5 GiB an hour); with no pause
   and starts of 85%, three of 90%, three of 95% and four of 100%, three rise episodes a cycle, 999
-  at 13 minutes (90.7 GiB an hour). Those fills need the volume back from 69.9% to their first
-  start within two minutes of the sweep that left it there, and their shortest cycles within one
-  minute, which costs more: 1,081 a day at a 12-minute cycle of the last fill (98.2 GiB an hour).
-  docs/kubernetes.md gives the rest of the figures. The switched-off notice is sent whatever the
-  bounds stand at. A rollback below this release has the operator delete the queued notices
-  first, as docs/kubernetes.md says.
+  at 13 minutes (90.7 GiB an hour). Those four cycles, of 35, 57, 101 and 13 minutes, need the
+  volume back from 69.9% to their first start within two minutes of the sweep that left it there,
+  where a longer cycle of the same fill is a longer wait, and back within one minute each is a
+  minute shorter and costs more: 1,081 a day at a 12-minute cycle of the last fill (98.2 GiB an
+  hour). docs/kubernetes.md gives the rest of the figures. The switched-off notice is sent
+  whatever the bounds stand at. A rollback below this release has the operator delete the queued
+  notices first, as docs/kubernetes.md says.
 
   A `worker-died` notice of the tree architect, and of a held phase, now names the pod's own end
   — `Evicted: The node was low on resource: ephemeral-storage. ...` above all — when the claim's

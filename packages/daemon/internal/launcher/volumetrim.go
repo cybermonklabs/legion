@@ -682,10 +682,11 @@ func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 }
 
 // riseAt reads a rise at start, the reading a sweep that reported started from, before that
-// sweep's report is made, so the report carries the episode its start raised. A sweep that sends
-// no report is not read, its start neither anchoring nor entering the two a rise reads: one that
-// ended at or below the low mark, since the trimmer brought that volume down, and one the settings
-// stopped (tick).
+// sweep's report is made, so the report carries the episode its start raised. Two sweeps are not
+// read, their start neither anchoring nor entering the two a rise reads: one that ended at or below
+// the low mark, since the trimmer brought that volume down, and one the settings stopped (tick).
+// Every other sweep is read before its report is made, so one whose report then panics, which
+// tick recovers and counts as a fault, has been read although it sends no report.
 //
 // A rise is read where the lower of the last two reported sweep starts, this one and the one
 // before it, stands five points or more above the episode's anchor. An episode that no rise
