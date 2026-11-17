@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -277,12 +278,28 @@ func (r specFormResult) refusing() []specFormFinding {
 }
 
 // unread is the record of what Dispatch could not read as it made the list of each document in
-// scope (specFormList.Unread), each version once.
+// scope (specFormList.Unread), each version once: the documents of one root share one record, so
+// a version is the same entry in each.
 func (r specFormResult) unread() []specFormUnread {
-	unread := []specFormUnread{}
+	type version struct {
+		artifactID string
+		version    int
+		orders     bool
+	}
+	var lists [][]specFormUnread
+	total := 0
 	for _, document := range r.documents {
-		for _, each := range document.list.Unread {
-			if document.inScope() && !slices.Contains(unread, each) {
+		if document.inScope() {
+			lists = append(lists, document.list.Unread)
+			total += len(document.list.Unread)
+		}
+	}
+	unread := make([]specFormUnread, 0, total) // an answer with no unread version answers [], not null
+	kept := make(map[version]bool, total)
+	for _, list := range lists {
+		for _, each := range list {
+			if key := (version{each.ArtifactID, each.Version, each.orders}); !kept[key] {
+				kept[key] = true
 				unread = append(unread, each)
 			}
 		}
@@ -1047,18 +1064,20 @@ func definitionJoins(ctx context.Context, q queryer, root string, roots []string
 		return joins, nil, nil
 	}
 	var (
-		ids      []string
-		versions []int
+		ids      = make([]string, 0, len(contested))
+		versions = make([]int, 0, len(contested))
 		moved    []string
 		unread   []specFormUnread
 	)
-	artifacts := map[string]model.Artifact{}
+	artifacts := make(map[string]model.Artifact, len(contested))
+	queued := make(map[string]bool, len(contested)) // each issue of moved once
 	for index := range contested {
 		document := documents[index]
 		ids = append(ids, document.artifact.ID)
 		versions = append(versions, document.version)
 		artifacts[document.artifact.ID] = document.artifact
-		if issue := *document.artifact.IssueKey; issue != root && !slices.Contains(moved, issue) {
+		if issue := *document.artifact.IssueKey; issue != root && !queued[issue] {
+			queued[issue] = true
 			moved = append(moved, issue)
 		}
 	}
@@ -1196,17 +1215,33 @@ func readParentHistory(ctx context.Context, q queryer, keys []string) (parentHis
 				history[key] = nil // no event: read, so no later step asks again
 			}
 		}
-		var next []string
-		for _, key := range keys {
-			for _, change := range history[key] {
-				if _, read := history[change.parent]; change.parent != "" && !read && !slices.Contains(next, change.parent) {
-					next = append(next, change.parent)
-				}
-			}
-		}
-		keys = next
+		keys = history.above(keys)
 	}
 	return history, nil
+}
+
+// above is each parent that the changes of the issues of keys name and that h does not hold yet,
+// once, in the order of keys and of their changes: the issues that the next step up reads.
+func (h parentHistory) above(keys []string) []string {
+	var next []string
+	queued := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		for _, change := range h[key] {
+			if _, read := h[change.parent]; change.parent != "" && !read && !queued[change.parent] {
+				queued[change.parent] = true
+				next = append(next, change.parent)
+			}
+		}
+	}
+	return next
+}
+
+// upTo is the changes of issue written at or before event. Each issue's changes are in the order
+// of their events, so a binary search finds them, and a walk back over the moves of an issue
+// (arrival) does work in proportion to its moves times their logarithm, not their square.
+func (h parentHistory) upTo(issue string, event int64) []parentChange {
+	changes := h[issue]
+	return changes[:sort.Search(len(changes), func(at int) bool { return changes[at].event > event })]
 }
 
 // parentAt is the parent of issue once the events up to event were written: the parent of its
@@ -1216,26 +1251,19 @@ func (h parentHistory) parentAt(issue string, event int64) string {
 	if len(changes) == 0 {
 		return ""
 	}
-	parent := changes[0].parent
-	for _, change := range changes {
-		if change.event > event {
-			break
-		}
-		parent = change.parent
+	if written := h.upTo(issue, event); len(written) > 0 {
+		return written[len(written)-1].parent
 	}
-	return parent
+	return changes[0].parent
 }
 
 // lastChange is the id of the last event at or before event that changed the parent of issue, 0
 // for none.
 func (h parentHistory) lastChange(issue string, event int64) int64 {
-	var last int64
-	for _, change := range h[issue] {
-		if change.event <= event {
-			last = change.event
-		}
+	if written := h.upTo(issue, event); len(written) > 0 {
+		return written[len(written)-1].event
 	}
-	return last
+	return 0
 }
 
 // pathTo is issue and each issue above it, up to the first named root of roots, once the events
