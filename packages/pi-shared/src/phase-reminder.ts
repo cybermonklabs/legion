@@ -253,9 +253,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * that completed its phase from the shell instead of the tool — and when the daemon has failed
    * this role's claim, which is the daemon's own word that this process is finished: a claim the
    * daemon failed runs no further turn in this process — its retry relaunches this session in a
-   * new process, or starts a new session where the retry asks for one, the provider refused this
-   * one out of its launch budget, or no session store holds it any more — and a reminder written
-   * now reaches nobody who can act on it. That is what stops Claude Code's reminder, which has no
+   * new process, or starts a new session once the daemon's `forgetSession` (its supervise package)
+   * has dropped this one — and a reminder written now reaches nobody who can act on it. That is
+   * what stops Claude Code's reminder, which has no
    * refused-turn settle of its own for a turn the provider never answered. Everything else fails
    * open and is logged at debug: an unreachable daemon is exactly when a stalled worker must still
    * be nudged.

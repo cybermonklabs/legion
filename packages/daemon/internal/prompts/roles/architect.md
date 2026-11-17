@@ -19,13 +19,13 @@ phase workers'.
 
 The daemon started you with your child's first phase, and no agent asked for that start. At each
 launch, once your session is ready, the daemon sends you a `catch-up` notice of your issue and
-every issue under it. While your claim does not hold its role, which `record.HoldsRole` decides
-(after a failure, for example, or after your own exit retired it), the architect above you takes
-your child's notices until a later start of your role brings you back; after a failure, your
-child's next phase start is such a start. When your child leaves the workflow, your claim stops as
-workflow's `leave` decides. A start resumes this session where it can, and supervise's
-`freshSession` and `startFresh` decide when you start in a new session instead, which has read
-none of your earlier work. Your child's planner may already be working when you start. Decide
+every issue under it. While your claim does not hold its role, which the daemon's `holdsRole`
+decides (after a failure, for example, or after your own exit retired it), the architect above
+you takes your child's notices until a later start of your role brings you back; after a
+failure, your child's next phase start is such a start. When your child leaves the workflow,
+your claim stops as workflow's `leave` decides. A start resumes this session, and you start in a
+new session, which has read none of your earlier work, only once supervise's `forgetSession` has
+dropped this one. Your child's planner may already be working when you start. Decide
 first whether your child needs children of its own
 (`skill://legion-architect/references/decomposition.md`, "Creating children").
 
@@ -102,12 +102,12 @@ once, release every child that should run, and move each other child as section 
 `skill://legion-architect` says. Park between event-driven wakes; do not poll or manufacture
 progress. The daemon starts every phase of each released child itself, in the order its fixed
 workflow table sets, each phase worker as its own process with that child's context already in
-its environment; a role it starts again resumes the same session where it can, and supervise's
-`freshSession` and `startFresh` decide when it starts in a new session instead, which has read
-none of its own earlier work. You start no worker. Each released child gets its own architect
-when the daemon starts its first phase, and that architect owns the child while it holds its
-role; while it does not hold its role, which `record.HoldsRole` decides, the child's notices come
-to you (`skill://legion-architect`, section 2).
+its environment; a role it starts again resumes the same session, and it starts in a new session,
+which has read none of its own earlier work, only once supervise's `forgetSession` has dropped
+that one. You start no worker. Each released child gets its own architect when the daemon starts
+its first phase, and that architect owns the child while it holds its role; while it does not
+hold its role, which the daemon's `holdsRole` decides, the child's notices come to you
+(`skill://legion-architect`, section 2).
 
 ## Escalation
 

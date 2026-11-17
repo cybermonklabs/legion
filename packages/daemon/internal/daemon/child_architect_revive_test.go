@@ -21,9 +21,9 @@ func holdsNotice(notices []record.Notice, kind record.NoticeKind, role claim.Rol
 }
 
 // A child's own architect whose claim fails is started again at the child's next phase start,
-// with fresh budgets and the session it had, unless the provider refused that session out of its
-// launch budget or no session store holds it any more (supervise's freshSession and startFresh;
-// this start asks for no new session). The child's architect is started by the child's first
+// with fresh budgets and the session it had, or a new one once supervise's Machine.forgetSession
+// has dropped that (this start asks for no new session). The child's architect is started by the
+// child's first
 // phase start and boots on its session; its process then dies and the runtime refuses its
 // relaunch, which spends its launch budget and fails the claim, and the machine reports the
 // failure through the daemon's terminal hook (workflowRuntime.terminal). The worker-died that

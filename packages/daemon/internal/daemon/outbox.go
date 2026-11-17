@@ -1939,9 +1939,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// (whose linger also removed the workspace), its agent reported its own exit (a phase
 			// worker or a child's own architect, which supervise's exit retires), or an operator
 			// stopped it. So the workspace is provisioned, which brings back one a linger removed,
-			// before the kept session relaunches (a new one where the start asks for one, the
-			// provider refused that session out of the claim's launch budget, or no session store
-			// holds it any more: supervise's freshSession and startFresh).
+			// before the kept session relaunches (a new one once supervise's Machine.forgetSession
+			// has dropped it).
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
 			}
@@ -2112,11 +2111,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	case "issue_close":
 		// A child's close as done: the claim is closed as a tree close closes it, retired with its
 		// session kept, since the issue is finished and its next run, should a person set it todo
-		// again, resumes that session on a pod and a disk of its own (a new one where the provider
-		// refused it out of the claim's launch budget or no session store holds it any more:
-		// supervise's RequestIssueClose). It is fenced as a suspend is, not as a tree close: no
-		// linger is involved, and a newer start means a person set the child todo again, whose run
-		// the close must not end.
+		// again, resumes that session on a pod and a disk of its own (a new one once supervise's
+		// Machine.forgetSession has dropped it). It is fenced as a suspend is, not as a tree
+		// close: no linger is involved, and a newer start means a person set the child todo again,
+		// whose run the close must not end.
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}

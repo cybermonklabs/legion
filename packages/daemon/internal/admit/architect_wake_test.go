@@ -672,10 +672,9 @@ func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.
 // lane that died mid-run leaves on the row until the outbox's sweep runs the row again, holds
 // nothing, as the store's own due predicate reads it (record.QueuedSupervise.Running). A queued
 // start is the daemon's own next move: the outbox's start of a failed or a retired claim
-// relaunches it, on its kept session unless the provider refused that session out of the claim's
-// launch budget or no session store holds it any more (supervise's freshSession and startFresh;
-// an architect's start asks for no new session), and a controller woken now would take
-// `fresh_session`, which discards that session. Every re-admission of a closed tree makes this
+// relaunches it, on its kept session, or a new one once supervise's Machine.forgetSession has
+// dropped that (an architect's start asks for no new session), and a controller woken now would
+// take `fresh_session`, which discards that session. Every re-admission of a closed tree makes this
 // shape: the linger's end retires the architect's claim, and the promotion queues the architect's
 // start in the same pass that reads the arms. A start in its run against the claim is still the
 // next move: the outbox records the start on the claim (claims.last_start_row) before it

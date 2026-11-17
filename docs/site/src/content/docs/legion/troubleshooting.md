@@ -640,9 +640,8 @@ stands:
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
   names the architect under `failed, retry`. Retry it, as [A tree does not move after a
   restart](#a-tree-does-not-move-after-a-restart) shows: the daemon relaunches it on the session
-  it kept where it can, with fresh budgets (supervise's `freshSession` and `startFresh` decide when
-  it starts a new session instead), and the tree carries on at the generation and phase it stands
-  at.
+  it kept, or on a new one once supervise's `forgetSession` has dropped that, with fresh budgets,
+  and the tree carries on at the generation and phase it stands at.
 - **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
   in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
   generation; a retry by hand would run it outside the admission cap, and it would be sent no
@@ -923,10 +922,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
 
-- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept where
-  it can, with fresh budgets (supervise's `freshSession` and `startFresh` decide when it starts a
-  new session instead), and sends it a catch-up of its tree once it is ready, so the tree carries
-  on at the generation and phase it stands at. The daemon drops every notice it could
+- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on
+  a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
+  catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
+  stands at. The daemon drops every notice it could
   not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
   among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
   architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
@@ -949,8 +948,7 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   it owns — its architect's `retry_or_escalate` of a held phase, a transition into that phase, or a
   tree close and re-admission — or, for an architect, a start of its issue's run: its tree's
   admission for a root's, its child's first phase start for a child's own. Each relaunches the
-  session it kept where it can (supervise's `freshSession` and `startFresh` decide when it starts a
-  new one).
+  session it kept, or a new one once supervise's `forgetSession` has dropped that.
 
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that

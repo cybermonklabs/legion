@@ -1370,10 +1370,10 @@ Once the roles have stopped, the daemon sets that issue's Sandbox to `Suspended`
 Then it deletes the Sandbox, whatever the close was:
 a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
 Sandbox and the role Secrets it owned` — the six role Secrets go with it by owner reference.
-An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded where it can (supervise's `freshSession` and `startFresh` decide when that role starts a new one, and `startFresh` reports the lost session, R8).
+An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
 The parent's Sandbox is another issue's and is never touched.
 A daemon restart retries the stored effect.
-Re-admission during linger makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions, except that a claim the provider refused out of its launch budget, or whose session no store holds any more, starts a new one;
+Re-admission during linger makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions, and a claim whose session supervise's `forgetSession` has dropped starts a new one;
 the issue pod's launch turn orders a concurrent resume after any suspension already in flight.
 
 Linger expiry reserves its tree only while the root still lingers at the close's generation, so a re-admission that committed first fences it;
@@ -5300,7 +5300,7 @@ From the wake to the woken role's first turn is 5 minutes or less for 90% of wak
 A release of a pod no claim owns suspends no claim, so it leaves no released claim and owes no wake.
 Its pod comes back at the next start of a claim of that issue, and that start builds the Sandbox, the pod and the workspace again.
 There are four such starts.
-An operator's `legion claims retry` of a failed claim resumes the role's recorded session from the session database where it can (supervise's `freshSession` and `startFresh` decide when it starts a new one).
+An operator's `legion claims retry` of a failed claim resumes the role's recorded session from the session database, or starts a new one once supervise's `forgetSession` has dropped it.
 The same retry with `--fresh-session` forgets that session first and starts a new one.
 A start the daemon queues for a phase worker itself does as the first does: a phase start, a backward move, a retry after the architect's `retry_or_escalate`, and that same retry made by a `todo` written on a held root, which releases the hold and starts the held phase's worker.
 A start the daemon queues for a child's own architect does as the first does too: the child's first phase start queues one, and each later phase start of the child queues one for an architect that failed, the move into `accepting` among them (`childArchitectStart` and `reviveArchitect`, `internal/workflow`).

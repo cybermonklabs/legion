@@ -690,9 +690,9 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	// Roles that finished earlier phases of the run stay in whatever state they stood in: this
 	// re-entry starts and stops none of them, so for a child that had left the workflow each is as
 	// workflow's leave and what came after it left it. The new run's starts hand each its task;
-	// whether a start brings a stopped claim back, and on which session, is supervise's to decide
-	// (its table, and freshSession and startFresh for the session). These starts ask for no new
-	// session themselves.
+	// whether a start brings a stopped claim back is supervise's table to decide, and a start
+	// resumes the recorded session, or a new one once supervise's Machine.forgetSession has dropped
+	// it. These starts ask for no new session themselves.
 	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
 	if err != nil {
 		return err
@@ -1633,10 +1633,9 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // for it. The start is the plain one (gateOpened's), with no task: the architect's catch-up at
 // its launch's ready tells it the child and every issue under it (claimReady). Starting a claim
 // that already exists resumes its session, so a child that comes back — a rerun, a person's move
-// back to todo — gets the architect that worked it before (in a new session where the provider
-// refused that one out of the claim's launch budget or no session store holds it any more:
-// supervise's freshSession and startFresh). A root's architect is admission's, started when its
-// tree was admitted, so a root's first phase starts no architect.
+// back to todo — gets the architect that worked it before (in a new session once supervise's
+// Machine.forgetSession has dropped the old one). A root's architect is admission's, started
+// when its tree was admitted, so a root's first phase starts no architect.
 //
 // It replaces the two doors that used to start a first phase themselves, the gate's opening
 // (advanceAdmittedTree) and a child's release (enterChild), which are gone. Neither could stay:

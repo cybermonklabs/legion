@@ -2840,6 +2840,14 @@ func (m *Machine) sessionGone() {
 // nothing of. The session is recorded as abandoned, with why it was, since nothing else keeps
 // where it went and the fresh agent is told of it in its first task.
 //
+// It is the one place a claim leaves its session behind, so every start, retry or resume of a
+// claim relaunches the session the claim records, and a claim starts in a new session only after
+// this ran. It has three callers: the launch's startFresh, for a session no store holds any more;
+// retry, when freshSession says the retry needs a new session; and the operator's forget-session
+// (forgetSession, the table's), which `legion claims retry --fresh-session` and the controller's
+// fresh_session run (api's freshSession). Every text that says which session a start uses names
+// this function rather than repeating these cases.
+//
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
 // abandoned session, it ends that record too: a record that still tells is marked told, by no

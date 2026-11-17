@@ -90,7 +90,7 @@ const (
 	subArchitectOwnership = "Its own architect starts with it and owns it while that architect holds its role: its " +
 		"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
 		"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
-		"record.HoldsRole decides"
+		"holdsRole decides"
 )
 
 // subArchitectLive is one run of the proof: the booted daemon, the one live tree it runs, the

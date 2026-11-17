@@ -89,14 +89,13 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // of them out. The state is not the end of the claim: the outbox's start executor provisions the
 // workspace for a retired claim and sends supervise.RequestRetry (the StateRetired branch in
 // internal/daemon/outbox.go), and RequestRetry's own row accepts StateRetired beside StateFailed
-// (internal/supervise/table.go), so the kept session relaunches with fresh budgets, unless the
-// start asks for a new one, the provider refused it out of the claim's launch budget, or no
-// session store holds it any more (supervise's freshSession and startFresh). What nothing
-// does by itself is queue that start: no rule the daemon runs starts a retired claim, the boot's
-// repair reads only a suspension, and the operator's retry, which reaches a retired claim as well
-// as a failed one, is a person's move, not a rule's (supervise.RequestOperatorRetry). So the rule
-// this report states is unchanged in meaning — a claim no queued start will reach — and what was
-// wrong was the states it read.
+// (internal/supervise/table.go), so the kept session relaunches with fresh budgets, or a new one
+// once supervise's Machine.forgetSession has dropped it. What nothing does by itself is queue that
+// start: no rule the daemon runs starts a retired claim this report names, the boot's repair reads
+// only a suspension, and the operator's retry, which reaches a retired claim as well as a failed
+// one, is a person's move, not a rule's (supervise.RequestOperatorRetry). So the rule this report
+// states is unchanged in meaning — a claim no queued start will reach — and what was wrong was the
+// states it read.
 //
 // Two shapes of retired worker reach the report through record.Issue.WorkingPhase. One is a
 // retired claim of the issue's own phase: the worker that left the phase it still owns. The
@@ -117,13 +116,13 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //
 // It names no other claim: a worker whose phase is not its own is started again when its phase
 // comes, and a tree that is not running runs nothing yet. Nor does it name a child's own
-// architect: while that claim does not hold its role (record.HoldsRole), the architect above it
-// takes the child's notices, and a later start of the role brings it back, as supervise's table
-// decides for the state it stands in. The workflow queues such a start itself at its child's
-// first phase start and, for a failed one, at each later phase start (StartFirstPhase,
-// reviveArchitect); others come from elsewhere, an operator's retry or the controller's
-// fresh_session among them. One that its own exit retired gets no worker-died, and nothing
-// reports it, this report included.
+// architect: while that claim does not hold its role (the daemon's holdsRole), the architect
+// above it takes the child's notices, and a later start of the role brings it back, as
+// supervise's table decides for the state it stands in. The workflow queues such a start itself
+// at its child's first phase start and, for a failed one, at each later phase start
+// (StartFirstPhase, reviveArchitect); others come from elsewhere, an operator's retry or the
+// controller's fresh_session among them. One that its own exit retired gets no worker-died, and
+// nothing reports it, this report included.
 // A tree that is not running is a lingering tree — a root that leaves the workflow, closed or
 // moved out by a person, always lingers first (leave) — whose members its re-admission starts
 // again, and a root that never ran, whose architect receives its first task only when the line

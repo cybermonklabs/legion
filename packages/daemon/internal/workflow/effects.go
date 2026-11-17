@@ -346,10 +346,9 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // claim failed and holds no start of it queued that the outbox will act on: a failed sub-architect
 // starts again at its child's next phase start (dispatch://INFRA-3915 R2), and until then its
 // child's notices go to the architect above it (record.OwningArchitect). The outbox's start
-// retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded
-// unless the provider refused that session out of its launch budget or no session store holds it
-// any more: then it starts a new session (supervise's freshSession and startFresh). This start
-// asks for no new session itself. A tree root's architect is admission's, started with its tree,
+// retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
+// or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
+// session itself. A tree root's architect is admission's, started with its tree,
 // so a root revives nothing here.
 //
 // The claim's state is read in the transaction, and no row carries a mark that asks for the
@@ -937,7 +936,7 @@ func ChildStartedNotice(child, root string, waited []string) record.Notice {
 	reason := fmt.Sprintf("%s starts planning under %s: %s. Its own architect starts with it and owns it while that architect "+
 		"holds its role: its decomposition, its children and its acceptance. You hear its child-status and child-closed "+
 		"notices, a worker-died or worker-stalled of its architect, and its other notices while its architect does not "+
-		"hold its role, which the daemon's record.HoldsRole decides", child, root, why)
+		"hold its role, which the daemon's holdsRole decides", child, root, why)
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }
 

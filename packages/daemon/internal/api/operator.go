@@ -46,10 +46,10 @@ type DeliverRequest struct {
 }
 
 // RetryRequest is the operator's retry, whose body is optional: a retry that sends none, as every
-// caller before this contract did, resumes the claim's recorded session where it can (supervise's
-// freshSession and startFresh decide when it starts a new one). FreshSession is `legion claims
-// retry --fresh-session`, which starts the claim in a new session instead. It is the one effect
-// the controller's fresh_session runs as well (freshSession), and it reaches every claim of the
+// caller before this contract did, resumes the claim's recorded session, or a new one once
+// supervise's Machine.forgetSession has dropped it. FreshSession is `legion claims retry
+// --fresh-session`, which starts the claim in a new session instead. It is the one effect the
+// controller's fresh_session runs as well (freshSession), and it reaches every claim of the
 // project that is not in a turn and whose launch is not in flight, where the plain retry reaches
 // only a failed or retired claim (supervise's onOperatorRetry row).
 type RetryRequest struct {
@@ -635,10 +635,10 @@ func forgettable(state supervise.ClaimState) bool {
 // when the body asks for a new session (RetryRequest), the fresh session the controller's
 // fresh_session runs too (freshSession). The two differ in what they reach and in what they
 // leave behind, and nothing else answers either: a plain retry acts on a failed or retired
-// claim, resuming the session it recorded where it can (supervise's freshSession and startFresh
-// decide when it starts a new one), while a fresh session reaches every claim of the project that
-// is not in a turn and whose launch is not in flight, and drops that session first. Only the fresh
-// session answers the claim with a phase restart that was refused named on it
+// claim, resuming the session it recorded, or a new one once supervise's Machine.forgetSession
+// has dropped it, while a fresh session reaches every claim of the project that is not in a turn
+// and whose launch is not in flight, and drops that session first. Only the fresh session answers
+// the claim with a phase restart that was refused named on it
 // (OperatorClaim.PhaseNotRestarted).
 func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
@@ -682,10 +682,9 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 // claims a runtime failed to launch — every failed claim in turn, with
 // `legion claims retry --failed` — once the cause is gone.
 //
-// The session is the claim's own either way: this start relaunches the recorded one where it can
-// (supervise's freshSession and startFresh decide when it starts a new one). A caller that wants a
-// new session forgets it before calling here (freshSession), which is also what reaches a claim
-// this start refuses.
+// The session is the claim's own either way: this start relaunches the recorded one, or a new one
+// once supervise's Machine.forgetSession has dropped it. A caller that wants a new session forgets
+// it before calling here (freshSession), which is also what reaches a claim this start refuses.
 func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
 	c := m.Claim()
 	if failedOrRetired(c.State) {
@@ -763,9 +762,9 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 }
 
 // machineRetry is the retry an architect or a phase worker that runs nothing gets from its own
-// machine: fresh budgets, and the session the claim records relaunched where it can (supervise's
-// freshSession and startFresh decide when it starts a new one). The machine refuses it for a claim
-// in any other state, naming that state, and for the daemon's controller, naming who retries it
+// machine: fresh budgets, and the session the claim records relaunched, or a new one once
+// supervise's Machine.forgetSession has dropped it. The machine refuses it for a claim in any
+// other state, naming that state, and for the daemon's controller, naming who retries it
 // (supervise's operatorRetry). A caller that asked for a new session has forgotten the recorded one
 // before it gets here (freshSession), so the relaunch spawns rather than resumes. A relaunch the
 // machine holds for the agent's turn answers 202, as every operator request on a claim answers one
