@@ -18,7 +18,13 @@ machine-code page, and `agent-secrets machine login` reaches no device authoriza
 which is not mounted at all. On such a machine a person runs `agent-secrets login` instead, which
 signs them in through Google and needs nobody to approve a code
 ([Concepts](/legion/broker/concepts/#sessions-and-enrollment)); the machine itself trades its own
-identity token and needs no login of this kind at all.
+identity token and needs no login of this kind at all. It needs no setting for that either, once
+the broker names its Google exchange audience in `GET /v1/settings` (only where
+`BROKER_VM_SERVICES` lists a machine): `agent-secrets NAME -- command` and
+`agent-secrets login` find a Compute Engine VM's metadata server or an
+`external_account` credential file by themselves, with nothing set but `AGENT_SECRETS_URL`, which
+a unit or a cron job may read from `~/.config/agent-secrets/config`
+([where a command takes its identity](/legion/broker/concepts/#where-a-command-takes-its-identity)).
 
 ## 1. Install and start the helper
 

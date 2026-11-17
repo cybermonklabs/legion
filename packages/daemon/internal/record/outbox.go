@@ -52,6 +52,9 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
+	// row (RoleHoldersPublish).
+	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
@@ -93,7 +96,7 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
@@ -1044,6 +1047,20 @@ type DesignGateDocument struct {
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
 
+// RoleHoldersPublish writes the session of each live Legion role of Issue onto the issue's
+// Dispatch row (PUT /api/v1/issues/{key}/role-holders), which Dispatch reads to take the role of a
+// result from the session that wrote it. The payload names the issue alone: the executor reads the
+// live set from the claims when the row runs (publishRoleHolders), so a row queued before a claim
+// ended sends the set without it, and two events of one issue never publish a stale set.
+//
+// The row waits on its issue's board lane among the issue's other Dispatch writes. The write
+// replaces the issue's whole set and tells nobody, so a set Dispatch already holds costs nothing.
+type RoleHoldersPublish struct {
+	Issue string `json:"issue"`
+}
+
+func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
+
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
 // the push that creates a branch of a large repository, where it takes a push that moves one. A
@@ -1416,6 +1433,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindRoleHoldersPublish:
+		value := RoleHoldersPublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1511,8 +1534,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Status == "" {
 			return fmt.Errorf("outbox status write has empty status")
 		}
-		if value.Reason != "" && value.Status != "done" {
-			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
+		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
+		// move's that nothing else on Dispatch explains (workflow's moveReason, a head that
+		// conflicts with its base). A hand-over, a re-assertion or a person's handover repeats or
+		// carries out a move whose cause is already on the issue, so it posts none.
+		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
+			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}
 	case MessagePost:
 		// Each is a refusal Dispatch would make of the upload on every run, or a link that would
@@ -1672,6 +1699,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 				return fmt.Errorf("a design-gates publish names the %s step twice", gate.Step)
 			}
 			named[gate.Step] = true
+		}
+	case RoleHoldersPublish:
+		if value.Issue == "" {
+			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
 		}
 	case CheckWakeDue:
 		if value.Look <= 0 {
