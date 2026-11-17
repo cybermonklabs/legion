@@ -17,7 +17,11 @@
  * fixture declares in `form`: most declare none, because a fixture holds the faults that no
  * program decides. A document out of scope also means that DISPATCH_SPEC_ROOTS did not reach the
  * server. A fixture that declares findings tests that the reviewer leaves them to Dispatch: a
- * finding of the reviewer at one of those texts fails the run.
+ * finding of the reviewer at one of those texts fails the run. The same answers say what the
+ * application's own reader read (its `nodes`, `definitions` and `terms`), and the command reads no
+ * text of a fixture itself: each planted and listed node must be a text that Dispatch read, each
+ * item at the node `terms` a term that the request defines, a planted undefined noun a term of
+ * neither the root's list nor the request, and any other noun that a fixture names a term of one.
  *
  * The agent reads the change request's own text and nothing else that tells its answer. In each
  * run each fixture gets an opaque handle, its place in a shuffle that a seed of the run decides.
@@ -148,11 +152,21 @@ export interface FormFinding {
   readonly node: string;
 }
 
-/** What formProblems reads of the server's answer to `GET /api/v1/artifacts/{id}/spec-form`. */
+/**
+ * What the evaluation reads of the server's answer to `GET /api/v1/artifacts/{id}/spec-form`: the
+ * scope and the findings (formProblems), and what the application's own reader read in the
+ * version (readingProblems): each text by its kind and its node, each term that the version
+ * defines, the root's list of terms, and each approved version under the root that Dispatch cannot
+ * read. The evaluation reads no text of a fixture itself.
+ */
 export interface FormRead {
   readonly in_scope: boolean;
   readonly scope: string;
   readonly findings: readonly FormFinding[] | null;
+  readonly nodes: readonly { readonly kind: string; readonly node: string }[] | null;
+  readonly definitions: readonly { readonly term: string }[] | null;
+  readonly terms: readonly { readonly term: string }[] | null;
+  readonly unread: readonly { readonly line: string }[] | null;
 }
 
 export interface Plan {
@@ -378,62 +392,58 @@ export function specFormCalled(stdout: string): boolean {
   return false;
 }
 
-/**
- * The ids of the requirement and check blocks of a document, and of its entry lines of the how-to
- * of The Spec (`- **<statement>** `<id>` · under: …`), in their order, as specform.ExtractDocument
- * reads them.
- */
-export function blockIds(markdown: string): string[] {
-  return [
-    ...markdown.matchAll(
-      /^(?::{3,}(?:requirement|check)\{#([^\s}]+)|\s*[-*+] \*\*.+?\*\* `([^`]+)` · under:)/gm
-    ),
-  ].map((match) => match[1] ?? match[2] ?? "");
+/** What the application's reader read in one seeded document of a fixture, by the document's name. */
+export interface DocumentRead {
+  readonly document: string;
+  readonly read: FormRead;
 }
 
 /**
- * The term names of the `- **term**: definition` lines under a heading `Terms`, with `-`, `*` or
- * `+`, read as specform.ExtractDocument reads them: the section ends at the next heading of its
- * level or above, and no line of a code fence counts, a heading among them. No line of a
- * requirement or a check block counts either: it runs to a line of at least as many colons alone,
- * and a term line in it adds no term. A line of another typed block counts as any other line.
+ * What is wrong with a fixture against what the application's own reader read in its documents
+ * (the `nodes`, `definitions`, `terms` and `unread` of each read): the evaluation takes the ids of
+ * the statements and the checks, and the names of the terms, from Dispatch, and reads no copy of
+ * the rules of the form. Each planted and listed node is a text that Dispatch read, and each item
+ * at the node `terms` is a term that the request defines. A planted undefined noun is a term of
+ * neither the root's list nor the request. A planted other meaning, and a listed noun of a text,
+ * is a term of one of them, so the reviewer finds it defined. An answer with no list, or with an
+ * approved version that Dispatch cannot read, says nothing whole about the terms, so it is a
+ * problem too.
  */
-export function termNames(markdown: string): string[] {
-  const names: string[] = [];
-  let level = 0;
-  let fence = "";
-  let block = 0;
-  for (const line of markdown.split("\n")) {
-    const trimmed = line.trim();
-    if (block > 0) {
-      if (/^:+$/.test(trimmed) && trimmed.length >= block) block = 0;
+export function readingProblems(fixture: Fixture, reads: readonly DocumentRead[]): string[] {
+  const problems: string[] = [];
+  const texts = new Set<string>();
+  const defined = new Set<string>();
+  const listed = new Set<string>();
+  for (const { document, read } of reads) {
+    const where = `${fixture.id} ${document}`;
+    if (read.nodes === null || read.definitions === null || read.terms === null) {
+      problems.push(`${where}: the answer names no nodes, definitions or terms`);
       continue;
     }
-    if (fence !== "") {
-      if (trimmed.startsWith(fence) && /^([`~])\1*$/.test(trimmed)) fence = "";
-      continue;
-    }
-    const opening = /^(`{3,}|~{3,})/.exec(trimmed);
-    if (opening !== null) {
-      fence = opening[1] ?? "";
-      continue;
-    }
-    const typed = /^(:{3,})(?:requirement|check)\{/.exec(trimmed);
-    if (typed !== null) {
-      block = (typed[1] ?? "").length;
-      continue;
-    }
-    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(trimmed);
-    if (heading !== null) {
-      const depth = (heading[1] ?? "").length;
-      if (level > 0 && depth <= level) level = 0;
-      if (heading[2] === "Terms") level = depth;
-      continue;
-    }
-    const term = level > 0 ? /^\s*[-*+] \*\*(.+?)\*\*: /.exec(line) : null;
-    if (term !== null) names.push((term[1] ?? "").trim());
+    for (const { line } of read.unread ?? []) problems.push(`${where}: ${line}`);
+    for (const { node } of read.nodes) texts.add(node);
+    for (const { term } of read.definitions) defined.add(normal(term));
+    for (const { term } of read.terms) listed.add(normal(term));
   }
-  return names;
+  for (const item of [...fixture.planted, ...fixture.mustNotName]) {
+    const what = `${fixture.id}: ${item.kind ?? "the listed node"} ${label(item.node, item.subject)}`;
+    if (item.node === "terms") {
+      if (item.subject === undefined || !defined.has(normal(item.subject))) {
+        problems.push(`${what} is no term that the request defines`);
+      }
+      continue;
+    }
+    if (!texts.has(item.node)) problems.push(`${what} is no text that Dispatch read`);
+    if (item.subject === undefined) continue;
+    const subject = normal(item.subject);
+    const isTerm = defined.has(subject) || listed.has(subject);
+    if (item.kind === "undefined-noun" && isTerm) {
+      problems.push(`${what} is a term that the list or the request defines`);
+    } else if (item.kind !== "undefined-noun" && !isTerm) {
+      problems.push(`${what} is no term of the list or of the request`);
+    }
+  }
+  return problems;
 }
 
 /** A document with the key of its fixture's own issue in each `serves`. */
@@ -893,12 +903,15 @@ export function formProblems(fixture: Fixture, document: string, read: FormRead)
 
 /**
  * Refuses the run unless the form check of Dispatch reads each fixture document in scope with
- * exactly the findings that its fixture declares: a fixture holds what no program decides, and
- * the findings it declares are the texts that the reviewer must leave to Dispatch.
+ * exactly the findings that its fixture declares, and unless what the application's own reader
+ * read in the fixture's documents holds each node and term of its expectation (readingProblems):
+ * a fixture holds what no program decides, the findings it declares are the texts that the
+ * reviewer must leave to Dispatch, and Dispatch alone says what a statement, a check and a term are.
  */
 async function checkForm(stack: DispatchStack, seeded: readonly Seeded[]): Promise<void> {
   const problems: string[] = [];
   for (const one of seeded) {
+    const reads: DocumentRead[] = [];
     for (const document of one.documents) {
       const read = await call<FormRead>(
         stack,
@@ -908,7 +921,9 @@ async function checkForm(stack: DispatchStack, seeded: readonly Seeded[]): Promi
         "agent"
       );
       problems.push(...formProblems(one.fixture, document.name, read));
+      reads.push({ document: document.name, read });
     }
+    problems.push(...readingProblems(one.fixture, reads));
   }
   if (problems.length > 0) throw new CannotRunError(problems.join("\n"));
 }

@@ -165,22 +165,18 @@
       "id": "13-markup-heading",
       "root": "locker",
       "spec": "13-markup-heading.md",
-      "form": [{ "kind": "heading", "node": "\"## **Terms**\"" }],
-      "planted": [
-        { "kind": "undefined-noun", "node": "door-alarm-start", "subject": "door alarm" }
-      ],
-      "mustNotName": []
+      "planted": [],
+      "mustNotName": [{ "node": "door-alarm-start" }, { "node": "terms", "subject": "door alarm" }]
     },
     {
       "id": "14-quoted-blocks",
       "root": "locker",
       "spec": "14-quoted-blocks.md",
-      "planted": [],
-      "mustNotName": [
-        { "node": "door-close-60" },
-        { "node": "quoted-calm" },
-        { "node": "quoted-entry" }
-      ]
+      "planted": [
+        { "kind": "principle", "node": "quoted-calm" },
+        { "kind": "principle", "node": "quoted-entry" }
+      ],
+      "mustNotName": [{ "node": "door-close-60" }]
     },
     {
       "id": "15-code-fence",
