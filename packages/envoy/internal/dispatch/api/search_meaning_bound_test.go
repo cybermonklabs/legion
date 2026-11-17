@@ -16,8 +16,8 @@ import (
 // endMeaningStatementsAt points searchMeaningScan's bound (searchMeaningStatementBound) at `at`
 // for one test, so that a meaning statement is ended by the server rather than answered, without
 // a test waiting production's fifteen seconds out. The bound it replaces must be in the list: a
-// list that holds none is the defect INFRA-988 fixed, and a test that quietly added its own
-// bound would pass on a server that holds none.
+// list that holds none is the defect an earlier fix closed (a meaning statement with no bound of
+// its own), and a test that quietly added its own bound would pass on a server that holds none.
 //
 // Swapping a package-level statement is safe only because no test in internal/dispatch/api calls
 // t.Parallel, so no other test's meaning query can read the shortened list before the cleanup
@@ -212,8 +212,8 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 	}
 }
 
-// The related-item check reports a meaning statement the server ended the way INFRA-148 made it
-// report a meaning search that did not answer: the check is still made, by keywords alone, and
+// The related-item check reports a meaning statement the server ended the way it already reports
+// a meaning search that did not answer: the check is still made, by keywords alone, and
 // says why. Before this it would have read the server's own bound as "meaning search failed",
 // which is what it says when something broke.
 //
