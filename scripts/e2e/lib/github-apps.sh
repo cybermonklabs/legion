@@ -130,7 +130,7 @@ fi
 # tokens come from, which is agent tier. The review App has no default credential, since the only
 # credential it takes is a key (see the header). A deployment with Apps of its own passes them
 # through the inputs; no other deployment's ids or names belong here.
-default_implement_app_id=5341240
+default_implement_app_id=REQUIRED_IMPLEMENT_APP_ID
 default_implement_app_secret=LEGION_IMPLEMENT_APP
 default_review_app_id=5341243
 

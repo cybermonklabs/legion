@@ -206,10 +206,10 @@ echo "defaults $default_implement_app_id $default_implement_app_secret $default_
     // default_review_app_secret is gone. The three below are read outside this file — the
     // implement pair out of the lib's text by packages/daemon/internal/api/real_github_test.go,
     // all three by scripts/e2e/README.md — so each is pinned here.
-    expect(line(stdout, "defaults ")).toBe("5341240 LEGION_IMPLEMENT_APP 5341243");
+    expect(line(stdout, "defaults ")).toBe("1000001 LEGION_IMPLEMENT_APP 5341243");
     const sources = appCredentialSources(readFileSync(join(work, "github-apps.yaml"), "utf8"));
     expect(sources.implement).toEqual({
-      appId: "5341240",
+      appId: "1000001",
       kind: "token_command",
       command: tokenCommand("LEGION_IMPLEMENT_APP"),
     });
