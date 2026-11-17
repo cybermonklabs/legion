@@ -2202,7 +2202,7 @@ jobs:
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # extensions/envoy.test.ts:297.
+              # extensions/envoy.test.ts:298.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'

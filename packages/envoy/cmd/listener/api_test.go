@@ -4591,8 +4591,8 @@ func TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored(t *testing.T) {
 // noInterestRecordFixture is packages/contracts/fixtures/envoy-session-no-interests.json: the row
 // a live session with no interest record, no role claim and no capability has in GET /v1/sessions,
 // before and after the change that made that row's topics the empty list. Each row is kept as raw
-// JSON, key by key, because the defect under test is a JSON type: decoded into a []string, the
-// null the old listener wrote and the empty list the new one writes are the same Go value.
+// JSON, key by key, because the spec's comparison rule reads the JSON itself: the same keys, no key
+// more and no key less, and the same JSON type for each key, so a null and an empty list differ.
 type noInterestRecordFixture struct {
 	AfterThisChange  map[string]json.RawMessage `json:"after_this_change"`
 	BeforeThisChange map[string]json.RawMessage `json:"before_this_change"`
@@ -4643,14 +4643,7 @@ func seedNoInterestRecordSession(t *testing.T, sessions *session.SessionRegistry
 	if err := json.Unmarshal(raw, &listed); err != nil {
 		t.Fatalf("read the fixture row's session entry fields: %v", err)
 	}
-	if err := sessions.Put(listed.SessionID, session.SessionEntry{
-		Port:           listed.Port,
-		MachineID:      listed.MachineID,
-		Dir:            listed.Dir,
-		Title:          listed.Title,
-		SelfSubscribed: listed.SelfSubscribed,
-		Delivery:       listed.Delivery,
-	}); err != nil {
+	if err := sessions.Put(listed.SessionID, listed.SessionEntry); err != nil {
 		t.Fatalf("register %s: %v", listed.SessionID, err)
 	}
 	return listed.SessionID
@@ -4719,8 +4712,8 @@ func compactNoInterestRecordJSON(t *testing.T, value json.RawMessage) string {
 // A session that registered and subscribed to nothing has no interest record, and its row in GET
 // /v1/sessions carries topics as the empty list, never null: a client that reads the row's topics
 // as a list iterates it without a null check. The row is read key by key, never into a sessionInfo,
-// which decodes null and [] into the same empty slice and so would pass on the row this test
-// exists to refuse.
+// which would drop a key sessionInfo does not name, so the row could not be held to the fixture's
+// keys.
 func TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture(t *testing.T) {
 	fixture := readNoInterestRecordFixture(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)

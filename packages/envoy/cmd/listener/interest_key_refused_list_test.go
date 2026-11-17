@@ -24,23 +24,22 @@ import (
 // interest bucket refuses as a key (bus.ErrRefused): the listing joins the interest copy
 // (store.Registry.Cached) and reads no key of the bucket, so there is no read to refuse and the
 // session is listed with no roles and its topics as the empty list, never null, which a client
-// iterating the row's topics would have to check for. Those topics are read from the raw JSON
-// as well as through sessionInfo, because decoded into a []string a null is the same empty slice
-// as [], so only the raw value tells the two apart. An earlier listener stored session ids past
-// this one's write bound (testnats.LegacyKeys); the unreadable one, 3,987 bytes in
-// envoy_sessions, is past envoy_interests' 3,974-byte get bound, so a read of its interest record
-// would be bus.ErrTooLarge, while the readable one, 3,969 bytes, still fits it and reads as no
-// record. A direct bucket write can also store an id outside nats.go's key alphabet, `ses:bad`,
-// whose interest read would be bus.ErrInvalidKey. The listing logs nothing for any of them,
-// because it makes none of those reads: a line here would mean the list had gone back to one
-// bucket read per row, which over a slow KV leader holds the answer for seconds per row
-// (TestTheListsMakeNoNATSReadWhileNATSStalls). GET /v1/registry/<session_id>, which does read the
-// one record, answers such a live session 200 with no roles and its topics the empty list, read
-// raw the same way, and logs it at WARN once, and Dispatch's envoy client finds it through that
-// route rather than reading a 413 or 400 as a session that cannot exist. GET
-// /v1/interests/<session_id>, which asks for the interest record by that key, still answers the
-// refused key as the caller's own input: 413 for the too-long id and 400 for the invalid one,
-// with no Retry-After, since a retry sends the same key.
+// iterating the row's topics would have to check for. A null decodes into a nil []string and an
+// empty list into a non-nil one, so the rows' topics are held non-nil as well as empty. An
+// earlier listener stored session ids past this one's write bound (testnats.LegacyKeys); the
+// unreadable one, 3,987 bytes in envoy_sessions, is past envoy_interests' 3,974-byte get bound,
+// so a read of its interest record would be bus.ErrTooLarge, while the readable one, 3,969 bytes,
+// still fits it and reads as no record. A direct bucket write can also store an id outside
+// nats.go's key alphabet, `ses:bad`, whose interest read would be bus.ErrInvalidKey. The listing
+// logs nothing for any of them, because it makes none of those reads: a line here would mean the
+// list had gone back to one bucket read per row, which over a slow KV leader holds the answer for
+// seconds per row (TestTheListsMakeNoNATSReadWhileNATSStalls). GET /v1/registry/<session_id>,
+// which does read the one record, answers such a live session 200 with no roles and its topics
+// the empty list, held non-nil the same way, and logs it at WARN once, and Dispatch's envoy
+// client finds it through that route rather than reading a 413 or 400 as a session that cannot
+// exist. GET /v1/interests/<session_id>, which asks for the interest record by that key, still
+// answers the refused key as the caller's own input: 413 for the too-long id and 400 for the
+// invalid one, with no Retry-After, since a retry sends the same key.
 func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T) {
 	const (
 		ordinary   = "ses_refused_list_ordinary"
@@ -130,15 +129,6 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode GET /v1/sessions %.300s: %v", recorder.Body.String(), err)
 	}
-	// The same rows are read key by key too, because only the raw JSON tells topics null from [].
-	var rawRows []map[string]json.RawMessage
-	if err := json.Unmarshal(recorder.Body.Bytes(), &rawRows); err != nil {
-		t.Fatalf("decode GET /v1/sessions %.300s as JSON objects: %v", recorder.Body.String(), err)
-	}
-	rawByID := map[string]map[string]json.RawMessage{}
-	for _, row := range rawRows {
-		rawByID[rowSessionID(t, row)] = row
-	}
 	byID := map[string]sessionInfo{}
 	for _, row := range rows {
 		byID[row.SessionID] = row
@@ -151,10 +141,9 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 	}
 	for _, id := range []string{readableLegacy, unreadableLegacy, invalidKey} {
 		row, ok := byID[id]
-		if !ok || row.Title != "refused" || len(row.Topics) != 0 || len(row.Roles) != 0 {
+		if !ok || row.Title != "refused" || row.Topics == nil || len(row.Topics) != 0 || len(row.Roles) != 0 {
 			t.Fatalf("GET /v1/sessions row for the %d-byte session %.16s = %+v (listed %v), want it listed by title with no roles and topics the empty list", len(id), id, row, ok)
 		}
-		checkTopicsAreTheEmptyList(t, "GET /v1/sessions", id, rawByID[id])
 	}
 
 	var warned []map[string]any
@@ -177,16 +166,10 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("GET /v1/registry/<the %d-byte id %.16s>: status %d, body %.300s; want 200 with topics the empty list", len(id), id, recorder.Code, recorder.Body.String())
 			}
-			// The answer is read raw before decodeSessionInfo consumes the body.
-			var answer map[string]json.RawMessage
-			if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
-				t.Fatalf("decode GET /v1/registry/<the %d-byte id %.16s> %.300s as a JSON object: %v", len(id), id, recorder.Body.String(), err)
-			}
 			info := decodeSessionInfo(t, recorder)
-			if info.SessionID != id || info.Title != "refused" || len(info.Topics) != 0 || len(info.Roles) != 0 {
+			if info.SessionID != id || info.Title != "refused" || info.Topics == nil || len(info.Topics) != 0 || len(info.Roles) != 0 {
 				t.Fatalf("GET /v1/registry/<the %d-byte id %.16s> = %+v, want it by title with no roles and topics the empty list", len(id), id, info)
 			}
-			checkTopicsAreTheEmptyList(t, "GET /v1/registry/<session_id>", id, answer)
 			var warned int
 			for _, line := range strings.Split(strings.TrimSpace(logs.String()[before:]), "\n") {
 				var record map[string]any
@@ -235,21 +218,5 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 				t.Fatalf("Retry-After = %q, want none: a retry sends the same key", got)
 			}
 		})
-	}
-}
-
-// checkTopicsAreTheEmptyList reports a failure unless row, the answer route gave for session id
-// read key by key, carries topics as exactly the JSON empty list. It reports with Errorf, so a
-// listener that writes null fails the list and every registry subtest rather than stopping at
-// the first.
-func checkTopicsAreTheEmptyList(t *testing.T, route, id string, row map[string]json.RawMessage) {
-	t.Helper()
-	topics, ok := row["topics"]
-	if !ok {
-		t.Errorf("%s row for the %d-byte session %.16s carries no topics, want the empty list []", route, len(id), id)
-		return
-	}
-	if got := compactNoInterestRecordJSON(t, topics); got != "[]" {
-		t.Errorf("%s row for the %d-byte session %.16s carries topics %s, want the empty list [], never null", route, len(id), id, got)
 	}
 }
