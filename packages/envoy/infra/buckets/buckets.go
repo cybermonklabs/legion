@@ -32,6 +32,14 @@
 // connect, nor any of the buckets. An empty server is no proof that no writer runs - a hub on a new
 // disk is empty while its old clients still run - so the inventory is required with it as without.
 //
+// A create that finds every bucket it names already there changes nothing, so it takes no proof:
+// it reads each bucket (missingBuckets), says that every one exists and exits 0. That lets a
+// provisioning step run on every start - the single-node compose file's buckets service, which
+// `docker compose up` runs again while the listener it provisioned still serves - pass without
+// stopping that listener. A read the server does not answer fails the run, and a create with any
+// bucket missing takes the whole proof. --first-deployment says the server holds no bucket, so a
+// create with it always takes its proof, which then refuses a server that holds one.
+//
 // Until the auth service's cutover lets the operator connect through the auth service, no hub
 // has the buckets user's key (the deployment repository declares that user with none), so
 // `create --break-glass` is how a missing copied bucket is made: it runs as a listener's NATS user,
@@ -133,15 +141,17 @@ const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effo
   - a renamed binary: a host is checked by process name (envoy-listener, listener, dispatch, ...);
   - a writer that starts between the final scan and the create: nothing holds writers out;
   - an unheld restore: check holds nothing through a later nats stream restore.
-Before you run it, stop every envoy-listener of the deployment (and every envoy-dispatch, for
-envoy_ci_state) and confirm on each host that it has ended. A server-side hold, which
+Before a run that creates or deletes a bucket, stop every envoy-listener of the deployment (and
+every envoy-dispatch, for envoy_ci_state) and confirm on each host that it has ended. A create
+that finds every bucket there changes nothing and takes no proof. A server-side hold, which
 leaves no writer a connection, replaces this.
 `
 
 const usage = `usage: envoy-infra buckets create|recreate|check --nats URL [options]
        envoy-infra buckets create --break-glass --operator NAME --bucket NAME --nats URL
 
-  create     create every copied bucket that is missing (or each --bucket), once no writer runs
+  create     create every copied bucket that is missing (or each --bucket), once no writer runs;
+             with none missing it changes nothing and takes no proof
   recreate   delete each --bucket and create it again, once no writer runs
   check      prove no writer runs, and change nothing
 
@@ -276,6 +286,20 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	defer nc.Close()
 	js := nc.JS()
 
+	// A create with nothing to create changes nothing, so it takes no proof (the package comment
+	// says why). --first-deployment always takes its proof.
+	if action == "create" && !f.firstDeployment {
+		missing, err := missingBuckets(js, buckets)
+		if err != nil {
+			fmt.Fprintf(stderr, "envoy-infra buckets: %v\n", err)
+			return 1
+		}
+		if len(missing) == 0 {
+			fmt.Fprintf(stdout, "every bucket named exists (%s): nothing to create, so no writer proof is taken\n", strings.Join(buckets, ", "))
+			return 0
+		}
+	}
+
 	if blockers := f.prove(ctx, stdout, js); len(blockers) > 0 {
 		refuse(stderr, action, blockers, "")
 		return 1
@@ -331,6 +355,20 @@ func create(stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext,
 		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
 	}
 	return 0
+}
+
+// missingBuckets reads each of buckets and returns those the server reports missing. A read the
+// server answers with anything but "not found", or does not answer, is an error naming the bucket.
+func missingBuckets(js nats.JetStreamContext, buckets []string) ([]string, error) {
+	var missing []string
+	for _, bucket := range buckets {
+		if _, err := js.KeyValue(bucket); errors.Is(err, nats.ErrBucketNotFound) {
+			missing = append(missing, bucket)
+		} else if err != nil {
+			return nil, fmt.Errorf("read %s: %w", bucket, err)
+		}
+	}
+	return missing, nil
 }
 
 // breakGlassUsage is why the flags of a run misuse --break-glass or --operator, or "" when they

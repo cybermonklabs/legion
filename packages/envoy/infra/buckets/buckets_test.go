@@ -310,6 +310,106 @@ func TestFirstDeploymentCreatesEveryBucketOnlyOnAServerNoWriterReached(t *testin
 	}
 }
 
+// makeBuckets creates each of buckets with its copied configuration, as `envoy-infra buckets
+// create` makes it.
+func makeBuckets(t *testing.T, js natsgo.JetStreamContext, buckets ...string) {
+	t.Helper()
+	for _, bucket := range buckets {
+		config, _ := bus.CopiedBucketConfig(bucket, 1)
+		if _, err := js.CreateKeyValue(&config); err != nil {
+			t.Fatalf("create %s: %v", bucket, err)
+		}
+	}
+}
+
+// bucketFlags is each of buckets as a --bucket flag.
+func bucketFlags(buckets ...string) []string {
+	var flags []string
+	for _, bucket := range buckets {
+		flags = append(flags, "--bucket", bucket)
+	}
+	return flags
+}
+
+// A writer of the buckets "runs" on every place named, and a create whose buckets all exist still
+// exits 0: it changes nothing, so it runs no proof - the fake runner records no call - says that
+// every bucket exists, and leaves each as it was. That holds for the four buckets a listener with
+// no GitHub route copies, the single-node compose file's, named with --bucket, and for every
+// copied bucket, named by none. At 036c9e7a60 the create took the proof and refused, exit 1.
+func TestACreateWithEveryBucketThereTakesNoProof(t *testing.T) {
+	uri, js := server(t)
+	single := []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.KnownSessionBucket}
+	makeBuckets(t, js, single...)
+	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
+	for _, c := range []struct {
+		name    string
+		make    []string
+		buckets []string
+		flags   []string
+	}{
+		{"the four a listener with no GitHub route copies", nil, single, bucketFlags(single...)},
+		{"every copied bucket", []string{bus.CIStateBucket}, bus.CopiedBuckets(), nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			makeBuckets(t, js, c.make...)
+			before := map[string]time.Time{}
+			for _, bucket := range c.buckets {
+				before[bucket] = created(t, js, bucket)
+			}
+			w := &world{hostAnswers: map[string][]string{"box-1": {writer}, here: {writer}}}
+			code, stdout, stderr := runCommand(t, w, nil, append([]string{"create", "--nats", uri, "--host", "box-1", "--this-machine"}, c.flags...)...)
+			want := "every bucket named exists (" + strings.Join(c.buckets, ", ") + "): nothing to create, so no writer proof is taken\n"
+			if code != 0 || stdout != want || len(w.calls) != 0 {
+				t.Fatalf("create with every bucket there while a writer runs = %d, calls %q, want 0, no call and %q\n%s%s", code, w.calls, want, stdout, stderr)
+			}
+			for bucket, at := range before {
+				if after := created(t, js, bucket); !after.Equal(at) {
+					t.Fatalf("the create changed %s: created %s, was %s", bucket, after, at)
+				}
+			}
+		})
+	}
+}
+
+// A create with one named bucket missing takes the whole proof: while a writer runs it refuses
+// naming it and makes nothing, and once none runs it makes the missing bucket alone. The control
+// is the same writer once every bucket exists: that create exits 0 with no proof, so the refusal
+// was the missing bucket's (at 036c9e7a60 the control fails, refused). --first-deployment, which
+// says the server holds no bucket, keeps its proof with every bucket there, and refuses.
+func TestACreateWithABucketMissingTakesTheProof(t *testing.T) {
+	uri, js := server(t)
+	single := []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.KnownSessionBucket}
+	makeBuckets(t, js, bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket)
+	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
+	args := append([]string{"create", "--nats", uri, "--host", "box-1"}, bucketFlags(single...)...)
+
+	w := &world{hostAnswers: map[string][]string{"box-1": {writer}}}
+	code, stdout, stderr := runCommand(t, w, nil, args...)
+	if code != 1 || !strings.Contains(stderr, "blocked: host box-1: process 4242 envoy-listener runs") || len(w.calls) != 1 {
+		t.Fatalf("create with %s missing while a writer runs = %d, calls %q, want refused by the proof\n%s%s", bus.KnownSessionBucket, code, w.calls, stdout, stderr)
+	}
+	if _, err := js.KeyValue(bus.KnownSessionBucket); !errors.Is(err, natsgo.ErrBucketNotFound) {
+		t.Fatalf("the refused create made %s: %v", bus.KnownSessionBucket, err)
+	}
+
+	w = &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
+	code, stdout, stderr = runCommand(t, w, nil, args...)
+	if code != 0 || !strings.Contains(stdout, "created "+bus.KnownSessionBucket+" (1 copies)") || !strings.Contains(stdout, bus.SessionBucket+" exists; left as it is") || len(w.calls) != 1 {
+		t.Fatalf("create with %s missing and no writer = %d, calls %q, want it created after the proof\n%s%s", bus.KnownSessionBucket, code, w.calls, stdout, stderr)
+	}
+
+	w = &world{hostAnswers: map[string][]string{"box-1": {writer}}}
+	if code, stdout, stderr := runCommand(t, w, nil, args...); code != 0 || len(w.calls) != 0 {
+		t.Fatalf("control: create with every bucket there while the writer runs = %d, calls %q, want 0 with no proof\n%s%s", code, w.calls, stdout, stderr)
+	}
+
+	w = &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
+	code, stdout, stderr = runCommand(t, w, nil, append(args, "--first-deployment")...)
+	if code != 1 || !strings.Contains(stderr, "--first-deployment: the server holds KV_") || len(w.calls) != 1 {
+		t.Fatalf("create --first-deployment with every bucket there = %d, calls %q, want its proof taken and refused\n%s%s", code, w.calls, stdout, stderr)
+	}
+}
+
 // No inventory is a usage error, with --first-deployment as without it: an empty server is no
 // proof that no writer runs (a hub on a new disk is empty while its old clients still run), so
 // nothing would be proven. At 7b262c2e0a --first-deployment alone was accepted and created the
