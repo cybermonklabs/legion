@@ -7,9 +7,9 @@ import {
   type AgentStreamControlMessage,
   agentStreamControlSubject,
   agentStreamFramesSubject,
-  agentSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  legacyAgentSubject,
   type OpenAsk,
   type OpenAsksResponse,
   ROLE_TOPIC_PREFIX,
@@ -69,6 +69,7 @@ import {
   dispatchSettings,
 } from "@legion/envoy-client/dispatch-config";
 import { defaultExec } from "@legion/envoy-client/dispatch-cwd";
+import { goBlankPattern } from "@legion/envoy-client/dispatch-execute";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -323,40 +324,38 @@ export function resetNatsConnectForTests(): void {
 }
 
 /**
- * The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`; agent-infra's
- * sessions workload sets it once t-e-32 renames its `RoleEnv`, `AGENT_SESSION_ROLE` today), taken
- * into a process-wide slot when this module loads. Every extension instance of the process reads
- * it from the slot, an instance a later load of this entry makes included (a `task` subagent's, or
- * each top-level session of an ACP host).
- *
- * The load leaves the variable set to "" rather than deleting it. A delete reaches `process.env`
- * alone: the C environment the process started with keeps the value, and a child Oh My Pi starts
- * in a PTY (its bash tool's `pty: true`) begins from that environment with the variables built
- * from `Bun.env` laid over it, so a deleted variable comes back. "" lies over it in every
- * environment built from `Bun.env`, the PTY's and the plain shell's (`procmgr`), and a child's
- * load reads "" as no role, so an `omp` an agent runs inside the pod claims none of the pod's
- * roles. A later load in this process that finds "" keeps the role held; one that finds a value
- * set again takes that one. Only a `Bun.spawn` that names no `env` still hands a child the value,
- * since it passes the environment the process started with, which no write here reaches.
+ * Whether this process has logged that a session it decides for is not the one a session pod's
+ * launch named for its role (`sessionRoleRefusal` in the entry). The line is logged once per
+ * process, whichever extension instance of it decides first, and an instance may come from a
+ * later load of this entry (each top-level session of an ACP host), so the mark lives on
+ * `globalThis`, as the NATS stand-in above does.
  */
-const SESSION_ROLE = Symbol.for("legion.pi-envoy.session-role");
+const SESSION_ROLE_LOGGED = Symbol.for("legion.pi-envoy.session-role-logged");
 
-interface GlobalSessionRole {
-  [key: symbol]: string | undefined;
+interface GlobalSessionRoleLogged {
+  [key: symbol]: true | undefined;
 }
 
-const sessionRoleStore = globalThis as unknown as GlobalSessionRole;
+const sessionRoleLoggedStore = globalThis as unknown as GlobalSessionRoleLogged;
 
-if (process.env.ENVOY_SESSION_ROLE !== undefined) {
-  const launched = process.env.ENVOY_SESSION_ROLE.trim();
-  if (launched !== "") sessionRoleStore[SESSION_ROLE] = launched;
-  process.env.ENVOY_SESSION_ROLE = "";
-}
-
-// The slot outlives every instance of this entry in the process, so a suite clears it between
+// The mark outlives every instance of this entry in the process, so a suite clears it between
 // rows, as it clears the NATS stand-in above. Production callers never call this.
-export function resetSessionRoleForTests(): void {
-  delete sessionRoleStore[SESSION_ROLE];
+export function resetSessionRoleLoggedForTests(): void {
+  delete sessionRoleLoggedStore[SESSION_ROLE_LOGGED];
+}
+
+/**
+ * A role's name as the listener reads a claim's: with the characters Go's `strings.TrimSpace`
+ * takes trimmed from both ends, which is Go's set and not JavaScript's `trim` (`goBlankPattern`
+ * says where the two differ).
+ */
+function listenerRoleName(role: string): string {
+  const characters = [...role];
+  let start = 0;
+  let end = characters.length;
+  while (start < end && goBlankPattern.test(characters[start] ?? "")) start += 1;
+  while (end > start && goBlankPattern.test(characters[end - 1] ?? "")) end -= 1;
+  return characters.slice(start, end).join("");
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
@@ -2317,7 +2316,11 @@ export default function envoyExtension(pi: PiApi): void {
   // the role claim's to open again, which a restored process without the role never does.
   const followedSubjects = (): string[] => {
     if (sessionID === "") return [];
-    return replayFollowedSubjects(agentSubject(sessionID), followed, registrationState.isRoleBound);
+    return replayFollowedSubjects(
+      legacyAgentSubject(sessionID),
+      followed,
+      registrationState.isRoleBound
+    );
   };
 
   // Acts on a `subscription.removed` naming this session, which the relay delivers like any
@@ -2961,11 +2964,54 @@ export default function envoyExtension(pi: PiApi): void {
         : `the session moved from ${from} to ${hostSessionID()} while its claim of role ${role} ran; nothing was claimed`
     );
 
-  // The Envoy role a session pod's launch named for its session, as the module's load took it
-  // into the slot and left "" in the environment (`SESSION_ROLE`): the session claims it itself,
-  // under its own credential, which the listener holds to this very session, at every pass that
-  // registers it (`settleRole`). Read when the instance is created.
-  const sessionRole = sessionRoleStore[SESSION_ROLE];
+  // The Envoy role a session pod's launch named (`ENVOY_SESSION_ROLE`) and the one session it named
+  // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; agent-infra's
+  // sessions workload sets both once t-e-32 lands). That session claims the role itself, under its
+  // own credential, which the listener holds to that very session, at every pass that registers
+  // it (`settleRole`). No other session claims it, by any path: not a process the agent starts in
+  // the pod, such as an `omp -p` review, which gets the same environment; not an ACP host's other
+  // session; not an id a `/new`, a `/fork` or a tree branch mints, though a fork's or a branch's
+  // transcript carries the named session's record of the claim. Each pass compares the session
+  // open then. Read when the instance is created; nothing takes them out of the environment.
+  const sessionRole = listenerRoleName(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
+  const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
+  // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
+  // named session's alone, so every other session is refused it, and with no session named every
+  // session is. The name is read as the listener reads a claim's (`listenerRoleName`), so a padded
+  // name is the same role. The process logs the refusal once (`SESSION_ROLE_LOGGED`), whichever
+  // session and path meets it first, and the person is told once for each session refused, on
+  // screen, where the role stays and how to take it back.
+  const sessionRoleNotified = new Set<string>();
+  const sessionRoleRefusal = (id: string, role: string): string | undefined => {
+    if (
+      sessionRole === undefined ||
+      listenerRoleName(role) !== sessionRole ||
+      id === sessionRoleSession
+    ) {
+      return undefined;
+    }
+    const refusal = `envoy: ENVOY_SESSION_ROLE ${sessionRole} belongs to session ${sessionRoleSession ?? "none"}; this session ${id} claims nothing`;
+    if (sessionRoleLoggedStore[SESSION_ROLE_LOGGED] === undefined) {
+      sessionRoleLoggedStore[SESSION_ROLE_LOGGED] = true;
+      logger.warn(refusal);
+    }
+    if (!sessionRoleNotified.has(id)) {
+      sessionRoleNotified.add(id);
+      activeSessionContext?.ui.notify(
+        sessionRoleSession === undefined
+          ? `envoy: role ${sessionRole} is the pod's, but the pod names no session for it, so no session claims it; messages to the role are not delivered here`
+          : `envoy: role ${sessionRole} stays with the pod's session ${sessionRoleSession}; messages to the role are not delivered here. /resume ${sessionRoleSession} takes it back`,
+        "warning"
+      );
+    }
+    return refusal;
+  };
+  // A claim the model or a plugin asks for refuses the launch's role to a session the launch did
+  // not name, before it calls the listener.
+  const requireSessionRoleFor = (id: string, role: string): void => {
+    const refusal = sessionRoleRefusal(id, role);
+    if (refusal !== undefined) throw new Error(refusal);
+  };
 
   // The registration and role state the two serial queues write, the queues themselves, each
   // task's deadline and this extension instance's client instance id, all private to
@@ -3159,7 +3205,7 @@ export default function envoyExtension(pi: PiApi): void {
     const role = registrationState.heldRole();
     return registerWithRelay({
       relay: asking?.delivery,
-      ownAgentSubject: agentSubject(registeringFor),
+      ownAgentSubject: legacyAgentSubject(registeringFor),
       followed,
       roles: role === undefined ? [] : [role],
       outage: inboundOutage,
@@ -3434,7 +3480,7 @@ export default function envoyExtension(pi: PiApi): void {
       activeSessionContext?.sessionManager.getEntries() ?? []
     ).filter((topic) => !(slackRetired && slackTopicChannel(topic) !== undefined));
     for (const topic of new Set([...registered, ...remembered])) {
-      if (topic === agentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
+      if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
       if (retired.includes(topic)) continue;
       await handle.subscribe(topic);
     }
@@ -3471,33 +3517,41 @@ export default function envoyExtension(pi: PiApi): void {
   //    survives `omp --resume` after the listener has reaped a dead session's rows), and a
   //    recorded release is final. A fork's branch is a copy of its parent's, so it records its
   //    parent's role; a `/new` records none; a resume or branch records its own.
-  //  - Otherwise the role a session pod's launch named (`sessionRole`), which the pass claims
-  //    outright (`settleRole`), so the listener never refuses it. A move the model makes with
-  //    `envoy_role_set` is a record, which no pass undoes.
+  //  - Otherwise, when `id` is the session the launch named for it, the role a session pod's
+  //    launch named (`sessionRole`), which the pass claims outright (`settleRole`), so the
+  //    listener never refuses it. A move the model makes with `envoy_role_set` is a record, which
+  //    no pass undoes.
   //  - Otherwise the role this process holds, when its hold is under `id` or a session `id`
   //    continues (a tree navigation to before the claim, or a fork from before it).
   //  - Otherwise, once when a pass establishes a resumed or switched session (`readRows`), the
   //    listener's rows for `id` (a same-id resume inside the reap window) and for the sessions it
   //    continues.
-  // None of them while the listener has refused that role to `id`. The pass claims every role but
-  // the launch's softly (`settleRole`): a session's records may be stale evidence (the parent of a
-  // fork whose role moved to the child, a second process on the same transcript), and it must not
-  // take a role another live session holds. The listener decides that atomically: a soft claim
-  // naming a predecessor takes the role from that predecessor only when the predecessor has no
-  // live registry entry, when its live entry carries this client instance's own instance id, or
-  // when either side carries no instance id. A predecessor still live under another client
-  // instance keeps the role, and the claim is refused naming it.
+  // None of them while the listener has refused that role to `id`, and never the launch's role
+  // for a session the launch did not name (`sessionRoleRefusal`): a fork's branch records it, and
+  // a fork is another session. The pass claims every role but the launch's softly (`settleRole`):
+  // a session's records may be stale evidence (the parent of a fork whose role moved to the
+  // child, a second process on the same transcript), and it must not take a role another live
+  // session holds. The listener decides that atomically: a soft claim naming a predecessor takes
+  // the role from that predecessor only when the predecessor has no live registry entry, when its
+  // live entry carries this client instance's own instance id, or when either side carries no
+  // instance id. A predecessor still live under another client instance keeps the role, and the
+  // claim is refused naming it.
   const desiredRole = async (
     handle: TaskHandle,
     id: string,
     branch: readonly unknown[],
     readRows: boolean
   ): Promise<string | undefined> => {
-    const want = (role: string) => (registrationState.refusalFor(id) === role ? undefined : role);
+    const want = (role: string) =>
+      registrationState.refusalFor(id) === role || sessionRoleRefusal(id, role) !== undefined
+        ? undefined
+        : role;
     const recorded = recordedRole(branch);
     if (recorded === null) return undefined;
     if (recorded !== undefined) return want(recorded);
-    if (sessionRole !== undefined) return sessionRole;
+    if (sessionRole !== undefined && sessionRoleRefusal(id, sessionRole) === undefined) {
+      return sessionRole;
+    }
     const held = registrationState.heldRole();
     const holdID = registrationState.holdSessionID();
     const lineage = continuedBy(id);
@@ -3629,7 +3683,7 @@ export default function envoyExtension(pi: PiApi): void {
       if (host !== lastHeard) lastHeard = "";
     }
     for (const other of handle.forgetOtherAgentSessions(host)) {
-      unfollow(agentSubject(other));
+      unfollow(legacyAgentSubject(other));
       leftSessions.add(other);
     }
     // Another session's relay: its unsettled frames go back to the listener (`nak`).
@@ -3650,7 +3704,7 @@ export default function envoyExtension(pi: PiApi): void {
       try {
         handle.markAgentSessionOpen(host);
         await handle.connect();
-        await handle.subscribe(agentSubject(host));
+        await handle.subscribe(legacyAgentSubject(host));
         // The relay subject opens before any registration asks for consumer delivery, so the
         // listener's first relayed frame has a subscriber.
         await openRelay(context, host, handle.connect);
@@ -3760,9 +3814,10 @@ export default function envoyExtension(pi: PiApi): void {
       handle.markRoleSettled(host);
       return true;
     }
-    // The launch's role is claimed at every pass that registered the session, below, rather than
-    // read as held between two registrations: the launch named this session its holder.
-    const launched = desired === sessionRole;
+    // The launch's role is claimed at every pass that registered the session the launch named,
+    // below, rather than read as held between two registrations: the launch named this session
+    // its holder.
+    const launched = desired === sessionRole && host === sessionRoleSession;
     if (
       !launched &&
       !registrationState.holdIsUnconfirmed() &&
@@ -3863,6 +3918,7 @@ export default function envoyExtension(pi: PiApi): void {
     // a held role would take them all and deliver none, so the claim refuses before any listener
     // call registers the session or sets the role.
     requireInbound();
+    requireSessionRoleFor(targetSessionID, role);
     if (registrationState.establishedFor() !== targetSessionID) {
       await establishForBridge(context);
     }
@@ -4043,10 +4099,15 @@ export default function envoyExtension(pi: PiApi): void {
     // Ends at once a role the host session's own records rule out, so the new session never
     // takes the old role's notices while an earlier pass finishes; the pass hands the hold back.
     // Only a record this process acts on ends anything (`recordedRole`): a release another
-    // process wrote on this transcript ends no role this one holds.
+    // process wrote on this transcript ends no role this one holds. The launch's role ends here
+    // too, as a recorded release would end it, when the launch did not name this session: a fork
+    // or a branch carries the named session's record of it, and would otherwise follow its notice
+    // subjects until its first pass, which waits on its registration.
+    const held = registrationState.heldRole();
+    const launchRoleRefused = held !== undefined && sessionRoleRefusal(host, held) !== undefined;
     registrationState.endUnwantedRole(
       host,
-      recordedRole(context.sessionManager.getBranch?.() ?? []),
+      launchRoleRefused ? null : recordedRole(context.sessionManager.getBranch?.() ?? []),
       continuedBy(host)
     );
     // With inbound messages off the session opens no agent subject; a heartbeat's pass, when a
@@ -4785,7 +4846,7 @@ export default function envoyExtension(pi: PiApi): void {
           // so it is told by name, in the listener's own words, rather than left following a
           // subject nothing is ever delivered on. A private stream subject is left out of the
           // registration without a word, as it always was (`refuseUncapturedTopics`).
-          refuseUncapturedTopics(sessionID, agentSubject(sessionID), requested);
+          refuseUncapturedTopics(sessionID, legacyAgentSubject(sessionID), requested);
           const added: string[] = [];
           const already: string[] = [];
           for (const topic of requested) {
@@ -4820,7 +4881,7 @@ export default function envoyExtension(pi: PiApi): void {
           // The session's own inbox is not a subscription the tool manages.
           // A role topic is followed through the independently-held role claim: drop the local
           // follow without unregistering that interest.
-          const inbox = agentSubject(sessionID);
+          const inbox = legacyAgentSubject(sessionID);
           // Concrete subjects, a named `X.>` already expanded to `X.>` and `X`.
           const candidates = topicsFor(parameters, [...followed]).filter(
             (subject) => subject !== inbox
@@ -4937,6 +4998,7 @@ export default function envoyExtension(pi: PiApi): void {
             async (handle) => {
               target = sessionID;
               handle.actFor(target);
+              requireSessionRoleFor(target, role);
               const held = registrationState.heldRole();
               const moving = held !== undefined && held !== role;
               // Moving off a role closes every subscription another plugin opened `whileHolding`

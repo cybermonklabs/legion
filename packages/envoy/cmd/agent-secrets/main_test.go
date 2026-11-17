@@ -1021,6 +1021,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 			name: "one airlock name",
 			environ: append(append([]string{}, identity...),
 				"SSL_CERT_FILE=/inherited/roots.pem",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/inherited/grpc-roots.pem",
 				"HTTPS_PROXY=http://stale.example:3128",
 				"NO_PROXY=keep.example.com"),
 			release: &AirlockRelease{
@@ -1036,6 +1037,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 				"CURL_CA_BUNDLE="+testAirlockFiles.bundle,
 				"GIT_SSL_CAINFO="+testAirlockFiles.bundle,
 				"GRANT_ME=released",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="+testAirlockFiles.bundle,
 				"HTTPS_PROXY=http://agent-secrets:"+placeholder+"@proxy.broker.example:3128",
 				"NODE_EXTRA_CA_CERTS="+testAirlockFiles.bundle,
 				"NODE_USE_ENV_PROXY=1",

@@ -259,7 +259,7 @@ func TestPublishHandler_RejectsAgentTopics(t *testing.T) {
 		},
 		{
 			name:       "agent with session ID",
-			topic:      contracts.AgentSubject("ses_abc123"),
+			topic:      contracts.LegacyAgentSubject("ses_abc123"),
 			wantStatus: http.StatusBadRequest,
 			wantSubstr: "cannot publish to agent topics",
 		},
@@ -609,12 +609,12 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		t.Fatalf("claim registered role B: status = %d, body = %s", claimRecorder.Code, claimRecorder.Body.String())
 	}
 
-	probeA, err := harness.client.Conn.SubscribeSync(contracts.AgentSubject("ses_role_a"))
+	probeA, err := harness.client.Conn.SubscribeSync(contracts.LegacyAgentSubject("ses_role_a"))
 	if err != nil {
 		t.Fatalf("subscribe A agent subject: %v", err)
 	}
 	t.Cleanup(func() { _ = probeA.Unsubscribe() })
-	probeB, err := harness.client.Conn.SubscribeSync(contracts.AgentSubject("ses_role_b"))
+	probeB, err := harness.client.Conn.SubscribeSync(contracts.LegacyAgentSubject("ses_role_b"))
 	if err != nil {
 		t.Fatalf("subscribe B agent subject: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	if err != nil {
 		t.Fatalf("read forwarded role event for B: %v", err)
 	}
-	if forwardedMessage.Subject != contracts.AgentSubject("ses_role_b") {
+	if forwardedMessage.Subject != contracts.LegacyAgentSubject("ses_role_b") {
 		t.Fatalf("forwarded subject = %q, want B agent subject", forwardedMessage.Subject)
 	}
 	var forwarded contracts.Envelope
@@ -783,7 +783,7 @@ func TestPublishHandler_ExplicitDedupeKeyIsNotForwardedAgainOnceStored(t *testin
 		t.Fatalf("claim role: %v", err)
 	}
 	forwards := make(chan contracts.Envelope, 8)
-	responder, err := harness.client.Conn.Subscribe(contracts.AgentSubject("ses_slow"), func(message *natsgo.Msg) {
+	responder, err := harness.client.Conn.Subscribe(contracts.LegacyAgentSubject("ses_slow"), func(message *natsgo.Msg) {
 		var forwarded contracts.Envelope
 		if err := json.Unmarshal(message.Data, &forwarded); err == nil {
 			forwards <- forwarded
@@ -1425,7 +1425,7 @@ func setupAdminTestRegistry(t *testing.T, interests map[string][]string) *store.
 		t.Fatalf("failed to create registry: %v", err)
 	}
 	for sessionID, topics := range interests {
-		allTopics := append([]string{contracts.AgentSubject(sessionID)}, topics...)
+		allTopics := append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...)
 		if _, err := registry.Upsert(store.Interest{
 			SessionID: sessionID,
 			MachineID: "test-machine",
@@ -1499,7 +1499,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 		t.Fatalf("failed to create registry: %v", err)
 	}
 	if _, err := registry.Upsert(store.Interest{SessionID: "ses_known", MachineID: "test-machine", Dir: "/test"},
-		[]string{contracts.AgentSubject("ses_known")}); err != nil {
+		[]string{contracts.LegacyAgentSubject("ses_known")}); err != nil {
 		t.Fatalf("failed to upsert interest: %v", err)
 	}
 	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
@@ -1610,7 +1610,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 	t.Cleanup(sessions.StopWatch)
 	for _, sessionID := range interests {
 		if _, err := registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine", Dir: "/test/" + sessionID},
-			[]string{contracts.AgentSubject(sessionID)}); err != nil {
+			[]string{contracts.LegacyAgentSubject(sessionID)}); err != nil {
 			t.Fatalf("failed to upsert interest for %s: %v", sessionID, err)
 		}
 	}
@@ -1740,7 +1740,7 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 		t.Fatalf("open the interest bucket: %v", err)
 	}
 	for sessionID, topics := range interests {
-		allTopics := slices.Compact(slices.Sorted(slices.Values(append([]string{contracts.AgentSubject(sessionID)}, topics...))))
+		allTopics := slices.Compact(slices.Sorted(slices.Values(append([]string{contracts.LegacyAgentSubject(sessionID)}, topics...))))
 		row, err := json.Marshal(store.Interest{
 			SessionID: sessionID,
 			MachineID: "test-machine",
@@ -1879,7 +1879,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 		SessionID: "ses_titled",
 		MachineID: "test-machine",
 		Dir:       "/test/ses_titled",
-	}, []string{contracts.AgentSubject("ses_titled")}); err != nil {
+	}, []string{contracts.LegacyAgentSubject("ses_titled")}); err != nil {
 		t.Fatalf("failed to upsert interest: %v", err)
 	}
 	if err := sessions.Put("ses_titled", session.SessionEntry{
@@ -2821,7 +2821,9 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	caches := listenerCaches(registry, sessions, nil)
-	client.AddReconnectHook(func(conn *natsgo.Conn) error { return rewatchListenerKVWatchers(conn, caches) })
+	client.AddReconnectHook(func(ctx context.Context, conn *natsgo.Conn) error {
+		return rewatchListenerKVWatchers(ctx, conn, caches)
+	})
 	if _, err := client.SubscribeCore(contracts.RoleTopicPrefix+">", func(*natsgo.Msg) {}, "envoy-listener-"+machineID); err != nil {
 		t.Fatalf("open the role lane: %v", err)
 	}
@@ -2969,7 +2971,7 @@ func TestIsControlTopic(t *testing.T) {
 		want  bool
 	}{
 		{topic: "notifications.role.legion-controller", want: true},
-		{topic: contracts.AgentSubject("ses_control"), want: true},
+		{topic: contracts.LegacyAgentSubject("ses_control"), want: true},
 		{topic: "notifications.envoy.exceptions.notifications.role.legion-controller", want: false},
 		{topic: "notifications.github.sjawhar.legion.issue.42.comment", want: false},
 	}
@@ -3113,8 +3115,8 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 
 	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 	cfg.roleForwards.settled(t)
-	if len(forwardedTo) != 1 || forwardedTo[0] != contracts.AgentSubject(holderID) {
-		t.Fatalf("the role message was forwarded to %v, want once to %s", forwardedTo, contracts.AgentSubject(holderID))
+	if len(forwardedTo) != 1 || forwardedTo[0] != contracts.LegacyAgentSubject(holderID) {
+		t.Fatalf("the role message was forwarded to %v, want once to %s", forwardedTo, contracts.LegacyAgentSubject(holderID))
 	}
 	if message, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("a forwarded role message emitted an exception (or the probe failed): %v %v", message, err)
@@ -3373,7 +3375,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 		role string
 	}{
 		{name: "role", topic: contracts.RoleTopicPrefix + "unheld", role: "unheld"},
-		{name: "agent", topic: contracts.AgentSubject("ses_unheld")},
+		{name: "agent", topic: contracts.LegacyAgentSubject("ses_unheld")},
 	}
 
 	for _, tc := range cases {
@@ -3693,7 +3695,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 // delivery fails (session.ErrNoSessionRecord) instead of counting as skipped, on a followed
 // topic and on the session's agent subject alike. Only a message a consumer holds is skipped.
 func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t *testing.T) {
-	for _, topic := range []string{"notifications.github.owner.repo.issue.1", contracts.AgentSubject("ses_omp")} {
+	for _, topic := range []string{"notifications.github.owner.repo.issue.1", contracts.LegacyAgentSubject("ses_omp")} {
 		t.Run(topic, func(t *testing.T) {
 			// Given
 			harness := newListenerDeliveryHarness(t)
@@ -4560,7 +4562,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 		func(err error) bool { return errors.Is(err, natsgo.ErrConnectionClosed) },
 		client.Connected,
 		func() error {
-			return rewatchListenerKVWatchers(client.Conn, []listenerCache{{name: "interest", cache: registry}})
+			return rewatchListenerKVWatchers(context.Background(), client.Conn, []listenerCache{{name: "interest", cache: registry}})
 		},
 	)
 
@@ -4630,7 +4632,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 		client.Connected,
 		func() error {
 			rebuilds.Add(1)
-			return rewatchListenerKVWatchers(client.Conn, []listenerCache{{name: "session", cache: sessions}})
+			return rewatchListenerKVWatchers(context.Background(), client.Conn, []listenerCache{{name: "session", cache: sessions}})
 		},
 	)
 	if got := rebuilds.Load(); got != 1 {
@@ -4891,7 +4893,7 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 			client.Connected,
 			func() error {
 				rebuilds.Add(1)
-				return rewatchListenerKVWatchers(client.Conn, caches)
+				return rewatchListenerKVWatchers(context.Background(), client.Conn, caches)
 			},
 			func() { terminated <- struct{}{} },
 			time.Millisecond,

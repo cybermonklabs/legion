@@ -512,7 +512,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 			rig.sendFrom(t, sender, target, nil).requireStatus(t, fmt.Sprintf("send %d of the burst", i+1), http.StatusOK)
 		}
 		rig.sendFrom(t, sender, target, nil).requireRefused(t, "the send after the burst", sender, 4, 2, 15)
-		if stored := rig.storedOn(t, contracts.AgentSubject(target)); stored != 2 {
+		if stored := rig.storedOn(t, contracts.LegacyAgentSubject(target)); stored != 2 {
 			t.Fatalf("the stream holds %d messages for %s, want the burst's 2 and none of the refused send", stored, target)
 		}
 		rig.requireCount(t, sender, false)
@@ -563,7 +563,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		stored, err := readStored(ctx, rig.harness.client, contracts.AgentSubject(claimant))
+		stored, err := readStored(ctx, rig.harness.client, contracts.LegacyAgentSubject(claimant))
 		if err != nil {
 			t.Fatalf("read what the stream holds for %s: %v", claimant, err)
 		}
@@ -804,7 +804,7 @@ func TestSenderLimitCost(t *testing.T) {
 		repeat := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key)
 		repeat.requireStatus(t, "the repeated role message", http.StatusOK)
 		repeat.requireUnnamed(t, "the repeated role message")
-		if stored := rig.storedOn(t, contracts.AgentSubject(holder)); stored != 1 {
+		if stored := rig.storedOn(t, contracts.LegacyAgentSubject(holder)); stored != 1 {
 			t.Fatalf("the stream holds %d forwards for %s, want the first message's one", stored, holder)
 		}
 		requireRoleSendLinesNameNoSender(t, logs()[before:])
