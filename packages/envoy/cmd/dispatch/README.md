@@ -4826,7 +4826,7 @@ What each node type weighs:
 A browser's edits over the document websocket are weighed by the bounds that socket holds, not by this count.
 No element count stands between a keystroke and the room, so a live document can hold more than 65,536 elements.
 A server write to such a document is refused `413 CAP_EXCEEDED` for as long as it would leave it heavier still, until someone shortens it, while a write that leaves it no heavier passes and a rebuild from its latest stored version restores it whatever it weighs.
-What a browser is refused instead is `4413 DOC_TOO_LARGE`: at the byte bound (1 MiB, with 64 KiB of creep past it and 8 KiB of new content in one update at the bound), at the 1,200,000 values one apply may decode, at the decode cap (1,048,576 structs) and at the 16,777,216 bytes of encoded state one room may hold.
+What a browser is refused instead is `4413 DOC_TOO_LARGE`: at the byte bound (1 MiB, with 64 KiB of creep past it and 8 KiB of new content in one update at the bound), for an update whose rendering would end past that bound and its creep and larger than it was, at the 1,200,000 values one apply may decode, at the decode cap (1,048,576 structs) and at the 16,777,216 bytes of encoded state one room may hold.
 At those last two the close is `4413 DOC_NEEDS_REBUILD` where the rebuild route would take the room as it stands, since only there is a rebuild the remedy; Document errors below has the rest.
 
 ## Input errors
@@ -4982,7 +4982,9 @@ Each item below names a status and code, then its meaning.
 
   The document websocket (`/ws/doc/{room}`) refuses one browser's update that would take the document past a bound of its own:
   it stores and relays nothing of the update and closes that one browser with code `4413` (`DOCUMENT_TOO_LARGE_CLOSE_CODE` and `DOCUMENT_TOO_LARGE_CLOSE_REASON` in `packages/contracts`, generated into Go), leaving every other browser of the room editing.
-  The bounds are the byte bound every server write obeys (1 MiB of rendering; past it an update may still carry 8 KiB of new content, for the editor's own derived writes and for typing, until the rendering has crept 64 KiB past the bound, after which only an update carrying nothing new at all is taken), and the 1,200,000 values one apply of a browser's update may decode (each struct, each lib0 Any value at any depth, each Any map entry and each JSON member), which is past the decode cap itself, so an honest whole-state handoff decodes within it.
+  The bounds are the byte bound every server write obeys (1 MiB of rendering; past it an update may still carry 8 KiB of new content, for the editor's own derived writes and for typing, until the rendering has crept 64 KiB past the bound, after which only an update carrying nothing new at all is taken), the rendering the update leaves, and the 1,200,000 values one apply of a browser's update may decode (each struct, each lib0 Any value at any depth, each Any map entry and each JSON member), which is past the decode cap itself, so an honest whole-state handoff decodes within it.
+  An update's bytes do not show what it does to the rendering - a few bytes setting a list's start number or deleting a code mark's format items can grow it by hundreds of kilobytes - so the room renders what each browser's update leaves before it commits, and refuses one whose rendering would end past 1 MiB and its 64 KiB of creep and larger than the rendering it found;
+  an update that leaves the rendering no larger is taken, so a document already past the bound can be shortened.
   The 4400-4499 band is permanent, so the dashboard drops the refused edit, re-reads the document and says so in one sentence, rather than reconnecting into the same refusal.
 
 - `4413 DOC_TOO_TANGLED`
@@ -5005,7 +5007,8 @@ Each item below names a status and code, then its meaning.
 - `4413 DOC_UPDATE_REFUSED`
 
   The same close for an update holding content the document does not take:
-  bytes the server's own decoder refuses, or content the Proof editor never sends - an embed, raw binary content, a subdocument, a root outside the document's tree and its margin, or a write of the list of clients a rebuild retired - which ygo refuses as it decodes the update, rolling the whole apply back, storing and relaying nothing of it.
+  bytes the server's own decoder refuses, or content the Proof editor never sends - an embed, raw binary content, a subdocument, a root outside the document's tree and its margin, or a write of the list of clients a rebuild retired - which ygo refuses as it decodes the update, rolling the whole apply back, storing and relaying nothing of it;
+  or an update that leaves a document this build cannot render where it rendered before, which the room's render of what the update leaves refuses before it commits.
   Permanent like `DOC_TOO_LARGE`: the client that sent it would send it again on every reconnect, so the dashboard drops the refused edit and re-reads the document.
 
 - `4503 DOC_BUSY`
@@ -5014,6 +5017,8 @@ Each item below names a status and code, then its meaning.
   a browser asking for one more document is closed with code `4503` (`DOCUMENT_BUSY_CLOSE_CODE` and `DOCUMENT_BUSY_CLOSE_REASON` in `packages/contracts`) before any room is made for it, once its admission has waited for the sweep it started, and an update into a document already open is closed with it too unless it integrates no struct, cuts no item the room holds and adds no byte of content, since an insert of fewer bytes than it deletes can still multiply what the room holds.
   The budget is the share of the server's Go memory limit the open rooms are charged together (2 GiB at the 4 GiB limit the figures are calibrated on, 16 GiB on the production pod; the boot line `dispatch: the document service's memory bounds` names it), and the one update admitted while it is full is one that grows the room in no measure - a delete of whole items, or a frame of structs the room already holds - so a full document can still be cut.
   The 4500-4599 band is transient, so the dashboard keeps the edit it could not send and lets the provider's own backoff retry.
+  The same close refuses for now an update whose rendering would end past the 1 MiB bound and its creep in a room that has just taken a write of the server's own its rendered copy has not taken yet, where what the update found is not known;
+  the edit is sent again on the backoff and weighed once the room's rendering is known, an edit that shortens the document taken and one that grows it past the bound refused `DOC_TOO_LARGE`.
 
 ## Comment errors
 

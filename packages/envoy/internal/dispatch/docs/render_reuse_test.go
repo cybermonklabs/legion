@@ -62,7 +62,8 @@ func renderReuseDocument() string {
 type renderPaths struct {
 	observerReused, observerRendered                   uint64
 	observerIncremental, observerUntouched             uint64
-	observerMarginOnly                                 uint64
+	observerMarginOnly, observerChecked                uint64
+	checkUntouched, checkIncremental, checkRendered    uint64
 	beforeFromReplica, beforeFromWrite, beforeRendered uint64
 	catchUpFromLoad, catchUpRendered                   uint64
 }
@@ -75,6 +76,10 @@ func readRenderPaths(service *Service) renderPaths {
 		observerIncremental: counts.observerIncremental.Load(),
 		observerUntouched:   counts.observerUntouched.Load(),
 		observerMarginOnly:  counts.observerMarginOnly.Load(),
+		observerChecked:     counts.observerChecked.Load(),
+		checkUntouched:      counts.checkUntouched.Load(),
+		checkIncremental:    counts.checkIncremental.Load(),
+		checkRendered:       counts.checkRendered.Load(),
 		beforeFromReplica:   counts.beforeFromReplica.Load(),
 		beforeFromWrite:     counts.beforeFromWrite.Load(),
 		beforeRendered:      counts.beforeRendered.Load(),
@@ -90,6 +95,10 @@ func (p renderPaths) minus(base renderPaths) renderPaths {
 		observerIncremental: p.observerIncremental - base.observerIncremental,
 		observerUntouched:   p.observerUntouched - base.observerUntouched,
 		observerMarginOnly:  p.observerMarginOnly - base.observerMarginOnly,
+		observerChecked:     p.observerChecked - base.observerChecked,
+		checkUntouched:      p.checkUntouched - base.checkUntouched,
+		checkIncremental:    p.checkIncremental - base.checkIncremental,
+		checkRendered:       p.checkRendered - base.checkRendered,
 		beforeFromReplica:   p.beforeFromReplica - base.beforeFromReplica,
 		beforeFromWrite:     p.beforeFromWrite - base.beforeFromWrite,
 		beforeRendered:      p.beforeRendered - base.beforeRendered,
@@ -99,9 +108,10 @@ func (p renderPaths) minus(base renderPaths) renderPaths {
 }
 
 // observed is how many logged updates the update observer classified on any of its paths. A
-// replica's start is no such path: it classifies no update.
+// replica's start is no such path: it classifies no update, and neither does the room's apply
+// check, whose renders the observer takes (observerChecked).
 func (p renderPaths) observed() int {
-	return int(p.observerReused + p.observerRendered + p.observerIncremental + p.observerUntouched + p.observerMarginOnly)
+	return int(p.observerReused + p.observerRendered + p.observerIncremental + p.observerUntouched + p.observerMarginOnly + p.observerChecked)
 }
 
 // withoutCatchUps is p without the counts of the replica's starts (catchUpFromLoad,
@@ -1495,7 +1505,12 @@ func TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked(t *testing.T
 	if changed := storedClassOf(t, service, artifactID, logged.Parked); changed {
 		t.Error("the bytes the commit that only parked kept were recorded as a content change")
 	}
-	m.expect(t, renderPaths{observerUntouched: 1, observerRendered: 1}, 0)
+	// The commit that only parked changed nothing, so the room's apply check was not called for it
+	// and the observer classified it untouched. The one that filled the gap was checked once
+	// before it committed (renderCheck), with what waited behind it already integrated beside its
+	// own block: it changed the fragment, so the check rendered it whole, and the observer took
+	// that rendering in place of one of its own (takeChecked).
+	m.expect(t, renderPaths{observerUntouched: 1, observerChecked: 1, checkRendered: 1}, 0)
 }
 
 // peerAppendsBlock writes markdown as a paragraph at the end of the peer's document, in one

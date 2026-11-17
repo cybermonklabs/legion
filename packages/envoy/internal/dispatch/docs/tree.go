@@ -583,6 +583,13 @@ type roomWeighing struct {
 	// sizeUnmeasured while the room has no rendering to measure, which is a document outside the
 	// schema.
 	bytes atomic.Int64
+	// rendered is the replica's rendering as of the commit position it last stood at, which it
+	// publishes after each commit it takes (renderedReplica.publishRendered): what the room's
+	// apply check weighs a browser's update against, and splices that update's blocks into,
+	// where no commit has landed since (renderCheck.base). The check runs under the room
+	// document's lock, where the replica's lock may not be taken, so the rendering travels as an
+	// atomic as the measurement does.
+	rendered atomic.Pointer[roomRendered]
 	// charge is the room's charge in the room budget, which the room's load stores once it has
 	// made it (chargeLoadedRoom) and nothing replaces; nil until then, and for a room no load
 	// charged, a test's.
@@ -636,9 +643,10 @@ func (w *roomWeighing) roomStateBytes() int64 {
 // one; no measurement at all for a document no room's load listed. It takes no lock, so a caller
 // on the peer's read loop holds up nobody for it.
 //
-// It is never stale: the update observer publishes it with the rendering itself, so it is as
-// recent as the room's last update observer. It does not make the document bound a ceiling
-// (weighPeerUpdate).
+// It is as recent as the room's last update observer, so the byte bound the hook weighs before an
+// apply can be passed by the updates in flight when it crosses. What holds the document's
+// rendering to the bound is the room's apply check, which measures what each browser's apply
+// leaves before it commits (renderCheck); this measurement is the cheap test before the apply.
 func (w *roomWeighing) size() (bytes int64, measured bool) {
 	if w == nil {
 		return 0, false

@@ -139,11 +139,16 @@ func (s *roomStore) stored() {
 // cleanup's delete-set entry is only in the cleanup's commit. Here one browser deletes "abc"
 // while another marks its last character, the room taking the mark first, so the delete leaves
 // the mark's two markers around nothing and the cleanup deletes them. The mark is a one-letter
-// key with a one-byte value, so what the cleanup collects of the markers is less than the entry
-// it adds and the cleanup grows the state: measured here, the delete's apply grew the room 13
-// bytes and reported 13, and the cleanup grew it 2 more. The tally must cover an encode of the
-// room once both have landed, which it does only if the cleanup's commit is counted by the drain
-// that hands it over.
+// key with a one-byte value, so what the cleanup collects of the markers is less than the entry it
+// adds and the cleanup grows the state: measured here, the delete's apply grew the room 13 bytes
+// and reported 13, and the cleanup grew it 2 more. The tally must cover an encode of the room once
+// both have landed, which it does only if the cleanup's commit is counted by the drain that hands
+// it over.
+//
+// No mark of the schema is that small, and a browser's update leaving a mark this build cannot
+// read is refused by the room's apply check (renderCheck), so the mark reaches the room as a remote
+// apply that is none of the hook's - a catch-up's or a stored row's - which the check passes; the
+// delete, which leaves the document rendering again, is a browser's.
 func TestTheTallyCoversTheFormatCleanupARemoteDeleteLeaves(t *testing.T) {
 	state := stateOf(t, "One paragraph xabcy.\n")
 	live := newDocumentCopy()
@@ -160,7 +165,9 @@ func TestTheTallyCoversTheFormatCleanupARemoteDeleteLeaves(t *testing.T) {
 	marking := paragraphEdit(t, state, func(txn *crdt.Transaction, text *crdt.YXmlText) { text.Format(txn, at+2, 1, mark) })
 	deletion := paragraphEdit(t, state, func(txn *crdt.Transaction, text *crdt.YXmlText) { text.Delete(txn, at, 3) })
 
-	weighAsBrowser(t, room, marking, new(int))
+	if err := crdt.ApplyUpdateV1(live, marking, new(int)); err != nil {
+		t.Fatalf("apply the mark: %v", err)
+	}
 	before := room.replica.roomStateBytes()
 	encodedBefore := int64(len(crdt.EncodeStateAsUpdateV1(live, nil)))
 	// The deleting apply's own commit, read as its observers run and before ygo runs the cleanup

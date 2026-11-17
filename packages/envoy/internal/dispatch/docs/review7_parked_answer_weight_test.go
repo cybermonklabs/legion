@@ -9,7 +9,7 @@ package docs
 // copy_heap.go:52-55), so it is charged parkedAnswerWeight - 149 per cent of a whole copy of the
 // room, capped at one whole load slot.
 //
-// At the tag this branch pins, github.com/theorem-labs/ygo v1.55.1-theorem.6, there is no such
+// At the tag this branch pinned when this was written, github.com/theorem-labs/ygo v1.55.1-theorem.6, there is no such
 // path: crdt.SplitStateAsUpdateV1 walks the document's own structs for every room and reads back
 // only what the room parks, one parked struct at a time (crdt/split.go:81-115, readParked at
 // :155). The fork's own release notes for v1.55.1-sami.14, carried by this tag, say so: a

@@ -758,7 +758,16 @@ func TestTheHeaviestWholeStateFrameABrowserCanGrowFitsTheMessageFloor(t *testing
 		if fit := int((creepCap - 1 - published()) / renderedAPair); fit > 0 && fit < largest {
 			pairs = fit
 		}
-		if frame, err := grow(pairs); err != nil {
+		frame, err := grow(pairs)
+		// The room's apply check refuses the frame that would take the rendering past the bound
+		// and its creep (renderCheck), where the byte rule alone admitted it: the room grows to
+		// that line and no further, which is the heaviest a browser can now grow it. A refusal
+		// further from the line than one frame's worth of pairs is still a failure.
+		var past *renderRefusal
+		if errors.As(err, &past) && past.after > maxPeerRenderingBytes && creepCap-published() <= int64(largest)*renderedAPair {
+			break
+		}
+		if err != nil {
 			t.Fatalf("the hook refused %d pairs in a %d-byte frame at %d rendered bytes: %v", pairs, frame, published(), err)
 		}
 		updates++

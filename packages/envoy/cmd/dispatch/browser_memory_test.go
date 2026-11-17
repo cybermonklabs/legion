@@ -327,8 +327,12 @@ func TestABrowsersUpdateIsBoundedByTheDocumentBound(t *testing.T) {
 		if last := lengths[len(lengths)-1]; last >= bound+maxPeerByteCreepForTest || last < bound {
 			t.Errorf("the last insert applied to a %d-byte document, want one over the bound (%d) and under the creep past it (%d)", last, bound, bound+maxPeerByteCreepForTest)
 		}
-		if refusedAt < bound+maxPeerByteCreepForTest || refusedAt > bound+maxPeerByteCreepForTest+len(chunk) {
-			t.Errorf("the run was refused at %d bytes, want no earlier than the creep past the bound (%d) and no later than the one insert that crossed it (%d)", refusedAt, bound+maxPeerByteCreepForTest, bound+maxPeerByteCreepForTest+len(chunk))
+		// The room's apply check refuses the insert whose result would render past the creep line
+		// (docs.renderCheck), where the frame-bytes rule alone admitted it and refused the next: the
+		// run stops within one insert below the line and never past it. Both ends bite - a check
+		// refusing far too early fails the first, and a document let past the line the second.
+		if creepLine := bound + maxPeerByteCreepForTest; refusedAt < creepLine-len(chunk) || refusedAt > creepLine {
+			t.Errorf("the run was refused at %d bytes, want no earlier than one insert (%d bytes) short of the creep past the bound (%d) and no later than that line", refusedAt, len(chunk), creepLine)
 		}
 	})
 

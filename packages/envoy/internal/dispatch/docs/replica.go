@@ -63,8 +63,9 @@ import (
 //
 // The observer renders the replica after an update only when it can neither know the update is a
 // margin write's publish into the room its fork was warm-built from (liveWriteOrigin.marginOnly
-// says why that changes no text) nor reuse the rendering the published live write that made the
-// update made of it (changedBy). Both are exact.
+// says why that changes no text), nor reuse the rendering the published live write that made the
+// update made of it, nor take the rendering the room's apply check made of the state a browser's
+// update left before it committed (changedBy, takeChecked, renderCheck). All three are exact.
 // The write's rendering (publishedRendering) is taken only on the replica, epoch and foreign
 // count the operation's own fork read found, the replica's under its lock at the position that
 // read copied (warmFork): a replica still at both has consumed, through that read, every commit
@@ -133,7 +134,13 @@ type renderedReplica struct {
 	// (roomListing), and the two of them are collected together as they always were.
 	live *crdt.Doc
 	log  *crdt.UpdateLog
-	doc  *crdt.Doc
+	// logged counts the room's commits by log (loggedCommits): every drain of log and every
+	// reset of it goes through it, so the room's apply check can read the commit position the
+	// room stands at. check is the room's apply check (renderCheck), which the replica holds so a
+	// test can reach its hooks; live holds it as its apply check besides.
+	logged *loggedCommits
+	check  *renderCheck
+	doc    *crdt.Doc
 	// fragment is doc's document fragment, the one shared type the rendering reads; nil with doc.
 	fragment *crdt.YXmlFragment
 	// rendering is the room's rendering as the replica's latest update left it, or as the log's
@@ -271,6 +278,10 @@ func (s *Service) residentVerdict(room string) schemaVerdict {
 type replicaRendering struct {
 	markdown string
 	layout   *pmdoc.Layout
+	// blocks is the index of the room's live top-level blocks a rendering the room's apply check
+	// made is of (blockIndex), nil for every other rendering: the replica's, the load's and a
+	// published write's are of other documents' elements.
+	blocks *blockIndex
 }
 
 // markdownAt is the markdown of rendering, the pointer the room's measurement is published from
@@ -330,6 +341,16 @@ type renderPathCounts struct {
 	// without rendering, since they changed nothing under the document's fragment
 	// (updateChangesMarkdown's untouched path).
 	observerUntouched atomic.Uint64
+	// observerChecked counts the logged updates the update observer classified with the
+	// rendering the room's apply check made of the very state the update left, in place of one
+	// of its own (takeChecked).
+	observerChecked atomic.Uint64
+	// checkUntouched, checkIncremental and checkRendered count the browsers' applies the room's
+	// apply check rendered (renderInView): as the rendering the apply found, since it touched no
+	// top-level block; by splicing the blocks it touched into that rendering; and whole.
+	checkUntouched   atomic.Uint64
+	checkIncremental atomic.Uint64
+	checkRendered    atomic.Uint64
 	// beforeFromReplica counts the operations whose rendering of their fork before they applied was
 	// the room replica's, which held the very state the fork was read from.
 	beforeFromReplica atomic.Uint64
@@ -440,22 +461,27 @@ func (r *renderedReplica) drainLocked(room string) (settles, changed, local bool
 // drainLog drains the room's update log, with reports, the reports the room's applies made
 // before it did (roomApplies.reportsMade): ygo appends a commit to the log and then reports it
 // under one hold of the document's lock, so these hold the report of every remote apply among
-// updates but one whose report a concurrent drain's take raced (reportPairing.covers). The
-// caller holds mu.
-func (r *renderedReplica) drainLog() (base []byte, updates []crdt.LoggedUpdate, reports []any) {
+// updates but one whose report a concurrent drain's take raced (reportPairing.covers). The drain
+// counts what it takes (loggedCommits), so the room's apply check knows how many commits the
+// room has made and which of them the rendering it weighs against stands at. The caller holds
+// mu.
+func (r *renderedReplica) drainLog() (base []byte, updates []crdt.LoggedUpdate, reports []madeReport) {
 	reports = r.applies().reportsMade()
-	base, updates = r.log.Drain()
+	base, updates = r.logged.drain()
 	return base, updates, reports
 }
 
 // takeLocked moves the replica through what one drain of the room's log handed over - base, when
 // it recorded one and the replica holds no copy, and updates - in commit order, counting each
 // into the room's tracked state where no report among reports covers it (countCommit),
-// classifying each update as it takes it (changedBy) and calling the replica's classify, when
-// set, with each update, its commit position, whether it changed the room's rendered markdown
-// and the ask blocks it left; it then charges the room again from what its record holds
+// classifying each update as it takes it (changedBy), with the rendering the room's apply check
+// made of the state it left where its report carries one, and calling the replica's classify,
+// when set, with each update, its commit position, whether it changed the room's rendered
+// markdown and the ask blocks it left; it then charges the room again from what its record holds
 // (chargeAdded). The caller holds mu, so the room's own record of what each update introduced
-// moves forward in commit order.
+// moves forward in commit order. After each update it publishes the rendering it then holds, at
+// that commit's position, for the apply check to weigh the room's next browser update against
+// (publishRendered).
 //
 // Each update is applied in the two parts the log hands over: Update, the structs and deletions
 // the transaction integrated, and then what it parked (crdt.LoggedUpdate.Parked), nil when it
@@ -463,7 +489,7 @@ func (r *renderedReplica) drainLog() (base []byte, updates []crdt.LoggedUpdate, 
 // goes to recover with the rest of the drain. The two are one commit: it is consumed, counted,
 // classified and recorded once, and renderedReplica says why the second apply changes no
 // rendering.
-func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.LoggedUpdate, reports []any) (settles, changed, local bool) {
+func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.LoggedUpdate, reports []madeReport) (settles, changed, local bool) {
 	r.pairing = reportPairing{reports: reports}
 	defer r.chargeAdded(len(updates) > 0)
 	note := func(update crdt.LoggedUpdate, contentChanged bool, asks func() map[string]struct{}) {
@@ -507,11 +533,13 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 				return settles, changed, local
 			}
 		}
-		r.countCommit(update, r.measures >= applies)
+		report := r.countCommit(update, r.measures >= applies)
 		published, rendering := r.consumed(update)
-		contentChanged, asks := r.changedBy(room, published, rendering)
+		// The commit is the replica's next position, which note counts it at.
+		contentChanged, asks := r.changedBy(room, published, rendering, report.checkedAt(r.seq+1))
 		note(update, contentChanged, asks)
 		r.touched.reset()
+		r.publishRendered()
 	}
 	return settles, changed, local
 }
@@ -584,33 +612,44 @@ func (r *renderedReplica) noteReplicaApply(_ any, report crdt.ApplyReport) {
 // decode (start). A commit the replica parks is measured, since its report counts a struct
 // where it parks, and an apply that commits and makes no report, which ygo does not do, is
 // owed as well.
-func (r *renderedReplica) countCommit(update crdt.LoggedUpdate, measured bool) {
-	if r.pairing.covers(update.Origin) {
-		return
+//
+// It answers the report that covered the commit, the zero report where none did: a browser's
+// apply's report carries the rendering the room's apply check made of the state the commit left,
+// which the drain classifies the commit with (madeReport.checkedAt, takeChecked).
+func (r *renderedReplica) countCommit(update crdt.LoggedUpdate, measured bool) madeReport {
+	if report, covered := r.pairing.covers(update.Origin); covered {
+		return report
 	}
 	if !measured {
 		r.applies().owe()
-		return
+	} else {
+		r.applies().added(max(int64(len(update.Update)+len(update.Parked)), r.measured))
 	}
-	r.applies().added(max(int64(len(update.Update)+len(update.Parked)), r.measured))
+	return madeReport{}
 }
 
 // noteChangedTypes records into what txn, a transaction of fragment's document, changed under
-// fragment: each type ygo says txn changed (crdt.Transaction.ChangedTypes) is fragment itself, so
-// the update is rendered whole, or sits in a top-level block, the type just below fragment on its
-// Parent chain, which it records as touched; a chain that ends at another root type is outside
-// what the rendering reads, and touches nothing. A type more than pmdoc.MaxTreeDepth levels down
-// stands deeper than any node a document in the schema holds, so the walk up from it stops there
-// and the update is rendered whole, which is exact for any update: each walk costs at most the
-// schema's depth, however deep a peer nested the types it changed. start registers
-// it on each document the replica makes, after applying the base, so it runs for the transactions
-// of the updates takeLocked applies, under mu.
+// fragment (noteChanged). start registers it on each document the replica makes, after applying
+// the base, so it runs for the transactions of the updates takeLocked applies, under mu.
 func noteChangedTypes(txn *crdt.Transaction, fragment *crdt.YXmlFragment, into *touchedBlocks) {
+	noteChanged(txn.ChangedTypes(), fragment, into)
+}
+
+// noteChanged records into what changed, the types one transaction or one apply changed
+// (crdt.Transaction.ChangedTypes, crdt.ApplyView.ChangedTypes), touched under fragment: each type
+// is fragment itself, so the update is rendered whole, or sits in a top-level block, the type
+// just below fragment on its Parent chain, which it records as touched; a chain that ends at
+// another root type is outside what the rendering reads, and touches nothing. A type more than
+// pmdoc.MaxTreeDepth levels down stands deeper than any node a document in the schema holds, so
+// the walk up from it stops there and the update is rendered whole, which is exact for any
+// update: each walk costs at most the schema's depth, however deep a peer nested the types it
+// changed. Parent takes no document lock, so the room's apply check walks it too (renderCheck).
+func noteChanged(types []crdt.SharedType, fragment *crdt.YXmlFragment, into *touchedBlocks) {
 	if into.whole {
 		return
 	}
 	root := crdt.SharedType(fragment)
-	for _, changed := range txn.ChangedTypes() {
+	for _, changed := range types {
 		if changed == root {
 			into.whole = true
 			return
@@ -634,11 +673,12 @@ func noteChangedTypes(txn *crdt.Transaction, fragment *crdt.YXmlFragment, into *
 }
 
 // changedBy classifies the update the replica has just applied and counted (consumed), published
-// when a published live write made it, nil otherwise, and rendering that write's operation's
-// rendering of it: whether it changed the room's rendered markdown, and the ask blocks it left
-// when it did (drainClassifier). It measures the update against the replica
-// (updateChangesMarkdown) only when nothing else tells. A published live write's update can tell
-// in two ways, tried in this order:
+// when a published live write made it, nil otherwise, rendering that write's operation's
+// rendering of it, and checked the rendering the room's apply check made of the state a
+// browser's apply left, nil for any other commit: whether it changed the room's rendered
+// markdown, and the ask blocks it left when it did (drainClassifier). It measures the update
+// against the replica (updateChangesMarkdown) only when nothing else tells. A published live
+// write's update can tell in two ways, tried in this order:
 //
 //   - it is a margin write's publish into the room instance its fork was warm-built from
 //     (liveWriteOrigin.marginOnly, which says why that changes no text), so it changed nothing,
@@ -651,8 +691,13 @@ func noteChangedTypes(txn *crdt.Transaction, fragment *crdt.YXmlFragment, into *
 //     replica takes that rendering, markdown and layout together (replicaRendering). A change the
 //     operation did not see as one carries no ask blocks, so it is measured after all.
 //
-// renderedReplica says why the last one is exact. The caller holds mu.
-func (r *renderedReplica) changedBy(room string, published *liveWriteOrigin, rendering publishedRendering) (bool, func() map[string]struct{}) {
+// A browser's update tells by checked (takeChecked): the check rendered the state it left before
+// the commit, under the document's lock, and that render is the one the update pays for, so the
+// observer renders nothing of its own for it.
+//
+// renderedReplica says why the published path is exact, and takeChecked why the checked one is.
+// The caller holds mu.
+func (r *renderedReplica) changedBy(room string, published *liveWriteOrigin, rendering publishedRendering, checked *replicaRendering) (bool, func() map[string]struct{}) {
 	if published != nil && published.marginOnly && r.rendering != nil {
 		r.paths.observerMarginOnly.Add(1)
 		return false, nil
@@ -677,6 +722,11 @@ func (r *renderedReplica) changedBy(room string, published *liveWriteOrigin, ren
 				r.paths.observerReused.Add(1)
 				return true, func() map[string]struct{} { return askBlocks }
 			}
+		}
+	}
+	if checked != nil {
+		if changed, asks, ok := r.takeChecked(room, checked); ok {
+			return changed, asks
 		}
 	}
 	return r.updateChangesMarkdown(room)
@@ -814,7 +864,9 @@ func (r *renderedReplica) startFromRead(doc *crdt.Doc, epoch uint64) *crdt.Doc {
 // start says, and a render of doc otherwise. It subscribes noteChangedTypes to doc's transactions,
 // with doc's own fragment, so what it records is each later update's, and gives doc the report
 // each drain measures a commit by (noteReplicaApply). A rendering other than the one the room
-// last published is published as the room's measurement (publishSize). The caller holds mu.
+// last published is published as the room's measurement (publishSize), and the rendering is
+// published at the commit position doc stands at for the room's apply check (publishRendered).
+// The caller holds mu.
 func (r *renderedReplica) startAt(doc *crdt.Doc) {
 	published := r.rendering
 	loaded := r.loaded.Value()
@@ -839,6 +891,18 @@ func (r *renderedReplica) startAt(doc *crdt.Doc) {
 	if published == nil || r.rendering == nil || published.markdown != r.rendering.markdown {
 		r.publishSize(markdownAt(r.rendering))
 	}
+	r.publishRendered()
+}
+
+// publishRendered publishes the replica's rendering as of the commit position it stands at
+// (seq), the room's rendering at that commit, for the room's apply check to weigh a browser's
+// update against where no commit has landed since (renderCheck.base). It drops the check's own
+// record of the room's rendering where that record stands at or before this position, so a
+// rendering the replica has taken over is not held twice. The caller holds mu, and the replica
+// holds a document.
+func (r *renderedReplica) publishRendered() {
+	r.rendered.Store(&roomRendered{at: r.seq, bytes: renderedSize(r.rendering), rendering: r.rendering})
+	r.applies().forgetChecked(r.seq)
 }
 
 // recover answers a replica that could not take an update, which leaves it holding no state the
@@ -858,7 +922,7 @@ func (r *renderedReplica) recover(room string, unplaced []crdt.LoggedUpdate, not
 	// The reports the drain took are a prefix of these: nothing drops a report but the charge
 	// that ends the drain (chargeAdded).
 	r.pairing.reports = r.applies().reportsMade()
-	reset := r.log.Reset()
+	reset := r.logged.reset()
 	unplaced = append(unplaced, reset...)
 	for _, update := range unplaced {
 		r.countCommit(update, false)
@@ -1072,24 +1136,32 @@ func (r *renderedReplica) chargeAdded(handed bool) {
 // root, and every apply that commits leaves the room's record holding what the document then
 // holds and what the apply added to its encoded state (crdt.WithApplyReport), which is what the
 // room's charge and the next update's allowance are built from, each report kept for the drain
-// that hands its commit over where there is a log to drain; and it sets
-// live's scan budget (newRoomScans), so from here every remote apply on live is bounded, with
-// nothing of the room's scan total used until the load records its re-scan
-// (roomScans.rescanned).
+// that hands its commit over where there is a log to drain; it sets live's scan budget
+// (newRoomScans), so from here every remote apply on live is bounded, with nothing of the room's
+// scan total used until the load records its re-scan (roomScans.rescanned); and it sets live's
+// apply check (newRenderCheck), so from here every browser's apply is refused where what it
+// leaves renders past the document bound and its creep, larger than it found it. The load's
+// rendering is the first the check weighs against, at the room's first commit position: held
+// with the copy where the replica holds one, and by its size alone where it does not, so a room
+// whose load handed no copy renders its first checked update whole.
 func (s *Service) keepReplica(live *crdt.Doc, log *crdt.UpdateLog, loaded *replicaRendering, decoded *crdt.Doc) *renderedReplica {
+	logged := newLoggedCommits(live, log)
 	weighing := &roomWeighing{
 		retired: retiredClientsOf(live),
-		budgets: newRoomApplies(live, log != nil),
+		budgets: newRoomApplies(live, log != nil, logged),
 		scans:   newRoomScans(live),
 	}
-	replica := &renderedReplica{live: live, log: log, roomWeighing: weighing, paths: &s.renderPaths}
+	replica := &renderedReplica{live: live, log: log, logged: logged, roomWeighing: weighing, paths: &s.renderPaths}
 	replica.epoch.Store(replicaEpochs.Add(1))
 	if decoded != nil {
 		replica.startFromLoad(decoded, loaded)
+		replica.publishRendered()
 	} else {
 		replica.loaded = weak.Make(loaded)
+		weighing.rendered.Store(&roomRendered{bytes: renderedSize(loaded)})
 	}
 	replica.publishSize(markdownAt(loaded))
+	replica.check = newRenderCheck(live, weighing, &s.renderPaths)
 	listResident(&s.replicas, live, &roomListing{weighing: weighing, replica: weak.Make(replica)})
 	return replica
 }
@@ -1280,48 +1352,73 @@ func (r *renderedReplica) updateChangesMarkdown(room string) (bool, func() map[s
 }
 
 // spliceTouched is updateChangesMarkdown's incremental path: it splices the touched blocks'
-// rendering into the replica's markdown (pmdoc.Layout.Splice) and reports whether that changed
-// it, with the ask blocks the update left when it did, or ok false where the update must be
-// rendered whole. Splice wants the document's top-level blocks as many and in the order the layout
-// recorded, which an update that did not change the fragment leaves them, and every touched block
-// among them, which a touched block deleted with its parent's own deletion is not; it checks the
-// rest itself. The ask blocks are those of the blocks the new layout says hold one, read only when
-// asked for: the document node is never an ask, so they are the whole tree's. A block the walk
-// cannot read leaves it with no answer to give, so it logs the failure and answers nil, which
-// records nothing of the update's ask blocks (observeAskBlocksForUpdate), as a whole render that
-// cannot read the document does. The caller holds mu.
+// rendering into the replica's markdown (spliceBlocks) and reports whether that changed it, with
+// the ask blocks the update left when it did (askBlocksOf), or ok false where the update must be
+// rendered whole. The caller holds mu.
 func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() map[string]struct{}, ok bool) {
 	children := r.fragment.Children()
-	if len(children) != r.rendering.layout.Blocks() {
-		return false, nil, false
-	}
-	touched := make([]int, 0, len(r.touched.blocks))
-	for index, child := range children {
-		element, isElement := child.(*crdt.YXmlElement)
-		if !isElement {
-			return false, nil, false
-		}
-		if slices.Contains(r.touched.blocks, crdt.SharedType(element)) {
-			touched = append(touched, index)
-		}
-	}
-	if len(touched) != len(r.touched.blocks) {
-		return false, nil, false
-	}
-	read := func(index int) (*pmdoc.Node, error) {
-		return pmdoc.ReadBlockForRendering(children[index].(*crdt.YXmlElement))
-	}
-	markdown, layout, ok := r.rendering.layout.Splice(r.rendering.markdown, touched, read)
+	spliced, ok := spliceBlocks(r.rendering, children, r.touched.blocks, pmdoc.ReadBlockForRendering)
 	if !ok {
 		return false, nil, false
 	}
-	if !r.keep(markdown, layout) {
+	if !r.keep(spliced.markdown, spliced.layout) {
 		return false, nil, true
 	}
-	return true, func() map[string]struct{} {
+	return true, askBlocksOf(room, children, spliced.layout), true
+}
+
+// spliceBlocks is rendering with the top-level blocks of children that blocks names - the blocks
+// an update touched (touchedBlocks) - read through read and rendered again into its markdown
+// (pmdoc.Layout.Splice), or ok false where the document must be rendered whole. children is the
+// document fragment's children as the update left them. Splice wants the document's top-level
+// blocks as many and in the order the layout recorded, which an update that did not change the
+// fragment leaves them, and every touched block among them, which a touched block deleted with
+// its parent's own deletion is not; it checks the rest itself. A markdown the splice leaves as it
+// was keeps rendering's own string, so no two equal copies of it are held.
+//
+// It serves both renders that splice a room's document: the update observer's of the replica
+// (spliceTouched), read through pmdoc.ReadBlockForRendering, and the room's apply check's of the
+// room's document as a browser's apply leaves it (renderInView), read through the apply's view.
+func spliceBlocks[N any](rendering *replicaRendering, children []N, blocks []crdt.SharedType, read func(*crdt.YXmlElement) (*pmdoc.Node, error)) (*replicaRendering, bool) {
+	if len(children) != rendering.layout.Blocks() {
+		return nil, false
+	}
+	touched := make([]int, 0, len(blocks))
+	for index, child := range children {
+		element, isElement := any(child).(*crdt.YXmlElement)
+		if !isElement {
+			return nil, false
+		}
+		if slices.Contains(blocks, crdt.SharedType(element)) {
+			touched = append(touched, index)
+		}
+	}
+	if len(touched) != len(blocks) {
+		return nil, false
+	}
+	markdown, layout, ok := rendering.layout.Splice(rendering.markdown, touched, func(index int) (*pmdoc.Node, error) {
+		return read(any(children[index]).(*crdt.YXmlElement))
+	})
+	if !ok {
+		return nil, false
+	}
+	if markdown == rendering.markdown {
+		markdown = rendering.markdown
+	}
+	return &replicaRendering{markdown: markdown, layout: layout}, true
+}
+
+// askBlocksOf answers the ids of the ask blocks of children, the replica's top-level blocks as
+// they stand, which layout says hold one, read only when asked for: the document node is never an
+// ask, so they are the whole tree's. A block the walk cannot read leaves it with no answer to
+// give, so it logs the failure and answers nil, which records nothing of the update's ask blocks
+// (observeAskBlocksForUpdate), as a whole render that cannot read the document does. The answer
+// reads the replica, so it is valid only while the caller holds mu.
+func askBlocksOf[N any](room string, children []N, layout *pmdoc.Layout) func() map[string]struct{} {
+	return func() map[string]struct{} {
 		ids := map[string]struct{}{}
 		for _, index := range layout.AskBlocks() {
-			block, err := read(index)
+			block, err := pmdoc.ReadBlockForRendering(any(children[index]).(*crdt.YXmlElement))
 			if err != nil {
 				slog.Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", err)
 				return nil
@@ -1329,6 +1426,39 @@ func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() 
 			addAskBlockIDs(ids, block)
 		}
 		return ids
+	}
+}
+
+// takeChecked classifies the update the replica has just applied with checked, the rendering
+// the room's apply check made of the very state the update left (renderCheck), in place of a
+// render of its own, and reports whether the update changed the room's rendered markdown, with
+// the ask blocks it left when it did, or ok false where the observer must measure the update
+// itself after all.
+//
+// It is exact: the check renders the room's document as the apply left it, before the commit,
+// and the rendering it hands over is that of the last check the apply passed, which is the state
+// the commit stood at - a drain taken back leaves the state the update's own check rendered, and
+// nothing else a commit does changes what renders (renderCheck). The replica holds the room as
+// each commit in turn left it (renderedReplica), so after the update's apply it holds the state
+// checked renders, and rendering is deterministic over one state. The replica is a copy that may
+// be coarser than the room, never one with other content (countCommit), and a coarser copy reads
+// the same deltas. It walks nothing of the replica unless the ask blocks are asked for: a walk of
+// the fragment's children costs in proportion to the document, and a keystroke pays for its change
+// alone. The block count is guarded where the ask blocks are read. The caller holds mu.
+func (r *renderedReplica) takeChecked(room string, checked *replicaRendering) (changed bool, asks func() map[string]struct{}, ok bool) {
+	r.paths.observerChecked.Add(1)
+	if !r.keep(checked.markdown, checked.layout) {
+		return false, nil, true
+	}
+	fragment, layout := r.fragment, checked.layout
+	return true, func() map[string]struct{} {
+		children := fragment.Children()
+		if len(children) != layout.Blocks() {
+			slog.Error("dispatch: the updated document's blocks are not the ones its rendering was recorded with; its ask blocks are not listed",
+				"room", room, "blocks", len(children), "recorded", layout.Blocks())
+			return nil
+		}
+		return askBlocksOf(room, children, layout)()
 	}, true
 }
 

@@ -501,9 +501,11 @@ func TestARoomTakesTypedCharactersAfterAForgedGCRun(t *testing.T) {
 
 // A replica that could not place an update holds no document, no fragment and no rendering, and
 // waits for the base the room's next commit records (renderedReplica.recover): the edit after that
-// commit starts the replica from that base, rendering it whole, and splices its own block into that
-// rendering. So a restart leaves the room taking edits too, and nothing on the path reads the
-// document, the fragment or the layout the replica dropped.
+// commit starts the replica from that base, rendering it whole, and takes the rendering the room's
+// apply check spliced the edit's own block into (takeChecked). So a restart leaves the room taking
+// edits too, and nothing on the path reads the document, the fragment or the layout the replica
+// dropped: the check splices into the room's own record of its rendering, which the replica's
+// restart does not touch (renderCheck.base).
 func TestARestartedReplicaRendersItsBaseAndSplicesTheEditAfterIt(t *testing.T) {
 	service, room, replica, _ := drainedPeerUpdateRoom(t, "# Title\n\nParagraph one of the room.\n\nParagraph two of the room.\n")
 	// The room's first commit, which hands the replica the log's first base and leaves it
@@ -525,15 +527,15 @@ func TestARestartedReplicaRendersItsBaseAndSplicesTheEditAfterIt(t *testing.T) {
 		t.Fatalf("between the drop and the room's next commit the replica holds a document %t, a fragment %t, a rendering %t and a layout %t, want none of them",
 			doc, fragment, rendering, layout)
 	}
-	if took := readRenderPaths(service).minus(before); took != (renderPaths{}) {
-		t.Fatalf("the update it could not place took the paths %+v, want none", took)
+	if took, want := readRenderPaths(service).minus(before), (renderPaths{checkIncremental: 1}); took != want {
+		t.Fatalf("the update it could not place took the paths %+v, want the check's splice and nothing of the replica's: %+v", took, want)
 	}
 	before = readRenderPaths(service)
 	edit := browserTypingACharacter(t, room, "c")
 	if err, called := weighInto(service, room, edit); err != nil || !called {
 		t.Fatalf("the edit after the restart was answered %v (applied %t), want it admitted", err, called)
 	}
-	if took, want := readRenderPaths(service).minus(before), (renderPaths{catchUpRendered: 1, observerIncremental: 1}); took != want {
+	if took, want := readRenderPaths(service).minus(before), (renderPaths{checkIncremental: 1, catchUpRendered: 1, observerChecked: 1}); took != want {
 		t.Fatalf("the edit after the restart took the paths %+v, want %+v", took, want)
 	}
 	requireRoomRendered(t, room, replica, "the edit after the restart")

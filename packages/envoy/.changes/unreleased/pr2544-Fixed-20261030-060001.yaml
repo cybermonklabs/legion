@@ -12,9 +12,14 @@ body: |-
     code an update is closed `4413 DOC_TOO_LARGE` when it would carry the document past the 1 MiB
     byte bound every server write obeys (past which it may still carry 8 KiB of new content, for the
     editor's own derived writes and for typing, until the document has crept 64 KiB over the bound,
-    after which only an update carrying nothing new is taken), or decode more than the 1,200,000
-    values one apply may decode; `4413 DOC_NEEDS_REBUILD` when it would carry the room's encoded
-    state past the 16,777,216 bytes one room may hold - each struct it carries charged 48 bytes of
+    after which only an update carrying nothing new is taken), when what it leaves would render
+    past that bound and its creep and larger than the room rendered before it - the room renders
+    each browser's update before it commits, since a few bytes setting a list's start number or
+    deleting a code mark's format items can grow the rendering by hundreds of kilobytes, and an
+    update that leaves a document this build cannot render is closed `DOC_UPDATE_REFUSED` -, or
+    decode more than the 1,200,000 values one apply may decode; `4413 DOC_NEEDS_REBUILD` when it
+    would carry the room's encoded state past the 16,777,216 bytes one room may hold - each struct
+    it carries charged 48 bytes of
     them besides its content, so structs that carry no content stop at the cap too - or carry the
     document past the 1,048,576 structs ygo decodes in one update - counting the items a delete
     inside a run splits as well as the structs the update carries, so a delete of one character can

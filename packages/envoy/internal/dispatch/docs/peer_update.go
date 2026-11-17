@@ -22,14 +22,15 @@ import (
 
 // A browser's update reaches its room through no check of the server's own: applyLive weighs every
 // write a caller makes by the document it leaves (growth.go), and a browser's update runs through
-// none of it, so a browser can carry a document past the bound every server write obeys
-// (refuseGrowth). What stops that here is weighPeerUpdate, ygo's Server.OnPeerUpdate, which the
-// room runs in place of its own apply for each update and whole-state message a read-write browser
-// sends.
+// none of it, so without a bound of its own a browser could carry a document past the bound every
+// server write obeys (refuseGrowth). Two things bound it here: weighPeerUpdate, ygo's
+// Server.OnPeerUpdate, which the room runs in place of its own apply for each update and
+// whole-state message a read-write browser sends, and the room's apply check (renderCheck), which
+// ygo runs inside that apply, on what it leaves, before it commits.
 //
-// It does not run applyLive's checks. Those weigh what a write leaves, which costs a fork of the
-// document, a tree build and a full markdown render - about 420 ms for the fork alone at 1 MiB and
-// a whole further copy of the document, with the render about 160 ms (AGENTS.md:563-602,
+// The hook does not run applyLive's checks. Those weigh what a write leaves, which costs a fork
+// of the document, a tree build and a full markdown render - about 420 ms for the fork alone at
+// 1 MiB and a whole further copy of the document, with the render about 160 ms (AGENTS.md:563-602,
 // :780-781) - against a keystroke on such a document that already takes between half a second and
 // a second. What it does instead is hand ygo an allowance built from what it can see without
 // reading the update at all - the update's own length, the structs the room's last committed
@@ -56,11 +57,21 @@ import (
 // it no heavier passes, and a rebuild from its latest stored version restores it whatever it
 // weighs (TestARebuildFromTheLatestVersionRestoresItWhateverItWeighs).
 //
-// The bound is not a ceiling the document cannot pass: the rendering the hook compares against is
-// as recent as the room's last update observer, so a document passes it by the updates in flight
-// when it crosses, and this is all that is claimed here. What the room holds parked is weighed
-// beside that rendering, because parked content renders nothing until the apply that fills its
-// gap lands it all at once (drainWouldRender).
+// The byte rule the allowance carries is not what holds the document to its bound. It weighs
+// what an update carries against the room's last published rendering, and neither says what the
+// update does to the rendering: where its items land and what a deleted format item leaves
+// formatted depend on what the document holds, and a few bytes can grow the rendering by
+// hundreds of kilobytes (renderCheck lists the shapes measured). The rendering is as recent as
+// the room's last update observer, too, so the rule alone could be passed by the updates in
+// flight when the room crosses it. What holds the bound is the room's apply check, which
+// renders what each browser's apply leaves and refuses one whose rendering would be past the
+// bound and its creep (maxPeerRenderingBytes) and larger than it was. The byte rule stays as the
+// cheap test before the apply: it refuses a frame too large for the room before anything decodes
+// it, holds what one update may carry into a document at the bound to what keeps an editor
+// working (maxPeerInsertAtTheBound), and leaves one past the creep cap nothing to carry at all,
+// so the check renders only what can pass it. What the room holds parked is weighed beside the
+// published rendering, because parked content renders nothing until the apply that fills its gap
+// lands it all at once (drainWouldRender); the check weighs that drain again on what it lands.
 //
 // The document has a second bound of its own, which bytes cannot see: the decode cap. ygo decodes
 // at most maxUpdateItems structs in one update, and a room's whole state is one update to the next
@@ -147,12 +158,19 @@ import (
 // maxPeerInsertAtTheBound is the most new content one update may carry into a document already at
 // or over the bound: enough for the editor's own derived writes - heading ids, list labels, anchor
 // marks - and for ordinary typing and deleting to carry on, and not enough for a paste. A document
-// can therefore creep above the bound, and maxPeerByteCreep caps how far.
+// can therefore creep above the bound, and maxPeerByteCreep caps how far. What an update carries
+// is not what it renders (renderCheck), so this bounds the content, and the room's apply check
+// bounds the rendering the update leaves.
 const maxPeerInsertAtTheBound = 8 << 10
 
-// maxPeerByteCreep is how far past the bound a room's measurement may creep before only an update
-// that inserts nothing at all is admitted, so a document that has crossed can still be trimmed or
-// split and nothing can grow it further.
+// maxPeerByteCreep is how far past the bound a document's rendering may creep: a room whose
+// measurement stands past it admits only an update that carries no content at all, and the room's
+// apply check refuses any update whose rendering would end past the bound and this creep larger
+// than it was (maxPeerRenderingBytes). The first is a test of what the update carries, which an
+// update carrying none can still pass while growing the rendering - a delete of a code mark's
+// format items carries nothing and leaves every character it held to be escaped - so it is the
+// second that keeps a document that has crossed from growing further, while it can still be
+// trimmed or split.
 const maxPeerByteCreep = 64 << 10
 
 // maxRoomStateBytes is the most encoded state one room may hold: a quarter of the message floor,
@@ -630,14 +648,45 @@ type roomApplies struct {
 	state   atomic.Int64
 	commits atomic.Uint64
 	owed    atomic.Bool
-	// unpaired is the origins of the reports no drained commit has been paired with yet, in
-	// commit order, guarded by mu; paired is whether the room keeps them, which a room whose
-	// commits a replica drains does (newRoomApplies). ygo logs a commit and then reports it
-	// under the same hold of the document's lock, so a drain that takes the reports made
-	// before it takes the log finds the report of every remote apply it hands over
-	// (reportsMade, reportPairing).
-	unpaired []any
+	// unpaired is the reports no drained commit has been paired with yet, in commit order, each
+	// with its apply's origin and the rendering the room's apply check made of the state it
+	// left, guarded by mu; paired is whether the room keeps them, which a room whose commits a
+	// replica drains does (newRoomApplies). ygo logs a commit and then reports it under the same
+	// hold of the document's lock, so a drain that takes the reports made before it takes the log
+	// finds the report of every remote apply it hands over (reportsMade, reportPairing).
+	unpaired []madeReport
 	paired   bool
+	// checked is the room's rendering as the last browser's apply the check passed left it, at
+	// the commit position that apply's commit stood at (noteApply): what the next browser's
+	// apply is weighed against and spliced into while no other commit has landed and the
+	// replica has not yet taken this one (renderCheck.base). It is written under the document's
+	// lock and dropped by the replica once it stands at or past it (forgetChecked), so it is an
+	// atomic.
+	checked atomic.Pointer[roomRendered]
+}
+
+// madeReport is one apply's report as the room keeps it for the drain that hands its commit over
+// (reportPairing): the apply's origin, and checked, the rendering the room's apply check made of
+// the state the apply's commit stood at, with that commit's position, nil for an apply the check
+// did not render - the server's own, or one that changed nothing the check reads - and for one
+// whose position could not be counted.
+type madeReport struct {
+	origin  any
+	checked *roomRendered
+}
+
+// checkedAt is the rendering report carries for the commit at position seq, and nil where it
+// carries none or carries one of another commit. The position is what makes the hand-over exact:
+// the pairing matches a commit with the first unpaired report of its origin, and a report made by
+// an apply that logged nothing - one the room already held - is such a report too, so the
+// report a commit is paired with can be another commit's (reportPairing.covers). Counting the
+// commit that way costs nothing, since every report of one origin counts alike; taking another
+// commit's rendering would make the replica's rendering a state it does not hold.
+func (report madeReport) checkedAt(seq uint64) *replicaRendering {
+	if report.checked == nil || report.checked.at != seq {
+		return nil
+	}
+	return report.checked.rendering
 }
 
 // peerApply is one of the hook's applies while it runs: the allowance ygo holds it to, and
@@ -645,9 +694,21 @@ type roomApplies struct {
 // charged for whether they integrate now or wait for a gap to fill (crdt.ApplyReport.Bytes,
 // crdt.WithApplyBudget). The hook reads content once the apply has returned, to charge what the
 // apply left parked to the room (roomApplies.noteParked).
+//
+// It is also what the room's apply check keeps of the apply (renderCheck): startAt, how many
+// commits the room had made as the apply began, and counted, whether that was known
+// (loggedCommits.now), both read as ygo asks for the apply's budget; and checked and rendering,
+// whether a check of what the apply left has passed and the rendering that check made of it, nil
+// for a state that renders nothing. The apply report hands that rendering on with the commit
+// (noteApply). All four are read and written under the document's lock, which ygo holds for the
+// budget, the check and the report alike, and under mu besides.
 type peerApply struct {
-	budget  crdt.ApplyBudget
-	content int64
+	budget    crdt.ApplyBudget
+	content   int64
+	startAt   uint64
+	counted   bool
+	checked   bool
+	rendering *replicaRendering
 }
 
 // newRoomApplies sets live, a room's document, to apply every browser's update under the
@@ -655,7 +716,13 @@ type peerApply struct {
 // margin, to refuse one carrying a kind of content the editor never sends, and to report what
 // each apply that commits leaves it holding, as newRoomScans sets its scan budget. From here
 // live applies every remote update whole or not at all. paired is whether a replica drains the
-// room's commits from its update log, and so pairs each one with its report (unpaired).
+// room's commits from its update log, and so pairs each one with its report (unpaired). logged
+// is the count of the room's commits (loggedCommits), which the budget and the report read to
+// place each of the hook's applies at its commit position for the room's apply check.
+//
+// logged is held by the callbacks live holds and by nothing the record keeps: the record is
+// listed strongly for the hook (roomWeighing), and the count reaches live through its update log,
+// so a record holding it would keep every evicted room's document resident.
 //
 // The report is what makes the library and not this package the authority on what a room holds
 // (crdt.WithApplyReport, dispatch://INFRA-179): ygo reads the two counters that answer it - the
@@ -669,13 +736,16 @@ type peerApply struct {
 // The room's parked content starts at what live already parks (parkedStructBytes): a room is
 // listed as its load has decoded its stored state into live, and that state carries what parked
 // in the rooms before it, which the decode parks again.
-func newRoomApplies(live *crdt.Doc, paired bool) *roomApplies {
+func newRoomApplies(live *crdt.Doc, paired bool, logged *loggedCommits) *roomApplies {
 	applies := &roomApplies{paired: paired}
 	applies.parkedContent.Store(parkedStructBytes(live))
-	live.SetApplyBudget(applies.budget)
+	live.SetApplyBudget(func(origin any) crdt.ApplyBudget {
+		applies.began(origin, logged)
+		return applies.budget(origin)
+	})
 	live.SetAllowedRoots(applies.roots)
 	live.SetRefusedContent(applies.refusedContent)
-	live.SetApplyReport(applies.noteApply)
+	live.SetApplyReport(func(origin any, report crdt.ApplyReport) { applies.noteApply(origin, report, logged) })
 	return applies
 }
 
@@ -737,19 +807,72 @@ func parkedStructBytes(doc *crdt.Doc) int64 {
 // The content bytes go to the apply's own record where the apply is one of the hook's, so the
 // hook can charge what its apply left parked to the room once it returns (peerApply,
 // noteParked). An apply of any other origin has no record and nothing is kept for it.
-func (a *roomApplies) noteApply(origin any, report crdt.ApplyReport) {
+//
+// So does the rendering the room's apply check made of what a hook's apply left: the report is
+// made once the apply has passed its last check and its commit is logged, so that rendering is
+// the commit's, and it becomes the room's record of its rendering at the commit's position
+// (checked, noteChecked) and rides the report to the drain that hands the commit over
+// (madeReport, takeChecked).
+func (a *roomApplies) noteApply(origin any, report crdt.ApplyReport, logged *loggedCommits) {
 	a.structs.Store(int64(report.Structs))
 	a.reported.Store(true)
 	a.state.Add(int64(report.StateBytes))
 	a.commits.Add(1)
+	at, counted := logged.now()
 	a.mu.Lock()
+	made := madeReport{origin: origin}
 	if running, mine := a.inFlight[origin]; mine {
 		running.content += int64(report.Bytes)
+		made.checked = a.noteChecked(running, at, counted)
 	}
 	if a.paired {
-		a.unpaired = append(a.unpaired, origin)
+		a.unpaired = append(a.unpaired, made)
 	}
 	a.mu.Unlock()
+}
+
+// noteChecked keeps, as the room's record of its rendering (checked), the rendering running's
+// commit left the room at: the one the room's apply check made of what the apply left, where a
+// check passed it, at at, the room's commit position once the commit is logged. An apply no check
+// ran for changed nothing the check reads - ygo checks every apply that changes the document -
+// so a record standing at the position the apply began at is carried to at unchanged. A position
+// that cannot be counted now (counted false) places nothing, and the record keeps the position
+// it had. It answers what the commit's report carries (madeReport): the record it made, nil where
+// no check rendered the apply or none could be placed. The caller holds the document's lock and
+// mu.
+func (a *roomApplies) noteChecked(running *peerApply, at uint64, counted bool) *roomRendered {
+	held := a.checked.Load()
+	switch {
+	case !counted:
+		return nil
+	case !running.checked:
+		if held != nil && running.counted && held.at == running.startAt {
+			a.checked.Store(&roomRendered{at: at, bytes: held.bytes, rendering: held.rendering})
+		}
+		return nil
+	}
+	made := &roomRendered{at: at, bytes: renderedSize(running.rendering), rendering: running.rendering}
+	a.checked.Store(made)
+	if running.rendering == nil {
+		return nil
+	}
+	return made
+}
+
+// forgetChecked drops the room's record of its rendering (checked) where it stands before seq, a
+// commit position whose rendering the replica has published (publishRendered): a commit past the
+// record has landed, and the replica's rendering says what the room renders now. A record standing
+// at seq itself stays: it is of the same state as the replica's and shares its markdown
+// (takeChecked keeps the check's string), and it carries the index of the room's own blocks the
+// next apply's check splices by (blockIndex), which the replica's rendering, of its own document's
+// blocks, cannot.
+func (a *roomApplies) forgetChecked(seq uint64) {
+	if a == nil {
+		return
+	}
+	if held := a.checked.Load(); held != nil && held.at < seq {
+		a.checked.CompareAndSwap(held, nil)
+	}
 }
 
 // stateBytes is the bytes of encoded state the room is tracked at (state), and zero for a
@@ -873,12 +996,12 @@ func holdsPending(live *crdt.Doc) bool {
 	return pending.Items > 0 || pending.DeleteRanges > 0
 }
 
-// reportsMade is the origins of the reports made in the room that no drained commit has been
-// paired with yet, in commit order: what a drain about to take the room's log pairs its commits
-// against (reportPairing). The slice is capped at its length, so the reports made after it are
+// reportsMade is the reports made in the room that no drained commit has been paired with yet, in
+// commit order: what a drain about to take the room's log pairs its commits against
+// (reportPairing). The slice is capped at its length, so the reports made after it are
 // appended past what it holds, and only the drain that holds it drops what it holds
 // (settleReports). Nil for a room that keeps no reports.
-func (a *roomApplies) reportsMade() []any {
+func (a *roomApplies) reportsMade() []madeReport {
 	if a == nil || !a.paired {
 		return nil
 	}
@@ -906,15 +1029,17 @@ func (a *roomApplies) settleReports(n int) {
 // before the drain took the log (roomApplies.reportsMade), and next, the first of them no commit
 // has been paired with.
 type reportPairing struct {
-	reports []any
+	reports []madeReport
 	next    int
 }
 
-// covers reports whether a report covers the commit the drain has reached, which origin wrote,
-// and pairs the two. ygo logs a commit and reports it under one hold of the document's lock, so
-// a remote apply's report is among those the drain took and after every report of a commit
-// before it: the first one from next with the commit's origin is its own, or one an apply with
-// that origin made without logging anything, which leaves the count the same.
+// covers answers the report that covers the commit the drain has reached, which origin wrote,
+// and pairs the two, or false for a commit no report covers. ygo logs a commit and reports it under
+// one hold of the document's lock, so a remote apply's report is among those the drain took and
+// after every report of a commit before it: the first one from next with the commit's origin is
+// its own, or one an apply with that origin made without logging anything, which leaves the count
+// the same (and is why the rendering a report carries names its commit's position,
+// madeReport.checkedAt).
 //
 // A commit no report covers is a local transaction - a server write, or ygo's format cleanup,
 // whose origin is nil - since no origin a local transaction is made with is one a remote apply
@@ -924,14 +1049,14 @@ type reportPairing struct {
 // for one as well, and counted again from the replica on top of its report, which is the safe
 // side (renderedReplica.countCommit). Every origin here went through the apply budget's map
 // (roomApplies.budget), so each compares.
-func (p *reportPairing) covers(origin any) bool {
+func (p *reportPairing) covers(origin any) (madeReport, bool) {
 	for at := p.next; at < len(p.reports); at++ {
-		if p.reports[at] == origin {
+		if p.reports[at].origin == origin {
 			p.next = at + 1
-			return true
+			return p.reports[at], true
 		}
 	}
-	return false
+	return madeReport{}, false
 }
 
 // reportedStructs is the structs the last apply that committed in the room reported it holding,
@@ -969,6 +1094,20 @@ func (a *roomApplies) budget(origin any) crdt.ApplyBudget {
 		return running.budget
 	}
 	return crdt.ApplyBudget{Decoded: -1, Structs: -1, Bytes: -1, Split: -1}
+}
+
+// began places the hook's apply with origin at the commit position the room stands at as it
+// begins (peerApply.startAt), which the room's apply check weighs the apply against
+// (renderCheck.base). ygo asks for the apply's budget under the document's lock as the apply
+// begins, before the apply changes anything, so the room's document asks this there, beside the
+// budget (newRoomApplies). An apply of any other origin is placed nowhere.
+func (a *roomApplies) began(origin any, logged *loggedCommits) {
+	at, counted := logged.now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if running, reserved := a.inFlight[origin]; reserved {
+		running.startAt, running.counted = at, counted
+	}
 }
 
 // roots is ygo's per-apply root list: the browser's two for the hook's applies, and nil - every
@@ -1020,6 +1159,28 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 		a.mu.Unlock()
 	}()
 	return 0, apply()
+}
+
+// checking is the record of the hook's apply with origin that the room's apply check is judging,
+// nil for an apply of any other origin, which the check passes (renderCheck.check). The caller
+// holds the document's lock.
+func (a *roomApplies) checking(origin any) *peerApply {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.inFlight[origin]
+}
+
+// passed records that a check of what running's apply left has passed, with rendering, that
+// check's rendering of it, nil for a state that renders nothing: the later of an update's check
+// and its drain's is the one that stands, since a drain the check refuses is taken back and leaves
+// what the update's own check rendered (noteChecked). The caller holds the document's lock.
+func (a *roomApplies) passed(running *peerApply, rendering *replicaRendering) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	running.checked, running.rendering = true, rendering
 }
 
 // noteParked charges what an apply of the hook's left parked in the room to the room's parked
@@ -1177,7 +1338,10 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // the rule that set that field, and the rule names the close (peerRule.refusal). So the walk that
 // read every browser's update before it applied - a second decode of the same bytes on the peer's
 // read loop - is gone, and with it the three running totals the room kept to weigh that walk
-// against.
+// against. Once the apply has integrated what it may, the room's apply check renders what it left
+// and refuses it the same way where that rendering would pass the bound and its creep and grow
+// (renderCheck, crdt.ErrApplyCheck); a drain the check refuses is taken back alone, the update
+// stands, and the hook answers it as the success it is, with a line of its own (logDrainRefused).
 //
 // Every refusal before or inside the apply closes the browser. Under sjawhar/ygo v1.51.3-sami.7
 // a hook's refusal answered the browser SyncStatus(0) and left it connected; upstream
@@ -1202,7 +1366,9 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // A room with no measurement at all is a document that left the Proof schema while it was live,
 // which the socket path refuses to open in the first place (refuseOutsideSchema), or one no load
 // listed: the byte bound weighs its updates on their own bytes, as if the room rendered nothing,
-// and the creep cap, which needs a rendering to measure, never applies to it.
+// and the creep cap, which needs a rendering to measure, never applies to it. In a room its load
+// listed, the apply check renders the document itself, so where the update leaves a document that
+// renders, the check weighs it by that rendering all the same (renderCheck).
 //
 // An apply that fails leaves no trace but its scans. The room's bounded document takes every
 // remote update it refuses back out whole, whatever the error, and fires no observer for it
@@ -1299,6 +1465,15 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	scanning := scans.reserve(info.Origin, scanCeiling(len(info.Update)))
 	content, err := weighing.applies().applying(info.Origin, allowance.budget, apply)
 	scans.settle(scanning, err)
+	if errors.Is(err, crdt.ErrApplyCheckDrain) {
+		// The room's apply check refused what the drain the update released would land, and
+		// ygo took the drain back alone: the update stands and has committed, so it closes
+		// nobody and is the hook's success - ygo answers the sender applied and relays the
+		// update (provider/websocket/peer_update.go, updateStood) - with this line beside it
+		// (renderCheck).
+		logDrainRefused(info, err)
+		err = nil
+	}
 	if err == nil {
 		// What the apply left parked is the room's from here, and what it drained is the
 		// room's rendering, which its update observer measures afresh (noteParked). A refused
@@ -1307,6 +1482,23 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 		return nil
 	}
 	return s.refusedByApply(info, weighing, allowance, scanning, err)
+}
+
+// logDrainRefused is the one line a drain the room's apply check refused leaves: the update that
+// released it stood, and what parked behind its gap stays parked, to be drained by the next
+// update that fills the gap and refused again while it would still render past the bound
+// (crdt.ErrApplyCheckDrain). Nothing else says so - ygo answers the sender applied, relays the
+// update and closes nobody, as for any update the room took - so without it an operator would
+// see a pending queue that stops falling and nothing naming why.
+func logDrainRefused(info websocket.PeerUpdateInfo, err error) {
+	var refusal *renderRefusal
+	before, after := int64(sizeUnmeasured), int64(sizeUnmeasured)
+	if errors.As(err, &refusal) {
+		before, after = refusal.before, refusal.after
+	}
+	slog.Warn("dispatch: the room took a browser's update and refused what the drain it released would land; the drain was taken back",
+		"room", info.Room, "update_bytes", len(info.Update), "rendering_before", before, "rendering_after", after,
+		"rendering_limit", maxPeerRenderingBytes, "error", err.Error())
 }
 
 // underPressure is whether room's next update is weighed under the budget's pressure: the budget
@@ -1568,9 +1760,12 @@ func fillsAParkedGap(update []byte, missing []crdt.ClientID) bool {
 // is, the one error the hook answers that is no *websocket.PeerClose, so ygo answers that browser
 // SyncStatus(0) and leaves it connected, exactly as a room without this hook does: the update
 // parks past the cap only because the structs it depends on have not arrived, and the browser
-// that sends it again once its gap fills is right to stay. Any other refusal of the bytes
-// themselves (crdt.ErrInvalidUpdate) is DOC_UPDATE_REFUSED: ygo will not read them, and the
-// client that sent them sends them again on every reconnect.
+// that sends it again once its gap fills is right to stay. One the room's apply check refused
+// (crdt.ErrApplyCheck, renderCheck) carries the check's own refusal, whose close is
+// DOC_TOO_LARGE for a rendering past the bound and DOC_UPDATE_REFUSED for one this build cannot
+// render (renderRefusal.close). Any other refusal of the bytes themselves (crdt.ErrInvalidUpdate)
+// is DOC_UPDATE_REFUSED: ygo will not read them, and the client that sent them sends them again
+// on every reconnect.
 func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, weighing *roomWeighing, allowance peerAllowance, scanning *scanAllowance, err error) error {
 	var refused *crdt.RefusedUpdateError
 	errors.As(err, &refused)
@@ -1612,6 +1807,15 @@ func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, weighing *roomWe
 		// the gap does fill, and the socket stays open, so one line here would be a flood where
 		// every other refusal here closes the socket and so logs at most once.
 		return err
+	case errors.Is(err, crdt.ErrApplyCheck):
+		var checked *renderRefusal
+		if !errors.As(err, &checked) {
+			checked = &renderRefusal{before: sizeUnmeasured, after: sizeUnmeasured, cause: err}
+		}
+		refusal := checked.close()
+		logRefusal(info, refusal, checked.why(), "rendering_before", checked.before, "rendering_after", checked.after,
+			"rendering_limit", maxPeerRenderingBytes, "error", err.Error())
+		return refusedWith(refusal, err)
 	case errors.Is(err, crdt.ErrInvalidUpdate):
 		refusal := documentUpdateRefused()
 		logRefusal(info, refusal, "dispatch: refused a browser's update ygo will not read", "error", err.Error())
