@@ -348,9 +348,9 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 // corrects after boot trades again on the next pass rather than holding no credential until
 // somebody restarts it, a pod whose trade reached the broker before its registration did trades
 // once that registration lands, however long it takes, and a person whom Dispatch held is
-// traded again after their next Dispatch sign-in with nothing restarted. A missing registration
-// is logged once, naming the session, and again every unregisteredLogEvery while it lasts,
-// rather than at every trade. A cancelled ctx is no error.
+// traded again after their next Dispatch sign-in, or the next refresh that confirms them, with
+// nothing restarted. A missing registration is logged once, naming the session, and again every
+// unregisteredLogEvery while it lasts, rather than at every trade. A cancelled ctx is no error.
 func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) error) error {
 	wait := defaultRetryWait
 	// since is when the broker first refused this pod's session as unregistered, and logged when

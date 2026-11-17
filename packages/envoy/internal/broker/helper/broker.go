@@ -1297,9 +1297,21 @@ func (b *Broker) drop(cred *machineCredential, why string, attrs ...any) bool {
 		return false
 	}
 	close(cred.gone)
-	b.logger().Error(why+"; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)",
-		append([]any{"credential_id", cred.id}, attrs...)...)
+	b.logger().Error(why+"; cleared: "+b.dropLeaves(), append([]any{"credential_id", cred.id}, attrs...)...)
 	return true
+}
+
+// dropLeaves is what a drop leaves the machine, for its log line. In identity mode the trade loop
+// trades this machine's identity again on its own (brokerclient.Client.Run), so a session enrols
+// again once a trade lands, and nobody is told to log in: the credential it traded for lives an
+// hour, and a broker that refuses trades for longer, for a person Dispatch holds among others,
+// lets it lapse with nothing for a person to do on this machine. Otherwise none enrols until a
+// human approves a new machine login.
+func (b *Broker) dropLeaves() string {
+	if b.Identity != nil {
+		return "no session can enroll until the trade loop trades this machine's identity for a new credential"
+	}
+	return "no session can enroll until a human approves a new machine login (run: agent-secrets machine login)"
 }
 
 // logger is b.Log, or a logger that writes nowhere when there is none.
@@ -1527,12 +1539,15 @@ func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, er
 // Revoke deletes the enrollment and every grant under it. 204 and 404 both mean done.
 //
 // It signs with the credential enrolAuthority would choose now and, where the broker answers
-// that this is not that enrolment's credential (403), with this machine's own. The broker lets
-// a credential end only the enrolments of its own operator, and a machine's only those it made
-// itself (enroll.authorized, ErrNotEnrollingCredential), while the helper keeps no note of
-// which of the two enrolled a given session: a key it enrolled for a launcher leaves it none at
-// all, and a restart leaves it the enrollment id alone. Two attempts settle every case, and
-// only a 403 — the broker's "not this credential's" — costs the second.
+// that this is not that enrolment's credential (403 OPERATOR_MISMATCH or
+// NOT_ENROLLING_CREDENTIAL), with this machine's own. The broker lets a credential end only the
+// enrolments of its own operator, and a machine's only those it made itself (enroll.authorized,
+// ErrNotEnrollingCredential), while the helper keeps no note of which of the two enrolled a given
+// session: a key it enrolled for a launcher leaves it none at all, and a restart leaves it the
+// enrollment id alone. Two attempts settle every case, and only those two refusals cost the
+// second. Any other 403 is the broker's answer about the credential itself, such as a person
+// Dispatch holds (MEMBERSHIP_HELD), and is answered as it came: the machine's own credential would
+// only be told the enrolment is not its own, and the refusal would be lost.
 func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 	authority, cred, err := b.signingAuthority(ctx)
 	if err != nil {
@@ -1540,7 +1555,8 @@ func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 	}
 	err = b.revokeUnder(ctx, authority, cred, enrollmentID)
 	var be *BrokerError
-	if cred != nil || !errors.As(err, &be) || be.Status != http.StatusForbidden {
+	if cred != nil || !errors.As(err, &be) || be.Status != http.StatusForbidden ||
+		(be.Code != "OPERATOR_MISMATCH" && be.Code != "NOT_ENROLLING_CREDENTIAL") {
 		return err
 	}
 	machine := b.cred.Load()

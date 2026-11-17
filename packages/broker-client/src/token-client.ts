@@ -430,8 +430,8 @@ export class BrokerTokenClient {
    *
    * A person whom Dispatch holds is restored by their next Dispatch sign-in, or the next refresh
    * that confirms them, with no new credential, so the token source is kept and traded again:
-   * like the other four, the refusal answers the token in hand while it is live, and with
-   * nothing live in hand it is thrown and the next call trades afresh.
+   * like a 429 or a DPoP refusal, the refusal answers the token in hand while it is live, and
+   * with nothing live in hand it is thrown and the next call trades afresh.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;

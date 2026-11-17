@@ -18,9 +18,11 @@ package helper
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -142,9 +144,11 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		var out syncBuffer
 		b := &Broker{
 			URL: f.srv.URL, Identity: machine, HTTP: f.srv.Client(),
 			OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
+			Log:          slog.New(slog.NewJSONHandler(&out, nil)),
 		}
 		t.Cleanup(b.Close)
 		expiries := installExpiryTimers(b)
@@ -181,6 +185,15 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		if status := b.LoginStatus(); status.Dropped != dropExpired {
 			t.Fatalf("login-status once the credential lapsed: %+v; want it dropped at its expiry (%q)", status, dropExpired)
 		}
+		// The drop line says what brings a credential back on this machine: the trade loop, not a
+		// machine login a human approves.
+		lapsed := waitForRecord(t, &out, dropExpired+"; cleared: no session can enroll until the trade loop trades this machine's identity for a new credential")
+		if lapsed["level"] != "ERROR" || lapsed["credential_id"] != first.id {
+			t.Fatalf("the drop line in identity mode: %v; want an ERROR naming %s", lapsed, first.id)
+		}
+		if strings.Contains(out.String(), "agent-secrets machine login") {
+			t.Fatalf("the helper in identity mode told someone to run a machine login, which is not how this machine gets a credential:\n%s", out.String())
+		}
 
 		// The release: the trade the loop is waiting to make brings a credential back.
 		held.Store(false)
@@ -195,6 +208,27 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		}
 		if enrols, _ := f.calls(); len(enrols) != 1 || enrols[0].credential != next.id {
 			t.Fatalf("the enrolments after the release were signed with %+v; want one, with %s", enrols, next.id)
+		}
+	})
+
+	// A revoke under a person's sign-in that the broker answers 403 MEMBERSHIP_HELD is answered
+	// as it came. It is not the broker's "not this credential's" (OPERATOR_MISMATCH,
+	// NOT_ENROLLING_CREDENTIAL), so the helper does not sign it again with this machine's own
+	// credential, whose answer could only hide the hold.
+	t.Run("revoke", func(t *testing.T) {
+		f := newEnrolBroker(t)
+		b, _, _ := machineIdentityBroker(t, f)
+		person := signedIn(t, f, heldPerson, "credential-of-adas-sign-in")
+		b.SignIns = &stubSignIns{authority: person}
+		f.revokeRefusals, f.revokeStatus, f.revokeCode = 1, http.StatusForbidden, "MEMBERSHIP_HELD"
+
+		err := b.Revoke(context.Background(), "enr-1")
+		var be *BrokerError
+		if !errors.As(err, &be) || be.Status != http.StatusForbidden || be.Code != "MEMBERSHIP_HELD" {
+			t.Fatalf("a revoke while %s is held answered %v; want the broker's 403 MEMBERSHIP_HELD as it came", heldPerson, err)
+		}
+		if _, revokes := f.calls(); len(revokes) != 1 || revokes[0].credential != person.CredentialID {
+			t.Fatalf("the revokes were %+v; want one, signed with %s, and no second under this machine's own credential", revokes, person.CredentialID)
 		}
 	})
 }

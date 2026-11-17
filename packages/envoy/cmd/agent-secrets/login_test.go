@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -313,6 +314,23 @@ func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(brokerclient.SessionFor(record)), " ") {
 		t.Fatal("the session name carries a space, which no form field of a trade may")
+	}
+}
+
+// TestAHeldSignInsTradeIsAnsweredInTheBrokersWords: a trade of a kept sign-in that the broker
+// refuses membership_held fails in the broker's own words, which say that the person's next
+// Dispatch sign-in, or the next refresh that confirms them, ends it, and not with "run: agent-secrets
+// login": a new sign-in on the box would make a second box key and change nothing. A refusal no
+// retry cures still tells the person to sign in again.
+func TestAHeldSignInsTradeIsAnsweredInTheBrokersWords(t *testing.T) {
+	held := &brokerclient.RefusedError{Status: http.StatusBadRequest, Code: "membership_held",
+		Description: "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"}
+	if got := signInTradeFailure(held); got != error(held) || strings.Contains(got.Error(), brokerclient.SignInCommand) {
+		t.Errorf("the failure of a held sign-in's trade reads %q; want the broker's refusal as it came, naming no %q", got, brokerclient.SignInCommand)
+	}
+	final := &brokerclient.RefusedError{Status: http.StatusBadRequest, Code: "invalid_grant", Description: "the sign-in was revoked"}
+	if got := signInTradeFailure(final); !errors.Is(got, final) || !strings.HasSuffix(got.Error(), "; run: "+brokerclient.SignInCommand) {
+		t.Errorf("the failure of a revoked sign-in's trade reads %q; want the refusal and then %q", got, "run: "+brokerclient.SignInCommand)
 	}
 }
 

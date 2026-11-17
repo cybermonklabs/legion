@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`agent-secrets-helper` signs a revoke again with the machine''s own credential only when the broker answers that the enrolment is not the person''s credential''s (`OPERATOR_MISMATCH`, `NOT_ENROLLING_CREDENTIAL`), so another refusal, such as `MEMBERSHIP_HELD`, is no longer hidden; in identity mode its drop line says the trade loop brings a credential back, rather than telling anyone to run `agent-secrets machine login`; and `agent-secrets` no longer tells a person to run `agent-secrets login` when the broker refused their sign-in''s trade with a refusal a later trade may cure.'
+time: 2026-11-17T17:55:39.597655452Z
+custom:
+    Issue: pr4330

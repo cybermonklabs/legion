@@ -56,3 +56,50 @@ test("membership_held is not a final refusal", async () => {
     broker.stop();
   }
 });
+
+test("membership_held answers the token in hand while it is live", async () => {
+  // The hold comes inside the renewal window of a live token: the trade is refused, and the
+  // token in hand still answers, as it does for a 429. Past its expiry nothing live is left and
+  // the refusal is thrown, still not final; the release then brings a new token to the same
+  // client, from the same token source.
+  let held = false;
+  const broker = stubBroker((_trade, count) =>
+    held
+      ? { status: 400, body: { error: "membership_held", error_description: HELD } }
+      : { body: accepted(`token-${count}`, 600) }
+  );
+  const clock = { now: Date.now() };
+  const client = new BrokerTokenClient({
+    brokerUrl: broker.url,
+    key: await newDpopKey(),
+    subject: {
+      read: async () => ({ token: "subject", tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES }),
+      describe: () => "a scripted identity",
+    },
+    renewBeforeMs: 60_000,
+    now: () => clock.now,
+  });
+  try {
+    expect((await client.token()).accessToken).toBe("token-1");
+
+    held = true;
+    clock.now += 560_000;
+    expect(
+      (await client.token()).accessToken,
+      "the hold dropped a live token in hand; it is the token the broker serves again after the release"
+    ).toBe("token-1");
+    expect(broker.trades.length).toBe(2);
+
+    clock.now += 60_000;
+    const lapsed = await refusalOf(() => client.token());
+    expect(lapsed).toBeInstanceOf(BrokerRefusedError);
+    expect((lapsed as BrokerRefusedError).code).toBe("membership_held");
+    expect(isFinalRefusal(lapsed), "the lapsed token's membership_held read as final").toBe(false);
+
+    held = false;
+    expect((await client.token()).accessToken).toBe("token-4");
+  } finally {
+    client.close();
+    broker.stop();
+  }
+});

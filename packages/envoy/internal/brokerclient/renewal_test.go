@@ -285,6 +285,14 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				t.Fatalf("Run = %v; want it waiting to ask again", err)
 			}
 
+			// The error a trade fails with now, which each line must carry whole.
+			client.mu.Lock()
+			_, tradeErr := client.trade(ctx)
+			client.mu.Unlock()
+			if tradeErr == nil {
+				t.Fatal("a trade after the loop succeeded; want it failing as every trade after the first does")
+			}
+
 			want := retriedRefusalLine
 			if tc.code == "" {
 				want = retriedNoAnswerLine
@@ -296,7 +304,7 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 						t.Errorf("the client logged %q: the broker answered, or the line names what it did", record.Message)
 					}
 					if record.Message == want+suffix {
-						lines = append(lines, attrsOf(record))
+						lines = append(lines, attrsOf(t, record))
 					}
 				}
 				if len(lines) != 1 {
@@ -306,6 +314,9 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				if line["code"] != tc.code {
 					t.Errorf("the line %q names the code %q; want %q", want+suffix, line["code"], tc.code)
 				}
+				if line["error"] != tradeErr.Error() {
+					t.Errorf("the line %q carries the error %q; want the trade's error whole, %q", want+suffix, line["error"], tradeErr.Error())
+				}
 				if tc.code != "" {
 					if line["status"] != strconv.Itoa(tc.status) {
 						t.Errorf("the line %q names the status %q; want %d", want+suffix, line["status"], tc.status)
@@ -313,16 +324,23 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 					if description := tc.body["error_description"].(string); !strings.Contains(line["error"], description) {
 						t.Errorf("the line %q carries the error %q; want the broker's words %q", want+suffix, line["error"], description)
 					}
+				} else if _, named := line["status"]; named {
+					t.Errorf("the line %q names a status %q; a trade with no usable answer has none", want+suffix, line["status"])
 				}
 			}
 		})
 	}
 }
 
-// attrsOf is a record's attributes, each as its value's text.
-func attrsOf(record slog.Record) map[string]string {
+// attrsOf is a record's attributes, each as its value's text. A key the record carries twice
+// fails the test, since a map would keep only the last of the two.
+func attrsOf(t *testing.T, record slog.Record) map[string]string {
+	t.Helper()
 	attrs := map[string]string{}
 	record.Attrs(func(attr slog.Attr) bool {
+		if _, twice := attrs[attr.Key]; twice {
+			t.Errorf("the line %q carries the key %q twice", record.Message, attr.Key)
+		}
 		attrs[attr.Key] = attr.Value.String()
 		return true
 	})

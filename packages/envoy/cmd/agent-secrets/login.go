@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -231,7 +232,7 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
-		return record, fmt.Errorf("%w; run: %s", err, brokerclient.SignInCommand)
+		return record, signInTradeFailure(err)
 	}
 	if token.CredentialID == "" {
 		return record, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)
@@ -240,4 +241,17 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 		return record, err
 	}
 	return record, brokerclient.SignIns(homeGetenv).Write(record)
+}
+
+// signInTradeFailure is the error of a failed trade of a kept sign-in. A refusal a later trade may
+// cure (brokerclient.RefusedError.Permanent false: a person Dispatch holds, a broker that is busy
+// or wants a fresh proof) is answered in the broker's own words, which say what ends it, since a new
+// sign-in would not: a person Dispatch holds is restored by their next Dispatch sign-in, or the
+// next refresh that confirms them. Every other failure tells the person to sign in again.
+func signInTradeFailure(err error) error {
+	var refused *brokerclient.RefusedError
+	if errors.As(err, &refused) && !refused.Permanent() {
+		return err
+	}
+	return fmt.Errorf("%w; run: %s", err, brokerclient.SignInCommand)
 }
