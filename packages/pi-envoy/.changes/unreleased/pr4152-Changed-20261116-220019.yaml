@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The `agent-secrets` skill says `agent-secrets grant revoke <grant_id>` ends, from inside the
+    session, a grant given to the session's broker identity, that a grant of another enrollment is
+    refused, and that every session of one person's `agent-secrets login` signs as one enrollment
+    and so shares its grants.
+time: 2026-11-16T22:00:19.425085981Z
+custom:
+    Issue: pr4152

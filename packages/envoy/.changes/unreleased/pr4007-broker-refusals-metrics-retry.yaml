@@ -20,10 +20,10 @@ body: |-
   (`127.0.0.1:13382` by default), and on no other port: `broker_answers_total`,
   `broker_mint_attempts_total`, `broker_unservable_secrets` and `broker_policy_store_reads_total`.
   `agent-secrets secret create`, `secret set` and `secret retag` refuse a `github-app`,
-  `google-login`, `google-service-account` or `azure-login` value that the kind's minter would
-  refuse, through the one decoder the minters use. The broker reads each kind secret's value once
-  for each new version, kind or shape, and refuses a value the decoder refuses as
-  `value-malformed`, before any mint.
+  `google-login`, `google-service-account` or `azure-login` value that the type's minter would
+  refuse, through the one decoder the minters use. The broker reads each type secret's value once
+  for each new version and type, and refuses a value the decoder refuses as `value-malformed`,
+  before any mint.
   A mint call that fails with a 5xx, a transport failure or a rate limit is made again: at most 3
   attempts of 5 s each, at most 10 s of added wait for each mint, and, for the whole process, a
   budget of 60 retries that gains one back each second. The `broker: mint failed` line names the

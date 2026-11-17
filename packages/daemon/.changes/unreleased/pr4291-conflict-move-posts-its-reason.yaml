@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A move back to implementing on a head that conflicts with its base now posts why on the issue
+  before the status changes: which phase the issue left, the pull request and head that conflict,
+  and the base. The issue used to show only a status change, with no hand-off, comment or message
+  beside it. A tester's verdict and a review are already on Dispatch as the worker's own hand-off, so
+  those moves post no reason.

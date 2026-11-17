@@ -136,6 +136,15 @@ func freshMarker(dir string) bool {
 	return err == nil && time.Since(info.ModTime()) < pendingMarkerLife
 }
 
+// launcherKeyDir reports whether dir is a launcher's key dir, which puts the process that reads
+// it inside a session: dir holds a key.pem with no machine-session marker beside it, or a fresh
+// enrollment.pending while the launcher is still enrolling it. A key.pem with the marker is a
+// machine's own session that a client before #4143 left there, not a launcher's key, so it
+// puts no process inside a session. identity and grant revoke both read the key dir by this rule.
+func launcherKeyDir(dir string) bool {
+	return (exists(filepath.Join(dir, keyFile)) && !exists(filepath.Join(dir, machineSessionMarker))) || freshMarker(dir)
+}
+
 // enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait.
 func enrollWait() (time.Duration, error) {
 	v := os.Getenv("AGENT_SECRETS_ENROLL_WAIT")
@@ -210,8 +219,7 @@ func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 	if *source {
 		return identitySource(stdout, stderr)
 	}
-	dir := keyDir()
-	if (exists(filepath.Join(dir, keyFile)) && !exists(filepath.Join(dir, machineSessionMarker))) || freshMarker(dir) {
+	if launcherKeyDir(keyDir()) {
 		return 0
 	}
 	answer := probeHelper()
@@ -254,10 +262,12 @@ func identitySource(stdout, stderr io.Writer) int {
 		reportError(stderr, "agent-secrets identity", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s: %s\n", name, detail)
-	if name != "helper" {
+	if name == "helper" {
+		fmt.Fprintf(stdout, "helper: %s%s\n", detail, helperVersionSuffix(detail))
+	} else {
+		fmt.Fprintf(stdout, "%s: %s\n", name, detail)
 		if answer := probeHelper(); answer.answered() {
-			fmt.Fprintf(stdout, "helper: %s\n", answer.sock)
+			fmt.Fprintf(stdout, "helper: %s%s\n", answer.sock, helperVersionSuffix(answer.sock))
 		}
 	}
 	return 0

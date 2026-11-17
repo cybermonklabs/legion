@@ -26,12 +26,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A child Dispatch already shows todo when its architect releases it — set todo before its tree was
-// live, by a person or another session, so no todo event of it ever reached the live tree — is
-// recorded under the tree and started by the release, as a child the release moves into todo is by
-// that move's event. Dispatch makes no event for a status an issue already has, so before, the
-// release answered the child released and nothing recorded or started it: read_record found no
-// record, and park_child and rerun_child answered ISSUE_NOT_FOUND (LEGION-627). The architect's
+// A child Dispatch already shows todo when an architect above it releases it — set todo before its
+// tree was live, by a person or another session, so no todo event of it ever reached the live tree
+// — is recorded under the tree and started by the release, as a child the release moves into todo
+// is by that move's event. Dispatch makes no event for a status an issue already has, so before,
+// the release answered the child released and nothing recorded or started it: read_record found
+// no record, and park_child and rerun_child answered ISSUE_NOT_FOUND (LEGION-627). The architect's
 // retry of the same wave changes nothing more.
 func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T) {
 	h := newHarness(t)
@@ -454,7 +454,7 @@ func TestWaveReleaseRecordsATodoChildOfAChildTheSameWaveReleases(t *testing.T) {
 
 // A child whose parent still has not reached the daemon does not make an architect retry forever.
 // After the bounded backoff attempts, release_children answers CHILD_RELEASE_STALLED and queues one
-// notice to the tree architect.
+// notice to the architect that released it.
 func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testing.T) {
 	h := newHarness(t)
 	records := record.NewStore()

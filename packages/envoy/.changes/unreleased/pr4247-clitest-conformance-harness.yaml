@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `packages/envoy/clitest` checks a command line's built binary against the rules a command line
+  on cobra keeps: `-h`, `--help` and `help <command>` on every command; a mistyped command, an
+  unknown flag at the root and on each command, an unknown shell for `completion` and an unknown
+  topic for `help` that each exit 2, print the word they refuse, are no crash of the Go runtime
+  and make no request to, or connection with, its recorder, where cobra's own completion and help
+  commands exit 0; a flag read after a positional; a completion script for bash, zsh, fish and
+  powershell that each shell reads; and `__complete` listing every visible command and no hidden
+  one. On a Unix system each run is a process group of its own, which ends only when every process
+  the binary left behind has exited. Its package documentation states each check.
+  No program imports it yet, so no release changes what it ships.

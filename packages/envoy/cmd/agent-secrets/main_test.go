@@ -526,8 +526,8 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 // binary gets the bytes the broker released, byte for byte — compared as a digest, so no value
 // is in this test's output — and standard error carries the one source line and then nothing of
 // this command's at all, not even where the released value ends in a line ending. Which bytes a
-// value has is the broker's decision now (policy.TrimForShape): a value that reaches the child
-// ending in a line feed ends that way because its owner's shape tag says it does, and the agent
+// value has is the broker's decision now (policy.TrimLineEnding): a value that reaches the child
+// ending in a line feed ends that way because the stored value holds a line ending inside it, and the agent
 // running the command could not store it differently in any case.
 func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
 	binary := buildAgentSecrets(t)
@@ -1063,7 +1063,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 }
 
 // TestReleasedValuesReachTheChildAsTheBrokerSentThem: which bytes a released value has is the
-// broker's decision, taken from the secret's shape (policy.TrimForShape), so the exec form hands
+// broker's decision, taken from the stored value itself (policy.TrimLineEnding), so the exec form hands
 // the child what the broker sent, byte for byte, line endings and all.
 func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 	for name, value := range map[string]string{
