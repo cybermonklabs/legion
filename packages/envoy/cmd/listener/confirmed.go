@@ -156,11 +156,13 @@ func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
 // settled: counted, and logged on the send's own delivery line.
 //
 // Each answer marks the message's take from its sender's count (record.charge) before it is
-// written: a wake reported, a forward the stream stored and a window that ended cost one. An
-// answer after an earlier forward of the same send costs one too, whatever it answers, since that
-// forward may have stored the message: a forward refused, an echo, a repeat the route's own record
-// or the kept lane answers, and a 403. Before any forward, a repeat the kept lane answers is
-// forgiven and any other answer marks nothing, so the route's deferred settle gives the take back.
+// written: a wake reported, a forward the stream stored, a forward that failed with no refusal,
+// which the stream may have stored for the holder it went to, and a window that ended cost one.
+// The mark of a forward that may have been stored stands whatever the send answers next
+// (senderCharge.stored): a forward refused, an echo, a repeat the route's own record or the kept
+// lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels the wake's
+// mark alone, and every other answer marks nothing, so where no forward may have been stored the
+// route's deferred settle gives the take back.
 type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
@@ -235,7 +237,7 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 func (s *roleSend) noHolder(result roles.Resolution) {
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
-	s.record.charge.spend()
+	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
 		if kept, ok := keepForNextHolder(*s.d.delivery, s.role, s.item); ok {
 			s.kept(result, kept)
@@ -265,16 +267,16 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // A repeat of a dedupe key whose copy is still on the lane inside its hour stored nothing new
 // (storeKeptRoleCopy), so the answer is that first copy's envelope and event id, and the request's
 // record line and the send's delivery line name it too: the send's envelope becomes the copy's.
-// Such a repeat costs its sender nothing while the send has made no forward, though noHolder's
-// wake report spent its charge. After an earlier forward of the same send it costs one, since that
-// forward may have stored the message for the holder it went to.
+// Such a repeat is forgiven: it costs its sender nothing, though noHolder's wake report marked
+// its charge, unless an earlier forward of the same send failed with no refusal, which may have
+// stored the message for the holder it went to and marked the charge so (sendToRole).
 //
 // 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
 // 200, the message is with a live holder; 202, no live session holds the role and the message
 // waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
 // fallback must run. INFRA-514's architect decided it on 2026-10-31.
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
-	if kept.repeat && s.attempts == 0 {
+	if kept.repeat {
 		s.record.charge.forgive()
 	}
 	s.item = kept.item
@@ -314,23 +316,22 @@ func (s *roleSend) unresolved(err error) {
 }
 
 // refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. A refusal of the first
-// attempt stored nothing, but one after an earlier attempt costs its sender one: that earlier
-// forward of the same send may have stored the message.
+// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refused forward
+// stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
+// the message has marked the charge already (sendToRole).
 func (s *roleSend) refused(err error) {
-	if s.attempts > 1 {
-		s.record.charge.spend()
-	}
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
 	s.settle(sendFailed)
 }
 
 // timedOut answers the 504 of a send whose window ended with no forward the stream stored for its
-// holder, recorded delivery_failed. It costs its sender one, since a forward whose
-// acknowledgement did not arrive may still have been stored.
+// holder, recorded delivery_failed. A 504 costs its sender one whether or not a forward went out,
+// so also when the window ended before the first forward, or on resolutions that failed or found
+// the holder not live: the limit holds a 504 to be the answer after which the listener cannot say
+// whether it stored the message, and does not tell a 504 that forwarded nothing from the rest.
 func (s *roleSend) timedOut() {
-	s.record.charge.spend()
+	s.record.charge.stored()
 	s.record.holder = s.holder
 	s.record.refuseWith(s.w, http.StatusGatewayTimeout, outcomeDeliveryFailed, roleSendFailure{
 		Error: fmt.Sprintf("role %s: event %s was not stored for its holder %s within %s (%s)",
@@ -351,9 +352,9 @@ func (s *roleSend) timedOut() {
 // the payload's delivery mode, answered 403 with the refusal sendHandler gives,
 // recorded capability_refused as sendHandler records it.
 //
-// Each of those answers costs its sender nothing while the send has made no forward. After an
-// earlier forward of the same send, one whose acknowledgement did not arrive, it costs one: that
-// forward may have stored the message for the holder it went to.
+// None of those answers marks the charge: each stores nothing, and an earlier forward of the same
+// send that failed with no refusal, which may have stored the message for the holder it went to,
+// has marked the charge already (sendToRole).
 //
 // The dedupe check reads the route's own record (listenerDeps.confirmed), not the delivery
 // handlers' cache: agentSubjectDelivery and fanoutDelivery record a key there for every delivery
@@ -361,13 +362,9 @@ func (s *roleSend) timedOut() {
 // holder the route never forwarded it to.
 func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 	verdict := beforeForward(s.item, s.holder, entry, s.d.confirmed.Seen)
-	if verdict.kind == forwardAllowed {
-		return false
-	}
-	if s.attempts > 0 {
-		s.record.charge.spend()
-	}
 	switch verdict.kind {
+	case forwardAllowed:
+		return false
 	case forwardEcho:
 		s.delivered(sendSkipped)
 	case forwardRepeat:
@@ -472,7 +469,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
 				d.confirm(item.DedupeKey, send.holder)
-				send.record.charge.spend()
+				send.record.charge.stored()
 				send.delivered(sendDelivered)
 				return
 			}
@@ -480,6 +477,9 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				send.refused(err)
 				return
 			}
+			// A forward that failed with no refusal may have been stored for its holder, so it
+			// costs its sender one whatever this send answers next.
+			send.record.charge.stored()
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.

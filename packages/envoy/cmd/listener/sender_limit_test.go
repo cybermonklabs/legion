@@ -336,22 +336,6 @@ func (rig *senderLimitRig) requireCount(t *testing.T, sender string, has bool) {
 	next.requireNamed(t, sender+"'s next message", sender)
 }
 
-// awaitRoleWake reads the rig's wake reports until one names role, and fails when none has within
-// 10 s. An agent wake is awaited on rig.wakes with awaitAgentWake.
-func (rig *senderLimitRig) awaitRoleWake(t *testing.T, role string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		msg, err := rig.wakes.NextMsg(time.Until(deadline))
-		if err != nil {
-			t.Fatalf("no role wake report named %s: %v", role, err)
-		}
-		if kind, name := wakeReportNames(t, msg); kind == wakeKindRole && name == role {
-			return
-		}
-	}
-}
-
 // requireNoWake reads the rig's wake reports until none has arrived for half a second, and fails
 // on one of kind naming name. A report is published off the route's path, so the quiet is what
 // tells a report that will never come from one still on its way.
@@ -365,10 +349,47 @@ func (rig *senderLimitRig) requireNoWake(t *testing.T, kind, name string) {
 		if err != nil {
 			t.Fatalf("read the wake reports: %v", err)
 		}
-		if gotKind, gotName := wakeReportNames(t, msg); gotKind == kind && gotName == name {
+		if wakeNamed(wakeReportIn(t, msg), kind, name) {
 			t.Fatalf("a %s wake report named %s, want none", kind, name)
 		}
 	}
+}
+
+// interceptForwards has every role forward the rig's routes make go through intercept, handed the
+// forward's number among them, from 1, and the forward itself, which intercept makes or does not,
+// and answers in its place. It answers the count of the forwards the routes made so far.
+func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func() (func() error, error)) (func() error, error)) *int {
+	forwards := 0
+	delivery := *rig.deps.delivery
+	forwardRole := delivery.forwardRole
+	delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		forwards++
+		return intercept(forwards, func() (func() error, error) { return forwardRole(subject, item, msgID, timeout) })
+	}
+	rig.deps.delivery = &delivery
+	return &forwards
+}
+
+// loseFirstForwardAck has the stream store the first role forward the rig's routes make and its
+// acknowledgement lost on the way back: once the stream stored it, then runs, and the forward's
+// wait answers natsgo.ErrTimeout, as the wait for an acknowledgement that never arrives ends.
+// Every later forward goes out as it would. It answers the count of the forwards made so far.
+func (rig *senderLimitRig) loseFirstForwardAck(then func()) *int {
+	return rig.interceptForwards(func(n int, forward func() (func() error, error)) (func() error, error) {
+		if n > 1 {
+			return forward()
+		}
+		// The first forward is stored, and its acknowledgement is lost on the way back.
+		wait, err := forward()
+		if err != nil {
+			return nil, err
+		}
+		if err := wait(); err != nil {
+			return nil, err
+		}
+		then()
+		return func() error { return natsgo.ErrTimeout }, nil
+	})
 }
 
 // messageJSON is body with fields over it, a nil value removing a field, as a request's JSON.
@@ -559,7 +580,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 		// so the rig is shown to read the role's wake reports, and that one is the only one.
 		unkept := rig.publishFrom(t, other, contracts.RoleTopicPrefix+role, map[string]any{"keep": false})
 		unkept.requireStatus(t, "another sender's message with keep false", http.StatusNotFound)
-		rig.awaitRoleWake(t, role)
+		awaitWake(t, rig.wakes, wakeKindRole, role)
 		rig.requireNoWake(t, wakeKindRole, role)
 		assertNothingKept(t, rig.harness.client, role)
 
@@ -599,7 +620,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 		// Another sender's send to the same session is answered 404 with its wake reported, so the
 		// rig is shown to read the session's wake reports, and that one is the only one.
 		rig.sendFrom(t, other, gone, nil).requireStatus(t, "another sender's send", http.StatusNotFound)
-		awaitAgentWake(t, rig.wakes, gone)
+		awaitWake(t, rig.wakes, wakeKindAgent, gone)
 		rig.requireNoWake(t, wakeKindAgent, gone)
 		rig.requireCount(t, sender, false)
 	})
@@ -761,13 +782,13 @@ func TestSenderLimitCost(t *testing.T) {
 		first := rig.sendFrom(t, sender, target, key)
 		first.requireStatus(t, "the first send", http.StatusOK)
 		first.requireNamed(t, "the first send", sender)
-		awaitAgentWake(t, rig.wakes, target)
+		awaitWake(t, rig.wakes, wakeKindAgent, target)
 		repeat := rig.sendFrom(t, sender, target, key)
 		repeat.requireStatus(t, "the repeated send", http.StatusOK)
 		if !repeat.Duplicate {
 			t.Fatalf("the repeated send under one UUID key answered %s, want duplicate", repeat.raw)
 		}
-		awaitAgentWake(t, rig.wakes, target)
+		awaitWake(t, rig.wakes, wakeKindAgent, target)
 		repeat.requireUnnamed(t, "the repeated send")
 		rig.requireCount(t, sender, true)
 	})
@@ -795,13 +816,13 @@ func TestSenderLimitCost(t *testing.T) {
 		first := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key)
 		first.requireStatus(t, "the first kept message", http.StatusAccepted)
 		first.requireNamed(t, "the first kept message", sender)
-		rig.awaitRoleWake(t, role)
+		awaitWake(t, rig.wakes, wakeKindRole, role)
 		repeat := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key)
 		repeat.requireStatus(t, "the repeated kept message", http.StatusAccepted)
 		if !repeat.Kept || repeat.EventID != first.EventID {
 			t.Fatalf("the repeat answered %s, want kept with the first copy's event %s", repeat.raw, first.EventID)
 		}
-		rig.awaitRoleWake(t, role)
+		awaitWake(t, rig.wakes, wakeKindRole, role)
 		repeat.requireUnnamed(t, "the repeated kept message")
 		requireRoleSendLinesNameNoSender(t, logs()[before:])
 		rig.requireCount(t, sender, true)
@@ -898,7 +919,7 @@ func TestSenderLimitCost(t *testing.T) {
 			t.Fatalf("the message to a role nobody holds answered %s, want kept", kept.raw)
 		}
 		kept.requireNamed(t, "the kept message", sender)
-		rig.awaitRoleWake(t, role)
+		awaitWake(t, rig.wakes, wakeKindRole, role)
 		requireRoleSendLinesNameNoSender(t, logs()[before:])
 		rig.requireCount(t, sender, false)
 	})
@@ -911,7 +932,7 @@ func TestSenderLimitCost(t *testing.T) {
 		unkept.requireStatus(t, "the message with keep false", http.StatusNotFound)
 		unkept.requireOutcome(t, "the message with keep false", outcomeRoleUnclaimed)
 		unkept.requireNamed(t, "the message with keep false", sender)
-		rig.awaitRoleWake(t, role)
+		awaitWake(t, rig.wakes, wakeKindRole, role)
 		assertNothingKept(t, rig.harness.client, role)
 		requireRoleSendLinesNameNoSender(t, logs()[before:])
 		rig.requireCount(t, sender, false)
@@ -924,7 +945,7 @@ func TestSenderLimitCost(t *testing.T) {
 		missing.requireStatus(t, "the send to a session nobody knows", http.StatusNotFound)
 		missing.requireOutcome(t, "the send to a session nobody knows", outcomeNoLiveSession)
 		missing.requireNamed(t, "the send to a session nobody knows", sender)
-		awaitAgentWake(t, rig.wakes, gone)
+		awaitWake(t, rig.wakes, wakeKindAgent, gone)
 		rig.requireCount(t, sender, false)
 	})
 
@@ -936,7 +957,7 @@ func TestSenderLimitCost(t *testing.T) {
 		refused.requireStatus(t, "the steer to a record that takes aside alone", http.StatusForbidden)
 		refused.requireOutcome(t, "the steer to a record that takes aside alone", outcomeCapabilityRefused)
 		refused.requireNamed(t, "the steer to a record that takes aside alone", sender)
-		awaitAgentWake(t, rig.wakes, target)
+		awaitWake(t, rig.wakes, wakeKindAgent, target)
 		rig.requireCount(t, sender, false)
 	})
 
@@ -948,7 +969,7 @@ func TestSenderLimitCost(t *testing.T) {
 		stopped.requireStatus(t, "the connected_only send to a record", http.StatusConflict)
 		stopped.requireOutcome(t, "the connected_only send to a record", outcomeSessionStopped)
 		stopped.requireNamed(t, "the connected_only send to a record", sender)
-		awaitAgentWake(t, rig.wakes, target)
+		awaitWake(t, rig.wakes, wakeKindAgent, target)
 		rig.requireCount(t, sender, false)
 	})
 
@@ -963,7 +984,7 @@ func TestSenderLimitCost(t *testing.T) {
 		refused.requireStatus(t, "the send to a full stream", http.StatusServiceUnavailable)
 		refused.requireOutcome(t, "the send to a full stream", outcomeStreamFull)
 		refused.requireNamed(t, "the send to a full stream", sender)
-		awaitAgentWake(t, full.wakes, target)
+		awaitWake(t, full.wakes, wakeKindAgent, target)
 		full.requireCount(t, sender, false)
 	})
 
@@ -1045,16 +1066,13 @@ func TestSenderLimitCost(t *testing.T) {
 		// out, after the send resolved its holder live, so no acknowledgement arrives and every
 		// later resolution waits out the window.
 		var thaw func()
-		delivery := *frozen.deps.delivery
-		forward := delivery.forwardRole
-		delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		frozen.interceptForwards(func(_ int, forward func() (func() error, error)) (func() error, error) {
 			if thaw == nil {
 				thaw = server.Freeze(t)
 				t.Cleanup(thaw)
 			}
-			return forward(subject, item, msgID, timeout)
-		}
-		frozen.deps.delivery = &delivery
+			return forward()
+		})
 		before := len(frozen.harness.logs.String())
 		timedOut := frozen.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
 		if thaw == nil {
@@ -1078,29 +1096,12 @@ func TestSenderLimitCost(t *testing.T) {
 		moved.limit(4, 1)
 		const sender, first, next, role = "ses_cost_moved", "ses_cost_moved_first", "ses_cost_moved_next", "cost-moved"
 		claimRoleFor(t, moved.deps.registry, moved.deps.sessions, first, role, []string{"steer"})
-		forwards := 0
-		delivery := *moved.deps.delivery
-		forward := delivery.forwardRole
-		delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-			forwards++
-			if forwards > 1 {
-				return forward(subject, item, msgID, timeout)
-			}
-			// The first forward is stored, and its acknowledgement is lost on the way back.
-			wait, err := forward(subject, item, msgID, timeout)
-			if err != nil {
-				return nil, err
-			}
-			if err := wait(); err != nil {
-				return nil, err
-			}
+		forwards := moved.loseFirstForwardAck(func() {
 			claimRoleFor(t, moved.deps.registry, moved.deps.sessions, next, role, []string{"aside"})
-			return func() error { return natsgo.ErrTimeout }, nil
-		}
-		moved.deps.delivery = &delivery
+		})
 		answer := moved.publishFrom(t, sender, contracts.RoleTopicPrefix+role, steer)
-		if forwards != 1 {
-			t.Fatalf("the role send forwarded %d times, want the first holder's one; body %s", forwards, answer.raw)
+		if *forwards != 1 {
+			t.Fatalf("the role send forwarded %d times, want the first holder's one; body %s", *forwards, answer.raw)
 		}
 		if stored := moved.storedOn(t, contracts.LegacyAgentSubject(first)); stored != 1 {
 			t.Fatalf("the stream holds %d forwards for %s, want the one whose acknowledgement was lost", stored, first)
@@ -1126,22 +1127,7 @@ func TestSenderLimitCost(t *testing.T) {
 			t.Fatalf("keep the earlier attempt; the listener log says why:\n%s", released.harness.logs.String())
 		}
 		claimRoleFor(t, released.deps.registry, released.deps.sessions, holder, role, nil)
-		forwards := 0
-		delivery := *released.deps.delivery
-		forward := delivery.forwardRole
-		delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-			forwards++
-			if forwards > 1 {
-				return forward(subject, item, msgID, timeout)
-			}
-			// The first forward is stored, and its acknowledgement is lost on the way back.
-			wait, err := forward(subject, item, msgID, timeout)
-			if err != nil {
-				return nil, err
-			}
-			if err := wait(); err != nil {
-				return nil, err
-			}
+		forwards := released.loseFirstForwardAck(func() {
 			// The claim names no process, so the release is the forced one DELETE
 			// /v1/interests/<session_id> makes (store.RoleReleaseAuthority.Force).
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1149,12 +1135,10 @@ func TestSenderLimitCost(t *testing.T) {
 			if _, err := released.deps.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
 				t.Fatalf("release %s's claim of %s: %v", holder, role, err)
 			}
-			return func() error { return natsgo.ErrTimeout }, nil
-		}
-		released.deps.delivery = &delivery
+		})
 		answer := released.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": idempotencyKey})
-		if forwards != 1 {
-			t.Fatalf("the role send forwarded %d times, want the holder's one; body %s", forwards, answer.raw)
+		if *forwards != 1 {
+			t.Fatalf("the role send forwarded %d times, want the holder's one; body %s", *forwards, answer.raw)
 		}
 		if stored := released.storedOn(t, contracts.LegacyAgentSubject(holder)); stored != 1 {
 			t.Fatalf("the stream holds %d forwards for %s, want the one whose acknowledgement was lost", stored, holder)
@@ -1164,7 +1148,7 @@ func TestSenderLimitCost(t *testing.T) {
 			t.Fatalf("the role send answered %s, want kept with the earlier attempt's event %s", answer.raw, earlier.EventID)
 		}
 		answer.requireNamed(t, "the role message the stream stored for the holder", sender)
-		released.awaitRoleWake(t, role)
+		awaitWake(t, released.wakes, wakeKindRole, role)
 		released.requireCount(t, sender, false)
 	})
 }

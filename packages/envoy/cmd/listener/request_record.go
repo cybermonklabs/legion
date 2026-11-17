@@ -94,11 +94,11 @@ type requestRecord struct {
 	// its line, with the envelope's four fields empty rather than no line at all.
 	item   *contracts.Envelope
 	holder string
-	// charge is the message's take from its sender's count (senderLimit.take), nil for a message
+	// charge is the message's take from its sender's count (senderLimit.admit), nil for a message
 	// the limit does not count, and refused the refusal of a message whose count was empty. The
-	// line names the sender of a refusal, and of a charge only while it is spent and not
-	// forgiven, so the field sender marks exactly the messages that cost one or were refused for
-	// the rate, and no other line of the listener carries it.
+	// line names the sender of a refusal, and of a charge only once it costs one
+	// (senderCharge.counted), so the field sender marks exactly the messages that cost one or were
+	// refused for the rate, and no other line of the listener carries it.
 	charge  *senderCharge
 	refused *senderRefusal
 }

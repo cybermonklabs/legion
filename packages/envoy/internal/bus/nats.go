@@ -1881,7 +1881,7 @@ func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contr
 // core-transport topic has no acknowledgement, so it answers the zero StoredAck beside
 // PublishCoreContext's error. The listener's send and publish routes publish this way: their
 // sender limit charges nothing for a copy the stream already held, and one for a copy this call
-// may have stored (cmd/listener/api.go).
+// may have stored (cmd/listener's senderCharge.published).
 func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	if c.UsesCoreTransport(item.Topic) {
 		return StoredAck{}, c.PublishCoreContext(ctx, item.Topic, item)
@@ -1906,24 +1906,42 @@ type StoredAck struct {
 	Resent    bool
 }
 
-// PublishStoredAck publishes item to the notification stream on subject, under Nats-Msg-Id msgID
-// instead of the one publishJetStream derives, within ctx's bound as PublishWithin's, for a caller
-// that names both the subject it is stored on and the stored message itself, and returns the
-// stream's acknowledgement. It is how the listener keeps a role message it could not deliver:
-// stored on that role's kept subject (KeptRoleSubject) while the envelope keeps its own topic
-// field, so the holder that later takes the role is handed the message as its sender sent it.
-// Every listener that keeps the same message writes it under one id (KeptMsgID), and the keep
-// reads the acknowledgement to tell a new copy from one the stream already held, and which copy
-// that is (cmd/listener/role_keep.go).
+// PublishStoredAck publishes item to the notification stream on subject, under Nats-Msg-Id msgID,
+// none when it is empty, within ctx's bound as PublishWithin's, for a caller that names both the
+// subject it is stored on and the stored message itself, and returns the stream's
+// acknowledgement. publishJetStream publishes an envelope on its own topic through it, under the
+// id it derives. It is also how the listener keeps a role message it could not deliver: stored on
+// that role's kept subject (KeptRoleSubject) while the envelope keeps its own topic field, so the
+// holder that later takes the role is handed the message as its sender sent it. Every listener
+// that keeps the same message writes it under one id (KeptMsgID), and the keep reads the
+// acknowledgement to tell a new copy from one the stream already held, and which copy that is
+// (cmd/listener/role_keep.go).
 //
 // A duplicate is no error: it comes back Duplicate, with the sequence of the copy the stream
-// holds, and Resent where it answers a resend. Its refusals are publishJetStream's (ErrTooLarge,
-// ErrRefused, ErrPublishDenied, ErrStreamFull), and ErrDuplicateInProcess while a clustered
-// stream is still storing an earlier publish under the same id; subject must be one the stream
-// captures, or nothing answers the publish. A failure after a send that nothing answered wraps
-// ErrUnacknowledged, since the stream may hold the copy (sendStored).
+// holds, and Resent where it answers a resend. Its refusals are those of every stored publish,
+// which publishJetStream describes (ErrTooLarge, ErrRefused, ErrPublishDenied, ErrStreamFull), and
+// ErrDuplicateInProcess while a clustered stream is still storing an earlier publish under the
+// same id; subject must be one the stream captures, or nothing answers the publish. A failure
+// after a send that nothing answered wraps ErrUnacknowledged, since the stream may hold the copy
+// (sendStored).
 func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
-	return c.publishJetStreamOn(ctx, subject, item, msgID)
+	if err := checkSubject(subject); err != nil {
+		return StoredAck{}, err
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		return StoredAck{}, err
+	}
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	defer cancel()
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return StoredAck{}, err
+	}
+	options := []nats.PubOpt{nats.Context(ctx)}
+	if msgID != "" {
+		options = append(options, nats.MsgId(msgID))
+	}
+	return c.sendStored(ctx, subject, data, options...)
 }
 
 // PublishStoredAs is PublishStoredAck for a caller that needs no acknowledgement: the listener's
@@ -1940,11 +1958,11 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // stream's acknowledgement (StoredAck). The MsgId, where the envelope earns one, is the dedupe key
 // and the topic together, because one upstream event can be published on several topics under one
 // key - a GitHub comment that mentions the trigger is published on its mention topic beside its
-// comment topic - and each of those must be retained. The bound below is the earlier of the
-// caller's own deadline and publishBound, since WithTimeout keeps the parent's deadline when that
-// is the earlier one; publishBound is what bounds a caller that passed none. The acknowledgement
-// wait is still taken from publishAcknowledgementClock, the seam a test uses to expire that bound
-// without spending it.
+// comment topic - and each of those must be retained. The bound PublishStoredAck sets is the
+// earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
+// deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
+// The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
+// to expire that bound without spending it.
 //
 // A publish the server refuses under the connection's own publish permissions is answered
 // ErrPublishDenied, as a publish window's sends are (window.acknowledged): a denied JetStream
@@ -1974,33 +1992,7 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) 
 	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
 		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
 	}
-	return c.publishJetStreamOn(ctx, item.Topic, item, msgID)
-}
-
-// publishJetStreamOn is publishJetStream to subject under Nats-Msg-Id msgID, none when it is
-// empty, and returns the stream's acknowledgement, which each caller reads for what it needs:
-// PublishAckWithin the whole of it for the envelope's own topic, PublishStoredAck the sequence
-// beside the verdict. Every publish of the envelope's own topic passes item.Topic; a kept role
-// message passes the subject it is stored on (PublishStoredAck), which leaves item.Topic the role
-// topic it was published on.
-func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
-	if err := checkSubject(subject); err != nil {
-		return StoredAck{}, err
-	}
-	data, err := json.Marshal(item)
-	if err != nil {
-		return StoredAck{}, err
-	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
-	defer cancel()
-	if err := c.ensureConnWithContext(ctx); err != nil {
-		return StoredAck{}, err
-	}
-	options := []nats.PubOpt{nats.Context(ctx)}
-	if msgID != "" {
-		options = append(options, nats.MsgId(msgID))
-	}
-	return c.sendStored(ctx, subject, data, options...)
+	return c.PublishStoredAck(ctx, item.Topic, item, msgID)
 }
 
 // ErrUnacknowledged is wrapped by the error of a stored publish that failed and may still have put
@@ -2048,7 +2040,7 @@ func unacknowledged(err error, mayHold bool) error {
 // sendStored publishes data to subject on the notification stream under options, once more if the
 // connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge,
 // ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path: its callers
-// (publishJetStreamOn, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
+// (PublishStoredAck, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
 // among the options, so the acknowledgement wait ends with that bound.
 //
 // A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live
