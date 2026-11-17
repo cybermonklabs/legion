@@ -144,9 +144,6 @@ func requirePrivateProjectsRefusal(t *testing.T, row privateProjectsRefusal, err
 //   - Let a private clustered hub open its monitoring port: delete gcp/clusteredhub.go's refusal
 //     of monitorNamespaces beside privateProjects. The monitorNamespaces row fails with
 //     "privateProjects was taken beside the monitoring port open to the namespace "legion"".
-//   - Let a private VM hub open its monitoring port to IAP: delete gcp/natshub.go's refusal of
-//     monitorThroughIap beside privateProjects. The monitorThroughIap row fails with
-//     "privateProjects was taken beside the monitoring port open to IAP's TCP forwarding".
 func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		for _, row := range privateProjectsRefusals() {
@@ -159,20 +156,31 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 				require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
 			})
 		}
-		// The same port, through an IAP tunnel, answers every principal IAM lets open one to the
-		// VM, so a private VM hub opens it to none.
-		t.Run("beside monitorThroughIap", func(t *testing.T) {
+		// A private VM hub takes monitorThroughIap: a monitoring path checked by identity is
+		// allowed beside privateProjects, where one that depends only on network position, as
+		// gcp:ClusteredNatsHub's monitorNamespaces does, is refused (natshub.go, MonitorThroughIap).
+		// The rule it registers is the narrow one, tcp/8222 alone, from IAP's range alone, on the
+		// hub's own account alone and no tag; no input widens any of the three, so there is no
+		// wider rule to refuse, and this row pins all three. Control: the same private hub without
+		// the input registers no such rule.
+		t.Run("beside monitorThroughIap, it registers the narrow IAP rule", func(t *testing.T) {
 			args := privateNatsHub()
 			args.MonitorThroughIap = true
-			const want = `monitorThroughIap and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication`
-			err := gcp.ResolveNatsHub(args)
-			require.ErrorContains(t, err, want, "privateProjects was taken beside the monitoring port open to IAP's TCP forwarding")
-			var input *core.InputError
-			require.ErrorAs(t, err, &input)
-			require.Equal(t, "monitorThroughIap", input.Input, "%v", err)
+			require.NoError(t, gcp.ResolveNatsHub(args))
 			m, err := run(t, args, nil, true)
-			require.ErrorContains(t, err, want)
-			require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
+			require.NoError(t, err)
+			rule := m.Named(t, firewallType, "example-hub-iap-monitor").Inputs.Mappable()
+			delete(rule, "network")
+			require.Equal(t, map[string]any{
+				"allows":                []any{map[string]any{"protocol": "tcp", "ports": []any{"8222"}}},
+				"sourceRanges":          []any{"35.235.240.0/20"},
+				"targetServiceAccounts": []any{"example-hub-hub@example-project.iam.gserviceaccount.com"},
+			}, rule, "tcp/8222 alone, from IAP's range alone, on the hub's own account alone")
+			control, err := run(t, privateNatsHub(), nil, true)
+			require.NoError(t, err)
+			for _, r := range control.Registrations() {
+				require.NotEqual(t, "example-hub-iap-monitor", r.Name, "control: without the input no IAP rule")
+			}
 		})
 		t.Run("with authCallout and the service's user alone, it registers", func(t *testing.T) {
 			require.NoError(t, gcp.ResolveNatsHub(privateNatsHub()))

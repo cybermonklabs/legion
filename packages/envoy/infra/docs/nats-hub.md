@@ -56,7 +56,7 @@ and `instanceGroup`, the group's name.
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
 | `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. See [The auth service](#the-auth-service). |
-| `monitorThroughIap` | `false` | IAP TCP forwarding reaches NATS's monitoring port, 8222: the firewall rule `<h>-iap-monitor` and the VM's own host firewall admit IAP's range, `35.235.240.0/20`, to 8222 alone. The component grants no one a tunnel. Refused beside `privateProjects`. A change of it rewrites the VM's user data, so the group replaces the VM. See [The monitoring port through IAP](#the-monitoring-port-through-iap). |
+| `monitorThroughIap` | `false` | IAP TCP forwarding reaches NATS's monitoring port, 8222: the firewall rule `<h>-iap-monitor` and the VM's own host firewall admit IAP's range, `35.235.240.0/20`, to 8222 alone. The component grants no one a tunnel. Taken beside `privateProjects` (see [The auth service](#the-auth-service) for why). A change of it rewrites the VM's user data, so the group replaces the VM. See [The monitoring port through IAP](#the-monitoring-port-through-iap). |
 
 Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource's output. Every
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
@@ -316,10 +316,13 @@ port-forward` and `exec` reach a pod through the API server; and Managed Prometh
 exporter's port, 7777. `gcp:NatsHub` opens 8222 to Google Cloud's health-check probe ranges,
 `130.211.0.0/22` and `35.191.0.0/16` (its firewall `<h>-health-checks` and the VM's own iptables
 rule), from which its group's health check reads `/healthz`, and, with `monitorThroughIap`, to IAP
-TCP forwarding's range, through which every principal IAM lets open a tunnel to the VM reaches it.
-So it refuses `monitorThroughIap` beside `privateProjects`, as `monitorThroughIap and
-privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no
-authentication, …`.
+TCP forwarding's range, through which a principal IAM lets open a tunnel to the VM reaches it. The
+rule is this: a monitoring path checked by identity is allowed beside `privateProjects`, and one
+that depends only on network position is refused. `monitorNamespaces` admits every pod of a
+namespace, by its position, so it is refused; `kubectl port-forward` is checked by RBAC and an IAP
+tunnel by IAM, so both are allowed. The IAP rule opens tcp/8222 alone, from IAP's range alone, on
+the hub's own instance alone, and no input widens any of the three. Who holds a tunnel is the
+deployment's to bound before a project is private.
 
 `privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
 (the callout, no session user, no client user beside the auth service's) reaches a running server

@@ -149,9 +149,15 @@ type NatsHubArgs struct {
 	// IAP TCP forwarding reaches NATS's monitoring port, 8222: a firewall rule admits
 	// iapTunnelRange to it on the VM's own service account alone, and the VM's host firewall
 	// admits the range to it, beside the health checks. Who may open a tunnel is IAM's, which the
-	// consumer grants: the component grants no one. Refused beside privateProjects
-	// (monitorBesidePrivateProjects's reason). Unset, the VM's user data is as before this input
-	// existed. A change of it rewrites the user data, so the group replaces the VM.
+	// consumer grants: the component grants no one. It is taken beside privateProjects: a
+	// monitoring path checked by identity is allowed beside that flag, and one that depends only
+	// on network position is refused, which is why gcp:ClusteredNatsHub refuses monitorNamespaces
+	// there and allows kubectl port-forward. A tunnel is checked by identity, and its rule opens
+	// tcp/8222 alone, from iapTunnelRange alone, on the hub's own instance alone, none of which an
+	// input widens (TestNatsHubMonitorThroughIapOpensTheMonitoringPortToIapAlone). Who holds the
+	// tunnel is the deployment's to bound before a project is private. Unset, the VM's user data is
+	// as before this input existed. A change of it rewrites the user data, so the group replaces
+	// the VM.
 	MonitorThroughIap bool `pulumi:"monitorThroughIap,optional"`
 }
 
@@ -321,9 +327,6 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	if args.Listener != nil && args.AuthCallout != nil {
 		return settings{}, listenerBesideCallout("listener")
 	}
-	if args.PrivateProjects && args.MonitorThroughIap {
-		return settings{}, iapMonitorBesidePrivateProjects()
-	}
 	var hubListener *listenerUser
 	if args.Listener != nil {
 		hubListener = &listenerUser{machineID: args.Hostname, nkey: args.Listener.NKey}
@@ -352,16 +355,6 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 		return settings{}, fmt.Errorf("render the cloud-config: %w", err)
 	}
 	return s, nil
-}
-
-// iapMonitorBesidePrivateProjects refuses monitorThroughIap beside privateProjects, for the reason
-// gcp:ClusteredNatsHub refuses monitorNamespaces there (monitorBesidePrivateProjects): nats-server's
-// monitoring port answers /connz, /subsz and /jsz with no authentication, and through the tunnel it
-// answers every principal IAM lets open one to the VM, which the component cannot see or bound.
-func iapMonitorBesidePrivateProjects() error {
-	return core.InputErrorf("monitorThroughIap", "monitorThroughIap and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication, "+
-		"naming the subjects, connections and consumers of every client, a private project's among them, to every principal IAM lets open an IAP tunnel to the hub's VM; "+
-		"leave monitorThroughIap unset beside privateProjects: the health checks read the port from their own ranges, which need no tunnel")
 }
 
 // resolveListener checks the hub's listener input and returns the listener it gives, or nil for a
