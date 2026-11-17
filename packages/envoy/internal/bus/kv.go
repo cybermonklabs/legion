@@ -302,7 +302,7 @@ const (
 	// policy and direct get, its metadata included (nats.go@v1.53.1 kv.go:525-545). nats-server
 	// 2.15.1, the hubs' version, answers every stream with metadata of its own (_nats.ver,
 	// _nats.level, _nats.req.level), which that configuration never carries, so there the update
-	// is never sent.
+	// is never sent (infra/buckets, TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs).
 	createOnly
 )
 

@@ -1,6 +1,7 @@
 package buckets
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,8 +10,10 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -739,12 +742,12 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-// listenerUserServer starts a NATS server with two users: a listener's, the nkey user the hub
+// listenerUsers is the authorization of a hub with two users: a listener's, the nkey user the hub
 // renders for the in-cluster gke listener, holding exactly core.ListenerHostPermissions("gke"); and
 // a watcher, which a client presenting no credential becomes and which may do anything, so the test
-// reads streams and stream requests through it. It returns the server's URL and the listener
+// reads streams and stream requests through it. It returns the authorization and the listener
 // user's seed.
-func listenerUserServer(t *testing.T) (uri, seed string) {
+func listenerUsers(t *testing.T) (config, seed string) {
 	t.Helper()
 	seed, public := testnats.User(t)
 	_, watcher := testnats.User(t)
@@ -757,6 +760,14 @@ func listenerUserServer(t *testing.T) (uri, seed string) {
 	if err != nil {
 		t.Fatalf("render the hub's users: %v", err)
 	}
+	return config, seed
+}
+
+// listenerUserServer starts a NATS server with listenerUsers' users, and returns its URL and the
+// listener user's seed.
+func listenerUserServer(t *testing.T) (uri, seed string) {
+	t.Helper()
+	config, seed := listenerUsers(t)
 	_, uri = testnats.StartConfig(t, config, []string{"-js"}, true)
 	return uri, seed
 }
@@ -793,8 +804,9 @@ func watchStreamRequests(t *testing.T, conn *natsgo.Conn) *streamRequests {
 }
 
 // take returns each request since the last take, as <verb>.<stream> in the order they came, but
-// those of the notification stream, whose info every connect reads (bus.Connect). The flush, a
-// round trip after the run ended, leaves each request that reached the server queued here.
+// those of the notification stream, whose info every connect reads (bus.Connect), and a racer's own
+// (racerInbox). The flush, a round trip after the run ended, leaves each request that reached the
+// server queued here.
 func (r *streamRequests) take(t *testing.T) []string {
 	t.Helper()
 	if err := r.conn.Flush(); err != nil {
@@ -805,6 +817,9 @@ func (r *streamRequests) take(t *testing.T) []string {
 		msg, err := r.sub.NextMsg(50 * time.Millisecond)
 		if err != nil {
 			return requests
+		}
+		if strings.HasPrefix(msg.Reply, racerInbox+".") {
+			continue
 		}
 		if request := strings.TrimPrefix(msg.Subject, "$JS.API.STREAM."); !strings.HasSuffix(request, "."+bus.Stream) {
 			requests = append(requests, request)
@@ -1027,6 +1042,295 @@ func TestCreateMakesTheCopiedBucketsAtTheDeploymentsCopies(t *testing.T) {
 				t.Fatalf("%s: %s has %d copies configured and %d placed, want %d", step.name, bucket, info.Config.Replicas, placed, step.copies)
 			}
 		}
+	}
+}
+
+// holdingRelay relays a break-glass run's connections to a hub, the run's side a protocol message
+// at a time, and holds the run between two of its requests: once it has passed on the run's first
+// publish on trigger, it reads nothing more from the run until the hold ends. That publish reaches
+// the hub, which answers it, and nothing the run sends after it reaches the hub before the hold
+// ends, however the scheduler orders the run and the racer.
+type holdingRelay struct {
+	trigger  string
+	url      string
+	listener net.Listener
+	once     sync.Once
+	reply    string        // the held publish's reply subject, set before held is closed
+	held     chan struct{} // closed once the publish on trigger has been passed on
+	release  chan struct{} // closed by end
+	end      func()        // ends the hold; the test's end ends it too
+}
+
+func startHoldingRelay(t *testing.T, target, trigger string) *holdingRelay {
+	t.Helper()
+	server, err := url.Parse(target)
+	if err != nil || server.Host == "" {
+		t.Fatalf("read the hub's URL %q: %v", target, err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the holding relay: %v", err)
+	}
+	r := &holdingRelay{trigger: trigger, url: "nats://" + listener.Addr().String(), listener: listener,
+		held: make(chan struct{}), release: make(chan struct{})}
+	r.end = sync.OnceFunc(func() { close(r.release) })
+	t.Cleanup(func() {
+		r.end()
+		_ = listener.Close()
+	})
+	go r.serve(server.Host)
+	return r
+}
+
+// serve joins each connection the relay accepts to the hub until the listener closes.
+func (r *holdingRelay) serve(target string) {
+	for {
+		client, err := r.listener.Accept()
+		if err != nil {
+			return
+		}
+		server, err := net.Dial("tcp", target)
+		if err != nil {
+			_ = client.Close()
+			continue
+		}
+		go func() {
+			_, _ = io.Copy(client, server)
+			_ = client.Close()
+			_ = server.Close()
+		}()
+		go r.pass(client, server)
+	}
+}
+
+// pass relays what the client sends to the hub, a protocol message at a time, and holds after the
+// first publish on trigger. A client sends CONNECT, SUB, UNSUB, PING, PONG and publishes, and a
+// publish (`PUB <subject> [reply] <bytes>`, `HPUB <subject> [reply] <header bytes> <bytes>`) is
+// followed by that many bytes and a CRLF.
+func (r *holdingRelay) pass(client, server net.Conn) {
+	defer func() {
+		_ = client.Close()
+		_ = server.Close()
+	}()
+	reader := bufio.NewReader(client)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		if _, err := io.WriteString(server, line); err != nil {
+			return
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		publish, headed := strings.EqualFold(fields[0], "PUB"), strings.EqualFold(fields[0], "HPUB")
+		if !publish && !headed {
+			continue
+		}
+		size, err := strconv.Atoi(fields[len(fields)-1])
+		if err != nil {
+			return
+		}
+		if _, err := io.CopyN(server, reader, int64(size)+2); err != nil {
+			return
+		}
+		if fields[1] != r.trigger {
+			continue
+		}
+		reply := ""
+		if (publish && len(fields) == 4) || (headed && len(fields) == 5) {
+			reply = fields[2]
+		}
+		r.once.Do(func() {
+			r.reply = reply
+			close(r.held)
+			<-r.release
+		})
+	}
+}
+
+// racerInbox is the reply prefix of a racer's own requests, which the request watch leaves out.
+const racerInbox = "_RACER"
+
+// racer is another client of the hub, the watcher (listenerUsers) on the hub directly, that makes a
+// bucket while a holdingRelay holds a break-glass run.
+type racer struct {
+	answer string             // the hub's answer to the run's held request
+	made   *natsgo.StreamInfo // the bucket's stream once the racer made it
+	err    error
+	done   chan struct{}
+}
+
+// race starts a racer on the hub at uri: once relay holds the run, it waits for the hub's answer to
+// the held request, makes the bucket whose stream is stream with makeBucket, waits until the hub
+// answers for that stream, and ends the hold.
+func race(t *testing.T, uri string, relay *holdingRelay, stream string, makeBucket func(natsgo.JetStreamContext) error) *racer {
+	t.Helper()
+	conn, err := testnats.ConnectSeed(t, uri, "", natsgo.CustomInboxPrefix(racerInbox))
+	if err != nil {
+		t.Fatalf("connect the racer: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("the racer's jetstream: %v", err)
+	}
+	replies, err := conn.SubscribeSync(natsgo.InboxPrefix + ">")
+	if err != nil {
+		t.Fatalf("the racer's watch of the run's answers: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the racer's watch: %v", err)
+	}
+	r := &racer{done: make(chan struct{})}
+	go func() {
+		defer close(r.done)
+		defer relay.end()
+		select {
+		case <-relay.held:
+		case <-time.After(30 * time.Second):
+			r.err = fmt.Errorf("the run sent nothing on %s within 30 s", relay.trigger)
+			return
+		}
+		if r.answer, r.err = answerTo(replies, relay.reply); r.err != nil {
+			return
+		}
+		if r.err = makeBucket(js); r.err != nil {
+			return
+		}
+		r.made, r.err = awaitStream(js, stream)
+	}()
+	return r
+}
+
+// answerTo is the payload of the first message on replies whose subject is reply.
+func answerTo(replies *natsgo.Subscription, reply string) (string, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		msg, err := replies.NextMsg(time.Until(deadline))
+		if err != nil {
+			return "", fmt.Errorf("no answer to %s: %w", reply, err)
+		}
+		if msg.Subject == reply {
+			return string(msg.Data), nil
+		}
+	}
+}
+
+// awaitStream reads stream until the hub answers for it, or 10 s pass.
+func awaitStream(js natsgo.JetStreamContext, stream string) (*natsgo.StreamInfo, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		info, err := js.StreamInfo(stream)
+		if err == nil || time.Now().After(deadline) {
+			return info, err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// A bucket another client makes after a break-glass run's read is left as it is, and the run is
+// refused for it, rather than raising, updating or deleting it. The other client is a racer (race):
+// the run reaches a three-member hub through a relay that holds it after its first request on the
+// trigger (holdingRelay), and in that hold the racer makes the bucket, then lets the run go on.
+//
+//   - At the run's read of the session bucket, which the hub answers "stream not found", the racer
+//     makes the bucket at one copy where the run asks for three. The create's own lookup finds it,
+//     and the run is refused there, having sent the bucket's stream its two reads alone. The control
+//     is the open the normal path takes (bus.CreateCopiedBucket), which raises a bucket its lookup
+//     finds with a stream update.
+//   - Between the create's lookup and its create - at the account info nats.go asks for before
+//     every create - the racer makes the role-claim bucket with the discard policy and direct get
+//     of a KV made before nats-server 2.7.2 and 2.9. The hub answers the create "stream name
+//     already in use"; nats.go reads the stream and sends no update, since the hub's metadata keeps
+//     the two configurations apart (bus, createOnly); and the run is refused.
+func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
+	config, seed := listenerUsers(t)
+	cluster := testnats.StartClusterConfig(t, 3, config)
+	uri := cluster.Servers[0].URL()
+	t.Setenv("NATS_NKEY_SEED", seed)
+	t.Setenv(bus.ReplicasEnvVar, "3")
+	watcher, js := jetStream(t, uri)
+	requests := watchStreamRequests(t, watcher)
+	for _, c := range []struct {
+		name, bucket, trigger string
+		makeBucket            func(natsgo.JetStreamContext) error
+		answered              string // what the hub answered the run's request on trigger
+		says                  []string
+		sent                  []string // the run's requests of the bucket's stream, by verb
+	}{
+		{
+			name:    "at fewer copies when the run's read arrives",
+			bucket:  bus.SessionBucket,
+			trigger: "$JS.API.STREAM.INFO.KV_" + bus.SessionBucket,
+			makeBucket: func(js natsgo.JetStreamContext) error {
+				config, _ := bus.CopiedBucketConfig(bus.SessionBucket, 1)
+				_, err := js.CreateKeyValue(&config)
+				return err
+			},
+			answered: "stream not found",
+			says:     []string{"KV_" + bus.SessionBucket + " STREAM.INFO"},
+			sent:     []string{"INFO", "INFO"},
+		},
+		{
+			name:    "with another discard policy and direct get between the create's lookup and its create",
+			bucket:  bus.RoleClaimBucket,
+			trigger: "$JS.API.INFO",
+			makeBucket: func(js natsgo.JetStreamContext) error {
+				config, _ := bus.CopiedBucketConfig(bus.RoleClaimBucket, 3)
+				if _, err := js.CreateKeyValue(&config); err != nil {
+					return err
+				}
+				info, err := js.StreamInfo("KV_" + bus.RoleClaimBucket)
+				if err != nil {
+					return err
+				}
+				legacy := info.Config
+				legacy.Discard, legacy.AllowDirect = natsgo.DiscardOld, false
+				_, err = js.UpdateStream(&legacy)
+				return err
+			},
+			says: []string{"KV_" + bus.RoleClaimBucket + " create", "stream name already in use"},
+			sent: []string{"INFO", "INFO", "CREATE", "INFO"},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stream := "KV_" + c.bucket
+			requests.take(t)
+			relay := startHoldingRelay(t, uri, c.trigger)
+			r := race(t, uri, relay, stream, c.makeBucket)
+			code, stdout, stderr := runCommand(t, &world{}, nil, "create", "--break-glass", "--operator", "op", "--bucket", c.bucket, "--nats", relay.url)
+			<-r.done
+			if r.err != nil || !strings.Contains(r.answer, c.answered) {
+				t.Fatalf("the racer: %v; the hub answered the run's request %q, want %q", r.err, r.answer, c.answered)
+			}
+			// The run's requests are taken before the read below, which is the test's own.
+			var sent []string
+			for _, request := range requests.take(t) {
+				verb, _ := strings.CutSuffix(request, "."+stream)
+				if verb != "INFO" && verb != "CREATE" {
+					t.Errorf("the run sent %s, which changes a stream", request)
+				}
+				sent = append(sent, verb)
+			}
+			if after, err := js.StreamInfo(stream); err != nil || !after.Created.Equal(r.made.Created) || !reflect.DeepEqual(after.Config, r.made.Config) {
+				t.Errorf("%s after the run: %v, %+v; want it as the racer made it, %+v", stream, err, after, r.made)
+			}
+			if !slices.Equal(sent, c.sent) {
+				t.Errorf("the run sent %v to %s, want %v", sent, stream, c.sent)
+			}
+			refused := "refused: " + stream + " was made by another client after the read"
+			if code != 1 || !strings.Contains(stderr, refused) || strings.Contains(stdout, "created") {
+				t.Errorf("the run = %d, want 1 and %q\n%s%s", code, refused, stdout, stderr)
+			}
+			for _, says := range c.says {
+				if !strings.Contains(stderr, says) {
+					t.Errorf("the refusal does not name %q:\n%s", says, stderr)
+				}
+			}
+		})
 	}
 }
 
