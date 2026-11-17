@@ -192,6 +192,10 @@ afterEach(resetReachability);
 afterEach(() => {
   jest.useRealTimers();
 });
+// A spy of `quietConsoleError` a row did not restore itself is put back here, as a fake clock is
+// just above: one left in place would keep `console.error` quiet for the hooks that run before
+// the next row. It runs before the act check below, whose throw would otherwise skip it.
+afterEach(restoreQuietConsoleError);
 
 // A row in which React printed an act message fails with what React printed (`act-warnings.ts`).
 // The hook order this rests on, measured on Bun 1.4.4: after a row, its file's `afterEach` hooks
@@ -214,9 +218,8 @@ afterEach(() => {
 // runs it once, at the end of the run. Keep this block the last of the file, so its throws skip
 // no other hook and its checks run after every other: a hook added later goes above it.
 //
-// The `beforeEach` restores a spy of `quietConsoleError` that the row before left in place: the
-// spy restores itself through `onTestFinished`, which Bun skips when one of that row's
-// `afterEach` hooks throws, as it skips the hooks after that one.
+// The `beforeEach` puts back a spy of `quietConsoleError` that the row before left in place
+// because one of that row's `afterEach` hooks threw before the one beside the clock restore ran.
 installActMessageRecorder();
 beforeEach(restoreQuietConsoleError);
 afterEach(() => failOnActMessages("in or before this row"));

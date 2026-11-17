@@ -1,4 +1,4 @@
-import { type Mock, onTestFinished, spyOn } from "bun:test";
+import { type Mock, spyOn } from "bun:test";
 
 // React 19's act messages, each by a piece of its text as react@19.2.8 and react-dom@19.2.8 print
 // it, with what the rule calls it. The table is at the top of the file on purpose: when the rule
@@ -68,25 +68,22 @@ export function installActMessageRecorder(): void {
 
 /**
  * Keeps `console.error` quiet for the rest of the row: a row whose code logs on purpose uses it to
- * keep that expected output out of the log. The spy restores itself when the row ends, after the
- * row's `afterEach` hooks, even when the row throws before it reaches its own restore; a row may
- * restore it sooner with `mockRestore()` on the spy this returns. Bun skips that restore when one
- * of the row's `afterEach` hooks throws, so the preload's `beforeEach` restores a spy left in place
- * before the next row starts. A second call in the same row restores the first spy and returns a
- * new one. Call it while a row runs, in its body or a `beforeEach`: Bun's `onTestFinished` throws
- * outside one. The spy records each act message it is handed before it drops the call, so the rule
- * still fails the row that drew one. It is the only sanctioned way to silence `console.error`: a
- * replacement, or a row's own spy with a `mockImplementation`, drops React's act messages before
- * the rule can read them.
+ * keep that expected output out of the log. The preload puts `console.error` back after the row's
+ * own `afterEach` hooks, in the `afterEach` of `setup.ts` beside its clock restore, so a row that
+ * throws before its own restore still gets it back; a row may restore it sooner with
+ * `mockRestore()` on the spy this returns. Bun skips that `afterEach` when an `afterEach` before
+ * it throws, so the preload's `beforeEach` also puts back a spy the row before left in place. A
+ * second call in the same row restores the first spy and returns a new one. The spy records each
+ * act message it is handed before it drops the call, so the rule still fails the row that drew
+ * one. It is the only sanctioned way to silence `console.error`: a replacement, or a row's own spy
+ * with a `mockImplementation`, drops React's act messages before the rule can read them.
  */
 export function quietConsoleError(): Mock<typeof console.error> {
   restoreQuietConsoleError();
-  const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+  quiet = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
     recordActMessage(args);
   });
-  quiet = spy;
-  onTestFinished(restoreQuietConsoleError);
-  return spy;
+  return quiet;
 }
 
 /**
