@@ -3580,6 +3580,7 @@ jobs:
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/cputest/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
