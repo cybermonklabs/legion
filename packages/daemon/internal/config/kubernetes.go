@@ -346,12 +346,15 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // wins lives only in process memory); the audience of the projected token every pod carries for
 // the broker; and that pod token's lifetime. The audience defaults to the broker's own
 // (`agent-secrets`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
-// Legion worker token; the API server issues none under 600.
+// Legion worker token; the API server issues none under 600. ExchangeAudience is the audience of a
+// second projected token every enrolled pod carries, the identity the broker's exchange trades for
+// a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one.
 type AgentSecretsConfig struct {
 	URL                string
 	TokenFile          string
 	Audience           string
 	TokenExpirySeconds int
+	ExchangeAudience   string
 }
 
 const (
@@ -415,6 +418,16 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 		}
 		block.TokenExpirySeconds = *expiry
 	}
+	exchange, err := optionalString(fields["exchange_audience"], agentSecretsKey+".exchange_audience")
+	if err != nil {
+		return nil, err
+	}
+	if exchange == block.Audience {
+		// The cluster admits one projected volume per audience, and the broker verifies the
+		// enrollment's token and the exchange's at different routes, each against its own audience.
+		return nil, fmt.Errorf("%s.exchange_audience must differ from %s.audience (both %s)", agentSecretsKey, agentSecretsKey, exchange)
+	}
+	block.ExchangeAudience = exchange
 	return block, nil
 }
 

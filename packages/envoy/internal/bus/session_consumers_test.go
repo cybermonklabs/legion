@@ -61,6 +61,20 @@ func TestReduceFilterSubjects(t *testing.T) {
 			want:     []string{"a.>"},
 		},
 		{
+			// A digit sorts before `>`, so a subject can sort before the subject that contains it
+			// (`a.1` before `a.>`), and the first subject of a pair is then the one dropped. The
+			// subject after it takes its place, and must still be weighed against every subject
+			// after it: `a.2.*` contains `a.2.x`, which lies between them.
+			name:     "a subject dropped for a later one that contains it leaves the next weighed against every later subject",
+			subjects: []string{"a.>", "a.2.x", "a.1", "a.2.*"},
+			want:     []string{"a.>"},
+		},
+		{
+			name:     "every subject a wildcard before them contains is dropped, one after another",
+			subjects: []string{"a.d", "a.*", "a.c", "a.b"},
+			want:     []string{"a.*"},
+		},
+		{
 			name:     "subjects that do not overlap stay, sorted",
 			subjects: []string{"notifications.github.o.r.>", "notifications.agent.ses_a", "notifications.dispatch.issue.K-1.>"},
 			want:     []string{"notifications.agent.ses_a", "notifications.dispatch.issue.K-1.>", "notifications.github.o.r.>"},

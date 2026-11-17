@@ -25,6 +25,16 @@ import type { CommentReply, DispatchEvent } from "./dispatch-read";
  * released by the owner of the next round in writing (that document's "Version 1 released"):
  * version 2's item 6 takes no case that version 1 alone held, so those cases are development data.
  *
+ * Version 3 holds only the trees the final test can take. From `RESERVE_LIST_CUT` an ask is held
+ * when its tree's root, at its first opening or at the build, is not in a list registered with it:
+ * every issue of each tree that held an ask through event `RESERVE_LIST_THROUGH`, except the trees
+ * version 2 held whole (`TreeLog.reserveListOf`). The build takes that list from the log and
+ * refuses one whose sha256 is not `RESERVE_LIST_SHA256`, and records for each case whether each
+ * root is in it (`askRootListed`, `issueRootListed`). Version 2's hash picks nothing from that cut,
+ * and its cases whose root at their ask's opening is in the list are released: such a tree had an
+ * ask before version 2's cut or an ask whose root version 2 did not pick, so item 6 takes none of
+ * them.
+ *
  * A reserved tree, by its root's key, that a read has already spent is in `MOVED_TO_DEVELOPMENT`,
  * with the record of that read, and is held no more.
  *
@@ -45,6 +55,16 @@ export const RESERVE_TREE_CUT = "2026-11-16T00:00:00Z";
 /** The text the rule appends the key of a tree's root to before it hashes it, as registered. */
 export const RESERVE_TREE_TEXT = "superfan-experiments INFRA-2897 reserve v2 2026-11-16:";
 
+/** Version 3's cut: from it, an ask is held when its tree's root is not in version 3's list. */
+export const RESERVE_LIST_CUT = "2026-11-18T00:00:00Z";
+
+/** The last event of the log whose trees and asks version 3's list is taken from. */
+export const RESERVE_LIST_THROUGH = 640951;
+
+/** The sha256 of version 3's list as registered: its keys in order, each line ending in `\n`. */
+export const RESERVE_LIST_SHA256 =
+  "5f2b4e13fa8e8fc1f20ede4eab62f770504d292564eb8bffaf855472d8ff0a79";
+
 /** The environment variable that lets a command read the reserved cases. */
 export const RESERVE_VARIABLE = "APPROVAL_EVAL_RESERVE";
 
@@ -60,6 +80,7 @@ export const MOVED_TO_DEVELOPMENT: Readonly<Record<string, string>> = {
 };
 
 const TREE_CUT_TIME = Date.parse(RESERVE_TREE_CUT);
+const LIST_CUT_TIME = Date.parse(RESERVE_LIST_CUT);
 
 /** The hexadecimal digits that pick a key: half of the sixteen. */
 const PICKING_DIGITS = "01234567";
@@ -73,26 +94,44 @@ export function pickedRoot(rootKey: string): boolean {
 }
 
 /**
- * Whether a case is held by the reserve. An ask on no issue, or one that opened before the cut,
- * is kept; one whose opening time is missing or does not parse is placed by its answer, which
- * comes after the opening, so it may be held. On or after the cut, `unknown` is a case from a
- * corpus built before `build-corpus.ts` recorded its tree's roots, which a caller refuses;
- * otherwise the case is held when the rule picks its root at the opening or at the build (a root
- * the build could not follow is null and picks nothing), unless a read spent that tree. Once
- * `ended` names the record that ended the reserve (`claim.ts`), every case is kept.
+ * An ask's time, which every cut is read against: its first opening, or, where that is missing or
+ * does not parse, its answer, which comes after the opening.
+ */
+export function askTimeOf(row: Pick<CaseSeed, "askCreatedAt" | "answeredAt">): number {
+  const opened = Date.parse(row.askCreatedAt ?? "");
+  return Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened;
+}
+
+/**
+ * Whether a case is held by the reserve. An ask on no issue, or one that opened before version 2's
+ * cut, is kept. From that cut, `unknown` is a case from a corpus built before `build-corpus.ts`
+ * recorded its tree's roots, which a caller refuses, and a case is kept when a read spent its
+ * tree. Before version 3's cut a case is held when version 2's rule picks its root at the opening
+ * or at the build (a root the build could not follow is null and picks nothing), unless its root at
+ * the opening is in version 3's list, which released it. The root at the build releases nothing:
+ * it moves with each parent change, so a tree moved under a listed issue for one build would put
+ * its cases in a development corpus and could then move back. From version 3's cut a case is held
+ * unless both roots are in that list. A root the build did not look up in the list (an older
+ * build, or one pinned before the list's event) counts as not in it, so such a build releases
+ * nothing and holds every case from version 3's cut. Once `ended` names the record that ended the
+ * reserve (`claim.ts`), every case is kept.
  */
 export function reserveOf(
   row: CaseSeed,
   ended: string | null = RESERVE_ENDED
 ): "held" | "kept" | "unknown" {
   if (ended !== null || row.issueKey === null) return "kept";
-  const opened = Date.parse(row.askCreatedAt ?? "");
-  if ((Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened) < TREE_CUT_TIME) return "kept";
+  const askTime = askTimeOf(row);
+  if (askTime < TREE_CUT_TIME) return "kept";
   if (row.askTreeRoot === undefined || row.issueTreeRoot === undefined) return "unknown";
   const roots = [row.askTreeRoot, row.issueTreeRoot].filter(
     (root): root is string => root !== null
   );
   if (roots.some((root) => Object.hasOwn(MOVED_TO_DEVELOPMENT, root))) return "kept";
+  if (askTime >= LIST_CUT_TIME) {
+    return row.askRootListed === true && row.issueRootListed === true ? "kept" : "held";
+  }
+  if (row.askRootListed === true) return "kept";
   return roots.some(pickedRoot) ? "held" : "kept";
 }
 
