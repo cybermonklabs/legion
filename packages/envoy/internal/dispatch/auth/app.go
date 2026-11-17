@@ -41,12 +41,17 @@ type AppConfig struct {
 // PullRequests' tag previously read `pullRequests`, which never matched a real
 // response and left the field permanently empty; nothing read it before
 // LEGION-567's delivery package needed a working Actions/Pull-requests check.
+//
+// Statuses is Commit statuses. Dispatch's CI reconcile reads the commit statuses of a head only
+// where the token it holds names Commit statuses at read or write, and a minted token's own
+// permissions come in this shape too (githubapp.Client.Token).
 type AppPerms struct {
 	Issues       string `json:"issues,omitempty"`
 	PullRequests string `json:"pull_requests,omitempty"`
 	Contents     string `json:"contents,omitempty"`
 	Metadata     string `json:"metadata,omitempty"`
 	Actions      string `json:"actions,omitempty"`
+	Statuses     string `json:"statuses,omitempty"`
 }
 
 // ReadApp returns (nil, nil) when the file does not exist so callers can

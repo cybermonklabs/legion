@@ -32,6 +32,15 @@
 // cistore writer, which binds the listener's bucket and creates none (cistore.OpenWriter), so
 // one record per head is shared by both processes.
 //
+// Where the token the pass holds for a repository holds Commit statuses, the pass reads the
+// commit statuses of each of its heads as well: in the same query (headsQueryWithStatuses), and
+// over REST, after the check runs and suites, for a head the query could not answer whole
+// (readStatuses). Each status in success, failure or error is mapped through
+// contracts.GithubStatusObservation and recorded, and a pending one is not. GitHub refusing a
+// head's statuses costs that head its statuses alone. Where the token does not hold Commit
+// statuses the pass asks GitHub for no status, and reads the repository as it did before it read
+// any.
+//
 // A query's answer carries no ETag of its own -- it is one answer for twenty heads, which
 // GitHub's conditional reads do not cover -- so what an ETag does for a REST read a fingerprint
 // does for a query: the pass keeps a hash of the objects it mapped for each head a query

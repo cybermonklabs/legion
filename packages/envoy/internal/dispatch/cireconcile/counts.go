@@ -24,7 +24,8 @@ type counts struct {
 	listPages    int
 	heads        int
 	headRequests int
-	// notModified counts the heads every page of whose two listings answered 304.
+	// notModified counts the heads every page of whose listings answered 304: the check runs,
+	// the check suites, and the commit statuses where the pass read them.
 	notModified int
 	// unchanged counts the heads a query answered the very objects the pass had already
 	// recorded for, which are written nothing at all: the counterpart for a head read in a
