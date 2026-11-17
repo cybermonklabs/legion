@@ -32,7 +32,9 @@ env:
 jobs:
   envoy-infra-go:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 11.4 minutes in a recent run (43986412718) before the darwin vet, which compiles the module
+    # and Pulumi's SDK for darwin from an empty build cache: 3.5 minutes more in run 43990864191.
+    timeout-minutes: 20
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
