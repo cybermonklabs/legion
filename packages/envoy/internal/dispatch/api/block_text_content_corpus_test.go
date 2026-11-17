@@ -19,15 +19,20 @@ import (
 // others it answers as they stand. Of the texts it cuts, one whose block holds only blank lines
 // has no content, and the item's block must then hold nothing (blockHoldingNothing). Every other
 // content's tree is compared with the item's node by node (sameNodes), which allows for the first
-// of the content's limits, columnsOff's: a text can hold spaces where the item's holds a tab. The
-// trees may differ in one other way, the limit blockTextContent names: the item's parse holds in
-// its code the lines of only spaces and tabs, one or several, that end a code block which ends the
-// content, fenced or indented, closed or not, and the content drops them. A text whose trees are
-// the same once those lines are taken off the item's code block is set aside and counted; any
-// other difference fails. The third limit, columnsOff's for a quote whose `>` stands four columns
-// or more into a list item, is allowed for nowhere here, since no text of these corpora reaches
-// it; TestBlockTextContentReadsEveryShape holds its shapes. Every count of each corpus is pinned,
-// so a text that moves from one count to another fails too.
+// of the content's limits, columnsOff's: a text can hold spaces where the item's holds a tab, each
+// run as wide as columnsOff can write it. The trees may differ in two other ways, each allowed for
+// alone and counted. The limit blockTextContent names: the item's parse holds in its code the
+// lines of only spaces and tabs, one or several, that end a code block which ends the content, an
+// indented block or a fenced one its own fence does not close, and the content drops them; a text
+// whose trees are the same once those lines are taken off the item's code block is set aside. And
+// columnsOff's limit for a code span that crosses lines, one of whose ends a run written as spaces
+// decides: such a span can differ from the item's by one space or line ending at each end, either
+// way, and a text whose trees are the same once each such span is given the item's text
+// (alignSpanEnds) is counted at the span's ends. Any other difference fails. The fourth limit,
+// columnsOff's for a quote whose `>` stands four columns or more into a list item, is allowed for
+// nowhere here, since no text of these corpora reaches it; TestBlockTextContentReadsEveryShape
+// holds its shapes. Every count of each corpus is pinned, so a text that moves from one count to
+// another fails too.
 func TestBlockTextContentReadsTheItemCorporaAsTheItemDoes(t *testing.T) {
 	for _, corpus := range []struct {
 		name  string
@@ -35,11 +40,11 @@ func TestBlockTextContentReadsTheItemCorporaAsTheItemDoes(t *testing.T) {
 		want  corpusCounts
 	}{
 		{"openers by lines by fences", openerLineFenceTexts(),
-			corpusCounts{texts: 1152, cut: 256, empty: 0, exact: 212, collapsed: 44, setAside: 0}},
+			corpusCounts{texts: 1152, cut: 256, empty: 0, exact: 212, byRuns: 44, spanEnds: 0, setAside: 0}},
 		{"tabs, containers and nested blocks", tabAndContainerTexts,
-			corpusCounts{texts: 66, cut: 55, empty: 0, exact: 47, collapsed: 8, setAside: 0}},
+			corpusCounts{texts: 66, cut: 55, empty: 0, exact: 47, byRuns: 8, spanEnds: 0, setAside: 0}},
 		{"random openers, markers and blank lines", randomItemTexts(7000),
-			corpusCounts{texts: 7000, cut: 6933, empty: 677, exact: 3962, collapsed: 2228, setAside: 66}},
+			corpusCounts{texts: 7000, cut: 6947, empty: 636, exact: 3983, byRuns: 2224, spanEnds: 48, setAside: 56}},
 	} {
 		t.Run(corpus.name, func(t *testing.T) {
 			counts := corpusCounts{texts: len(corpus.texts)}
@@ -59,14 +64,20 @@ func TestBlockTextContentReadsTheItemCorporaAsTheItemDoes(t *testing.T) {
 				}
 				got := treeContent(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest))
 				read, item := decodedTree(t, got), decodedTree(t, held)
-				if same, collapsed := sameNodes(read, item); same && collapsed {
-					counts.collapsed++
+				if same, byRuns := sameNodes(read, item); same && byRuns {
+					counts.byRuns++
 					continue
 				} else if same {
 					counts.exact++
 					continue
 				}
-				if withoutBlankCodeEnd(item) {
+				if alignSpanEnds(read, item) {
+					if same, _ := sameNodes(read, item); same {
+						counts.spanEnds++
+						continue
+					}
+				}
+				if read := decodedTree(t, got); withoutBlankCodeEnd(item) {
 					if same, _ := sameNodes(read, item); same {
 						counts.setAside++
 						continue
@@ -75,9 +86,10 @@ func TestBlockTextContentReadsTheItemCorporaAsTheItemDoes(t *testing.T) {
 				failures = append(failures, fmt.Sprintf("\n%q\n\tcut %q\n\treads as %s\n\twant     %s", whole, content, got, held))
 			}
 			t.Logf("%d texts, %d read as one typed block, %d of those holding only blank lines; %d compared exactly, "+
-				"%d compared per node with a collapsed text (a tab in a text of the item's tree), %d set aside "+
+				"%d compared per node with a text compared run by run (a tab in a text of the item's tree), %d with "+
+				"a code span differing at its ends (one space or line ending at each end, either way), %d set aside "+
 				"(whitespace-only lines ending a code block that ends the content)",
-				counts.texts, counts.cut, counts.empty, counts.exact, counts.collapsed, counts.setAside)
+				counts.texts, counts.cut, counts.empty, counts.exact, counts.byRuns, counts.spanEnds, counts.setAside)
 			if counts != corpus.want {
 				t.Errorf("the counts are %+v, want %+v", counts, corpus.want)
 			}
@@ -91,9 +103,10 @@ func TestBlockTextContentReadsTheItemCorporaAsTheItemDoes(t *testing.T) {
 
 // corpusCounts is what the texts of a corpus come to: how many it holds, how many of them read as
 // one typed block, and of those how many hold only blank lines, read as the item does compared
-// exactly, read so with a text compared collapsed, and are set aside at the code block's end.
+// exactly, read so with a text compared run by run, read so with a code span's stripped ends given
+// back, and are set aside at the code block's end.
 type corpusCounts struct {
-	texts, cut, empty, exact, collapsed, setAside int
+	texts, cut, empty, exact, byRuns, spanEnds, setAside int
 }
 
 // blockHoldingNothing is what a typed block that holds nothing holds as the display read encodes
@@ -140,8 +153,9 @@ func withoutBlankCodeEnd(item any) bool {
 // spaces in and whose fence `:::` stands at the same indentation, drawn from a fixed seed. Each
 // holds one to five lines: blank, whitespace only, or up to three runs of spaces or a tab,
 // usually after the opener's own spaces, then up to two container markers (a list marker or
-// `>`), each followed by spaces or tabs, then a word, a rule `***` or nothing. It writes no fence,
-// so every code block of its texts is indented.
+// `>`), each followed by spaces or tabs, then a word, a rule `***`, a backtick or nothing. It
+// writes no fence, so every code block of its texts is indented, and a backtick at one line's end
+// can open a code span that a backtick on a later line closes.
 func randomItemTexts(count int) []string {
 	random := rand.New(rand.NewPCG(0x9e3779b97f4a7c15, 1))
 	pick := func(from ...string) string { return from[random.IntN(len(from))] }
@@ -168,7 +182,7 @@ func randomItemTexts(count int) []string {
 					text.WriteString(pick("-", "*", "+", "1.", "2)", ">"))
 					text.WriteString(pick(" ", "  ", "\t", " \t", "\t\t"))
 				}
-				text.WriteString(pick("word", "***", ""))
+				text.WriteString(pick("word", "***", "", "`"))
 			}
 			text.WriteByte('\n')
 		}

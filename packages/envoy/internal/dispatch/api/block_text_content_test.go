@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,25 +11,39 @@ import (
 )
 
 // blockTextContent answers every shape of a block's stored text found so far with the content
-// its text_tree is read from, and reads no database. A document's block, which can stand in a
-// list item or a footnote definition, has the closing fence's indentation taken out of its lines.
-// A block of a comment, a message or an ask, stored from the start of its line, has its opening
-// line's indentation, up to three spaces, taken off it and up to as many columns off each later
-// line, and its content reads as the item's own parse reads what the block holds, node by node as
-// sameNodes compares them. A text that does not read back as one typed block is answered as it
-// stands. The documents' texts are slices of a rendering, as the block index stores them; the
-// items' texts are as a comment writes them.
+// its text_tree is read from, the bytes each row pins, and reads no database. A document's block,
+// which can stand in a list item or a footnote definition, has the closing fence's indentation
+// taken out of its lines. A block of a comment, a message or an ask, stored from the start of its
+// line, has its opening line's indentation, up to three spaces, taken off it and up to as many
+// columns off each later line, and its content reads as the item's own parse reads what the block
+// holds, node by node as sameNodes compares them, but where the row's kind names a limit of
+// columnsOff's: there the content reads otherwise than the item, and as the item does once that
+// limit's difference is allowed for. A text that does not read back as one typed block is
+// answered as it stands. The documents' texts are slices of a rendering, as the block index
+// stores them; the items' texts are as a comment writes them.
 func TestBlockTextContentReadsEveryShape(t *testing.T) {
-	const document, item = true, false
-	// quoteLimit begins the name of a row at the limit columnsOff names for a quote whose `>`
-	// stands four columns or more into a list item. Such a row's content is checked to read
-	// otherwise than the item, so a change that brings it to the item's reading shows.
-	const quoteLimit = "at the limit of a quote in a list item: "
+	// kind is what a row's text is the block of, and how its content is read past its bytes.
+	type kind int
+	const (
+		// document is a document's block, whose content is read by its bytes alone.
+		document kind = iota
+		// item is an item's block, whose content reads as the item's own parse reads the block.
+		item
+		// quoteLimit is an item's block at columnsOff's limit for a quote whose `>` stands four
+		// columns or more into a list item: its content reads as the item does once each line of
+		// only spaces and tabs in a code block is emptied in both trees (emptyBlankCodeLines).
+		quoteLimit
+		// codeSpanLimit is an item's block at columnsOff's limit for a code span that crosses
+		// lines, one of whose ends a run written as spaces decides: its content reads as the item
+		// does once a span that differs from the item's only at its ends, by one space or line
+		// ending at each, either way, is given the item's text (alignSpanEnds).
+		codeSpanLimit
+	)
 	for _, row := range []struct {
-		name     string
-		document bool
-		whole    string
-		want     string
+		name  string
+		kind  kind
+		whole string
+		want  string
 	}{
 		{"a document's top-level block", document,
 			":::requirement{#r1}\nAn answered ask leaves the list.\n:::",
@@ -150,6 +165,9 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"an item's block whose opening line stands two spaces in, over an ordered item whose nine-digit marker a tab follows and a second paragraph of that item", item,
 			"  :::callout{}\n  123456789.\tFirst.\n\n              Second.\n  :::",
 			"123456789.    First.\n\n            Second.\n"},
+		{"an item's block whose opening line stands two spaces in, over a ten-digit number, `.` and a tab, which open no list, so the tab is kept", item,
+			"  :::callout{}\n  1234567890.\tx\n  :::",
+			"1234567890.\tx\n"},
 		{"an item's block whose opening line stands one space in, over a list item whose marker a tab follows and a rule a space and a tab in", item,
 			" :::callout{}\n -\titem\n \t***\n   :::",
 			"-  item\n   ***\n"},
@@ -157,8 +175,8 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 			"  :::callout{}\n  -\t\tCodeInItem.\n  :::",
 			"-     CodeInItem.\n"},
 		// Past a run five columns or more wide the walk reads markers still. Here the second `-`
-		// and its tab are code, which the item holds with the tab: the limit columnsOff names, so
-		// sameNodes compares that text with its whitespace collapsed.
+		// and its tab are code, which the item holds with the tab: columnsOff's limit for a tab
+		// the item keeps as text, so sameNodes compares that text run by run.
 		{"an item's block whose opening line stands two spaces in, over a list item whose marker two tabs follow, then in its code a second marker and a tab", item,
 			"  :::callout{}\n  -\t\t-\tx\n  :::",
 			"-     -   x\n"},
@@ -183,44 +201,59 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"an item's block whose opening line stands two spaces in, over a paragraph and a line of `2) `, which opens no list there, a `>` and two tabs", item,
 			"  :::callout{}\n  foo\n  2) >\t\t\n  bar\n  :::",
 			"foo\n2) >\t\t\nbar\n"},
-		// The limit columnsOff names for a quote whose `>` stands four columns or more into a
-		// list item: the walk does not take that `>` for a quote's, so on a line of only spaces
-		// and tabs in the quote's code its run is kept as it stands, and that line holds up to
-		// three columns more or fewer of whitespace than the item's, the structure the same.
-		// These rows hold the cut as it is today.
-		{quoteLimit + "an item's block whose opening line stands one space in, over code in a quote after `10. `, a line of that `>` and two tabs alone, and more of that code", item,
+		{"an item's block whose opening line stands one space in, over code in a quote after `10. `, a line of that `>` and two tabs alone, and more of that code", quoteLimit,
 			" :::callout{}\n 10. >\t\tcode\n     >\t\t\n     >\t\tmore\n :::",
 			"10. >      code\n    >\t\t\n    >      more\n"},
-		{quoteLimit + "an item's block whose opening line stands one space in, over code in a quote after `-   `, a line of that `>` and two tabs alone, and more of that code", item,
+		{"an item's block whose opening line stands one space in, over code in a quote after `-   `, a line of that `>` and two tabs alone, and more of that code", quoteLimit,
 			" :::callout{}\n -   >\t\tcode\n     >\t\t\n     >\t\tmore\n :::",
 			"-   >      code\n    >\t\t\n    >      more\n"},
-		{quoteLimit + "an item's block whose opening line stands one space in, over code in a quote after `> 1.  `, a line of those `>` and two tabs alone, and more of that code", item,
+		{"an item's block whose opening line stands one space in, over code in a quote after `> 1.  `, a line of those `>` and two tabs alone, and more of that code", quoteLimit,
 			" :::callout{}\n > 1.  >\t\tcode\n >     >\t\t\n >     >\t\tmore\n :::",
 			"> 1.  >        code\n>     >\t\t\n>     >        more\n"},
+		{"an item's block whose opening line stands one space in, over a paragraph whose code span opens at its first line's end and closes after `2)`, two tabs, `-` and a tab, which open no list, and loses its ends in the content", codeSpanLimit,
+			" :::callout{}\n foo `\n 2)\t\t-\t`\n :::",
+			"foo `\n2)     -   `\n"},
+		{"an item's block whose opening line stands three spaces in, over a code span that opens at a line's end and closes after the next line's spaces, two tabs and a space, whose ends the item loses and the content keeps", codeSpanLimit,
+			"   :::callout{}\n `\n   \t\t `\n   :::",
+			"`\n      `\n"},
 		{"an item's block whose opening line stands two spaces in, over a code line six spaces in, a line of spaces and another code line", item,
 			"  :::callout{}\n      a\n        \n      b\n  :::",
 			"    a\n      \n    b\n"},
-		// The item keeps the tab in its code's text, and the cut writes it as spaces: the limit
-		// columnsOff names, so sameNodes compares that text with its whitespace collapsed.
+		// The item keeps the tab in its code's text, and the cut writes it as spaces: columnsOff's
+		// limit for a tab the item keeps as text, so sameNodes compares that text run by run.
 		{"an item's block whose opening line stands two spaces in, over a fenced code line a tab past the fence", item,
 			"  :::callout{}\n  ```\n  \tcode\n  ```\n  :::",
 			"```\n  code\n```\n"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			content := blockTextContent(row.whole, row.document)
+			content := blockTextContent(row.whole, row.kind == document)
 			if content != row.want {
-				t.Fatalf("blockTextContent(%q, document=%t) = %q, want %q", row.whole, row.document, content, row.want)
+				t.Fatalf("blockTextContent(%q, document=%t) = %q, want %q", row.whole, row.kind == document, content, row.want)
 			}
-			if row.document || content == row.whole || content == "" {
+			if row.kind == document || content == row.whole || content == "" {
 				return
 			}
 			got := treeContent(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest))
 			want := heldByItsOneBlock(t, row.whole)
-			same, _ := sameNodes(decodedTree(t, got), decodedTree(t, want))
-			if atTheLimit := strings.HasPrefix(row.name, quoteLimit); atTheLimit && same {
-				t.Errorf("the content %q reads as the item's own parse reads the block, %s, so the row is no longer at the limit", content, got)
-			} else if !atTheLimit && !same {
-				t.Errorf("the content %q reads as\n\t%s\nwant what the item's own parse reads in the block\n\t%s", content, got, want)
+			read, held := decodedTree(t, got), decodedTree(t, want)
+			same, _ := sameNodes(read, held)
+			if row.kind == item {
+				if !same {
+					t.Errorf("the content %q reads as\n\t%s\nwant what the item's own parse reads in the block\n\t%s", content, got, want)
+				}
+				return
+			}
+			if same {
+				t.Fatalf("the content %q reads as the item's own parse reads the block, %s, so the row is no longer at the limit", content, got)
+			}
+			if row.kind == quoteLimit {
+				emptyBlankCodeLines(read)
+				emptyBlankCodeLines(held)
+			} else {
+				alignSpanEnds(read, held)
+			}
+			if same, _ := sameNodes(read, held); !same {
+				t.Errorf("the content %q reads as\n\t%s\nwant what the item's own parse reads in the block, but for the row's limit\n\t%s", content, got, want)
 			}
 		})
 	}
@@ -263,12 +296,11 @@ func decodedTree(t *testing.T, tree json.RawMessage) any {
 // sameNodes walks content, the decoded tree a block's content reads as, and item, the decoded
 // tree the item's own parse gives what the block holds, together, and reports whether they are
 // the same node by node. Where a text node of item holds a tab, its text and the text of
-// content's node in its place are compared with each run of spaces and tabs as one space, since
-// there the content can hold spaces where the item holds a tab (columnsOff). Everything else is
-// compared exactly: every other text, each node's type, attrs and marks, and the shape, each
-// node's keys and each list's count of nodes. collapsed reports whether a text was compared with
-// its whitespace collapsed.
-func sameNodes(content, item any) (same, collapsed bool) {
+// content's node in its place are compared run by run (sameRuns), since there the content can
+// hold spaces where the item holds a tab (columnsOff). Everything else is compared exactly: every
+// other text, each node's type, attrs and marks, and the shape, each node's keys and each list's
+// count of nodes. byRuns reports whether a text was compared run by run.
+func sameNodes(content, item any) (same, byRuns bool) {
 	switch item := item.(type) {
 	case []any:
 		nodes, isList := content.([]any)
@@ -276,13 +308,13 @@ func sameNodes(content, item any) (same, collapsed bool) {
 			return false, false
 		}
 		for index, child := range item {
-			sameChild, collapsedChild := sameNodes(nodes[index], child)
-			collapsed = collapsed || collapsedChild
+			sameChild, byRunsChild := sameNodes(nodes[index], child)
 			if !sameChild {
-				return false, collapsed
+				return false, false
 			}
+			byRuns = byRuns || byRunsChild
 		}
-		return true, collapsed
+		return true, byRuns
 	case map[string]any:
 		node, isNode := content.(map[string]any)
 		if !isNode || len(node) != len(item) {
@@ -291,27 +323,127 @@ func sameNodes(content, item any) (same, collapsed bool) {
 		for key, value := range item {
 			other, has := node[key]
 			if !has {
-				return false, collapsed
+				return false, false
 			}
 			if text, _ := value.(string); key == "text" && item["type"] == "text" && strings.Contains(text, "\t") {
-				otherText, isText := other.(string)
-				if !isText || whitespaceRuns.ReplaceAllString(otherText, " ") != whitespaceRuns.ReplaceAllString(text, " ") {
-					return false, true
+				if otherText, isText := other.(string); !isText || !sameRuns(otherText, text) {
+					return false, false
 				}
-				collapsed = true
+				byRuns = true
 				continue
 			}
-			sameValue, collapsedValue := sameNodes(other, value)
-			collapsed = collapsed || collapsedValue
+			sameValue, byRunsValue := sameNodes(other, value)
 			if !sameValue {
-				return false, collapsed
+				return false, false
 			}
+			byRuns = byRuns || byRunsValue
 		}
-		return true, collapsed
+		return true, byRuns
 	default:
 		return content == item, false
 	}
 }
 
+// sameRuns reports whether content, a text, reads as item, the text in its place that holds a
+// tab, run by run: split at their runs of spaces and tabs, the two hold the same words, and each
+// run of item is met by the same run in content or, where item's run holds a tab, by a run of
+// spaces alone as wide as columnsOff can write it, one column for each of its spaces and one to
+// four for each of its tabs.
+func sameRuns(content, item string) bool {
+	if !slices.Equal(whitespaceRuns.Split(content, -1), whitespaceRuns.Split(item, -1)) {
+		return false
+	}
+	contentRuns := whitespaceRuns.FindAllString(content, -1)
+	for index, run := range whitespaceRuns.FindAllString(item, -1) {
+		tabs, spaces := strings.Count(run, "\t"), strings.Count(run, " ")
+		if written := contentRuns[index]; written != run && (tabs == 0 || strings.Trim(written, " ") != "" ||
+			len(written) < spaces+tabs || len(written) > spaces+4*tabs) {
+			return false
+		}
+	}
+	return true
+}
+
 // whitespaceRuns is a run of spaces and tabs.
 var whitespaceRuns = regexp.MustCompile(`[ \t]+`)
+
+// emptyBlankCodeLines empties, in place, each line of only spaces and tabs in the text of every
+// code block of tree, a decoded tree as sameNodes takes it: what columnsOff's limit for a quote
+// whose `>` stands four columns or more into a list item lets differ.
+func emptyBlankCodeLines(tree any) {
+	switch tree := tree.(type) {
+	case []any:
+		for _, node := range tree {
+			emptyBlankCodeLines(node)
+		}
+	case map[string]any:
+		if tree["type"] != "code_block" {
+			emptyBlankCodeLines(tree["content"])
+			return
+		}
+		texts, _ := tree["content"].([]any)
+		for _, text := range texts {
+			node, _ := text.(map[string]any)
+			code, isText := node["text"].(string)
+			if !isText {
+				continue
+			}
+			lines := strings.Split(code, "\n")
+			for index, line := range lines {
+				if strings.Trim(line, " \t") == "" {
+					lines[index] = ""
+				}
+			}
+			node["text"] = strings.Join(lines, "\n")
+		}
+	}
+}
+
+// alignSpanEnds walks content, the decoded tree a block's content reads as, and item, the decoded
+// tree the item's own parse gives what the block holds, together, and gives each code span of
+// content whose text differs from item's in its place only at its ends (differsAtSpanEnds) item's
+// text, in place: the difference columnsOff's limit for a code span that crosses lines lets
+// stand, so that sameNodes then compares every other node and run as it does without it. It
+// reports whether it gave any span item's text.
+func alignSpanEnds(content, item any) bool {
+	switch item := item.(type) {
+	case []any:
+		nodes, _ := content.([]any)
+		aligned := false
+		for index, child := range item[:min(len(item), len(nodes))] {
+			aligned = alignSpanEnds(nodes[index], child) || aligned
+		}
+		return aligned
+	case map[string]any:
+		node, _ := content.(map[string]any)
+		marks, _ := item["marks"].([]any)
+		inCode := slices.ContainsFunc(marks, func(mark any) bool {
+			kind, _ := mark.(map[string]any)
+			return kind["type"] == "inlineCode"
+		})
+		text, _ := item["text"].(string)
+		written, isText := node["text"].(string)
+		if !inCode || !isText || sameRuns(written, text) {
+			return alignSpanEnds(node["content"], item["content"])
+		}
+		if !differsAtSpanEnds(written, text) {
+			return false
+		}
+		node["text"] = text
+		return true
+	}
+	return false
+}
+
+// differsAtSpanEnds reports whether written, a code span's text in a block's content, reads as
+// text, the item's span in its place, run by run (sameRuns) once it has one space or line ending
+// more or fewer at each end: given back the one text begins with and a space at the end, or
+// without the space or line ending it begins with and the space it ends with. Those are the ends
+// CommonMark strips from a span whose text begins and ends with a space and is not all spaces.
+func differsAtSpanEnds(written, text string) bool {
+	if text != "" && (text[0] == ' ' || text[0] == '\n') && sameRuns(text[:1]+written+" ", text) {
+		return true
+	}
+	end := len(written) - 1
+	return end > 0 && (written[0] == ' ' || written[0] == '\n') && written[end] == ' ' && sameRuns(written[1:end], text)
+}
