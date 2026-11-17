@@ -64,8 +64,9 @@ name: CI caches
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
-# a Go version, that toolchain file's hash or the hash of packages/envoy/go.sum, not a file list,
-# so what the push touched decides nothing, and a run whose keys are all there is seconds.
+# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum or, for
+# go-envoy-infra, the hash of the infra workspace's module files, not a file list, so what the
+# push touched decides nothing, and a run whose keys are all there is seconds.
 on:
   push:
     branches: [main]
@@ -374,13 +375,17 @@ jobs:
   # module-file change gives the family a new key, and the entry under the old key, about 1.4 GB,
   # is then read by no run of this ref: left alone it would hold its space until GitHub drops it
   # after seven days unread, and over the repository's cache limit GitHub evicts the least recently
-  # used entries, which can be another family's live one. Only this ref's entries are deleted, and
-  # none unless the new key is among them, so a save that did not land leaves the old entry in
-  # place. A job of its own, so the token that may delete caches is in no job that builds code. A
-  # cache key is text any build that saves on this ref chose, so the step never splits or prints
-  # one raw: the list stays JSON, jq selects the numeric ids of this ref's go-envoy-infra entries
-  # other than the new one, and each id is checked to be a number before `gh cache delete` gets
-  # it. A key holding a newline then cannot add a line of its own, such as `--all`, to that list.
+  # used entries, which can be another family's live one. An entry the new one supersedes is one of
+  # this ref whose key is the new key but for its 64-hex module-file hash: the same family, runner
+  # and Go, with older module files, the hashless key of the fill before this one included. An
+  # entry of another runner or another Go is no such entry and stays, so a fill that runs once per
+  # architecture deletes nothing the other leg saved. None is deleted unless the new key is among
+  # this ref's entries, so a save that did not land leaves the old entry in place. A job of its
+  # own, so the token that may delete caches is in no job that builds code. A cache key is text any
+  # build that saves on this ref chose, so the step never splits or prints one raw: the list stays
+  # JSON, jq selects the numeric ids of the superseded entries, and each id is checked to be a
+  # number before `gh cache delete` gets it. A key holding a newline then cannot add a line of its
+  # own, such as `--all`, to that list.
   envoy-infra-superseded:
     needs: envoy-infra
     if: needs.envoy-infra.outputs.filled == 'true'
@@ -403,7 +408,8 @@ jobs:
             exit 0
           fi
           jq -r --arg keep "$KEEP" --arg ref "$REF" \
-            '.[] | select(.ref == $ref and (.key | startswith("go-envoy-infra-")) and .key != $keep) | .id' <<<"$entries" |
+            'def base: gsub("-[0-9a-f]{64}"; "");
+             .[] | select(.ref == $ref and .key != $keep and (.key | base) == ($keep | base)) | .id' <<<"$entries" |
             while read -r id; do
               if ! [[ $id =~ ^[0-9]+$ ]]; then
                 echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
