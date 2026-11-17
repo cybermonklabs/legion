@@ -427,7 +427,7 @@ func (r *Runtime) ReplacePod(context.Context, runtime.Known, func(context.Contex
 func (r *Runtime) CleanupTree(context.Context, string) error { return nil }
 
 // result is one tmux invocation's outcome. timedOut is the budget the client was killed at, zero
-// when it returned on its own.
+// when it returned on its own; exitCode is then -1, which a message never prints (failed, exited).
 type result struct {
 	stdout, stderr string
 	exitCode       int
@@ -489,6 +489,25 @@ func failure(res result) string {
 		return ": " + detail
 	}
 	return ": tmux printed nothing on stderr"
+}
+
+// failed is the end of an error message about a tmux client that did not succeed, after the
+// command it ran: ` failed (exit 3): <stderr>`, or ` timed out after 10s` for a client its timeout
+// killed, which left it no exit of its own.
+func failed(res result) string {
+	if res.timedOut > 0 {
+		return fmt.Sprintf(" timed out after %s", res.timedOut)
+	}
+	return fmt.Sprintf(" failed (exit %d)%s", res.exitCode, failure(res))
+}
+
+// exited is failed for a message that says what the client exited with: ` exited 3: <stderr>`, or
+// ` timed out after 10s`.
+func exited(res result) string {
+	if res.timedOut > 0 {
+		return fmt.Sprintf(" timed out after %s", res.timedOut)
+	}
+	return fmt.Sprintf(" exited %d%s", res.exitCode, failure(res))
 }
 
 // incarnation is a pane's process identity: its root pid and that process's start ticks.
@@ -740,7 +759,7 @@ func (r *Runtime) stop(ctx context.Context, loc runtime.Locator) error {
 		return fmt.Errorf("stop %s: %w", loc.Claim, err)
 	}
 	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) {
-		return fmt.Errorf("stop %s: kill-pane %s exited %d%s", loc.Claim, pane, res.exitCode, failure(res))
+		return fmt.Errorf("stop %s: kill-pane %s%s", loc.Claim, pane, exited(res))
 	}
 	r.untrack(loc)
 	return nil

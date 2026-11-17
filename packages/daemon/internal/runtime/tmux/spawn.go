@@ -820,7 +820,7 @@ func (r *Runtime) ensureSession(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if res.exitCode != 0 {
-		return false, fmt.Errorf("tmux new-session failed (exit %d)%s", res.exitCode, failure(res))
+		return false, fmt.Errorf("tmux new-session%s", failed(res))
 	}
 	return true, nil
 }
@@ -872,11 +872,11 @@ func (r *Runtime) openWindowIn(ctx context.Context, name string, pane []string, 
 			return paneReport{}, err
 		}
 		if cleanup.exitCode != 0 {
-			return paneReport{}, fmt.Errorf("tmux bootstrap window cleanup failed (exit %d)%s", cleanup.exitCode, failure(cleanup))
+			return paneReport{}, fmt.Errorf("tmux bootstrap window cleanup%s", failed(cleanup))
 		}
 	}
 	if res.exitCode != 0 {
-		return paneReport{}, fmt.Errorf("tmux new-window failed (exit %d)%s", res.exitCode, failure(res))
+		return paneReport{}, fmt.Errorf("tmux new-window%s", failed(res))
 	}
 	report, err := readPaneReport("new-window", res, true)
 	if err != nil {
@@ -890,7 +890,7 @@ func (r *Runtime) openWindowIn(ctx context.Context, name string, pane []string, 
 		if _, err := r.run(ctx, killWindowArgv(r.socket, report.window)); err != nil {
 			return paneReport{}, err
 		}
-		return paneReport{}, fmt.Errorf("tmux window ownership marker failed (exit %d)%s", marker.exitCode, failure(marker))
+		return paneReport{}, fmt.Errorf("tmux window ownership marker%s", failed(marker))
 	}
 	return report, nil
 }
@@ -902,7 +902,7 @@ func (r *Runtime) splitWindow(ctx context.Context, window string, pane []string)
 		return paneReport{}, err
 	}
 	if res.exitCode != 0 {
-		return paneReport{}, fmt.Errorf("tmux split-window failed (exit %d)%s", res.exitCode, failure(res))
+		return paneReport{}, fmt.Errorf("tmux split-window%s", failed(res))
 	}
 	report, err := readPaneReport("split-window", res, false)
 	if err != nil {

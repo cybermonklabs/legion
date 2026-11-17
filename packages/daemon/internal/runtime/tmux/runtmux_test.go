@@ -51,7 +51,10 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 	}
 }
 
-// A client its timeout kills timed out, with that timeout, and is a result, not an error.
+// A client its timeout kills timed out, with that timeout, and is a result, not an error. A
+// message about it names the timeout and no exit: the -1 runTmux records is no status the client
+// chose, and a message that printed it read `new-session failed (exit -1): timed out after 1s`.
+// A client that exited keeps its exit and its stderr in both message forms.
 func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
 	client := fakeTmuxClient(t, t.TempDir(), "exec sleep 30")
 	r := &Runtime{tmuxPath: client, commandTimeout: time.Second, environ: []string{"PATH=" + os.Getenv("PATH")}}
@@ -60,6 +63,19 @@ func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
 
 	if err != nil || res.timedOut != time.Second || res.exitCode != -1 {
 		t.Errorf("runTmux = exit %d, timed out %s, error %v; want exit -1, timed out 1s, no error", res.exitCode, res.timedOut, err)
+	}
+	if got := "tmux new-session" + failed(res); got != "tmux new-session timed out after 1s" {
+		t.Errorf("failed = %q, want the timeout and no exit", got)
+	}
+	if got := "list-panes" + exited(res); got != "list-panes timed out after 1s" {
+		t.Errorf("exited = %q, want the timeout and no exit", got)
+	}
+	answered := result{exitCode: 1, stderr: "no server running\n"}
+	if got := "tmux new-session" + failed(answered); got != "tmux new-session failed (exit 1): no server running" {
+		t.Errorf("failed = %q for a client that exited 1", got)
+	}
+	if got := "list-panes" + exited(answered); got != "list-panes exited 1: no server running" {
+		t.Errorf("exited = %q for a client that exited 1", got)
 	}
 }
 
