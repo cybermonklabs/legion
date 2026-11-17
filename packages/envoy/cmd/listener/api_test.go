@@ -1061,9 +1061,9 @@ func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInte
 		t.Fatal("the observer's session cache already holds ses_fresh, so the reaper's bucket read is not under test")
 	}
 
-	reaped, err := observer.registry.Reap(func(sessionID string) (bool, error) { return sessionMayBeLive(observer.sessions, sessionID) }, 10*time.Minute)
-	if err != nil || reaped != 1 {
-		t.Fatalf("reap interests = %d, %v; want the one interest whose session left the bucket", reaped, err)
+	sweep, err := observer.registry.Reap(func(sessionID string) (bool, error) { return sessionMayBeLive(observer.sessions, sessionID) }, 10*time.Minute)
+	if err != nil || sweep.Reaped != 1 {
+		t.Fatalf("reap interests = %+v, %v; want the one interest whose session left the bucket", sweep, err)
 	}
 	if _, err := interests.Get("ses_fresh"); err != nil {
 		t.Fatalf("ses_fresh's interest after the reaper: %v, want it kept", err)

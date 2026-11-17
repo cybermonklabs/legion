@@ -2,17 +2,57 @@ package store
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
+// Interest is one session's row of the envoy_interests bucket, keyed by its session id: the
+// topics the session follows, and the listener that owns its delivery (MachineID).
+//
+// A row is the session's subscriptions for the session's life, not for one of its processes. A
+// session whose process ends keeps them: the interest reaper stops the row of a session gone past
+// its grace (Registry.Reap) rather than deleting it, keeping the session's subscriptions
+// (keptTopics) and nothing else, and the session's next registration merges into the stopped row
+// as into any other (mergeForUpsert), so a process that resumes the session follows them again
+// without naming them. The row goes when the session unsubscribes the last of them or is
+// deregistered (Registry.Remove), or when the session's life ends, StoppedInterestRetention after
+// the row's last write.
 type Interest struct {
-	SessionID string   `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// MachineID is the listener the session last registered through, which fans its topics out
+	// and owns its delivery (Registry.Match, session.HandleAgentMessage). A stopped row names none,
+	// so no listener routes its topics and every listener answers for its inbox, as for a session
+	// with no row at all.
 	MachineID string   `json:"machine_id"`
 	Dir       string   `json:"dir"`
 	Topics    []string `json:"topics"`
 	UpdatedAt int64    `json:"updated_at"`
+	// Stopped says the row's session was gone when the interest reaper found the row past its
+	// grace: the row keeps the session's subscriptions for its next registration, which clears
+	// the mark, and its UpdatedAt is still the session's last write, which its life is counted
+	// from. Left out of a row that is not stopped, so a live row encodes as it always has.
+	Stopped bool `json:"stopped,omitempty"`
+}
+
+// keptTopics is what a stopped row of sessionID keeps of topics: every topic the stream stores
+// (bus.StreamCaptures) that reaches no private stream subject (bus.ReachesPrivateStreamSubject,
+// judged with no role) and is not one of the session's agent subjects. That is the topics the
+// session's own consumer delivers to it and no registration of its own has to name again: its
+// inbox is in every registration's filter, a role lane is the role claim's half and goes with the
+// claim, and a controller notice lane is its holder's only while it holds the role, which a
+// process of the session claims again for itself. A row holding none of these keeps nothing.
+func keptTopics(sessionID string, topics []string) []string {
+	var kept []string
+	for _, topic := range topics {
+		if strings.HasPrefix(topic, contracts.AgentTopicPrefix) || !bus.StreamCaptures(topic) ||
+			bus.ReachesPrivateStreamSubject(sessionID, topic, nil) {
+			continue
+		}
+		kept = append(kept, topic)
+	}
+	return kept
 }
 
 func Merge(item Interest, topics []string) Interest {

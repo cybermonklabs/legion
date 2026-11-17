@@ -1727,14 +1727,14 @@ func TestInterestReaper(t *testing.T) {
 
 	// Reap with 0 grace window: a dead session's row older than InterestRefreshAge (this
 	// one is 10 minutes old) is reaped, and the live session's row is kept.
-	count, err := reg.Reap(func(sessionID string) (bool, error) {
+	sweep, err := reg.Reap(func(sessionID string) (bool, error) {
 		return sessionID == "ses_alive", nil
 	}, 0)
 	if err != nil {
 		t.Fatalf("Reap failed: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected 1 reaped, got %d", count)
+	if sweep != (InterestSweep{Reaped: 1}) {
+		t.Fatalf("expected 1 reaped, got %+v", sweep)
 	}
 
 	// ses_alive should still exist in KV
@@ -1778,12 +1778,12 @@ func TestReapKeepsRoleClaimsForSessionRecovery(t *testing.T) {
 	}
 	interestCache{reg}.Apply(kvwatch.Entry{Key: sessionID, Value: raw, Revision: revision}, kvwatch.Read{})
 
-	count, err := reg.Reap(func(string) (bool, error) { return false, nil }, 0)
+	sweep, err := reg.Reap(func(string) (bool, error) { return false, nil }, 0)
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("reaped interests = %d, want 1", count)
+	if sweep != (InterestSweep{Reaped: 1}) {
+		t.Fatalf("reaped interests = %+v, want 1", sweep)
 	}
 	assertRoleHolder(t, reg, role, sessionID)
 }
@@ -1949,12 +1949,12 @@ func TestReaperGraceWindow(t *testing.T) {
 		}
 	}
 
-	count, err := reg.Reap(func(string) (bool, error) { return false, nil }, InterestReapGrace)
+	sweep, err := reg.Reap(func(string) (bool, error) { return false, nil }, InterestReapGrace)
 	if err != nil {
 		t.Fatalf("Reap failed: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected 1 reaped (only the 16-minute row), got %d", count)
+	if sweep != (InterestSweep{Reaped: 1}) {
+		t.Fatalf("expected 1 reaped (only the 16-minute row), got %+v", sweep)
 	}
 
 	for _, sid := range []string{"ses_14m", "ses_15m"} {
@@ -1970,9 +1970,11 @@ func TestReaperGraceWindow(t *testing.T) {
 // A session that heartbeats every 90 seconds and then pauses keeps its interest row as it did when
 // every heartbeat wrote the row: the unchanged row is not rewritten for up to InterestRefreshAge,
 // so its UpdatedAt lags the last heartbeat, but the listener's reaper (InterestReapGrace, plus
-// InterestRefreshAge in Reap) deletes nothing within InterestReapGrace of that heartbeat, long
+// InterestRefreshAge in Reap) changes nothing within InterestReapGrace of that heartbeat, long
 // after the session row's 5-minute TTL has made the session dead. A session back under the same
-// id at 6 or at 9 minutes finds its row and topics.
+// id at 6 or at 9 minutes finds its row and topics. The one that does not come back has its row
+// stopped once it is past that allowance, which keeps the topic it followed, and it finds that
+// topic when it comes back 55 minutes on, as a Legion pod's backstop wakes it.
 func TestAPausedSessionKeepsItsInterestThroughTheReapGrace(t *testing.T) {
 	const sessionTTL = 5 * time.Minute // the session bucket's MaxAge, the liveness clock
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
@@ -1991,12 +1993,12 @@ func TestAPausedSessionKeepsItsInterestThroughTheReapGrace(t *testing.T) {
 	}
 	reapNothing := func(when string) {
 		t.Helper()
-		count, err := reg.Reap(isAlive, InterestReapGrace)
+		sweep, err := reg.Reap(isAlive, InterestReapGrace)
 		if err != nil {
 			t.Fatalf("%s: Reap: %v", when, err)
 		}
-		if count != 0 {
-			t.Fatalf("%s: Reap deleted %d interests, want none", when, count)
+		if sweep != (InterestSweep{}) {
+			t.Fatalf("%s: Reap changed interests (%+v), want none", when, sweep)
 		}
 		if _, err := kv.Get("ses_gone"); err != nil {
 			t.Fatalf("%s: ses_gone's interest row is gone: %v", when, err)
@@ -2044,18 +2046,31 @@ func TestAPausedSessionKeepsItsInterestThroughTheReapGrace(t *testing.T) {
 		}
 	}
 
-	// The reaper does take the row that never came back, once it is InterestReapGrace plus
-	// InterestRefreshAge past its last write.
+	// The reaper stops the row that never came back, once it is InterestReapGrace plus
+	// InterestRefreshAge past its last write: it names no listener and keeps the topic.
 	clock.Set(start.Add(InterestReapGrace + InterestRefreshAge + time.Millisecond))
-	count, err := reg.Reap(isAlive, InterestReapGrace)
+	sweep, err := reg.Reap(isAlive, InterestReapGrace)
 	if err != nil {
 		t.Fatalf("final Reap: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("final Reap deleted %d interests, want ses_gone's alone", count)
+	if sweep != (InterestSweep{Stopped: 1}) {
+		t.Fatalf("final Reap = %+v, want ses_gone's row stopped alone", sweep)
 	}
-	if _, err := kv.Get("ses_gone"); !errors.Is(err, natsgo.ErrKeyNotFound) {
-		t.Fatalf("ses_gone should be reaped, got %v", err)
+	entry, err := kv.Get("ses_gone")
+	if err != nil {
+		t.Fatalf("ses_gone's row after the final Reap: %v, want it kept", err)
+	}
+	var stopped Interest
+	if err := json.Unmarshal(entry.Value(), &stopped); err != nil {
+		t.Fatalf("decode ses_gone's row: %v", err)
+	}
+	if !stopped.Stopped || stopped.MachineID != "" || stopped.Dir != "/work/ses_gone" || stopped.UpdatedAt != start.UnixMilli() || !slices.Equal(stopped.Topics, []string{github}) {
+		t.Fatalf("ses_gone's row after the final Reap = %+v, want it stopped, naming no listener, keeping %s, its directory and its last write's time", stopped, github)
+	}
+
+	clock.Set(start.Add(55 * time.Minute))
+	if got, want := heartbeat("ses_gone", "notifications.agent.ses_gone"), []string{"notifications.agent.ses_gone", github}; !slices.Equal(got.Topics, want) || got.Stopped || got.MachineID != "m1" {
+		t.Fatalf("ses_gone back 55 minutes on has %+v, want topics %v on m1, not stopped", got, want)
 	}
 }
 
@@ -2093,7 +2108,7 @@ func TestReapCallsIsAliveWithoutHoldingTheInterestLock(t *testing.T) {
 	}
 
 	upserted := false
-	count, err := reg.Reap(func(sessionID string) (bool, error) {
+	sweep, err := reg.Reap(func(sessionID string) (bool, error) {
 		if sessionID == "ses_dead" {
 			upserted = upsertWithin(t, reg, Interest{SessionID: "ses_other", MachineID: "m1"}, []string{"notifications.agent.ses_other"})
 		}
@@ -2105,8 +2120,8 @@ func TestReapCallsIsAliveWithoutHoldingTheInterestLock(t *testing.T) {
 	if !upserted {
 		t.Fatal("isAlive never upserted ses_other")
 	}
-	if count != 1 {
-		t.Fatalf("expected 1 reaped, got %d", count)
+	if sweep != (InterestSweep{Reaped: 1}) {
+		t.Fatalf("expected 1 reaped, got %+v", sweep)
 	}
 	if _, err := kv.Get("ses_dead"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("ses_dead should be deleted, got err: %v", err)
@@ -2127,7 +2142,7 @@ func TestReapKeepsAnInterestReupsertedDuringThePass(t *testing.T) {
 	}
 
 	// The session heartbeats again while the pass is deciding it is dead.
-	count, err := reg.Reap(func(sessionID string) (bool, error) {
+	sweep, err := reg.Reap(func(sessionID string) (bool, error) {
 		if sessionID == "ses_back" {
 			upsertWithin(t, reg, Interest{SessionID: "ses_back", MachineID: "m1"}, []string{"notifications.agent.ses_back"})
 		}
@@ -2136,8 +2151,8 @@ func TestReapKeepsAnInterestReupsertedDuringThePass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reap failed: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("expected 0 reaped, got %d", count)
+	if sweep != (InterestSweep{}) {
+		t.Fatalf("expected nothing reaped, got %+v", sweep)
 	}
 	if _, err := kv.Get("ses_back"); err != nil {
 		t.Fatalf("ses_back, re-upserted during the pass, should exist: %v", err)
@@ -2165,12 +2180,12 @@ func TestReapKeepsAnInterestWrittenAfterItsRecheck(t *testing.T) {
 		beforeDelete: func() { putInterest(t, kv, fresh) },
 	}, current.WatchHandle(), current.Streams()), interestCache{reg})
 
-	count, err := reg.Reap(func(string) (bool, error) { return false, nil }, 0)
+	sweep, err := reg.Reap(func(string) (bool, error) { return false, nil }, 0)
 	if err != nil {
 		t.Fatalf("Reap failed: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("expected 0 reaped, got %d", count)
+	if sweep != (InterestSweep{}) {
+		t.Fatalf("expected nothing reaped, got %+v", sweep)
 	}
 	entry, err := kv.Get("ses_raced")
 	if err != nil {

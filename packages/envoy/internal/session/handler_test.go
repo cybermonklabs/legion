@@ -84,3 +84,24 @@ func TestHandleAgentMessage_StoredInterestHereWithAnUnansweredRead(t *testing.T)
 		t.Fatalf("result = %+v, want an error the caller NAKs, with no delivery and no owner elsewhere", result)
 	}
 }
+
+// A stopped row (store.Interest.Stopped) names no listener, so a message to its session's inbox
+// is this listener's to answer for, as for a session with no row at all: no owner elsewhere, no
+// error to NAK, and no delivery, which leaves it to the unplaceable path and its wake report.
+func TestHandleAgentMessage_StoppedRowIsNoListenersToOwn(t *testing.T) {
+	newSessionRegistry(t)
+	stopped := &store.Interest{
+		SessionID: "ses_released",
+		Topics:    []string{"notifications.github.acme.widgets.pr.3370.>"},
+		Stopped:   true,
+	}
+
+	result := session.HandleAgentMessage(
+		newTestEnvelope("agent", "notifications.agent.ses_released", "test"),
+		"ses_released", "test-machine", stopped, nil, true, 0, true,
+	)
+
+	if result.OwnedElsewhere || result.Relayed || result.Err != nil {
+		t.Fatalf("result = %+v, want the zero result a session with no row gets", result)
+	}
+}

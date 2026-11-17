@@ -51,8 +51,8 @@ func TestARegistryOverKeysAnEarlierListenerStoredOpensAndReapsThem(t *testing.T)
 	}
 
 	isAlive := func(sessionID string) bool { return sessionID == "ses_live" }
-	if reaped, err := registry.Reap(func(sessionID string) (bool, error) { return isAlive(sessionID), nil }, 0); err != nil || reaped != 2 {
-		t.Fatalf("reap = %d, %v; want both earlier sessions' interests", reaped, err)
+	if sweep, err := registry.Reap(func(sessionID string) (bool, error) { return isAlive(sessionID), nil }, 0); err != nil || sweep != (InterestSweep{Reaped: 2}) {
+		t.Fatalf("reap = %+v, %v; want both earlier sessions' interests", sweep, err)
 	}
 	if _, err := registry.ReapRoleClaims(context.Background(), isAlive, 0, 0); err != nil {
 		t.Fatalf("reap role claims: %v", err)
@@ -153,8 +153,8 @@ func TestARegistryOverKeysOutsideTheNATSKeyAlphabetGoesOn(t *testing.T) {
 
 	t.Run("the interest reaper skips an interest it cannot delete", func(t *testing.T) {
 		registry, rawInterests, _ := open(t, interest("ses:bad"), interest("ses_live"), interest("ses_gone"))
-		if reaped, err := registry.Reap(func(sessionID string) (bool, error) { return isAlive(sessionID), nil }, 0); err != nil || reaped != 1 {
-			t.Fatalf("reap = %d, %v; want ses_gone's interest, skipping ses:bad's", reaped, err)
+		if sweep, err := registry.Reap(func(sessionID string) (bool, error) { return isAlive(sessionID), nil }, 0); err != nil || sweep != (InterestSweep{Reaped: 1}) {
+			t.Fatalf("reap = %+v, %v; want ses_gone's interest, skipping ses:bad's", sweep, err)
 		}
 		if got, want := keys(t, rawInterests), []string{"ses:bad", "ses_live"}; !slices.Equal(got, want) {
 			t.Fatalf("interests after the reaper = %v, want %v", got, want)

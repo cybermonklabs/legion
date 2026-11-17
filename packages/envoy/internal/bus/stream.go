@@ -35,7 +35,8 @@ const StreamIDMetadataKey = "envoy_stream_id"
 // The JetStream KV buckets Envoy's stores keep, each named for what it holds.
 const (
 	// InterestBucket holds each session's interests, the topics it subscribes to, keyed by session
-	// id (internal/store).
+	// id (internal/store): a running session's, and a stopped session's for the session's life,
+	// which names no listener and routes nothing until the session registers again.
 	InterestBucket = "envoy_interests"
 	// RoleClaimBucket holds each role lane's claim, its holder session, keyed by role
 	// (internal/store).
@@ -45,12 +46,13 @@ const (
 	SessionBucket = "envoy_sessions"
 	// KnownSessionBucket holds one record per session that registered in the last 30 days, keyed
 	// by session id (internal/session). A record says the session was known in the last 30 days,
-	// never that it is registered now: it outlives both stores that answer for a session that
-	// runs, the session entry (SessionBucket) and the interest row (InterestBucket), so a send to
-	// a stopped session is queued rather than refused and a publish counts that session as a
-	// recipient. The code that needs a live session or a role holder therefore never reads it:
-	// role resolution (roleHolderSessions.Holder in cmd/listener/role_holder.go) and the reapers
-	// each ask the stores whose records end when the session is gone.
+	// never that it is registered now: it outlives the session entry (SessionBucket), the store
+	// that answers for a session that runs, so a send to a stopped session is queued rather than
+	// refused and a publish counts that session as a recipient. A stopped session's interest row
+	// (InterestBucket) is kept as long, and names no listener. The code that needs a live session
+	// or a role holder therefore never reads it: role resolution (roleHolderSessions.Holder in
+	// cmd/listener/role_holder.go) and the reapers each ask the session entry, whose record ends
+	// when the session is gone.
 	KnownSessionBucket = "envoy_known_sessions"
 	// CIStateBucket holds the CI state of each commit of a pull request (internal/cistore).
 	CIStateBucket = "envoy_ci_state"

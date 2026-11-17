@@ -3834,22 +3834,32 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - The interest reaper decides a session's absence the same way:
   it asks each candidate's liveness outside every lock (`sessionMayBeLive`:
-  a session cache hit, or else a read of the session's own key, and false only for `session.Gone`) and deletes only the interests of a session that is gone;
-  a read that does not answer keeps the interest for the next cycle with a WARN.
+  a session cache hit, or else a read of the session's own key, and false only for `session.Gone`) and changes only the interest row of a session that is gone;
+  a read that does not answer keeps the row as it is for the next cycle with a WARN.
   So a session the session cache has not read yet, before its first read or while it reads its bucket again, keeps its subscriptions.
 
-- The interest reaper (`Registry.Reap`, `internal/store/reaper.go`) deletes a dead session's interest only once its row was last written more than the grace window plus `store.InterestRefreshAge` (5 minutes) ago;
-  the listener passes `store.InterestReapGrace` (10 minutes), so a dead session's interest stays 15 minutes after its row's last write, and a row exactly that old is kept.
+- A session's interest row holds its subscriptions for the session's life, not for one of its processes (`store.Interest`).
+  The interest reaper (`Registry.Reap`, `internal/store/reaper.go`) leaves a dead session's row as it is until it was last written more than the grace window plus `store.InterestRefreshAge` (5 minutes) ago;
+  the listener passes `store.InterestReapGrace` (10 minutes), so a dead session's row stands 15 minutes after its last write, and a row exactly that old is left.
+  Past that the reaper stops the row (`stopInterest`): it writes it again naming no listener (`machine_id` empty) and marked `stopped`, its `updated_at` and `dir` as they were, and its topics cut to the session's subscriptions (`keptTopics`): every topic the stream stores that reaches no private stream subject and is not one of the session's agent subjects.
+  A role's lane goes, since it is the role claim's half and the claim's reaper frees it, and so does a controller notice lane, which a process of the session registers again with the role; a row that keeps nothing is deleted, as every dead session's row was before a row could be stopped.
+  A stopped row routes nothing, since no listener's `Match` names it, and every listener answers for its session's inbox, as for a session with no row, so a message to a released session still raises its wake report.
+  The session's next registration merges into the stopped row like any other (`mergeForUpsert`): its own topics and its role's lane join the kept ones, the row names that listener again and the mark is cleared, so a process that resumes the session, a Legion role woken from an idle release among them, follows every topic the session followed without naming one, and its consumer, created at the floor its clean stop recorded, delivers what the stream stored on them while it was away.
+  A stopped row goes with an unsubscribe that takes its last kept topic, with a deregistration (`POST /v1/interests/unsubscribe` with no topics, `DELETE /v1/interests/<session_id>`), and with the session's life: the reaper deletes it once its `updated_at` is more than `store.StoppedInterestRetention` (30 days) ago, the retention of the session's known-session record too (`session.KnownSessionRetention` is that value), and a row not stopped yet that is past it is deleted rather than stopped.
+  A `DELETE /v1/sessions/<session_id>`, the daemon's clean stop at an idle release among them, ends the session's registration and leaves its row.
   The refresh allowance exists because a build that skips rewriting an unchanged interest row younger than `InterestRefreshAge` lets the row's `UpdatedAt` lag the session's last heartbeat by up to that age;
   adding it keeps a paused session's grace at least `InterestReapGrace` after its last heartbeat.
   Release order follows from it: no build that skips unchanged interest writes may run while any listener on the shared `envoy_interests` bucket still reaps at 10 minutes, and this build is one that skips them (`Registry.UpsertWithin`).
+  A listener of an earlier build deletes a stopped row at its own 15-minute allowance, since the row's `updated_at` is old and its session gone, so while a roll runs a stopped session can still lose its subscriptions, and keeps them once every listener on the bucket runs a build that stops rows.
 
 - The known-session store (`envoy_known_sessions`, `internal/session/known.go`) holds one record per session that registered through any listener within `session.KnownSessionRetention` (30 days), keyed by session id:
   its title, its capabilities, the topics its registration stored, and its last seen time (`session.KnownSession`).
   A record says the session was known in the last 30 days, never that it is registered now.
-  It outlives both stores that answer for a running session, the session entry (`envoy_sessions`) and the interest row (`envoy_interests`), so a send to a stopped session is stored rather than refused and a publish counts that session among its recipients.
+  It outlives the session entry (`envoy_sessions`), the store that answers for a running session, so a send to a stopped session is stored rather than refused and a publish counts that session among its recipients.
+  A stopped session's interest row (`envoy_interests`) is kept for the same 30 days, counted from the row's own last write (`store.StoppedInterestRetention`, above), so a session Envoy still knows still has its subscriptions;
+  that row names no listener and routes nothing, so it says no more than the record does that the session runs.
   The code that needs a running session or a role holder therefore never reads it:
-  role resolution (`liveSessionEntry` in `cmd/listener/role_holder.go`) and the reapers each ask the stores whose records end when the session is gone.
+  role resolution (`liveSessionEntry` in `cmd/listener/role_holder.go`) and the reapers each ask the session entry, whose record ends when the session is gone.
   Its readers are `/v1/messages/send` for a target with no entry within the gone horizon, `/v1/messages/publish` for its recipient counts, and `/v1/registry/<session_id>` with `stopped` in its `include=` list.
   Each reads memory alone (`session.KnownSessions.Get` and `MatchEach`, over a `kvwatch` copy with a subject index of the records' topics), so no read of the store makes a JetStream call.
   A record is written at a registration once its consumer call landed, at every change of a session's interests (`recordFollowedTopics`, which the unsubscribe route and the admin interests route each call), and at a `DELETE /v1/sessions/<session_id>` that removed an entry this listener's cache held, which is a clean stop.
@@ -4335,14 +4345,15 @@ A read-only broker token carries no project either, but none of the three checks
   Reads (`Get`, `List`, `LastSeen`, and `LiveCount`, which the `envoy_active_sessions` gauge counts with, without copying the cache) take the shared lock and change nothing:
   an entry past its deadline reads as absent.
   The entry leaves the cache at that deadline, from a deadline heap one `time.AfterFunc` timer serves (`expireDue`), not on a read, and its final heartbeat moves to the `last_seen` record for the registry's last-seen retention (`session.WithLastSeenRetention`, `session.LastSeenMemory` (2 hours) by default and never less than one TTL), so `LastSeen` answers the same before and after the removal.
-  That default outlasts the gone horizon, so a caller told a session is gone can still say when it was last seen, and it outlasts the interest reaper's allowance (`store.InterestReapGrace` + `store.InterestRefreshAge`) as well, so `/v1/interests/` can give the last heartbeat of every row that reaper still holds; the listener shortens it to nothing of its own.
+  That default outlasts the gone horizon, so a caller told a session is gone can still say when it was last seen, and it outlasts the interest reaper's allowance (`store.InterestReapGrace` + `store.InterestRefreshAge`) as well, so `/v1/interests/` can give the last heartbeat of every row that reaper has not stopped; the listener shortens it to nothing of its own.
+  A stopped row outlasts it by days, and its listing carries no `last_seen` once the retention has passed: its `updated_at`, which a stop leaves as the session's last write, is the time a reader has, as Dispatch's subscriber pages already read it.
   An id's revision fence leaves with that record, the retention after the id left the cache, expired or deleted, so the fence map holds only live ids and ids that left within the retention;
   since the retention is at least one TTL, a late delivery of an older revision then has a deadline already passed and is not cached.
   A non-positive TTL schedules nothing.
-  The interest reaper (`store.Registry.Reap`) copies the session id and revision of each cached interest past its grace (the grace window plus `store.InterestRefreshAge`) under the interest registry's read lock and releases it, then calls the liveness check (`isAlive`, the session cache's `Get`) with no interest lock held, so a subscribe never waits on a pass's liveness checks.
-  It re-reads each candidate before deleting it, skips one whose revision changed or that is now within grace, and deletes it only at the revision it checked:
-  a write that lands after that check makes JetStream refuse the delete, and the interest is kept.
-  Each pass logs `reaper cycle` with `reaped` and `elapsed_ms`.
+  The interest reaper (`store.Registry.Reap`) copies the session id and revision of each cached interest past its grace (the grace window plus `store.InterestRefreshAge`), or of each stopped row past the session's life, under the interest registry's read lock and releases it, then calls the liveness check (`isAlive`, the session cache's `Get`) with no interest lock held, so a subscribe never waits on a pass's liveness checks.
+  It re-reads each candidate before it changes it, skips one whose revision changed or that is now within grace, and deletes it only at the revision it checked, or stops it only at the revision the bucket answers for the row it judged:
+  a write that lands after that check makes JetStream refuse the delete or the stop, and the interest is kept as that write left it.
+  Each pass logs `reaper cycle` with `reaped`, `stopped` and `elapsed_ms`.
 
 - The role claim view (`store.Registry.RolesHeldBy`, which `GET /v1/sessions`, `GET /v1/registry/<session_id>` and a send's `sender.roles` read) answers only while the role claim watcher's copy can be served (`kvwatch.Watcher.Servable`):
   its first read of the bucket completed, and the copy has followed the bucket since, within the stale bound.
@@ -5015,7 +5026,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   a registration that would store the row it holds (no new topic, and the same machine and directory) writes it only once it is that old, and until then answers with the stored row, `updated_at` included (`store.Registry.UpsertWithin`);
   the session entry is still written on every registration, since its bucket's `MaxAge` is the liveness clock.
   A session's owner is the listener its stored subscription names, the one `Match` delivers on, else, with no subscription stored, the listener it registered through (the entry's `machine_id`);
-  a session neither names is every listener's (`session.HandleAgentMessage`).
+  a session neither names is every listener's (`session.HandleAgentMessage`), and so is the session of a stopped row, which names no listener (`store.Interest.Stopped`, the interest reaper above), until its next registration names one again.
   A non-owner leaves inbox messages to the owner silently (`HandleAgentResult.OwnedElsewhere`:
   no delivery, no exception, no NAK, one DEBUG line):
   every listener on the bus reads each inbox message from its own durable, so a second listener would deliver the same message again, while the owner always has the message.
@@ -5096,7 +5107,8 @@ Each item below names an endpoint and its method, then its contract, and an item
 
   Lists persisted interests, or the refilling `503` `/v1/sessions` gives while the interest copy cannot be served;
   `envoy_active_interests` counts the same listing and has no sample then.
-  Each row carries `last_seen` (Unix ms): its session's last heartbeat as this listener's session cache knows it, the live entry's `updated_at` while the session is live, else the final heartbeat the cache keeps after it left, omitted when unknown (a session that died before this listener started).
+  The listing holds the stopped rows too, each with `stopped: true` and an empty `machine_id`: the subscriptions of a session that has stopped, kept for its next registration for up to `store.StoppedInterestRetention` (30 days) after its last write, so the gauge counts them as well.
+  Each row carries `last_seen` (Unix ms): its session's last heartbeat as this listener's session cache knows it, the live entry's `updated_at` while the session is live, else the final heartbeat the cache keeps after it left, omitted when unknown (a session that died before this listener started, or one that left more than `session.LastSeenMemory` ago).
   The row's own `updated_at` can lag that heartbeat by up to `store.InterestRefreshAge`.
 
 - `/v1/interests/<session_id>` (GET, DELETE)

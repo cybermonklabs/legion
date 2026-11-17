@@ -6087,6 +6087,7 @@ The wakes are these:
 
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
+  A message on such a topic wakes no released pod, but it is not lost: Envoy keeps the subscriptions of a released session for up to 30 days after its last registration, so the role woken by the backstop, or by any other wake, follows every topic it subscribed to without subscribing again, and its consumer delivers what was published on them while it was released, for as long as the stream keeps a message (72 hours).
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.

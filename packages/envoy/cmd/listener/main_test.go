@@ -1693,8 +1693,8 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 }
 
 // A row for a session that has expired from the session cache still carries its last heartbeat
-// while the cache retains it, as the listener retains it for as long as the interest reaper can
-// still hold the row: the heartbeat, not the row's older updated_at. The read comes more than one
+// while the cache retains it, as the listener retains it for as long as the interest reaper leaves
+// the row as it is: the heartbeat, not the row's older updated_at. The read comes more than one
 // TTL after the session left, past the default retention, so only WithLastSeenRetention keeps it.
 func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testing.T) {
 	const (
@@ -5279,15 +5279,16 @@ func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucket
 
 // The listener keeps no last-seen memory of its own: it opens the session registry on
 // session.LastSeenMemory, the package's own value, which must outlast both deadlines the
-// listener reads a departed session's last heartbeat for. The interest reaper can hold a dead
-// session's row until store.InterestReapAllowance after its last write, and /v1/interests/ gives
-// that row's session its real last heartbeat; and a refusal for a session past the gone horizon
-// says when it last registered. A retention shorter than either - the fifteen minutes the
-// listener used to set - leaves a row listed with no heartbeat to give and a gone session's
-// refusal unable to say when it was last seen.
+// listener reads a departed session's last heartbeat for. The interest reaper leaves a dead
+// session's row as it is until store.InterestReapAllowance after its last write, and
+// /v1/interests/ gives that row's session its real last heartbeat; and a refusal for a session
+// past the gone horizon says when it last registered. A retention shorter than either - the
+// fifteen minutes the listener used to set - leaves a row listed with no heartbeat to give and a
+// gone session's refusal unable to say when it was last seen. A row the reaper has stopped is kept
+// far longer (store.StoppedInterestRetention) and gives its session's last write as updated_at.
 func TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor(t *testing.T) {
 	if allowance := store.InterestReapAllowance(store.InterestReapGrace); session.LastSeenMemory <= allowance {
-		t.Fatalf("session.LastSeenMemory is %s and the interest reaper holds a dead session's row for %s, so a row it still lists can have no last heartbeat", session.LastSeenMemory, allowance)
+		t.Fatalf("session.LastSeenMemory is %s and the interest reaper leaves a dead session's row as it is for %s, so a row it still lists can have no last heartbeat", session.LastSeenMemory, allowance)
 	}
 	if session.LastSeenMemory <= session.GoneHorizon {
 		t.Fatalf("session.LastSeenMemory is %s and the gone horizon is %s, so a refusal for a session that has just gone cannot say when it was last seen", session.LastSeenMemory, session.GoneHorizon)
