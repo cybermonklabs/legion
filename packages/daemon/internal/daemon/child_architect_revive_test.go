@@ -64,7 +64,7 @@ func TestAFailedSubArchitectIsRetriedWithFreshBudgetsAtTheChildsNextPhaseStart(t
 
 	rig.apply("planner-session-lost", intake.SessionLost{Issue: doorChild, Role: claim.RolePlanner, Detail: "the session file is gone"})
 	if starts := rig.architectStarts(doorChild); starts != 0 {
-		t.Fatalf("the child holds %d architect starts before its next phase start, want none: nothing but a phase start revives its architect", starts)
+		t.Fatalf("the child holds %d architect starts before its next phase start, want none: no notice of the child revives its architect; the workflow does at the child's next phase start, and an operator's retry can", starts)
 	}
 	rig.drain()
 	if root := rig.noticesTo(doorRoot); !holdsNotice(root, "session-lost", claim.RolePlanner) {

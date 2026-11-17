@@ -40,11 +40,12 @@ func subArchitectOn(t *testing.T, sup *supervisor, state supervise.ClaimState, l
 // and to no other: it is published on LEGION-2's architect topic, with one line naming the claim
 // it reached, its generation, its launch and how many issues it lists. When that claim has
 // stopped, the catch-up is never published to the root's architect, which would read the child's
-// state as its own: a claim that will not hold its role again finishes the row undelivered, and
-// one suspended with its issue holds it, as a root's catch-up is held, without holding back the
-// root's own notices behind it. A newer launch of the child's architect, or the child at a later
-// generation, supersedes an older catch-up, which finishes without publishing; the root's claim
-// and generation decide nothing about it.
+// state as its own: a claim that failed or retired finishes the row undelivered, since the start
+// that brings it back (for a child's failed architect, the child's next phase start) queues a
+// catch-up of its own at its ready, and one suspended with its issue holds it, as a root's
+// catch-up is held, without holding back the root's own notices behind it. A newer launch of the
+// child's architect, or the child at a later generation, supersedes an older catch-up, which
+// finishes without publishing; the root's claim and generation decide nothing about it.
 func TestASubArchitectsCatchUpGoesToItAlone(t *testing.T) {
 	t.Run("to the child's own architect", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)

@@ -4,7 +4,10 @@ body: |-
   that child's first phase. That architect owns its child. It files its own children under its
   own issue, releases, parks and reruns them, signs off its own issue, and registers no design
   gate. The architect above it hears the child's `child-status` and `child-closed`, and that
-  architect's `worker-died` and `worker-stalled`. Each parent reviews every version of a child's
+  architect's `worker-died` and `worker-stalled`. It also hears every other notice of the child
+  while that architect has failed or is stopped. The `legion` tool's description of
+  `handoff_complete` now says that the daemon refuses every architect's completion, a child's own
+  architect's included. Each parent reviews every version of a child's
   spec and Verification document with a fresh reader and posts its verdict on the child. A
   child's architect sends each question for a person to the architect above it. The question goes
   up to the root architect, which asks it on the root. The worker skills and the `legion` tool's

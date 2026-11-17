@@ -753,13 +753,14 @@ func (a *Admission) rootArchitectOf(project string, issue record.Issue) (phaseWo
 // reconcileOrphans, at orphanSweepInterval), so a tick can name a worker that passed its bound
 // since the last sweep up to a minute before the next one writes its architect's notice.
 //
-// Why the controller is told at all, when the issue's own architect already was or is within the
-// minute: that architect may be failed or gone, so its notice reaches nobody, and the controller
-// is the role that holds `fresh_session` and reads the whole project (this root's architect ruled
-// it on 2026-11-12, dispatch://INFRA-3163). The tick carries the list. The state route gains no
-// field for it; the state's settings gain the two bounds, `worker_silence_minutes` and
-// `worker_background_hours`, as two keys of a loose object, so no daemon API contract number is
-// taken for either.
+// Why the controller is told at all, when the architect that owns the issue already was or is
+// within the minute: a child's architect that does not hold its role is passed over for the one
+// above it, but the notice can end at a tree root's architect claim that has failed or is gone,
+// and then it reaches nobody, and the controller is the role that holds `fresh_session` and reads
+// the whole project (this root's architect ruled it on 2026-11-12, dispatch://INFRA-3163). The
+// tick carries the list. The state route gains no field for it; the state's settings gain the two
+// bounds, `worker_silence_minutes` and `worker_background_hours`, as two keys of a loose object,
+// so no daemon API contract number is taken for either.
 //
 // What that costs, plainly: record.DecodeOutboxPayload refuses a field and a notice kind it
 // does not know, so a daemon of an older release that met a queued row carrying this list, or a
@@ -2158,10 +2159,11 @@ func (a *Admission) catchingUpFor(key string) bool {
 	return holding
 }
 
-// tellChildrenFirst tells the architect of each parent whose own first phase now waits for its
-// Dispatch children, once per issue and per run (record.Store.TellChildrenFirst). The notice
-// names the parent, each open child with the Dispatch status that holds it, and each cycle
-// among them (workflow.ChildrenFirstNotice).
+// tellChildrenFirst tells the architect that owns each parent whose own first phase now waits for
+// its Dispatch children, once per issue and per run (record.Store.TellChildrenFirst): a root's own
+// architect, and for a child the architect above it, since the child's own starts only with the
+// first phase this wait holds. The notice names the parent, each open child with the Dispatch
+// status that holds it, and each cycle among them (workflow.ChildrenFirstNotice).
 //
 // The wait is judged again every pass and the telling is written once, which is the whole of
 // why the two are recorded differently: every fact, tick, hold release and boot runs this pass,
@@ -2459,11 +2461,13 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
 // role needs the same resume start ordinary mid-phase children receive
 // (workflow.ResumePhaseTask, which says to carry the phase's work on and names no head, since a
-// merger reads the head it merges on GitHub). A root promoted held, which only a
-// hand-over leaves (every other re-admission starts its root at admitted), starts no worker, and
-// the hold's notice went to the architect of the tree it was handed over from, so its own
-// architect is told of the hold (workflow.HeldNotice), whether or not it carried a gate.
-// Promotion already queued the root's branch; each other member queues its own before starting.
+// merger reads the head it merges on GitHub). A root promoted held, which only a hand-over leaves
+// (every other re-admission starts its root at admitted), starts no worker. The hold's first
+// notice was routed in the tree the root was handed over from, where it reached the root's own
+// architect only if that claim held its role then, and else an architect above it, so its
+// architect is told of the hold again as a root's (workflow.HeldNotice), whether or not it carried
+// a gate. Promotion already queued the root's branch; each other member queues its own before
+// starting.
 // No member's phase is rewritten on the way back: the phase its record carries is the phase it
 // stands in, since the merge is what ends merging and no phase of this workflow is a wait for
 // one. A child of a re-admitted tree, and a root a hand-over created, come back in merging where
@@ -2496,7 +2500,7 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 //
 // What an issue waits on is deliberately not read here: every member this starts is mid-phase,
 // work already under way, and a member standing at admitted is passed over, since nothing of it
-// has run and its first phase is the waiting line's to start.
+// has run in this generation and its first phase is the waiting line's to start.
 //
 // root is the promoted root as the promotion has just written it, and issues the pass's own
 // records, which still carry that root as the pass read it. The caller passes both and appends
@@ -2538,11 +2542,12 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			return nil
 		}
-		// A member standing at admitted has run nothing in this generation: it holds no session
-		// to bring back, and its own first phase starts when the waiting line gives it a slot
-		// (record.LineFirstPhase). A root whose tree is opened for the first time is exactly
-		// that, so admitting a fresh root relaunches nobody and creates no claim for a worker
-		// that has never worked.
+		// A member standing at admitted has run nothing in this generation, and nothing of it is
+		// brought back here: its own first phase starts when the waiting line gives it a slot
+		// (record.LineFirstPhase), and a claim it kept from an earlier run comes back on its kept
+		// session when a start of its role reaches it. A root whose tree is opened for the first
+		// time is exactly that, so admitting a fresh root relaunches nobody and creates no claim
+		// for a worker that has never worked.
 		if member.Phase == phase.Admitted {
 			return nil
 		}
@@ -2774,9 +2779,9 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The root's own architect is the second role, and record.AtWork is not its reading: that rule
 // answers false for a root at admitted once its design gate has opened, where the architect is
-// still the only role of the tree at work, and a relaunched architect of exactly such a root is
-// the measured defect (dispatch://INFRA-2614). The architect of every root of the domain is
-// weighed here, slotted, past its review or released for a wait, and the reach that decides
+// still the only role at work on the root itself, and a relaunched architect of exactly such a
+// root is the measured defect (dispatch://INFRA-2614). The architect of every root of the domain
+// is weighed here, slotted, past its review or released for a wait, and the reach that decides
 // which of them is owed anything is read once its claim is behind (architectReached,
 // workflow.ArchitectAtWork): a root at admitted whatever its gate, a root a hand-over carried in
 // while it stands in the run that hand-over carried it into, and a root past admitted under its

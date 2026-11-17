@@ -1363,10 +1363,10 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 // releaseWaiting reads the same set through the same WaitingNotices and leaves behind exactly the
 // rows whose reserved moment is still ahead of now): a row whose moment has come is a wake that
 // is running or about to, or one whose attempt failed and is waiting on a backoff of its own, and
-// neither is a wake the pacing holds. Each goes to the root architect of its issue, whose token
-// it is composed for exactly as the line that wake writes composes it (the outbox's wakeRan),
-// since the row names the issue and the kind alone. A project whose outbox holds no such row
-// allocates nothing.
+// neither is a wake the pacing holds. Each goes to the architect of its own issue, a root's or a
+// child's, whose token it is composed for exactly as the line that wake writes composes it (the
+// outbox's wakeRan), since the row names the issue and the kind alone. A project whose outbox
+// holds no such row allocates nothing.
 func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project, dispatchProject string, now time.Time) ([]api.WakeWaiting, error) {
 	waiting, err := records.WaitingNotices(ctx, tx, dispatchProject, now)
 	if err != nil {

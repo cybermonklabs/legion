@@ -487,7 +487,8 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 		// and redo work that is already pushed (dispatch://INFRA-714 R8).
 		fragment += " The session this claim recorded was found in no session store, so this is a new session: " +
 			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " +
-			"Read your issue and the committed handoffs in your workspace before you continue, and tell your architect what you found."
+			"Read your issue and the committed handoffs in your workspace before you continue. " +
+			"Then tell the architect named above what you found, unless you are your tree's root architect."
 	}
 	if repo.IsZero() {
 		return fragment

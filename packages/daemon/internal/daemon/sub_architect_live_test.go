@@ -88,7 +88,8 @@ const (
 	// with (workflow.ChildStartedNotice): the child's own architect owns it from then on, so the
 	// architect told hears only what goes above that architect.
 	subArchitectOwnership = "Its own architect starts with it and owns it from now on: its decomposition, its children and " +
-		"its acceptance. You hear its child-status and child-closed notices, and a worker-died when its architect fails"
+		"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
+		"and its other notices while its architect has failed or an operator has stopped or suspended it"
 )
 
 // subArchitectLive is one run of the proof: the booted daemon, the one live tree it runs, the

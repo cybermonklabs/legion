@@ -177,9 +177,10 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's
 // rule holds (record.HoldsRole: it has not ended, and it is not suspended unless the idle release
 // suspended it), and that decision is not stopping its process for good (supervise.ClaimView's
-// Stopping) — a suspension, a failure, a release. The routing reads it, so no notice is routed to
-// a sub-architect whose session is being stopped; it goes on up the tree, as it will once the stop
-// returns.
+// Stopping) — a suspension, a failure, a release. The owner walk reads it, so no notice but a
+// catch-up is routed to a sub-architect whose session is being stopped: such a notice goes on up
+// the tree, as it will once the stop returns, while a catch-up waits for the architect of its own
+// issue (noticeArchitect).
 func holdsRole(held supervise.ClaimView) bool {
 	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }
@@ -190,7 +191,9 @@ func holdsRole(held supervise.ClaimView) bool {
 // catch-up of its own, so nothing held for the failed claim waits for it. A suspended claim has
 // not ended: the operator's resume or deliver starts it again (`legion claims resume`), and so
 // does the workflow's next start of its role for a claim the workflow suspended, which for a
-// child's own architect is the child's next first phase start (workflow's StartFirstPhase).
+// child's own architect is the child's next first phase start after its leave (workflow's
+// StartFirstPhase), or, after its tree's linger, the re-admission's start of a child past admitted
+// (admit's startMidPhaseMembers).
 func claimEnded(state supervise.ClaimState) bool {
 	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
 }
@@ -219,9 +222,9 @@ func (r *outbox) holdsItsRole(token claim.Token) bool {
 }
 
 // architectEnded says why nobody will hold the role of the owning architect, in state, for a
-// notice of tree, or "" when its claim can hold the role again: a lingering or closed tree's
-// architect is suspended until re-admission, which starts it with the tree's record rather than the
-// notices of its close.
+// notice of tree, or "" when its claim can hold the role again: a lingering tree's architects are
+// suspended, and a closed tree's retired, until re-admission, which starts each with the tree's
+// record rather than the notices of its close.
 func architectEnded(tree treeSnapshot, state supervise.ClaimState) string {
 	if tree.root.Lingers() {
 		return "its tree lingers or has closed"

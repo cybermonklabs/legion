@@ -8,9 +8,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A worker-died or a worker-stalled about a child's architect is about the architect the walk from
-// the child would reach, so it starts at the child's parent: the running architect above the child
-// hears it — the parent's, else the nearest running one above that, else the root's. The child's
+// A worker-died or a worker-stalled about a child's architect is about that architect, so it starts
+// at the child's parent: the running architect above the child hears it — the parent's, else the
+// nearest running one above that, else the root's. The child's
 // architect never hears it itself, which a stalled claim would, since it still holds its role, not
 // even when the record's parents loop back to the child: that walk ends at the root. The same
 // notices about a phase worker of the child go to the child's own running architect, which is the

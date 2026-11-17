@@ -51,10 +51,11 @@
 // The seed is one tree with one child, so that the daemon starts three real panes of three
 // different kinds: the tree's root architect, the planner of the same issue, which stands in
 // planning, and the architect of the child, which stands in planning too. Each architect's claim
-// carries no task, as an architect's start leaves none; the planner's carries the task its phase's
-// start left pending, because a start writes the relaunch and the task together (workflow's
-// StartOrOwe) and a slotted worker holding no task at all is the state admission repairs
-// (internal/admit/admit.go's resumeSlottedWorkers), which would deliver a task of its own instead.
+// is seeded with no task (a child's architect's start carries none, and this seed gives the root's
+// none); the planner's carries the task its phase's start left pending, because a start writes the
+// relaunch and the task together (workflow's StartOrOwe) and a slotted worker holding no task at
+// all is the state admission repairs (internal/admit/admit.go's resumeSlottedWorkers), which would
+// deliver a task of its own instead.
 // The child has no planner's claim and no phases row, so that repair owes it nothing and starts no
 // fourth pane: the planner this proof reads is the root's.
 //
@@ -322,9 +323,9 @@ func (r *rolePromptRuleLive) overrides() overrides {
 // child, in planning on a slot of its own as a started child holds one; and the three claims
 // mid-launch, which this boot relaunches. The planner's claim also holds the task its phase's
 // start left pending, which is the state admission's repair of a slotted worker passes over
-// (workflow.StartFor, the delivery's StillWorked); neither architect's holds one, since the
-// repair reads no architect's claim at all. The child has no planner's claim and no phases row,
-// so that repair owes it nothing.
+// (workflow.StartFor, the delivery's StillWorked); neither architect's holds one: the repair
+// weighs a root's architect claim (admit's owedEntryRoles) but never a child's. The child has no
+// planner's claim and no phases row, so that repair owes it nothing.
 //
 // No role prompt file is written below the state directory. Such a file is an operator's own
 // prompt, and a launch that finds one gives the pane that file and nothing else

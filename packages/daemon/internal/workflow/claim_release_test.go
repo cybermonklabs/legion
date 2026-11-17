@@ -32,7 +32,8 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 	// A root's park acts on its whole tree: six suspends and an IssueSuspend for each of its two
 	// members, and the one row that closes the linger.
 	parkedTree := map[string]int{"supervise": 12, "issue_suspend": 2, "linger_close": 1}
-	// A child's park ends the child alone, and tells the tree's architect which child left.
+	// A child's park ends the child alone, and tells the architect above it (here the tree's) which
+	// child left.
 	parkedChild := map[string]int{"supervise": 6, "issue_suspend": 1, "notice": 1}
 	for _, tc := range []struct {
 		name string

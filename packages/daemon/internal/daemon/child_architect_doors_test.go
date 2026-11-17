@@ -274,15 +274,15 @@ func (r *childArchitectRig) wantChildsArchitectToldItsIssues(want []string) {
 }
 
 // Every door a child comes through starts its own architect when it starts the child's first
-// phase, and that architect is told what it owns at its launch. The child is released by its
-// architect (release_children's own write of todo), run again by its architect (rerun_child's
-// write of todo on a done child), set todo by a person under a live tree, or freed by the close of
-// the issue it waited on. Each door's facts go through the daemon's own handlers, the rows they
-// write through the real outbox runner, and the architect's launch through its claim's machine:
-// the start creates and spawns the child's architect claim, on the child and in the root's tree,
-// and the first notice published to that architect is its catch-up, naming the child and every
-// issue under it. A child that waits for the issue it is held by gets no architect while it
-// waits: the architect starts with the child's first phase and not with its entry.
+// phase, and that architect is told what it owns at its launch. The child is released by the
+// architect above it (release_children's own write of todo), run again by that architect
+// (rerun_child's write of todo on a done child), set todo by a person under a live tree, or freed
+// by the close of the issue it waited on. Each door's facts go through the daemon's own handlers,
+// the rows they write through the real outbox runner, and the architect's launch through its
+// claim's machine: the start creates and spawns the child's architect claim, on the child and in
+// the root's tree, and the first notice published to that architect is its catch-up, naming the
+// child and every issue under it. A child that waits for the issue it is held by gets no architect
+// while it waits: the architect starts with the child's first phase and not with its entry.
 func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 	t.Run("release_children", func(t *testing.T) {
 		rig := newChildArchitectRig(t)

@@ -165,8 +165,8 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 // holds its role, and else the nearest architect above it that does. So a root's catch-up names
 // no accepting child whose own architect holds its role — running, or released by the idle rule
 // and woken by the next wake — and that architect's catch-up names it instead; and the root's
-// does name one whose architect has failed, retired or been suspended, or never started, since
-// that child's acceptance is then the root's.
+// does name a child directly under it whose architect has failed, retired or been suspended, or
+// never started, since that child's acceptance then walks up to the root's.
 func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
 	const root = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
 	const child = "the issues under LEGION-2, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says"

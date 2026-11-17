@@ -135,8 +135,8 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 		t.Fatalf("child tree/phase = %q/%q, want LEGION-208/planning", tree, gotPhase)
 	}
 	// The first supervise row is the child's own architect's start, before its planner's
-	// (Engine.gateOpened). The second notice is the architect's: every child the line starts
-	// tells it so (ChildStartedNotice).
+	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
+	// tells the architect above it (ChildStartedNotice).
 	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 	var branchIssue string
 	var generation int
@@ -523,8 +523,8 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 }
 
 // superviseRequests counts the enqueued supervise requests of one operation by issue/role. A
-// phase worker's start is one row, which carries the worker's task (StartOrOwe), and every start
-// this package writes carries one.
+// phase worker's start is one row, which carries the worker's task (StartOrOwe); a child's own
+// architect's plain start (childArchitectStart) carries none.
 func superviseRequests(t *testing.T, pool *pgxpool.Pool, op string) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select issue, payload->>'role' from outbox

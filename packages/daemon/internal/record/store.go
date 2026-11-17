@@ -1064,13 +1064,15 @@ func (s *Postgres) DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root s
 	return nil
 }
 
-// TellChildrenFirst records that issue's architect has been told, for the run generation of tree,
-// that the issue waits for its own Dispatch children, and reports whether this call is the
-// telling: a second call for the same tree and generation changes nothing and answers false, so
-// the one row decides who tells. The tree is part of the key because the generation is the root's
-// and only names a run within one tree: an issue handed over as a root of its own waits in a tree
-// of its own, at a generation of its own numbering (admit's readmit), and is told there again. at
-// is the moment the pass ran, kept for a reader of the table alone.
+// TellChildrenFirst records that the architect that owns issue has been told (the root's own
+// architect for a root, and for a child the architect above it, since the child's own starts only
+// with that first phase), for the run generation of tree, that the issue waits for its own
+// Dispatch children, and reports whether this call is the telling: a second call for the same tree
+// and generation changes nothing and answers false, so the one row decides who tells. The tree is
+// part of the key because the generation is the root's and only names a run within one tree: an
+// issue handed over as a root of its own waits in a tree of its own, at a generation of its own
+// numbering (admit's readmit), and is told there again. at is the moment the pass ran, kept for a
+// reader of the table alone.
 func (s *Postgres) TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error) {
 	tag, err := tx.Exec(ctx, `insert into children_first_notices (issue, tree, generation, told_at) values ($1, $2, $3, $4)
 		on conflict (issue, tree, generation) do nothing`, issue, tree, int64(generation), at)
@@ -2371,11 +2373,12 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
 // since a start of a phase past its review carries none (PhaseKeepsSlot).
 //
-// The issue's other supervise starts name no phase or carry no task — the tree architect's
-// (admit's promotion), the roles brought back beside a member's phase worker (admit's
-// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled
-// idle release — and each of them is a start of its own that must still run. None of them is
-// ever taken out here.
+// The issue's other supervise starts name no phase or carry no task — a root's architect's
+// (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
+// reviveArchitect), the roles brought back beside a member's phase worker (admit's
+// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled idle
+// release — and each of them is a start of its own that must still run. None of them is ever
+// taken out here.
 const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
 

@@ -687,8 +687,9 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	next := child.Generation + 1
 	// The worker of the phase the child was taken out of may still finish its old turn, but its
 	// completion serves the generation it took and the API refuses it once this generation begins.
-	// Roles that finished earlier phases of the run stay live, as they do between phases, and the
-	// new run's starts hand them their tasks.
+	// Roles that finished earlier phases of the run stay as they stood: live for a child moved to
+	// todo from a running status, suspended or retired for one that had left the workflow. The new
+	// run's starts hand each its task, and bring one that had stopped back on its kept session.
 	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
 	if err != nil {
 		return err
@@ -914,10 +915,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // worker-died names none: nobody inside the tree is left to read it, and the operator who
 // relaunches that architect reads the claim's own record (api.ClaimFailureView).
 //
-// A child's own architect works no phase and holds none: the daemon starts it with the child's
-// first phase (StartFirstPhase). Its claim failing holds nothing and is told as a worker-died of
-// the architect on the child, which reaches the architect above it, since the owner walk starts
-// at the child's parent for an architect's own worker-died (record.OwningArchitect). That
+// A child's own architect works no phase but its child's acceptance (accepting), where no worker
+// runs: the daemon starts it with the child's first phase (StartFirstPhase). Its claim failing
+// holds nothing, even at accepting, since its branch below comes before any read of the phase, and
+// is told as a worker-died of the architect on the child, which reaches the architect above it,
+// since the owner walk starts at the child's parent for an architect's own worker-died
+// (record.OwningArchitect). That
 // architect takes the child's notices from then on, because the failed claim no longer holds its
 // role, until the child's architect runs again: the daemon starts it again at the child's next
 // phase start (start), and so do a re-admission of the tree while the child stands in a phase
@@ -930,9 +933,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // while another role works the issue's phase, or while the issue waits on a person: the architect
 // is told in a worker-died of that role, its reason saying the role does not work the issue's phase,
 // and nothing is held, since the phase is not that role's. A later start of the role relaunches its
-// session (the outbox executor's retry of a failed claim). An issue that left the workflow (done)
-// suspended every claim it held, and a lingering tree holds its members where they stood, so
-// neither tells anyone.
+// session (the outbox executor's retry of a failed claim). An issue that left the workflow
+// suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
+// tree holds its members where they stood, so neither tells anyone.
 //
 // The checking role of a closed issue failing inside a look of its production check ends that look
 // as a report of pending would (endLook): a done issue has no phase to hold, and the look's next
@@ -1524,9 +1527,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	starting := phase.RoleFor(row.To)
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
 	// started for it and the merge closes the issue the moment it reaches merging. The close is
-	// closeMergedTelling's rather than a second transition's because a root's close waits for the
-	// rest of its tree, and an issue that arrives there and waits must be told why: the notice its
-	// architect got at the merge could not say it, since the issue was elsewhere then.
+	// closeMergedTelling's rather than a second transition's because a merged issue's close waits
+	// for the issues beneath it still in the workflow (for a root, the rest of its tree), and an
+	// issue that arrives there and waits must be told why: the notice its architect got at the
+	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
 		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
@@ -1553,11 +1557,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // (TriggerConflict), why, under the checks-red kind the architect's prompt reads, since that is
 // the daemon stopping the phase on something it read of the head. Two moves tell it nothing (a
 // notice of no kind, which notice drops): its own sign-off, whose only recipient would be the
-// architect that just acted, and the merge that closes the issue, whose close tells a child's
-// architect child-closed itself (leave) and suspends a root's with the rest of its tree. A third
-// move names no role: the gate's opening, the one move out of admitted (Table), whose role is the
-// architect. A phase-finished names the worker whose phase ended, and the architect is the tree's
-// own role and the reader of this notice, so a role there would tell the architect of itself.
+// architect that just acted, and the merge that closes the issue, whose close tells the architect
+// above a child child-closed itself (leave) and closes the child's own architect with its other
+// claims, and suspends a root's architect with the rest of its tree. A third move names no role:
+// the gate's opening, the one move out of admitted (Table), whose role is the architect. A
+// phase-finished names the worker whose phase ended, and admitted has none: its role is an
+// architect, the role that reads this notice.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
@@ -1652,7 +1657,8 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
 // waited, which the notice's reason says instead. A tree's own root gets no notice: the
-// architect this would tell is the worker being started, and its own task says it is starting.
+// architect this would tell is the root's own, which the phase-finished of the move out of
+// admitted already tells (noticeFor).
 func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, waited []string) error {
 	if err := e.gateOpened(ctx, tx, issue); err != nil {
 		return err

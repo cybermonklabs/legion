@@ -22,14 +22,15 @@ func launchesSince(rt *fake.Runtime, token claim.Token, after int) []fake.Call {
 	return launches
 }
 
-// A child's architect leaves the workflow with its child and comes back with it. The architect's
-// park_child (its own write of backlog) takes the child out of the workflow, which suspends every
-// claim of the child (the workflow's leave), the architect's among them: the claim stays the
-// child's, suspended by the daemon with the session its agent registered, and its process is
-// stopped once. The architect's rerun_child (its own write of todo on the parked child) starts
-// the child's first phase again, and that start resumes the same claim in its session: the
-// runtime is asked to resume the process from the session file the claim recorded, and no fresh
-// one is spawned. Its ready tells it the child at the generation the rerun opened.
+// A child's architect leaves the workflow with its child and comes back with it. The park_child
+// of the architect above the child (its own write of backlog) takes the child out of the workflow,
+// which suspends every claim of the child (the workflow's leave), the child's architect's among
+// them: the claim stays the child's, suspended by the daemon with the session its agent
+// registered, and its process is stopped once. That architect's rerun_child (its own write of todo
+// on the parked child) starts the child's first phase again, and that start resumes the child's
+// architect's claim in its session: the runtime is asked to resume the process from the session
+// file the claim recorded, and no fresh one is spawned. Its ready tells it the child at the
+// generation the rerun opened.
 func TestAParkedChildsArchitectIsSuspendedAndItsRerunResumesItsSession(t *testing.T) {
 	rig := newChildArchitectRig(t)
 	rig.written("release", childAt("todo", 2))

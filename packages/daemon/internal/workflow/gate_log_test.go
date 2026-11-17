@@ -49,7 +49,7 @@ func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
 		// log line of the registration itself, since the row is written first.
 		{"registration", intake.GateRegistered{Issue: "LEGION-1", ArtifactID: "art-1", Version: 2},
 			[]string{
-				`msg="workflow: the design gate moved and every phase holder of the tree is told" issue=LEGION-1 tree=LEGION-1 step=spec version=2 open=false told=1`,
+				`msg="workflow: the design gate moved and every phase worker of the tree and the root's architect are told" issue=LEGION-1 tree=LEGION-1 step=spec version=2 open=false told=1`,
 				`msg="workflow: design gate registered" issue=LEGION-1 artifact=art-1 step=spec version=2 open=false changes_requested=false gated_steps=[spec]`,
 			}},
 		{"changes requested on the closed gate", intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "art-1", Kind: intake.DispatchArtifactChangesRequested, Version: 2, Reason: "tighten it"},
@@ -59,7 +59,7 @@ func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
 		{"the approval", intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "art-1", Kind: intake.DispatchArtifactApproved, Version: 3},
 			[]string{
 				`msg="workflow: design gate opened" issue=LEGION-1 artifact=art-1 event=approved version=3`,
-				`msg="workflow: the design gate moved and every phase holder of the tree is told" issue=LEGION-1 tree=LEGION-1 step=spec version=3 open=true told=1`,
+				`msg="workflow: the design gate moved and every phase worker of the tree and the root's architect are told" issue=LEGION-1 tree=LEGION-1 step=spec version=3 open=true told=1`,
 			}},
 		{"a version after the approval", intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "art-1", Kind: intake.DispatchArtifactVersion, Version: 4},
 			[]string{
@@ -67,7 +67,7 @@ func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
 				// The root is still admitted: an approval opens the gate and the waiting line
 				// starts the first phase at its slot (StartFirstPhase), which this test's
 				// admission stub does not do, so the architect is the one holder there is.
-				`msg="workflow: the design gate moved and every phase holder of the tree is told" issue=LEGION-1 tree=LEGION-1 step=spec version=4 open=false told=1`,
+				`msg="workflow: the design gate moved and every phase worker of the tree and the root's architect are told" issue=LEGION-1 tree=LEGION-1 step=spec version=4 open=false told=1`,
 			}},
 	} {
 		if got := apply(step.name, step.fact); strings.Join(got, "\n") != strings.Join(step.want, "\n") {

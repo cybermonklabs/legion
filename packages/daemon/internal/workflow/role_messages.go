@@ -26,8 +26,8 @@ type addressedRole struct {
 
 // addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
 // tellGateMoved): the claim token of each recipient, in the order given and each token once, so a
-// role named twice - the implementer that also holds the phase, a tree member whose phase is its
-// architect's - is told once. A recipient with no role is a phase no worker holds, and is nobody.
+// role named twice - the implementer that also holds the phase - is told once. A recipient with no
+// role is a phase no worker holds, and is nobody.
 //
 // unnamable is the policy for a recipient whose claim token cannot be built, which is the whole of
 // what the two senders differ in: nil ends the collection with that error, and so the fact's

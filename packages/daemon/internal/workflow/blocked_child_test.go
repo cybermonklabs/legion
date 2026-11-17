@@ -116,16 +116,17 @@ func TestAChildReleasedWhileABlockerIsUnfinishedStaysAdmitted(t *testing.T) {
 		t.Fatalf("the unblocked child = %s once the line reached it, want planning", got)
 	}
 	// The first supervise row is the child's own architect's start, queued behind its branch row
-	// and before its planner's (Engine.gateOpened). The second notice is the architect's: every
-	// child the line starts tells it so (ChildStartedNotice), whether a blocker held it or its
-	// tree's gate did.
+	// and before its planner's (Engine.gateOpened). The second notice is the child-status that
+	// every child the line starts tells the architect above it (ChildStartedNotice), whether a
+	// blocker held it or its tree's gate did.
 	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 }
 
 // The close of the last issue a held child waited on starts it: its branch row, its own
 // architect's start behind that row, the in_progress its entry into planning writes to Dispatch,
-// its planner's start behind the branch row, and one child-status notice to the tree's architect
-// naming the issues it waited on and saying that the child's own architect owns it from now on.
+// its planner's start behind the branch row, and one child-status notice to the architect above it
+// (here the tree's) naming the issues it waited on and saying that the child's own architect owns
+// it from now on.
 func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
@@ -161,8 +162,9 @@ func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 // starts at the next look: left admitted, it would stand unstarted with nothing naming it, since
 // the state's `blocked` names only a child with an unfinished blocker and the edit, which changes
 // no status, is not one the engine's handling of the event acts on. It starts as a child its tree's
-// gate opened onto does, and its tree's architect is told so by the same child-status notice a
-// blocker's close sends, its reason saying the links were taken off: no issue it waited on closed.
+// gate opened onto does, and the architect above it (here its tree's) is told so by the same
+// child-status notice a blocker's close sends, its reason saying it reached the front of the
+// waiting line, since no issue it waited on closed.
 func TestAHeldChildWhoseLinksAreTakenOffStarts(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
@@ -219,10 +221,10 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 	return blocked
 }
 
-// The opening of a tree's design gate tells every phase holder of the tree and its architect, and
-// releases every admitted member it was holding, and the waiting line then starts each of them at
-// its own slot — except one that waits on an unfinished issue of its own, whose own blockers hold
-// it where the gate left it.
+// The opening of a tree's design gate tells every phase worker of the tree and the root's
+// architect, and releases every admitted member it was holding, and the waiting line then starts
+// each of them at its own slot — except one that waits on an unfinished issue of its own, whose own
+// blockers hold it where the gate left it.
 func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
@@ -549,7 +551,8 @@ func assertPlannerStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 // reason: the child's own architect starts with it and owns it, so the architect it tells hears
 // only what goes above that architect (ChildStartedNotice).
 const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
-	"its acceptance. You hear its child-status and child-closed notices, and a worker-died when its architect fails"
+	"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
+	"and its other notices while its architect has failed or an operator has stopped or suspended it"
 
 func childStatusNotices(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()

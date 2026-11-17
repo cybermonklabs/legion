@@ -75,7 +75,7 @@ const (
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
 // phase ended, given the words a hook fired on a move back, told that its pull request left the
 // merge queue, or asked to get ready for the replacement of its pod must hear it while that is
-// news, not after whatever its tree's architect is owed.
+// news, not after whatever the architect that owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -361,15 +361,16 @@ type Notice struct {
 	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
 	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
 	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
-	// carries none. The issue's architect is told of each of these by a `worker-silent` or
-	// `worker-background-stalled` notice of its own, judged by the same rules, with the two
+	// carries none. The architect that owns the issue is told of each of these by a `worker-silent`
+	// or `worker-background-stalled` notice of its own, judged by the same rules, with the two
 	// differences admit.Admission.silentWorkers sets out: a handler also refuses a fact whose run
 	// is not the issue's current generation, a term the tick does not weigh, since it reads the
 	// worker's claim by its token alone and that claim carries no serving run; and the sweep that
 	// writes those notices runs once a minute, so a tick can name a worker up to a minute before
-	// its architect is told. The controller is the second reader, because that architect may be
-	// failed or gone, so its notice reaches nobody, and the controller holds `fresh_session` and
-	// reads the whole project.
+	// its architect is told. The controller is the second reader, because the notice can reach
+	// nobody: a child's architect that does not hold its role is passed over for the one above
+	// it, but a notice whose walk ends at a tree root whose architect claim failed, retired or is
+	// gone ends undelivered. The controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
@@ -776,8 +777,9 @@ func NoticePerClaim(kind NoticeKind) bool {
 // a suspend stops a role of an issue the workflow is taking out, a release stops a role of an
 // issue that stays in the workflow and comes back at the next wake; "tree_close" is the tree's
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
-// child issue's close as done, which ends the claim as a tree close does and drops its session,
-// since the issue is finished and its next run, should a person set it todo again, starts fresh.
+// child issue's close as done, which ends the claim as a tree close does and keeps its session, so
+// the issue's next run, should a person set it todo again, resumes each claim's session rather
+// than starting fresh (supervise's RequestIssueClose).
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
@@ -797,8 +799,11 @@ type SuperviseRequest struct {
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
-	// finishes without acting. It is empty for the architect, which serves every phase, and for a
-	// suspend or a tree's close, which must still act after the issue moves on.
+	// finishes without acting. It is empty for a root's architect, which serves every phase, for a
+	// child's own architect's plain start (workflow's childArchitectStart), and for a suspend or a
+	// tree's close, which must still act after the issue moves on. The start a re-admission writes
+	// to bring back a mid-phase child's own architect names the phase the child stands in (admit's
+	// startMidPhaseMembers), and finishes without acting once the child has left it.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -1152,8 +1157,8 @@ func (p PhaseEnded) Message(issue string) string {
 // `owner/name#n` where the issue has one, and Prompt the hook's own words.
 //
 // It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
-// news, as it hears that its phase ended: a prompt held behind whatever its tree's architect is
-// owed would reach the role rounds after the round the firing wrote it for.
+// news, as it hears that its phase ended: a prompt held behind whatever the architect that owns
+// its issue is owed would reach the role rounds after the round the firing wrote it for.
 //
 // The daemon writes the facts and never substitutes anything into the hook's own words: Message
 // states the move, the counts and the pull request in sentences of the daemon's own, and then the

@@ -155,9 +155,9 @@ func architectSweepStarts(t *testing.T, pool *pgxpool.Pool, root string) []conve
 //
 // The second is the measured defect (dispatch://INFRA-2614): record.AtWork answers false for a
 // root at admitted whose design gate has opened, while the root's own architect is the only role
-// of the tree at work. The fourth is the first root again, its claim holding the task of the entry
-// before unconfirmed: a task the row has moved past is no start on its way, so it holds nothing
-// back (dispatch://INFRA-2614 R4).
+// at work on the root itself. The fourth is the first root again, its claim holding the task of
+// the entry before unconfirmed: a task the row has moved past is no start on its way, so it holds
+// nothing back (dispatch://INFRA-2614 R4).
 func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

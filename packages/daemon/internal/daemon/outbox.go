@@ -86,10 +86,11 @@ type outbox struct {
 	// is shared, and another project's rows are another daemon's.
 	dispatchProject string
 	stateDir        string
-	// gatedSteps are the design-gate steps the project gates (gates.design), which a catch-up
-	// this runner writes states and whose kept approval pair a start task names
-	// (workflow.QueueCatchUp). A test that builds the runner by hand leaves it nil, which
-	// newOutbox reads as the shipped list, the one step spec.
+	// gatedSteps are the design-gate steps the project gates (gates.design), which a root
+	// architect's catch-up this runner writes states (a child's catch-up states none) and whose
+	// kept approval pair a root architect's start task names (workflow.QueueCatchUp). A test that
+	// builds the runner by hand leaves it nil, which newOutbox reads as the shipped list, the one
+	// step spec.
 	gatedSteps []record.DesignStep
 	log        *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
@@ -331,12 +332,12 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // write that would hand the child to Legion never lands, so no admission consumes the fence, and
 // one left behind would keep naming the child's own tree as its Sandbox's home
 // (store.IssueSandboxHome) for good. The child stays where it is until a person labels it, which
-// admits it as an orphan. A message row Dispatch refused tells the issue's architect what was not
-// posted and Dispatch's own refusal (messagePostRefused), since nothing else would: the message
-// is the daemon's only word on the issue for what it carries. Each of those notice rows is
-// written in the finish's own transaction, which owns the commit hook that write registers
-// (projectRecords, intake.OnCommit), so the notice's lane is woken as the finish commits and the
-// notice is published without a sweep.
+// admits it as an orphan. A message row Dispatch refused tells the architect that owns the issue
+// (noticeArchitect) what was not posted and Dispatch's own refusal (messagePostRefused), since
+// nothing else would: the message is the daemon's only word on the issue for what it carries.
+// Each of those notice rows is written in the finish's own transaction, which owns the commit hook
+// that write registers (projectRecords, intake.OnCommit), so the notice's lane is woken as the
+// finish commits and the notice is published without a sweep.
 func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause error) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
@@ -1934,8 +1935,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("retry claim %s: %w", token, err)
 			}
 		case supervise.StateRetired:
-			// A retired claim's tree closed, and its linger removed the workspace; the tree was
-			// re-admitted, so the workspace comes back before the kept session relaunches.
+			// A retired claim was closed with its issue (a child closed as done) or with its tree
+			// (whose linger also removed the workspace), or an operator stopped it. So the workspace
+			// is provisioned, which brings back one a linger removed, before the kept session
+			// relaunches.
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
 			}
@@ -2004,19 +2007,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			gave = true
 		}
 		// A start that finds an architect running is a return of its issue while its session lived
-		// on: a tree's re-admission for a root's architect, a child's next first phase start (a
-		// rerun, or a person's move back to todo) for a child's own. The linger suspends a root's
-		// claim and a child's leave suspends the child's architect, so that happens only when the
-		// claim was mid-launch when the suspend ran (the machine ignores a suspend while
-		// launching), or the start ran before the suspend. No ready follows, and a ready is what
-		// tells the architect the issues it owns (workflow's claimReady), so the start applies that
-		// fact itself, for the running launch, once per start row, on the start's own issue: the
-		// architect is told its issues at their new generation, a root's whole tree and a child's
-		// own subtree, each through the workflow's one composer (workflow.QueueCatchUp). Its
-		// catch-up names what nobody claims, which this row's task may name too, so the decisions
-		// the task carries are settled first (settleKept) and the catch-up is composed without
-		// them; the settle after the row then finds nothing left to do. A retry of the row queues
-		// the task no second time and applies the fact once.
+		// on: a tree's re-admission for a root's architect; for a child's own, the tree's
+		// re-admission while the child stands past admitted (admit's startMidPhaseMembers) or the
+		// child's next first phase start (a rerun, or a person's move back to todo). The linger
+		// suspends every claim of the tree and a child's leave suspends the child's architect, so
+		// that happens only when the claim was mid-launch when the suspend ran (the machine ignores
+		// a suspend while launching), or the start ran before the suspend. No ready follows, and a
+		// ready is what tells the architect the issues it owns (workflow's claimReady), so the start
+		// applies that fact itself, for the running launch, once per start row, on the start's own
+		// issue: the architect is told its issues at their new generation, a root's whole tree and
+		// a child's own subtree, each through the workflow's one composer (workflow.QueueCatchUp).
+		// Its catch-up names what nobody claims, which this row's task may name too, so the
+		// decisions the task carries are settled first (settleKept) and the catch-up is composed
+		// without them; the settle after the row then finds nothing left to do. A retry of the row
+		// queues the task no second time and applies the fact once.
 		//
 		// That catch-up stands in place of a launch, so it is a wake of the architect and takes a
 		// turn in the daemon's pacing like the launch it replaces: the fact says so (Paced), the
@@ -2101,11 +2105,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// it, so a retry suspends and records together.
 		return r.trees.ReleaseSuspendedClaim(ctx, r.project, row.Issue, payload.Role, row.ID)
 	case "issue_close":
-		// A child's close as done: the claim is closed as a tree close closes it, its session dropped
-		// with it, since the issue is finished and its next run, should a person set it todo again,
-		// starts fresh on a pod and a disk of its own. It is fenced as a suspend is, not as a tree
-		// close: no linger is involved, and a newer start means a person set the child todo again,
-		// whose run the close must not end.
+		// A child's close as done: the claim is closed as a tree close closes it, retired with its
+		// session kept, since the issue is finished and its next run, should a person set it todo
+		// again, resumes that session on a pod and a disk of its own (supervise's
+		// RequestIssueClose). It is fenced as a suspend is, not as a tree close: no linger is
+		// involved, and a newer start means a person set the child todo again, whose run the close
+		// must not end.
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
@@ -2209,13 +2214,15 @@ func childArchitectFirstStart(issue record.Issue, payload record.SuperviseReques
 // backoff, charging no claim a launch. No close of the old tree reaches such a claim, since its
 // issue has left that tree, so the suspension names the deadline that close would have had
 // (carriedStopDeadline): a turn still running at the old root's linger expiry is stopped there, and
-// the claim keeps its workspace, the issue's branch and its session, which its next start resumes
-// with its phase's resume task. The hold lives in the claim's memory, so a restart that forgets it
-// is asked again by the start's next attempt, with the same deadline. Once none runs, every claim
-// of the issue may be re-pointed to the issue's tree (supervise.Machine.Retree), and the issue's
-// Sandbox, which no role of the old tree then runs in, is the new tree's to relabel
-// (runtime/sandbox's ensureSandbox). A claim already in the issue's tree is skipped on its view,
-// which only Retree changes, so a start waits on no decision a sibling claim has in flight.
+// the claim keeps its workspace, the issue's branch and its session, which its next start resumes:
+// a phase worker's with its phase's resume task, and the issue's own architect's, now its tree's
+// root architect, with that architect's start task (workflow.ArchitectStartTask). The hold lives
+// in the claim's memory, so a restart that forgets it is asked again by the start's next attempt,
+// with the same deadline. Once none runs, every claim of the issue may be re-pointed to the
+// issue's tree (supervise.Machine.Retree), and the issue's Sandbox, which no role of the old tree
+// then runs in, is the new tree's to relabel (runtime/sandbox's ensureSandbox). A claim already in
+// the issue's tree is skipped on its view, which only Retree changes, so a start waits on no
+// decision a sibling claim has in flight.
 func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 	var running []string
 	for _, role := range claim.Roles {
@@ -2833,8 +2840,8 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 // and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
 // wait error for a merger start the gate holds, which leaves the start on the row's backoff as a
 // check start waits on its look (checkLookHolds), and nil for every other role and an open gate.
-// The gate opening releases the row's next try, and tells every phase holder of the tree as well
-// (workflow's tellGateMoved).
+// The gate opening releases the row's next try, and tells every phase worker of the tree and the
+// root's architect as well (workflow's tellGateMoved).
 func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.Issue, role claim.Role) error {
 	if role != claim.RoleMerger {
 		return nil

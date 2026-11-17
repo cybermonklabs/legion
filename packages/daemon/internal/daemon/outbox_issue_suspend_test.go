@@ -190,13 +190,13 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 }
 
 // A child closed as done gives its Sandbox back at once while its parent keeps running: the
-// close's issue_close rows retire the child's claims with their sessions dropped, and its
+// close's issue_close rows retire the child's claims, keeping their sessions, and its
 // issue_suspend row foreground-deletes the child's Sandbox — taking what it owns with it, with no
 // PVC request from the restricted daemon; the root's Sandbox stays Running. A child parked in
 // backlog keeps its claims suspended with their sessions, and its Sandbox goes the same way,
 // since the pod it ran in, and the disk with it, go either way. The done child set back to todo
-// launches fresh because its resume path was cleared, while its session id stays as reaping
-// evidence until the volume is gone.
+// starts again on a new Sandbox and resumes the sessions its claims kept: the close cleared
+// neither the session id nor the resume path.
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	// Two children under the running root: the one closed as done, whose planner is stopped with
 	// its session kept, and the one parked in backlog, whose tester is. The root's own implementer
@@ -622,8 +622,8 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 	})
 
 	// A park is the same departure by another op: the child moved to backlog has stopped rather
-	// than finished, so its roles keep their sessions and the departure suspends them where a
-	// close retires them. Its Sandbox goes either way, and so does the start.
+	// than finished, so the departure suspends its roles where a close retires them, and both keep
+	// their sessions. Its Sandbox goes either way, and so does the start.
 	t.Run("a start queued before the park runs after it", func(t *testing.T) {
 		rig := newFenceRig(t, oneFenceChild("in_progress", phase.Planning, claim.RolePlanner))
 		child := rig.children[0]
@@ -735,9 +735,10 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatalf("the re-entered child = %s at generation %d in tree %s, want its first phase at generation %d under the tree it was parked in",
 				back.Phase, back.Generation, back.Tree, child.Generation+1)
 		}
-		// Nothing of the old run is wanted back: the re-entry queued two starts, the plain start of
-		// the child's own architect, which every child's first phase start queues ahead of its
-		// planner's (workflow's Engine.StartFirstPhase), and the planner's, of the new generation
+		// Nothing of the old run's phase work is wanted back: the re-entry queued two starts, the
+		// plain start of the child's own architect, which every child's first phase start queues
+		// ahead of its planner's (workflow's Engine.StartFirstPhase) and which resumes an architect
+		// claim the park suspended (none is seeded here), and the planner's, of the new generation
 		// and the new run's first phase, carrying that phase's own task at the entry the transition
 		// raised on the planner's phases row, which is no resume of anything (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
@@ -768,8 +769,8 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		if got := rig.storedClaim("legion-legion-legion-209-planner"); got.LastStartRow == 0 || got.SessionFile != "" {
 			t.Fatalf("the re-entered child's planner = %+v, want a fresh launch of the new run's first phase", got)
 		}
-		// No role of the old run is resumed: the implementer whose start the fence declined is left
-		// exactly as the park left it, and the run that came back never asked for it.
+		// No phase worker of the old run is resumed: the implementer whose start the fence declined
+		// is left exactly as the park left it, and the run that came back never asked for it.
 		if got := rig.storedClaim(child.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.Session != child.suspended.Session {
 			t.Fatalf("the re-entered child's implementer = %+v, want the old run's role left suspended with its session and no start recorded against it", got)
 		}

@@ -150,10 +150,11 @@ func (e *Engine) Ancestry(ctx context.Context, tx pgx.Tx, issue record.Issue, ch
 }
 
 // tellReparented tells a root that ran as a tree of its own, and that a person has since made a
-// child of a live tree, that it stays its own tree: one message on the issue and one notice to
-// that tree's architect. Neither a release of children nor the admission sweep can take such a
-// root in (AdoptionRefusal), so without this the architect releases it, is refused by name once,
-// and the person who moved it is told nothing at all.
+// child of a live tree, that it stays its own tree: one message on the issue and one notice to the
+// architect of that tree's root. Neither a release of children nor the admission sweep can take
+// such a root in (AdoptionRefusal), so without this the person who moved it is told nothing at
+// all. The architect of a child that owns the new parent is not told: it learns of the refusal
+// only when its release is refused by name.
 //
 // It is told once per parent value: the parent it was told under is kept on the record
 // (record.Issue.ToldParent), so every later event of the issue under that same parent repeats
@@ -185,7 +186,7 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
 		return err
 	}
-	told := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and its architect cannot release it. It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.",
+	told := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and no architect of that tree can release it. It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.",
 		issue.Key, fact.Parent, ran, root.Key, root.Key)
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
 		return err

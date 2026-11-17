@@ -55,9 +55,10 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 // architect is told in a worker-died naming the role and saying the phase is not its, and the
 // issue's phase stands: nothing is held for a role that holds no phase, and the controller is not
 // told of a phase that is not stalled. A lingering tree and a child that left the workflow tell
-// nobody, since their claims were suspended. A child's own architect works no phase either, so its
-// failure holds nothing: it is told in a worker-died of the architect on the child, which reaches
-// the architect above it, and that architect takes the child's notices until the daemon starts the
+// nobody, since their claims were suspended or closed. A child's own architect's failure holds
+// nothing either, even at accepting, its own phase, since claimFailed answers an architect before
+// it reads the phase: it is told in a worker-died of the architect on the child, which reaches the
+// architect above it, and that architect takes the child's notices until the daemon starts the
 // child's architect again (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt).
 func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	root := "LEGION-208"
@@ -151,8 +152,9 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // (R6); `reason` keeps its one value, `escalated`, which both agents' texts read as the
 // architect having already escalated this hold.
 //
-// The other three shapes of worker-died are here beside it, because the evidence each carries is
-// a decision of its own: the worker-died of a role that does not work the issue's phase names the
+// Three other shapes of worker-died are here beside it (a fourth, a child's own architect's, is
+// TestASubArchitectsFailedClaimTellsTheArchitectAboveIt), because the evidence each carries is a
+// decision of its own: the worker-died of a role that does not work the issue's phase names the
 // failure too, since that role's architect decides whether to start it again on the same
 // evidence; the tree architect's own names none, as R5 has it, and neither does the one that ends
 // a closed issue's production-check look, whose reason already names the cause.
@@ -690,7 +692,7 @@ func slotCount(t *testing.T, pool *pgxpool.Pool, issue string) int {
 // R2: an architect's claim failing holds nothing and writes no held notice, at admitted as at
 // accepting. Both phases are the architect's own (phase.RoleFor), and claimFailed answers an
 // architect before it asks which role works the phase: a tree's own architect is told in a
-// worker-died, and a child's own architect works no phase at all, so its failure is told only in a
+// worker-died, and a child's own architect's failure, at accepting as anywhere, is told only in a
 // worker-died of the architect on the child, which reaches the architect above it, with no
 // controller copy (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt). Nothing here reaches
 // HeldNotice, which is why no hold is ever recorded from either phase.

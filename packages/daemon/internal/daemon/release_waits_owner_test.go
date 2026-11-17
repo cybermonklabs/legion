@@ -13,7 +13,8 @@ import (
 
 // A repository's recovery tells each child its release_children left unrecorded to the architect
 // that releases that child: its notice is queued on the child's parent when the record holds that
-// parent in the child's tree, so the owner walk takes it to the parent's own architect, and two
+// parent in the child's tree, so the owner walk takes it to the architect that owns that parent
+// (the parent's own while it holds its role, else the nearest one above it that does), and two
 // children under one parent share one notice. A child under the root, one whose parent is not
 // recorded, and one whose parent is recorded in another tree have no architect of the tree between
 // them and the root, so their notice is queued on the tree root, as every such notice was.

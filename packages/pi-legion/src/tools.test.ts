@@ -138,7 +138,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
   "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
   "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. " +
-  "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
+  "handoff_complete (phase workers alone: the daemon refuses every architect's completion, a child's own architect's included, with ACCEPTANCE_IS_SIGN_OFF, since an architect accepts with sign_off; " +
+  "the daemon accepts a completion only from the role working the issue's current phase, " +
   "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
   "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
@@ -1010,7 +1011,8 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   // A role that does not work the issue's phase reports its own newest record of the phase it
   // left: the tester at implementing its test record and the head it names, with the verdict as
   // given. A role whose left phase writes no record reports the commit the workspace stands on and
-  // no record: the merger, and a sub-architect, which leaves no phase, each posting @-.
+  // no record: the merger, and a sub-architect, which leaves no phase, each posting @- (the daemon
+  // then refuses the sub-architect's, ACCEPTANCE_IS_SIGN_OFF; this stand-in daemon records it).
   await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",

@@ -23,11 +23,11 @@ import (
 )
 
 // A release_children that stalls answers the architect that called it, so its child-release-stalled
-// notice is queued on that architect's own issue, where the owner walk takes it to that architect:
-// a sub-architect's release is told to the sub-architect, not to the root's architect. That holds
-// for the release whose unrecorded parent ran out of attempts (CHILD_RELEASE_STALLED) and for the
-// one the recovery of an unread repository will not record, since its chain stops at a parent in
-// backlog.
+// notice is queued on that architect's own issue, where the owner walk takes it to that architect
+// while it holds its role, and on up the tree once it does not: a sub-architect's release is told
+// to the sub-architect, not to the root's architect. That holds for the release whose unrecorded
+// parent ran out of attempts (CHILD_RELEASE_STALLED) and for the one the recovery of an unread
+// repository will not record, since its chain stops at a parent in backlog.
 func TestASubArchitectsStalledReleaseIsToldOnItsOwnIssue(t *testing.T) {
 	const root, own = "LEGION-208", "LEGION-209"
 	stalledOn := func(t *testing.T, h *harness, issue string) []string {

@@ -54,7 +54,8 @@ func joinedNotices(t *testing.T, pool *pgxpool.Pool, child string) []string {
 // reason: the child's own architect starts with it and owns it, so the architect it tells hears
 // only what goes above that architect (workflow.ChildStartedNotice).
 const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
-	"its acceptance. You hear its child-status and child-closed notices, and a worker-died when its architect fails"
+	"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
+	"and its other notices while its architect has failed or an operator has stopped or suspended it"
 
 // assertJoinedAndPlanning asserts child left admission's queue for tree's run: recorded in tree
 // at generation and, once an admission pass with a slot to spare has read it, planning there on
@@ -230,7 +231,7 @@ func TestACarriedOrphanUnderAReopenedOldRootStillGetsItsSlot(t *testing.T) {
 }
 
 // Queued roots nested under each other join the running tree at the top: each takes one new
-// generation, and the tree's architect is told each joined its own tree.
+// generation, and the architect above each is told it joined the tree.
 func TestNestedQueuedRootsJoinTheLiveTreeAtTheTop(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 3, slog.New(slog.NewTextHandler(io.Discard, nil)))

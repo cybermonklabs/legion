@@ -318,11 +318,13 @@ const testerVerdictLabel = "Tester's verdict"
 // own starts with the child's first phase (StartFirstPhase).
 //
 // Every phase start of a child, the move into accepting among them, first starts the child's own
-// architect again when its claim has failed (reviveArchitect). This is the one place that does:
-// the transitions are the only phase starts. A restart of a held phase (restart), a promoted
-// start (StartPromotedWorker), an owed entry (SendOwedEntry) and a resume task each hand a role
-// the work of a phase the issue already stands in, and the owed-entry sweep runs every minute, so
-// none of them revives the architect.
+// architect again when its claim has failed (reviveArchitect). The phase starts are the one place
+// in the workflow that does this, since the transitions are the only phase starts. Outside the
+// workflow, a re-admission brings a mid-phase child's failed architect back with the member's
+// other roles (admit's startMidPhaseMembers), and so does an operator's retry. A restart of a held
+// phase (restart), a promoted start (StartPromotedWorker), an owed entry (SendOwedEntry) and a
+// resume task each hand a role the work of a phase the issue already stands in, and the owed-entry
+// sweep runs every minute, so none of them revives the architect.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
 	if role == "" {
 		return nil
@@ -884,8 +886,9 @@ func ResumePhaseTask(issue record.Issue) string {
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an
 // escalation: the phase the hold came from, the role that works it, and why it is held. Admission
-// tells a carried root's own architect with it, since the hold's first notice went to the
-// architect of the tree the root was handed over from.
+// tells a carried root's own architect with it, since the hold's first notice was routed in the
+// tree the root was handed over from, where it reached an architect above the root unless the
+// root's own architect held its role then.
 func HeldNotice(issue record.Issue) record.Notice {
 	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
 }
@@ -913,9 +916,10 @@ func ChildReenteredNotice(child, root string) record.Notice {
 // is worse than a plain one.
 //
 // The reason then says what the reader keeps of the child: from this start the child's own
-// architect owns it — its decomposition, its children and its acceptance — so the reader hears
-// only the notices that go above that architect, the child's child-status and child-closed and
-// that architect's worker-died (record.OwningArchitect).
+// architect owns it — its decomposition, its children and its acceptance — while that architect
+// holds its role. So the reader hears the child's child-status and child-closed and that
+// architect's worker-died and worker-stalled, and, while that architect does not hold its role,
+// every other notice of the child too (record.OwningArchitect).
 //
 // A start nobody hears of is the silent state the hold's report exists to remove, so no child
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
@@ -929,7 +933,8 @@ func ChildStartedNotice(child, root string, waited []string) record.Notice {
 	}
 	reason := fmt.Sprintf("%s starts planning under %s: %s. Its own architect starts with it and owns it from now on: "+
 		"its decomposition, its children and its acceptance. You hear its child-status and child-closed notices, "+
-		"and a worker-died when its architect fails", child, root, why)
+		"a worker-died or worker-stalled of its architect, and its other notices while its architect has failed "+
+		"or an operator has stopped or suspended it", child, root, why)
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }
 

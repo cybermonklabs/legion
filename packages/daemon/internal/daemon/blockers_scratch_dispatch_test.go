@@ -60,8 +60,9 @@ import (
 //     that ran starts again when Legion takes it back, and is admitted when its blocker closes;
 //  6. a root waiting on an issue Legion keeps no record of and nobody handed to it is admitted by
 //     that issue's closing event alone, not by the controller tick that follows;
-//  7. a held child whose blocked-by links a person takes off starts, and its tree's architect is
-//     told by a child-status notice that the links were taken off;
+//  7. a held child whose blocked-by links a person takes off starts, and the architect above it
+//     (here its tree's) is told by a child-status notice that it reached the front of the waiting
+//     line;
 //  8. a child that ran in its tree's earlier run and comes to Legion as a root of its own once
 //     that tree finishes is checked like any other root — one set back to todo and held in its
 //     tree before the tree closed, and one closed and set back to todo after;
@@ -898,10 +899,11 @@ func blockedOn(state api.State, issue string) ([]string, bool) {
 // reason: the child's own architect starts with it and owns it, so the architect it tells hears
 // only what goes above that architect (workflow.ChildStartedNotice).
 const childStartedOwnership = ". Its own architect starts with it and owns it from now on: its decomposition, its children and " +
-	"its acceptance. You hear its child-status and child-closed notices, and a worker-died when its architect fails"
+	"its acceptance. You hear its child-status and child-closed notices, a worker-died or worker-stalled of its architect, " +
+	"and its other notices while its architect has failed or an operator has stopped or suspended it"
 
 // childStatusNotices is the reason of every child-status notice the daemon has queued on issue for
-// its tree's architect, oldest first, read off the daemon's own outbox, where a notice stands
+// the architect above it, oldest first, read off the daemon's own outbox, where a notice stands
 // until the architect's role topic takes it. Nothing in this harness answers the Envoy address the
 // notice runner publishes to, so no row is finished by a delivery while the test reads it.
 func childStatusNotices(t *testing.T, pool *store.Pool, issue string) []string {

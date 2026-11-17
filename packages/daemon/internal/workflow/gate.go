@@ -1009,21 +1009,21 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			return err
 		}
 	}
-	e.logOnCommit(ctx, "workflow: the design gate moved and every phase holder of the tree is told", "issue", key, "tree", root.Tree,
+	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
-// every phase holder of the tree (tellGateMoved). It is the one way a gate row that can move the
-// standing gate is written, so that no path writes one silently: the artifact event's own apply
-// (applyArtifact), the registration (gateRegistered) and the reset of a gate recorded above the
-// version Dispatch holds (gateAboveDispatch) all go through it, and the gate seed reaches it
-// through the last two, since what the seed reads is applied as one of those facts (the outbox's
-// seedGate). A registration alone can take the standing gate either way — it writes a row at a new
-// version, which closes it, or carries the approval its read found, which opens it — and before
-// this helper only the artifact path told anyone, so a merger could be left merging under a
-// document nobody had approved, or waiting for an opening it was never told of
+// every phase worker of the tree and the root's architect (tellGateMoved). It is the one way a
+// gate row that can move the standing gate is written, so that no path writes one silently: the
+// artifact event's own apply (applyArtifact), the registration (gateRegistered) and the reset of a
+// gate recorded above the version Dispatch holds (gateAboveDispatch) all go through it, and the
+// gate seed reaches it through the last two, since what the seed reads is applied as one of those
+// facts (the outbox's seedGate). A registration alone can take the standing gate either way — it
+// writes a row at a new version, which closes it, or carries the approval its read found, which
+// opens it — and before this helper only the artifact path told anyone, so a merger could be left
+// merging under a document nobody had approved, or waiting for an opening it was never told of
 // (dispatch://INFRA-714/spec R5).
 //
 // Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record

@@ -1527,8 +1527,9 @@ func (s *server) owns(ctx context.Context, grant credential.Grant, recorded reco
 // parkChild takes a running child the architect owns (childOfTree: for a sub-architect, an issue
 // under its own) out of the workflow by moving it to backlog in Dispatch, the move a human would
 // make, and applies that move to the record before it answers (applyOwnStatusWrite), as the move's
-// event would: the child is parked as any child leaving the workflow is (the workflow's leave), its
-// workers suspended and its phase parked, and the architect is told. The record does not wait for
+// event would: the child is parked as any child leaving the workflow is (the workflow's leave).
+// Every claim of the child, its own architect's included, is suspended with its session kept, its
+// phase is parked, and the architect above it is told (child-status). The record does not wait for
 // the event to come back through the Dispatch consumer, which can run far behind: until then the
 // workflow would keep running the child, start its next phase's worker on a completion, and refuse
 // rerun_child. The event, once delivered, finds the record at its sequence and changes nothing.

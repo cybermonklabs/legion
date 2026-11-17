@@ -21,19 +21,21 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, kind No
 // role (runs), else the tree root (issue.Tree), whose architect is the tree's own claim. The daemon
 // starts a child's architect with the child's first phase, and starts a failed one again at the
 // child's next phase start. While a child's architect does not hold its role — it failed or
-// retired, or the workflow suspended it when the child left — the child's notices go on up to the
-// architect above it.
+// retired, or the workflow suspended it when the child left, or an operator suspended it — the
+// child's notices go on up to the architect above it.
 //
-// Two notices start the walk at the issue's parent instead. A child's close or status change: the
-// child's own architect is suspended with it (workflow's leave), and the architect above it
-// decides what the rest of the tree does. And a worker-died or a worker-stalled about the
-// architect of an issue that is not its tree's root (role is claim.RoleArchitect): the notice is
-// about that architect, so the architect above it must hear it. Either notice on an issue with no
-// parent goes to the tree root, never to the issue's own architect: a failed claim is passed over
-// by the walk anyway, but a stalled one still holds its role and would be told of its own stall,
-// and the outbox can publish a child's close or status change while the child's own architect
-// still holds its role, before its suspension lands. A walk that starts at the parent never comes
-// back to the issue itself: a record whose parents loop back to it ends the walk at the tree root.
+// Two notices start the walk at the issue's parent instead. A child's close or status change: it
+// tells of the child's own run starting, leaving, coming back or closing, which is not the child's
+// own architect to judge (a leave suspends that architect and a close as done retires it, in
+// workflow's leave), and the architect above it decides what the rest of the tree does. And a
+// worker-died or a worker-stalled about the architect of an issue that is not its tree's root
+// (role is claim.RoleArchitect): the notice is about that architect, so the architect above it
+// must hear it. Either notice on an issue with no parent goes to the tree root, never to the
+// issue's own architect: a failed claim is passed over by the walk anyway, but a stalled one still
+// holds its role and would be told of its own stall, and the outbox can publish a child's close or
+// status change while the child's own architect still holds its role, before its suspension or
+// close lands. A walk that starts at the parent never comes back to the issue itself: a record
+// whose parents loop back to it ends the walk at the tree root.
 //
 // The walk stays inside the issue's tree: admission records a Dispatch re-parent as it comes and
 // leaves the issue's tree as it was (admit's recordObservation), except a root that never ran,

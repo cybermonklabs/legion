@@ -14,10 +14,11 @@ import (
 )
 
 // The CI message of a child goes to the architect that owns the child, as its phase's notices do
-// (owningArchitect): the child's own architect while its claim holds its role, and the tree root's
-// architect once it has failed, or while the child has none. The child's phase worker and its
-// implementer are told as before, and the message is queued on the child either way. A child in
-// accepting, whose phase is its architect's own, tells that architect once.
+// (owningArchitect): the child's own architect while its claim holds its role, and once it has
+// failed, or while the child has none, the nearest architect above it whose claim holds its role
+// (here the tree root's). The child's phase worker and its implementer are told as before, and the
+// message is queued on the child either way. A child in accepting, whose phase is its architect's
+// own, tells that architect once.
 func TestASettlementOfAChildTellsTheArchitectThatOwnsIt(t *testing.T) {
 	const root, child = "LEGION-208", "LEGION-209"
 	token := func(issue string, role claim.Role) string {
