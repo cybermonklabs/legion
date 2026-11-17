@@ -6,8 +6,9 @@ body: |-
   failed or retired), in a new `claim_sessions` table: its id, its file's base name (which holds
   the path too), the id an Oh My Pi file name gives, and the id a Claude Code transcript is named
   for. A registration under a name another claim holds is refused with `409 session <name> is
-  recorded for another claim of this daemon; …` before anything is recorded or enrolled, and a
-  relaunch whose record names one is refused before anything starts; a claim's own earlier session
+  recorded for another claim of this daemon; …` before anything is recorded or enrolled, a
+  relaunch whose record names one is refused before anything starts, and a pod's session
+  registration (`exchange_audience`) is made for no such name; a claim's own earlier session
   and a session no claim has recorded register as before. A session id or a session file's name
   longer than 255 bytes is refused with `400`, and a registration that would take one claim past
   2,048 held names is refused with `409`: a claim that records a session still resumes it, and one

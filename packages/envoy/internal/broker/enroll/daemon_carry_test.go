@@ -65,7 +65,7 @@ func endLeavingDormant(t *testing.T, svc *Service, cred Credential, enr Enrollme
 }
 
 // spellAccountAlone rewrites enr's carry principal to the account alone, the spelling every pod
-// row a broker before migration 0032 wrote carries, and one an older replica still writes while
+// row a broker before migration 0033 wrote carries, and one an older replica still writes while
 // the broker rolls.
 func spellAccountAlone(t *testing.T, svc *Service, id uuid.UUID) {
 	t.Helper()
@@ -173,12 +173,12 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 }
 
 // TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration: a session's pod rows written before
-// migration 0032, carrying the account alone, one dormant and one live and each holding a grant,
+// migration 0033, carrying the account alone, one dormant and one live and each holding a grant,
 // are rewritten by the migration to the pair its own daemon's enrolment spells, in SQL spelled as
 // exchange.PodLaunchPrincipal spells it; the next enrolment of the session by that daemon then
 // takes both grants.
 //
-// The control: skip the rewrite (run nothing for 0032); the rows keep the account alone, and the
+// The control: skip the rewrite (run nothing for 0033); the rows keep the account alone, and the
 // test fails naming them (the pull request records the run).
 func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 	ctx := context.Background()
@@ -186,7 +186,7 @@ func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 	issuer, key := withPodVerifier(t, svc)
 	cred := daemonLogin(t, svc)
 	const session = "ses_running"
-	// Two rows of one session as a broker before 0032 left them: the grants are written after both
+	// Two rows of one session as a broker before 0033 left them: the grants are written after both
 	// rows exist, so neither row took the other's at its creation.
 	dormant := enrolPod(t, svc, issuer, key, cred, session, "pod-before-1")
 	live := enrolPod(t, svc, issuer, key, cred, session, "pod-before-2")
@@ -197,7 +197,7 @@ func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 	spellAccountAlone(t, svc, dormant.ID)
 	spellAccountAlone(t, svc, live.ID)
 
-	rewrite, err := os.ReadFile("../store/migrations/0032_pod_carry_launcher.up.sql")
+	rewrite, err := os.ReadFile("../store/migrations/0033_pod_carry_launcher.up.sql")
 	if err != nil {
 		t.Fatalf("read the migration: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 	}
 }
 
-// TestTheCarryMigrationTakesItsRowsInAdoptsOrder: migration 0032 locks the rows it rewrites in id
+// TestTheCarryMigrationTakesItsRowsInAdoptsOrder: migration 0033 locks the rows it rewrites in id
 // order, the order adopt locks a session's predecessors in, so it cannot deadlock with an older
 // broker replica's adoption of the same rows while the broker rolls, and fail the boot. An
 // adoption holds the lower of two rows of one session; the rewrite waits on it, holding nothing;
@@ -253,7 +253,7 @@ func TestTheCarryMigrationTakesItsRowsInAdoptsOrder(t *testing.T) {
 	if rows.Err() != nil || len(ids) != 2 {
 		t.Fatalf("the session's rows are %v (%v), want two", ids, rows.Err())
 	}
-	rewrite, err := os.ReadFile("../store/migrations/0032_pod_carry_launcher.up.sql")
+	rewrite, err := os.ReadFile("../store/migrations/0033_pod_carry_launcher.up.sql")
 	if err != nil {
 		t.Fatalf("read the migration: %v", err)
 	}

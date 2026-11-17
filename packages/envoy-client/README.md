@@ -707,6 +707,18 @@ Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
 An identity with one of its variables missing is an error that names the variable.
 
+A pod writes under a session name only once its deployment has registered that name for the pod,
+and its trade can reach the broker first. The broker refuses that trade with a description
+beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
+in `@legion/broker-client/token-client`). With no live token in hand, the client trades again in
+the background, 15 s later, doubling to 5 minutes, until a trade lands, and a call that arrives
+meanwhile has it trade at once. Each Dispatch and Envoy call hands the credential its own
+deadline (`RequestCredential.headers`), so a call still waiting at that deadline fails with
+`RegistrationPendingError`, which names the session and says the trade is being retried; the
+next call takes the token once the registration lands. The client logs the wait through
+`console.warn` once, naming the session, and again every 30 minutes. A call made while a live
+token is in hand goes on with that token. Every other refusal fails the call as before.
+
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
 no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
 one this process makes, and the session name is the caller's own session, else

@@ -6,9 +6,9 @@ body: |-
   Legion project's pods run as one account and each project's daemon logs in as its own; a pod
   enrolled under a login that proved no account carries nothing. Its session name is still held
   under its account alone, so a pod's enrollment and its own trade never refuse each other.
-  Migration 0032 rewrites each pod row's carry principal once, so running sessions keep their
+  Migration 0033 rewrites each pod row's carry principal once, so running sessions keep their
   grants, and a row an older broker replica writes during the roll is still taken by its own
-  daemon's next enrollment. A rollback to a broker before 0032 strands every rewritten row: their
+  daemon's next enrollment. A rollback to a broker before 0033 strands every rewritten row: their
   grants are swept at their end and the sessions ask again.
 time: 2026-11-16T15:28:23Z
 custom:

@@ -2,7 +2,9 @@ package admit
 
 import (
 	"context"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -485,16 +487,62 @@ func headerWayBack(t *testing.T, version int) string {
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
-// leftStandingVersion is the highest migration neither way back deletes,
-// 20261114031356_merge_queue_removal (dispatch://INFRA-3274, which main carries above the phase
-// entry), which is the version the store reports once both ways back have run.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
 	entryVerbatimVersion  = 20261114061900
-	leftStandingVersion   = 20261114031356
 )
+
+// wayBackDeletes is a way back's own `delete from schema_version where version = <n>;` lines,
+// read from its text as headerWayBack gives it.
+var wayBackDeletes = regexp.MustCompile(`(?m)^\s*delete from schema_version where version = (\d+);`)
+
+// leftStanding is every version the schema_version table records once the ways back have run,
+// ascending: each embedded migration that none of them deletes. It is computed from the
+// migrations the binary ships and from each block's own deletes rather than written here. A number
+// written here was true only until the next migration landed above these, which neither block
+// deletes (20261114031356_merge_queue_removal when #3711 wrote it, 20261116144907_claim_sessions
+// after dispatch://INFRA-840's #4220), and the highest version alone cannot see the deletes at all
+// once one such migration stands above them, so the test reads every version.
+func leftStanding(t *testing.T, ways ...string) []int {
+	t.Helper()
+	deleted := map[int]bool{}
+	for _, way := range ways {
+		for _, match := range wayBackDeletes.FindAllStringSubmatch(way, -1) {
+			version, err := strconv.Atoi(match[1])
+			if err != nil {
+				t.Fatalf("read the version a way back deletes, %q: %v", match[0], err)
+			}
+			deleted[version] = true
+		}
+	}
+	if len(deleted) == 0 {
+		t.Fatalf("the ways back delete no schema_version row, so nothing tells what they leave standing: %q", ways)
+	}
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	var standing []int
+	for _, migration := range all {
+		if !deleted[migration.Version] {
+			standing = append(standing, migration.Version)
+		}
+	}
+	return standing
+}
+
+// versionsNotIn is every version of a that b does not hold, in a's order.
+func versionsNotIn(a, b []int) []int {
+	var out []int
+	for _, v := range a {
+		if !slices.Contains(b, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
 // upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
@@ -510,9 +558,10 @@ const (
 //
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
-// none stands after the two blocks. The store between the blocks and the roll-forward is that
-// release's: it reports that release's own version and holds no marks' table, no handshake column
-// and no column of the mark.
+// none stands after the two blocks. The store between the blocks and the roll-forward holds no
+// marks' table, no handshake column and no column of the mark, and records every embedded
+// version but those the blocks delete (leftStanding); a migration above them stays recorded, since
+// Migrate applies each migration the table has not recorded, whatever version stands highest.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
@@ -529,6 +578,7 @@ const (
 func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T) {
 	const settled, readmitted = "LEGION-850", "LEGION-851"
 	wayBack := headerWayBack(t, architectUpgradeVersion)
+	standing := leftStanding(t, wayBack, headerWayBack(t, phaseEntryVersion))
 	for _, version := range []int{stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion} {
 		if other := headerWayBack(t, version); other != wayBack {
 			t.Fatalf("the headers of migrations %d and %d carry two ways back, want the one block both are reversed by:\n%s\nagainst\n%s",
@@ -585,9 +635,23 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				if unsent != 0 {
 					t.Fatalf("the two ways back left %d unsent architect wakes, want none: the older release refuses their kind", unsent)
 				}
+				var recorded []int
+				rows, err := pool.Query(ctx, `select version from schema_version order by version`)
+				if err != nil {
+					t.Fatalf("read the versions the store records after the way back: %v", err)
+				}
+				if recorded, err = pgx.CollectRows(rows, pgx.RowTo[int]); err != nil {
+					t.Fatalf("read the versions the store records after the way back: %v", err)
+				}
 				version, err := st.SchemaVersion(ctx)
 				if err != nil {
 					t.Fatalf("read the version the store reports after the way back: %v", err)
+				}
+				if !slices.Equal(recorded, standing) || version != standing[len(standing)-1] {
+					extra, missing := versionsNotIn(recorded, standing), versionsNotIn(standing, recorded)
+					t.Fatalf("after the two ways back the store records %d versions and reports %d; want the %d embedded "+
+						"migrations but those the blocks delete, and the highest of them, %d: recorded and not wanted %v, wanted "+
+						"and not recorded %v", len(recorded), version, len(standing), standing[len(standing)-1], extra, missing)
 				}
 				var marksTable, handshakeColumn, markColumn bool
 				if err := pool.QueryRow(ctx, `select to_regclass('architect_stalled_notices') is not null`).Scan(&marksTable); err != nil {
@@ -603,10 +667,9 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
-				if version != leftStandingVersion || marksTable || handshakeColumn || markColumn {
-					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
-						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
-						version, marksTable, handshakeColumn, markColumn, leftStandingVersion)
+				if marksTable || handshakeColumn || markColumn {
+					t.Fatalf("after the two ways back the marks' table stands: %v, a handshake column stands: %v, and the "+
+						"phases row's mark stands: %v; want none of them", marksTable, handshakeColumn, markColumn)
 				}
 			}
 

@@ -2,11 +2,13 @@ package supervise
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -279,6 +281,126 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		h.must(registration)
 		if enrolled := broker.enrolled(); len(enrolled) != 1 || enrolled[0].Session != session {
 			t.Fatalf("the settled registration enrolled %+v, want one enrollment of %s", enrolled, session)
+		}
+	})
+}
+
+// sessionRecorder is a Registrar that records the session of every registration a machine
+// starts.
+type sessionRecorder struct {
+	mu       sync.Mutex
+	sessions []string
+}
+
+func (r *sessionRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessions = append(r.sessions, s.Session)
+	return func() {}, nil
+}
+
+func (r *sessionRecorder) registered() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.sessions)
+}
+
+// The pod's session registration is held as an enrollment is (ensureRegistered, plan E's t-e-54):
+// the broker answers an exchange naming the pod and a registered session with the role's own
+// token, so a registration of another claim's session is that session's trade. A session another
+// claim holds is never registered — the id the runtime chose for a launch, or a re-adopted claim's
+// recorded session — and an accepted one, the runtime's chosen id or the agent's own fresh
+// registration, is registered once and held for the claim.
+//
+// The control (the pull request records the run): the hold after the first write (in
+// ensureRegistered, below KeepPodSession) still answers no registration of the claim's own, but
+// only once the stub has recorded the other claim's session.
+func TestARefusedSessionIsNeverRegistered(t *testing.T) {
+	const pod, other = "pod-uid-54", claim.Token("legion-legion-LEGION-209-tester")
+	rig := func(t *testing.T) (*harness, *sessionRecorder, func()) {
+		t.Helper()
+		h := newHarness(t)
+		h.withSecrets()
+		recorder := &sessionRecorder{}
+		h.deps.Registrar = recorder
+		h.start(h.store.load(h.token))
+		h.rt.ScriptSpawn(fake.SpawnResult{Locator: runtime.Locator{
+			Runtime: runtime.RuntimeSandbox, Claim: h.token, Incarnation: runtime.SandboxIncarnation(pod, 1),
+			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-209", PodUID: pod, Container: "roles", Generation: 1},
+		}})
+		hello := func() {
+			t.Helper()
+			h.conns.Register(h.token, h.conn)
+			h.must(StreamHello{Claim: h.token, Generation: h.generation(), AgentSecrets: &AgentSecretsIdentity{Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken}})
+		}
+		return h, recorder, hello
+	}
+
+	t.Run("a launch's chosen session another claim holds", func(t *testing.T) {
+		h, recorder, hello := rig(t)
+		h.rt.ScriptLaunchSession(h.token, "ses_chosen")
+		h.store.setHold(sessionID("ses_chosen"), other)
+		h.launch()
+		hello()
+		h.observe(runtime.Alive)
+		if got := recorder.registered(); len(got) != 0 {
+			t.Fatalf("registered %v for the pod to trade, want nothing: ses_chosen is held for %s", got, other)
+		}
+		if holder, _ := h.store.holdOf(sessionID("ses_chosen")); holder != other {
+			t.Fatalf("ses_chosen is held for %q, want it still %s's", holder, other)
+		}
+	})
+
+	t.Run("a re-adopted claim's recorded session another claim holds", func(t *testing.T) {
+		h, recorder, hello := rig(t)
+		h.launch()
+		hello()
+		h.register()
+		h.ready()
+		if got := recorder.registered(); !slices.Equal(got, []string{session}) {
+			t.Fatalf("the first process registered %v, want %s once", got, session)
+		}
+		// As a daemon before the hold leaves it, or a release another claim then took the id after:
+		// the store holds the recorded session for another claim, and a daemon restarted onto the
+		// claim re-adopts it, its cache of held names gone.
+		h.store.setHold(sessionID(session), other)
+		h.restart()
+		hello()
+		h.observe(runtime.Alive)
+		if got := recorder.registered(); !slices.Equal(got, []string{session}) {
+			t.Fatalf("registered %v, want only the first process's %s: after the restart it is held for %s", got, session, other)
+		}
+	})
+
+	t.Run("a launch's chosen session no claim holds", func(t *testing.T) {
+		h, recorder, hello := rig(t)
+		h.rt.ScriptLaunchSession(h.token, "ses_chosen")
+		h.launch()
+		hello()
+		h.observe(runtime.Alive)
+		if got := recorder.registered(); !slices.Equal(got, []string{"ses_chosen"}) {
+			t.Fatalf("registered %v, want ses_chosen once", got)
+		}
+		if holder, _ := h.store.holdOf(sessionID("ses_chosen")); holder != h.token {
+			t.Fatalf("ses_chosen is held for %q, want %s", holder, h.token)
+		}
+	})
+
+	t.Run("an agent's fresh registration", func(t *testing.T) {
+		h, recorder, hello := rig(t)
+		h.launch()
+		hello()
+		if got := recorder.registered(); len(got) != 0 {
+			t.Fatalf("registered %v before the agent registered a session", got)
+		}
+		h.register()
+		h.ready()
+		h.observe(runtime.Alive)
+		if got := recorder.registered(); !slices.Equal(got, []string{session}) {
+			t.Fatalf("registered %v, want %s once", got, session)
+		}
+		if holder, _ := h.store.holdOf(sessionID(session)); holder != h.token {
+			t.Fatalf("%s is held for %q, want %s", session, holder, h.token)
 		}
 	})
 }

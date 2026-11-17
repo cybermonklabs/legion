@@ -2,13 +2,11 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -131,7 +129,7 @@ func TestAReclaimRegistersANewIdNoOtherClaimHolds(t *testing.T) {
 
 		h.runtime.ScriptResume(fake.SpawnResult{Locator: podLocator(owner, "pod-legion-901", 2)})
 		relaunchBoot := h.relaunch(owner)
-		h.hello(owner)
+		h.hello(owner, "pod-legion-901", "thumbprint-"+string(owner))
 		again := h.registered(relaunchBoot, "ses_own")
 		if again.ClaimToken != owner || again.Generation != registered.Generation+1 {
 			t.Fatalf("the relaunch registered as %+v, want %s at generation %d", again, owner, registered.Generation+1)
@@ -203,7 +201,7 @@ func (h *harness) freshSession(token claim.Token, session string, generation uin
 	if err := m.Handle(h.ctx, supervise.RequestResume{Claim: token}); err != nil {
 		h.t.Fatalf("resume %s: %v", token, err)
 	}
-	h.hello(token)
+	h.hello(token, "pod-legion-901", "thumbprint-"+string(token))
 	return h.bootToken(token)
 }
 
@@ -219,8 +217,8 @@ func sessionHoldHarness(t *testing.T) (*harness, *enrollmentRecorder) {
 
 // podRole launches role on issue as one role process of the issue's own pod, at the pod's process
 // generation, so roles of one issue share the pod's uid as they do in a Sandbox, and has the
-// shim say hello with the pod's identity: the machine then holds every half of an enrollment but
-// the session. It returns the claim and its launch's boot token.
+// shim say hello with the pod's identity (hello): the machine then holds every half of an
+// enrollment but the session. It returns the claim and its launch's boot token.
 func (h *harness) podRole(issue string, role claim.Role, generation uint64) (claim.Token, string) {
 	h.t.Helper()
 	token, err := claim.NewToken(testProject, issue, role)
@@ -232,20 +230,8 @@ func (h *harness) podRole(issue string, role claim.Role, generation uint64) (cla
 	if launched != token {
 		h.t.Fatalf("launched %s, want %s", launched, token)
 	}
-	h.hello(token)
+	h.hello(token, "pod-"+strings.ToLower(issue), "thumbprint-"+string(token))
 	return token, boot
-}
-
-// hello is the shim of the claim's current process connecting with the pod's identity.
-func (h *harness) hello(token claim.Token) {
-	h.t.Helper()
-	m, _ := h.supervisor.Machine(token)
-	if err := m.Handle(h.ctx, supervise.StreamHello{
-		Claim: token, Generation: m.Claim().Generation,
-		AgentSecrets: &supervise.AgentSecretsIdentity{Thumbprint: "thumbprint-" + string(token), PodToken: unexpiredPodToken()},
-	}); err != nil {
-		h.t.Fatalf("hello %s: %v", token, err)
-	}
 }
 
 // readyAt has the claim's agent say it is ready with the secret its registration was issued.
@@ -266,13 +252,6 @@ func podLocator(token claim.Token, podUID string, generation uint64) runtime.Loc
 			Namespace: "legion", Name: "legion-" + podUID, PodUID: podUID, Container: runtime.IssuePodContainer, Generation: generation,
 		},
 	}
-}
-
-// unexpiredPodToken is a projected token whose expiry, the one claim the daemon reads of it
-// (supervise's podTokenExpiry), is an hour past the harness's still clock.
-func unexpiredPodToken() string {
-	payload := fmt.Sprintf(`{"exp":%d}`, stillClock{}.Now().Add(time.Hour).Unix())
-	return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".signature"
 }
 
 // enrollmentRecorder is the secrets broker's enrollment routes as the daemon calls them,

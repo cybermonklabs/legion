@@ -73,15 +73,17 @@ export const Health = z.looseObject({
 export type Health = z.infer<typeof Health>;
 
 /** Parsed JSON from one of the script's own reads, with a status `accept` admits. A body that is
- * not JSON is returned as its text so the schema reports it malformed. */
+ * not JSON is returned as its text so the schema reports it malformed. `deadline` bounds the read:
+ * a caller that presented a credential for it passes the deadline that credential was given. */
 export async function readJson(
   url: string,
   headers: Record<string, string>,
-  accept: (status: number) => boolean
+  accept: (status: number) => boolean,
+  deadline: AbortSignal = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS)
 ): Promise<unknown> {
   const response = await fetch(url, {
     headers: { Accept: "application/json", ...headers },
-    signal: AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS),
+    signal: deadline,
   });
   if (!accept(response.status)) throw new HttpStatusError(response.status);
   const text = await response.text();

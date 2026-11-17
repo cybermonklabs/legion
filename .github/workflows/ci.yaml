@@ -1638,6 +1638,10 @@ jobs:
               # guide_layout below, and a guide-only change has to select this job for it.
               - *guide_layout_files
               - 'scripts/third-party-notices.test.ts'
+              # scripts/third-party-notices.test.ts:102-105 lists the Dispatch web app's typeface:
+              # it resolves the font file's path, lists that directory and reads the package.json
+              # and LICENSE.txt in it.
+              - 'packages/dispatch/web/src/fonts/inter/**'
               - 'scripts/third-party-notices.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'

@@ -257,6 +257,34 @@ A daemon that stops registering costs its pods their writes within the registrat
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that
 is the separate list of the callers that relay a person's decisions and read tokens back.
 
+A registration may also name the thumbprint of the key that session's own role proves
+(`thumbprint`, 43 base64url characters, else `400 THUMBPRINT_INVALID`). The broker then admits a
+trade for that session only with a DPoP proof of that key, and refuses one proved with another
+`invalid_grant`, naming the session. The roles of one Legion issue pod read one exchange token and
+are registered for one pod, so this is what keeps one role from trading for another role's
+session; the Legion daemon names each role's key. A later write that names no key keeps the one
+the registration names, and a registration that names none, as a session pod's is, admits any key
+of that pod. Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53
+makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session
+id a role's agent reports, so a role can still have its own claim registered under another
+claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in
+your daemon and its pods.
+
+A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
+`400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The
+broker applies a write only when its generation is at least the registration's, and answers the
+registration as it stands after the write, its generation included when it is not 0. The Legion
+daemon sends a role's launch generation, so a write its old incarnation sent, which the broker
+commits only after the new incarnation's, changes nothing and cannot put the old key back. A
+registrar that sends none, as a session watch does, writes 0 as before and is answered no
+generation, exactly as before.
+
+Rolling the broker back past the release that brought migration 0032 drops the binding without a
+word: an older broker reads no key or generation, so it admits a trade for a bound session proved
+with any key of that pod, and its route refuses a body naming `thumbprint` or `generation` with
+`400`, so the daemon's registrations fail. Unset `exchange_audience` in every Legion daemon before
+you roll the broker back past this release.
+
 Whoever can get a token for a listed account logs in as its service. Kubernetes access control on
 the daemon's namespace is that boundary: anyone who may create pods there naming the account,
 create `serviceaccounts/token` for it, or exec into the daemon's pod and read its token file can
