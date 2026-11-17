@@ -238,7 +238,10 @@ func (l *ClusteredHubListenerArgs) Annotate(a infer.Annotator) {
 // written into the route URLs whole, and nats-server types a variable's value as it types a
 // literal of nats.conf, so a password of digits alone is an integer it refuses and one such as 1k
 // is a size: the password holds letters and digits only, a letter first. The component never sees
-// it, so its minter holds it to that.
+// it, so its minter holds it to that. Lowering stage below routes, or removing routeAuthorization
+// from routes or authorization, makes each server log every route URL it removes, password
+// included (nats-server 2.15.1 server/reload.go:543, "Removed route %v"), so the password must be
+// changed after such a rollback (docs/nats-hub.md, Route authorization).
 type ClusteredHubRouteAuthorizationArgs struct {
 	SecretName string `pulumi:"secretName"`
 	SecretKey  string `pulumi:"secretKey"`

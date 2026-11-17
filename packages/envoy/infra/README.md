@@ -459,7 +459,8 @@ first `pulumi up`:
 
 - The cluster enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane V2, and has nodes
   in three zones. The policy is what keeps a pod other than the hub's from joining the cluster on
-  6222, since the routes carry no credential. It is also what keeps every other pod of the cluster
+  6222, since the routes carry no credential unless `routeAuthorization` has reached
+  `authorization`. It is also what keeps every other pod of the cluster
   off the session listener's `/v1` on 9020, which that listener serves with no credential at all
   (`ENVOY_API_ALLOW_UNAUTHENTICATED=1`, and the component takes no token input for it). A caller
   the policy admits reaches `/v1` with `Host: localhost`, so the listener's own `Host` check stops

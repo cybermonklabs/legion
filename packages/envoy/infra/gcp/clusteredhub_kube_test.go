@@ -404,7 +404,8 @@ var (
 // The hub pods admit NATS's client port from each client namespace, from the hub's own tailnet
 // hosts, which forward the tailnet's port to it, and from the session listener's own pod, which
 // dials the hub as a client of its own; the route port from the hub pods alone, since routes
-// carry no credential; the monitoring port from the monitor namespaces; and the exporter's port
+// carry no credential unless routeAuthorization has reached authorization; the monitoring port
+// from the monitor namespaces; and the exporter's port
 // from the metrics namespaces, GMP's by default. Nothing else reaches them.
 func TestClusteredNatsHubNetworkPolicy(t *testing.T) {
 	args := clusteredArgs()

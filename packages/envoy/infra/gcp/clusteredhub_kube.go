@@ -170,7 +170,8 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 // split is a pod of neither kind: it carried the tailnet hosts' labels while it was a container
 // of their pods, and without a rule of its own it would reach NATS only while clientNamespaces
 // happened to name the hub's namespace; the route port from the hub pods alone, which is
-// all that keeps anything else from joining the cluster, since routes carry no credential; the
+// all that keeps anything else from joining the cluster, since routes carry no credential unless
+// routeAuthorization has reached authorization; the
 // monitoring port from each monitor namespace, and from none without one, as an empty from would
 // admit every pod; and the exporter's port from each metrics namespace.
 func clusteredHubIngress(s clusteredHubSettings) networkingv1.NetworkPolicyIngressRuleArray {

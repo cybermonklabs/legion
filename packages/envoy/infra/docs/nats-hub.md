@@ -510,7 +510,9 @@ a tag, since a tag is any VM creator's to set while only a principal that may ac
 can start a VM the rule reaches; and `nats-firewall`'s third rule, without which COS's host firewall
 drops the tunnel's connection. Who may open a tunnel is IAM's alone
 (`iap.tunnelInstances.accessViaIAP`), which the consumer grants and the component never does: grant
-it to one principal, conditioned on the instance and on `destination.port == 8222`. The health
+it to one principal, conditioned on `destination.port == 8222` alone. The rule's target account
+keeps the path to the hub's VM. A condition on the instance's name lets no tunnel through, and one
+on its numeric id stops working when the group recreates the VM. The health
 checks' rule and its `/healthz` are unchanged. The input rewrites the VM's user data, so turning it
 on or off replaces the VM (see [Updating a hub](#updating-a-hub)).
 
@@ -1026,7 +1028,9 @@ as they were, and the reloader applies it. A
 (`gcp/natshub.go:795`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
 `RECREATE`: `gcp/natshub.go:822-828`), so any configuration change restarts its server already.
 
-### Two ports, guarded by the NetworkPolicy alone
+<a id="two-ports-guarded-by-the-networkpolicy-alone"></a>
+
+### Two ports, guarded by the NetworkPolicy alone unless `routeAuthorization` has reached `authorization`
 
 Without `routeAuthorization`, the servers' routes carry no credential: any process that reaches a
 hub pod's port 6222 can join the cluster as a server. The NetworkPolicy `<n>` admits 6222 from the
@@ -1096,6 +1100,14 @@ A reload closes only the routes the server accepted that now fail the credential
 it opened itself, so a server that joined before `authorization` can keep a route to a peer until
 that peer restarts. `authorization` fences a server that tries to join after it; only a restart of
 every server fences one that joined before.
+
+Lowering `stage` below `routes`, or removing `routeAuthorization` from `routes` or
+`authorization`, makes each server log every route URL it removes, password included: a reload
+logs `Removed route <url>` with the whole URL (nats-server 2.15.1 `server/reload.go:543`).
+Measured on two local servers: lowering `routes` to `env` logged 4 such lines carrying the
+password, while the forward step from `env` to `routes` logged none. So change the password after
+such a rollback: mint a new one, roll it out from `env` again, and treat the old one as known to
+whoever reads the hub's logs.
 
 The password holds letters and digits only, a letter first. It is written into the route URLs
 whole, and nats-server types a variable's value as it types a literal of `nats.conf`: a password of
