@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
-	"github.com/sjawhar/envoy/internal/bustest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -30,17 +30,6 @@ import (
 
 // TestMain removes the PULUMI_HOME the live tests share once they have run.
 func TestMain(m *testing.M) { os.Exit(pulumitest.Main(m)) }
-
-// provision creates the buckets a listener copies, and the marker that says the server is a
-// fixture's (bustest.Provision), on the test's own NATS at natsURL before any listener starts, as
-// `envoy-infra buckets` does for a deployment: no listener creates one
-// (packages/envoy/cmd/listener/missing_buckets.go).
-func provision(t *testing.T, natsURL string) {
-	t.Helper()
-	conn := testnats.Connect(t, natsURL)
-	defer conn.Close()
-	require.NoError(t, bustest.Provision(conn, 1), "provision %s with the buckets a listener copies", natsURL)
-}
 
 // healthWindow is how long a listener has to answer "healthy", and how long a negative control
 // watches one that must not.
@@ -139,7 +128,7 @@ func listener(properties map[string]any) map[string]any {
 func TestLiveListenerRunsAHealthyListenerWithTheExplicitProvider(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	_, natsURL := testnats.Start(t)
-	provision(t, natsURL)
+	bustest.ProvisionURL(t, natsURL, 1)
 	port := holdListenerPort(t)
 	name := containerName(t)
 
@@ -187,7 +176,7 @@ func TestLiveListenerRunsAHealthyListenerWithTheExplicitProvider(t *testing.T) {
 func TestLiveAdoptionPreviewsClean(t *testing.T) {
 	image := pulumitest.HeldPortImage(t)
 	_, natsURL := testnats.Start(t)
-	provision(t, natsURL)
+	bustest.ProvisionURL(t, natsURL, 1)
 	port := holdListenerPort(t)
 	name := containerName(t)
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)

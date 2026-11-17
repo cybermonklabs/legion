@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -223,26 +225,32 @@ func namedRequest(request string, err error) error {
 // fixture marked as its own (CreateCopiedBucketsOn): a missing one is ErrBucketMissing, named for
 // its stream (`KV_envoy_sessions STREAM.INFO: bucket is missing; ...`). A bucket deleted while one
 // of its writers runs must not come back while that writer runs, since a write the deleted bucket
-// acknowledged is in no bucket after it, and its writer was told it landed (INFRA-4094). The
+// acknowledged is in no bucket after it, and its writer was told it landed. The
 // operator creates such a bucket with `envoy-infra buckets` (CreateCopiedBucket). Every other
 // bucket is created when missing.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	mode := openOnly
-	if _, fixture := fixtureConns.Load(conn); fixture || !slices.Contains(CopiedBuckets(), config.Bucket) {
+	if _, fixture := fixtureConns.Load(weak.Make(conn)); fixture || !slices.Contains(CopiedBuckets(), config.Bucket) {
 		mode = openOrCreate
 	}
 	return openKeyValue(conn, js, config, mode)
 }
 
-// fixtureConns are the connections a test fixture marked as its own (CreateCopiedBucketsOn).
+// fixtureConns are the connections a test fixture marked as its own (CreateCopiedBucketsOn), each
+// held by a weak pointer, so a connection a test is done with is collected with all it references,
+// and its entry removed then, rather than kept for the rest of the test process.
 var fixtureConns sync.Map
 
 // CreateCopiedBucketsOn marks conn as a test fixture's connection to a server of its own: an open
 // through it (EnsureKeyValue) creates a copied bucket it finds missing, with the caller's
 // configuration, as it creates every other bucket. Only a test's fixture calls it
-// (internal/bustest); no program of a deployment does, so no listener creates a bucket it copies.
+// (internal/bus/bustest); no program of a deployment does, so no listener creates a bucket it
+// copies.
 func CreateCopiedBucketsOn(conn *nats.Conn) {
-	fixtureConns.Store(conn, struct{}{})
+	key := weak.Make(conn)
+	if _, marked := fixtureConns.LoadOrStore(key, struct{}{}); !marked {
+		runtime.AddCleanup(conn, func(key weak.Pointer[nats.Conn]) { fixtureConns.Delete(key) }, key)
+	}
 }
 
 // ErrBucketMissing is a bucket a listener copies that an open found missing (EnsureKeyValue). It
@@ -256,7 +264,7 @@ var ErrBucketExists = errors.New("bucket exists; a create-only open creates only
 
 // CreateCopiedBucket creates bucket, one a listener copies, with its configuration at replicas
 // copies (CopiedBucketConfig), or opens it as it is when it exists: the operator's creation,
-// `envoy-infra buckets`, and a test fixture's (internal/bustest), on a server of its own.
+// `envoy-infra buckets`, and a test fixture's (internal/bus/bustest), on a server of its own.
 func CreateCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
 	return openCopiedBucket(conn, js, bucket, replicas, openOrCreate)
 }

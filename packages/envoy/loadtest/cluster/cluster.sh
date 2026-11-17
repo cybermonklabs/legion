@@ -1552,8 +1552,8 @@ kv_replicas_add() {
 }
 
 # nats_purge: ENVOY_NOTIFICATIONS, every KV bucket and the fixture's marker stream
-# (internal/bustest's ENVOY_TEST_FIXTURE) removed, so the reset's nats_provision makes the buckets
-# again: fixturebuckets leaves a server that holds the marker as it is.
+# (internal/bus/bustest's ENVOY_TEST_FIXTURE) removed, so the reset's nats_provision makes the
+# buckets again: fixturebuckets leaves a server that holds the marker as it is.
 nats_purge() {
   local streams s
   streams=$(nats_box stream ls --names) || die "nats stream ls failed through nats-box"
@@ -1568,7 +1568,7 @@ nats_purge() {
 kv_delete() { nats_box kv del "$1" -f >/dev/null || die "nats kv del $1 failed"; }
 
 # nats_provision: the buckets a listener copies, made on the copy's NATS on three replicas, since
-# no listener creates one (INFRA-4094): before up's first start of the listener, and before each
+# no listener creates one: before up's first start of the listener, and before each
 # reset's, after nats_purge deleted them. fixturebuckets provisions only a server on this
 # machine's loopback, so it reaches NATS through a kubectl port-forward of the nats Service on a
 # local port the kernel chose, which ends with it. The buckets are the copy's, so the lock is read

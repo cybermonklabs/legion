@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/bustest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 )
 
 // runRecreate deletes the bucket's stream and adds it again with the config it had, so the

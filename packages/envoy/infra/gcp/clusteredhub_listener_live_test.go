@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
-	"github.com/sjawhar/envoy/internal/bustest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -104,25 +104,18 @@ func liveListenerEnv(t *testing.T, port int, natsURL string, allowUnauthenticate
 	return env
 }
 
-// provisionLiveHub creates, on the test's server at natsURL, the buckets a listener copies and the
-// marker that says the server is a fixture's (bustest.Provision), as `envoy-infra buckets` does
-// before a hub's first listener starts: no listener creates one, and one started without them
-// waits at its start, so the listener runs with the pod's environment and nothing else. It acts
-// once per server, so a second listener's start leaves the first one's buckets as they are.
-func provisionLiveHub(t *testing.T, natsURL string) {
-	t.Helper()
-	conn := testnats.Connect(t, natsURL)
-	defer conn.Close()
-	require.NoError(t, bustest.Provision(conn, 1), "provision %s with the buckets a listener copies", natsURL)
-}
-
 // startLiveListener starts a listener of the pod's environment on a port drawn from ports, on the
-// server at natsURL once it is provisioned (provisionLiveHub), and waits for its /healthz to answer
-// 200, so it returns a process that is serving. It returns the process and the port it serves on,
-// which is drawn again on each retry a taken port costs (startBound).
+// server at natsURL once it holds the buckets a listener copies, and waits for its /healthz to
+// answer 200, so it returns a process that is serving. It returns the process and the port it
+// serves on, which is drawn again on each retry a taken port costs (startBound).
+//
+// The server is provisioned first (bustest.ProvisionURL), as `envoy-infra buckets` does before a
+// hub's first listener starts: no listener creates a bucket it copies, and one started without them
+// waits at its start, so the listener runs with the pod's environment and nothing else. That acts
+// once per server, so a second listener's start leaves the first one's buckets as they are.
 func startLiveListener(t *testing.T, name, binary, natsURL string, ports *loopbackPorts) (*cmdtest.Process, int) {
 	t.Helper()
-	provisionLiveHub(t, natsURL)
+	bustest.ProvisionURL(t, natsURL, 1)
 	var port int
 	process := startBound(t, name, func() *exec.Cmd {
 		port = ports.draw(t, 1)[0]

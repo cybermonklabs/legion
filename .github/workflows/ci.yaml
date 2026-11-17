@@ -903,10 +903,10 @@ jobs:
               # internal/daemon/idle_rig_listener_test.go:52-53 build ./cmd/listener and
               # ./internal/testnats/cmd/fixturebuckets with testbuild.EnvoyBinary and
               # testbuild.ProvisionFixtureBuckets, beside the Dispatch server dispatch_server
-              # covers; fixturebuckets provisions through internal/bustest.
+              # covers; fixturebuckets provisions through internal/bus/bustest.
               - *listener_command
               - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
-              - 'packages/envoy/internal/bustest/*'
+              - 'packages/envoy/internal/bus/bustest/*'
               # The testdata of envoy's internal/contracts, which the daemon compiles.
               - 'packages/envoy/internal/contracts/**'
               # The fixtures of packages/contracts this suite's tests read, and no other file of
@@ -1010,7 +1010,7 @@ jobs:
               # whichever three its -run then selects.
               - *listener_command
               - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
-              - 'packages/envoy/internal/bustest/*'
+              - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/testnats/*'
@@ -2593,7 +2593,7 @@ jobs:
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/logtest/*'
-              - 'packages/envoy/internal/bustest/*'
+              - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -2811,7 +2811,6 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
-              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
@@ -2843,7 +2842,6 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
-              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
@@ -2882,7 +2880,6 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
-              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
@@ -2974,7 +2971,6 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
-              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
@@ -3143,7 +3139,6 @@ jobs:
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/serverwait/*'
-              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -3186,8 +3181,8 @@ jobs:
               - *listener_command
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
               - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
-              # fixturebuckets provisions through internal/bustest, which connects with testnats.
-              - 'packages/envoy/internal/bustest/*'
+              # fixturebuckets provisions through internal/bus/bustest, which connects with testnats.
+              - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               # The job reads no Markdown file: the listener, the renderer and the contracts
               # between them are its whole input, so a guide written under one of the directory

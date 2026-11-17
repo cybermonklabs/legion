@@ -1,5 +1,5 @@
 // Command fixturebuckets provisions a test's or a dev rig's own NATS server for a listener: it
-// creates every bucket a listener copies, which no listener creates (INFRA-4094), and marks the
+// creates every bucket a listener copies, which no listener creates, and marks the
 // server as a fixture's (bustest.Provision). A script runs it after it starts its NATS server and
 // before it starts a listener on it:
 //
@@ -18,7 +18,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bustest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 )
 
 func main() {

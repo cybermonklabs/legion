@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bustest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// The known-session bucket is a copied bucket like the others (INFRA-4094): a listener that starts
+// The known-session bucket is a copied bucket like the others: a listener that starts
 // while the server says it holds none waits at its start, every route answering 503 and /healthz
 // naming the bucket, and serves once the bucket is there. Deleted under a running listener, it
 // refuses each registration whose 30-day record it cannot write with the bus-unavailable 503,

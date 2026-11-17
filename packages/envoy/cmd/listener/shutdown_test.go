@@ -15,7 +15,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bustest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -204,14 +204,13 @@ func provisionListenerServer(t *testing.T, uri string, env []string) {
 			seed = value
 		}
 	}
-	var conn *natsgo.Conn
 	if seed == "" {
-		conn = testnats.Connect(t, uri)
-	} else {
-		var err error
-		if conn, err = testnats.ConnectSeed(t, uri, seed); err != nil {
-			t.Fatalf("connect to %s with the listener's seed: %v", uri, err)
-		}
+		bustest.ProvisionURL(t, uri, replicas)
+		return
+	}
+	conn, err := testnats.ConnectSeed(t, uri, seed)
+	if err != nil {
+		t.Fatalf("connect to %s with the listener's seed: %v", uri, err)
 	}
 	defer conn.Close()
 	if err := bustest.Provision(conn, replicas); err != nil {

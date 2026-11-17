@@ -1259,7 +1259,7 @@ func main() {
 	// Each store below opens through openExisting, which waits here again for a bucket deleted
 	// between this wait and its open, rather than ending the start.
 	// No configuration makes the listener create one: a test or a dev rig provisions its own
-	// server before it starts the listener (internal/bustest, the fixturebuckets command).
+	// server before it starts the listener (internal/bus/bustest, the fixturebuckets command).
 	// The copied buckets this listener opens, which the start's wait and every self-health tick
 	// read: the CI state bucket only beside the GitHub webhook route, whose CI store a start that
 	// cannot open it ends (log.Fatalf below), so ciStore is set exactly when this names it.

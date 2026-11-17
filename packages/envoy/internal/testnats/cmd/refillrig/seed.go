@@ -11,20 +11,20 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bustest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 )
 
-// bucketConfig is the config the listener creates each bucket with when it finds none
-// (session.OpenSessionRegistry, store.Open), so a bucket seeded before the listener starts is the
-// bucket the listener would have created.
+// bucketConfig is the config `envoy-infra buckets` and bustest.Provision create each copied bucket
+// with (bus.CopiedBucketConfig), at one copy, so a bucket seeded before the listener starts is the
+// bucket a deployment's operator would have created.
 func bucketConfig(kind string) (*nats.KeyValueConfig, error) {
-	switch kind {
-	case "sessions":
-		return &nats.KeyValueConfig{Bucket: bus.SessionBucket, TTL: 5 * time.Minute, Replicas: 1, Storage: nats.FileStorage}, nil
-	case "interests":
-		return &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: nats.FileStorage}, nil
+	buckets := map[string]string{"sessions": bus.SessionBucket, "interests": bus.InterestBucket}
+	bucket, ok := buckets[kind]
+	if !ok {
+		return nil, fmt.Errorf("bucket %q: want sessions or interests", kind)
 	}
-	return nil, fmt.Errorf("bucket %q: want sessions or interests", kind)
+	config, _ := bus.CopiedBucketConfig(bucket, 1)
+	return &config, nil
 }
 
 func connect(url string) (*nats.Conn, nats.JetStreamContext, error) {
@@ -186,7 +186,7 @@ func runSeed(args []string) error {
 	defer conn.Close()
 	if *create {
 		// A copied bucket is created only on a server a fixture provisioned, through a connection
-		// marked as the fixture's (internal/bustest): no command creates one elsewhere.
+		// marked as the fixture's (internal/bus/bustest): no command creates one elsewhere.
 		if err := bustest.RequireFixtureServer(js); err != nil {
 			return err
 		}

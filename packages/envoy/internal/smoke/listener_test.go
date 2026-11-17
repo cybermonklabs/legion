@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/sjawhar/envoy/internal/bustest"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
@@ -78,12 +78,7 @@ func TestSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NATS connection string: %v", err)
 	}
-	provisioning := testnats.Connect(t, natsURL)
-	err = bustest.Provision(provisioning, 1)
-	provisioning.Close()
-	if err != nil {
-		t.Fatalf("provision NATS with the buckets the listener copies: %v", err)
-	}
+	bustest.ProvisionURL(t, natsURL, 1)
 
 	listenerC, err := testcontainers.Run(ctx, image,
 		network.WithNetwork([]string{"listener"}, net),

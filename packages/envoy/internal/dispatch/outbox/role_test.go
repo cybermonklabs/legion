@@ -19,7 +19,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
-	copiedbuckets "github.com/sjawhar/envoy/internal/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -117,10 +116,10 @@ func newRoleRigWith(t *testing.T, options ...session.SessionRegistryOption) *rol
 
 // newRoleRigOn is a roleRig on the server at url, with client as the outbox's client and conn as
 // the test's own connection, which the registries write through. conn is marked as a fixture's
-// (copiedbuckets.Fixture), so the registries create their buckets.
+// (bustest.Fixture), so the registries create their buckets.
 func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Conn, options ...session.SessionRegistryOption) *roleRig {
 	t.Helper()
-	copiedbuckets.Fixture(conn)
+	bustest.Fixture(conn)
 	registry, err := envoystore.Open(conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
