@@ -54,22 +54,40 @@ func procPIDs(root string) ([]int, error) {
 	return pids, nil
 }
 
-// heldWithTheirs is held and every process of the /proc mounted at root that is one of theirs: a
-// descendant by its parent chain (a held child's own children, as the install's --help run starts
-// python), or a member of a process group a held child leads (procgroup.Configure gives each of
-// the launcher's guarded commands one). A process whose stat cannot be read, gone in between,
-// counts as none of theirs.
-func heldWithTheirs(root string, held []int) (map[int]bool, error) {
-	spared := make(map[int]bool, len(held))
-	for _, pid := range held {
-		spared[pid] = true
-	}
-	if len(held) == 0 {
-		return spared, nil
-	}
+// namespaceProcesses is one listing of the /proc of PID 1's namespace, split by the guard's
+// children, so what a pass spares and what it signals or reaps come from the same read: a process
+// a held child forks after it is in neither, rather than in the second and not the first.
+type namespaceProcesses struct {
+	// pids is every process the listing found.
+	pids []int
+	// spared is the guard's children and every process of theirs: a descendant by its parent
+	// chain (a held child's own children, as the install's --help run starts python), or a member
+	// of a process group a held child leads (procgroup.Configure gives each of the launcher's
+	// guarded commands one).
+	spared map[int]bool
+	// others is every process of the listing but PID 1 and the spared whose stat was read; one
+	// whose stat could not be read, gone in between, is in neither.
+	others []int
+}
+
+// listNamespace is one listing of the /proc mounted at root, split by held (namespaceProcesses).
+// With nothing held it reads no process's stat: spared is empty and others is every pid but 1.
+func listNamespace(root string, held []int) (namespaceProcesses, error) {
 	pids, err := procPIDs(root)
 	if err != nil {
-		return nil, err
+		return namespaceProcesses{}, err
+	}
+	listed := namespaceProcesses{pids: pids, spared: make(map[int]bool, len(held))}
+	for _, pid := range held {
+		listed.spared[pid] = true
+	}
+	if len(held) == 0 {
+		for _, pid := range pids {
+			if pid > 1 {
+				listed.others = append(listed.others, pid)
+			}
+		}
+		return listed, nil
 	}
 	parent := make(map[int]int, len(pids))
 	for _, pid := range pids {
@@ -78,19 +96,24 @@ func heldWithTheirs(root string, held []int) (map[int]bool, error) {
 			continue
 		}
 		parent[pid] = ppid
-		if spared[pgid] {
-			spared[pid] = true
+		if listed.spared[pgid] {
+			listed.spared[pid] = true
 		}
 	}
 	for _, pid := range pids {
 		for ancestor, steps := parent[pid], 0; ancestor > 1 && steps < len(pids); ancestor, steps = parent[ancestor], steps+1 {
-			if spared[ancestor] {
-				spared[pid] = true
+			if listed.spared[ancestor] {
+				listed.spared[pid] = true
 				break
 			}
 		}
 	}
-	return spared, nil
+	for _, pid := range pids {
+		if _, read := parent[pid]; read && pid > 1 && !listed.spared[pid] {
+			listed.others = append(listed.others, pid)
+		}
+	}
+	return listed, nil
 }
 
 // statParentAndGroup is pid's parent and process group, as /proc/<pid>/stat holds them after the
@@ -175,7 +198,7 @@ func (g *pidGuard) held() []int {
 
 // reap is one pass of reapNamespace that leaves the guard's children, and skip, to their own
 // waits, under the guard's lock for the whole pass, and answers whether any other process of the
-// namespace is left that is none of the guard's children's (heldWithTheirs): their descendants and
+// namespace is left that is none of the guard's children's (listNamespace): their descendants and
 // group members are not counted, though an exited one PID 1 adopted is reaped, since no other wait
 // reads it. Every reap of the launcher's process runs here: the orphan reaper's passes
 // (reapOrphans, which skips each manager's generation) and the controller pod's drain of an exited
@@ -184,19 +207,20 @@ func (g *pidGuard) reap(skip ...int) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	held := g.held()
-	spared, err := heldWithTheirs("/proc", held)
+	listed, err := listNamespace("/proc", held)
 	if err != nil {
-		return false, fmt.Errorf("list the processes the launcher holds: %w", err)
+		return false, fmt.Errorf("list role namespace processes: %w", err)
 	}
-	return reapNamespaceCounting(append(held, skip...), spared)
+	return reapListed(listed.pids, append(held, skip...), listed.spared)
 }
 
 // signalNamespace sends sig to every process of PID 1's namespace but PID 1 and the guard's
-// children with theirs (heldWithTheirs), which the controller pod's drain leaves to finish and to
+// children with theirs (listNamespace), which the controller pod's drain leaves to finish and to
 // their own waits. While the guard holds nothing it is kill(-1), which reaches every process at
 // once, a setsid or daemonized one included; while it holds a child the signal goes process by
-// process, under the guard's lock, so no guarded child starts between the read of /proc and the
-// signals.
+// process to the others of one listing (signalEach), under the guard's lock, so no guarded child
+// starts between the read of /proc and the signals, and a process a held child forks after the
+// read is not signalled.
 func (g *pidGuard) signalNamespace(sig syscall.Signal) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -204,19 +228,19 @@ func (g *pidGuard) signalNamespace(sig syscall.Signal) error {
 	if len(held) == 0 {
 		return signalGeneration(0, sig)
 	}
-	spared, err := heldWithTheirs("/proc", held)
-	if err != nil {
-		return fmt.Errorf("list the processes the launcher holds: %w", err)
-	}
-	pids, err := procPIDs("/proc")
+	listed, err := listNamespace("/proc", held)
 	if err != nil {
 		return fmt.Errorf("list role namespace processes: %w", err)
 	}
+	return signalEach(listed.others, sig, syscall.Kill)
+}
+
+// signalEach sends sig to each of pids with kill, as kill(-1) would: a process that is gone
+// (ESRCH) or that this process may not signal (EPERM) is passed over, since kill(-1) also signals
+// every process it may and leaves the rest, and any other error ends the signals with it.
+func signalEach(pids []int, sig syscall.Signal, kill func(int, syscall.Signal) error) error {
 	for _, pid := range pids {
-		if pid <= 1 || spared[pid] {
-			continue
-		}
-		if err := syscall.Kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
 			return fmt.Errorf("signal role process %d: %w", pid, err)
 		}
 	}
@@ -228,16 +252,16 @@ func (g *pidGuard) signalNamespace(sig syscall.Signal) error {
 // delaying a resident worker's next turn, and never takes the exit status a generation's own wait
 // reports. It answers whether any process of the namespace is left but PID 1 and skip's.
 func reapNamespace(skip ...int) (bool, error) {
-	return reapNamespaceCounting(skip, nil)
-}
-
-// reapNamespaceCounting is reapNamespace that answers whether a process is left that is neither
-// in skip nor in uncounted, which it reaps all the same.
-func reapNamespaceCounting(skip []int, uncounted map[int]bool) (bool, error) {
 	pids, err := procPIDs("/proc")
 	if err != nil {
 		return false, fmt.Errorf("list role namespace processes: %w", err)
 	}
+	return reapListed(pids, skip, nil)
+}
+
+// reapListed is reapNamespace over pids, one listing of /proc, that answers whether a process is
+// left that is neither in skip nor in uncounted, which it reaps all the same.
+func reapListed(pids, skip []int, uncounted map[int]bool) (bool, error) {
 	remaining := false
 	for _, pid := range pids {
 		if pid <= 1 || slices.Contains(skip, pid) {

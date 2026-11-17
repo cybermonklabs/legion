@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,12 +38,14 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 	if os.Getpid() != 1 {
 		t.Fatal("the drain helper is not PID 1")
 	}
+	// Each held child's exit depends on its own child, as the install's does (its --help run is
+	// bash running python): a drain that ends the sleep makes the shell exit 9, not 5.
 	for _, tc := range []struct{ name, script string }{
 		// SIGTERM at its default: a SIGTERM the drain sends every process reaches it.
-		{"a held child", "sleep 2; exit 5"},
+		{"a held child", "sleep 2 && exit 5; exit 9"},
 		// SIGTERM ignored, by its sleep too, which the guard does not hold: a drain that counts the
 		// sleep as left kills every process once the stop grace is over.
-		{"a held child that ignores SIGTERM", "trap '' TERM; sleep 2; exit 5"},
+		{"a held child that ignores SIGTERM", "trap '' TERM; sleep 2 && exit 5; exit 9"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := &pidGuard{}
@@ -64,10 +68,73 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 			err = held.Wait()
 			guard.done(pid)
 			if held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
-				t.Errorf("the held child, still running when the drain began, reads %v (%v), want its own exit 5: the drain ended it", held.ProcessState, err)
+				t.Errorf("the held child, still running when the drain began, reads %v (%v), want its own exit 5: the drain ended it or its sleep", held.ProcessState, err)
 			}
 		})
 	}
+	// A held child that leads its own process group (procgroup.Configure, as every guarded command
+	// of the launcher's does) leaves a member of that group that is no descendant of its: an
+	// orphan PID 1 adopted. The drain spares it too, and the held child's exit depends on it.
+	t.Run("a held child's group member that PID 1 adopted", func(t *testing.T) {
+		guard := &pidGuard{}
+		m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
+		marks := t.TempDir()
+		started, finished := filepath.Join(marks, "started"), filepath.Join(marks, "finished")
+		held := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+			`( (: >"$1"; sleep 1; : >"$2") & ); sleep 2 && [ -e "$2" ] && exit 5; exit 9`, "sh", started, finished)
+		procgroup.Configure(held)
+		pid, err := guard.start(held)
+		if err != nil {
+			t.Fatal(err)
+		}
+		testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the held child's orphan to start", func() bool {
+			_, err := os.Stat(started)
+			return err == nil
+		})
+		m.cleanExitedGeneration()
+		err = held.Wait()
+		guard.done(pid)
+		if held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+			t.Errorf("the held child reads %v (%v), want its own exit 5: the drain ended its group's orphan", held.ProcessState, err)
+		}
+	})
+	// A held child that keeps forking while the drain runs back to back: each signal pass reads
+	// /proc once and signals only what that one read did not spare, so a child the held process
+	// forks after the read is not signalled. Each /bin/true it runs must exit 0, or it exits 9.
+	t.Run("a held child that keeps forking", func(t *testing.T) {
+		for round := range 20 {
+			guard := &pidGuard{}
+			m := &manager{cfg: Config{StopGrace: 50 * time.Millisecond}, guard: guard}
+			held := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+				`i=0; while [ $i -lt 300 ]; do /bin/true || exit 9; i=$((i+1)); done; exit 5`)
+			procgroup.Configure(held)
+			pid, err := guard.start(held)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stop, drained := make(chan struct{}), make(chan int)
+			go func() {
+				drains := 0
+				for {
+					select {
+					case <-stop:
+						drained <- drains
+						return
+					default:
+						m.cleanExitedGeneration()
+						drains++
+					}
+				}
+			}()
+			err = held.Wait()
+			close(stop)
+			drains := <-drained
+			guard.done(pid)
+			if held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+				t.Fatalf("round %d: the held child reads %v (%v) after %d drains, want its own exit 5: a drain signalled a child it forked", round, held.ProcessState, err, drains)
+			}
+		}
+	})
 	// While a child is held the drain signals process by process rather than with kill(-1), and it
 	// still ends what the generation left: a setsid'd process that ignores SIGTERM outlives the
 	// drain's SIGTERM, is killed at the end of the grace and is reaped, while the held child beside
@@ -157,5 +224,39 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 	guard.done(pid)
 	if held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
 		t.Errorf("the held child reads %v (%v), want its own exit 5: the reap took it", held.ProcessState, err)
+	}
+}
+
+// The drain's per-process signal (signalEach, while the guard holds a child) passes over a process
+// it may not signal, as kill(-1) does, rather than fail and panic PID 1, and over one already gone;
+// it signals every other process of the listing, and any other error ends it with that error.
+func TestTheDrainsSignalsPassOverAProcessTheyMayNotSignal(t *testing.T) {
+	var signalled []int
+	kill := func(pid int, _ syscall.Signal) error {
+		signalled = append(signalled, pid)
+		switch pid {
+		case 11:
+			return syscall.EPERM
+		case 12:
+			return syscall.ESRCH
+		}
+		return nil
+	}
+	if err := signalEach([]int{10, 11, 12, 13}, syscall.SIGTERM, kill); err != nil {
+		t.Fatalf("signalEach answered %v, want nil: a process it may not signal, or one gone, is passed over", err)
+	}
+	if want := []int{10, 11, 12, 13}; !slices.Equal(signalled, want) {
+		t.Errorf("signalEach signalled %v, want every process of the listing, %v", signalled, want)
+	}
+	signalled = nil
+	failing := func(pid int, _ syscall.Signal) error {
+		signalled = append(signalled, pid)
+		if pid == 11 {
+			return syscall.EINVAL
+		}
+		return nil
+	}
+	if err := signalEach([]int{10, 11, 12}, syscall.SIGTERM, failing); !errors.Is(err, syscall.EINVAL) || !slices.Equal(signalled, []int{10, 11}) {
+		t.Errorf("signalEach answered %v after signalling %v, want EINVAL from process 11 and no signal after it", err, signalled)
 	}
 }

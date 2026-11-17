@@ -1691,6 +1691,35 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
+def daemon_race_impossible_tests() -> dict:
+    """Per package of DAEMON_RACE_PACKAGES, in that list's order, the tests only a plain run covers
+    (race_impossible_tests_of): the race step runs those packages and the plain step leaves them
+    out, so without this step such a test runs in no step of daemon-go. A package that has none is
+    left out."""
+    found = {}
+    for under in DAEMON_RACE_PACKAGES:
+        directory = Path(DAEMON) / under
+        if not directory.is_dir():
+            raise ValueError(f"the daemon-go race step names {under}, which is no directory under {DAEMON}")
+        names = set()
+        for path in sorted(directory.glob("*_test.go")):
+            names |= race_impossible_tests_of(path)
+        if names:
+            found[under] = names
+    return found
+
+
+# daemon-go's plain run of what its race step's packages hold that the race build cannot run: the
+# first is internal/launcher's call-graph walk, under `//go:build !race`, which loads the
+# launcher's whole program from source and builds its call graph twice. Built from the race
+# step's own package list and the source, as the envoy step above is, so a test added under
+# `//go:build !race` or behind raceEnabled in one of those packages changes this text and
+# ci-job-daemon-go.yaml stops matching it.
+DAEMON_RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run"
+DAEMON_RACE_IMPOSSIBLE_PACKAGES = daemon_race_impossible_tests()
+DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
+
+
 # The text-check job: the three modules' text checks, and the fifteen tests of the Dispatch API's
 # eight static checks - its seven source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
@@ -2117,6 +2146,13 @@ GATES = [
         pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
             (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack tests "
                                        "skipped by name", {"race": True}),
+        ]),
+        # The race step's packages' tests the race build does not compile or runs smaller
+        # (DAEMON_RACE_IMPOSSIBLE_*), one go test per package, each selecting that package's own
+        # tests with -run.
+        pinned_step("daemon-go", DAEMON_RACE_IMPOSSIBLE_STEP, DAEMON, DAEMON_RACE_IMPOSSIBLE_SCRIPT, [
+            (DAEMON, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
+            for under in DAEMON_RACE_IMPOSSIBLE_PACKAGES
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),

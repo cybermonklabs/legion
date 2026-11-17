@@ -1,3 +1,11 @@
+// The walk loads the launcher and every package it imports from source and builds a call graph
+// over the whole program, twice: without the race detector the test took 24 s at a 1.95 GB peak on
+// a development host and 66 s at 2.34 GB in a pod, and the detector multiplies both. So the race
+// build leaves this file out, and daemon-go's plain step for what the race build cannot run runs
+// its test by name (.github/scripts/ci_job_reads.py).
+
+//go:build !race
+
 package launcher
 
 import (
@@ -82,11 +90,15 @@ var heldStarts = map[string]heldStart{
 // without the second, a start handed to the standard library (a goroutine's body, a
 // context.AfterFunc callback, an http.Handler) would go unread.
 //
-// It cannot pass by reading nothing: its control plants four starts the launcher would reach, and
-// must see each named: a bare cmd.Run in newCheckInstall; one in a package variable's function that
-// newCheckInstall hands to context.AfterFunc; procgroup.NoReaper given to the workspace restore in
-// place of the guard's starter; and the install's run of the check as it was before the guard took
-// it (a bare cmd.Run in leakguard.verifyServed).
+// It cannot pass by reading nothing, nor with a rule of its own broken: its control plants starts
+// the launcher would reach, and must see each named (plantedStarts): a bare cmd.Run in
+// newCheckInstall; one in a package variable's function that newCheckInstall hands to
+// context.AfterFunc; procgroup.NoReaper given to the workspace restore in place of the guard's
+// starter; the install's run of the check as it was before the guard took it (a bare cmd.Run in
+// leakguard.verifyServed); a closure only sync.Once.Do calls; and a start made through each other
+// shape Go gives it: a method value called, a method value handed to a helper, to errgroup.Go and
+// to sync.OnceValue, a method expression, and a method promoted from an embedded *exec.Cmd and
+// called through an interface.
 func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testing.T) {
 	t.Run("this tree", func(t *testing.T) {
 		sites := map[string][]processStart{}
@@ -107,7 +119,7 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 		}
 		for call := range heldStarts {
 			if len(sites[call]) == 0 {
-				t.Errorf("heldStarts allows %s, which the launcher's process no longer reaches: remove it", call)
+				t.Errorf("heldStarts allows %s, which the walk no longer reaches. Remove it only if the code that started it is gone: if that code is still there, the walk has gone blind to it, and the control subtest names the rule that broke", call)
 			}
 		}
 	})
@@ -116,7 +128,8 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 		plant(t, overlay, "leakcheck.go", "\tif dir == \"\" {\n\t\tdir = leakguard.InstallDir\n\t}\n",
 			"\tif dir == \"\" {\n\t\tdir = leakguard.InstallDir\n\t}\n"+
 				"\t_ = exec.Command(\"/bin/true\").Run()\n"+
-				"\t_ = context.AfterFunc(context.Background(), plantedCallback)\n")
+				"\t_ = context.AfterFunc(context.Background(), plantedCallback)\n"+
+				"\tplantedStarts()\n")
 		plant(t, overlay, "leakcheck.go", "", "\nvar plantedCallback = func() { _ = exec.Command(\"/bin/false\").Run() }\n")
 		plant(t, overlay, "launcher.go", "restore := newBundleRestore(guard.starter())",
 			"restore := newBundleRestore(procgroup.NoReaper)")
@@ -124,18 +137,29 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 		// another package the launcher calls.
 		plant(t, overlay, "../leakguard/install.go", "procgroup.Err(procgroup.Run(cmd, start))",
 			"procgroup.Err(cmd.Run())")
+		planted, err := filepath.Abs("planted_starts.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		overlay[planted] = []byte(plantedStartsSource)
 		starts := launcherProcessStarts(t, overlay)
-		for _, want := range []struct {
-			what           string
-			caller, callee string
-		}{
-			{"the bare cmd.Run in newCheckInstall", launcherPackage + ".newCheckInstall", "(*os/exec.Cmd).Run"},
-			{"the package variable's start handed to context.AfterFunc", launcherPackage + ".init$", "(*os/exec.Cmd).Run"},
-			{"procgroup.NoReaper in place of the guard's starter", "github.com/sjawhar/legion/daemon/internal/procgroup.NoReaper", "(*os/exec.Cmd).Start"},
-			{"the install's run as it was before the guard", "github.com/sjawhar/legion/daemon/internal/leakguard.verifyServed", "(*os/exec.Cmd).Run"},
+		for _, want := range []struct{ what, caller string }{
+			{"the bare cmd.Run in newCheckInstall", launcherPackage + ".newCheckInstall"},
+			{"the package variable's start handed to context.AfterFunc", launcherPackage + ".init$"},
+			{"procgroup.NoReaper in place of the guard's starter", "github.com/sjawhar/legion/daemon/internal/procgroup.NoReaper"},
+			{"the install's run as it was before the guard", "github.com/sjawhar/legion/daemon/internal/leakguard.verifyServed"},
+			{"a closure only sync.Once.Do calls", launcherPackage + ".plantedClosure$1"},
+			{"a method value called", launcherPackage + ".plantedMethodValue"},
+			{"a method value handed to a helper", launcherPackage + ".plantedHelperValue"},
+			{"a method value handed to errgroup.Go", launcherPackage + ".plantedErrgroup"},
+			{"a method value handed to sync.OnceValue", launcherPackage + ".plantedOnceValue"},
+			{"a method expression", launcherPackage + ".plantedMethodExpression"},
+			{"a method promoted from an embedded *exec.Cmd, called through an interface", launcherPackage + ".plantedPromoted"},
 		} {
+			// Every start the walk answers is a process start, a promoted method's wrapper
+			// included, whose own name is its receiver's, so a row is matched by its caller.
 			named := slices.ContainsFunc(starts, func(start processStart) bool {
-				return strings.HasPrefix(start.caller, want.caller) && start.callee == want.callee
+				return start.caller == want.caller || strings.HasSuffix(want.caller, "$") && strings.HasPrefix(start.caller, want.caller)
 			})
 			if !named {
 				t.Errorf("the check did not name %s, so it could pass over a real one; it named: %v", want.what, starts)
@@ -143,6 +167,63 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 		}
 	})
 }
+
+// plantedStartsSource is the file the control adds to the launcher's package: one function per
+// shape a start can take beyond a plain call, each called from plantedStarts, which the control
+// calls from newCheckInstall.
+const plantedStartsSource = `package launcher
+
+import (
+	"os/exec"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
+)
+
+func plantedStarts() {
+	plantedClosure()
+	plantedMethodValue()
+	plantedHelperValue()
+	plantedErrgroup()
+	plantedOnceValue()
+	plantedMethodExpression()
+	plantedPromoted()
+}
+
+func plantedClosure() {
+	var once sync.Once
+	once.Do(func() { _ = exec.Command("/bin/true").Run() })
+}
+
+func plantedMethodValue() {
+	run := exec.Command("/bin/true").Run
+	_ = run()
+}
+
+func plantedHelperValue() { plantedRun(exec.Command("/bin/true").Run) }
+
+func plantedRun(run func() error) { _ = run() }
+
+func plantedErrgroup() {
+	var group errgroup.Group
+	group.Go(exec.Command("/bin/true").Run)
+	_ = group.Wait()
+}
+
+func plantedOnceValue() { _ = sync.OnceValue(exec.Command("/bin/true").Run)() }
+
+func plantedMethodExpression() {
+	run := (*exec.Cmd).Run
+	_ = run(exec.Command("/bin/true"))
+}
+
+type plantedEmbedded struct{ *exec.Cmd }
+
+func plantedPromoted() {
+	var runner interface{ Run() error } = plantedEmbedded{exec.Command("/bin/true")}
+	_ = runner.Run()
+}
+`
 
 // plant replaces, in overlay's copy of file (a path from this package's directory; the file on
 // disk when the overlay holds none yet), the first anchor with replacement, or appends
@@ -192,9 +273,10 @@ func (s processStart) call() string { return s.caller + " -> " + s.callee }
 // standard library of a processStarts function it reaches, one per call site.
 func launcherProcessStarts(t *testing.T, overlay map[string][]byte) []processStart {
 	t.Helper()
-	// A pod runs Linux, and role-init's namespaces exist only there (roleinit_linux.go), so the
-	// walk reads the Linux build whatever the host builds for.
-	cfg := &packages.Config{Mode: packages.LoadAllSyntax, Dir: ".", Overlay: overlay, Env: append(os.Environ(), "GOOS=linux")}
+	// A pod runs Linux built with no cgo, and role-init's namespaces exist only there
+	// (roleinit_linux.go), so the walk reads that build whatever the host builds for.
+	cfg := &packages.Config{Mode: packages.LoadAllSyntax, Dir: ".", Overlay: overlay,
+		Env: append(os.Environ(), "GOOS=linux", "CGO_ENABLED=0")}
 	pkgs, err := packages.Load(cfg, launcherPackage)
 	if err != nil {
 		t.Fatal(err)
@@ -228,10 +310,10 @@ func launcherProcessStarts(t *testing.T, overlay map[string][]byte) []processSta
 		if node := graph.Nodes[fn]; node != nil {
 			for _, edge := range node.Out {
 				callee := edge.Callee.Func
-				if !std && slices.Contains(processStarts, callee.String()) {
+				if !std && isProcessStart(callee) {
 					starts = append(starts, processStart{
 						caller: fn.String(), callee: callee.String(),
-						site: siteOf(prog.Fset, edge), path: w.pathTo(fn),
+						site: siteOf(prog.Fset, edge.Pos()), path: w.pathTo(fn),
 					})
 				}
 				if std && edge.Site != nil && edge.Site.Common().StaticCallee() == nil {
@@ -244,6 +326,7 @@ func launcherProcessStarts(t *testing.T, overlay map[string][]byte) []processSta
 			w.handedOut(fn)
 		}
 	}
+	starts = append(starts, w.handed...)
 	slices.SortFunc(starts, func(a, b processStart) int { return strings.Compare(a.String(), b.String()) })
 	return slices.CompactFunc(starts, func(a, b processStart) bool { return a.String() == b.String() })
 }
@@ -302,6 +385,8 @@ type walk struct {
 	parent map[*ssa.Function]*ssa.Function
 	seen   map[*ssa.Function]bool
 	queue  []*ssa.Function
+	// handed is every process start walked code hands out as a value (walk.value).
+	handed []processStart
 }
 
 func (w *walk) visit(fn, from *ssa.Function) {
@@ -313,6 +398,32 @@ func (w *walk) visit(fn, from *ssa.Function) {
 	w.queue = append(w.queue, fn)
 }
 
+// value walks v, a function fn hands out as a value at pos, and records it as a start of fn's
+// when it is one: a bound method value (cmd.Run, whose call is $bound's), a method expression
+// ($thunk) or a promoted method's wrapper, which whoever is handed it may call where the walk
+// does not follow, the standard library among them.
+func (w *walk) value(v, fn *ssa.Function, pos token.Pos) {
+	if !standardLibrary(fn) && isProcessStart(v) {
+		w.handed = append(w.handed, processStart{
+			caller: fn.String(), callee: v.String(), site: "handed out at " + siteOf(w.prog.Fset, pos), path: w.pathTo(fn),
+		})
+	}
+	w.visit(v, fn)
+}
+
+// isProcessStart is whether fn is one of processStarts, or a synthetic wrapper of one: its bound
+// method value ($bound), its method expression ($thunk), or its promotion through an embedded
+// field.
+func isProcessStart(fn *ssa.Function) bool {
+	name := fn.String()
+	if fn.Synthetic != "" {
+		if method, ok := fn.Object().(*types.Func); ok {
+			name = method.FullName()
+		}
+	}
+	return slices.Contains(processStarts, name)
+}
+
 // handedOut walks what fn hands out: every function it uses as a value, every closure it makes,
 // the methods of every type it puts into an interface, and every function stored into a package
 // variable it reads (storedFunctions).
@@ -321,11 +432,11 @@ func (w *walk) handedOut(fn *ssa.Function) {
 		for _, instruction := range block.Instrs {
 			switch value := instruction.(type) {
 			case *ssa.MakeClosure:
-				w.visit(value.Fn.(*ssa.Function), fn)
+				w.value(value.Fn.(*ssa.Function), fn, value.Pos())
 			case *ssa.MakeInterface:
 				methods := w.prog.MethodSets.MethodSet(value.X.Type())
 				for i := range methods.Len() {
-					w.visit(w.prog.MethodValue(methods.At(i)), fn)
+					w.value(w.prog.MethodValue(methods.At(i)), fn, value.Pos())
 				}
 			}
 			// A function in the callee place of a static call is that call, not a value handed
@@ -344,10 +455,10 @@ func (w *walk) handedOut(fn *ssa.Function) {
 				}
 				switch value := (*operand).(type) {
 				case *ssa.Function:
-					w.visit(value, fn)
+					w.value(value, fn, instruction.Pos())
 				case *ssa.Global:
 					for _, stored := range w.stored[value] {
-						w.visit(stored, fn)
+						w.value(stored, fn, instruction.Pos())
 					}
 				}
 			}
@@ -385,9 +496,9 @@ func standardLibrary(fn *ssa.Function) bool {
 	return !strings.Contains(first, ".")
 }
 
-// siteOf is where edge's call is, as a path relative to the module and a line.
-func siteOf(fset *token.FileSet, edge *callgraph.Edge) string {
-	position := fset.Position(edge.Pos())
+// siteOf is where pos is, as a path relative to the module and a line.
+func siteOf(fset *token.FileSet, pos token.Pos) string {
+	position := fset.Position(pos)
 	file := position.Filename
 	if i := strings.Index(file, "/packages/daemon/"); i >= 0 {
 		file = file[i+len("/packages/daemon/"):]
