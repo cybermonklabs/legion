@@ -493,9 +493,11 @@ The broker names its Google audience only where
 `BROKER_VM_SERVICES` lists a machine: a Google audience set for API callers alone
 (`BROKER_API_ACCOUNTS`' `google:` entries) is not published, since its exchange takes no machine.
 `agent-secrets` reads those settings only from an `https` broker, or an `http` one on loopback,
-and keeps the first Google audience it reads, refusing a later one that differs; change
-`BROKER_GOOGLE_OIDC_AUDIENCE` on a deployed broker only together with removing each machine's
-`~/.local/state/agent-secrets/machine/google-exchange-audience`.
+and keeps the first Google audience it finds an identity for, refusing a later one that differs.
+That file is per user: change `BROKER_GOOGLE_OIDC_AUDIENCE` on a deployed broker only together
+with removing `agent-secrets/machine/google-exchange-audience` from each user's state directory
+(`$XDG_STATE_HOME`, else `~/.local/state`) on each machine whose `agent-secrets` has used its own
+identity.
 
 ## Approval sign-in
 

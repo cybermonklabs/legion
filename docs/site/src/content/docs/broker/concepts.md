@@ -220,11 +220,12 @@ the machine cache by the first command that finds it.
 
 `GET /v1/settings` is public, and its Google audience chooses whom the identity token the
 machine mints is good for, so the machine source reads it only from an `https` broker, or an
-`http` one on loopback, and keeps the first Google audience it reads in
-`google-exchange-audience` beside its session. A broker that later names another audience is
-refused before any token is minted for it; if the broker's audience really did change, remove
-that file. A broker publishes its Google audience only where `BROKER_VM_SERVICES` lists a
-machine that may trade a token for it.
+`http` one on loopback. Once it has found an identity to mint a token for that audience, and
+before it mints one, it keeps the audience in `google-exchange-audience` in the machine cache;
+a machine with no identity of its own mints nothing and keeps nothing. A broker that later
+names another audience than the one kept is refused before any token is minted for it; if the
+broker's audience really did change, remove that file. A broker publishes its Google audience
+only where `BROKER_VM_SERVICES` lists a machine that may trade a token for it.
 
 Each registration of the machine's session makes a key of its own, the first one and each one
 after the broker says the session is no longer live, so a copy of `key.pem` (in a backup of the
@@ -239,9 +240,11 @@ takes nine keys — `AGENT_SECRETS_URL`, `AGENT_SECRETS_SIGNIN_ISSUER`,
 `AGENT_SECRETS_SIGNIN_CLIENT_ID`, `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`,
 `AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT` —
-and any other key is a usage error (exit 2) naming the file and the line. So is a file its group
-or others can write: it names the broker the machine proves its identity to, so nothing in it is
-read until `chmod go-w` is run on it. A variable that is set and not empty wins over the file.
+and any other key is a usage error (exit 2) naming the file and the line. So is a path that is
+not a regular file, a file another user than this one or root owns, and a file its group or
+others can write: the file names the broker the machine proves its identity to, so nothing in it
+is read until it is the user's own and `chmod go-w` is run on it. A variable that is set and not
+empty wins over the file.
 Where the environment gives no `HOME`, as for a system unit that names no `User=`, the file, the
 sign-ins and the machine cache are under the home the password database gives the process's user
 (`/root` for root).
