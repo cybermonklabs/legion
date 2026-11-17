@@ -94,9 +94,9 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s among them: the forward's wait is the one copy it holds, and costs the comment's own response nothing",
 			reached, issueTopic)
 	}
-	if slices.Contains(reached, contracts.AgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
+	if slices.Contains(reached, contracts.LegacyAgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
 		t.Fatalf("the comment reached %v, want neither the route %s nor %s among them: the forward waits for the comment's unpinned mentions",
-			reached, route, contracts.AgentSubject(holder))
+			reached, route, contracts.LegacyAgentSubject(holder))
 	}
 
 	// Both resends are made, resolve to no session and fail, as a sweep's pass makes them:

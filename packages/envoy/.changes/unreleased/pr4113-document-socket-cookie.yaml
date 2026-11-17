@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  Dispatch's document socket (`GET /ws/doc/{room}`) re-checks, on each heartbeat, the sign-in cookie it was admitted with, and closes once that cookie's session ends. Before, its heartbeat resolved whatever credential the request carried, so a bearer or a broker token sent beside the cookie, a read-only one included, kept the socket open after the cookie's session ended. `GET /ws/live` keeps resolving the credential it was admitted with.

@@ -51,11 +51,11 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	// many the session then takes and acks.
 	const before, acked = 20, 4
 	name, _ := SessionConsumerName(session)
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 
 	for i := range before {
-		publishStored(t, owner, contracts.AgentSubject("ses_whole_loss_bystander"), fmt.Sprintf("before %02d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject("ses_whole_loss_bystander"), fmt.Sprintf("before %02d", i))
 	}
 	start, err := consumers.Ensure(ctx, session, filters, 0)
 	if err != nil {

@@ -2009,13 +2009,16 @@ export class DispatchClient {
     // that cannot answer throws here, out of the loop's reach, rather than being taken for a
     // failed attempt.
     const headers: Record<string, string> = { Accept: accept };
-    let presented = await this.#credential.headers(method, url);
+    // The call's own deadline and the client's, which the credential is given too: a broker
+    // credential waiting on a pod's missing registration stops at it, naming the session.
+    const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
+    let presented = await this.#credential.headers(method, url, undefined, limit);
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (key === undefined) {
       return this.fetchImpl(url, {
         method,
         headers: { ...headers, ...presented },
-        signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
+        signal: limit,
         ...(body === undefined ? {} : { body: body.content }),
       });
     }
@@ -2050,7 +2053,7 @@ export class DispatchClient {
       try {
         // Each attempt after the first presents the credential afresh: a resource server that
         // keeps a replay store refuses a proof it has already seen.
-        if (attempt > 1) presented = await this.#credential.headers(method, url);
+        if (attempt > 1) presented = await this.#credential.headers(method, url, undefined, limit);
         const sent = { ...headers, ...presented };
         answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
@@ -2221,10 +2224,14 @@ export class DispatchClient {
   async #probeKeyedLayer(): Promise<boolean> {
     try {
       const probe = `${this.#baseUrl}/healthz`;
+      const limit = AbortSignal.any([this.#signal, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]);
       const response = await this.fetchImpl(probe, {
         method: "GET",
-        headers: { Accept: "application/json", ...(await this.#credential.headers("GET", probe)) },
-        signal: AbortSignal.any([this.#signal, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]),
+        headers: {
+          Accept: "application/json",
+          ...(await this.#credential.headers("GET", probe, undefined, limit)),
+        },
+        signal: limit,
       });
       if (!isJson(response)) return false;
       const health: unknown = await response.json();
