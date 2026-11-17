@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -671,6 +672,43 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
+		}
+	}
+}
+
+// The agent that does the retro rates the plan the issue ran in the completion that ends the
+// retro, and the daemon refuses that completion without the rating from a plugin whose tool takes
+// it (api's PlanRatingContract, PLAN_RATING_REQUIRED), and a rating it cannot take: one outside 1
+// to 5, one of the two without the other, or a reason that is blank or too long (api's
+// planRatingRefusal, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
+// therefore reads, in its composed prompt, the two fields its completion carries, both ends of the
+// scale and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
+// on its completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
+// This shows the text is loaded, never that a role follows it.
+func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	retro := phase.RoleFor(phase.Retro)
+	text := foldWhitespace(composedText(t, composer, retro, false))
+	for _, phrase := range []string{
+		"The agent that does the retro rates",
+		"`plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work)",
+		"`plan_reason`, one sentence of why",
+		"`PLAN_RATING_REQUIRED`",
+		"a rating outside 1 to 5, one of the two without the other, or a reason that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`)",
+	} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("the composed %s prompt, the retro's, omits %q", retro, phrase)
+		}
+	}
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
+		if role == retro {
+			continue
+		}
+		if strings.Contains(composedText(t, composer, role, false), "plan_rating") {
+			t.Errorf("the composed %s prompt teaches plan_rating, and the %s never ends the retro", role, role)
 		}
 	}
 }

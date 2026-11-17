@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -46,6 +48,10 @@ import (
 // wire is a named time whatever it reads — `"0001-01-01T00:00:00Z"` decodes to a non-nil pointer
 // and passes that refusal — and the workflow moves a time already past out to the wake floor, a
 // minute from now (workflow.CheckWakeFloor), so such a report starts the next look a minute on.
+// PlanRating and PlanReason are the rating of the plan the issue ran, which the completion that
+// ends the retro carries and no other completion does (PlanRatingContract). PlanRating is a
+// pointer for the reason WakeAt is: a completion naming no rating is told from one naming 0, which
+// is refused as outside 1 to 5.
 type HandoffCompleteRequest struct {
 	GrantID        string     `json:"grantId"`
 	Summary        string     `json:"summary"`
@@ -54,7 +60,24 @@ type HandoffCompleteRequest struct {
 	HandoffID      string     `json:"handoffId,omitempty"`
 	HandoffVersion int        `json:"handoffVersion,omitempty"`
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
+	PlanRating     *int       `json:"planRating,omitempty"`
+	PlanReason     string     `json:"planReason,omitempty"`
 }
+
+// PlanRatingContract is the daemon contract that added the rating of the plan to the completion
+// that ends the retro (version.go's 155): planRating, a whole number from 1 (the plan cost the
+// work) to 5 (the plan fit the work), and planReason, why, the two together. The agent that does
+// the retro gives it, so the route takes the two on the completion whose phase is retro (phase.Of,
+// never the role) and refuses them on every other completion and on a production check's report
+// (PLAN_RATING_UNEXPECTED). A claim whose plugin declared this contract or a later one must rate
+// (PLAN_RATING_REQUIRED); a plugin below it never sends the two, and its retro, where the daemon
+// serves its claim (staleClaim), completes with no rating.
+const PlanRatingContract = 155
+
+// planReasonMax is the most characters, counted as Unicode code points, a rating's reason holds:
+// Dispatch's record of the retro takes a reason of one to 2,000 characters, so a longer one taken
+// here could never be written there.
+const planReasonMax = 2000
 
 // HandoffCompleteResponse confirms that the completion fact committed. It carries nothing: the
 // daemon merges nothing and reads no head, so no completion has anything to answer with.
@@ -297,8 +320,19 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
 	of := phase.Of(grant.Role, issue.Phase)
+	endsRetro := of == phase.Retro
 	if of == "" {
 		of = issue.Phase
+	}
+	// The rating of the plan is the retro's (planRatingRefusal), and which completion ends the
+	// retro is phase.Of's answer itself rather than the issue's phase the architect falls back to,
+	// since an architect ends no phase. It is read past the fences above, which decide whether
+	// this completion is the turn's own work at all, so a completion of a run or an entry that is
+	// over is told that rather than asked for a rating; and before the handoff record and the pull
+	// request are read, so a rating where none belongs costs no read of Dispatch or GitHub.
+	if refusal := planRatingRefusal(req, endsRetro, c.PluginContract, issue.Key, fmt.Sprintf("this completion of phase %s of %s", of, issue.Key)); refusal != nil {
+		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+		return
 	}
 	word, writer, handoffPhase := phase.Handoff(of)
 	namesRecord := req.HandoffID != "" || req.HandoffVersion != 0
@@ -351,9 +385,16 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			return
 		}
 	}
+	// The rating rides only the completion that ends the retro (planRatingRefusal above), and it is
+	// left out of the key as the summary is: the first completion is what the workflow took, so a
+	// retry that rates again is answered already received and the first rating stands.
+	rating := 0
+	if req.PlanRating != nil {
+		rating = *req.PlanRating
+	}
 	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion}, s.handlers...)
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, PlanReason: req.PlanReason}, s.handlers...)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -376,6 +417,51 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	writeJSON(w, http.StatusOK, HandoffCompleteResponse{})
 	return
+}
+
+// planRatingRefusal holds a completion's rating of the plan to PlanRatingContract's rule, and is nil
+// when the completion carries what it should. endsRetro is whether the completion is the one that
+// ends the retro of issue (phase.Of is retro), pluginContract the contract the claim's plugin
+// declared at its registration (supervise.Claim.PluginContract), and what names the completion in
+// a refusal. Every refusal is a 400 its caller writes before anything is recorded, so the same
+// completion sent again, corrected, is taken:
+//
+//   - PLAN_RATING_UNEXPECTED: a completion that does not end the retro names planRating or
+//     planReason. Dropping them unread would let an agent believe it had rated the plan.
+//   - PLAN_RATING_REQUIRED: the completion that ends the retro names neither, from a claim whose
+//     plugin declared PlanRatingContract or a later one, whose tool takes the two. A plugin before
+//     it, and a claim that recorded no contract (0), never sends them and completes unrated.
+//   - PLAN_RATING_INPUT: a rating outside 1 to 5, one of the two without the other, or a reason
+//     that is blank or holds more than planReasonMax characters, counted as Unicode code points.
+func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContract int, issue, what string) *intake.Refusal {
+	named := req.PlanRating != nil || req.PlanReason != ""
+	switch {
+	case !endsRetro && named:
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
+			"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
+	case !named && endsRetro && pluginContract >= PlanRatingContract:
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
+			"this completion ends the retro of %s and carries no rating of the plan: rate the plan the issue ran from 1 (the plan cost the work) to 5 (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", issue)}
+	case !named:
+		return nil
+	}
+	var wrong string
+	switch length := utf8.RuneCountInString(req.PlanReason); {
+	case req.PlanRating == nil:
+		wrong = "planReason comes with no planRating"
+	case *req.PlanRating < 1 || *req.PlanRating > 5:
+		wrong = fmt.Sprintf("planRating %d is outside 1 to 5", *req.PlanRating)
+	case req.PlanReason == "":
+		wrong = fmt.Sprintf("planRating %d comes with no planReason", *req.PlanRating)
+	case strings.TrimSpace(req.PlanReason) == "":
+		wrong = "planReason is blank"
+	case length > planReasonMax:
+		wrong = fmt.Sprintf("planReason is %d characters, and it holds at most %d", length, planReasonMax)
+	default:
+		return nil
+	}
+	return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_INPUT", Message: fmt.Sprintf(
+		"%s: a rating of the plan is a whole number from 1 to 5 in planRating with why in planReason, one to %d characters, the two together; nothing was recorded", wrong, planReasonMax)}
 }
 
 // handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,
@@ -830,6 +916,8 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 //   - CHECK_WAKE_UNEXPECTED: a wakeAt where no look follows it — on a pass or a fail, each of
 //     which closes the check, or on a pending on the check's last look, after which the check
 //     closes as not run.
+//   - PLAN_RATING_UNEXPECTED: a planRating or a planReason, which only the completion that ends
+//     the retro carries (planRatingRefusal).
 //
 // No commit is read: the look pushed nothing. No run is read either: the check fences itself on
 // the issue and the look, since the look's task is no phase's run and a woken session may hold an
@@ -876,6 +964,10 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		}
 		writeFailure(w, http.StatusBadRequest, "CHECK_WAKE_UNEXPECTED", fmt.Sprintf(
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
+		return
+	}
+	if refusal := planRatingRefusal(req, false, 0, grant.Issue, fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)); refusal != nil {
+		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
 	eventID := fmt.Sprintf("check:%s:%s:%d:%s", grant.Issue, check.ID(), look.Look, req.Verdict)

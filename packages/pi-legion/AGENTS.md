@@ -95,7 +95,13 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 146 (dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 155 (the completion that
+ends the retro rates the plan the issue ran: `LegionHandoffCompleteRequest` takes `planRating`, a
+whole number from 1 to 5, and `planReason`, why, the two together; the daemon refuses them on every
+other completion, `PLAN_RATING_UNEXPECTED`, and refuses the retro's completion without them from a
+claim at 155 or later, `PLAN_RATING_REQUIRED`, while a plugin below 155 never sends them and its
+retro, where the daemon serves it, completes with no rating; no shape of the state moves), after
+contract 146's architect handshake (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
@@ -669,7 +675,11 @@ shares, which is then often a sibling's commit; retro, the merger, a left phase 
 record and every other phase report the commit the workspace stands on, `@-`, and so does an
 implementer whose left record names no head, which sends `@-` alone, naming no record. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
-`handoffVersion`, `commit` and `wakeAt` where they apply). A
+`handoffVersion`, `commit`, `wakeAt`, `planRating` and `planReason` where they apply).
+The completion that ends the retro carries the agent's rating of the plan, `plan_rating` and
+`plan_reason`, sent as `planRating` and `planReason`: the plugin refuses one without the other,
+posting nothing, and sends the two as given on any completion, since which completion ends the
+retro is the daemon's to say (`PLAN_RATING_UNEXPECTED`, `PLAN_RATING_REQUIRED`). A
 report on a look of a closed issue's production check is the one call that finds neither: the
 operation reads the daemon's state first, and a call on an issue in `done` whose
 `check` is open is a check report, posted with its `verdict` (`pass`, `pending` or `fail`, required

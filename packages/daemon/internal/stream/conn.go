@@ -494,8 +494,9 @@ func (c *Conn) logNotAFrame(line []byte, err error) {
 // dispatch acts on one whole frame. A tool call starting or ending is pushed as the length and
 // the fingerprint of its arguments (ToolStep), which is everything the supervisor records of
 // them and the only thing computed here: their text stops at this reader, so no queue of the
-// daemon's holds a credential a shell command carried. OMP's other events — message updates,
-// errors — are not facts the daemon supervises on, and are dropped, except an extension's
+// daemon's holds a credential a shell command carried. An assistant message's end is pushed as
+// the model that answered and nothing of its text (answeredBy). OMP's other events — message
+// updates, errors — are not facts the daemon supervises on, and are dropped, except an extension's
 // failure, which leaves the agent running without what the extension gives it (the Legion
 // plugin's tool, when its session_start fails) and is on no other record the daemon reads, so it
 // is logged.
@@ -535,7 +536,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.Response:
 		c.answer(frame)
 	case shimwire.Raw:
-		if frame.Type == "extension_error" {
+		switch frame.Type {
+		case "extension_error":
 			var event struct {
 				ExtensionPath string `json:"extensionPath"`
 				Event         string `json:"event"`
@@ -544,6 +546,11 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 			_ = json.Unmarshal(frame.JSON, &event)
 			c.log.Warn("worker-stream: an extension of the worker's Oh My Pi failed", "claim", c.claim,
 				"extension", event.ExtensionPath, "event", event.Event, "error", event.Error)
+		case "message_end":
+			if answered, ok := answeredBy(frame.JSON); ok {
+				answered.Claim = c.claim
+				c.events.push(answered)
+			}
 		}
 	case shimwire.AdoptWorkingCopyResult:
 		c.answerShim(frame.ID, frame)
@@ -567,6 +574,32 @@ func stepArgsHash(args []byte) string {
 	}
 	sum := sha256.Sum256(args)
 	return hex.EncodeToString(sum[:8])
+}
+
+// syntheticModel is the model Claude Code names on a message no model wrote, such as its own
+// answer to a provider's refusal (internal/claudebridge's testdata/api-error-429.jsonl).
+const syntheticModel = "<synthetic>"
+
+// answeredBy is the model a message_end names as the one that answered: an assistant message
+// whose message.model is set and is not syntheticModel. A user's message, a tool's result and a
+// message no model wrote answer nothing, and neither does a frame that is not the shape Oh My Pi
+// writes (internal/testbin's omp frames, omp://rpc.md).
+func answeredBy(raw json.RawMessage) (Answered, bool) {
+	var frame struct {
+		Message struct {
+			Role     string `json:"role"`
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &frame) != nil {
+		return Answered{}, false
+	}
+	m := frame.Message
+	if m.Role != "assistant" || m.Model == "" || m.Model == syntheticModel {
+		return Answered{}, false
+	}
+	return Answered{Provider: m.Provider, Model: m.Model}, true
 }
 
 // answerShim hands a frame the shim answered itself to the request waiting on its id; one nobody

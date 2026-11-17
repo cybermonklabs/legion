@@ -62,6 +62,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   // A session's own conversation belongs to no issue, so the call names the session instead.
   dispatch_send_to_agent: true,
   dispatch_architecture_sync: true,
+  dispatch_plans: true,
 };
 
 function canonicalExternalIssueRef(value: string): string {

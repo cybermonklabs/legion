@@ -231,10 +231,12 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 
 // queuedKinds counts every queued row by kind, with no start passed over: in this package every
 // start carries a task — a phase worker's is one row and carries it (StartOrOwe) — and the
-// task-less starts admission brings back are written in internal/admit, never here.
+// task-less starts admission brings back are written in internal/admit, never here. A step record
+// is left out: the tests of the step sites (step_sites_test.go) read those rows exactly
+// (stepWrites), so every row of any other kind is still counted here.
 func queuedKinds(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox where kind <> $1`, string(record.OutboxKindStepRecord))
 	if err != nil {
 		t.Fatalf("read the outbox: %v", err)
 	}

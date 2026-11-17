@@ -846,18 +846,21 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 
 // The implementer's retro writes no handoff, so it reports the commit the workspace stands on, the
 // one its implementing round already reported: the completion is retro's own, not a repeat. Retro
-// ends with no handoff record, and a completion naming one is refused.
+// ends with no handoff record, and a completion naming one is refused. Each completion rates the
+// plan, as a retro from a plugin at PlanRatingContract must (handoff_rating_test.go).
 func TestHandoffCompleteRecordsRetroAtTheCommitItStandsOn(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
-	named := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee", HandoffID: implementer.writeHandoff("implement", 3), HandoffVersion: 3}),
+	named := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee", HandoffID: implementer.writeHandoff("implement", 3), HandoffVersion: 3,
+		PlanRating: new(4), PlanReason: "The plan fit the work."}),
 		http.StatusConflict, "HANDOFF_RECORD_MISMATCH")
 	if !strings.Contains(named, "phase retro of LEGION-208 ends with no handoff record") {
 		t.Fatalf("retro naming a record was refused with %q; want the phase named", named)
 	}
-	recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee"})
+	recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
+		PlanRating: new(4), PlanReason: "The plan fit the work."})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("retro handoff = %d: %s", recorder.Code, recorder.Body)
 	}

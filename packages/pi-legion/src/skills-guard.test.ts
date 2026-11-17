@@ -668,6 +668,23 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
   expect(carried).toEqual([]);
 });
 
+// The completion that ends the retro rates the plan, and the daemon refuses each rating it cannot
+// take (planRatingRefusal in packages/daemon/internal/api/handoff.go): none at all
+// (PLAN_RATING_REQUIRED), and a rating outside 1 to 5, one of the two without the other, or a
+// reason that is blank or too long (PLAN_RATING_INPUT), recording nothing either way. The step that
+// gives the two fields says both refusals, so an agent that sends one field alone knows what the
+// daemon does with it; prompts_test.go pins the implementer prompt's copy. This shows the text
+// ships, never that a role follows it.
+test("the retro skill says which ratings of the plan the daemon refuses", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  expect(retro).toContain(
+    "Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`) and records nothing, so complete again with both."
+  );
+  expect(retro).toContain(
+    "The daemon also refuses a rating outside 1 to 5, one of the two without the other, or a reason that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`), again recording nothing."
+  );
+});
+
 // dispatch://INFRA-3116's rule, beside the rules above: where a tree builds or changes a surface a
 // person opens, the architect shows that person the surface and gets their answer before it asks
 // them to approve the root spec. The rule is one bullet of section 1 and the section of the

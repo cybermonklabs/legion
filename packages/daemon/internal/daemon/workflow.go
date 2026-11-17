@@ -86,7 +86,8 @@ type workflowRuntime struct {
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
 	// at open, before the outbox exists, and the facts the boot applies before attach write rows
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
-	// then — the outbox's boot sweep finds every row written before it ran.
+	// then — the outbox's boot sweep finds every row written before it ran. The engine's read of a
+	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
 	// limits are where the deployment's claim budgets run out (supervise.Limits, built once at
 	// daemon.go's Deps), taken from the supervisor at attach: a failed claim's fact carries them
@@ -436,6 +437,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, err
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread, engineCfg.ReadMergeState = w, w.noteUnread, w.queueMergeState
+	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
@@ -552,6 +554,31 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 	if r := w.outboxWake.Load(); r != nil {
 		r.wake(issue, kind)
 	}
+}
+
+// stepAgent is the engine's read of the agent of a step where it writes the step's record
+// (workflow.Config.StepAgent): the session the claim's machine published (supervise.Machine.View)
+// and the model that answered last in that session (supervise.Machine.LastAnswer). It reaches the
+// supervisor through the outbox attach stored, so a fact the boot applies before attach reads
+// nothing, as does a claim this daemon does not supervise. Neither read waits on a decision in
+// flight, so the engine's transaction may make them. The session is read on both sides of the
+// model, and a model read while the session changed is left out, so the pair never names a model
+// with a session it did not serve; a later write of the record can still fill it.
+func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
+	r := w.outboxWake.Load()
+	if r == nil || r.supervisor == nil {
+		return workflow.StepAgent{}
+	}
+	machine, ok := r.supervisor.Machine(token)
+	if !ok {
+		return workflow.StepAgent{}
+	}
+	session := machine.View().Session
+	model := machine.LastAnswer().Model
+	if machine.View().Session != session {
+		model = ""
+	}
+	return workflow.StepAgent{Session: session, Model: model}
 }
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot

@@ -460,46 +460,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /legion/v1/state", s.stateRoute)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("GET /readyz", s.readyz)
-
-	mux.HandleFunc("POST /legion/v1/claims/register", s.register)
-	mux.HandleFunc("POST /legion/v1/claims/ready", s.ready)
-	mux.HandleFunc("POST /legion/v1/claims/ready-for-update", s.readyForUpdate)
-	mux.HandleFunc("POST /legion/v1/claims/exit", s.exit)
-	mux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)
-	mux.HandleFunc("POST /legion/v1/claims/activity", s.activity)
-	mux.HandleFunc("POST /legion/v1/claims/release-records", s.releaseRecords)
-	mux.HandleFunc("POST /legion/v1/grants", s.grant)
-	mux.HandleFunc("POST /legion/v1/controller/secret", s.controllerSecret)
-	mux.HandleFunc("POST /legion/v1/controller/github-credential", s.controllerGitHubCredential)
-	mux.HandleFunc("POST /legion/v1/handoff/complete", s.handoffComplete)
-	mux.HandleFunc("POST /legion/v1/issues/status", s.issueStatus)
-	mux.HandleFunc("POST /legion/v1/claims/fresh-session", s.claimFreshSession)
-	mux.HandleFunc("POST /legion/v1/claims/compact", s.claimCompact)
-	mux.HandleFunc("POST /legion/v1/gates/register", s.gateRegister)
-	mux.HandleFunc("POST /legion/v1/waves/release", s.waveRelease)
-	mux.HandleFunc("POST /legion/v1/phase/backward", s.phaseBackward)
-	mux.HandleFunc("POST /legion/v1/phase/retry", s.phaseRetry)
-	mux.HandleFunc("POST /legion/v1/signoff", s.signOff)
-	mux.HandleFunc("POST /legion/v1/roots/close", s.closeRoot)
-	mux.HandleFunc("POST /legion/v1/children/park", s.parkChild)
-	mux.HandleFunc("POST /legion/v1/children/rerun", s.rerunChild)
-
-	mux.HandleFunc("POST /legion/v1/operator/claims", s.operator(s.spawn))
-	mux.HandleFunc("GET /legion/v1/operator/claims", s.operator(s.list))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree))
-
+	for _, route := range s.routes() {
+		mux.HandleFunc(route.pattern, route.handler)
+	}
 	// The catch-all answers every unrouted request, including a known path asked for with the
 	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
 	// script needs.
@@ -511,6 +474,59 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
 		Handler:           trackTransactions(mux),
 		ReadHeaderTimeout: readHeaderTimeout,
+	}
+}
+
+// route is one route of the daemon's API: its ServeMux pattern and the handler that serves it.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// routes is every route the daemon's API serves, in the one table NewServer mounts, so a test of
+// a rule every route keeps walks the routes themselves (TestNoRouteTakesABodyStringHoldingANul)
+// rather than a list of its own that a new route never joins.
+func (s *server) routes() []route {
+	return []route{
+		{"GET /legion/v1/state", s.stateRoute},
+		{"GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		}},
+		{"GET /readyz", s.readyz},
+
+		{"POST /legion/v1/claims/register", s.register},
+		{"POST /legion/v1/claims/ready", s.ready},
+		{"POST /legion/v1/claims/ready-for-update", s.readyForUpdate},
+		{"POST /legion/v1/claims/exit", s.exit},
+		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
+		{"POST /legion/v1/claims/activity", s.activity},
+		{"POST /legion/v1/claims/release-records", s.releaseRecords},
+		{"POST /legion/v1/grants", s.grant},
+		{"POST /legion/v1/controller/secret", s.controllerSecret},
+		{"POST /legion/v1/controller/github-credential", s.controllerGitHubCredential},
+		{"POST /legion/v1/handoff/complete", s.handoffComplete},
+		{"POST /legion/v1/issues/status", s.issueStatus},
+		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
+		{"POST /legion/v1/claims/compact", s.claimCompact},
+		{"POST /legion/v1/gates/register", s.gateRegister},
+		{"POST /legion/v1/waves/release", s.waveRelease},
+		{"POST /legion/v1/phase/backward", s.phaseBackward},
+		{"POST /legion/v1/phase/retry", s.phaseRetry},
+		{"POST /legion/v1/signoff", s.signOff},
+		{"POST /legion/v1/roots/close", s.closeRoot},
+		{"POST /legion/v1/children/park", s.parkChild},
+		{"POST /legion/v1/children/rerun", s.rerunChild},
+
+		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
+		{"GET /legion/v1/operator/claims", s.operator(s.list)},
+		{"POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent))},
+		{"POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent))},
+		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent))},
+		{"POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent))},
+		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
+		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
+		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
+		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
 	}
 }
 

@@ -1211,6 +1211,9 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},
 			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3}},
 		{stream.Closed{Claim: token}, supervise.StreamClosed{Claim: token}},
+		{stream.Answered{Claim: token, Provider: "second", Model: "second-model"},
+			supervise.StreamAnswered{Claim: token, Model: "second/second-model"}},
+		{stream.Answered{Claim: token, Model: "claude-sonnet-4-5"}, supervise.StreamAnswered{Claim: token, Model: "claude-sonnet-4-5"}},
 	}
 	mapped := map[string]bool{}
 	for _, testCase := range cases {

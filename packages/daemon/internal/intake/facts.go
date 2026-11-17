@@ -885,6 +885,12 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
+	// PlanRating and PlanReason are the rating of the plan the issue ran, from 1 to 5, and why,
+	// which the completion that ends the retro carries (api.PlanRatingContract): the route took
+	// them only on that completion and held them to the scale and to coming together. 0 and ""
+	// on every other completion, and on a retro's from a plugin before that contract.
+	PlanRating int
+	PlanReason string
 }
 
 func (HandoffComplete) isFact() {}

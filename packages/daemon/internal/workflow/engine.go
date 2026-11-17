@@ -125,6 +125,12 @@ type Config struct {
 	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
+	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
+	// step's start or end (startStep, endStep): the session its claim records and the model that
+	// answered it last in that session (supervise.Machine.LastAnswer), read from the claim's
+	// machine without waiting on a decision in flight. Nil reads nothing, so a record names no
+	// session and no model, which is the API-only daemon and every test that reads no agent.
+	StepAgent func(claim.Token) StepAgent
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
@@ -698,6 +704,10 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 			return err
 		}
 	}
+	// The new run ends the step the old one stood in, read before the clear below empties it.
+	if err := e.endStep(ctx, tx, child, stepStopped); err != nil {
+		return err
+	}
 	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
 		return err
 	}
@@ -892,7 +902,16 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, "")
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil {
+			return intake.Result{}, err
+		}
+		// The completion that ends the retro carries the rating its agent gave the plan (the
+		// route took it on no other completion, api.PlanRatingContract), and a plugin before
+		// that contract sends none, so its retro writes no rating.
+		if fact.PlanRating == 0 {
+			return intake.Result{}, nil
+		}
+		return intake.Result{}, e.rateRetro(ctx, tx, *issue, fact.PlanRating, fact.PlanReason)
 	}
 	return intake.Result{}, nil
 }
@@ -1464,6 +1483,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.status(ctx, tx, issue, status); err != nil {
 		return err
 	}
+	// The move ends the step the issue stood in, on the issue as it stood: before the phase write,
+	// and before the start below writes the step it moves into.
+	if err := e.endStep(ctx, tx, issue, endOfTransition(trigger, issue.Phase, row.To, handoff)); err != nil {
+		return err
+	}
 	from := issue.Phase
 	issue.Phase, issue.Hold = row.To, nil
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
@@ -1493,6 +1517,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
 	}
+	// The move out of admitted is where the run's work starts, and so where the plan it carries
+	// out is written: the default plan (defaultPlan), the steps whose first is the start below.
+	if trigger == TriggerGateOpened && recordsSteps(issue) {
+		if err := e.enqueue(ctx, tx, issue.Key, defaultPlan(issue)); err != nil {
+			return err
+		}
+	}
 	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
 	// session until its issue closes (leave), and its phase entry ends here, not its process. The
 	// workspace passes to the next role at the completion this move records, which the worker reports
@@ -1514,7 +1545,23 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// rest of its tree, and an issue that arrives there and waits must be told why: the notice its
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
-	if !mergedAlready {
+	switch {
+	case mergedAlready:
+		// The merge's step starts all the same, run by nobody, and the close ends it.
+		if err := e.startStep(ctx, tx, issue, ""); err != nil {
+			return err
+		}
+	case row.To == phase.Accepting && recordsSteps(issue):
+		// Accepting's role is the tree's architect, which start skips, so the step's start is
+		// written here, run by that architect.
+		architect, err := stepClaim(issue, issue.Tree, claim.RoleArchitect)
+		if err != nil {
+			return err
+		}
+		if err := e.startStep(ctx, tx, issue, architect); err != nil {
+			return err
+		}
+	default:
 		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
 			return err
 		}

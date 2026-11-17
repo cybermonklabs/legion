@@ -379,6 +379,28 @@ func TestUndecodableHandoffCompleteBodyRefusesAStaleClaimButNamesTheFieldForACur
 	}
 }
 
+// A handoff/complete body whose summary holds a NUL character is an undecodable body like any
+// other: from a stale claim it is refused the stale-caller 409 first, as the unknown field above
+// is, and from a current claim it gets the decoder's 400 naming the string's place.
+func TestNulHandoffCompleteBodyRefusesAStaleClaimButNamesTheStringForACurrentOne(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+	stale := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	staleGrant := stale.grant(t)
+	endTurn(t, h, stale.token)
+	h.makeStale(t, stale.token, stale.session, stale.secret, DaemonAPIVersion-1)
+	wantFailure(t, h.complete(HandoffCompleteRequest{GrantID: staleGrant, Summary: "implemented" + nulText, Commit: "aabbcc"}),
+		http.StatusConflict, "STALE_PLUGIN_CONTRACT")
+
+	seedIssueAt(t, h, "LEGION-209", phase.Implementing)
+	current := newLiveClaim(t, h, "LEGION-209", claim.RoleImplementer)
+	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: current.grant(t), Summary: "implemented" + nulText, Commit: "aabbcc"}),
+		http.StatusBadRequest, "invalid request body: "+nulError("summary", 13))
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the two refusals = %#v, want none applied", got)
+	}
+}
+
 // The register route decodes leniently from the start: its body carries the contract the
 // record-and-relaunch path needs, so an unknown field reaches registration rather than a 400.
 func TestUndecodableRegisterBodyReachesRegistration(t *testing.T) {

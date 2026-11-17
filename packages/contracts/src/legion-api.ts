@@ -1604,6 +1604,19 @@ export const LegionControllerGrantRequest = z.strictObject({
   secret: nonEmptyString,
 });
 
+/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
+ * daemon counts them (api's planReasonMax): Dispatch's record of the retro takes one to 2,000. */
+const PLAN_REASON_MAX = 2000;
+
+/** `planReason`: why the retro rated the plan as it did, one to `PLAN_REASON_MAX` characters that
+ * are not all blank. A string's `length` counts UTF-16 units, so the bound counts code points. */
+const legionPlanReason = z
+  .string()
+  .refine((reason) => reason.trim() !== "", { message: "planReason says why" })
+  .refine((reason) => [...reason].length <= PLAN_REASON_MAX, {
+    message: `planReason holds at most ${PLAN_REASON_MAX} characters`,
+  });
+
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
  * completion, or the checking role's report on a look of its closed issue's production check.
  * A file-backed phase (planning, implementing, testing, reviewing) ends with a handoff record on
@@ -1629,16 +1642,27 @@ export const LegionControllerGrantRequest = z.strictObject({
  * checking agent asks to be woken for its next look, which a pending report on a look that is not
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
- * the daemon's decode of it refuses a time with no seconds, and so does this. */
-export const LegionHandoffCompleteRequest = z.strictObject({
-  grantId: nonEmptyString,
-  summary: nonEmptyString,
-  verdict: z.string(),
-  commit: nonEmptyString.optional(),
-  handoffId: nonEmptyString.optional(),
-  handoffVersion: z.number().int().positive().optional(),
-  wakeAt: LegionInstant.optional(),
-});
+ * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
+ * `planReason` are the rating of the plan the issue ran (contract 155), which the completion that
+ * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
+ * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
+ * (`PLAN_RATING_INPUT`). A plugin at contract 155 or later must send both on its retro
+ * (`PLAN_RATING_REQUIRED`). */
+export const LegionHandoffCompleteRequest = z
+  .strictObject({
+    grantId: nonEmptyString,
+    summary: nonEmptyString,
+    verdict: z.string(),
+    commit: nonEmptyString.optional(),
+    handoffId: nonEmptyString.optional(),
+    handoffVersion: z.number().int().positive().optional(),
+    wakeAt: LegionInstant.optional(),
+    planRating: z.number().int().min(1).max(5).optional(),
+    planReason: legionPlanReason.optional(),
+  })
+  .refine((request) => (request.planRating === undefined) === (request.planReason === undefined), {
+    message: "planRating and planReason appear together",
+  });
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({

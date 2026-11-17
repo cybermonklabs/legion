@@ -122,6 +122,12 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listHandoffs: (client) => client.listHandoffs("DSP-1"),
   latestHandoff: (client) => client.latestHandoff("DSP-1", "implement"),
   handoff: (client) => client.handoff("handoff-1"),
+  listSteps: (client) => client.listSteps("DSP-1"),
+  listProjectPlans: (client) =>
+    client.listProjectPlans("DSP", {
+      since: "2026-11-01T00:00:00Z",
+      until: "2026-11-17T00:00:00Z",
+    }),
 };
 
 afterEach(forgetKeyedLayerMemory);

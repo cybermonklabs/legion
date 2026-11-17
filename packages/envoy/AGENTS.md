@@ -356,6 +356,34 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
+- **Step records and plans of an issue**: `internal/dispatch/api/steps.go`, `internal/dispatch/api/plans.go`, `internal/dispatch/workflowstore/`, `store/migrations/20261116235202_workflow_nodes.up.sql`
+
+  The Legion daemon writes each run of each step of an issue twice, at its start and at its end, under one id it derives for the run, with `PUT /api/v1/issues/{key}/steps/{id}`;
+  only the session `legion-daemon:<PROJECT>` of the issue's project writes (`403 STEP_WRITER`), as the daemon's `DaemonSession` names it from the key.
+  A write sets each field the record does not hold yet and leaves every field it holds, so a start and an end land in either order, a write sent again changes nothing and no write is refused for its order;
+  the first write of a run names its task, step, kind, role and generation (`400 STEP_INPUT`, as every value outside its form, the message naming the field).
+  An id whose record is a run of another issue is `409 STEP_OTHER_ISSUE`, and an issue Dispatch does not hold `404 ISSUE_NOT_FOUND`, which the daemon tells from the router's `NOT_FOUND` of a Dispatch older than the route.
+  The write reads the issue `for key share` with no open check, so the merge that closes an issue still records its step, and it appends no issue event.
+  `GET /api/v1/issues/{key}/steps` answers every run task by task, in the order of each task's first run, each with its attempt, which the read computes and no write stores, and a retro's rating with its reason (both null where none);
+  a key no issue carries reads as an issue with no task, as its handoffs read, and a read-only token may call it (`readScopeRoutes`).
+  Beside the step records, three routes write and read the plans the runs ran from and the ratings the retros gave them:
+
+  - `PUT /api/v1/issues/{key}/steps/{id}/rating` writes the rating the agent that did a retro gave the plan into the retro's record:
+    its body is the step write's with `rating` (1 to 5) and `rating_reason` (not blank, at most `RatingReasonMost`, 2,000 code points) required, so it makes the retro's record where the run's start and end have not landed, each is set once, and a record held or written as another kind refuses them (`400 STEP_INPUT`).
+    The rating is a route and not a member of the step write because `decodeJSON` ignores a member its route does not declare: a Dispatch older than the rating would drop the member in silence, where it answers the route its router's `NOT_FOUND`, which the daemon sends again.
+
+  - `PUT /api/v1/issues/{key}/plans/{id}` writes the plan a run of an issue runs from, under the step write's writer check (`403 STEP_WRITER`), the same `for key share` read with no open check, and no event:
+    every write names the run's generation, its source, `default` or `owner` (the owner's document `artifact_id` and its `version` with `owner` alone), and its tasks, each an id and its steps (a role or `role:key`).
+    Each field is set once, a value outside its form is `400 PLAN_INPUT`, the message naming the field, and an id whose plan is another issue's is `409 PLAN_OTHER_ISSUE`.
+
+  - `GET /api/v1/projects/{key}/plans` lists each finished issue of the project, status `done` with `closed_at` set, newest close first, with `?since=` and `?until=` bounding the close to `[since, until)`
+    (`400 INVALID_QUERY` for a bound that is not RFC 3339 or a since not before until, `404 PROJECT_NOT_FOUND` for a project Dispatch does not hold).
+    Each issue carries its newest plan (the highest generation, null where it has none), every retro's rating in the order the retros ran, the earliest start and the latest end of its runs with their difference in whole seconds (each null where no run holds one), and its count of runs of kind `step` that failed.
+    The read is one statement for the whole project, whatever the number of its issues, and a read-only token may call it (`readScopeRoutes`).
+
+  `workflowstore` is the one writer of the two tables, a node per run or plan and a tuple per fact.
+  Shapes: `StepRecord`, `StepTask`, `IssueSteps`, `PlanRecord`, `PlanTask`, `PlanRating`, `FinishedIssue`, `ProjectPlans` in `internal/dispatch/model/model.go`, generated into `packages/contracts/src/dispatch-api.generated.ts`
+
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;

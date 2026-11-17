@@ -2268,6 +2268,66 @@ export const dispatchToolSpecs = [
     strict: true,
   },
   {
+    name: "dispatch_steps",
+    example: { issue: "DSP-1" },
+    description:
+      "Print each step that ran on an issue, as the Legion daemon recorded it at the step's " +
+      "start and at its end. The first line is `<KEY>: <n> steps in <m> tasks`. Then each run " +
+      "of a step prints one line, task by task, in the order each task first ran: `<task> " +
+      "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
+      "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
+      "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
+      "from 1. agent is the claim of the role that ran the step, and model is the model that " +
+      "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
+      "value prints -, and a run that has not ended prints running for its end and its result. " +
+      "A closed issue's steps read too. An issue that no step ran on, or that Dispatch does not " +
+      `hold, prints 0 steps in 0 tasks. ${ISSUE_REFERENCE}`,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+    }),
+    strict: true,
+  },
+  {
+    name: "dispatch_plans",
+    example: { project: "INFRA" },
+    description:
+      "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
+      "from, the rating each retro gave that plan with its reason, its time and its count of " +
+      "failed steps. An issue is finished when its status is done and Dispatch closed it. The " +
+      "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
+      "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
+      '<rating>/5 "<reason>"[, <rating>/5 "<reason>" ...] time <h>h<m>m failed steps <n>`. ' +
+      "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
+      "and the plan is the one of the issue's newest run. A rating is 1 (the plan cost the " +
+      "work) to 5 (the plan fit the work), one for each retro in the order the retros ran, and " +
+      "its reason prints as a JSON string. time runs from the first start of the issue's steps " +
+      "to the last end, in whole hours and minutes rounded down. failed steps counts the runs " +
+      "of a step that failed, retros and merges left out. An issue with no plan prints plan " +
+      "none, one with no rating prints ratings none, and one whose time is not known prints " +
+      "time -: an issue Legion never ran prints all three. since and until, each an RFC 3339 " +
+      "time, keep the issues closed at or after since and before until.",
+    arguments: (z) => ({
+      project: z.string().describe("Project key whose finished issues to list, such as INFRA."),
+      since: z
+        .string()
+        .describe("Optional RFC 3339 time; only issues closed at or after it.")
+        .optional(),
+      until: z
+        .string()
+        .describe("Optional RFC 3339 time; only issues closed before it.")
+        .optional(),
+    }),
+    // The key rides in the request path; a missing project is the schema's own refusal.
+    validation: {
+      check: (value) => {
+        const { project } = value as { readonly project?: unknown };
+        return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
+      },
+      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+    },
+    strict: true,
+  },
+  {
     name: "dispatch_inbox",
     example: {},
     description:

@@ -485,16 +485,35 @@ func headerWayBack(t *testing.T, version int) string {
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
-// leftStandingVersion is the highest migration neither way back deletes,
-// 20261114031356_merge_queue_removal (dispatch://INFRA-3274, which main carries above the phase
-// entry), which is the version the store reports once both ways back have run.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
 	entryVerbatimVersion  = 20261114061900
-	leftStandingVersion   = 20261114031356
 )
+
+// wayBackVersions are the version rows the two ways back delete: this migration's block deletes
+// the four of contract 146, and the phase entry's block its own.
+var wayBackVersions = []int{phaseEntryVersion, stalledNoticesVersion, architectUpgradeVersion, claimHandshakeVersion, entryVerbatimVersion}
+
+// leftStandingVersion is the highest embedded migration neither way back deletes, which is the
+// version the store reports once both ways back have run. It is read from the embedded set rather
+// than written here, because every migration added above the phase entry's mark is that version
+// from then on.
+func leftStandingVersion(t *testing.T) int {
+	t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	highest := 0
+	for _, migration := range all {
+		if !slices.Contains(wayBackVersions, migration.Version) && migration.Version > highest {
+			highest = migration.Version
+		}
+	}
+	return highest
+}
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
 // upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
@@ -603,10 +622,17 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
-				if version != leftStandingVersion || marksTable || handshakeColumn || markColumn {
-					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
-						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
-						version, marksTable, handshakeColumn, markColumn, leftStandingVersion)
+				// The rows the blocks delete are read by name too: once a migration stands above
+				// all of them, the version the store reports is that migration's whether or not a
+				// block deleted its rows.
+				var undeleted int
+				if err := pool.QueryRow(ctx, `select count(*) from schema_version where version = any($1)`, wayBackVersions).Scan(&undeleted); err != nil {
+					t.Fatalf("count the version rows the ways back delete: %v", err)
+				}
+				if left := leftStandingVersion(t); version != left || undeleted != 0 || marksTable || handshakeColumn || markColumn {
+					t.Fatalf("after the two ways back the store reports version %d, %d of the rows the blocks delete stand, the marks' table stands: %v, "+
+						"a handshake column stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
+						version, undeleted, marksTable, handshakeColumn, markColumn, left)
 				}
 			}
 

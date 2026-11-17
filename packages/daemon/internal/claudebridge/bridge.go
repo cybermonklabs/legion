@@ -656,9 +656,12 @@ func blocksOf(message json.RawMessage) []contentBlock {
 	return m.Content
 }
 
-// assistant shows each tool call of the message on the pane through the shim. Nothing else of it
-// is read: the phase machine runs in the pane's `legion` MCP server, driven by Claude Code's own
-// hooks, and the bridge is transport.
+// assistant shows each tool call of the message on the pane through the shim, and names the model
+// that wrote the message as Oh My Pi's message_end does (message.provider and message.model), which
+// is what the daemon records as the model that served a step. A message no model wrote names none:
+// Claude Code marks its own answer to a provider's refusal `<synthetic>`
+// (testdata/api-error-429.jsonl:4). Nothing else of the message is read: the phase machine runs in
+// the pane's `legion` MCP server, driven by Claude Code's own hooks, and the bridge is transport.
 func (b *bridge) assistant(message json.RawMessage) {
 	for _, block := range blocksOf(message) {
 		if block.Type != "tool_use" {
@@ -670,7 +673,17 @@ func (b *bridge) assistant(message json.RawMessage) {
 		}
 		b.emitRaw(map[string]any{"type": "tool_execution_start", "toolName": block.Name, "args": args})
 	}
+	var written struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(message, &written) == nil && written.Model != "" && written.Model != syntheticModel {
+		b.emitRaw(map[string]any{"type": "message_end", "message": map[string]any{
+			"role": "assistant", "provider": "anthropic", "model": written.Model}})
+	}
 }
+
+// syntheticModel is the model Claude Code names on a message no model wrote.
+const syntheticModel = "<synthetic>"
 
 // echoed answers the delivery Claude Code has just taken: the oldest one sent, not yet answered,
 // whose text is the re-emitted user message's. The bridge's own user messages (the daemon's prompt,

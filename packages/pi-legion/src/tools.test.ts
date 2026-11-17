@@ -157,6 +157,11 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
   "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
   "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
+  "The agent that does the retro rates the plan the issue ran, its steps and the role that worked each (not the planner's `plan.md`), in the " +
+  "completion that ends the retro: `plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and " +
+  "`plan_reason`, one sentence of why, the two together. Any other completion that carries them is refused (PLAN_RATING_UNEXPECTED), and so is " +
+  "a rating outside 1 to 5 or a reason that is blank or longer than 2,000 characters (PLAN_RATING_INPUT), and the completion that ends the " +
+  "retro without them (PLAN_RATING_REQUIRED). " +
   "The daemon refuses " +
   "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
   "write this phase's handoff), " +
@@ -336,6 +341,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
     wake_at: { type: "string" },
+    plan_rating: { type: "integer", minimum: 1, maximum: 5 },
+    plan_reason: { type: "string" },
     round: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
@@ -389,7 +396,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -1184,6 +1191,52 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       },
     ]);
   }
+});
+
+// The agent that does the retro rates the plan the issue ran in the completion that ends the
+// retro. Retro writes no handoff, so the completion reports the commit the workspace stands on,
+// and the rating travels beside it under the daemon's names.
+test("the retro's handoff_complete posts its rating of the plan as planRating and planReason, with the commit the workspace stands on", async () => {
+  const reads: string[] = [];
+  const { calls, daemon } = recordingDaemon({ state: stateAt("retro") });
+  const reason = "The plan's tester step caught the regression the review would have missed.";
+  const result = await createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: paneEnv,
+        jj: paneJj(),
+        latestHandoff: paneDispatch(reads),
+      }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("implementer"),
+  }).execute(
+    "",
+    { op: "handoff_complete", summary: "Retro done.", plan_rating: 5, plan_reason: reason },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(result.isError).toBeUndefined();
+  expect(reads).toEqual([]);
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "Retro done.",
+      verdict: "",
+      commit: STANDING,
+      planRating: 5,
+      planReason: reason,
+    },
+  ]);
 });
 
 test("a completion once the issue moved on posts the role's own newest record of the phase it left, and @- where that phase writes none", async () => {

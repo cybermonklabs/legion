@@ -1192,6 +1192,29 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   }
 });
 
+// `s` is the Spec's and `t` starts the chord, so the Steps tab takes the next letter of its name.
+test("IssuePage opens the Steps tab with the t e chord", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await user.keyboard("t");
+    await user.keyboard("e");
+
+    await screen.findByRole("tab", { name: "Steps", selected: true });
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/steps");
+    await screen.findByText("No step of this issue has run in Legion.");
+    expect(steps).toHaveBeenCalledWith("CORE-1");
+  } finally {
+    view.unmount();
+    steps.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage opens the Collaborators tab with the t o chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);

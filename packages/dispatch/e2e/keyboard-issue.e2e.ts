@@ -124,6 +124,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     for (const [key, tab] of [
       ["k", "Verification"],
       ["p", "Plan"],
+      ["e", "Steps"],
       ["h", "Children"],
       ["a", "Artifacts"],
       ["v", "Activity"],
@@ -155,6 +156,9 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await expect(
       issueSection.getByRole("listitem").filter({ hasText: "Plan tab" }).locator("kbd")
     ).toHaveText(["t", "p"]);
+    await expect(
+      issueSection.getByRole("listitem").filter({ hasText: "Steps tab" }).locator("kbd")
+    ).toHaveText(["t", "e"]);
     // Collaborators is the last tab and takes `t o`; Activity takes `t v`, since `t a` is
     // Artifacts and `l` the labels.
     await expect(issueSection).toContainText("Activity tab");

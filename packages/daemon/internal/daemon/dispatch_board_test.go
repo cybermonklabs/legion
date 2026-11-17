@@ -23,9 +23,11 @@ const liveRepo = "acme/widgets"
 // before a status write, a release's walk up an issue's parent chain, an event's walk up its
 // Dispatch chain to the top) and 404s an issue it does not hold, records every status and message
 // the daemon posted, so a step can read back what the daemon told Dispatch and tell a write that
-// never came from one it cannot see, and serves the handoff records a step seeds (handoff), which a
-// phase completion names and the daemon reads back. Anything else is a call a live proof does not
-// expect, and fails the test as workflowConfig's stand-in does.
+// never came from one it cannot see, serves the handoff records a step seeds (handoff), which a
+// phase completion names and the daemon reads back, and takes the record of each step the daemon
+// writes (putStep), the rating a retro gave the plan (putRating) and the plan of each run (putPlan),
+// as Dispatch's routes take them. Anything else is a call a live proof does not expect, and fails
+// the test as workflowConfig's stand-in does.
 type liveDispatch struct {
 	t       *testing.T
 	project string
@@ -38,10 +40,15 @@ type liveDispatch struct {
 	lists bool
 	mu    sync.Mutex
 	// issues is each issue as this board holds it, the daemon's writes applied.
-	issues map[string]liveDispatchIssue
-	posted []liveDispatchWrite
-	// handoffs is each seeded handoff record by its id, as GET /api/v1/handoffs/{id} answers it.
+	issues   map[string]liveDispatchIssue
+	posted   []liveDispatchWrite
 	handoffs map[string]map[string]any
+	// steps is each step record the daemon wrote, by its id, its fields as the writes left them;
+	// stepOrder is the ids in the order of their first write.
+	steps     map[string]map[string]any
+	stepOrder []string
+	// plans is each plan the daemon wrote, by its id, its fields as the first write set them.
+	plans map[string]map[string]any
 }
 
 // liveDispatchIssue is one issue as the board holds it: its status, its parent ("" for none), and
@@ -63,7 +70,8 @@ type liveDispatchWrite struct {
 // configuration at url.
 func newLiveDispatch(t *testing.T, project string) *liveDispatch {
 	t.Helper()
-	b := &liveDispatch{t: t, project: project, issues: map[string]liveDispatchIssue{}, handoffs: map[string]map[string]any{}}
+	b := &liveDispatch{t: t, project: project, issues: map[string]liveDispatchIssue{}, handoffs: map[string]map[string]any{},
+		steps: map[string]map[string]any{}, plans: map[string]map[string]any{}}
 	server := httptest.NewServer(b)
 	t.Cleanup(server.Close)
 	b.url = server.URL
@@ -139,6 +147,12 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		b.record(write, w)
 	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/handoffs/"):
 		b.showHandoff(strings.TrimPrefix(path, "/api/v1/handoffs/"), w)
+	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/rating"):
+		b.putRating(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/rating"), req, w)
+	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/"):
+		b.putStep(key, strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), req, w)
+	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/plans/"):
+		b.putPlan(key, strings.TrimPrefix(path, "/api/v1/issues/"+key+"/plans/"), req, w)
 	default:
 		b.t.Errorf("Dispatch request = %s %s", req.Method, path)
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -202,6 +216,145 @@ func (b *liveDispatch) showHandoff(id string, w http.ResponseWriter) {
 	}
 	if err := json.NewEncoder(w).Encode(handoff); err != nil {
 		b.t.Errorf("write the Dispatch handoff %s: %v", id, err)
+	}
+}
+
+// putStep takes one write of the step record id of key, as Dispatch's PUT
+// /api/v1/issues/{key}/steps/{id} does: only the session legion-daemon:<project> writes one (403
+// STEP_WRITER for any other writer), each field is written once and kept, a field a write leaves
+// out keeps what an earlier write gave it, and the answer is 200 with the record as it stands after
+// the write and its attempt: the place of the record among the issue's records of the same task,
+// kind and step, in the order of their first write. The route declares no rating, so it ignores
+// one, as Dispatch ignores a member it does not declare.
+func (b *liveDispatch) putStep(key, id string, req *http.Request, w http.ResponseWriter) {
+	write, ok := b.daemonWrite(key, "a step record", req, w)
+	if !ok {
+		return
+	}
+	delete(write, "rating")
+	delete(write, "rating_reason")
+	b.writeStep(key, id, write, w)
+}
+
+// putRating takes the rating a retro gave the plan onto the step record id of key, as Dispatch's
+// PUT /api/v1/issues/{key}/steps/{id}/rating does: the step write's body and writer, which makes
+// the record where the retro's start and end have not landed, and a rating from 1 to 5 with its
+// reason, both required (400 STEP_INPUT otherwise), on a record of kind retro alone (400 STEP_INPUT
+// for any other kind), each written once.
+func (b *liveDispatch) putRating(key, id string, req *http.Request, w http.ResponseWriter) {
+	write, ok := b.daemonWrite(key, "a step record", req, w)
+	if !ok {
+		return
+	}
+	rating, rated := write["rating"].(float64)
+	reason, _ := write["rating_reason"].(string)
+	b.mu.Lock()
+	kind := write["kind"]
+	if stored, ok := b.steps[id]; ok && stored["kind"] != nil {
+		kind = stored["kind"]
+	}
+	b.mu.Unlock()
+	switch {
+	case !rated || rating < 1 || rating > 5 || rating != float64(int(rating)) || reason == "":
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"code":"STEP_INPUT","error":"rating is a whole number from 1 to 5, with its rating_reason"}`)
+		return
+	case kind != "retro":
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, `{"code":"STEP_INPUT","error":"a rating belongs to a retro's record; this record is of kind %v"}`, kind)
+		return
+	}
+	b.writeStep(key, id, write, w)
+}
+
+// daemonWrite decodes a write to a record of key, which only the session legion-daemon:<project>
+// makes (403 STEP_WRITER for any other writer, naming what), and answers its fields without the
+// actor.
+func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.ResponseWriter) (map[string]any, bool) {
+	var write map[string]any
+	if err := json.NewDecoder(req.Body).Decode(&write); err != nil {
+		b.t.Errorf("decode the write to %s: %v", req.URL.Path, err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return nil, false
+	}
+	project, _, _ := strings.Cut(key, "-")
+	actor, _ := write["actor"].(map[string]any)
+	if actor["kind"] != "session" || actor["id"] != dispatch.DaemonSession(key) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprintf(w, `{"code":"STEP_WRITER","error":"only the session legion-daemon:%s writes %s of %s"}`, project, what, key)
+		return nil, false
+	}
+	delete(write, "actor")
+	return write, true
+}
+
+// writeStep writes the fields of write onto the step record id of key, each field once, and
+// answers the record with its attempt (putStep).
+func (b *liveDispatch) writeStep(key, id string, write map[string]any, w http.ResponseWriter) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	stored, ok := b.steps[id]
+	if !ok {
+		stored = map[string]any{"id": id, "issue": key}
+		b.steps[id] = stored
+		b.stepOrder = append(b.stepOrder, id)
+	}
+	for field, value := range write {
+		if _, written := stored[field]; !written {
+			stored[field] = value
+		}
+	}
+	answer := map[string]any{"attempt": 0}
+	for field, value := range stored {
+		answer[field] = value
+	}
+	for _, other := range b.stepOrder {
+		record := b.steps[other]
+		if record["task"] == stored["task"] && record["kind"] == stored["kind"] && record["step"] == stored["step"] {
+			answer["attempt"] = answer["attempt"].(int) + 1
+		}
+		if other == id {
+			break
+		}
+	}
+	if err := json.NewEncoder(w).Encode(answer); err != nil {
+		b.t.Errorf("write the step record %s: %v", id, err)
+	}
+}
+
+// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does: only
+// the session legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), a plan of
+// the source default names no document and no version (400 PLAN_INPUT otherwise), each field is
+// set once, and the answer is 200 with the plan as it stands after the write.
+func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
+	write, ok := b.daemonWrite(key, "a plan", req, w)
+	if !ok {
+		return
+	}
+	if _, named := write["tasks"]; !named || write["source"] == nil || write["generation"] == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"code":"PLAN_INPUT","error":"a plan names its generation, its source and its tasks"}`)
+		return
+	}
+	if write["source"] == "default" && (write["artifact_id"] != nil || write["version"] != nil) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"code":"PLAN_INPUT","error":"a plan of the source default names no artifact_id and no version"}`)
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	stored, ok := b.plans[id]
+	if !ok {
+		stored = map[string]any{"id": id, "issue": key}
+		b.plans[id] = stored
+	}
+	for field, value := range write {
+		if _, written := stored[field]; !written {
+			stored[field] = value
+		}
+	}
+	if err := json.NewEncoder(w).Encode(stored); err != nil {
+		b.t.Errorf("write the plan %s: %v", id, err)
 	}
 }
 

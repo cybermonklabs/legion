@@ -51,6 +51,7 @@ import type {
   IssueRead,
   IssueReferences,
   IssueRouteStatus,
+  IssueSteps,
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
@@ -63,6 +64,7 @@ import type {
   OpenAsksResponse,
   Priorities,
   Project,
+  ProjectPlans,
   RecordCheckResultInput,
   RelatedCheckInput,
   ResolveAskInput,
@@ -1806,6 +1808,23 @@ export class DispatchClient {
   /** `GET /api/v1/handoffs/{id}`: one handoff by id, with its body. */
   async handoff(id: string): Promise<Handoff> {
     return this.#json("GET", ["api", "v1", "handoffs", id]);
+  }
+
+  /** `GET /api/v1/issues/{key}/steps`: every run of each step of the issue, task by task in the
+   *  order each task first ran, each with the attempt the read computes. An issue Dispatch does
+   *  not hold answers with no task, as its handoffs read. */
+  async listSteps(issue: string): Promise<IssueSteps> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
+  }
+
+  /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
+   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
+   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+  async listProjectPlans(
+    project: string,
+    window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}
+  ): Promise<ProjectPlans> {
+    return this.#json("GET", ["api", "v1", "projects", project, "plans"], undefined, window);
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {

@@ -1,6 +1,7 @@
 import { type LegionRole, zodSchemaApi } from "@legion/contracts";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
+  LegionHandoffCompleteRequest,
   LegionInstant,
   type LegionIssue,
   type LegionPhase,
@@ -91,6 +92,29 @@ const nextLook = rfc3339String(
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
+/** The refusal of a `plan_rating` that is not one of the scale's five whole numbers. */
+const PLAN_RATING_REFUSAL = "handoff_complete's plan_rating is a whole number from 1 to 5";
+
+/** `handoff_complete`'s `plan_rating`: the rating of the plan the issue ran, which the agent that
+ * does the retro gives in the completion that ends the retro, from 1 (the plan cost the work) to 5
+ * (the plan fit the work) (`LegionHandoffCompleteRequest`'s `planRating`, which goes on the wire). */
+const planRating = z
+  .number({ error: PLAN_RATING_REFUSAL })
+  .int({ error: PLAN_RATING_REFUSAL })
+  .min(1, { error: PLAN_RATING_REFUSAL })
+  .max(5, { error: PLAN_RATING_REFUSAL });
+
+/** `handoff_complete`'s `plan_reason`: why the plan earned its rating (`planReason` on the wire). A
+ * blank one is refused as missing (requiredString); its bound is the contract's own, at most 2,000
+ * characters counted as the daemon counts them, read here so that this tool refuses exactly the
+ * reasons the daemon refuses, by the field's name rather than as the request schema's parse
+ * failure. */
+const planReason = requiredString("handoff_complete", "plan_reason").refine(
+  (value) =>
+    value.trim() === "" || LegionHandoffCompleteRequest.shape.planReason.safeParse(value).success,
+  { error: "handoff_complete's plan_reason holds at most 2,000 characters" }
+);
+
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
  * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
  * tool refuses an unknown field in, a phase op's and pi-legion's own operations' alike. */
@@ -148,6 +172,8 @@ export const PhaseOpArguments = z.discriminatedUnion(
         })
         .optional(),
       wake_at: nextLook.optional(),
+      plan_rating: planRating.optional(),
+      plan_reason: planReason.optional(),
     }),
     operation("request_backward_move", {
       // The issue the move names: the tree architect's move names the issue it returns from
@@ -196,7 +222,16 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
       if (name === "op") continue;
       const field = declared instanceof z.ZodOptional ? declared.unwrap() : declared;
       if (field instanceof z.ZodString) fields[name] = api.string().optional();
-      else if (field instanceof z.ZodBoolean) fields[name] = api.boolean().optional();
+      else if (field instanceof z.ZodNumber) {
+        const { isInt, minValue, maxValue } = field;
+        fields[name] = api
+          .number({
+            int: isInt,
+            ...(minValue === null ? {} : { min: minValue }),
+            ...(maxValue === null ? {} : { max: maxValue }),
+          })
+          .optional();
+      } else if (field instanceof z.ZodBoolean) fields[name] = api.boolean().optional();
       else if (field instanceof z.ZodEnum) {
         const [first, ...rest] = field.options.map(String);
         if (first === undefined) throw new Error(`phase op field ${name} has no values`);
@@ -278,6 +313,11 @@ export function legionToolDescription(host: {
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
     "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
     "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
+    "The agent that does the retro rates the plan the issue ran, its steps and the role that worked each (not the planner's `plan.md`), in the " +
+    "completion that ends the retro: `plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and " +
+    "`plan_reason`, one sentence of why, the two together. Any other completion that carries them is refused (PLAN_RATING_UNEXPECTED), and so is " +
+    "a rating outside 1 to 5 or a reason that is blank or longer than 2,000 characters (PLAN_RATING_INPUT), and the completion that ends the " +
+    "retro without them (PLAN_RATING_REQUIRED). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), " +
@@ -355,8 +395,8 @@ const ROOT_COMPLETION_REFUSAL =
  * then each problem with the operation's own fields in the order it takes them; then what the
  * record decides (a check report's verdict, its claim's role against the check's own, its
  * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a completion or a move
- * names), then a refused handoff report (`findHandoffReport`). A daemon refusal throws its code
- * and sentence.
+ * names, a completion's `plan_rating` or `plan_reason` without the other), then a refused handoff
+ * report (`findHandoffReport`). A daemon refusal throws its code and sentence.
  *
  * A completion is a phase's or a look's report on the closed issue's production check. The daemon
  * tells them apart by the caller's own live assignment (`api.handoffComplete`,
@@ -366,7 +406,9 @@ const ROOT_COMPLETION_REFUSAL =
  * its verdict (`pass`, `pending` or `fail`), and a `pending` whose look is not the check's last
  * the `wake_at` of its next look; no handoff was written and nothing pushed, so no record or commit
  * is looked up and none is sent. `pending` is a check's verdict alone, refused on a phase
- * completion, and so is `wake_at`.
+ * completion, and so is `wake_at`. A rating of the plan is sent as given on either: which
+ * completion ends the retro, and so takes one, is the daemon's to say (`PLAN_RATING_UNEXPECTED`,
+ * `PLAN_RATING_REQUIRED`).
  */
 export async function executePhaseOp(
   runtime: PhaseOpRuntime,
@@ -409,6 +451,18 @@ export async function executePhaseOp(
       if (named !== "" && named !== claim.issue) {
         throw new Error(
           `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
+        );
+      }
+      // A rating of the plan carries its reason, and the daemon takes neither alone
+      // (PLAN_RATING_INPUT): one without the other is refused here, naming the one missing.
+      if (args.plan_rating !== undefined && args.plan_reason === undefined) {
+        throw new Error(
+          "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together"
+        );
+      }
+      if (args.plan_reason !== undefined && args.plan_rating === undefined) {
+        throw new Error(
+          "handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from 1 to 5, the two together"
         );
       }
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
@@ -663,6 +717,7 @@ async function completeHandoff(
       summary: args.summary,
       verdict: args.verdict ?? "",
       ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
+      ...planRatingOf(args),
     });
   }
   if (args.verdict === "pending") {
@@ -685,5 +740,16 @@ async function completeHandoff(
     summary: args.summary,
     verdict: args.verdict ?? "",
     ...report,
+    ...planRatingOf(args),
   });
+}
+
+/** The rating of the plan a completion carries, under the daemon's names (`planRating`,
+ * `planReason`), or nothing; `executePhaseOp` has refused one without the other. */
+function planRatingOf(
+  args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>
+): { readonly planRating?: number; readonly planReason?: string } {
+  return args.plan_rating === undefined || args.plan_reason === undefined
+    ? {}
+    : { planRating: args.plan_rating, planReason: args.plan_reason };
 }

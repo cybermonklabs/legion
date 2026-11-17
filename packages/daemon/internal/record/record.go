@@ -1724,6 +1724,23 @@ type Store interface {
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
+	// RaiseStepStarts counts one more start of place on issue, with the agent that start names and
+	// the moment it writes, clears the mark that the run before it ended, and answers the count
+	// with it: the start of a step's record raises it in its own transaction (workflow's
+	// startStep). ClearGeneration and ClearTreeGeneration leave the count: the generation is part
+	// of the record's id already, and the count only rises.
+	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, at time.Time) (int64, error)
+	// StepStarts is the count of starts of place on issue with the agent, the moment and the end
+	// mark of the latest, unchanged: the zero StepStart where no start was counted.
+	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
+	// EndStepStart marks the run of the latest start of place on issue ended and answers that
+	// start and true, in the transaction that writes the run's end (workflow's endStep); false
+	// where no counted run is open there, so one run gets one end.
+	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error)
+	// EndUncountedStep writes, marked ended, the row of a place no start of this release counted,
+	// with the agent and the moment its start would have named, and answers true; false where the
+	// place has a row already, whose latest run has ended.
+	EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, startedAt time.Time) (bool, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.

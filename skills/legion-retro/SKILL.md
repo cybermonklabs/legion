@@ -112,6 +112,14 @@ Dispatch message (step 5) is for a finished retro only.
    writes no handoff and makes no commit. In the workspace retro changes nothing; outside it, it
    writes only step 4's `mktemp -d` directory, the PR body and the Dispatch comment and message.
    It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon, not in labels.
+   In the same call, the agent that does the retro rates the plan the issue ran.
+   The plan is the issue's steps and the role that worked each, not the planner's `plan.md`.
+   `plan_rating` is a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and
+   `plan_reason` is one sentence of why, from the evidence step 1 read.
+   Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`)
+   and records nothing, so complete again with both.
+   The daemon also refuses a rating outside 1 to 5, one of the two without the other, or a reason
+   that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`), again recording nothing.
 
 ## Before you complete
 
@@ -121,3 +129,4 @@ Dispatch message (step 5) is for a finished retro only.
 - Each body line you added or changed that says work was done names work this pull request did.
 - The Dispatch comment and the Dispatch message are posted, and the pull request's head is the
   head you found.
+- Your `handoff_complete` carries `plan_rating` and `plan_reason` (step 6).

@@ -84,6 +84,8 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail"] },
       wake_at: { type: "string" },
+      plan_rating: { type: "integer", minimum: 1, maximum: 5 },
+      plan_reason: { type: "string" },
       to: { enum: [...LEGION_PHASE_BACKWARD_TARGETS] },
       reason: { type: "string" },
       round: { type: "string" },
@@ -166,6 +168,42 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", verdict: "pending", wake_at: "2026-11-06T10:00Z" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
     ],
+    // The rating of the plan is a whole number from 1 to 5 with a reason the contract takes: not
+    // blank, and at most 2,000 characters counted as the daemon counts them. Each is refused by its
+    // field's name, before the client's own parse of the request would refuse it unnamed.
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 0, plan_reason: "r" },
+      "handoff_complete's plan_rating is a whole number from 1 to 5",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 6, plan_reason: "r" },
+      "handoff_complete's plan_rating is a whole number from 1 to 5",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4.5, plan_reason: "r" },
+      "handoff_complete's plan_rating is a whole number from 1 to 5",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: "4", plan_reason: "r" },
+      "handoff_complete's plan_rating is a whole number from 1 to 5",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4, plan_reason: " \t\n" },
+      "handoff_complete requires plan_reason",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4, plan_reason: "é".repeat(2001) },
+      "handoff_complete's plan_reason holds at most 2,000 characters",
+    ],
+    // The two come together: one alone is refused naming the other.
+    [
+      { op: "handoff_complete", summary: "x", plan_rating: 4 },
+      "handoff_complete names plan_rating without plan_reason",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", plan_reason: "The plan fit the work." },
+      "handoff_complete names plan_reason without plan_rating",
+    ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
       'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"',
@@ -221,6 +259,71 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
     verdict: "pass",
     ...REPORT,
   });
+});
+
+/** `state.json` with LEGION-208 at `phase`. */
+function stateAtPhase(phase: string): Record<string, unknown> {
+  const state = daemonFixture("state.json") as { issues: Record<string, object> };
+  return {
+    ...state,
+    issues: { ...state.issues, "LEGION-208": { ...state.issues["LEGION-208"], phase } },
+  };
+}
+
+// The agent that does the retro rates the plan the issue ran in the completion that ends the
+// retro. Which completion that is, is the daemon's to say (PLAN_RATING_UNEXPECTED,
+// PLAN_RATING_REQUIRED), so the tool sends the two fields as given, under the daemon's names.
+test("the retro's completion sends plan_rating and plan_reason as planRating and planReason", async () => {
+  const { ops, routes, posted, lookups } = runtime(implementer, stateAtPhase("retro"));
+  const reason = "The tester found the bug the plan had left out.";
+  await expect(
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      plan_rating: 4,
+      plan_reason: reason,
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(lookups).toEqual(["retro implementer"]);
+  expect(routes).toEqual(["/legion/v1/state", "/legion/v1/grants", "/legion/v1/handoff/complete"]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Retro done.",
+    verdict: "",
+    ...REPORT,
+    planRating: 4,
+    planReason: reason,
+  });
+  // 2,000 characters of two UTF-16 units each is a reason of 2,000 characters as the daemon
+  // counts them, and it is sent; so are both ends of the scale.
+  for (const [rating, sent] of [
+    [1, "😀".repeat(2000)],
+    [5, "The plan fit the work."],
+  ] as const) {
+    await executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      plan_rating: rating,
+      plan_reason: sent,
+    });
+    expect(posted.at(-1)).toMatchObject({ planRating: rating, planReason: sent });
+  }
+});
+
+// The description is where every host's agent reads what the completion that ends the retro
+// carries: the two fields, the scale, and the daemon's refusals of a rating.
+test("the description tells the agent that does the retro to rate the plan in its completion, and names the daemon's refusals of a rating", () => {
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  for (const words of [
+    "The agent that does the retro rates the plan the issue ran",
+    "`plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work)",
+    "`plan_reason`",
+    "PLAN_RATING_UNEXPECTED",
+    "PLAN_RATING_INPUT",
+    "PLAN_RATING_REQUIRED",
+  ]) {
+    expect(description).toContain(words);
+  }
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
@@ -337,7 +440,7 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
     new Error(
-      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at; ${refusal}`
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; ${refusal}`
     )
   );
   expect(root.routes).toEqual([]);
@@ -360,7 +463,7 @@ test("a field an op does not take is refused naming the fields the op takes", as
     ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
-      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at',
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason',
     ],
   ] as const;
   for (const [input, message] of refusals) {
@@ -515,6 +618,34 @@ test("a tester's completion on a done issue with no check object reaches the dae
     { grantId: "grant-for-one-command", summary: "Looked.", verdict: "pass" },
     { grantId: "grant-for-one-command", summary: "Looked.", verdict: "" },
   ]);
+});
+
+// A rating belongs to the completion that ends the retro alone, and a report on a production check
+// is not that completion. The tool sends it all the same, so the daemon refuses it by its code,
+// rather than the tool dropping a rating the agent believes it gave.
+test("a rating on a production check's report is sent, and the daemon's PLAN_RATING_UNEXPECTED reaches the agent", async () => {
+  const { ops, posted } = closedRuntime(implementer, checkRecord(), {
+    status: 400,
+    code: "PLAN_RATING_UNEXPECTED",
+    error:
+      "this report on look 2 of LEGION-208's production check names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded",
+  });
+  await expect(
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Look 2: pass.",
+      verdict: "pass",
+      plan_rating: 4,
+      plan_reason: "The plan fit the work.",
+    })
+  ).rejects.toThrow("400 PLAN_RATING_UNEXPECTED");
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Look 2: pass.",
+    verdict: "pass",
+    planRating: 4,
+    planReason: "The plan fit the work.",
+  });
 });
 
 test("a report by a role the check does not record is refused before any call, nothing minted or posted", async () => {
