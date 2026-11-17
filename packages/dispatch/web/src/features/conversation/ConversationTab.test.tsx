@@ -38,6 +38,7 @@ import type {
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { stubMatchMedia } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
@@ -2245,6 +2246,9 @@ test("landing on a comment's reply opens the thread it belongs to and marks that
 });
 
 test("on a phone, landing on a comment opens its thread dialog and reading it marks it", async () => {
+  // The reply is read in the commit that mounts the dialog, which only a loaded engine draws
+  // (`MarkdownBody`): the first body of a file takes the asynchronous path.
+  await warmMarkdownRenderer();
   const restoreViewport = stubMatchMedia(true);
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", {
