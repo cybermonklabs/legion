@@ -215,14 +215,15 @@ both ways, so moving the pods back needs no change here, and it does not chain: 
 `BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_READ_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` or
 `BROKER_VM_EXCHANGE_ACCOUNTS` fixes. The broker refuses to start, naming the entry, on an entry
 not of that form, a namespace's `default` account, an account paired with itself, and a pair given
-twice, in either order. Set the pairs, and bind the new account in `BROKER_SERVICES` beside the
-old one, before the deployment moves its pods: a pair added after a role's enrollment was refused
-takes effect at that role's next enrollment, and the grants and pending requests of the old
-enrollment come across only while the broker still keeps them, `BROKER_SESSION_CARRY_SECONDS`
-after that enrollment ended. While a pair stands, a pod of either account can claim any session
-name the other holds, not only its own role's, so remove the pairs with the old account once no
-live pod runs as it. The start line `session account pairs` names the pairs the broker read
-([Health and logs](#health-and-logs)).
+twice, in either order. Set the pairs, bind the new account in `BROKER_SERVICES` beside the old
+one, and, where the pods trade their projected tokens at the exchange, list the new account in
+`BROKER_EXCHANGE_ACCOUNTS`, before the deployment moves its pods: a pair added after a role's
+enrollment was refused takes effect at that role's next enrollment, and the grants and pending
+requests of the old enrollment come across only while the broker still keeps them,
+`BROKER_SESSION_CARRY_SECONDS` after that enrollment ended. While a pair stands, a pod of either
+account can claim any session name the other holds, not only its own role's, so remove the pairs
+with the old account once no live pod runs as it. The start line `session account pairs` names
+the pairs the broker read ([Health and logs](#health-and-logs)).
 
 A service's launcher, such as the Legion daemon, logs in with its own projected ServiceAccount
 token, and no person approves it. `BROKER_SERVICE_LOGINS` lists which ServiceAccounts may log in
