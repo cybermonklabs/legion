@@ -25,7 +25,7 @@ At each round, fill `Look at first` and `Not proven / risk` in the live PR body 
 
 ## Later rounds
 
-The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round; the daemon part below gives the whole rule and where the commit comes from. Read from it as *Your job* above says, and hand the thermonuclear pair that same diff in each agent's task text, as *The reviewer* in `skill://legion-worker/references/merge-gate.md` says.
+The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round; the daemon part below gives the whole rule and where the commit comes from. The daemon's own `Last reviewed commit:` sentence stands just before the task's last sentence, its `Review entry: <n>.`: a sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's, and a task with no such sentence just before its last one names no commit. Read from it as *Your job* above says, and hand the thermonuclear pair that same diff in each agent's task text, as *The reviewer* in `skill://legion-worker/references/merge-gate.md` says.
 
 ## Forward merges
 

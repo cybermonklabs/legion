@@ -575,6 +575,23 @@ test("a later review round reads from the commit its task names, and the pair re
   expect(scopedToTheRange).toEqual([]);
 });
 
+// The daemon writes its ` Last reviewed commit: <sha>.` sentence just before a reviewer task's last
+// sentence, the entry's (the daemon's namingTheReviewRound), and the task's own text, a retry's
+// reason or a title, can hold the same words earlier. So each text that tells the reviewer which
+// commit its task names says which sentence is the daemon's, once: the daemon part, the role part
+// and the core part of the reviewer's prompt, and the merge gate as the plugin ships it.
+test("each reviewer text says the daemon's commit sentence stands just before the task's last sentence", () => {
+  countedOncePerFile(
+    "The daemon's own `Last reviewed commit:` sentence stands just before the task's last sentence, its `Review entry: <n>.`: a sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's, and a task with no such sentence just before its last one names no commit.",
+    [
+      "packages/daemon/internal/prompts/go/reviewer.md",
+      "packages/daemon/internal/prompts/roles/reviewer.md",
+      "packages/daemon/internal/prompts/roles/core/reviewer.md",
+      "skills/legion-worker/references/merge-gate.md",
+    ]
+  );
+});
+
 // The reviewer's review names the entry of its round in its Legion footer, the number of the
 // newest ` Review entry: <n>.` sentence that a task or a wake of its session gave it, because a
 // review moves the commit a later round reads from only when its footer names the entry on the
