@@ -162,11 +162,13 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 // architect of its own issue and to no other: it states what that architect owns
 // (workflow.QueueCatchUp, which queues it on that issue), so a child's catch-up that walked up to
 // the architect above it while the child's own architect was stopped would be read there as that
-// architect's own state. It waits for its architect, or finishes undelivered once that claim will
-// not hold its role again, as a root's catch-up does. Every other notice goes to the architect
-// that owns its issue (record.OwningArchitect), by runs. The publish (deliverNotice), the fence
-// (earlierNoticeFor) and a ready's release (releaseWaiting) all ask this, so each finds a notice
-// the same architect. project is the tree's claim project token.
+// architect's own state. It waits for its architect, and finishes undelivered once that claim
+// will not hold its role again or, for a child's catch-up, once the child is out of the workflow
+// (deliverNotice), since a park leaves that claim suspended rather than ended; a root's ends with
+// its tree's linger. Every other notice goes to the architect that owns its issue
+// (record.OwningArchitect), by runs. The publish (deliverNotice), the fence (earlierNoticeFor)
+// and a ready's release (releaseWaiting) all ask this, so each finds a notice the same architect.
+// project is the tree's claim project token.
 func noticeArchitect(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
 	if notice.CatchUp != nil {
 		return claim.NewToken(project, issue.Key, claim.RoleArchitect)
