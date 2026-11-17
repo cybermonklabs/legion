@@ -57,6 +57,10 @@ const HISTORY: Record<string, [number, unknown][]> = {
     [24, "ACME-4"],
     [60, "ACME-3"],
   ],
+  "ACME-16": [
+    [29, "ACME-1"],
+    [60, "ACME-3"],
+  ],
   "ACME-20": [[25, "ACME-21"]],
   "ACME-21": [[26, "ACME-20"]],
   "ACME-30": [[27, "ACME-99"]],
@@ -83,7 +87,13 @@ const V3 = "2026-11-18T06:00:00Z";
 
 /** Each ask the fake serves, by an id of the ask's shape. */
 const ASKS: Record<string, Record<string, unknown>> = {};
-function askFor(issue: string | null, opened: string, omit?: "issue_key"): string {
+/** An ask on `issue`, first opened at `opened`, with `fields` set over the usual ones or left out. */
+function askFor(
+  issue: string | null,
+  opened: string,
+  fields: Record<string, unknown> = {},
+  leaveOut?: "issue_key" | "opened_event_id"
+): string {
   const id = `00000000-0000-4000-8000-${String(Object.keys(ASKS).length + 1).padStart(12, "0")}`;
   const ask: Record<string, unknown> = {
     id,
@@ -91,8 +101,9 @@ function askFor(issue: string | null, opened: string, omit?: "issue_key"): strin
     created_at: opened,
     opened_event_id: OPENED_EVENT,
     question: "the request's own words",
+    ...fields,
   };
-  if (omit !== undefined) delete ask[omit];
+  if (leaveOut !== undefined) delete ask[leaveOut];
   ASKS[id] = ask;
   return id;
 }
@@ -101,13 +112,16 @@ const V2_ON_PICKED = askFor("ACME-11", V2);
 const V2_ON_PICKED_LISTED = askFor("ACME-2", V2);
 const V2_ON_UNPICKED = askFor("ACME-3", V2);
 const V2_MOVED_UNDER_LISTED = askFor("ACME-13", V2);
+const V2_MOVED_UNDER_UNPICKED = askFor("ACME-16", V2);
 const V3_UNDER_LISTED = askFor("ACME-12", V3);
 const V3_ON_UNLISTED = askFor("ACME-3", V3);
 const V3_UNDER_UNLISTED = askFor("ACME-11", V3);
 const V3_MOVED_UNDER_LISTED = askFor("ACME-14", V3);
 const V3_MOVED_OUT_OF_LISTED = askFor("ACME-15", V3);
 const V3_ON_NO_ISSUE = askFor(null, V3);
-const V3_WITH_NO_ISSUE_FIELD = askFor("ACME-12", V3, "issue_key");
+const V3_WITH_NO_ISSUE_FIELD = askFor("ACME-12", V3, {}, "issue_key");
+const V3_WITH_NO_OPENING_EVENT = askFor("ACME-14", V3, {}, "opened_event_id");
+const V3_WITH_TEXT_OPENING_EVENT = askFor("ACME-14", V3, { opened_event_id: "50" });
 const V3_IN_CYCLE = askFor("ACME-20", V3);
 const V3_UNDER_MISSING = askFor("ACME-30", V3);
 const V3_UNDER_BAD_PARENT = askFor("ACME-40", V3);
@@ -244,6 +258,16 @@ describe("decideAsk before version 3's cut", () => {
     });
   });
 
+  test("a root now that the hash does not pick frees nothing the root at the opening holds", async () => {
+    expect(await decide(V2_MOVED_UNDER_UNPICKED)).toMatchObject({
+      opening_root: "ACME-1",
+      root_now: "ACME-3",
+      opening_listed: false,
+      now_listed: false,
+      decision: "held",
+    });
+  });
+
   test("an ask that opened before version 2's cut is kept", async () => {
     expect((await decide(BEFORE_V2_ON_PICKED)).decision).toBe("kept");
   });
@@ -262,6 +286,13 @@ describe("decideAsk on what it cannot read", () => {
 
   test("an ask whose answer has no issue field decides nothing, not an ask on no issue", async () => {
     await expect(decide(V3_WITH_NO_ISSUE_FIELD)).rejects.toBeInstanceOf(UndecidedError);
+  });
+
+  test("an ask with no opening event, or one given as text, decides nothing", async () => {
+    // Without the opening event the walk would read the whole log, and the root at the opening
+    // would become the root now: ACME-14's root now is listed, its root at the opening is not.
+    await expect(decide(V3_WITH_NO_OPENING_EVENT)).rejects.toBeInstanceOf(UndecidedError);
+    await expect(decide(V3_WITH_TEXT_OPENING_EVENT)).rejects.toBeInstanceOf(UndecidedError);
   });
 
   test("a parent now that is not a key, a cycle or a refused read decides nothing", async () => {
