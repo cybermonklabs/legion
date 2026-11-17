@@ -135,32 +135,52 @@ func TestMemoryGuardAnUnboundHolderRefusesEveryKill(t *testing.T) {
 	}
 }
 
-// runtime.kubernetes.memory_guard.issue_pods reaches sandbox.Options as the settings an issue pod's
-// launcher is handed, and none at all when the deployment turned the guard off.
-func TestMemoryGuardTheIssuePodsSettingsReachTheSandboxRuntime(t *testing.T) {
+// runtime.kubernetes.memory_guard reaches sandbox.Options each pod kind's block apart: with
+// different numbers in the two, Options.MemoryGuard carries issue_pods' settings, which an issue
+// pod's launchers are handed, and Options.ControllerMemoryGuard controller_pod's, which the
+// controller pod's launcher is handed, neither ever the other's; a kind turned off is none, and
+// leaves the other kind's settings as they were.
+func TestMemoryGuardEachPodKindsSettingsReachTheSandboxRuntime(t *testing.T) {
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
-	k := config.Kubernetes{
-		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
-		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
-		MemoryGuard: config.MemoryGuardConfig{IssuePods: config.MemoryGuardPodConfig{
-			Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250,
-		}},
+	issue := config.MemoryGuardPodConfig{Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250}
+	controller := config.MemoryGuardPodConfig{Enabled: true, ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 400}
+	issueWire := &shimwire.LauncherMemoryGuard{ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250}
+	controllerWire := &shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 400}
+	off := func(g config.MemoryGuardPodConfig) config.MemoryGuardPodConfig {
+		g.Enabled = false
+		return g
 	}
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
-	if err != nil {
-		t.Fatalf("sandboxOptions: %v", err)
-	}
-	want := shimwire.LauncherMemoryGuard{ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250}
-	if opts.MemoryGuard == nil || *opts.MemoryGuard != want {
-		t.Fatalf("Options.MemoryGuard = %+v, want %+v", opts.MemoryGuard, want)
-	}
-
-	k.MemoryGuard.IssuePods.Enabled = false
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
-	if err != nil {
-		t.Fatalf("sandboxOptions with the guard off: %v", err)
-	}
-	if opts.MemoryGuard != nil {
-		t.Fatalf("Options.MemoryGuard = %+v with the guard off, want none", *opts.MemoryGuard)
+	for _, tc := range []struct {
+		name                      string
+		guard                     config.MemoryGuardConfig
+		wantIssue, wantController *shimwire.LauncherMemoryGuard
+	}{
+		{"both on", config.MemoryGuardConfig{IssuePods: issue, ControllerPod: controller}, issueWire, controllerWire},
+		{"the issue pods' guard off", config.MemoryGuardConfig{IssuePods: off(issue), ControllerPod: controller}, nil, controllerWire},
+		{"the controller pod's guard off", config.MemoryGuardConfig{IssuePods: issue, ControllerPod: off(controller)}, issueWire, nil},
+		{"both off", config.MemoryGuardConfig{IssuePods: off(issue), ControllerPod: off(controller)}, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := config.Kubernetes{
+				Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
+				StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+				MemoryGuard: tc.guard,
+			}
+			opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+			if err != nil {
+				t.Fatalf("sandboxOptions: %v", err)
+			}
+			for _, member := range []struct {
+				name      string
+				got, want *shimwire.LauncherMemoryGuard
+			}{
+				{"MemoryGuard", opts.MemoryGuard, tc.wantIssue},
+				{"ControllerMemoryGuard", opts.ControllerMemoryGuard, tc.wantController},
+			} {
+				if (member.got == nil) != (member.want == nil) || (member.got != nil && *member.got != *member.want) {
+					t.Errorf("Options.%s = %+v, want %+v", member.name, member.got, member.want)
+				}
+			}
+		})
 	}
 }

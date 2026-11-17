@@ -3,7 +3,9 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,50 +22,148 @@ func rigLauncherHello(g *rig, name, podUID string, role claim.Role) shimwire.Lau
 		Sandbox: name, Role: string(role), PodUID: podUID, LauncherID: "l-" + string(role)}
 }
 
-// Every role's launcher of an issue pod is answered with the memory guard's settings the runtime
-// was given, and the controller's launcher with none: its pod's guard settings are a block this
-// runtime does not carry. A refused hello is answered with the zero acknowledgement.
-func TestMemoryGuardTheResolverHandsTheSettingsToAnIssuePodsLaunchersAlone(t *testing.T) {
-	settings := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
-	g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard = &settings }))
-	controller := g.spawn(controllerSpec(t))
-	issue := g.spawn(workerSpec(t))
-	accept := g.r.LauncherResolver()
+// issueGuardSettings and controllerGuardSettings are a deployment's two memory guard blocks, every
+// number of one different from the other's, so an answer carrying one kind's settings is never
+// mistaken for the other's.
+var (
+	issueGuardSettings      = shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
+	controllerGuardSettings = shimwire.LauncherMemoryGuard{ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 400}
+)
 
+// guardText is a memory guard member as a failure names it: its settings, or none.
+func guardText(g *shimwire.LauncherMemoryGuard) string {
+	if g == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%+v", *g)
+}
+
+// sameGuard reports whether got carries want's settings, none for none included.
+func sameGuard(got, want *shimwire.LauncherMemoryGuard) bool {
+	return (got == nil) == (want == nil) && (got == nil || *got == *want)
+}
+
+// resolvedGuards are the memory guard settings g's resolver answers the launchers of issue, an
+// issue pod, with, by role, and the controller's launcher on controller, the controller's pod. A
+// refused hello fails the test.
+func resolvedGuards(t *testing.T, g *rig, issue, controller runtime.Locator) (map[claim.Role]*shimwire.LauncherMemoryGuard, *shimwire.LauncherMemoryGuard) {
+	t.Helper()
+	accept := g.r.LauncherResolver()
+	issueGuards := map[claim.Role]*shimwire.LauncherMemoryGuard{}
 	for _, role := range claim.Roles {
 		handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, role))
 		if handler == nil {
 			t.Fatalf("the issue pod's %s launcher was refused: %s", role, reason)
 		}
-		if ack.MemoryGuard == nil || *ack.MemoryGuard != settings {
-			t.Fatalf("the issue pod's %s launcher was answered %+v (memory guard %+v), want the settings %+v", role, ack, ack.MemoryGuard, settings)
-		}
+		issueGuards[role] = ack.MemoryGuard
 	}
 	handler, ack, reason := accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
 	if handler == nil {
 		t.Fatalf("the controller's launcher was refused: %s", reason)
 	}
-	if ack.MemoryGuard != nil {
-		t.Fatalf("the controller's launcher was answered the memory guard settings %+v, want none", *ack.MemoryGuard)
+	return issueGuards, ack.MemoryGuard
+}
+
+// With different numbers in the two blocks, every role's launcher of an issue pod is answered with
+// the issue pods' settings and the controller's launcher with the controller pod's, and neither
+// ever with the other kind's. A refused hello is answered with the zero acknowledgement.
+func TestMemoryGuardTheResolverHandsEachPodKindItsOwnSettings(t *testing.T) {
+	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.MemoryGuard, o.ControllerMemoryGuard = &issueSettings, &controllerSettings
+	}))
+	controller := g.spawn(controllerSpec(t))
+	issue := g.spawn(workerSpec(t))
+
+	issueGuards, controllerGuard := resolvedGuards(t, g, issue, controller)
+	for role, got := range issueGuards {
+		if !sameGuard(got, &issueGuardSettings) {
+			t.Errorf("the issue pod's %s launcher was answered the memory guard %s, want the issue pods' %+v and never the controller pod's %+v",
+				role, guardText(got), issueGuardSettings, controllerGuardSettings)
+		}
+	}
+	if !sameGuard(controllerGuard, &controllerGuardSettings) {
+		t.Errorf("the controller's launcher was answered the memory guard %s, want the controller pod's %+v and never the issue pods' %+v",
+			guardText(controllerGuard), controllerGuardSettings, issueGuardSettings)
 	}
 	refused := rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester)
 	refused.Token = "not-the-token"
-	if handler, ack, reason := accept(refused); handler != nil || reason == "" || ack.MemoryGuard != nil {
+	if handler, ack, reason := g.r.LauncherResolver()(refused); handler != nil || reason == "" || ack.MemoryGuard != nil {
 		t.Fatalf("a hello with a stale token was answered handler=%v ack=%+v reason=%q, want refused with the zero acknowledgement", handler, ack, reason)
 	}
 }
 
-// A deployment that turned the guard off (Options.MemoryGuard nil) answers an issue pod's launcher
-// with no settings, which the launcher reads as "run no guard".
-func TestMemoryGuardTheResolverHandsNoSettingsWhenTheGuardIsOff(t *testing.T) {
-	g := newRig(t, nil)
-	issue := g.spawn(workerSpec(t))
-	handler, ack, reason := g.r.LauncherResolver()(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester))
-	if handler == nil {
-		t.Fatalf("the issue pod's tester launcher was refused: %s", reason)
+// A deployment that turned one kind's guard off (its Options member nil) answers that kind's
+// launchers with no settings, which they read as "run no guard", and still answers the other
+// kind's launchers with that kind's own settings; with both off, no launcher is handed any.
+func TestMemoryGuardTheResolverLeavesOneKindOnWhenTheOtherIsOff(t *testing.T) {
+	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
+	for _, tc := range []struct {
+		name              string
+		issue, controller *shimwire.LauncherMemoryGuard
+	}{
+		{"the issue pods' guard off", nil, &controllerSettings},
+		{"the controller pod's guard off", &issueSettings, nil},
+		{"both off", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard, o.ControllerMemoryGuard = tc.issue, tc.controller }))
+			controller := g.spawn(controllerSpec(t))
+			issue := g.spawn(workerSpec(t))
+
+			issueGuards, controllerGuard := resolvedGuards(t, g, issue, controller)
+			for role, got := range issueGuards {
+				if !sameGuard(got, tc.issue) {
+					t.Errorf("the issue pod's %s launcher was answered the memory guard %s, want %s", role, guardText(got), guardText(tc.issue))
+				}
+			}
+			if !sameGuard(controllerGuard, tc.controller) {
+				t.Errorf("the controller's launcher was answered the memory guard %s, want %s", guardText(controllerGuard), guardText(tc.controller))
+			}
+		})
 	}
-	if ack.MemoryGuard != nil {
-		t.Fatalf("the launcher was answered the settings %+v, want none from a runtime given none", *ack.MemoryGuard)
+}
+
+// Two configurations that differ only in the controller pod's memory guard — off, on at the
+// defaults, on at other numbers — build the controller's pod with the same recorded shape
+// (podShape) and the same template (podTemplate), so the pod one of them built reads as no drift
+// to the other: a daemon restarted on a changed runtime.kubernetes.memory_guard.controller_pod
+// replaces no pod, and the settings reach the running pod's launcher on its next hello instead.
+func TestMemoryGuardAControllerPodSettingsChangeReplacesNoPod(t *testing.T) {
+	built := func(guard *shimwire.LauncherMemoryGuard) (*Runtime, podTemplate) {
+		t.Helper()
+		opts := goldenOptions()
+		opts.ControllerMemoryGuard = guard
+		r, err := configure(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r, r.podTemplate(launchOf(t, r, controllerSpec(t)))
+	}
+	off, offTemplate := built(nil)
+	for _, guard := range []*shimwire.LauncherMemoryGuard{
+		{ActPercent: shimwire.MemoryGuardActDefault, FloorPercent: shimwire.MemoryGuardFloorDefault,
+			WaitSeconds: shimwire.MemoryGuardWaitDefault, IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault},
+		&controllerGuardSettings,
+	} {
+		on, onTemplate := built(guard)
+		if got, want := podShape(on, controllerPod{}), podShape(off, controllerPod{}); got != want {
+			t.Errorf("the controller pod's shape with the guard at %+v is\n%s\nwant the shape with it off\n%s", *guard, got, want)
+		}
+		if !reflect.DeepEqual(onTemplate, offTemplate) {
+			t.Errorf("the controller pod's template with the guard at %+v is\n%+v\nwant the template with it off\n%+v", *guard, onTemplate, offTemplate)
+		}
+		for _, pair := range []struct {
+			name    string
+			now     *Runtime
+			running podTemplate
+		}{{"off, then on", on, offTemplate}, {"on, then off", off, onTemplate}} {
+			s := &sandbox{}
+			s.Spec.PodTemplate = pair.running
+			if drifted := pair.now.shapeDrift(s, controllerPod{}); len(drifted) > 0 {
+				t.Errorf("the controller's pod built with the guard %s at %+v reads as drifted: %q, want no drift", pair.name, *guard, drifted)
+			}
+		}
 	}
 }
 

@@ -125,8 +125,12 @@ type Runtime struct {
 	log                     *slog.Logger
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
-	// guard off.
+	// issue pods' guard off.
 	memoryGuard *shimwire.LauncherMemoryGuard
+	// controllerMemoryGuard is Options.ControllerMemoryGuard: the memory guard settings the
+	// launcher of the controller's pod is handed on the answer to each hello (LauncherResolver),
+	// nil for a deployment that turned that pod's guard off.
+	controllerMemoryGuard *shimwire.LauncherMemoryGuard
 	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
 	// encoded once here. Every input of a shape — the image, the kind's reservation, the
 	// operator's volumes and mounts and the disk — is set at construction and never written
@@ -378,7 +382,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
+		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository,
+		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,

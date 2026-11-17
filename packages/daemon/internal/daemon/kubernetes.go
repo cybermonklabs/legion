@@ -341,17 +341,6 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	if err != nil {
 		return sandbox.Options{}, err
 	}
-	// The guard's settings reach an accepted issue-pod launcher on the answer to its hello
-	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "run no guard", so a
-	// deployment that turned runtime.kubernetes.memory_guard.issue_pods off and a daemon built
-	// before the guard write the same ack (shimwire.LauncherHelloAck.MemoryGuard, INFRA-3557).
-	var memoryGuard *shimwire.LauncherMemoryGuard
-	if g := k.MemoryGuard.IssuePods; g.Enabled {
-		memoryGuard = &shimwire.LauncherMemoryGuard{
-			ActPercent: g.ActPercent, FloorPercent: g.FloorPercent,
-			WaitSeconds: g.WaitSeconds, IntervalMilliseconds: g.IntervalMilliseconds,
-		}
-	}
 	opts := sandbox.Options{
 		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
@@ -371,19 +360,38 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Setup:                   k.Setup,
 		SkillsRepository:        k.SkillsRepository,
 		TestPostgres:            k.TestPostgres,
-		MemoryGuard:             memoryGuard,
-		BootTimeout:             cfg.WorkerBootTimeout,
-		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,
-		BusyBackoff:             busyBackoffFirst,
-		TerminationGrace:        cfg.WorkerStopTimeout,
-		ProbeInterval:           cfg.ProbeInterval,
-		AdoptTimeout:            cfg.SlowCommandTimeout,
-		AgentSecrets:            agentSecrets,
-		RepositoryCache:         cache,
-		Log:                     log,
+		// The guard's settings reach an accepted launcher on the answer to its hello (sandbox
+		// Runtime.LauncherResolver), each pod kind's from its own block: an issue pod's launchers
+		// runtime.kubernetes.memory_guard.issue_pods, the controller pod's launcher
+		// runtime.kubernetes.memory_guard.controller_pod. Nil is what the launcher reads as "run no
+		// guard", so a deployment that turned a kind off and a daemon built before the guard write
+		// the same ack (shimwire.LauncherHelloAck.MemoryGuard, INFRA-3557).
+		MemoryGuard:           launcherMemoryGuard(k.MemoryGuard.IssuePods),
+		ControllerMemoryGuard: launcherMemoryGuard(k.MemoryGuard.ControllerPod),
+		BootTimeout:           cfg.WorkerBootTimeout,
+		RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
+		BusyBackoff:           busyBackoffFirst,
+		TerminationGrace:      cfg.WorkerStopTimeout,
+		ProbeInterval:         cfg.ProbeInterval,
+		AdoptTimeout:          cfg.SlowCommandTimeout,
+		AgentSecrets:          agentSecrets,
+		RepositoryCache:       cache,
+		Log:                   log,
 	}
 	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
+}
+
+// launcherMemoryGuard is one pod kind's settled memory guard as its launchers are handed it on the
+// answer to each hello, nil where the kind's block turned the guard off.
+func launcherMemoryGuard(g config.MemoryGuardPodConfig) *shimwire.LauncherMemoryGuard {
+	if !g.Enabled {
+		return nil
+	}
+	return &shimwire.LauncherMemoryGuard{
+		ActPercent: g.ActPercent, FloorPercent: g.FloorPercent,
+		WaitSeconds: g.WaitSeconds, IntervalMilliseconds: g.IntervalMilliseconds,
+	}
 }
 
 // repositoryCache is runtime.kubernetes.repository_cache as the runtime takes it: the volume as a

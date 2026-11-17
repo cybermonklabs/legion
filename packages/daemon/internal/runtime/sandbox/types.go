@@ -217,13 +217,24 @@ type Options struct {
 	// (runtime.kubernetes.memory_guard.issue_pods), handed to it on the daemon's answer to each
 	// of its roles' hellos (LauncherResolver). Nil is a deployment that turned the guard off, and
 	// the launcher reads the absent member as "run none", as it reads a daemon that does not know
-	// the guard. The controller's pod takes none however this is set: its settings are its own
-	// block's, which this runtime does not carry.
+	// the guard. The controller's pod never takes it, however it is set: that pod's settings are
+	// ControllerMemoryGuard's.
 	//
 	// It is no part of the pod shape a template records (podShapeRecord): nothing of a running
 	// pod is built from it, since a launcher is told it on every hello, a reconnect after a
 	// daemon restart included, so a changed setting reaches every pod without replacing one.
 	MemoryGuard *shimwire.LauncherMemoryGuard
+	// ControllerMemoryGuard is what the memory guard in the launcher of the project controller's
+	// pod runs by (runtime.kubernetes.memory_guard.controller_pod), the launcher that is PID 1 of
+	// that pod's one container, handed to it on the daemon's answer to each of its hellos
+	// (LauncherResolver). Nil is a deployment that turned that pod's guard off, which the launcher
+	// reads as it reads MemoryGuard's absence. No issue pod ever takes it, however it is set: an
+	// issue pod's settings are MemoryGuard's.
+	//
+	// It is no part of the pod shape a template records either, for MemoryGuard's reason: a
+	// changed setting reaches the controller's running pod at its launcher's next hello, and
+	// replaces no pod.
+	ControllerMemoryGuard *shimwire.LauncherMemoryGuard
 	// BootTimeout bounds each wait of a relaunch, its wait for the API server to answer one of its
 	// requests other than overloaded included (resend), and is how long a pod may stay unscheduled
 	// before it counts as gone (worker_boot_timeout_seconds).

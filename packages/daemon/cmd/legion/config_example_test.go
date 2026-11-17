@@ -233,7 +233,9 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 }
 
 // memoryGuardExampleLines are the example's commented memory_guard block, line by line, as an
-// operator turning it on uncomments it.
+// operator turning it on uncomments it: `issue_pods` first and `controller_pod` after it, in the
+// file's order, since uncommentExample takes the first commented line that starts with each, and
+// the two blocks carry the same members at the same defaults.
 var memoryGuardExampleLines = []string{
 	"    # memory_guard:",
 	"    #   issue_pods:",
@@ -242,10 +244,16 @@ var memoryGuardExampleLines = []string{
 	"    #     floor_percent: 10",
 	"    #     wait_seconds: 5",
 	"    #     interval_milliseconds: 100",
+	"    #   controller_pod:",
+	"    #     enabled: true",
+	"    #     act_percent: 85",
+	"    #     floor_percent: 10",
+	"    #     wait_seconds: 5",
+	"    #     interval_milliseconds: 100",
 }
 
 // The example's commented memory_guard block, uncommented, passes the same check and settles on
-// the guard on at the defaults the block states, which are the wire's own
+// the guard on for both pod kinds at the defaults the block states, which are the wire's own
 // (config.DefaultMemoryGuard): a default changed in the wire and not in the example would have the
 // example teach a number no daemon runs.
 func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
@@ -261,24 +269,34 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	}
 }
 
-// The example's memory_guard block, uncommented with act_percent at 96, one above the wire's range,
-// is refused by the same check: exit 1 and one line naming the whole key and both ends of the range,
-// which is what an operator who edits the shipped block past that range reads. It checks the
-// loader's refusal, not the range the block's own comment states. The block stays commented in the
-// file itself: its values are the defaults, which apply without it.
+// The example's memory_guard block, uncommented with either pod kind's act_percent at 96, one
+// above the wire's range, is refused by the same check: exit 1 and one line naming that kind's
+// whole key and both ends of the range, which is what an operator who edits the shipped block past
+// that range reads. It checks the loader's refusal, not the range the block's own comment states.
+// The block stays commented in the file itself: its values are the defaults, which apply without
+// it.
 func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
-	config := stageShippedExample(t, func(example string) string {
-		example = uncommentExample(t, example, memoryGuardExampleLines...)
-		return strings.Replace(example, "act_percent: 85", "act_percent: 96", 1)
-	})
+	for _, kind := range []string{"issue_pods", "controller_pod"} {
+		t.Run(kind, func(t *testing.T) {
+			config := stageShippedExample(t, func(example string) string {
+				example = uncommentExample(t, example, memoryGuardExampleLines...)
+				// The kind's own act_percent: the first after its key, since both kinds carry 85.
+				at := strings.Index(example, "\n      "+kind+":")
+				if at < 0 {
+					t.Fatalf("the uncommented example has no %s block", kind)
+				}
+				return example[:at] + strings.Replace(example[at:], "act_percent: 85", "act_percent: 96", 1)
+			})
 
-	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	t.Logf("legion start --check-config exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			t.Logf("legion start --check-config exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
 
-	want := "legion start: runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95\n"
-	if code != 1 || out.Len() != 0 || errb.String() != want {
-		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+			want := "legion start: runtime.kubernetes.memory_guard." + kind + ".act_percent must be between 50 and 95\n"
+			if code != 1 || out.Len() != 0 || errb.String() != want {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+			}
+		})
 	}
 }
 

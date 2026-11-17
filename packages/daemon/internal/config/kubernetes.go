@@ -122,10 +122,11 @@ type Kubernetes struct {
 	// deployment; `idle_minutes: 0` turns it off.
 	IdleRelease IdleReleaseConfig
 	// MemoryGuard is `runtime.kubernetes.memory_guard`, settled: what the memory guard in each
-	// issue pod's launcher process runs by. Every default applies when the file sets no block, so
-	// the guard is on for every Kubernetes deployment, as idle release is;
-	// `issue_pods.enabled: false` turns it off, and an issue pod's launcher is then handed no
-	// settings at all (sandbox.Options.MemoryGuard nil).
+	// issue pod's launcher process, and in the launcher of the project controller's pod, runs by.
+	// Every default applies when the file sets no block, so the guard is on for every Kubernetes
+	// deployment, as idle release is; a kind's `enabled: false` turns it off for that kind's pods,
+	// whose launchers are then handed no settings at all (sandbox.Options.MemoryGuard nil for an
+	// issue pod, sandbox.Options.ControllerMemoryGuard nil for the controller's).
 	MemoryGuard MemoryGuardConfig
 }
 
@@ -189,10 +190,13 @@ var defaultIdleRelease = IdleReleaseConfig{IdleMinutes: 10, BackstopMinutes: 60}
 func DefaultIdleRelease() IdleReleaseConfig { return defaultIdleRelease }
 
 // MemoryGuardConfig is `runtime.kubernetes.memory_guard`: the memory guard's settings, by the
-// kind of pod a launcher's guard runs in. IssuePods is every issue pod's; the mapping is keyed by
-// pod kind so the project controller's pod can have a block of its own beside it (INFRA-3531).
+// kind of pod a launcher's guard runs in. IssuePods is every issue pod's; ControllerPod is the
+// project controller's pod's, the one a daemon under `controller: daemon` launches, whose launcher
+// runs the guard as PID 1 of the controller's container (INFRA-3531). Each kind is settled from
+// its own block alone, so a value written under one never moves the other.
 type MemoryGuardConfig struct {
-	IssuePods MemoryGuardPodConfig
+	IssuePods     MemoryGuardPodConfig
+	ControllerPod MemoryGuardPodConfig
 }
 
 // MemoryGuardPodConfig is one kind of pod's memory guard: whether it runs at all, and the four
@@ -214,18 +218,20 @@ type MemoryGuardPodConfig struct {
 }
 
 // DefaultMemoryGuard is the memory guard's settled configuration when the file sets none: on for
-// issue pods, at the wire's own defaults (shimwire.MemoryGuardActDefault and its three siblings)
-// rather than copies of them. Those are also what a launcher's guard runs by before any
-// acknowledgement reaches it, so the one change a measurement may make to a default moves both
-// the launcher's start and every deployment's setting.
+// issue pods and for the controller's pod alike, each at the wire's own defaults
+// (shimwire.MemoryGuardActDefault and its three siblings) rather than copies of them. Those are
+// also what a launcher's guard runs by before any acknowledgement reaches it, so the one change a
+// measurement may make to a default moves both the launcher's start and every deployment's
+// setting.
 func DefaultMemoryGuard() MemoryGuardConfig {
-	return MemoryGuardConfig{IssuePods: MemoryGuardPodConfig{
+	defaults := MemoryGuardPodConfig{
 		Enabled:              true,
 		ActPercent:           shimwire.MemoryGuardActDefault,
 		FloorPercent:         shimwire.MemoryGuardFloorDefault,
 		WaitSeconds:          shimwire.MemoryGuardWaitDefault,
 		IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault,
-	}}
+	}
+	return MemoryGuardConfig{IssuePods: defaults, ControllerPod: defaults}
 }
 
 // PluginsConfig is `runtime.kubernetes.plugins`: the pi-legion and pi-envoy sources a
@@ -786,11 +792,12 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 	return settled, nil
 }
 
-// readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind, of which
-// this release knows `issue_pods` alone (readMemoryGuardPod), and the default (DefaultMemoryGuard)
-// for every member the file leaves out, so the guard runs wherever the file says nothing. Any
-// other member is refused by name: `controller_pod` is INFRA-3531's to add, and a loader that
-// accepted it unread would let an operator believe the controller's pod guarded.
+// readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind,
+// `issue_pods` and `controller_pod`, each read by readMemoryGuardPod against its own key-table
+// group, and the default (DefaultMemoryGuard) for every member the file leaves out, so the guard
+// runs wherever the file says nothing. Each kind is settled from its own block and its own
+// defaults, so a value written under one never moves the other. Any other member is refused by
+// name.
 func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 	const key = kubernetesKey + ".memory_guard"
 	settled := DefaultMemoryGuard()
@@ -804,7 +811,10 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 	if err != nil {
 		return MemoryGuardConfig{}, err
 	}
-	if settled.IssuePods, err = readMemoryGuardPod(fields["issue_pods"], key+".issue_pods", settled.IssuePods); err != nil {
+	if settled.IssuePods, err = readMemoryGuardPod(fields["issue_pods"], key+".issue_pods", settled.IssuePods, issuePodsGuardMembers); err != nil {
+		return MemoryGuardConfig{}, err
+	}
+	if settled.ControllerPod, err = readMemoryGuardPod(fields["controller_pod"], key+".controller_pod", settled.ControllerPod, controllerPodGuardMembers); err != nil {
 		return MemoryGuardConfig{}, err
 	}
 	return settled, nil
@@ -812,11 +822,16 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 
 // readMemoryGuardPod reads one pod kind's block of `runtime.kubernetes.memory_guard` under key:
 // each member the file sets and settled's for each it leaves out, and settled whole for a block
-// the file leaves null (`issue_pods:` with no value), as every other block of the file reads a
-// null. `enabled` is read from the settled default rather than from the key's presence, because
-// the default is on: an operator writing `enabled: true` back must get the guard, and a value that
-// is no YAML boolean — `off` and `yes` among them, which this loader's reader tags as strings — is
-// refused rather than read as a word nobody meant.
+// the file leaves null (`issue_pods:` or `controller_pod:` with no value), as every other block of
+// the file reads a null. `enabled` is read from the settled default rather than from the key's
+// presence, because the default is on: an operator writing `enabled: true` back must get the
+// guard, and a value that is no YAML boolean — `off` and `yes` among them, which this loader's
+// reader tags as strings — is refused rather than read as a word nobody meant.
+//
+// described is the kind's own key-table group, read by that kind's members reader below
+// (issuePodsGuardMembers, controllerPodGuardMembers), as readObjectSource takes its place's group:
+// the two blocks carry the same five names, but each kind's lines are its own in `legion
+// config-reference`, and a group derived from one kind would leave the other's keys undescribed.
 //
 // Each number is held to the wire's own range (shimwire.MemoryGuardActMin and its siblings), which
 // the launcher's guard checks the settings against a second time on its side of the connection: a
@@ -824,14 +839,14 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 // keeps the settings it ran by and logs the refusal instead (memoryguard's Guard.Apply). A refusal
 // names the whole key and both ends of its range, as the loader's other range refusals do
 // (agent_secrets' token_expiry_seconds).
-func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig) (MemoryGuardPodConfig, error) {
+func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (MemoryGuardPodConfig, error) {
 	if value == nil || value.Tag == "!!null" {
 		return settled, nil
 	}
 	if value.Kind != yaml.MappingNode {
 		return MemoryGuardPodConfig{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := describedMembers(value, key, kubernetesKey+".memory_guard.issue_pods")
+	fields, err := described(value, key)
 	if err != nil {
 		return MemoryGuardPodConfig{}, err
 	}
@@ -865,6 +880,19 @@ func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConf
 		*number.into = *read
 	}
 	return settled, nil
+}
+
+// The two members readers a pod kind's block names (readMemoryGuardPod): `issue_pods`' and
+// `controller_pod`'s. Each names its group as a constant of its own, as readObjectSource's four
+// readers do, which is what carries both kinds' keys into `legion config-reference` and holds the
+// two to the key table (TestNoKeyBypassesTheKeyTable).
+
+func issuePodsGuardMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, kubernetesKey+".memory_guard.issue_pods")
+}
+
+func controllerPodGuardMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, kubernetesKey+".memory_guard.controller_pod")
 }
 
 // ReadPodFile reads a `runtime.kubernetes.pod` block kept in a file of its own, such as an

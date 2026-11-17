@@ -102,15 +102,19 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 }
 
 // launcherHelloAck is the acknowledgement an accepted launcher on a pod of kind is answered with,
-// the one place each of its members is decided. An issue pod's launcher is handed the memory
-// guard's settings (Options.MemoryGuard), none when the deployment turned the guard off; the
-// controller's pod is handed none here, since its guard's settings are a block of their own
-// that this runtime does not carry, and an absent member is what its launcher reads as "run no
-// guard".
+// the one place each of its members is decided. Each pod kind's launcher is handed the memory
+// guard's settings of its own kind and never the other's: an issue pod's launcher those of
+// runtime.kubernetes.memory_guard.issue_pods (Options.MemoryGuard), the controller pod's launcher
+// those of runtime.kubernetes.memory_guard.controller_pod (Options.ControllerMemoryGuard). A kind
+// whose block turned the guard off is handed none, and an absent member is what its launcher
+// reads as "run no guard".
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
 	var ack shimwire.LauncherHelloAck
-	if _, issue := kind.(issuePod); issue {
+	switch kind.(type) {
+	case issuePod:
 		ack.MemoryGuard = r.memoryGuard
+	case controllerPod:
+		ack.MemoryGuard = r.controllerMemoryGuard
 	}
 	return ack
 }

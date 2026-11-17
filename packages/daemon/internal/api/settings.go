@@ -187,9 +187,9 @@ type KubernetesSettings struct {
 	// every pod may read them.
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
 	// MemoryGuard is the settled `runtime.kubernetes.memory_guard`: whether each issue pod's
-	// launcher runs a memory guard, and the shares, wait and interval it runs by. None of it is a
-	// credential, and a role reads it to know when a process of its own may be ended under it, so
-	// every pod may read it.
+	// launcher, and the launcher of the controller's pod, runs a memory guard, and the shares, wait
+	// and interval each runs by. None of it is a credential, and a role reads it to know when a
+	// process of its own may be ended under it, so every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
 }
 
@@ -201,9 +201,10 @@ type IdleReleaseSettings struct {
 }
 
 // MemoryGuardSettings is the settled `runtime.kubernetes.memory_guard`, by the kind of pod a
-// guard runs in.
+// guard runs in: every issue pod's, and the project controller's pod's.
 type MemoryGuardSettings struct {
-	IssuePods MemoryGuardPodSettings `json:"issue_pods"`
+	IssuePods     MemoryGuardPodSettings `json:"issue_pods"`
+	ControllerPod MemoryGuardPodSettings `json:"controller_pod"`
 }
 
 // MemoryGuardPodSettings is one kind of pod's settled memory guard. `enabled` false is the guard
@@ -620,13 +621,10 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			IdleMinutes:     block.IdleRelease.IdleMinutes,
 			BackstopMinutes: block.IdleRelease.BackstopMinutes,
 		},
-		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
-			Enabled:              block.MemoryGuard.IssuePods.Enabled,
-			ActPercent:           block.MemoryGuard.IssuePods.ActPercent,
-			FloorPercent:         block.MemoryGuard.IssuePods.FloorPercent,
-			WaitSeconds:          block.MemoryGuard.IssuePods.WaitSeconds,
-			IntervalMilliseconds: block.MemoryGuard.IssuePods.IntervalMilliseconds,
-		}},
+		MemoryGuard: MemoryGuardSettings{
+			IssuePods:     memoryGuardPodSettingsOf(block.MemoryGuard.IssuePods),
+			ControllerPod: memoryGuardPodSettingsOf(block.MemoryGuard.ControllerPod),
+		},
 	}
 	maps.Copy(settings.Scheduling.NodeSelector, block.Scheduling.NodeSelector)
 	for i, toleration := range block.Scheduling.Tolerations {
@@ -647,6 +645,14 @@ func reservationSettingsOf(reservation config.Reservation) ReservationSettings {
 		CPU: reservation.CPU, CPURequest: reservation.CPURequest,
 		Memory: reservation.Memory, MemoryRequest: reservation.MemoryRequest,
 		EphemeralStorage: reservation.EphemeralStorage, EphemeralStorageRequest: reservation.EphemeralStorageRequest,
+	}
+}
+
+// memoryGuardPodSettingsOf is one pod kind's settled memory guard as the state shows it.
+func memoryGuardPodSettingsOf(guard config.MemoryGuardPodConfig) MemoryGuardPodSettings {
+	return MemoryGuardPodSettings{
+		Enabled: guard.Enabled, ActPercent: guard.ActPercent, FloorPercent: guard.FloorPercent,
+		WaitSeconds: guard.WaitSeconds, IntervalMilliseconds: guard.IntervalMilliseconds,
 	}
 }
 
