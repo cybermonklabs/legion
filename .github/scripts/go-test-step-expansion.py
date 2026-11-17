@@ -102,13 +102,18 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
-  * a step whose one line runs a script under a module's `scripts/` directory
-    (`packages/envoy/scripts/database-skips.sh`) is read through that script: its `go test` lines
-    are the step's, in the module the script itself `cd`s to (`$(dirname "$0")/..`), with each
-    `${NAME:-default}` read as its default and the line cut at its first redirection, `|`, `||`
-    or `&&`, which change where the output goes and not which tests run. A script that holds no
-    `go test` runs none; one that `cd`s anywhere else is refused, since its tests would run in a
-    module this script cannot name;
+  * a step whose one line runs a script under a module's `scripts/` directory, with no argument
+    (`packages/envoy/scripts/database-skips.sh`), is read through that script, in one narrow form
+    and no other: its comment-free lines that start with `go test` are the step's, in the module
+    the script moves into with its one `cd`, which must be `cd "$(dirname "$0")/.."`. Each
+    `${NAME:-default}` is replaced by its default text. A redirection with its target is dropped
+    (a file descriptor written against it, `2>`, with it), and the command ends at a `|`, `||`,
+    `&&` or `;`, after which only another command than `go test` may follow, since that tail
+    runs after the tests or on their failure and selects none of them. Anything else is refused:
+    a second `cd`, a `pushd`, a `go test` that does not start its line, an argument after a
+    redirection, a `go test` after the end. A script that holds no `go test` runs none. A quoted
+    argument that is exactly an operator (`'>'`) reads as the operator, which no script here
+    writes;
   * a `Benchmark…` name a listing prints is left out of both verdicts: no step passes `-bench`,
     so `go test` builds those functions and runs none of them, and reading every one of them as
     compiled and unrun would say that over and over and name no hole anyone can close.
@@ -233,6 +238,22 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
+            (".github/workflows/ci-job-dispatch-two-builds.yaml", "Two-build tests of the Dispatch server"),
+            (".github/workflows/ci-job-dispatch-two-builds.yaml", "Two-build tests of the Dispatch server against its own build"),
+        }),
+        package="github.com/sjawhar/envoy/cmd/dispatch",
+        functions=None,
+        requirement=(
+            "R1 (dispatch://INFRA-4330/spec): in a merge-group run, the twobuild suite runs twice "
+            "on purpose, against the newest release's build (dispatch-two-builds) and against the "
+            "tree's own build (dispatch-two-builds-same), so a row whose assertion holds only "
+            "across a version boundary fails in the merge group of the change that breaks it. The "
+            "two runs answer different questions, and the second runs in no pull-request or "
+            "dispatched run."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
@@ -268,7 +289,10 @@ TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 SCRIPT_RUN = re.compile(r"^(?:\./)?(?P<path>[A-Za-z0-9_./-]+/scripts/[A-Za-z0-9_.-]+\.sh)$")
 SCRIPT_CD = 'cd "$(dirname "$0")/.."'
 DEFAULTED = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}")
-CUT_WORDS = ("|", "||", "&&", ";")
+# Shell operators as shlex's punctuation splitting yields them: a redirection takes the next word
+# as its target, and an end closes the command.
+REDIRECTS = (">", ">>", "<", ">&", "&>", ">|", "<&")
+ENDS = ("|", "||", "&&", ";")
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
@@ -418,33 +442,78 @@ def script_step(workflow: str, job: str, name: str, workdir: str, script: str) -
     `go test` lines (the module docstring says how), or None where the run is not such a line.
     A script of a module that holds no `go test` makes a step with an empty script, which runs
     nothing."""
-    lines = script_lines(script)
-    if len(lines) != 1:
+    run = script_lines(script)
+    if len(run) != 1:
         return None
-    found = SCRIPT_RUN.match(lines[0].strip())
+    found = SCRIPT_RUN.match(run[0].strip())
     if not found:
         return None
     file = (ROOT / workdir / found.group("path")).resolve()
     module = file.parent.parent.relative_to(ROOT).as_posix() if file.is_relative_to(ROOT) else ""
     if module not in MODULE_DIRS or not file.is_file():
         return None
-    text = file.read_text()
-    tests = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not re.match(r"go\s+test\b", line):
-            continue
-        words = shlex.split(DEFAULTED.sub(r"\1", line))
-        for at, word in enumerate(words):
-            if word in CUT_WORDS or re.match(r"^\d*>", word):
-                words = words[:at]
-                break
-        tests.append(shlex.join(words))
     label = f"{workflow}'s {job} / {name}"
-    if tests and SCRIPT_CD not in text:
-        raise Refused(f"{label}: {found.group('path')} runs `go test` and does not move into its "
-                      f"module with `{SCRIPT_CD}`, so this script cannot say where it runs")
+    lines = [line.strip() for line in file.read_text().splitlines()]
+    lines = [line for line in lines if line and not line.startswith("#")]
+    tests = []
+    for line in lines:
+        if re.match(r"go\s+test\b", line):
+            tests.append(script_go_test(label, line))
+        elif runs_go_test(line):
+            raise Refused(f"{label}: {found.group('path')} runs `go test` inside `{line}`, which "
+                          "this script does not read")
+    if tests:
+        moves = [line for line in lines if re.match(r"(cd|pushd|popd)\b", line)]
+        if moves != [SCRIPT_CD] or lines.index(SCRIPT_CD) > lines.index(next(
+                line for line in lines if re.match(r"go\s+test\b", line))):
+            raise Refused(f"{label}: {found.group('path')} runs `go test` and does not move into "
+                          f"its module with one `{SCRIPT_CD}` before it, so this script cannot say "
+                          "where it runs")
     return Step(workflow=workflow, job=job, name=name, workdir=module, script="\n".join(tests))
+
+
+def runs_go_test(line: str) -> bool:
+    """Whether a script line runs `go test` anywhere but at its start: the words `go` and `test`
+    side by side, outside quotes, since a quoted string (an `echo`'s message) stays one word."""
+    if not re.search(r"\bgo\s+test\b", line):
+        return False
+    try:
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return True
+    return any(a == "go" and b == "test" for a, b in zip(words, words[1:]))
+
+
+def script_go_test(label: str, raw: str) -> str:
+    """One `go test` line of a step's script as the command it runs, in the narrow form the
+    module docstring gives, or Refused."""
+    text = DEFAULTED.sub(r"\1", raw)
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    words = list(lexer)
+    at = 0
+    while at < len(words) and words[at] not in REDIRECTS + ENDS:
+        at += 1
+    command = words[:at]
+    # A file descriptor written against the first redirection (`2>`) is the redirection's.
+    if (at < len(words) and words[at] in REDIRECTS and command and command[-1].isdigit()
+            and re.search(rf"(?<!\S){command[-1]}{re.escape(words[at])}", text)):
+        command.pop()
+    while at < len(words) and words[at] in REDIRECTS:
+        at += 2
+        if (at + 1 < len(words) and words[at].isdigit() and words[at + 1] in REDIRECTS
+                and re.search(rf"(?<!\S){words[at]}{re.escape(words[at + 1])}", text)):
+            at += 1
+    if at < len(words):
+        if words[at] not in ENDS:
+            raise Refused(f"{label}: `{raw}` holds `{words[at]}` after a redirection, which this "
+                          "script does not read")
+        if re.search(r"\bgo\s+test\b", " ".join(words[at:])):
+            raise Refused(f"{label}: `{raw}` runs another `go test` after `{words[at]}`, which "
+                          "this script does not read")
+    return shlex.join(command)
 
 
 def commands_of(step: Step) -> list[GoTest]:
