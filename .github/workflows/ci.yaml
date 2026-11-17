@@ -2582,6 +2582,7 @@ jobs:
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/logtest/*'
+              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -2799,6 +2800,7 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
@@ -2830,6 +2832,7 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
@@ -2868,6 +2871,7 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
@@ -2959,6 +2963,7 @@ jobs:
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
@@ -3127,6 +3132,7 @@ jobs:
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/serverwait/*'
+              - 'packages/envoy/internal/bustest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -3164,9 +3170,14 @@ jobs:
               # pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
-              # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
+              # e2e-local.sh:300-302 builds ./cmd/listener, ./internal/testnats/cmd/natsd and
+              # ./internal/testnats/cmd/fixturebuckets.
               - *listener_command
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
+              - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
+              # fixturebuckets provisions through internal/bustest, which connects with testnats.
+              - 'packages/envoy/internal/bustest/*'
+              - 'packages/envoy/internal/testnats/*'
               # The job reads no Markdown file: the listener, the renderer and the contracts
               # between them are its whole input, so a guide written under one of the directory
               # patterns above would start it for nothing.
@@ -4118,7 +4129,6 @@ jobs:
               - 'packages/envoy/infra/go.work'
               - 'packages/envoy/infra/go.work.sum'
               - 'packages/envoy/infra/aws/**'
-              - 'packages/envoy/infra/buckets/*'
               - 'packages/envoy/infra/cmd/pulumi-resource-envoy-infra/*'
               - 'packages/envoy/infra/core/**'
               - 'packages/envoy/infra/gcp/**'
@@ -4144,7 +4154,6 @@ jobs:
               - '!packages/envoy/cmd/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/aws/**/*_test.go'
-              - '!packages/envoy/infra/buckets/**/*_test.go'
               - '!packages/envoy/infra/core/**/*_test.go'
               - '!packages/envoy/infra/gcp/**/*_test.go'
               - '!packages/envoy/infra/internal/**/*_test.go'

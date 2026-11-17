@@ -212,7 +212,7 @@ jobs:
       # directory, as envoy-stack.ts's build does, so both main packages build in one command.
       - name: Build the listener and natsd of the envoy module
         if: steps.go-envoy.outputs.cache-hit != 'true'
-        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd ./internal/testnats/cmd/fixturebuckets
         working-directory: packages/envoy
 
       - if: steps.go-envoy.outputs.cache-hit != 'true'
