@@ -136,7 +136,9 @@ else
   check "leaves the between-samples warning off a VmRSS peak" \
     "$(is "$(contains "$out" 'may belong to another moment')" false)"
 fi
-check "took a sample at 0 s and another at 5 s" \
+# The grower ends only after a later sample saw it grown, so this holds by construction: it is no
+# window of seconds, and a late first sample (the first walk of a loaded machine) changes nothing.
+check "took two samples at least" \
   "$([ "$(grep -c -- ' s, VmRSS ' <<<"$out")" -ge 2 ] && echo true || echo false)"
 
 echo "case: a run within the limit exits 0 and ends with the peak"

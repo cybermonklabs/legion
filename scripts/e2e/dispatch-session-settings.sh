@@ -214,26 +214,23 @@ database_created=1
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$work/dispatch-token" &&
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 listener() { curl -fsS -H "@$work/envoy-auth-header" "$@"; }
+envoy_port=$(bun "$driver" free-port)
+dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
-# holding legion/envoy.json would hand Dispatch a production configuration. Each serves on a socket
-# held-port.py opened on a port the kernel chose and hands it as descriptor 3 (start_held,
-# lib/rig.sh), so no other process can take the port before the service serves there, and
-# Dispatch's own URL names that port before it starts ({port}).
-envoy_port="" dispatch_port=""
-start_held listener envoy_port ENVOY_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_FD=3 \
+# holding legion/envoy.json would hand Dispatch a production configuration.
+env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
-  "$work/envoy-listener"
+  "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
+listener_pid=$!
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
-  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_LISTEN_FD=3 DISPATCH_PORT='{port}' DISPATCH_SERVER_URL='http://127.0.0.1:{port}' \
-  DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
+  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
+  DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
   ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" \
-  "$work/dispatch"
+  "$work/dispatch" >"$evidence/logs/dispatch.log" 2>&1 &
+dispatch_pid=$!
 until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 
 # The broken provider's port: bound and never listened on, by a process of the run's own, so every

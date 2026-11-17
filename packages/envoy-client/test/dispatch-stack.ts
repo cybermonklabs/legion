@@ -1,12 +1,12 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync } from "node:fs";
 import * as path from "node:path";
-import { pythonInterpreter } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
 import {
   awaitReady,
   buildGoBinaries,
   ENVOY_MODULE,
+  freePorts,
   type ReadyBudget,
   stopProcess,
 } from "./envoy-stack";
@@ -63,9 +63,6 @@ export interface DispatchStackOptions {
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
-/** The helper that opens the server's listening socket on a port the kernel chooses and hands it
- *  over (`DISPATCH_LISTEN_FD`), so the port is held from that choice until the server serves. */
-const HELD_PORT = path.resolve(import.meta.dir, "../../../scripts/e2e/lib/held-port.py");
 // The server migrates a database of its own as it boots, and a cold `go build` of ./cmd/dispatch
 // comes first, so it is given twice the Envoy stack's budget; 20 lines of its log say why a boot
 // that never answered stopped.
@@ -86,13 +83,6 @@ function testDatabaseServer(): string {
  * its own: a copy of template1 on the server `DISPATCH_TEST_DATABASE_URL` names, which the server
  * migrates itself as it boots. It resolves once `GET /api/v1` answers 200, and throws, naming why,
  * when `go` or the DSN is missing, the build fails, or the server does not come up.
- *
- * The server serves on a socket `scripts/e2e/lib/held-port.py` opened on a port the kernel chose
- * and handed to it as `DISPATCH_LISTEN_FD`: the server's own URL (`DISPATCH_SERVER_URL`) names
- * that port before it starts, and nothing else can take the port in between, as a port picked
- * free and handed over by number could be. The helper runs on the interpreter `python3` names in
- * the caller's environment, by its path (`pythonInterpreter`): under the server's own HOME, a
- * python3 looked up on PATH can be a version manager's shim with no version there.
  *
  * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
@@ -134,54 +124,33 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       stack: "Dispatch",
       binaries: "./cmd/dispatch",
     });
+    const [port] = await freePorts(1);
+    const url = `http://127.0.0.1:${port}`;
     const token = `dispatch-stack-${crypto.randomUUID()}`;
     const home = path.join(work, "home");
     mkdirSync(home);
     const log = path.join(work, "dispatch.log");
-    const portFile = path.join(work, "dispatch.port");
     const out = openSync(log, "a");
-    // held-port.py puts the socket's port in for {port}, writes it to the port file and executes
-    // the server in its own process, so the process started here is the server.
-    const server = Bun.spawn(
-      [
-        pythonInterpreter(),
-        HELD_PORT,
-        "exec",
-        "--port-file",
-        portFile,
-        "--fd-env",
-        "DISPATCH_LISTEN_FD",
-        "--env",
-        "DISPATCH_PORT={port}",
-        "--env",
-        "DISPATCH_SERVER_URL=http://127.0.0.1:{port}",
-        "--",
-        path.join(bin, "dispatch"),
-      ],
-      {
-        cwd: ENVOY_MODULE,
-        env: {
-          PATH: SHELL_PATH,
-          HOME: home,
-          DATABASE_URL: databaseUrl.toString(),
-          DISPATCH_AGENT_TOKEN: token,
-          DISPATCH_IDENTITY: "header:X-Dispatch-User",
-          DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
-          DISPATCH_NATS_DISABLED: "1",
-          DISPATCH_LISTEN_HOST: "127.0.0.1",
-          DISPATCH_WEB_DIST: WEB_DIST,
-        },
-        stdout: out,
-        stderr: out,
-      }
-    );
-    child = server;
+    child = Bun.spawn([path.join(bin, "dispatch")], {
+      cwd: ENVOY_MODULE,
+      env: {
+        PATH: SHELL_PATH,
+        HOME: home,
+        DATABASE_URL: databaseUrl.toString(),
+        DISPATCH_AGENT_TOKEN: token,
+        DISPATCH_IDENTITY: "header:X-Dispatch-User",
+        DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
+        DISPATCH_NATS_DISABLED: "1",
+        DISPATCH_LISTEN_HOST: "127.0.0.1",
+        DISPATCH_PORT: String(port),
+        DISPATCH_SERVER_URL: url,
+        DISPATCH_WEB_DIST: WEB_DIST,
+      },
+      stdout: out,
+      stderr: out,
+    });
     closeSync(out);
-    await awaitReady("Dispatch's held port", server, log, DISPATCH_READY, async () =>
-      existsSync(portFile)
-    );
-    const url = `http://127.0.0.1:${readFileSync(portFile, "utf8").trim()}`;
-    await awaitReady("Dispatch", server, log, DISPATCH_READY, async () => {
+    await awaitReady("Dispatch", child, log, DISPATCH_READY, async () => {
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
       return response.ok;
     });

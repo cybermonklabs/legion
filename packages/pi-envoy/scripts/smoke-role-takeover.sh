@@ -182,7 +182,9 @@ readonly drivers="${script_dir}/role-takeover"
 readonly channel_server="${repo_root}/packages/claude-envoy/bin/envoy-channel.ts"
 
 # The loopback stack this smoke shares with smoke-registration-stall.sh (--local-stack): the
-# ports each service reports, the two builds, what each service is run as and when it is up.
+# ports, the two builds, what each service is run as and when it is up. `pick_port` reports an
+# exhausted range the way everything else here refuses.
+local_stack_fail=refuse
 # shellcheck source=packages/pi-envoy/scripts/local-stack.sh
 source "${script_dir}/local-stack.sh"
 
@@ -246,6 +248,8 @@ done
 [[ -f "${repo_root}/node_modules/nats/package.json" ]] ||
   refuse "${repo_root}/node_modules has no nats package: run bun install in the checkout"
 
+port_range
+
 # ---- scratch, processes and teardown ----------------------------------------------------------
 work="$(mktemp -d "${TMPDIR:-/tmp}/smoke-role-takeover.XXXXXX")"
 readonly work
@@ -306,29 +310,6 @@ wait_for() {
   local seconds=$1
   shift
   poll_until "$seconds" 0.2 "$@"
-}
-
-# listening_port PID VAR: assigns VAR the port of the one TCP socket on 127.0.0.1 that process PID
-# holds in state LISTEN, read from its descriptors (/proc/PID/fd, `socket:[INODE]`) against the
-# kernel's socket tables of its network namespace (/proc/PID/net/tcp and tcp6, whose second field
-# is the local address and port in hexadecimal, fourth the state, 0A for LISTEN, and tenth the
-# inode); 127.0.0.1 is 0100007F there, and ::ffff:127.0.0.1 ends in it. It reads, and never binds
-# or connects to, anything. It fails while PID holds no such socket or more than one.
-listening_port() {
-  local pid=$1 inode address state rest ports=()
-  local -A held=()
-  while IFS= read -r inode; do
-    held[$inode]=1
-  done < <(find "/proc/${pid}/fd" -mindepth 1 -lname 'socket:*' -printf '%l\n' 2>/dev/null |
-    sed -n 's/^socket:\[\([0-9]*\)\]$/\1/p')
-  ((${#held[@]} > 0)) || return 1
-  while read -r _ address _ state _ _ _ _ _ inode rest; do
-    [[ "$state" == 0A && -n "${held[$inode]:-}" ]] || continue
-    [[ "${address%:*}" == 0100007F || "${address%:*}" == *FFFF00000100007F ]] || continue
-    ports+=($((16#${address##*:})))
-  done < <(cat "/proc/${pid}/net/tcp" "/proc/${pid}/net/tcp6" 2>/dev/null)
-  ((${#ports[@]} == 1)) || return 1
-  printf -v "$2" '%s' "${ports[0]}"
 }
 
 # ---- the results -------------------------------------------------------------------------------
@@ -426,47 +407,31 @@ readonly listener_exe listener_under_test
 ((drop_role_from_copy == 0)) ||
   note "SMOKE_DROP_ROLE_FROM_COPY=1: the live restart row drops its role from the listener's copy of the role claims"
 
-# Each binds a port the kernel chooses and logs it (local-stack.sh's reported_port), so no other
-# process can take a port between its choice and the service's bind.
-set_natsd_argv "${work}/bin/natsd" "${work}/nats-store" --monitor
+pick_port nats_port
+pick_port monitor_port
+pick_port listener_port
+readonly nats_port monitor_port listener_port
+readonly envoy_url="http://127.0.0.1:${listener_port}"
+readonly nats_url="nats://127.0.0.1:${nats_port}"
+
+set_natsd_argv "${work}/bin/natsd" "$nats_port" "$monitor_port" "${work}/nats-store"
 (exec env -i PATH="$PATH" HOME="${work}/nats-home" "${natsd_argv[@]}") \
   >"${work}/logs/natsd.log" 2>&1 &
 service_pids+=($!)
 wait_for 60 natsd_serving "${work}/logs/natsd.log" ||
   refuse "natsd did not start: $(tail -n 5 "${work}/logs/natsd.log")"
-nats_port="" monitor_port=""
-if ! reported_port "${work}/logs/natsd.log" "$natsd_client_line" nats_port ||
-  ! reported_port "${work}/logs/natsd.log" "$natsd_monitor_line" monitor_port; then
-  refuse "natsd logged no client or monitoring port: $(tail -n 5 "${work}/logs/natsd.log")"
-fi
-readonly nats_port monitor_port
-readonly nats_url="nats://127.0.0.1:${nats_port}"
 note "natsd serves ${nats_url} (monitoring 127.0.0.1:${monitor_port})"
 
 # The two windows this run's listener carries are appended to the assignments local-stack.sh
 # hands out, so the two smokes that share that file are run exactly as they were.
-set_listener_env "$nats_url" "smoke-role-takeover-$$"
+set_listener_env "$listener_port" "$nats_url" "smoke-role-takeover-$$"
 listener_env+=(
   ENVOY_SESSION_LIVE_WINDOW="$session_live_window"
   ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_claim_reap_interval"
 )
 (exec env -i PATH="$PATH" HOME="${work}/listener-home" "${listener_env[@]}" \
   "$listener_exe") >"${work}/logs/listener.log" 2>&1 &
-listener_pid=$!
-service_pids+=("$listener_pid")
-listener_port=""
-wait_for 90 reported_port "${work}/logs/listener.log" "$listener_line" listener_port ||
-  refuse "the listener logged no address it listens on: $(tail -n 5 "${work}/logs/listener.log")"
-# A listener built before it logged the address it bound (a5f0cf479b, which a --base-rev or a
-# --listener-bin control can run) logs the one it was given, port 0. Its port is then read from the
-# listener's own process: the one loopback socket it holds that listens.
-if [[ "$listener_port" == 0 ]]; then
-  wait_for 90 listening_port "$listener_pid" listener_port ||
-    refuse "${listener_under_test} logged port 0 and process ${listener_pid} holds no one loopback socket that listens: $(tail -n 5 "${work}/logs/listener.log")"
-  note "${listener_under_test} logged port 0, the PORT it was given; its process listens on ${listener_port}"
-fi
-readonly listener_port
-readonly envoy_url="http://127.0.0.1:${listener_port}"
+service_pids+=($!)
 wait_for 90 listener_healthy "$envoy_url" ||
   refuse "the listener did not become healthy: $(tail -n 5 "${work}/logs/listener.log")"
 note "the listener is healthy at ${envoy_url}"

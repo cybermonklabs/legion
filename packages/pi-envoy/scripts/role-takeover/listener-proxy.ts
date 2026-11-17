@@ -11,17 +11,12 @@
  *   {"seq":1,"label":"omp-a","at":1761,"method":"POST","path":"/v1/roles/set","status":409,
  *    "request":{...},"response":{...},"ms":3}
  *
- * It serves on a loopback port the kernel chooses, which it names on stdout once it listens:
- *
- *   listener-proxy <label> ready on <port>
- *
- * so no other process can take its port between that choice and its bind.
- *
- * Usage: bun listener-proxy.ts --upstream <url> --log <file> --label <name>
+ * Usage: bun listener-proxy.ts --port <n> --upstream <url> --log <file> --label <name>
  */
 import { appendFileSync } from "node:fs";
 
 interface Options {
+  readonly port: number;
   readonly upstream: string;
   readonly log: string;
   readonly label: string;
@@ -37,13 +32,15 @@ function parseOptions(argv: readonly string[]): Options {
     }
     values.set(name.slice(2), value);
   }
+  const port = Number(values.get("port"));
   const upstream = values.get("upstream");
   const log = values.get("log");
   const label = values.get("label");
+  if (!Number.isInteger(port) || port <= 0) throw new Error("listener-proxy: --port is required");
   if (upstream === undefined) throw new Error("listener-proxy: --upstream is required");
   if (log === undefined) throw new Error("listener-proxy: --log is required");
   if (label === undefined) throw new Error("listener-proxy: --label is required");
-  return { upstream: upstream.replace(/\/$/, ""), log, label };
+  return { port, upstream: upstream.replace(/\/$/, ""), log, label };
 }
 
 const options = parseOptions(process.argv.slice(2));
@@ -66,7 +63,7 @@ function record(entry: Record<string, unknown>): void {
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
-  port: 0,
+  port: options.port,
   idleTimeout: 0,
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);

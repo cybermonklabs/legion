@@ -186,21 +186,18 @@ means carrying the patch to the new version.
 tests run: a TCP proxy whose `freeze()` stops forwarding on, and stops reading, the connections
 open at that moment without closing either side, and which records when each connection was
 accepted, first subscribed and closed; a real natsd and listener that each stack builds with
-`go build` from `packages/envoy` into its own scratch directory and starts on ports the kernel
-chooses, each read back from the line the process logs once it listens (`reportedPort`), so no
-other process can take a port between its choice and the server's bind (its `monitorUrl` is
-natsd's monitoring port); and `runFreezeScenario`, the freeze both plugins' stall tests put their
-session through. The stack's listener answers `consumer`, so the scenario checks consumer delivery
-across the freeze: the connection nats.js dials in place of the frozen one subscribes the relay
-subject again (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message
-sent during the freeze and one sent after it are each shown once, neither as a replay. A test that
+`go build` from `packages/envoy` into its own scratch directory (its `monitorUrl` is natsd's
+monitoring port); and `runFreezeScenario`, the freeze both plugins' stall tests put their session
+through. The stack's listener answers `consumer`, so the scenario checks consumer delivery across
+the freeze: the connection nats.js dials in place of the frozen one subscribes the relay subject
+again (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message sent
+during the freeze and one sent after it are each shown once, neither as a replay. A test that
 uses the stack runs only with `LEGION_E2E_ENVOY_STACK=1`.
 
 `@legion/envoy-client/test/dispatch-stack` (Bun only, not built, in `test/`) is the same shape for
 a real Dispatch server: it builds `./cmd/dispatch` with `go build` from `packages/envoy` into its
 own scratch directory, makes a database of its own on the server `DISPATCH_TEST_DATABASE_URL`
-names and drops it at the end, starts the server, which migrates that database as it boots, on a
-socket `scripts/e2e/lib/held-port.py` opened on a port the kernel chose (`DISPATCH_LISTEN_FD`), and
+names and drops it at the end, starts the server, which migrates that database as it boots, and
 answers its URL and the agent bearer token it minted for the run. Two tests run on it:
 `src/__tests__/design-gate-advice.live.test.ts`, which proves the design-gate clause end to end,
 and `src/__tests__/moved-approval-advice.live.test.ts`, which proves the moved-approval line of a
@@ -209,9 +206,8 @@ server, the server's record and the client's sentence together. They share
 `@legion/envoy-client/test/dispatch-cli-live` (Bun only, not built, in `test/`), which holds the
 real CLI's `docEdit`, the person's and the machine's writes, and the issue and document a row
 writes about; each file keeps the constants and the sentences that are its own. A test that uses
-this stack runs only with `LEGION_E2E_DISPATCH_STACK=1`, and it needs `DISPATCH_TEST_DATABASE_URL`,
-`go` and `python3` on `PATH`; with the variable set it fails rather than skips. So, to run them
-here:
+this stack runs only with `LEGION_E2E_DISPATCH_STACK=1`, and it needs `DISPATCH_TEST_DATABASE_URL`
+and `go` on `PATH`; with the variable set it fails rather than skips. So, to run them here:
 
 ```sh
 cd packages/envoy-client

@@ -304,9 +304,10 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
       const ports = Object.entries(stack.harness.env)
         .map(([variable, port]) => `${variable}=${port}`)
         .join(" ");
-      const postgresAt = stack.database === undefined ? "" : `POSTGRES=${stack.database.address} `;
+      const postgresPort =
+        stack.database === undefined ? "" : `POSTGRES_PORT=${stack.database.port} `;
       const output = stack.logDir ?? "its output is on this process's stderr";
-      console.error(`${named}: stack ${stack.index}: ${postgresAt}${ports} (${output})`);
+      console.error(`${named}: stack ${stack.index}: ${postgresPort}${ports} (${output})`);
     }
     // The two numbers a reader of a CI log reads this line for. One stack per worker is the
     // invariant: a start that could not give a worker its own stack throws above rather than

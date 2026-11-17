@@ -2580,10 +2580,6 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
-        (TEST_FIXTURES_SRC, "packages/dispatch/e2e/harness-postgres.ts:43 imports @legion/test-fixtures/socket-root, "
-                            "and every browser job's Playwright run loads it: e2e/playwright.config.ts:753 makes "
-                            "e2e/global-setup.ts its globalSetup, global-setup.ts:51 imports harness-pool.ts, and "
-                            "harness-pool.ts:36 imports harness-postgres.ts"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),
@@ -2916,11 +2912,6 @@ GATES = [
         # manifest, which bun_job declares.
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
-        (TEST_FIXTURES_SRC, "packages/dispatch/e2e/harness-postgres.ts:43 imports @legion/test-fixtures/socket-root, and "
-                            + at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")
-                            + "'s `bun run e2e:multiprocess` loads it: e2e/playwright.config.ts:753 makes e2e/global-setup.ts "
-                            "its globalSetup, global-setup.ts:51 imports harness-pool.ts, and harness-pool.ts:36 imports "
-                            "harness-postgres.ts"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + two_builds_go_reads()),
 
@@ -3090,9 +3081,6 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-34"),
-        ("scripts/e2e/lib/held-port.py", "packages/envoy-client/test/dispatch-stack.ts starts Dispatch through it, on the socket it holds (DISPATCH_LISTEN_FD)"),
-        ("scripts/e2e/lib/report-port.sh", f"{at(STALL, 'Role takeover smoke')}: packages/pi-envoy/scripts/local-stack.sh:33 sources it, "
-                                           "for the port each service reports"),
     ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(

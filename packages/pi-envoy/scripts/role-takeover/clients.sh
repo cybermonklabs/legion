@@ -27,28 +27,26 @@
 #   client_reply_timeout   how long a client may take to answer one command
 #   listener_wait_timeout  how long a renewal may take to reach the listener
 #   run_id                 this run's id, which renew_claude's topic carries
-# and defines refuse, wait_for and reported_port, and the scenario_pids and scenario_fds its
-# teardown kills and closes, which every process and descriptor started here is added to.
+# and defines refuse, wait_for, pick_port and port_open, and the scenario_pids and scenario_fds
+# its teardown kills and closes, which every process and descriptor started here is added to.
 
 # ---- the clients ---------------------------------------------------------------------------------
 declare -A proxy_url proxy_log client_fd client_out client_pid
 next_command_id=0
 
-# start_proxy LABEL: this client's own HTTP path to the listener, recording every request. The
-# proxy binds a port the kernel chooses and names it in its ready line, so no other process can take
-# the port before it serves there.
+# start_proxy LABEL: this client's own HTTP path to the listener, recording every request.
 start_proxy() {
-  local label="$1" port="" log="${work}/logs/proxy-${1}.log"
+  local label="$1" port
+  pick_port port
   proxy_log["$label"]="${work}/proxies/${label}.jsonl"
   : >"${proxy_log[$label]}"
-  : >"$log"
   (exec env -i PATH="$PATH" HOME="${work}/bun-home" TMPDIR="${TMPDIR:-/tmp}" \
-    bun "${drivers}/listener-proxy.ts" --upstream "$envoy_url" \
-    --log "${proxy_log[$label]}" --label "$label") >>"$log" 2>&1 &
+    bun "${drivers}/listener-proxy.ts" --port "$port" --upstream "$envoy_url" \
+    --log "${proxy_log[$label]}" --label "$label") >>"${work}/logs/proxy-${label}.log" 2>&1 &
   scenario_pids+=($!)
-  wait_for 30 reported_port "$log" "listener-proxy ${label} ready on " port ||
-    refuse "the ${label} proxy reported no port it listens on: $(tail -n 5 "$log")"
   proxy_url["$label"]="http://127.0.0.1:${port}"
+  wait_for 30 port_open "$port" ||
+    refuse "the ${label} proxy did not listen on 127.0.0.1:${port}: $(tail -n 5 "${work}/logs/proxy-${label}.log")"
 }
 
 # client_fifo LABEL: the stdin this shell holds open for the client, so it never sees end of input.

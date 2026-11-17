@@ -227,12 +227,6 @@ scratch build; natsd is still built from the checkout. A path that is not an exe
 refused with exit 2, and so is `--listener-bin` beside `--base-rev`, since each chooses the
 listener.
 
-The listener is given `PORT=0` and binds a port the kernel chooses. One built from this checkout
-names that port in its `envoy-listener listening` line. One built before `a5f0cf479b`, which either
-flag can run, names port 0 there, the port it was given, and the smoke reads its port from the
-listener's own process instead: the one loopback socket it holds that listens, from its
-descriptors and the kernel's socket tables (`listening_port`), with no probe of the port.
-
 `SMOKE_DROP_ROLE_FROM_COPY=1` turns the INFRA-2747 row into its own control
 (c-live-restart of dispatch://INFRA-2747). Once the restarted process's claim is granted, the row
 asks the listener to take the role out of its copy of the role claims
@@ -293,18 +287,15 @@ that failed, and 2 is a refusal.
 
 ## local-stack.sh
 
-The loopback Envoy stack the two smokes above bring up, in one sourced file: the natsd and
+The loopback Envoy stack the two smokes above bring up, in one sourced file: a free loopback
+port below the kernel's ephemeral range (`port_range`, `port_open`, `pick_port`), the natsd and
 listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy` directory to
 build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from another
-revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`),
-the port each one binds (natsd's `-p -1` and `-m -1`, the listener's `PORT=0`: a port the kernel
-chooses, read back from the line the service logs with `reported_port`, so no other process can
-take it before the service serves there, as it could a port picked free and handed over) and when
-it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). `reported_port` is
-`scripts/e2e/lib/report-port.sh`'s, the one reader of such a line, which the end-to-end rig
-(`scripts/e2e/lib/rig.sh`) sources too; this file sources it, and none of the rig's other helpers.
-It is sourced, never run: it starts no process, so every script keeps its own isolation, logs,
-traps, timeouts, messages and exit codes.
+revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`)
+and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced,
+never run: it starts no process, so every script keeps its own isolation, logs, traps, timeouts,
+messages and exit codes. A caller defines `refuse` and sets `local_stack_fail` to the function an
+exhausted port range is reported through, `refuse` in both smokes here.
 `packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
 
 ## listener-api.sh

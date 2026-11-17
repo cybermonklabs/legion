@@ -5299,7 +5299,7 @@ it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 aft
 
 ## lib/report-port.sh
 
-The one reader of the port a process that bound port 0 itself logs once it listens, which `lib/rig.sh`, `envoy-session-delivery.sh` and `packages/pi-envoy/scripts/local-stack.sh` share, the last for the two smokes beside it and their `role-takeover/clients.sh`.
+The one reader of the port a process that bound port 0 itself logs once it listens, which `lib/rig.sh` and `envoy-session-delivery.sh` share.
 Sourced, never run; it needs nothing of its caller's.
 
 ```sh

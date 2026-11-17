@@ -792,17 +792,13 @@ check_k4() {
 
 	# A stand-in on a .svc name of its own, which the stack does not have. It is this run's
 	# own: one Python HTTP server on loopback, reached by the .svc name with curl --resolve,
-	# because a Legion pod's /etc/hosts cannot be written. It binds a port the kernel chooses
-	# (port 0) and names it in the first line it logs, so no other process can take the port
-	# before it serves there; -u keeps that line from waiting in Python's buffer.
-	local svc_port svc_pid
+	# because a Legion pod's /etc/hosts cannot be written.
+	local svc_port
+	svc_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 	mkdir -p "$WORK_DIR/svc"
 	echo "the .svc stand-in answered" >"$WORK_DIR/svc/index.html"
-	(cd "$WORK_DIR/svc" && exec python3 -u -m http.server 0 --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
-	svc_pid=$!
-	HELPER_PIDS+=("$svc_pid")
-	await "the .svc stand-in" 30 "$WORK_DIR/svc.log" '^Serving HTTP on 127\.0\.0\.1 port [0-9]+ ' "$svc_pid"
-	svc_port="$(sed -n 's/^Serving HTTP on 127\.0\.0\.1 port \([0-9][0-9]*\) .*/\1/p' "$WORK_DIR/svc.log" | head -n 1)"
+	(cd "$WORK_DIR/svc" && exec python3 -m http.server "$svc_port" --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
+	HELPER_PIDS+=($!)
 
 	local s_before t_before
 	s_before="$(records_count s)"
@@ -1356,40 +1352,21 @@ k7_dotfiles() {
 	K7_FETCHED="$(cd "$d" && find . -type f | sed 's|^\./||' | sort | tr '\n' ' ')"
 }
 
-# k7_front NAME starts a front (dev-airlock-stands front, as dev-airlock.sh starts the stack's) on
-# a 127.0.0.1 port the kernel chooses, and sets K7_FRONT_URL to its URL. It forwards each
-# connection to the address its backends file $WORK_DIR/k7/NAME-backends names, which is empty
-# until k7_broker writes it.
-k7_front() {
-	local d="$WORK_DIR/k7" pid
-	: >"$d/$1-backends"
-	"$STANDS_BIN" front --listen 127.0.0.1:0 --backends-file "$d/$1-backends" \
-		>"$d/$1-front.json" 2>"$d/$1-front.log" &
-	pid=$!
-	EXTRA_BROKER_PIDS+=("$pid")
-	await "k7's $1 front" 30 "$d/$1-front.log" 'front listening addr=' "$pid"
-	K7_FRONT_URL="$(jq -r .url "$d/$1-front.json")"
-}
-
 # k7_broker starts the one broker this check's steps run through: a broker like the stack's,
 # whose environment comes from the running one, with the rules file, the three listening addresses
-# and the public URL replaced. Its API and proxy are reached through a front each, as the stack's
-# brokers are: the broker must name both URLs at boot, before it has bound a port, and a port picked
-# free and named could be taken by another process before the broker binds it. So each front holds
-# a port the kernel chose from before the broker starts, the broker binds ports the kernel chooses
-# (port 0), and the fronts learn those from its log. The metrics port is one the system picks too,
-# since nothing here scrapes it and the stack's own brokers hold theirs.
+# and the public URL replaced; the metrics port is one the system picks, since nothing here
+# scrapes it and the stack's own brokers hold theirs.
 k7_broker() {
 	local d="$WORK_DIR/k7" api proxy
-	k7_front api
-	K7_API_URL=$K7_FRONT_URL
-	k7_front proxy
-	K7_PROXY_URL=$K7_FRONT_URL
+	api="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+	proxy="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+	K7_API_URL="http://127.0.0.1:$api"
+	K7_PROXY_URL="http://127.0.0.1:$proxy"
 	broker_env \
 		BROKER_AIRLOCK_RULES_FILE="$d/rules.json" \
-		BROKER_LISTEN_ADDR="127.0.0.1:0" \
+		BROKER_LISTEN_ADDR="127.0.0.1:$api" \
 		BROKER_PUBLIC_URL="$K7_API_URL" \
-		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
+		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:$proxy" \
 		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
@@ -1397,23 +1374,6 @@ k7_broker() {
 	local started=$!
 	EXTRA_BROKER_PIDS+=("$started")
 	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
-	api="$(logged_addr 'broker listening' "$d/broker.log")"
-	proxy="$(logged_addr 'airlock proxy listening' "$d/broker.log")"
-	if [ -z "$api" ] || [ -z "$proxy" ]; then
-		echo "airlock-check: k7's broker logged no API or proxy address; see $d/broker.log" >&2
-		exit 1
-	fi
-	# Each front rereads its file when it changes, so writing it is all it takes; the API front
-	# answering /healthz is the broker answering through it, as dev-airlock.sh waits for its own.
-	printf '%s\n' "$api" >"$d/api-backends"
-	printf '%s\n' "$proxy" >"$d/proxy-backends"
-	local i
-	for ((i = 0; i < 60; i++)); do
-		if curl -sf --max-time 2 "$K7_API_URL/healthz" >/dev/null 2>&1; then return 0; fi
-		sleep 0.5
-	done
-	echo "airlock-check: k7's API front never answered /healthz in 60 tries, each a curl of up to 2 s and a 0.5 s sleep (30 s when the front refuses at once, up to 150 s when each curl waits out its 2 s); see $d/api-front.log" >&2
-	exit 1
 }
 
 # k7_names is the rules file and the fake secrets this check adds: one name per consumer, bound

@@ -1,4 +1,5 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess } from "bun";
@@ -105,6 +106,38 @@ export async function buildGoBinaries(build: GoBuild): Promise<void> {
   }
 }
 
+/**
+ * `count` distinct loopback ports nothing listens on now. Every probe socket stays open until all
+ * of them are bound, so the kernel cannot hand one ephemeral port out twice; one at a time, each
+ * closed before the next opened, it can, and two processes of one stack then race for one port.
+ */
+export async function freePorts(count: number): Promise<number[]> {
+  const servers: Server[] = [];
+  try {
+    const ports: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const server = createServer();
+      servers.push(server);
+      const listening = Promise.withResolvers<void>();
+      server.once("error", listening.reject);
+      server.listen(0, "127.0.0.1", () => listening.resolve());
+      await listening.promise;
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("no free loopback port");
+      ports.push(address.port);
+    }
+    return ports;
+  } finally {
+    await Promise.all(
+      servers.map((server) => {
+        const closed = Promise.withResolvers<void>();
+        server.close(() => closed.resolve());
+        return closed.promise;
+      })
+    );
+  }
+}
+
 /** The last `lines` lines of a log file, for an error that names why a process failed. */
 export function tail(file: string, lines: number): string {
   try {
@@ -147,42 +180,6 @@ export async function awaitReady(
   }
 }
 
-/** natsd's line naming the client port it bound (`-p -1`), which nats-server logs as it listens. */
-export const NATS_CLIENT_PORT_LINE = /Listening for client connections on 127\.0\.0\.1:(\d+)$/m;
-/** natsd's line naming the monitoring port it bound (`-m -1`). */
-export const NATS_MONITOR_PORT_LINE = /Starting http monitor on 127\.0\.0\.1:(\d+)$/m;
-/** The listener's JSON line naming the address it bound (`PORT=0`). */
-export const LISTENER_PORT_LINE = /"msg":"envoy-listener listening".*"addr":"127\.0\.0\.1:(\d+)"/;
-
-/**
- * The port `child` reports it bound: the number `line` captures in `log`, which the process writes
- * once it listens on a port the kernel chose for it. It polls as `awaitReady` does, throwing when
- * `child` exits first or the budget passes.
- *
- * A process that binds port 0 itself holds its port from the kernel's choice on, so no other
- * process can take it before the process serves there. A port this process picked free and handed
- * over by number gives no such hold: another process on the machine can bind it in between, and
- * the stack's own process then fails with "address already in use", or a client of the stack
- * reaches that other process instead.
- */
-export async function reportedPort(
-  what: string,
-  child: Subprocess,
-  log: string,
-  budget: ReadyBudget,
-  line: RegExp
-): Promise<number> {
-  let port = 0;
-  await awaitReady(what, child, log, budget, async () => {
-    // The whole log; a log not yet written reads as "(no log)", which no line matches.
-    const reported = line.exec(tail(log, Infinity))?.[1];
-    if (reported === undefined) return false;
-    port = Number(reported);
-    return true;
-  });
-  return port;
-}
-
 const StatusSchema = z.object({ status: z.string() });
 const JszSchema = z.object({
   account_details: z
@@ -210,8 +207,7 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
 }
 
 /**
- * Starts natsd (JetStream on) and the listener, each on a loopback port the kernel chose for it and
- * read back from the line it logs once it listens (`reportedPort`), and resolves once the
+ * Starts natsd (JetStream on) and the listener on free loopback ports, and resolves once the
  * listener's /healthz answers healthy and natsd holds the `ENVOY_NOTIFICATIONS` stream. Throws,
  * naming why, when `go` is missing, a build fails or either process does not come up. The NATS
  * server runs with no authorization at all, so every client may do anything, and the listener
@@ -240,13 +236,28 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       stack: "Envoy",
       binaries: "natsd and the listener",
     });
+    const [natsPort, monitorPort, listenerPort] = await freePorts(3);
     const natsHome = path.join(work, "nats-home");
     const listenerHome = path.join(work, "listener-home");
     mkdirSync(natsHome);
     mkdirSync(listenerHome);
     const machineID = `envoy-stack-${process.pid}`;
-    // -1 is nats-server's "a port the kernel chooses", for the client port and the monitoring one.
-    const natsArgs = ["-p", "-1", "-m", "-1", "-store_dir", path.join(work, "nats-store")];
+    const natsArgs = [
+      "-p",
+      String(natsPort),
+      "-m",
+      String(monitorPort),
+      "-store_dir",
+      path.join(work, "nats-store"),
+    ];
+    const listenerEnv = {
+      PATH,
+      HOME: listenerHome,
+      PORT: String(listenerPort),
+      ENVOY_LISTEN_HOST: "127.0.0.1",
+      ENVOY_MACHINE_ID: machineID,
+      NATS_URLS: `nats://127.0.0.1:${natsPort}`,
+    };
     const natsLog = path.join(work, "natsd.log");
     const natsOut = openSync(natsLog, "a");
     const natsd = Bun.spawn([path.join(bin, "natsd"), ...natsArgs], {
@@ -256,20 +267,6 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     });
     closeSync(natsOut);
     processes.push(natsd);
-    const natsPort = await reportedPort(
-      "natsd's client port",
-      natsd,
-      natsLog,
-      ENVOY_READY,
-      NATS_CLIENT_PORT_LINE
-    );
-    const monitorPort = await reportedPort(
-      "natsd's monitoring port",
-      natsd,
-      natsLog,
-      ENVOY_READY,
-      NATS_MONITOR_PORT_LINE
-    );
     const monitor = `http://127.0.0.1:${monitorPort}`;
     await awaitReady(
       "natsd",
@@ -281,33 +278,17 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
 
     const natsHostPort = `127.0.0.1:${natsPort}`;
     const natsUrl = `nats://${natsHostPort}`;
+    const envoyUrl = `http://127.0.0.1:${listenerPort}`;
     const listenerLog = path.join(work, "listener.log");
     const listenerOut = openSync(listenerLog, "a");
     const listener = Bun.spawn([path.join(bin, "listener")], {
       // The caller's environment last, so a test may replace a setting of the stack's own.
-      env: {
-        PATH,
-        HOME: listenerHome,
-        // Port 0: the listener binds a port the kernel chooses and logs the address it bound.
-        PORT: "0",
-        ENVOY_LISTEN_HOST: "127.0.0.1",
-        ENVOY_MACHINE_ID: machineID,
-        NATS_URLS: natsUrl,
-        ...options.listenerEnv,
-      },
+      env: { ...listenerEnv, ...options.listenerEnv },
       stdout: listenerOut,
       stderr: listenerOut,
     });
     closeSync(listenerOut);
     processes.push(listener);
-    const listenerPort = await reportedPort(
-      "the listener's port",
-      listener,
-      listenerLog,
-      ENVOY_READY,
-      LISTENER_PORT_LINE
-    );
-    const envoyUrl = `http://127.0.0.1:${listenerPort}`;
     await awaitReady(
       "the listener",
       listener,
