@@ -63,6 +63,9 @@ type Server struct {
 	// drainBoundNS is DefaultDrainBound unless SetDrainBound names another: how long a drain
 	// holds before the helper ends it by itself (drain). Atomic for the reason dormantGraceNS is.
 	drainBoundNS atomic.Int64
+	// revokes counts every revoke fired off (goRevoke) until it has returned, so a test that must
+	// see a revoke land waits for it rather than polling a fixed span for its effect.
+	revokes sync.WaitGroup
 }
 
 // Serve accepts until ctx ends. Each connection carries one request.
@@ -447,7 +450,7 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 	s.save()
 	s.adopt(ctx, sess)
 	for _, id := range orphans {
-		go s.revoke(ctx, id)
+		s.goRevoke(ctx, id)
 	}
 	if adm.Took {
 		s.Log.Info("session registered, taking back the identity it had before", "pid", pid, "runtime_id", sess.RuntimeID(), "session_id", sessionID, "enrollment_id", adm.Record.EnrollmentID)
@@ -582,7 +585,7 @@ func (s *Server) adoptSessionID(ctx context.Context, sess *Session, sessionID st
 	}
 	s.save()
 	for _, id := range got.Orphans {
-		go s.revoke(ctx, id)
+		s.goRevoke(ctx, id)
 	}
 	s.Log.Info("session named by its launcher; enrolling it under that name", "pid", sess.PID, "runtime_id", sess.RuntimeID(), "session_id", sessionID)
 	return Response{}, false
@@ -1294,7 +1297,7 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			s.Log.Info("an enrollment arrived for a name this session no longer has; enrolling again under its new one",
 				"runtime_id", sess.RuntimeID(), "enrollment_id", id)
 			if !sess.adoptLapsed(id) {
-				go s.revoke(ctx, id)
+				s.goRevoke(ctx, id)
 			}
 			continue
 		}
@@ -1530,7 +1533,7 @@ func (s *Server) revokeLapsed(ctx context.Context, sess *Session, id string) boo
 		s.Log.Warn("revoking the lapsed enrollment failed; retrying", "runtime_id", sess.RuntimeID(), "enrollment_id", id, "error", err, "in", delay)
 	}, func() error { return s.revokeOnce(ctx, id) })
 	if !revoked && ctx.Err() == nil {
-		go s.revoke(ctx, id)
+		s.goRevoke(ctx, id)
 	}
 	return revoked
 }
@@ -1653,7 +1656,7 @@ func (s *Server) retire(ctx context.Context, sess *Session, why string) {
 	// Nothing can claim an unnamed session's identity, so both its enrollments end now: the
 	// live one and any still awaiting its revoke.
 	for _, id := range nonEmpty(cur.EnrollmentID, cur.LapsedID) {
-		go s.revoke(ctx, id)
+		s.goRevoke(ctx, id)
 	}
 	s.Log.Info("session retired", "runtime_id", cur.RuntimeID, "why", why)
 }
@@ -1670,20 +1673,30 @@ func (s *Server) SweepDormant(ctx context.Context) {
 		ids := rec.enrollments()
 		s.Log.Info("a session did not come back; ending its enrollment", "runtime_id", rec.RuntimeID, "session_id", rec.SessionID, "enrollment_ids", ids)
 		for _, id := range ids {
-			// Fired off, never waited for: this runs on the one goroutine SweepLoop owns, and
-			// a revoke that fails costs about four seconds of bounded retries on top of its
+			// Fired off, never waited for here: this runs on the one goroutine SweepLoop owns,
+			// and a revoke that fails costs about four seconds of bounded retries on top of its
 			// own HTTP timeouts, with nothing to interrupt it. A reboot parks every recorded
 			// session, so one batch of twenty records — up to two ids each — is potentially
 			// eighty seconds in which this loop sweeps nothing, the ticker drops its ticks and
-			// the save below does not run. There is nothing to wait for either: revoke returns
-			// nothing, logs its own failure, and touches no registry state. ctx bounds these
-			// goroutines exactly as it bounded the calls made inline, and every sibling path
-			// in this file fires the same call off the same way (register, adoptSessionID,
-			// retire and both branches of Recover).
-			go s.revoke(ctx, id)
+			// the save below does not run. revoke returns nothing, logs its own failure, and
+			// touches no registry state. ctx bounds these goroutines exactly as it bounded the
+			// calls made inline, and every sibling path in this file fires the same call off
+			// the same way (goRevoke: register, adoptSessionID, retire and both branches of
+			// Recover), each counted in s.revokes for a test to wait on.
+			s.goRevoke(ctx, id)
 		}
 	}
 	s.save()
+}
+
+// goRevoke fires off revoke(ctx, id), counted in s.revokes until it returns, so a test of a path
+// that revokes waits for the revoke to land (s.revokes.Wait) instead of polling for its effect.
+func (s *Server) goRevoke(ctx context.Context, id string) {
+	s.revokes.Add(1)
+	go func() {
+		defer s.revokes.Done()
+		s.revoke(ctx, id)
+	}()
 }
 
 // SweepLoop runs SweepDormant until ctx ends. every is the tick; cmd/agent-secrets-helper passes
@@ -1792,7 +1805,7 @@ func (s *Server) Recover(ctx context.Context) {
 			}
 			s.Log.Info("recorded session is gone", "runtime_id", rec.RuntimeID)
 			for _, id := range rec.enrollments() {
-				go s.revoke(ctx, id)
+				s.goRevoke(ctx, id)
 			}
 			continue
 		}
@@ -1819,7 +1832,7 @@ func (s *Server) Recover(ctx context.Context) {
 			s.Log.Info("session re-pinned after a restart with the key it had; it keeps its enrollment", "runtime_id", rec.RuntimeID, "enrollment_id", rec.EnrollmentID)
 			s.adopt(ctx, sess)
 			for _, id := range orphans {
-				go s.revoke(ctx, id)
+				s.goRevoke(ctx, id)
 			}
 			continue
 		}
@@ -1829,7 +1842,7 @@ func (s *Server) Recover(ctx context.Context) {
 		// retry-until-gone loop; a second id belongs to a name this session no longer has, so
 		// it blocks nothing and the bounded revoke ends it.
 		for _, id := range takeLapsed(sess, rec.enrollments(), rec.EnrollmentID != "") {
-			go s.revoke(ctx, id)
+			s.goRevoke(ctx, id)
 		}
 		s.Registry.Add(sess)
 		s.Log.Warn("session re-pinned after a restart with a fresh key; its previous grants are revoked", "runtime_id", rec.RuntimeID)

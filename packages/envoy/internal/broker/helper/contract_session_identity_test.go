@@ -234,15 +234,12 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	next.SweepDormant(ctx)
 
 	// The sweep fires each revoke off rather than holding its own goroutine on one
-	// (SweepDormant), so the broker stops honouring the grant a moment after the sweep returns.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		status, body = cr.sessionReq(t, sess, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
-		if status != http.StatusOK || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// (SweepDormant). The test waits for every revoke the helper fired to return (Server.revokes,
+	// goRevoke), so the broker has answered the revoke before the grant is read, however long a
+	// loaded machine takes; a poll of five seconds failed here under load on main, 1 run of 12
+	// (the pull request records the runs).
+	next.revokes.Wait()
+	status, body = cr.sessionReq(t, sess, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
 	if status == http.StatusOK {
 		t.Fatalf("a session that never came back still released its grant: %d %s", status, body)
 	}
