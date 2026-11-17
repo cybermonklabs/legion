@@ -173,7 +173,7 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 		errorText string
 	}{
 		{name: "a pod with no claim", assignees: &standInAssignees{answer: dave}},
-		{name: "the controller's claim", claim: "legion-infra-controller", assignees: &standInAssignees{answer: dave}},
+		{name: "the controller's claim", claim: "legion-acme-controller", assignees: &standInAssignees{answer: dave}},
 		{name: "no Dispatch to read", claim: legionPlanner, noReader: true},
 		{name: "Dispatch refuses", claim: legionPlanner, assignees: &standInAssignees{err: errors.New("dispatch answered 503 for issue ACME-1")},
 			warned: true, errorText: "dispatch answered 503 for issue ACME-1"},
@@ -206,7 +206,7 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 				t.Errorf("Create took %s; want it back within %s, whatever Dispatch does", took, most)
 			}
 			requireListedFor(t, m, *req.RecordID, "", []string{alice, bob}, alice, bob)
-			if c.assignees != nil && (c.claim == "" || c.claim == "legion-infra-controller") {
+			if c.assignees != nil && (c.claim == "" || c.claim == "legion-acme-controller") {
 				if asked := c.assignees.keys(); len(asked) != 0 {
 					t.Errorf("Dispatch was asked for %v; want no read for a claim that names no issue", asked)
 				}
@@ -248,14 +248,14 @@ func TestTheFirstResponsiblePersonWins(t *testing.T) {
 // else: the controller's token and a token that ends in no role name no issue.
 func TestIssueKeyOfClaim(t *testing.T) {
 	for claim, want := range map[string]string{
-		"legion-acme-acme-2653-planner":   "ACME-2653",
-		"legion-bet-bet-12-merger":        "BET-12",
-		"legion-acme-acme7-3-architect":   "ACME7-3",
-		"legion-infra-controller":         "",
-		"legion-infra-infra-2653":         "",
-		"legion-infra-infra-2653-janitor": "",
-		"legion-infra-2653-planner":       "",
-		"":                                "",
+		"legion-acme-acme-12-planner":    "ACME-12",
+		"legion-widget-widget-12-merger": "WIDGET-12",
+		"legion-acme-acme7-3-architect":  "ACME7-3",
+		"legion-acme-controller":         "",
+		"legion-acme-acme-12":            "",
+		"legion-acme-acme-12-janitor":    "",
+		"legion-acme-12-planner":         "",
+		"":                               "",
 	} {
 		if got := issueKeyOfClaim(claim); got != want {
 			t.Errorf("issueKeyOfClaim(%q) = %q; want %q", claim, got, want)
