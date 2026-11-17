@@ -391,6 +391,13 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 // of both events carry proven: true. The shared agent token, a personal token and a pod's
 // service-account token prove no session, so the session their body names is recorded as it
 // always was and carries no mark, though it is the very session the broker's token proves.
+//
+// Each of those three also writes once with a forged body: its actor says proven: true, with an
+// act whose session_proven is true. Both are declared fields of model.Actor, so the server's
+// strict decode takes the body (every write below must answer its success code) and the mark
+// reaches the handler as the caller's own word. The write is still recorded with no mark on the
+// comment's author, either version's author or either event's actor: a server that copied the
+// body's actor, or its mark, into what it records fails every one of those assertions.
 func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
@@ -414,10 +421,15 @@ func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 		}
 	}
 
+	claimed := map[string]any{"kind": "session", "id": brokerTestSession}
+	forged := map[string]any{
+		"kind": "session", "id": brokerTestSession, "proven": true,
+		"act": map[string]any{"session": brokerTestSession, "session_proven": true},
+	}
 	for _, credential := range []struct {
 		name string
 		// actor is the body's actor: none for the token that proves its session, the session
-		// claimed for every other.
+		// claimed, or claimed with a forged mark, for every other.
 		actor  map[string]any
 		proven bool
 		send   func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder
@@ -425,9 +437,12 @@ func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 		{"a broker-issued token", nil, true, func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, method, path, brokerToken, body))
 		}},
-		{"the shared agent token", map[string]any{"kind": "session", "id": brokerTestSession}, false, bearer("agent-token")},
-		{"a personal token", map[string]any{"kind": "session", "id": brokerTestSession}, false, bearer(personal)},
-		{"a service-account token", map[string]any{"kind": "session", "id": brokerTestSession}, false, bearer(service)},
+		{"the shared agent token", claimed, false, bearer("agent-token")},
+		{"a personal token", claimed, false, bearer(personal)},
+		{"a service-account token", claimed, false, bearer(service)},
+		{"the shared agent token with a body that says proven", forged, false, bearer("agent-token")},
+		{"a personal token with a body that says proven", forged, false, bearer(personal)},
+		{"a service-account token with a body that says proven", forged, false, bearer(service)},
 	} {
 		t.Run(credential.name, func(t *testing.T) {
 			write := func(method, path string, body map[string]any) *httptest.ResponseRecorder {
@@ -499,8 +514,9 @@ func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 	}
 }
 
-// requireSessionProven fails t unless actor is the broker's test session and carries the proven
-// mark exactly when want says the credential proved it.
+// requireSessionProven fails t unless actor is the broker's test session, carries the proven
+// mark exactly when want says the credential proved it, and names no act: a session's own write
+// is no person's, so no session_proven a body sent can ride on it.
 func requireSessionProven(t *testing.T, what string, actor model.Actor, want bool) {
 	t.Helper()
 	if actor.Kind != "session" || actor.ID != brokerTestSession {
@@ -508,6 +524,9 @@ func requireSessionProven(t *testing.T, what string, actor model.Actor, want boo
 	}
 	if actor.Proven != want {
 		t.Fatalf("%s proven = %t, want %t", what, actor.Proven, want)
+	}
+	if actor.Act != nil {
+		t.Fatalf("%s act = %+v, want none", what, *actor.Act)
 	}
 }
 

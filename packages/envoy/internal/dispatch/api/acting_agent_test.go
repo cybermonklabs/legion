@@ -228,6 +228,17 @@ func TestAnActsSessionIsProvenOnlyWhereTheCredentialProvedIt(t *testing.T) {
 			body["actor"] = map[string]any{"kind": "session", "id": actingSession}
 			return answerAsToken(t, rig.handler, askID, personal.Token, "", body)
 		}, actingSession, false},
+		// A forged body: its actor says proven and names an act whose session_proven is true.
+		// Both are fields the strict decode takes, so the answer is written; the act still
+		// records the session the body named as not proven, which a handler that copied the
+		// body's act or mark would fail.
+		{"a personal token whose body says its session is proven", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			body["actor"] = map[string]any{
+				"kind": "session", "id": actingSession, "proven": true,
+				"act": map[string]any{"session": actingSession, "session_proven": true},
+			}
+			return answerAsToken(t, rig.handler, askID, personal.Token, "", body)
+		}, actingSession, false},
 		{"a broker-issued token naming no session", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
 			return presenting(t, askID, "", body)
 		}, brokerTestSession, true},
