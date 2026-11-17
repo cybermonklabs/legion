@@ -275,6 +275,16 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 // since, lets the listener read no part of it, and its store then opens it once the grant arrives
 // (session.OpenKnownSessions). A known-session bucket the server says it does not hold holds the
 // start as every other does.
+//
+// Once a read of the wait fails for the known-session bucket, the wait reads it no more: on such a
+// hub the server refuses and drops every read of it, each one a permissions violation and the
+// connection's `envoy nats async error` ERROR, every bucketWaitInterval for as long as another
+// bucket holds the start, and none of them can tell the wait anything. The store's own attempts
+// cover the bucket from its open on (session.KnownSessions), and the self-health monitor's reads
+// once the store can read it (monitoredBuckets). A known-session bucket that is missing on a hub
+// whose first read of it here failed for another cause (a read slower than
+// knownBucketCheckTimeout) then does not hold the start: its store finds it missing, refuses the
+// registrations that need it (bus.ErrBucketMissing), and the monitor names it.
 func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
 	var logged time.Time
 	for {
@@ -283,7 +293,10 @@ func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.Jet
 			return err
 		}
 		missing.observe(reads)
-		delete(reads.unread, bus.KnownSessionBucket)
+		if _, unread := reads.unread[bus.KnownSessionBucket]; unread {
+			delete(reads.unread, bus.KnownSessionBucket)
+			buckets = slices.DeleteFunc(slices.Clone(buckets), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
+		}
 		if len(reads.missing) == 0 && len(reads.unread) == 0 {
 			return nil
 		}
