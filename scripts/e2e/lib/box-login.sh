@@ -11,6 +11,21 @@
 # XDG_RUNTIME_DIR and TMPDIR still move nothing.
 box_login_lock_file=${box_login_lock_file:-/tmp/legion-e2e-box-login.$(id -u).lock}
 #
+# box_login_pid_args PID prints PID's command line, as `ps -o args= -p PID` prints it, from that
+# one process's /proc/PID/cmdline, and fails when PID runs no command. procps-ng's ps reads every
+# process on the machine even for one -p (43,778 /proc reads for one pid at 21,742 processes),
+# about a second on a machine that runs that many. A host with no /proc (macOS) asks ps.
+box_login_pid_args() {
+  local IFS=' ' args=()
+  if [ -d /proc/self ]; then
+    [ -r "/proc/$1/cmdline" ] && mapfile -d '' args <"/proc/$1/cmdline" 2>/dev/null || return 1
+    [ "${#args[@]}" -gt 0 ] || return 1
+    printf '%s\n' "${args[*]}"
+  else
+    ps -o args= -p "$1"
+  fi
+}
+#
 # take_box_login_lock — takes a non-blocking flock on $box_login_lock_file. The stage proofs call it
 # first, before they make a work directory or start anything, so a refused run leaves nothing. The
 # lock is held on a file descriptor of the calling shell for the rest of its life, and by every
@@ -29,7 +44,7 @@ take_box_login_lock() {
   if ! flock -n "$box_login_lock_fd"; then
     holder=$(<"$file") || holder=
     pid=${holder%% *}
-    if [[ $pid =~ ^[0-9]+$ ]] && cmd=$(ps -o args= -p "$pid" 2>/dev/null) && [ -n "$cmd" ]; then
+    if [[ $pid =~ ^[0-9]+$ ]] && cmd=$(box_login_pid_args "$pid") && [ -n "$cmd" ]; then
       echo "take_box_login_lock: another box-login proof holds $file: pid $pid ($cmd); one box-login proof runs at a time" >&2
     elif [[ $pid =~ ^[0-9]+$ ]]; then
       echo "take_box_login_lock: another box-login proof holds $file: pid $pid (${holder#* }) has exited, and a process it started still holds the lock; one box-login proof runs at a time" >&2
@@ -40,7 +55,7 @@ take_box_login_lock() {
     return 1
   fi
   # Same inode, so the lock the descriptor holds stays; the content names this holder.
-  printf '%s %s\n' "$$" "$(ps -o args= -p "$$" 2>/dev/null || echo "$0")" >"$file"
+  printf '%s %s\n' "$$" "$(box_login_pid_args "$$" || echo "$0")" >"$file"
 }
 
 # box_login_stop_grace is how long stop_box_login_processes waits, in seconds.
