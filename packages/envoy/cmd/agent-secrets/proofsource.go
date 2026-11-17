@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
 // proofSigner signs one broker call and returns the compact JWS for its Proof header: all a call
@@ -96,16 +97,15 @@ type helperSigner struct {
 	sock string
 }
 
-// errNoCredential is what a machine session gets from a helper that holds no launcher credential
-// (NO_CREDENTIAL): until the helper holds one it enrolls no one, so the session has no broker
-// identity. What cures it is the helper's to say (noCredential), since only the helper knows its
-// mode: in machine-login mode a machine login a human approves, in identity mode its own trade
-// loop. identity prints it, and reportError prints it the same way for every command that meets it.
-var errNoCredential = errors.New("this machine's agent-secrets-helper holds no credential at the secrets broker; not an agent session")
+// errNoCredential is what a command gets from a helper that holds no launcher credential
+// (NO_CREDENTIAL): until the helper holds one it enrolls no one, so a machine session has no
+// broker identity and a machine or grant command has no login to act under. What cures it is the
+// helper's to say (noCredential), since only the helper knows its mode: in machine-login mode a
+// machine login a human approves, in identity mode its own trade loop.
+var errNoCredential = errors.New("this machine's agent-secrets-helper holds no credential at the secrets broker")
 
 // noCredentialError is errNoCredential with the helper's own NO_CREDENTIAL answer, which ends with
-// the hint of the helper's mode (brokerclient.Hint). errors.Is finds errNoCredential in it, and
-// reportError prints it whole however deep a command wrapped it.
+// the hint of the helper's mode (brokerclient.Hint). errors.Is finds errNoCredential in it.
 type noCredentialError struct{ helper string }
 
 func (e *noCredentialError) Error() string {
@@ -114,8 +114,16 @@ func (e *noCredentialError) Error() string {
 
 func (e *noCredentialError) Is(target error) bool { return target == errNoCredential }
 
+// sessionLine is the line identity prints, and reportError for every command run in a session,
+// however deep the command wrapped the error: such a command is not an agent session.
+func (e *noCredentialError) sessionLine() string {
+	return errNoCredential.Error() + "; not an agent session (the helper: " + e.helper + ")"
+}
+
 // noCredential is the error for a helper's NO_CREDENTIAL answer resp.
-func noCredential(resp helper.Response) error { return &noCredentialError{helper: resp.Error} }
+func noCredential(resp helper.Response) *noCredentialError {
+	return &noCredentialError{helper: resp.Error}
+}
 
 // helperAnswer is what the helper said to the identity probe: sock is the socket asked, there
 // whether its file exists, err a socket that is there and did not answer within
@@ -213,10 +221,13 @@ func (e *launcherRefusal) Error() string { return e.message }
 // launcherSigner signs broker calls with the machine credential through the helper's
 // sign-launcher op: the key never leaves the helper, which signs only the four operator routes of
 // its own broker, for a process it can show is outside every registered session's process tree.
-// credentialID is the credential the last proof named, as the helper answered it.
+// credentialID is the credential the last proof named, as the helper answered it, and failure the
+// class of that helper's mode (helper.Response.NoCredentialFailure), which names what cures the
+// broker refusing the credential.
 type launcherSigner struct {
 	sock         string
 	credentialID string
+	failure      brokerclient.Failure
 }
 
 func (l *launcherSigner) Sign(method, url string) (string, error) {
@@ -226,7 +237,7 @@ func (l *launcherSigner) Sign(method, url string) (string, error) {
 	}
 	switch {
 	case resp.OK:
-		l.credentialID = resp.CredentialID
+		l.credentialID, l.failure = resp.CredentialID, resp.NoCredentialFailure()
 		return resp.Proof, nil
 	case resp.Code == helper.CodeNoCredential:
 		return "", &launcherRefusal{noCredential(resp).Error()}

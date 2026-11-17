@@ -193,13 +193,13 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 		// A refusal a retry could cure — the broker's 429, a skewed DPoP proof — is not this
 		// sign-in ending: marking it refused on one of those would enrol every later session
 		// under this machine for the life of the process.
-		a.markRefused(name, record.Person, refusal.Code)
+		a.markRefused(name, record.Person, refusal.Code, err)
 		return nil, nil
 	case errors.Is(err, ErrSignInEnded):
 		// The issuer, not the broker, is what refused: a refresh token Google no longer
 		// honours is as final as a revoke, and asking it again at every enrolment would fail
 		// every enrolment on this box rather than fall back to the machine.
-		a.markRefused(name, record.Person, "invalid_grant")
+		a.markRefused(name, record.Person, "invalid_grant", err)
 		return nil, nil
 	}
 	if err != nil {
@@ -268,16 +268,18 @@ func (a *SignInAuthority) Refused(ctx context.Context, credentialID string) erro
 
 // markRefused records that this record's sign-in has been refused for good — by the broker, or
 // by the issuer that no longer honours the person's refresh token — and logs it once with the
-// code that named the refusal: the person reads it on Dispatch's sign-ins page, and the box
-// goes on working under its own authority. The caller holds a.mu.
-func (a *SignInAuthority) markRefused(name, person, code string) {
+// code that named the refusal and the refusal itself: the person reads it on Dispatch's sign-ins
+// page, and the box goes on working under its own authority. The line adds no cure of its own
+// (Hint): the broker's words, or the ended sign-in's, say what ends the refusal where anything
+// on this machine does. The caller holds a.mu.
+func (a *SignInAuthority) markRefused(name, person, code string, err error) {
 	if a.refused == nil {
 		a.refused = map[string]bool{}
 	}
 	a.refused[name] = true
 	a.held, a.heldFor, a.heldCredential = nil, "", ""
 	if a.Log != nil {
-		a.Log.Warn("this machine's sign-in was refused; sessions enrol under this machine's own authority until somebody signs in again",
-			"person", person, "code", code, "command", SignInCommand)
+		a.Log.Warn("this machine's sign-in was refused; sessions enrol under this machine's own authority",
+			"person", person, "code", code, "error", err.Error())
 	}
 }

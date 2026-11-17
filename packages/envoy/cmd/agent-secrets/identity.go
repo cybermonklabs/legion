@@ -239,7 +239,7 @@ func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 	case resp.Code == helper.CodeNotASession:
 		return 1
 	case resp.Code == helper.CodeNoCredential:
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", noCredential(resp))
+		fmt.Fprintf(stderr, "agent-secrets: %s\n", noCredential(resp).sessionLine())
 		return 1
 	default:
 		fmt.Fprintf(stderr, "agent-secrets: helper at %s answered %s: %s; not an agent session\n", answer.sock, resp.Code, resp.Error)

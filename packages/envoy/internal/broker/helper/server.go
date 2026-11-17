@@ -836,7 +836,7 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
-	return Response{OK: true, Proof: compact, CredentialID: cred.id}
+	return Response{OK: true, Proof: compact, CredentialID: cred.id, MachineIdentity: s.Broker.Identity != nil}
 }
 
 // operatorRoute reports whether method and url are one of the broker's four operator routes

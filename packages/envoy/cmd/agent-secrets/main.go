@@ -439,7 +439,7 @@ func flagGiven(flags *flag.FlagSet, name string) bool {
 func reportError(stderr io.Writer, prefix string, err error) {
 	var none *noCredentialError
 	if errors.As(err, &none) {
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", none)
+		fmt.Fprintf(stderr, "agent-secrets: %s\n", none.sessionLine())
 		return
 	}
 	fmt.Fprintf(stderr, "%s: %v\n", prefix, err)

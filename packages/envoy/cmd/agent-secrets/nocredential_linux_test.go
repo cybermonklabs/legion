@@ -66,7 +66,7 @@ func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(out)) != "ran" {
 		t.Fatalf("the command must still run: %q %v (stderr %q)", out, err, stderr.String())
 	}
-	const warning = "agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: this machine's agent-secrets-helper holds no credential at the secrets broker; not an agent session (the helper: no machine credential; run: agent-secrets machine login, and have a human approve it)\n"
+	const warning = "agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: this machine's agent-secrets-helper holds no credential at the secrets broker (the helper: no machine credential; run: agent-secrets machine login, and have a human approve it)\n"
 	if stderr.String() != warning {
 		t.Fatalf("stderr %q, want the no-credential warning %q", stderr.String(), warning)
 	}
@@ -164,5 +164,55 @@ func TestLoginStatusSaysWhyTheHelperDroppedItsCredential(t *testing.T) {
 				t.Fatalf("exit %d, stdout %q, stderr %q; want 1, %q, %q", exit, stdout, stderr, "expired\n", want)
 			}
 		})
+	}
+}
+
+// TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin: a helper in identity mode answers
+// NO_CREDENTIAL with the cure of its own mode, its trade loop, and every command that meets the
+// answer passes it on whole: identity, a machine or grant command, and register --exec's launch
+// warning. None names a machine login, which is not how such a machine gets a credential. A
+// machine command whose credential the broker refuses LAUNCHER_INVALID names the same cure, read
+// from the helper's sign-launcher answer (machine_identity).
+func TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin(t *testing.T) {
+	const helperSays = "no machine credential; the helper's trade loop is trading this machine's identity for a new credential"
+	const none = "this machine's agent-secrets-helper holds no credential at the secrets broker"
+	answer := helper.Response{Code: helper.CodeNoCredential, Error: helperSays}
+	binary := buildAgentSecrets(t)
+	sock, _ := fakeHelperByOp(t, map[string]helper.Response{
+		"sign": answer, "sign-launcher": answer,
+		"register": {OK: true, State: "enrolling", Code: helper.CodeNoCredential, Error: helperSays},
+	})
+	env := []string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()}
+	for _, tc := range []struct {
+		args []string
+		exit int
+		want string
+	}{
+		{[]string{"identity"}, 1, "agent-secrets: " + none + "; not an agent session (the helper: " + helperSays + ")\n"},
+		{[]string{"machine", "list"}, 1, "agent-secrets machine list: " + none + " (the helper: " + helperSays + ")\n"},
+		{[]string{"register", "--wait", "1", "--exec", "--", "true"}, 0,
+			"agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: " + none + " (the helper: " + helperSays + ")\n"},
+	} {
+		stdout, stderr, exit := runAgentSecrets(t, binary, "http://127.0.0.1:1", t.TempDir(), env, tc.args...)
+		if exit != tc.exit || stdout != "" || stderr != tc.want || strings.Contains(stderr, "machine login") {
+			t.Errorf("%v on a helper in identity mode: exit %d, stdout %q, stderr %q; want %d, nothing, %q", tc.args, exit, stdout, stderr, tc.exit, tc.want)
+		}
+	}
+
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"LAUNCHER_INVALID","error":"the launcher credential is not valid"}`))
+	}))
+	t.Cleanup(broker.Close)
+	signs, _ := fakeHelperByOp(t, map[string]helper.Response{
+		"sign-launcher": {OK: true, Proof: "a.launcher.proof", CredentialID: "credential-1", MachineIdentity: true},
+	})
+	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, t.TempDir(),
+		[]string{"AGENT_SECRETS_HELPER_SOCK=" + signs, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir()}, "machine", "list")
+	want := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at " + brokerSource(broker.URL).String() +
+		" is expired or revoked; the helper's trade loop is trading this machine's identity for a new credential\n"
+	if exit != 1 || stdout != "" || stderr != want {
+		t.Fatalf("machine list refused LAUNCHER_INVALID on a helper in identity mode: exit %d, stdout %q, stderr %q; want 1, nothing, %q", exit, stdout, stderr, want)
 	}
 }

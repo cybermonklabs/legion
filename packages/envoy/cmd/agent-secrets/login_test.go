@@ -340,21 +340,28 @@ func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
 
 // TestASignInsFailedTradeNamesOnlyTheCureOfItsClass: a kept sign-in whose session lapsed trades
 // again on the next call (registerSignInSession), and a trade the broker refuses tells the person
-// only what cures that refusal. A refusal no retry cures says to run `agent-secrets login`, once.
-// A person Dispatch holds gets the broker's own words, which say how the hold ends, and no login:
-// a new sign-in on the box makes a second box key and changes nothing. A broker that answers 503
-// gets no login either, since the next trade may be served.
+// only what cures that refusal, in the broker's own words and nothing added: a sign-in the broker
+// revoked names `agent-secrets login` once, as the broker words it; a machine the deployment does
+// not list names no login, which would not list it; a person Dispatch holds names no login, since
+// a new sign-in on the box makes a second box key and changes nothing; and a broker that answers
+// 503 names none either, since the next trade may be served.
 func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
 	const held = "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
 	for _, tc := range []struct {
 		name   string
 		status int
 		body   map[string]any
-		login  bool // whether the error ends by telling the person to run agent-secrets login
+		logins int // how often the error names agent-secrets login, in any form
 	}{
-		{"a sign-in the broker refuses for good", http.StatusBadRequest, map[string]any{"error": "invalid_grant", "error_description": "the sign-in was revoked"}, true},
-		{"a person Dispatch holds", http.StatusBadRequest, map[string]any{"error": "membership_held", "error_description": held}, false},
-		{"a broker that answers 503", http.StatusServiceUnavailable, map[string]any{"error": "unavailable"}, false},
+		// The broker's words for a revoked sign-in (internal/broker/oauth, Provider.personSignIn).
+		{"a sign-in the broker revoked", http.StatusBadRequest, map[string]any{"error": "invalid_grant",
+			"error_description": "ada@example.com revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`."}, 1},
+		// The broker's words for a machine no entry lists (internal/broker/exchange, Set.Person),
+		// as the token endpoint answers them.
+		{"a machine the deployment does not list", http.StatusBadRequest, map[string]any{"error": "invalid_request",
+			"error_description": "The subject token was refused: no entry lists the Google account box@fleet.iam.gserviceaccount.com, which the actor token names as the machine."}, 0},
+		{"a person Dispatch holds", http.StatusBadRequest, map[string]any{"error": "membership_held", "error_description": held}, 0},
+		{"a broker that answers 503", http.StatusServiceUnavailable, map[string]any{"error": "unavailable"}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const person = "ada@example.com"
@@ -381,12 +388,11 @@ func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
 				t.Fatal("a call whose trade the broker refused succeeded")
 			}
 			got := err.Error()
-			told := strings.Count(got, "run: "+brokerclient.SignInCommand)
-			switch {
-			case tc.login && (told != 1 || !strings.HasSuffix(got, "; run: "+brokerclient.SignInCommand)):
-				t.Fatalf("the error reads %q; want it to end telling the person once to run %s", got, brokerclient.SignInCommand)
-			case !tc.login && strings.Contains(got, "run: "):
-				t.Fatalf("the error reads %q; want no login named, which would not cure it", got)
+			if told := strings.Count(got, brokerclient.SignInCommand); told != tc.logins {
+				t.Fatalf("the error reads %q; it names %s %d times, want %d", got, brokerclient.SignInCommand, told, tc.logins)
+			}
+			if strings.Contains(got, "run: ") {
+				t.Fatalf("the error reads %q; want the broker's words and no hint added to them", got)
 			}
 			if tc.body["error_description"] != nil && !strings.Contains(got, tc.body["error_description"].(string)) {
 				t.Errorf("the error reads %q; want the broker's own words %q", got, tc.body["error_description"])

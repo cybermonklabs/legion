@@ -284,7 +284,7 @@ revoked, every machine and grant command is refused from then on:
 
 ```console
 $ agent-secrets machine list
-agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's login is expired or revoked (run: agent-secrets machine login)
+agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at the broker AGENT_SECRETS_URL names is expired or revoked; run: agent-secrets machine login, and have a human approve it
 ```
 
 Nothing tells the machine's helper; it finds out the next time it calls the broker. A session's
