@@ -4806,6 +4806,8 @@ A full-width letter or a ligature folds to its plain letters.
 - When Dispatch cannot read a version: an earlier release can store a version that today's parser refuses, and no route stores one now.
   A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
   Another approved document under the root whose approved version Dispatch cannot read refuses nothing, and each answer names it in `unread`, one line for each.
+  A document that holds a definition is the exception, because no rule can compare the definition with the terms of that version.
+  Dispatch refuses its request with one finding of kind `document` and rule `unreadable` that names that approved document and its version.
   No rule compares the texts of that version, so its component names are no nouns of the system.
   Its terms are no part of the list either.
   When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.

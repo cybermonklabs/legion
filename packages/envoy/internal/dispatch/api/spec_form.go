@@ -171,13 +171,16 @@ type specFormTerm struct {
 
 // specFormUnread is an approved document under the root that a judgment did not compare with the
 // documents it judged, because Dispatch cannot read that approved version
-// (specform.UnreadableError). It refuses nothing, and line says so.
+// (specform.UnreadableError). It refuses nothing of a document with no definition, and line says
+// so; a document that holds a definition is refused for it (specform.UnreadListFinding), since no
+// rule can compare the definition with its terms. cause is why the parser refuses it.
 type specFormUnread struct {
 	Document   string `json:"document"`
 	ArtifactID string `json:"artifact_id"`
 	Issue      string `json:"issue"`
 	Version    int    `json:"version"`
 	Line       string `json:"line"`
+	cause      string
 }
 
 // specFormSummary is what an approval request's answer says of the form of the documents it
@@ -573,6 +576,16 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, e
 			Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version, Finding: finding,
 		})
 	}
+	// R50 is a gate: a definition that no rule can compare with the terms of an approved document
+	// that Dispatch cannot read is refused, naming that document (specform.UnreadListFinding).
+	if len(extracted.Terms) > 0 {
+		for _, unread := range document.unread {
+			document.findings = append(document.findings, specFormFinding{
+				Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version,
+				Finding: specform.UnreadListFinding(unread.Document, unread.Version, unread.Issue, unread.cause),
+			})
+		}
+	}
 	if document.root != nil {
 		where := listedWhere(document.artifact.Name, document.version, *document.artifact.IssueKey)
 		for _, term := range extracted.Terms {
@@ -855,14 +868,19 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) 
 
 // unreadApproved is an approved version of artifact that the parser refuses (err, a
 // specform.UnreadableError): it gives nothing to compare, so a judgment goes on without its texts,
-// logs it once, and names it to the writer (specFormUnread).
+// logs it once, and names it to the writer (specFormUnread). A judgment of a document that holds
+// a definition refuses it (specform.UnreadListFinding).
 func unreadApproved(artifact model.Artifact, version int, err error) specFormUnread {
 	issue := deref(artifact.IssueKey)
 	slog.Warn("dispatch: the form of The Spec compares no text with an approved version that it cannot read",
 		"artifact", artifact.ID, "document", artifact.Name, "issue", issue, "version", version, "error", err)
+	cause := err.Error()
+	if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
+		cause = unreadable.Err.Error()
+	}
 	return specFormUnread{
 		Document: artifact.Name, ArtifactID: artifact.ID, Issue: issue, Version: version,
-		Line: specform.UnreadLine(artifact.Name, version, issue),
+		Line: specform.UnreadLine(artifact.Name, version, issue), cause: cause,
 	}
 }
 

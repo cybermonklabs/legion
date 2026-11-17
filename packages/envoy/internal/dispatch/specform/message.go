@@ -50,6 +50,19 @@ func UnreadLine(document string, version int, issue string) string {
 		"To change that, write a new version of that document and request its approval.", document, version, issue)
 }
 
+// UnreadListFinding is the finding of a document that holds a definition of a term while version
+// of document, an approved document of issue under the root, is a version that the parser refuses
+// for cause. No rule can compare the definition with the terms of that version, and R50 refuses a
+// second definition, so the judgment refuses the definition: it fails closed, where a judgment of
+// a document with no definition skips that version (UnreadLine).
+func UnreadListFinding(document string, version int, issue, cause string) Finding {
+	return Finding{
+		Node: document, Kind: KindDocument, Where: fmt.Sprintf("%s version %d of %s", document, version, issue), Rule: ruleUnreadable,
+		Detail: fmt.Sprintf("Dispatch cannot read this approved version (%s), so it cannot compare its terms with the definitions of this request. "+
+			"Write a new version of that document and request its approval", cause),
+	}
+}
+
 func refusal(head string, findings []Finding, total int, more string, notes []string, last string) string {
 	var out strings.Builder
 	texts := textsOf(findings)

@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
 
@@ -162,4 +164,63 @@ func TestASecondDefinitionFollowsThePartOfItsContainer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// R50 is a gate: Dispatch refuses a request that holds a second definition of a term. When an
+// approved document under the root is a version that the parser refuses, no rule can compare a
+// definition with its terms, so a request whose documents hold a definition is refused, with one
+// finding of kind document and rule unreadable that names that document, its version and the way
+// out; the carry's gate breaks on it too. A request that holds no definition is not refused for
+// it (the first slice's skip). The control: with the same terms.md readable, the request that
+// defines session again gets the finding of a second definition.
+func TestAnUnreadableApprovedDocumentRefusesEachRequestThatHoldsADefinition(t *testing.T) {
+	lease := specWithTerms(termLine("lease", leaseDefinition))
+	again := specWithTerms(termLine("session", otherSession))
+	t.Run("control: a readable terms.md", func(t *testing.T) {
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+		approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+		requireFormRows(t, tree, []formRow{{name: "defines session again", spec: strings.TrimPrefix(again, "# Spec\n\n"),
+			want: []string{"definition session term-second-definition"}}})
+	})
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	terms := approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+	storeUnreadableVersion(t, tree.database, terms.ID, 1)
+	const wayOut = "Write a new version of that document and request its approval"
+	for _, row := range []struct{ name, spec string }{
+		{"a second definition of a term of the unreadable terms.md", again},
+		{"a new term", lease},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			issue := createFormIssue(t, tree.handler, tree.root, row.name, row.spec)
+			response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
+			body := decodeBody[specFormError](t, response)
+			var unreadable []specFormFinding
+			for _, finding := range body.Findings {
+				if finding.Kind == specform.KindDocument {
+					unreadable = append(unreadable, finding)
+				}
+			}
+			if response.Code != http.StatusConflict || len(unreadable) != 1 || unreadable[0].Node != "terms.md" || unreadable[0].Rule != "unreadable" ||
+				unreadable[0].Where != "terms.md version 1 of ACME-1" || !strings.Contains(unreadable[0].Detail, wayOut) {
+				t.Fatalf("request: status=%d body=%s, want 409 with one unreadable finding of terms.md version 1 of ACME-1", response.Code, response.Body.String())
+			}
+			gate, err := FormGate("ACME-1", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := tree.database.Pool.Begin(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			breaks, err := gate(context.Background(), tx, nil, model.AskApprovalDocument{ArtifactID: issue.PrimaryArtifactID, Name: "spec.md", Version: 1})
+			_ = tx.Rollback(context.Background())
+			if !breaks || err != nil {
+				t.Errorf("the carry's gate = %v, %v; want a break and no error", breaks, err)
+			}
+		})
+	}
+	t.Run("control: a request that holds no definition", func(t *testing.T) {
+		issue := createFormIssue(t, tree.handler, tree.root, "No definition", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
+		requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil))
+	})
 }
