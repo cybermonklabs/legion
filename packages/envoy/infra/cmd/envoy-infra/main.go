@@ -1,8 +1,9 @@
 // Command envoy-infra is envoy-infra's command line. seed writes a NATS nkey user seed into a
 // secret store and checks and verifies the one stored there (package seed); render prints what the
 // AWS components register, for a program that needs it outside Pulumi (package render); buckets
-// creates and recreates the KV buckets a listener copies once no writer of them runs (package
-// buckets); and `envoy-infra --version` prints the release it was built as.
+// creates and recreates the KV buckets a listener copies: its normal runs once no writer of them
+// runs, its break-glass create while they run (package buckets); and `envoy-infra --version` prints
+// the release it was built as.
 package main
 
 import (
