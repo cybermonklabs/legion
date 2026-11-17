@@ -51,7 +51,7 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 		postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 		postListener(t, listener.port, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"`+role+`"}`)
 		holder := testnats.Connect(t, uri)
-		if _, err := holder.Subscribe(contracts.AgentSubject(sessionID), func(*natsgo.Msg) {}); err != nil {
+		if _, err := holder.Subscribe(contracts.LegacyAgentSubject(sessionID), func(*natsgo.Msg) {}); err != nil {
 			t.Fatalf("run %d: holder subscribe: %v", run, err)
 		}
 		if err := holder.Flush(); err != nil {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/roleholder"
 	"github.com/sjawhar/envoy/sessiontiming"
+	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -28,8 +29,11 @@ import (
 // complete: notifications.envoy.exceptions.<the original role topic>
 // (packages/envoy/cmd/listener/delivery.go, publishDeliveryException). A role topic is outside the
 // notification stream, so the report goes over core NATS and reaches only a subscriber connected
-// when it is sent.
-const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + "*"
+// when it is sent. The role topic has two forms while every reader takes both
+// (dispatch://INFRA-3862), the role alone and its project first, so the subscription takes every
+// name under the role lanes' prefix, which the daemon's grant names whole
+// (daemonpermissions.Grant), and exceptionNotice reads either form.
+const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + ">"
 
 // The listener's own liveness windows for a role holder (packages/envoy/internal/session), read
 // through sessiontiming (the one public door onto the generated contracts numbers the listener
@@ -460,16 +464,22 @@ type reportedNotice struct {
 }
 
 // exceptionNotice reads the notice a report is about: a publish of this daemon's outbox (its
-// dedupe key names a row) to the role topic of an architect of this project, whose summary is the
-// executor's own "<kind> on <issue>" for an issue of this project and whose payload is that
-// notice. ok is false for a report about anything else.
+// dedupe key names a row) to the role topic of an architect of this project, in either form of
+// the lane's name (the role alone, or this daemon's Dispatch project and then the role), whose
+// summary is the executor's own "<kind> on <issue>" for an issue of this project and whose payload
+// is that notice. ok is false for a report about anything else, a lane of another project
+// among them.
 func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, bool) {
 	row, ok := record.ParseOutboxKey(exception.DedupeKey)
 	if !ok {
 		return reportedNotice{}, false
 	}
-	token, isRole := strings.CutPrefix(exception.OriginalTopic, notify.RoleTopicPrefix)
-	if !isRole || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
+	lane, isRole := strings.CutPrefix(exception.OriginalTopic, notify.RoleTopicPrefix)
+	if !isRole {
+		return reportedNotice{}, false
+	}
+	project, token, legacy := subjectforms.CanonicalRole(lane)
+	if (!legacy && project != r.dispatchProject) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
 		return reportedNotice{}, false
 	}
 	var notice record.Notice

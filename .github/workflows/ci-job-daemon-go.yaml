@@ -154,13 +154,15 @@ jobs:
       # the image's own ARG UV_VERSION; main's #3280 moved the address and the checksum there.
       - uses: ./.github/actions/install-uv
 
-      # The daemon's NATS tests start testnats.Image and, for its grant test, Envoy's HubImage
+      # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
+      # for the one test of its refusal), and, for its grant test, Envoy's HubImage
       # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
       - name: Pull the NATS test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
+            packages/daemon/internal/testnats/nats.go SkippingImage
             packages/envoy/internal/testnats/nats.go HubImage
 
       # internal/launcher's role-namespace tests start each role generation in unprivileged user,

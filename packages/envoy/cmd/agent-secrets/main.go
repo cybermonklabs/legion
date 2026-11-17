@@ -64,13 +64,14 @@
 // that hold a launcher's proof-signing key). One runtime enrols itself: a Kubernetes pod an
 // operator launches by hand (`enroll --pod`, pod.go). It holds no credential a person installed;
 // the projected service-account token its own kubelet mounts is what the broker trusts instead,
-// so it needs no helper, no launcher and no approval. The secret forms
-// read AWS_PROFILE (or --profile) for the person's AWS sign-in against an AWS broker, or their
-// Google sign-in (their Application Default Credentials, or their gcloud login) against a GCP
-// one, and need no session identity at all. The machine and grant forms act under this machine's
-// login: the helper signs each call with its launcher credential (sign-launcher) for a process
-// it can show is outside every registered session's process tree, the operator's own shell, and
-// only for the broker's four operator routes.
+// so it needs no helper, no launcher and no approval. The secret forms sign in to the store with
+// the cloud credential the environment gives them, as the cloud's own tools read it - against an
+// AWS broker the AWS SDK's own chain (access keys, a web identity token file, AWS_PROFILE,
+// AWS_DEFAULT_PROFILE, the rest of its default chain), against a GCP one the first Google source
+// present (newGCPBackend) - and need no session identity at all. The machine and grant forms act
+// under this machine's login: the helper signs each call with its launcher credential
+// (sign-launcher) for a process it can show is outside every registered session's process tree,
+// the operator's own shell, and only for the broker's four operator routes.
 package main
 
 import (
@@ -214,13 +215,26 @@ environment:
   AGENT_SECRETS_POOL_ACCOUNT the managed identity generateIdToken is called on
   AGENT_SECRETS_SESSION      the session name a trade writes under, where the deployment's entry
                              fixes none
-  AWS_PROFILE                the AWS profile the secret forms sign in with when --profile names
-                             none (else the AWS SDK's default credential chain); every secret
-                             form needs a sign-in in the broker's account, and the store's IAM
-                             decides what it may do there
+  AWS_PROFILE                the AWS profile the secret forms sign in with, against a broker on
+                             AWS; access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and
+                             AWS_WEB_IDENTITY_TOKEN_FILE, outrank it, as in the AWS CLI, and
+                             without it the AWS SDK's default credential chain signs in; every
+                             secret form needs a sign-in in the broker's account, and the
+                             store's IAM decides what it may do there
+  AWS_DEFAULT_PROFILE        the AWS profile the secret forms sign in with where AWS_PROFILE is
+                             unset; a profile either names that the AWS config does not hold
+                             stops the command
   CLOUDSDK_AUTH_ACCESS_TOKEN a Google access token the secret forms sign in with against a broker
-                             on Google Cloud, before the Application Default Credentials and the
-                             gcloud login; the store's IAM decides what it may do
+                             on Google Cloud; it outranks every other Google source
+  GOOGLE_APPLICATION_CREDENTIALS
+                             a Google credentials file the secret forms sign in with where no
+                             token is lent; it outranks the gcloud variables below
+  CLOUDSDK_ACTIVE_CONFIG_NAME
+                             the gcloud configuration whose login the secret forms sign in with,
+                             before the well-known credentials file, the active gcloud account
+                             and the metadata server
+  CLOUDSDK_CORE_ACCOUNT      the gcloud login the secret forms sign in with, at the same place in
+                             that order; the store's IAM decides what each may do
 
 exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval, 76 permanent renewal refusal, 77 denied;
 register --exec exits 127 when COMMAND is not found and 126 when it cannot run;

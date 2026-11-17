@@ -179,7 +179,7 @@ func TestAWatcherRepairedAfterItsConsumerWentLogsOneWarn(t *testing.T) {
 	waitForStopWarns(t, records, 1)
 
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
-	if err := w.Rewatch(conn); err != nil {
+	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	arm.fireIt(t)
@@ -210,7 +210,7 @@ func TestAWatcherWhoseBucketIsGoneReportsOnlyWhenItsWaitPasses(t *testing.T) {
 	deleteTestBucket(t, jetStream(t, conn))
 	waitForStopWarns(t, records, 1)
 
-	if err := w.Rewatch(conn); err == nil {
+	if err := w.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("a rewatch onto a deleted bucket succeeded")
 	}
 	if errs := matching(records(), "ERROR", unrepairedErr); len(errs) != 0 {
@@ -220,7 +220,7 @@ func TestAWatcherWhoseBucketIsGoneReportsOnlyWhenItsWaitPasses(t *testing.T) {
 		t.Fatalf("the stop armed %d repair waits after a failed repair, want one", got)
 	}
 
-	if err := w.Rewatch(conn); err == nil {
+	if err := w.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("a second rewatch onto a deleted bucket succeeded")
 	}
 	if errs := matching(records(), "ERROR", unrepairedErr); len(errs) != 0 {
@@ -291,7 +291,7 @@ func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 	deleteTestBucket(t, js)
 	waitForStopWarns(t, records, 1)
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
-	if err := w.Rewatch(conn); err != nil {
+	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	deleteTestBucket(t, js)
