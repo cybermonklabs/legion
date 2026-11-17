@@ -38,8 +38,9 @@ jobs:
     # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
     # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
     # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, the store-form count's own 5 is 43 (one package, so its -timeout bounds the
-    # step); after that step's seconds, the database skip count's own timeout-minutes of 25 is 64
+    # exceed that, the store-form count's own 5 is 43 (two packages, which go test starts at once
+    # with -p at least 2, so its -timeout bounds the step); after that step's seconds, the
+    # database skip count's own timeout-minutes of 25 is 64
     # (its -timeout bounds each package, not the step, so the step has a limit of its own, and
     # its comment below says why 25); after that step's measured 6 minutes, natslive's default 10
     # and the bus matrix's own 5 are 60, and the integration step's 5 is less.
