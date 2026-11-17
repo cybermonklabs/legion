@@ -5,4 +5,4 @@ body: |-
   Neither line holds a secret's value or a placeholder: no field of either is read from what a command sent, and each is cut to its first 256 bytes as a call line's are, so a line stays within one Cloud Logging entry whatever a caller asks for.
 time: 2026-11-17T23:48:36.401565547Z
 custom:
-  Issue: INFRA-4376-tunnel-log
+  Issue: pr4362
