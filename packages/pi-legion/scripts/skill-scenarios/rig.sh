@@ -782,7 +782,7 @@ services_up() {
   until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener &&
     go build -o "$S/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
-  # No listener creates a bucket it copies (INFRA-4094): the batch provisions its own NATS with
+  # No listener creates a bucket it copies: the batch provisions its own NATS with
   # them before the listener starts.
   provision_fixture_buckets "$S/fixturebuckets" "nats://127.0.0.1:$nats_port" "$S/logs/fixturebuckets.log"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")

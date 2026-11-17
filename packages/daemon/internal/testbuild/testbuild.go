@@ -162,7 +162,7 @@ func envoyModule() (string, error) {
 
 // ProvisionFixtureBuckets runs envoy's fixturebuckets command, built once per test process
 // (EnvoyBinary), on the NATS server at natsURL, which then holds every bucket a listener copies.
-// No listener creates one (INFRA-4094), so a test's own server is given them before a listener
+// No listener creates one, so a test's own server is given them before a listener
 // starts on it; the command leaves a server it already provisioned as it is.
 func ProvisionFixtureBuckets(t testing.TB, natsURL string) {
 	t.Helper()

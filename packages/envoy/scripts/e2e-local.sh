@@ -362,7 +362,7 @@ nats_url="nats://127.0.0.1:${nats_port}"
 readonly nats_url
 printf 'NATS: %s\n' "$nats_url"
 
-# No listener creates a bucket it copies (INFRA-4094): this run's own server is given them before
+# No listener creates a bucket it copies: this run's own server is given them before
 # the listener starts on it.
 printf 'provisioning NATS with the buckets a listener copies\n'
 "$fixturebuckets_binary" -url "$nats_url"

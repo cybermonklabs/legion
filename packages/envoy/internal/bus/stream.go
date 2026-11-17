@@ -90,7 +90,7 @@ func ListenerBuckets() []string {
 // deployment creates one (EnsureKeyValue, CreateCopiedBucketsOn): a write one of them acknowledged
 // is lost when it is deleted and created again, and its writer was told it landed, so the operator
 // alone creates them, with `envoy-infra buckets` (CreateCopiedBucket), only once every writer has
-// ended (INFRA-4094). Each call returns a fresh slice.
+// ended. Each call returns a fresh slice.
 func CopiedBuckets() []string {
 	return []string{InterestBucket, RoleClaimBucket, SessionBucket, KnownSessionBucket, CIStateBucket}
 }

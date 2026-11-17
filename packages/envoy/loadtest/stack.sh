@@ -448,7 +448,7 @@ nats_named() {
 }
 
 # start_nats starts NATS on a fresh JetStream store, so every start begins with no streams, and
-# provisions it with the buckets a listener copies, which no listener creates (INFRA-4094).
+# provisions it with the buckets a listener copies, which no listener creates.
 start_nats() {
   running nats && return 0
   check_port nats nats

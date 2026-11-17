@@ -1278,7 +1278,7 @@ grep -qF "building the stored-order checker, envoy-dispatch (static) of dispatch
 jq -e '.browsertype == null' "$run_dir/state.json" >/dev/null || fail "state.json without --browsertype-commit does not record browsertype null"
 [ "$(grep -c -- "^-n $ns cp $run_dir/envoy-dispatch runner:/work/envoy-dispatch " "$fake/kubectl.log")" = 1 ] ||
   fail "up did not copy envoy-dispatch into the runner"
-# The buckets a listener copies, which no listener creates (INFRA-4094): fixturebuckets on this pod
+# The buckets a listener copies, which no listener creates: fixturebuckets on this pod
 # makes them on the copy's NATS, on 3 replicas, through a port-forward of svc/nats, which comes
 # right after a read of the lock and before the listener is scaled up.
 grep -qxF -- "provisioned -url nats://127.0.0.1:14222 -replicas 3" "$fake/fixturebuckets.log" ||

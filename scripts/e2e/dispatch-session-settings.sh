@@ -205,7 +205,7 @@ mkdir -p "$work/nats-store"
 nats_pid=$!
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
-# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# No listener creates a bucket it copies: the run provisions its own server with them
 # before the listener starts.
 provision_fixture_buckets "$work/fixturebuckets" "$nats_url" "$evidence/logs/fixturebuckets.log"
 

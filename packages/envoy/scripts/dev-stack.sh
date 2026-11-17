@@ -635,7 +635,7 @@ NATS_PID=$!
 await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client port' nats_port_in
 NATS_URL="nats://127.0.0.1:$awaited"
 echo "dev-stack: natsd $NATS_URL" >&2
-# No listener creates a bucket it copies (INFRA-4094): fixturebuckets gives this run's own natsd
+# No listener creates a bucket it copies: fixturebuckets gives this run's own natsd
 # those buckets before the listener starts on it.
 if ! env -i PATH="$PATH" "$BIN_DIR/fixturebuckets" -url "$NATS_URL" >"$FIXTUREBUCKETS_LOG" 2>&1; then
   echo "dev-stack: fixturebuckets could not provision $NATS_URL; see $FIXTUREBUCKETS_LOG" >&2

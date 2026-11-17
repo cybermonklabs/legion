@@ -6,7 +6,7 @@
 #
 # Builds and starts a NATS server of its own (internal/testnats/cmd/natsd, its file store under the
 # output directory), gives each new store the buckets a listener copies with fixturebuckets
-# (internal/testnats/cmd/fixturebuckets), since no listener creates one (INFRA-4094), and starts
+# (internal/testnats/cmd/fixturebuckets), since no listener creates one, and starts
 # the listener, as e2e-local.sh does, and drives them with refillrig
 # (internal/testnats/cmd/refillrig): it seeds the session and interest buckets, through the
 # listener's registration route and straight into the buckets, deletes and recreates a bucket,
@@ -283,7 +283,7 @@ stop_nats() {
 }
 
 # provision gives this run's NATS the buckets a listener copies and the fixture's marker stream
-# (fixturebuckets): no listener creates one of those buckets (INFRA-4094), and refillrig's
+# (fixturebuckets): no listener creates one of those buckets, and refillrig's
 # seed -create and recreate act only on a server a fixture provisioned. Every start on an emptied
 # store runs it before the listener starts.
 provision() {

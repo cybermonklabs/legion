@@ -83,7 +83,7 @@ build_fixturebuckets() {
 }
 
 # provision_natsd BIN NATS_URL LOG: BIN, a fixturebuckets build, gives natsd at NATS_URL the
-# buckets a listener copies, which no listener creates (INFRA-4094), its output in LOG. A caller
+# buckets a listener copies, which no listener creates, its output in LOG. A caller
 # runs it once natsd serves and before the listener starts; non-zero when it failed, so the
 # caller refuses in its own words.
 provision_natsd() {

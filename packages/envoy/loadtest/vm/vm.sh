@@ -1103,7 +1103,7 @@ container_stop() {
 }
 
 # nats_provision: the buckets a listener copies, made on NATS before any listener starts on it,
-# since no listener creates one (INFRA-4094). up runs it once NATS is started, and reset once
+# since no listener creates one. up runs it once NATS is started, and reset once
 # NATS is started again on its emptied store. fixturebuckets provisions only a server on its own
 # machine's loopback, so it runs on the NATS machine, from the copy up put there, against the
 # port the container publishes on that machine: once a second until NATS takes the connection,

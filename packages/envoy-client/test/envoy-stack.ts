@@ -208,7 +208,7 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
 
 /**
  * Starts natsd (JetStream on), provisions it with the buckets a listener copies (the
- * fixturebuckets command; no listener creates one, INFRA-4094) and starts the listener on free
+ * fixturebuckets command; no listener creates one) and starts the listener on free
  * loopback ports, and resolves once the listener's /healthz answers healthy and natsd holds the
  * `ENVOY_NOTIFICATIONS` stream. Throws, naming why, when `go` is missing, a build fails, the
  * provisioning fails or either process does not come up. The NATS server runs with no

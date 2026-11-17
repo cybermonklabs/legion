@@ -419,7 +419,7 @@ fi
 docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
-# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# No listener creates a bucket it copies: the run provisions its own server with them
 # before the listener starts.
 provision_fixture_buckets "$work/fixturebuckets" "$nats_url"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&

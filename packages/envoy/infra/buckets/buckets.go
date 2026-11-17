@@ -3,13 +3,13 @@
 //
 // A write such a bucket acknowledged is lost when the bucket is deleted and created again, and the
 // listener that made it told its caller it landed: the ack names the stream and its sequence, never
-// the bucket's incarnation. So no listener creates one (INFRA-4094), and this command refuses
+// the bucket's incarnation. So no listener creates one, and this command refuses
 // while a listener of the deployment it can see runs, and, for the CI state bucket, an
 // envoy-dispatch, which writes it too. A listener that finds a bucket missing serves its writes 503
 // and names the bucket on /healthz until this command recreates it.
 //
 // The check is best effort, observation of the places the operator names, and every run says so
-// (bestEffortWarning). dispatch://INFRA-4015's hold (t-10) will replace it with exclusion at the
+// (bestEffortWarning). The coming server-side hold will replace it with exclusion at the
 // server: while it holds, the auth callout refuses every connection but the operator's, every other
 // connection is kicked, and every server's connz shows the operator alone. Until then it reads:
 //
@@ -28,8 +28,8 @@
 // connect, nor any of the buckets. An empty server is no proof that no writer runs - a hub on a new
 // disk is empty while its old clients still run - so the inventory is required with it as without.
 //
-// Until dispatch://INFRA-840's cutover lets the operator connect through the auth service, no hub
-// has the buckets user's key (theorem-labs/agent-infra#4079 declares that user with none), so
+// Until the auth service's cutover lets the operator connect through the auth service, no hub
+// has the buckets user's key (the deployment repository declares that user with none), so
 // `create --break-glass` is how a missing copied bucket is made: it runs as a listener's NATS user,
 // which may create these buckets, takes no writer proof, and creates only a bucket the server
 // reports missing (breakGlassCreate). The pull request that removes the create grant from the
@@ -104,7 +104,7 @@ const InboxPrefix = "_INBOX_envoy_buckets"
 // The same user runs the restore after `check` (`nats stream restore` with
 // --inbox-prefix=_INBOX_envoy_buckets), so the grant also holds each copied bucket's restore
 // request and the subject its chunks go to (nats-server 2.15.1, jetstream_api.go:91-94 and
-// 170-172). The deployment's buckets user is granted exactly this until dispatch://INFRA-840's
+// 170-172). The deployment's buckets user is granted exactly this until the auth service's
 // auth callout replaces the static user at the cutover.
 func Grant() (publish, subscribe []string) {
 	publish = []string{"$JS.API.INFO", "$JS.API.STREAM.INFO." + bus.Stream}
@@ -118,7 +118,7 @@ func Grant() (publish, subscribe []string) {
 }
 
 // bestEffortWarning is printed on every run but a break-glass create, to standard error, before
-// anything else: the check is observation, not exclusion, until dispatch://INFRA-4015's hold (t-10)
+// anything else: the check is observation, not exclusion, until the coming server-side hold
 // excludes every writer at the server - the auth callout refusing every connection but the
 // operator's and every other connection kicked - from the check through the change. Each way it
 // names is a test that asserts today's outcome and must flip then (buckets_test.go,
@@ -130,7 +130,7 @@ const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effo
   - a writer that starts between the final scan and the create: nothing holds writers out;
   - an unheld restore: check holds nothing through a later nats stream restore.
 Before you run it, stop every envoy-listener of the deployment (and every envoy-dispatch, for
-envoy_ci_state) and confirm on each host that it has ended. INFRA-4015's server-side hold, which
+envoy_ci_state) and confirm on each host that it has ended. A server-side hold, which
 leaves no writer a connection, replaces this.
 `
 
@@ -154,7 +154,7 @@ bucket is among the buckets. The proof is required before anything changes:
   --bucket NAME        a copied bucket to act on, repeatable (default: every one, for create)
   --replicas N         the copies a bucket is created with, 1 to 5 (default ENVOY_NATS_REPLICAS, else 1)
 
-Until INFRA-840's cutover, a missing bucket is created with a listener's credential instead:
+Until the auth service's cutover, a missing bucket is created with a listener's credential instead:
   --break-glass        create each --bucket the server reports missing, as a listener's NATS user
                        (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED), with no writer proof; refused
                        when any --bucket exists, and it updates and deletes nothing
@@ -298,7 +298,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 
 // refuse writes the refusal and each blocker.
 func refuse(stderr io.Writer, action string, blockers []string, after string) {
-	fmt.Fprintf(stderr, "envoy-infra buckets %s: refused: a writer of the buckets may still run, and a bucket created under it loses every write the deleted one acknowledged (INFRA-4094)\n", action)
+	fmt.Fprintf(stderr, "envoy-infra buckets %s: refused: a writer of the buckets may still run, and a bucket created under it loses every write the deleted one acknowledged\n", action)
 	for _, blocker := range blockers {
 		fmt.Fprintf(stderr, "  blocked: %s\n", blocker)
 	}
@@ -366,14 +366,14 @@ func breakGlassUsage(flags *flag.FlagSet, action string, breakGlass bool, operat
 // read answers anything but "not found", refuses the run, and no bucket is created.
 //
 // It connects as the user the environment names (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED), a
-// listener's until dispatch://INFRA-840's cutover, and takes its replies on nats.go's default
+// listener's until the auth service's cutover, and takes its replies on nats.go's default
 // _INBOX. prefix, which a listener's grant may receive on and the buckets user's (InboxPrefix) may
 // not.
 //
 // It takes no writer proof. A missing bucket only gains a create: the writes its deleted stream
 // acknowledged were lost when it was deleted, and every listener has answered its writes 503 since,
 // so a create while listeners run loses nothing more. And the proof cannot reach the production VM
-// hub's processes, so with it this path could not run there (dispatch://INFRA-4094, decisions.md).
+// hub's processes, so with it this path could not run there.
 //
 // It only creates: each create is bus.CreateMissingCopiedBucket's, which sends the normal path's
 // create (bus.CreateCopiedBucket) with its resend of an unanswered request and its wait for the

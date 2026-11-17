@@ -21,7 +21,7 @@ import (
 
 // A listener never creates a bucket its watchers copy (bus.CopiedBuckets). A bucket deleted while
 // a listener writes it and then created again loses every write the deleted bucket acknowledged,
-// and the listener that made the write answered its caller that it landed (INFRA-4094). So a
+// and the listener that made the write answered its caller that it landed. So a
 // listener that finds one missing fails closed: at its start it waits for the bucket and serves
 // nothing but 503s (awaitCopiedBuckets, the starting gates), and once it serves, a write to the
 // missing bucket answers the bus-unavailable 503 (writeStoreError) while /healthz names the bucket
@@ -35,9 +35,9 @@ const missingBucketLine = "listener KV bucket is missing"
 
 // missingBucketRepair is the repair a listener names for a missing bucket, in /healthz's error and
 // in missingBucketLine's action: the runbook's create, which until the auth service's cutover
-// (INFRA-840) no hub holds the key for but as `--break-glass`, run as a listener's NATS user, which
+// no hub holds the key for but as `--break-glass`, run as a listener's NATS user, which
 // stops no listener.
-const missingBucketRepair = "make it with `envoy-infra buckets create`, with `--break-glass` until the auth service's cutover (INFRA-840), by the runbook at packages/envoy/infra/README.md#envoy-infra-buckets"
+const missingBucketRepair = "make it with `envoy-infra buckets create`, with `--break-glass` until the auth service's cutover, by the runbook at packages/envoy/infra/README.md#envoy-infra-buckets"
 
 // bucketWaitInterval is how often a start that found a copied bucket missing asks again, and
 // missingBucketLogInterval how often it logs missingBucketLine while one stays missing: as often
@@ -244,7 +244,7 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 	for _, bucket := range names {
 		logger.Error(missingBucketLine,
 			slog.String("bucket", bucket),
-			slog.String("action", missingBucketRepair+"; no listener creates a bucket it copies (INFRA-4094)"))
+			slog.String("action", missingBucketRepair+"; no listener creates a bucket it copies"))
 	}
 }
 

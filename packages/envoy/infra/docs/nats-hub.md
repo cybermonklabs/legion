@@ -742,10 +742,10 @@ Three inputs work otherwise:
   after it, to the new VM's empty stream.
 
 A hub that comes up on a new, empty data disk (a new `hostname` or `zone` above) holds no key-value
-bucket, and no listener creates one (dispatch://INFRA-4094,
-[the module README](../README.md#envoy-infra-buckets)). Every listener that reaches it answers 503
-to each write and names the missing buckets on `/healthz` until the operator creates them, and
-`envoy-infra buckets` refuses while any listener runs, the hub's own included. So:
+bucket, and no listener creates one ([the module README](../README.md#envoy-infra-buckets)).
+Every listener that reaches it answers 503 to each write and names the missing buckets on
+`/healthz` until the operator creates them, and `envoy-infra buckets` refuses while any listener
+runs, the hub's own included. So:
 
 1. Before `pulumi up`, stop every listener and envoy-dispatch that reaches the hub.
 2. `pulumi up`. The new VM starts its own listener with the VM (`envoy-listener.service`), which
@@ -760,7 +760,7 @@ creates the `ENVOY_NOTIFICATIONS` stream at its first connect, so run `create` w
 `--first-deployment`. A replacement that keeps the disk (`recreate-instances`, a new template)
 keeps every bucket, and needs none of this.
 
-Until dispatch://INFRA-840's operator kind lets the operator connect through the auth service, no
+Until the auth service's operator kind lets the operator connect through the auth service, no
 hub has the buckets user's key, so step 3 cannot run as written. Create each missing bucket with
 the break-glass flag instead, as the in-cluster `gke` listener's NATS user. Read its seed,
 `envoy-nats-seed-gke`, from Secret Manager for that run alone, through a pipe, and never write it
@@ -970,7 +970,7 @@ The hub runs one listener, in a pod of its own, as that machine id.
 A move that restores the VM hub's streams into the clustered hub (`nats stream restore`) restores
 each key-value bucket from its snapshot, a bucket created again, so every writer of the buckets
 must have ended first: a write the old hub acknowledged after the snapshot is in no restored bucket
-(dispatch://INFRA-4094). In this order:
+(the module README's [`envoy-infra buckets`](../README.md#envoy-infra-buckets)). In this order:
 
 1. Stop every listener and envoy-dispatch that reaches either hub, the clustered hub's own listener
    included (scale it to 0), and confirm on each host that it has ended.
@@ -982,7 +982,7 @@ must have ended first: a write the old hub acknowledged after the snapshot is in
 
 Nothing holds the state `check` found through the restore: a writer that starts between steps 2
 and 5 gets past it, the "unheld restore" the command warns of on every run, until
-dispatch://INFRA-4015's hold (t-10) lands, which leaves no writer but the operator a connection.
+the coming server-side hold lands, which leaves no writer but the operator a connection.
 
 The rendered `auth.conf` is a key of the chart's ConfigMap `<n>-config`, beside `nats.conf`, which
 includes it; like the VM's metadata, the ConfigMap holds it in the clear, public keys only.
@@ -1214,9 +1214,9 @@ duration longer than a few scrapes. A stream whose every server is down has no s
 which the pod-down alert covers.
 
 A key-value bucket a listener copies that is missing has no series either, while the pods serve:
-no listener creates one (dispatch://INFRA-4094), so every write that needs it answers 503 until
+no listener creates one, so every write that needs it answers 503 until
 the operator recreates it ([`envoy-infra buckets`](../README.md#envoy-infra-buckets), with
-`--break-glass` until dispatch://INFRA-840's cutover, as [Updating a hub](#updating-a-hub) says).
+`--break-glass` until the auth service's cutover, as [Updating a hub](#updating-a-hub) says).
 Alert on each bucket's absence, with a `for` of a few scrapes and the pod-down alert's silence
 while a pod is down:
 

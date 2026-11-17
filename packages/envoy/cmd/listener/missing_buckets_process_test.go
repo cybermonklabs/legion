@@ -20,7 +20,7 @@ import (
 // selfHealthTicks is how long a test waits for the self-health monitor to have acted on a missing
 // bucket three times over: its 30 s interval times its threshold of 3, which is when a listener
 // that took a missing bucket for a failure a restart repairs terminates itself, and the restart's
-// store open created the bucket again (INFRA-4094's cause).
+// store open created the bucket again, losing every write the deleted bucket acknowledged.
 const selfHealthTicks = 3*30*time.Second + 10*time.Second
 
 // healthzMissing is /healthz's answer on port: its status code, its "status" and the buckets its
@@ -44,7 +44,7 @@ func requireBucketMissing(t *testing.T, js natsgo.JetStreamContext, bucket, when
 	}
 }
 
-// A copied bucket deleted under a running listener stays missing (INFRA-4094): the listener
+// A copied bucket deleted under a running listener stays missing: the listener
 // answers the write that needs it the bus-unavailable 503, /healthz names the bucket as 200
 // "degraded", the self-health monitor neither rebuilds nor restarts over it through three of its
 // intervals, and every check logs the line the AWS listener's bucket-missing alarm pages on. A

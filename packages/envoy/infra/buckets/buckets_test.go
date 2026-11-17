@@ -582,12 +582,12 @@ func TestEveryRunPrintsTheBestEffortWarning(t *testing.T) {
 	}
 }
 
-// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's HOLD LEAVES NO WRITER A CONNECTION (t-10). A
+// BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
 // writer on a host the operator did not name gets past the check: the command creates the bucket
 // while it runs. Today's outcome, asserted so that the hold, which excludes every writer at the
 // server whatever host it runs on, has to invert it. The same writer named with --host refuses, so
 // the pass is not vacuous.
-func TestBestEffortProofMissesAWriterOnAnOmittedHostUntilINFRA4015BarrierLands(t *testing.T) {
+func TestBestEffortProofMissesAWriterOnAnOmittedHostUntilTheServerSideHoldLands(t *testing.T) {
 	uri, js := server(t)
 	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
 	named := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}, "dev-box": {writer}}}
@@ -604,11 +604,11 @@ func TestBestEffortProofMissesAWriterOnAnOmittedHostUntilINFRA4015BarrierLands(t
 	}
 }
 
-// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's HOLD LEAVES NO WRITER A CONNECTION (t-10). A
+// BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
 // writer whose binary was renamed gets past the host check, which reads process names: the command
 // creates the bucket while the renamed writer runs on the named host. The hold refuses and kicks
 // its connection whatever its name. The stand-in runs throughout, so the pass is not vacuous.
-func TestBestEffortProofMissesARenamedBinaryUntilINFRA4015BarrierLands(t *testing.T) {
+func TestBestEffortProofMissesARenamedBinaryUntilTheServerSideHoldLands(t *testing.T) {
 	uri, js := server(t)
 	renamed := startStandIn(t, "renamed-writer")
 	var stdout, stderr bytes.Buffer
@@ -625,12 +625,12 @@ func TestBestEffortProofMissesARenamedBinaryUntilINFRA4015BarrierLands(t *testin
 	}
 }
 
-// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's HOLD LEAVES NO WRITER A CONNECTION (t-10). A
+// BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
 // writer that starts after the final scan and before the create gets past the check: here it starts
 // the moment the host query returns clean, and the command still creates the bucket. The hold, kept
 // from the check through the change, refuses its connection. The writer runs when the create
 // completes, so the pass is not vacuous.
-func TestBestEffortProofMissesAWriterStartedAfterTheFinalScanUntilINFRA4015BarrierLands(t *testing.T) {
+func TestBestEffortProofMissesAWriterStartedAfterTheFinalScanUntilTheServerSideHoldLands(t *testing.T) {
 	uri, js := server(t)
 	ssh := localSSH(t)
 	var writer *exec.Cmd
@@ -655,12 +655,12 @@ func TestBestEffortProofMissesAWriterStartedAfterTheFinalScanUntilINFRA4015Barri
 	}
 }
 
-// BEST EFFORT - INVERT WHEN dispatch://INFRA-4015's HOLD LEAVES NO WRITER A CONNECTION (t-10).
+// BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION.
 // check holds nothing once it returns: a writer starts after it, and the operator's restore (here
 // the bucket created as `nats stream restore` creates it) goes ahead under that writer with nothing
 // refusing it. The hold, kept through the restore, refuses the writer's connection. A second check
 // now refuses, so the writer is real.
-func TestBestEffortCheckHoldsNothingThroughARestoreUntilINFRA4015BarrierLands(t *testing.T) {
+func TestBestEffortCheckHoldsNothingThroughARestoreUntilTheServerSideHoldLands(t *testing.T) {
 	uri, js := server(t)
 	ssh := localSSH(t)
 	var writer *exec.Cmd
@@ -767,7 +767,7 @@ func (r *streamRequests) take(t *testing.T) []string {
 	}
 }
 
-// Until INFRA-840's cutover no hub has the buckets user's key, so `create --break-glass` runs as a
+// Until the auth service's cutover no hub has the buckets user's key, so `create --break-glass` runs as a
 // listener's NATS user: here one holding exactly the grant the hub renders for the in-cluster gke
 // listener (core.ListenerHostPermissions), which receives its replies on the default _INBOX.
 // prefix. It creates the missing session bucket with the stream configuration the normal path

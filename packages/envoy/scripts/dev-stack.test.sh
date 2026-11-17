@@ -447,7 +447,7 @@ assert_instance_ready() {
   # of two stacks on a machine could hold.
   grep -q 'metrics=127\.0\.0\.1:0$' "${work_dir}/logs/broker.log" ||
     fail "$label: the broker was not started with BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
-  # No listener creates a bucket it copies (INFRA-4094), so fixturebuckets provisioned the run's
+  # No listener creates a bucket it copies, so fixturebuckets provisioned the run's
   # own natsd, by the port natsd reported, before the listener started.
   grep -qxF "fake fixturebuckets: -url nats://127.0.0.1:${process_port[natsd]}" "${work_dir}/logs/fixturebuckets.log" ||
     fail "$label: fixturebuckets did not provision natsd's own server: $(cat "${work_dir}/logs/fixturebuckets.log" 2>/dev/null)"

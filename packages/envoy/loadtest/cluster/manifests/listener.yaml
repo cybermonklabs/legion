@@ -3,7 +3,7 @@
 # environment written from scratch: the copy's NATS, without auth, and a random API token from the
 # run's Secret. ENVOY_NATS_REPLICAS=3 makes the listener create ENVOY_NOTIFICATIONS on three
 # replicas; cluster.sh starts it before Dispatch and checks the stream's replicas. No listener
-# creates a KV bucket it copies (INFRA-4094): cluster.sh makes them first (nats_provision), on
+# creates a KV bucket it copies: cluster.sh makes them first (nats_provision), on
 # up and after each reset deletes them. The Deployment starts at 0 replicas; cluster.sh scales
 # it. cluster.sh fills every placeholder.
 apiVersion: v1

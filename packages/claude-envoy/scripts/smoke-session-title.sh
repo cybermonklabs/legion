@@ -98,7 +98,7 @@ readonly nats_port
 (cd "${repo_root}/packages/envoy" && go build -o "${workdir}/envoy-listener" ./cmd/listener &&
   go build -o "${workdir}/fixturebuckets" ./internal/testnats/cmd/fixturebuckets) ||
   fail "the Envoy listener or fixturebuckets did not build"
-# No listener creates a bucket it copies (INFRA-4094): the smoke provisions its own server with
+# No listener creates a bucket it copies: the smoke provisions its own server with
 # them before the listener starts.
 "${workdir}/fixturebuckets" -url "nats://127.0.0.1:${nats_port}" >"${workdir}/fixturebuckets.log" 2>&1 ||
   fail "fixturebuckets could not provision the smoke's nats-server: $(cat "${workdir}/fixturebuckets.log")"

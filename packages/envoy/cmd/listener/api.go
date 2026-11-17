@@ -3191,7 +3191,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// that consumer call landed, since every one that could not get its consumer was refused
 		// above with nothing recorded. A record that cannot be written refuses the registration
 		// with the bus-unavailable 503, as every other write it needs does, and the client
-		// registers again: the bucket missing (INFRA-4094) or the write failing. Only a store
+		// registers again: the bucket missing or the write failing. Only a store
 		// whose user may not read the bucket yet writes nothing and answers nil
 		// (session.KnownSessions.RecordWithin).
 		if err := d.known.RecordWithin(ctx, session.KnownSession{

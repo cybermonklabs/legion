@@ -156,7 +156,7 @@ for i in $(seq 1 60); do
   sleep 0.5
 done
 echo "  postgres 127.0.0.1:$pg_port, nats 127.0.0.1:$nats_port"
-# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# No listener creates a bucket it copies: the run provisions its own server with them
 # before any listener boots.
 "$work/fixturebuckets" -url "nats://127.0.0.1:$nats_port" >/dev/null ||
   fail "fixturebuckets could not provision the run's NATS server with the buckets a listener copies"

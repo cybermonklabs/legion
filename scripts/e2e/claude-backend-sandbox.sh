@@ -1362,7 +1362,7 @@ docker exec "$pg_container" createdb -U legion legion
 # bridge.
 docker run -d --name "$nats_container" -p "$bind_host:$port_nats:4222" nats:2.10 -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-# No listener creates a bucket it copies (INFRA-4094), so the run provisions its own server with
+# No listener creates a bucket it copies, so the run provisions its own server with
 # them before the listener starts. fixturebuckets provisions only a loopback server, and bind_host is
 # the devbox's private address under aws-private-ip, so it runs in the NATS container's own network,
 # where the server is 127.0.0.1:4222, from NATS's own image: it is built static for that.

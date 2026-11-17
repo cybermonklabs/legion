@@ -639,7 +639,7 @@ start_process nats "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store"
 await_start nats "$nats_pid" 60 "NATS to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 port_nats=$(report_port "$evidence/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
   fail "the nats-server logged no client port; see $evidence/logs/nats.log"
-# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# No listener creates a bucket it copies: the run provisions its own server with them
 # before the listener starts.
 provision_fixture_buckets "$work/fixturebuckets" "nats://127.0.0.1:$port_nats" "$evidence/logs/fixturebuckets.log"
 start_listener

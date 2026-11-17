@@ -649,7 +649,7 @@ nats_url="nats://127.0.0.1:${nats_port}"
 nats_monitor="http://127.0.0.1:${monitor_port}"
 nats_ready() { curl -fsS --max-time 2 "${nats_monitor}/healthz" | jq -e '.status == "ok"'; }
 await natsd "$work/logs/natsd.log" 30 nats_ready
-# No listener creates a bucket it copies (INFRA-4094): the run provisions its own server with them
+# No listener creates a bucket it copies: the run provisions its own server with them
 # before the listeners start.
 provision_fixture_buckets "$work/bin/fixturebuckets" "$nats_url" "$work/logs/fixturebuckets.log"
 
