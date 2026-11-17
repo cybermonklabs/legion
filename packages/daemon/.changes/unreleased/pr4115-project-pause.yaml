@@ -37,10 +37,12 @@ body: |-
   as a worker waiting on a deploy, keeps its own. Every wake's `start` row carries the wake's kind
   (`wakeKind`), and the pause's `pause` where one held it. On a database that other projects'
   daemons share, the daemon reads an issue record by its key only where the record is of its own
-  project. So an operator's spawn of another project's issue finds no record here: its ready, a
-  failure of it, a lost session, a session store fault, a memory guard kill and an operator's
-  retry write no row of that issue and change no record of that project, and the idle release
-  releases no pod of it. A new pod restores a saved workspace only of an issue that its own
+  project, and it writes, changes or deletes no outbox row keyed by another project's issue, since
+  only that project's daemon runs such a row. So an operator's spawn of another project's issue
+  finds no record here: its ready, a failure of it, a lost session, a session store fault, a memory
+  guard kill and an operator's retry write no row of that issue and change no record of that
+  project, its role changes queue no role-holders publication of that project, and the idle
+  release releases no pod of it. A new pod restores a saved workspace only of an issue that its own
   project records, so it never takes the workspace another project's daemon saved for its own pod.
   The daemon API contract is 153. Before a rollback to an earlier release, do three things in this
   order (docs/kubernetes.md, "Rolling back the project pause"). Resume the project. Resume one role

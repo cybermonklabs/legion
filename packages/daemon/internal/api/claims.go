@@ -139,8 +139,9 @@ func (s *server) promptAgentsList() []string {
 //
 // A ready that carries no report — a boot's, or a role-regain's — first queues the publication of
 // the issue's role sessions to Dispatch (Options.RoleHoldersChanged), before the machine takes the
-// ready and sends the first task. A queue the daemon could not write refuses the ready with 503,
-// so no task goes before the publication is queued, and the plugin tries the ready again.
+// ready and sends the first task; the daemon queues none for an issue of another project, whose
+// rows only that project's daemon runs. A queue the daemon could not write refuses the ready with
+// 503, so no task goes before the publication is queued, and the plugin tries the ready again.
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,

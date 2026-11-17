@@ -292,7 +292,8 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // changes the session the row names as the holder of c's role (storedRoleHolder, roleHolder,
 // EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves a
 // state that holds it — retired, failed, suspended, or launching again. A write that changes no
-// holder queues nothing, and neither does a write that can queue none (queuesRoleHolders).
+// holder queues nothing, and neither does a write that can queue none (queuesRoleHolders), such as
+// a write of a claim of another project's issue, whose row only that project's daemon runs.
 // It answers whether it queued, so that the caller can wake the lane once tx commits
 // (CommittedClaim). Every claim write goes through here — PutClaim, PutClaimAndDelivery,
 // RetireDelivery, AdmitClaim, and the pause's stop through PutClaimTx and PutClaimAndDeliveryTx —
@@ -313,10 +314,11 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 	if roleHolder(c.State, c.Session) == stored {
 		return false, nil
 	}
-	if err := EnqueueRoleHolders(ctx, tx, c.Issue, time.Now().UTC()); err != nil {
+	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC())
+	if err != nil {
 		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
-	return true, nil
+	return queued, nil
 }
 
 // upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim

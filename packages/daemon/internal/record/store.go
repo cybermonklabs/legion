@@ -2737,7 +2737,10 @@ func (s *Postgres) DueRows(ctx context.Context, tx pgx.Tx, project, issue string
 	return due, nil
 }
 
-// dueRowsSQL is DueRows' statement, built once from the outbox's rules (outboxClaimable).
+// dueRowsSQL is DueRows' statement, built once from the outbox's rules (outboxClaimable). Its
+// project scope, `split_part(outbox.issue, '-', 1) = $6`, is the rule every write of a row by key
+// takes from the other side (claim.KeyOfProject): a daemon writes no row keyed by another
+// project's issue, because only that project's daemon runs it here.
 var dueRowsSQL = `select ` + outboxColumns + ` from outbox
 		where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
 		and (cardinality($8::text[]) = 0 or outbox.kind = any($8::text[]))

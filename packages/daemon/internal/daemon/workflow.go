@@ -611,8 +611,8 @@ func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
 // roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
 // (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready, in
 // a transaction of its own, which owns the commit hook its write registers, so the board lane is
-// woken once it commits. An error is the route's to answer: it refuses the ready with 503, so no
-// task goes first.
+// woken once it commits; it queues none for an issue of another project (enqueueRoleHolders).
+// An error is the route's to answer: it refuses the ready with 503, so no task goes first.
 func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -626,9 +626,16 @@ func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Cl
 
 // enqueueRoleHolders queues the publication of issue's role sessions in tx
 // (store.EnqueueRoleHolders), and wakes the issue's board lane once tx commits, through the commit
-// scope of ctx (intake.WithCommitHooks), which both callers open.
+// scope of ctx (intake.WithCommitHooks), which both callers open. An issue of another project
+// queues nothing and wakes nothing, since only that project's daemon runs a row keyed by its issue
+// (claim.KeyOfProject). That is an ordinary path, not a fault: every ready of the operator's spawn
+// of such an issue takes it, so it is passed over here, before the store, and logs nothing. The
+// store's own refusal of such a key stands behind it for every other caller.
 func (w *workflowRuntime) enqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error {
-	if err := store.EnqueueRoleHolders(ctx, tx, issue, nextAt); err != nil {
+	if !claim.KeyOfProject(w.dispatchProject, issue) {
+		return nil
+	}
+	if _, err := store.EnqueueRoleHolders(ctx, tx, w.dispatchProject, issue, nextAt); err != nil {
 		return err
 	}
 	intake.OnCommit(ctx, func() { w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })

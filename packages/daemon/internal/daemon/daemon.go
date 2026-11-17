@@ -2626,6 +2626,16 @@ type source struct {
 // (admit.ownSlots). The outbox's claim is scoped in its SQL instead, because the lease it takes is
 // itself the damage.
 //
+// Its writes take the same rule from the other side: no row is written into the outbox keyed by
+// another project's issue (ownsKey, claim.KeyOfProject). Every write of record.Store that inserts,
+// upserts, expedites or deletes outbox rows by a key — Enqueue, EnqueueID, EnqueueStart,
+// ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps, DropStatusWrites, and
+// ClearGeneration and ClearTreeGeneration, which queue the publication of the gates they empty —
+// refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
+// The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
+// (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
+// here.
+//
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
 // the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
@@ -2636,7 +2646,8 @@ type projectRecords struct {
 	record.Store
 	project string
 	wake    func(issue string, kind record.OutboxKind)
-	// log says when a row was written outside a commit scope; nil is the default logger.
+	// log says when a row was written outside a commit scope, and when a write of a row keyed by
+	// another project's issue was refused; nil is the default logger.
 	log *slog.Logger
 }
 
@@ -2690,7 +2701,34 @@ func (s projectRecords) owns(issue record.Issue) bool {
 	return issue.Project == s.project
 }
 
+// ownsKey is whether an outbox row of kind keyed key is the daemon's to write (claim.KeyOfProject),
+// the rule every write of a row by key here applies (projectRecords). A write it refuses writes
+// nothing and, but for EnqueueID, returns no error: the transaction the caller is in goes on, since
+// a row the daemon would never run must not fail the caller's own work. Once the reads answer no
+// record of another project's issue (Issue), no path of the daemon builds such a row, so a refusal
+// here is a defect of the writer, and each is logged at Warn with the kind, the key and the
+// project, so nothing is dropped in silence.
+func (s projectRecords) ownsKey(kind record.OutboxKind, key string) bool {
+	if claim.KeyOfProject(s.project, key) {
+		return true
+	}
+	s.logger().Warn("outbox: refused a row keyed by another project's issue; only that project's daemon runs its rows",
+		"kind", kind, "issue", key, "project", s.project)
+	return false
+}
+
+// logger is log, or the default logger where it is nil.
+func (s projectRecords) logger() *slog.Logger {
+	if s.log == nil {
+		return slog.Default()
+	}
+	return s.log
+}
+
 func (s projectRecords) Enqueue(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if !s.ownsKey(row.Kind, row.Issue) {
+		return nil
+	}
 	if err := s.Store.Enqueue(ctx, tx, row); err != nil {
 		return err
 	}
@@ -2704,6 +2742,9 @@ func (s projectRecords) Enqueue(ctx context.Context, tx pgx.Tx, row record.Outbo
 // handed its work would wait for the lane's next sweep, up to one outbox lease after its
 // transition committed.
 func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if !s.ownsKey(row.Kind, row.Issue) {
+		return nil
+	}
 	if err := s.Store.EnqueueStart(ctx, tx, row); err != nil {
 		return err
 	}
@@ -2713,7 +2754,16 @@ func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.
 
 // EnqueueID wakes the row's lane as Enqueue does: a start or catch-up naming kept decisions is
 // written with its id (workflow.EnqueueNaming), so the row it claims them for waits for no sweep.
+//
+// Unlike the other writes, it refuses a row keyed by another project's issue with an error
+// (claim.ErrKeyOfAnotherProject), as the store's insertOutboxRow does: every caller names the row
+// by the id it answers — the decisions a start claims (ClaimKeptDecisions), the claims a re-held
+// catch-up takes over (MoveKeptClaims), the start a pause's stop released — and an id of no row
+// would name nothing, so the caller's transaction rolls back instead.
 func (s projectRecords) EnqueueID(ctx context.Context, tx pgx.Tx, row record.OutboxRow) (int64, error) {
+	if !s.ownsKey(row.Kind, row.Issue) {
+		return 0, fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, claim.ErrKeyOfAnotherProject)
+	}
 	id, err := s.Store.EnqueueID(ctx, tx, row)
 	if err != nil {
 		return 0, err
@@ -2723,6 +2773,9 @@ func (s projectRecords) EnqueueID(ctx context.Context, tx pgx.Tx, row record.Out
 }
 
 func (s projectRecords) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row record.OutboxRow, now time.Time) error {
+	if !s.ownsKey(row.Kind, row.Issue) {
+		return nil
+	}
 	if err := s.Store.ExpediteOutbox(ctx, tx, row, now); err != nil {
 		return err
 	}
@@ -2734,11 +2787,56 @@ func (s projectRecords) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row recor
 // with a statement of its own rather than through Enqueue (record.Postgres.EnqueueDesignGates),
 // so this is the one place that can tell the lane a gate change left a publication due.
 func (s projectRecords) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish record.DesignGatesPublish, nextAt time.Time) error {
+	if !s.ownsKey(record.OutboxKindDesignGatesPublish, publish.Issue) {
+		return nil
+	}
 	if err := s.Store.EnqueueDesignGates(ctx, tx, publish, nextAt); err != nil {
 		return err
 	}
 	s.wakeOnCommit(ctx, record.OutboxRow{Issue: publish.Issue, Kind: record.OutboxKindDesignGatesPublish})
 	return nil
+}
+
+// EnqueueGatedSteps's row is keyed by the bare project key, not by an issue
+// (record.Postgres.EnqueueGatedSteps), so that key is the one the rule reads.
+func (s projectRecords) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish record.GatedStepsPublish, nextAt time.Time) error {
+	if !s.ownsKey(record.OutboxKindGatedStepsPublish, publish.Project) {
+		return nil
+	}
+	return s.Store.EnqueueGatedSteps(ctx, tx, publish, nextAt)
+}
+
+func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+	if !s.ownsKey(record.OutboxKindNotice, issue) {
+		return nil
+	}
+	return s.Store.DropCatchUps(ctx, tx, issue, now)
+}
+
+func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
+	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
+		return nil
+	}
+	return s.Store.DropStatusWrites(ctx, tx, issue)
+}
+
+// ClearGeneration queues the publication of every gate it empties, keyed by the issue
+// (record.Postgres.clearGates), so a clear of another project's issue is refused whole: the
+// facts it would delete are that project's daemon's too.
+func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+	if !s.ownsKey(record.OutboxKindDesignGatesPublish, issue) {
+		return nil
+	}
+	return s.Store.ClearGeneration(ctx, tx, issue, now)
+}
+
+// ClearTreeGeneration is ClearGeneration for every issue of tree, each of which is of tree's
+// project: a record takes its root's project when the workflow writes it.
+func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
+	if !s.ownsKey(record.OutboxKindDesignGatesPublish, tree) {
+		return nil
+	}
+	return s.Store.ClearTreeGeneration(ctx, tx, tree, now)
 }
 
 // PutSlot grants the slot and then wakes the issue's lifecycle lane once the transaction
@@ -2770,13 +2868,9 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 		intake.OnCommit(ctx, func() { s.wake(row.Issue, row.Kind) })
 		return
 	}
-	log := s.log
-	if log == nil {
-		log = slog.Default()
-	}
 	// Caller 2 is the caller of Enqueue or ExpediteOutbox, past this helper and the method.
 	_, file, line, _ := goruntime.Caller(2)
-	log.Error("outbox row written outside a commit scope; its lane is woken at once",
+	s.logger().Error("outbox row written outside a commit scope; its lane is woken at once",
 		"kind", row.Kind, "issue", row.Issue, "file", file, "line", line)
 	s.wake(row.Issue, row.Kind)
 }

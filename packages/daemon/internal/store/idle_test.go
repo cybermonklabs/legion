@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -285,6 +286,37 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	if cleared := idleViewOf(t, st, rootIssue); cleared.Releasing {
 		t.Fatalf("view after the mark was cleared = %t, want no release in progress", cleared.Releasing)
 	}
+}
+
+// The idle release queues no row keyed by another project's issue (insertOutboxRow,
+// claim.KeyOfProject): an operator's spawn of that issue runs under this project's token, so its
+// pod is one the release reads, but a row keyed by the issue is run only by the other project's
+// daemon, against that daemon's own claims. A release whose rows are keyed so is refused whole
+// (claim.ErrKeyOfAnotherProject), with neither a row nor its mark written. The same release of this
+// project's own issue is marked.
+func TestTheIdleReleaseQueuesNoRowOfAnotherProjectsIssue(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	const theirs = "OTHERPROJECT-9"
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", theirs, func(pods.IdleView) (IdleReleaseMark, error) {
+		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
+			{Kind: "issue_bundle", Payload: []byte(`{"tree":"OTHERPROJECT-9","generation":1,"treeGeneration":1,"role":"architect"}`)},
+			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"OTHERPROJECT-9","role":"architect","generation":1}`), Boundary: true},
+		}}, nil
+	})
+	if !errors.Is(err, claim.ErrKeyOfAnotherProject) || marked {
+		t.Errorf("the release of %s = %t, %v; want it refused with claim.ErrKeyOfAnotherProject: its rows are keyed by OTHERPROJECT's issue",
+			theirs, marked, err)
+	}
+	var rows, marks int
+	if err := st.Pool().QueryRow(ctx, `select (select count(*) from outbox where issue = $1),
+		(select count(*) from issue_releases where issue = $1)`, theirs).Scan(&rows, &marks); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || marks != 0 {
+		t.Errorf("after the release of %s the outbox holds %d rows keyed by it and %d marks of it, want none", theirs, rows, marks)
+	}
+	releaseThroughTheStore(t, st, rootIssue)
 }
 
 // The release of a pod no role can use (workflow.UnownedPodRelease) suspends no role and saves

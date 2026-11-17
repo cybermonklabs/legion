@@ -200,7 +200,8 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 // (PauseRequest.StopRow), under the key the builder gave it, which runs it in that key's
 // lifecycle lane: the claim's issue, or the pause's project for a claim of another project's
 // issue. A row keyed by anything else would be run by no daemon's outbox or by another's, so it
-// is refused.
+// is refused, and so is a row keyed by another project's issue (insertOutboxRow,
+// claim.KeyOfProject).
 func queuePauseStopRow(ctx context.Context, tx pgx.Tx, pause Pause, stop PauseStopClaim, stopRow func(Pause, PauseStopClaim) (PauseRow, error)) error {
 	row, err := stopRow(pause, stop)
 	if err != nil {
@@ -209,7 +210,7 @@ func queuePauseStopRow(ctx context.Context, tx pgx.Tx, pause Pause, stop PauseSt
 	if row.Issue != stop.Issue && row.Issue != pause.Project {
 		return fmt.Errorf("the stop of %s is keyed by %q, neither its issue %s nor the project %s", stop.Claim, row.Issue, stop.Issue, pause.Project)
 	}
-	_, err = insertOutboxRow(ctx, tx, row.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload})
+	_, err = insertOutboxRow(ctx, tx, pause.Project, row.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload})
 	return err
 }
 
@@ -414,7 +415,7 @@ func queuePauseNotice(ctx context.Context, tx pgx.Tx, pause Pause, notice func(P
 	if row.Issue != pause.Project {
 		return fmt.Errorf("the controller's notice of pause %d is keyed by %q, not the project %s", pause.ID, row.Issue, pause.Project)
 	}
-	_, err = insertOutboxRow(ctx, tx, row.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload})
+	_, err = insertOutboxRow(ctx, tx, pause.Project, row.Issue, IdleReleaseRow{Kind: row.Kind, Payload: row.Payload})
 	return err
 }
 

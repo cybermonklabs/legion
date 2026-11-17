@@ -121,10 +121,16 @@ func TestAReleaseSaveIsCancelledWhileTheProjectIsPaused(t *testing.T) {
 // spawn (`legion claims spawn`) makes a claim of any issue key under the daemon's own project
 // token, and such a claim is part of this project's pause as every other claim is. No production
 // row reaches a release's save or its cancel for such an issue (IssueReleaseSave,
-// CancelIssueRelease): a release's rows are keyed by its issue, and the daemon's outbox runs only
-// the rows of its own project's keys. The tests below hold only the reading of the pause by the
-// project's token that the two make, which is the right reading and costs nothing.
+// CancelIssueRelease): a release's rows are keyed by its issue, the release queues no row keyed by
+// another project's issue (insertOutboxRow, claim.KeyOfProject) and so marks no release of it, and
+// the daemon's outbox runs only the rows of its own project's keys. The tests below write the mark
+// by hand (markReleaseOf) and hold only the reading of the pause by the project's token that the
+// two make, which is the right reading and costs nothing.
 const otherIssue = "OTHER-5"
+
+// The rows of the hand-written mark of otherIssue's release: its first row and its boundary, the
+// role stop.
+const otherFirst, otherBoundary = 18, 20
 
 // Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: the save of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
@@ -132,10 +138,10 @@ const otherIssue = "OTHER-5"
 func TestASaveOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPaused(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
-	first, _, _ := releaseThroughTheStore(t, st, otherIssue)
+	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	pauseLegion(t, st, pausedAt)
 
-	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, first)
+	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, otherFirst)
 	if err != nil || saved.Act != ReleaseCancel || saved.Cause != ReleaseCausePaused {
 		t.Fatalf("the save of %s's release while LEGION is paused = %s for %s, %v; want %s for %s: the pause saves no workspace and deletes no pod",
 			otherIssue, saved.Act, saved.Cause, err, ReleaseCancel, ReleaseCausePaused)
@@ -147,10 +153,10 @@ func TestASaveOfAReleaseOfAnotherProjectsIssueIsCancelledWhileThisProjectIsPause
 func TestASaveOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
-	first, _, _ := releaseThroughTheStore(t, st, otherIssue)
+	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	pauseProject(t, st, "OTHER", pausedAt)
 
-	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, first)
+	saved, err := st.IssueReleaseSave(ctx, "legion", otherIssue, otherFirst)
 	if err != nil || saved.Act != ReleaseActs {
 		t.Fatalf("the save of %s's release while only OTHER is paused = %s for %s, %v; want it to act: LEGION runs",
 			otherIssue, saved.Act, saved.Cause, err)
@@ -256,7 +262,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 		values ($1, $1, 'OTHER', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, otherIssue); err != nil {
 		t.Fatalf("record %s as OTHER's issue: %v", otherIssue, err)
 	}
-	_, boundary, _ := releaseThroughTheStore(t, st, otherIssue)
+	markReleaseOf(t, st, otherIssue, otherFirst, otherBoundary, 22, 0)
 	roles := []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
 	for _, role := range roles {
 		token, err := claim.NewToken("legion", otherIssue, role)
@@ -268,7 +274,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 			SuspendedBy: supervise.SuspendedByReleased}); err != nil {
 			t.Fatalf("seed the released %s of %s: %v", role, otherIssue, err)
 		}
-		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, role, boundary); err != nil {
+		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, role, otherBoundary); err != nil {
 			t.Fatalf("record the %s's suspension: %v", role, err)
 		}
 	}

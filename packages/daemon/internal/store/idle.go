@@ -211,7 +211,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		}
 		var first, boundary, last int64
 		for _, row := range mark.Rows {
-			id, err := insertOutboxRow(ctx, tx, issue, row)
+			id, err := insertOutboxRow(ctx, tx, project, issue, row)
 			if err != nil {
 				return err
 			}
@@ -283,12 +283,22 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 	return marked, nil
 }
 
-// insertOutboxRow queues one outbox row, encoded by the caller, and answers the id the outbox gave
-// it: the ids of a release's own rows are the range its mark is read against (IssueReleaseStop),
-// and a resume a cancel queues takes its id from the same sequence, above every row of the release
-// it ends. A pause's stop rows and its notices are queued through it too (queuePauseStopRow,
-// queuePauseNotice).
-func insertOutboxRow(ctx context.Context, tx pgx.Tx, issue string, row IdleReleaseRow) (int64, error) {
+// insertOutboxRow queues one outbox row of project, encoded by the caller, and answers the id the
+// outbox gave it: the ids of a release's own rows are the range its mark is read against
+// (IssueReleaseStop), and a resume a cancel queues takes its id from the same sequence, above every
+// row of the release it ends. A pause's stop rows and its notices are queued through it too
+// (queuePauseStopRow, queuePauseNotice).
+//
+// project is the caller's project, its Dispatch key or its claim token's spelling, and a row keyed
+// by an issue of another project is refused (claim.KeyOfProject): only that project's daemon runs
+// it, against that daemon's own claims. The refusal is an error (claim.ErrKeyOfAnotherProject),
+// which rolls the caller's transaction back, since every caller writes the row together with what
+// names it — a release's mark, a cancel's end of one, a pause and its stops — and neither stands
+// without the other.
+func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row IdleReleaseRow) (int64, error) {
+	if !claim.KeyOfProject(project, issue) {
+		return 0, fmt.Errorf("queue the %s row of %s for project %s: %w", row.Kind, issue, project, claim.ErrKeyOfAnotherProject)
+	}
 	var id int64
 	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
 		values ($1, $2, $3, 0, now(), '', '') returning id`, row.Kind, issue, string(row.Payload)).Scan(&id); err != nil {
@@ -434,7 +444,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			if err != nil {
 				return err
 			}
-			if _, err := insertOutboxRow(ctx, tx, issue, row); err != nil {
+			if _, err := insertOutboxRow(ctx, tx, project, issue, row); err != nil {
 				return err
 			}
 			cancelled.Resumed = append(cancelled.Resumed, r.role)

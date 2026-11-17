@@ -46,15 +46,21 @@ func openRunningTree(t *testing.T, store *Store) {
 // release's own stops have suspended so far.
 func markRelease(t *testing.T, store *Store, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
+	markReleaseOf(t, store, rootIssue, first, boundary, last, started, suspended...)
+}
+
+// markReleaseOf is markRelease for the pod of issue.
+func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, last, started int64, suspended ...claim.Role) {
+	t.Helper()
 	roles := make([]string, 0, len(suspended))
 	for _, role := range suspended {
 		roles = append(roles, string(role))
 	}
 	_, err := store.Pool().Exec(context.Background(), `insert into issue_releases
 		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
-		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, rootIssue, first, boundary, last, started, roles)
+		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, issue, first, boundary, last, started, roles)
 	if err != nil {
-		t.Fatalf("mark the release of %s: %v", rootIssue, err)
+		t.Fatalf("mark the release of %s: %v", issue, err)
 	}
 }
 
