@@ -1128,9 +1128,10 @@ type GatedStepView struct {
 // longer gates stays in the record — a deployment that gates that step again reads its true
 // state — and appears in no entry here, because it holds no work: every reader of the gate asks
 // the tree's steps (classify.DesignGatesOpen). A criteria row the architect registered beside a
-// deployment of spec alone is one of the tree's steps, because it holds the work, so the caller
-// passes record.TreeSteps' answer and the row is an entry. A step with no row is the other
-// direction, and is answered unregistered: it holds the tree's work, so a reader must see it.
+// deployment that gates spec and not criteria is one of the tree's steps, because it holds the
+// work, so the caller passes record.TreeSteps' answer and the row is an entry. A step with no row
+// is the other direction, and is answered unregistered: it holds the tree's work, so a reader must
+// see it.
 func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []GatedStepView {
 	views := make([]GatedStepView, 0, len(steps))
 	for _, step := range steps {

@@ -474,7 +474,7 @@ func (c *HTTPClient) ArtifactChanges(ctx context.Context, artifactID string, fro
 		case !errors.As(err, &refusal):
 		case artifactNotFound(refusal):
 			return ArtifactChanges{}, documentNotFound(err)
-		case noRoute(refusal), refusal.Status == http.StatusMethodNotAllowed:
+		case NoRoute(err), refusal.Status == http.StatusMethodNotAllowed:
 			return ArtifactChanges{}, fmt.Errorf("%w: %w", ErrNoChangesRoute, err)
 		}
 		return ArtifactChanges{}, err

@@ -392,17 +392,6 @@ var ErrDocumentNotFound = errors.New("dispatch holds no such document")
 // spellings change together.
 const ArtifactNotFound = "ARTIFACT_NOT_FOUND"
 
-// noRoute says whether refusal is Dispatch's router answering a path it serves no route for: 404
-// under the code NOT_FOUND, its message `no route for <METHOD> <path>`
-// (packages/envoy/internal/dispatch/routes/router.go), as the page and the dispatch command read
-// it (packages/envoy-client/src/dispatch-http.ts, isNoRoute). A route's own 404 for something it
-// does not hold can carry NOT_FOUND too, "the document has no version 5" among them, so the
-// message is what tells the router's apart. No mechanism shares a value between this module and
-// Dispatch's, so the spellings change together.
-func noRoute(refusal *Error) bool {
-	return refusal.Status == http.StatusNotFound && refusal.Code == "NOT_FOUND" && strings.HasPrefix(refusal.Message, "no route for ")
-}
-
 // artifactNotFound says whether refusal is Dispatch answering that it holds no document of the id
 // a read of one document names: 404 under the code ArtifactNotFound (ErrDocumentNotFound).
 func artifactNotFound(refusal *Error) bool {
@@ -495,8 +484,9 @@ const IssueNotFound = "ISSUE_NOT_FOUND"
 // NO_ROUTE_MESSAGE_PREFIX). A Dispatch older than a route answers it this way, and so does the
 // older build while a release rolls out, so no handler ran and the request is taken once the
 // release that serves the route is live. A handler's own 404 NOT_FOUND, for a resource it does not
-// know, says "not found" instead, and is not this answer. No mechanism shares a value between
-// this module and Dispatch's, so the spellings change together.
+// hold, carries another message ("the document has no version 5" among them), so the message is
+// what tells the router's answer apart. No mechanism shares a value between this module and
+// Dispatch's, so the spellings change together.
 func NoRoute(err error) bool {
 	var refusal *Error
 	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&

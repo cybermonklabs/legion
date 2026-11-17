@@ -572,10 +572,10 @@ func (s *server) supersededApprovalAdvice(
 // (design_gates.holds): which steps a tree is gated on is the daemon's rule, and the project's
 // own list (projects.gated_steps, written by PUT /api/v1/projects/{key}/gated-steps) is not the
 // whole of it. A root's architect may register its Verification document as `criteria` beside a
-// deployment that gates `spec` alone, and that row holds the tree although the list does not name
-// its step. A daemon also records a gate row for a step it does not gate - with `gates.design:
-// off` the registration records the spec step, approves it, and no later event ever moves it -
-// and that row holds nothing.
+// deployment whose list names `spec` and not `criteria`, and that row holds the tree although the
+// list does not name its step. A daemon also records a gate row for a step it does not gate - with
+// `gates.design: off` the registration records the spec step, approves it, and no later event ever
+// moves it - and that row holds nothing.
 //
 // A null holds is a row whose publish did not say whether it holds its tree, and the rule keeps it
 // where the project's list names its step (`coalesce`), which is how every row was read before

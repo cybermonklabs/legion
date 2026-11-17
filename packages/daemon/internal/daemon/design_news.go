@@ -380,7 +380,7 @@ type newsRecorded struct {
 // (record.Store.DesignNewsPending: queued, backing off or retrying, under no live lease). A pending
 // reconcile asks the history again, and what it reads replaces the row: a fill of the told row with
 // the row cleared, or, on its last attempt, a fresh unread row. Telling the row before then would
-// keep the failure it records, since the confirmation of a task that tells it raises the told
+// keep the failure it records, since the confirmation of a task that tells it credits the told
 // version past the item: so until that reconcile has run, the item is not recorded, the reconcile
 // leaves it owed, a merger waits for it, the summary names it by nothing, and a start attaches
 // nothing of it. The rule is for what is built anew: an item a delivery already carries with its

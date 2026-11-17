@@ -19,8 +19,8 @@ import (
 // that tree is gated on (TreeSteps over steps, the deployment's list, and gates, the issue's own
 // rows) name its step. The rule is the daemon's alone, so Dispatch is told the answer rather than
 // left to work it out from the project's list, which does not name a criteria row a root
-// registered beside a deployment of spec alone. A caller gives the deployment's steps, never a
-// tree's, since this applies TreeSteps itself.
+// registered beside a deployment that gates spec and not criteria. A caller gives the deployment's
+// steps, never a tree's, since this applies TreeSteps itself.
 func GateDocuments(steps []DesignStep, gates map[DesignStep]DesignGate) []DesignGateDocument {
 	gated := TreeSteps(steps, gates)
 	documents := make([]DesignGateDocument, 0, len(gates))

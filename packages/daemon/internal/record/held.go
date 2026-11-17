@@ -37,7 +37,7 @@ const (
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
 	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step that holds the
 	// tree (TreeGate.Open over TreeSteps): a step the deployment gates, or a criteria step the root
-	// registered beside a deployment of spec alone.
+	// registered beside a deployment that gates spec and not criteria.
 	HeldDesignGate HeldReason = "design_gate"
 	// HeldDispatchBlocker is an issue an unfinished Dispatch issue holds where it stands
 	// (blockers.Holds, which fills LineFacts.Held).

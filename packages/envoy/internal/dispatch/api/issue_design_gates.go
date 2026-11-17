@@ -38,11 +38,11 @@ import (
 //
 // Holds is the daemon's answer and not Dispatch's: which steps a tree is gated on is the daemon's
 // rule, and it is not the project's list alone, since a root's architect may register its
-// Verification document as `criteria` beside a deployment that gates `spec` alone, and that row
-// holds the tree. It is null for an entry that does not carry it, which is every entry a daemon
-// older than the field publishes (design_gates.holds, migration 20261114020013_design_gates_holds),
-// and the superseded-approval advice answers such a row by the project's list
-// (supersededApprovalGates).
+// Verification document as `criteria` beside a deployment whose list names `spec` and not
+// `criteria`, and that row holds the tree. It is null for an entry that does not carry it, which
+// is every entry a daemon older than the field publishes (design_gates.holds, migration
+// 20261114020013_design_gates_holds), and the superseded-approval advice answers such a row by the
+// project's list (supersededApprovalGates).
 type issueDesignGate struct {
 	Step       string `json:"step" enum:"decisions,criteria,spec"`
 	ArtifactID string `json:"artifact_id"`

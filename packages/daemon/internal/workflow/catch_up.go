@@ -264,13 +264,13 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // generation, and whether its old root's gate came with it, each design-gate step the root must
 // hold open and how it stands, and every issue of the tree in key order. The steps are the ones
 // the tree is gated on (classify.TreeSteps), so a criteria row the architect registered beside a
-// deployment of spec alone is listed after the spec, gated as the spec is. With it come the keys,
-// in key order, of the tree's issues waiting for the architect's acceptance: each in accepting
-// and still in the workflow. No worker runs in accepting, and the one phase-finished notice that
-// moved an issue there is ended undelivered when the architect's claim has failed (the outbox's
-// notice), so a retried architect learns of the wait from its catch-up alone; the reason names
-// these keys so that the catch-up, which a revived architect reads as the tree already running,
-// says what is the architect's own to do.
+// deployment that gates spec and not criteria is listed after the spec, gated as the spec is. With
+// it come the keys, in key order, of the tree's issues waiting for the architect's acceptance:
+// each in accepting and still in the workflow. No worker runs in accepting, and the one
+// phase-finished notice that moved an issue there is ended undelivered when the architect's claim
+// has failed (the outbox's notice), so a retried architect learns of the wait from its catch-up
+// alone; the reason names these keys so that the catch-up, which a revived architect reads as the
+// tree already running, says what is the architect's own to do.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (record.CatchUp, []string, error) {
 	catchUp := record.CatchUp{Generation: root.Generation}
 	handed, err := ArchitectCarried(ctx, tx, store, root)
