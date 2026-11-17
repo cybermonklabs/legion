@@ -640,9 +640,9 @@ stands:
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
   names the architect under `failed, retry`. Retry it, as [A tree does not move after a
   restart](#a-tree-does-not-move-after-a-restart) shows: the daemon relaunches it on the session
-  it kept, with fresh budgets, or on a new session when the provider refused that one out of its
-  launch budget or no session store holds it any more, and the tree carries on at the generation
-  and phase it stands at.
+  it kept where it can, with fresh budgets (supervise's `freshSession` and `startFresh` decide when
+  it starts a new session instead), and the tree carries on at the generation and phase it stands
+  at.
 - **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
   in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
   generation; a retry by hand would run it outside the admission cap, and it would be sent no
@@ -923,10 +923,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
 
-- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, with
-  fresh budgets, or on a new session when the provider refused that one out of its launch budget or
-  no session store holds it any more, and sends it a catch-up of its tree once it is ready, so the
-  tree carries on at the generation and phase it stands at. The daemon drops every notice it could
+- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept where
+  it can, with fresh budgets (supervise's `freshSession` and `startFresh` decide when it starts a
+  new session instead), and sends it a catch-up of its tree once it is ready, so the tree carries
+  on at the generation and phase it stands at. The daemon drops every notice it could
   not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
   among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
   architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
@@ -945,11 +945,12 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   a `todo` on a held root releases the hold without either of them. A failed claim ignores `legion
   claims resume` and `legion claims deliver`. A retired claim ignores those two as well. `legion
   claims retry --claim <token>` reaches it as it reaches a failed one, and `legion claims retry
-  --failed` passes over it. A workflow start also relaunches it: a start of the phase it owns
-  — its architect's `retry_or_escalate` of a held phase, a transition into that phase, or a
-  tree close and re-admission — and, for a retired tree architect, its tree's admission. Each
-  relaunches the session it kept, unless the provider refused that session out of its launch budget
-  or no session store holds it any more.
+  --failed` passes over it. A workflow start also relaunches it, for example a start of the phase
+  it owns — its architect's `retry_or_escalate` of a held phase, a transition into that phase, or a
+  tree close and re-admission — or, for an architect, a start of its issue's run: its tree's
+  admission for a root's, its child's first phase start for a child's own. Each relaunches the
+  session it kept where it can (supervise's `freshSession` and `startFresh` decide when it starts a
+  new one).
 
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that
@@ -960,9 +961,12 @@ slot has that start queued already. A root in
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
 return to `todo` starts it.
-The list never names a child's own architect: the child's next phase start starts a failed one
-again, the child's next first phase start starts one the workflow suspended or an operator stopped,
-and one an operator suspended waits for the operator's resume (`legion claims list` shows it).
+The list never names a child's own architect: while that architect does not hold its role, the
+architect above it takes the child's notices, and a later start of the role brings it back, as the
+daemon's supervise table decides for the state the claim stands in. The workflow's own starts of
+it, an operator's retry and the controller's `fresh_session` are among such starts. A child's own
+architect that an operator suspended waits for the operator's resume (`legion claims list` shows
+it).
 Any other claim an operator suspended is listed even when a workflow start is queued for it: that
 start waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no
 start is queued for it, since the next phase start or re-admission resumes it as before.

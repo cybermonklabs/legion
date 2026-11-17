@@ -19,18 +19,14 @@ phase workers'.
 
 The daemon started you with your child's first phase, and no agent asked for that start. At each
 launch, once your session is ready, the daemon sends you a `catch-up` notice of your issue and
-every issue under it. When your claim fails, the architect above you takes your child's notices
-until you run again: the child's next phase start starts you again, and so does an operator's
-retry. When you exit on your own, the daemon retires your claim, the architect above you takes
-your child's notices, and your child's next first phase start, a re-admission of your tree, a
-hand-over of your child as a root of its own when the tree's linger ends, or an operator's retry
-starts you again. When your child leaves the workflow, the daemon suspends you with its workers,
-or closes you with them when your child is done, and the child's next start starts you again. A
-re-admission of your tree also starts you again while your child stands in a phase past
-`admitted`. Each of these starts resumes this session, unless a retry asks for a new one, the
-provider refused this session out of your launch budget, or no session store holds it any more:
-then you start in a new session that has read none of your earlier work. Your child's planner may
-already be working when you start. Decide first whether your child needs children of its own
+every issue under it. While your claim does not hold its role, which `record.HoldsRole` decides
+(after a failure, for example, or after your own exit retired it), the architect above you takes
+your child's notices until a later start of your role brings you back; after a failure, your
+child's next phase start is such a start. When your child leaves the workflow, your claim stops as
+workflow's `leave` decides. A start resumes this session where it can, and supervise's
+`freshSession` and `startFresh` decide when you start in a new session instead, which has read
+none of your earlier work. Your child's planner may already be working when you start. Decide
+first whether your child needs children of its own
 (`skill://legion-architect/references/decomposition.md`, "Creating children").
 
 You open no `dispatch ask` yourself, whatever another part of this prompt says. Send each question
@@ -106,12 +102,12 @@ once, release every child that should run, and move each other child as section 
 `skill://legion-architect` says. Park between event-driven wakes; do not poll or manufacture
 progress. The daemon starts every phase of each released child itself, in the order its fixed
 workflow table sets, each phase worker as its own process with that child's context already in
-its environment; a role it starts again resumes the same session instead of starting fresh,
-except after a claim whose provider refused every turn of that session, which the daemon fails
-and your `retry_or_escalate` retries in a new one that has read none of its own earlier work. You
-start no worker. Each released child gets its own architect when the daemon starts its first
-phase, and that architect owns the child while it holds its role; while it does not hold its role,
-the child's notices come to you (`skill://legion-architect`, section 2).
+its environment; a role it starts again resumes the same session where it can, and supervise's
+`freshSession` and `startFresh` decide when it starts in a new session instead, which has read
+none of its own earlier work. You start no worker. Each released child gets its own architect
+when the daemon starts its first phase, and that architect owns the child while it holds its
+role; while it does not hold its role, which `record.HoldsRole` decides, the child's notices come
+to you (`skill://legion-architect`, section 2).
 
 ## Escalation
 

@@ -291,8 +291,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `legion claims retry --operator-token-file <file> (--claim <token> | --failed) [--fresh-session]`
 
-  The operator's: relaunch a failed architect with fresh budgets, on its session unless the provider refused that session out of its launch budget or no session store holds it any more, or retry a failed phase worker whose issue is held for its own role through that phase's retry (409 when the issue stays held, as a lingering tree's does);
-  `--claim` reaches a claim an operator stopped as well as a failed one, because `legion claims stop` retires the claim it stops, and starts a phase worker on the task of the phase its issue stands in now;
+  The operator's: relaunch a failed architect with fresh budgets, on its session where it can (supervise's `freshSession` and `startFresh` decide when it starts a new one), or retry a failed phase worker whose issue is held for its own role through that phase's retry (409 when the issue stays held, as a lingering tree's does);
+  `--claim` reaches a retired claim as well as a failed one, whatever retired it (`legion claims stop` retires the claim it stops, among others), and starts a phase worker on the task of the phase its issue stands in now;
   `--fresh-session` forgets the claim's recorded session first, so the retry starts a fresh agent instead of resuming that session;
   it reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that the read of its process at the request finds nothing behind, which is the dead role a project's controller has no other way back from, with no suspension held over it, a root architect included;
   it suspends a live agent and the claim no process stands behind alike, where the request arrives, and that last claim comes back with the task its dead turn held;

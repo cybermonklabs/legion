@@ -186,7 +186,7 @@ A root whose own architect is not taking the work the daemon states it is owed.
 
 - "the architect's claim cannot be reached": the claim is failed or retired and no start of the root's run is the daemon's next move for it, or the root has no architect claim at all, no start of one was queued in the last ten minutes, and the work of its entry has stood that same bound.
   A start the outbox is running is that next move, and so is a start queued in the last ten minutes unless it has already run against the claim and left it failed or retired.
-  While such a start will relaunch a failed or retired claim, the daemon raises no such wake, because that start brings the claim back: in the session it kept, or in a new one when the provider refused that session out of its launch budget or no session store holds it any more.
+  While such a start will relaunch a failed or retired claim, the daemon raises no such wake, because that start brings the claim back, in the session it kept where it can (supervise's `freshSession` and `startFresh` decide when it starts a new one).
   The claim reads failed or retired while the outbox runs that start, until the run relaunches it.
   A start that has run against the claim and left it failed or retired, which the daemon retries on its backoff, does not hold the wake back, and neither does one that has stood owed for longer than ten minutes.
   A root waiting on a person raises it as any root does, and its reason then says that the root waits: the daemon queues the next start of its architect only when that wait is answered.
@@ -226,7 +226,7 @@ For the second arm, read the root's architect claim in `read_state` too.
 A `failed` or `retired` claim this wake names has no start that will relaunch it: no start of its run was queued in the last ten minutes, or the one the queue holds has run against it and left it as it is, which the daemon retries on its backoff.
 It takes nothing the daemon sends.
 `fresh_session` on it, with the root's key as the issue and `architect` as the role, starts it again.
-When the reason says the root waits on a person, take no `fresh_session` while it waits, since the start the answer queues relaunches the session the claim kept (a new one only when the provider refused that session out of its launch budget or no session store holds it any more), and `fresh_session` would discard it.
+When the reason says the root waits on a person, take no `fresh_session` while it waits, since the start the answer queues relaunches the session the claim kept where it can (supervise's `freshSession` and `startFresh` decide when it starts a new one), and `fresh_session` would discard it.
 Name that root in the day's report with what it waits on (`issues.<KEY>.waitingOn`: the ask, or the version of its gate), so a person knows the tree has no architect that can run until they answer.
 That wake is the arm's one wake of the root's run: the daemon marks the arm told for the run, and the answer starts no new run, so it does not tell you again when the wait is answered or when the start the answer queues fails against the claim.
 So at each `tick` after `issues.<KEY>.waitingOn` is gone, read `issues.<KEY>.architectStalls`, which lists an arm whether or not you were told of it, and when it lists `claim-unreachable`, take `fresh_session` on that claim as for any other claim of this arm.
@@ -545,10 +545,10 @@ to ask. Ask for `fresh_session` there. Of your two doors, it is the one that bri
 role, a dead architect of your project included: it suspends the claim where your request arrives,
 leaves the session that claim recorded behind, and starts the claim again with the task its dead
 turn held. When a child's own architect's claim has failed, the daemon also starts it again at
-its child's next phase start. That start relaunches the session the claim recorded, unless the
-provider refused that session out of its launch budget or no session store holds it any more:
-then it starts a new session. Both doors read the claim's process at the moment you ask, not the
-daemon's memory of an older report, which a daemon restart forgets. A refusal of `CLAIM_IN_A_TURN`
+its child's next phase start. That start relaunches the session the claim recorded where it can
+(supervise's `freshSession` and `startFresh` decide when it starts a new one). Both doors read
+the claim's process at the moment you ask, not the daemon's memory of an older report, which a
+daemon restart forgets. A refusal of `CLAIM_IN_A_TURN`
 is a claim whose process that read found running, or one whose session is being compacted. A
 claim whose process the runtime would not answer for, one that records no process to read, and
 one that moved under your request and that a second read finds no longer working or gone once more

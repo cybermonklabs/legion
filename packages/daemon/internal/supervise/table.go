@@ -2460,13 +2460,10 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // operatorRetry is the operator's retry of a claim that runs nothing: retry, for an architect —
 // its tree's root, which no phase start relaunches (admission starts it with its tree, and a
 // person's answer resumes it: workflow's StartArchitect and ResumeAwaitedRoot), or a child's own
-// architect, which the daemon starts again at its child's next phase start when it failed, at the
-// child's next first phase start when an operator stopped it, its own exit retired it or the
-// child's close as done retired it, at a re-admission of its tree while the child stands in a
-// phase, and at the admission of a hand-over that makes the child a root of its own (workflow's
-// reviveArchitect, StartFirstPhase and StartArchitect, admit's startMidPhaseMembers) — and for
-// a phase worker whose issue works no phase of its role, which the route has already established
-// before it reaches the machine (api's retryStart starts the phase itself for every other one).
+// architect, which a start of the workflow's can also bring back (workflow's StartFirstPhase and
+// reviveArchitect, for example) — and for a phase worker whose issue works no phase of its role,
+// which the route has already established before it reaches the machine (api's retryStart starts
+// the phase itself for every other one).
 // The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
 // role never changes, so the refusal cannot race the decision it guards.
 //

@@ -1193,20 +1193,20 @@ Closing the terminal leaves the project without one, and the daemon logs
    the state names as nothing will wake (`legion state`'s `claims nothing will wake` line, or
    `strandedClaims` in `--json`), and skip those you drained on purpose: resume a suspended
    architect, retry a failed one (`legion claims retry --claim <token>`, which relaunches its
-   session with fresh budgets, or starts a new session when the provider refused that one out
-   of its launch budget or no session store holds it any more; `legion claims retry --failed`
-   retries every failed claim, and a failed phase worker whose issue is held for its own role
-   retries that phase), and bring a suspended phase worker back as [A tree does not move after a
+   session with fresh budgets where it can, supervise's `freshSession` and `startFresh` deciding
+   when it starts a new one; `legion claims retry --failed` retries every failed claim, and a
+   failed phase worker whose issue is held for its own role retries that phase), and bring a
+   suspended phase worker back as [A tree does not move after a
    restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart) shows for its
    `suspendedBy`. A claim the state names `retired` takes no resume. `legion claims retry --claim
    <token>` starts it again, because the retry reaches a retired claim as well as a failed one:
-   an architect is relaunched on its kept session, unless the provider refused that session out of
-   its launch budget or no session store holds it any more, and a phase worker whose issue stands
-   in its phase has that phase started again (`--failed` passes over a retired claim). Otherwise
-   it comes back on a workflow start: a start of the phase it owns, or, for a root's architect,
-   its tree's admission, as that page's `needsWorkflowStart` shows. Never resume or retry by hand a
-   claim of a lingering tree or of an issue parked out of the workflow: re-admission or the issue's
-   return to `todo` starts it.
+   an architect is relaunched on its kept session where it can, as above, and a phase worker whose
+   issue stands in its phase has that phase started again (`--failed` passes over a retired
+   claim). Otherwise it comes back on a workflow start, for example a start of the phase it owns
+   or, for an architect, a start of its issue's run (its tree's admission for a root's, its child's
+   first phase start for a child's own), as that page's `needsWorkflowStart` shows. Never resume
+   or retry by hand a claim of a lingering tree or of an issue parked out of the workflow:
+   re-admission or the issue's return to `todo` starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
    `suspendedBy`, so a value this release wrote survives the earlier daemon's own suspends and

@@ -1509,13 +1509,13 @@ func waitingClaims(group []supervise.Claim, round string) []supervise.Claim {
 // askedClaims is every blocking claim the round can ask: all but a failed one. A failed claim's
 // launches or prompts ran out, so it runs no process and no turn of it runs on the pod; the round
 // asks it nothing (unaskedClaims reads this set, and its machine ignores the round's post), and
-// nothing but an operator's or an architect's retry brings it back. Holding
-// the round for its answer held the pod, and every answered worker's next task with it, for an
-// answer it can never give: on the first contract-46 roll a planner that had failed at contract 41
-// recorded no round at all, and held its issue's round open behind the three workers that had
-// answered. A retry starts it again and it is asked like any other claim from the next tick. Work
-// it left on the pod's disk and did not push goes with the pod; the replacement's log line names
-// each failed claim it did not wait for.
+// only a retry of it brings it back (supervise's onRetry and onOperatorRetry rows), which the
+// round does not make. Holding the round for its answer held the pod, and every answered worker's
+// next task with it, for an answer it can never give: on the first contract-46 roll a planner that
+// had failed at contract 41 recorded no round at all, and held its issue's round open behind the
+// three workers that had answered. A retry starts it again and it is asked like any other claim
+// from the next tick. Work it left on the pod's disk and did not push goes with the pod; the
+// replacement's log line names each failed claim it did not wait for.
 func askedClaims(group []supervise.Claim) []supervise.Claim {
 	var asked []supervise.Claim
 	for _, c := range blockingClaims(group) {

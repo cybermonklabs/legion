@@ -5,10 +5,9 @@ body: |-
   own issue, releases, parks and reruns them, signs off its own issue, and registers no design
   gate. The architect above it hears the child's `child-status` and `child-closed`, and that
   architect's `worker-died` and `worker-stalled`. It also hears every other notice of the child
-  while that architect does not hold its role: before its first start has launched it, while a
-  stop of it is in flight, and after it failed, was retired or was suspended other than by the
-  idle release. The `legion` tool's description of `handoff_complete` now says that phase workers
-  alone send it, since the daemon refuses an architect's completion. Each parent reviews every
+  while that architect does not hold its role, which the daemon's `record.HoldsRole` decides. The
+  `legion` tool's description of `handoff_complete` now says that phase workers alone send it,
+  since the daemon refuses an architect's completion. Each parent reviews every
   version of a child's spec and Verification document with a fresh reader and posts its verdict
   on the child. A child's architect sends each question for a person to the architect above
   it. The question goes up to the root architect, which asks it on the root. The worker skills

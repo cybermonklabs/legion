@@ -20,10 +20,9 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, kind No
 // on issue: the nearest issue at or above it, through its parents, whose architect claim holds its
 // role (runs), else the tree root (issue.Tree), whose architect is the tree's own claim. The daemon
 // starts a child's architect with the child's first phase, and starts a failed one again at the
-// child's next phase start. While a child's architect does not hold its role — before its first
-// start has launched it, while a stop of it is in flight, and after it failed, was retired or was
-// suspended other than by the idle release — the child's notices go on up to the architect above
-// it.
+// child's next phase start. While a child's architect does not hold its role, which HoldsRole
+// decides (and the daemon's holdsRole over the machine's live view), the child's notices go on up
+// to the architect above it.
 //
 // Two notices start the walk at the issue's parent instead. A child's close or status change: it
 // tells of the child's own run starting, leaving, coming back or closing, which is not the child's
@@ -99,11 +98,14 @@ func TreeByKey(members []Issue) map[string]Issue {
 
 // HoldsRole is whether a claim the store records in state, suspended by by, holds its role: this
 // daemon supervises it (state is not ""), it has not failed or retired, and it is not suspended,
-// unless the suspension is the idle release's (supervise.Claim's Released). A released claim
-// keeps its session, its phase and its task, and the next wake for its role resumes it, so what it
-// owns is still its own; any other suspension stops the claim until a rule or an operator starts
-// it again. Were a released architect to lose its role here, a notice for it would walk up to the
-// architect above it, which owns neither the issue nor the answer.
+// unless the suspension is the idle release's (supervise.Claim's Released). A claim the outbox has
+// not created yet has no state and holds none: a new child's architect is such a claim until the
+// outbox runs the start its child's first phase start queued, and holds its role from that run on,
+// queued or launching. A released claim keeps its session, its phase and its task, and the next
+// wake for its role resumes it, so what it owns is still its own; any other suspension stops the
+// claim until a rule or an operator starts it again. Were a released architect to lose its role
+// here, a notice for it would walk up to the architect above it, which owns neither the issue nor
+// the answer.
 //
 // It is the whole rule for a reader in a transaction (ArchitectRuns). The daemon's outbox reads
 // the same rule over the machine's live view and also passes over a claim whose process a

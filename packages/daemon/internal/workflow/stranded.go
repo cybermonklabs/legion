@@ -116,18 +116,14 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // The move that brings each one back is api.StrandedClaim.Move's.
 //
 // It names no other claim: a worker whose phase is not its own is started again when its phase
-// comes, and a tree that is not running runs nothing yet. A child's own architect is started again
-// by its child's next phase start when it failed (Engine.reviveArchitect: the architect above it
-// heard of the failure in a worker-died), by the child's next first phase start when the workflow
-// suspended or retired it as the child left (StartFirstPhase), by the operator's resume when an
-// operator suspended it, and, when an operator stopped it, by the child's next first phase start,
-// a re-admission's start or the operator's retry. One that its own exit retired gets no
-// worker-died, and the reviveArchitect each phase start runs passes over it, since that acts on a
-// failed claim alone: it comes back only at the child's next first phase start, at a
-// re-admission's start while the child stands past admitted (admit's startMidPhaseMembers), at the
-// admission of a hand-over that makes the child a root of its own (StartArchitect), or by the
-// operator's retry, and nothing reports it, this report included. In every case the architect
-// above it takes the child's notices meanwhile.
+// comes, and a tree that is not running runs nothing yet. Nor does it name a child's own
+// architect: while that claim does not hold its role (record.HoldsRole), the architect above it
+// takes the child's notices, and a later start of the role brings it back, as supervise's table
+// decides for the state it stands in. The workflow queues such a start itself at its child's
+// first phase start and, for a failed one, at each later phase start (StartFirstPhase,
+// reviveArchitect); others come from elsewhere, an operator's retry or the controller's
+// fresh_session among them. One that its own exit retired gets no worker-died, and nothing
+// reports it, this report included.
 // A tree that is not running is a lingering tree — a root that leaves the workflow, closed or
 // moved out by a person, always lingers first (leave) — whose members its re-admission starts
 // again, and a root that never ran, whose architect receives its first task only when the line
