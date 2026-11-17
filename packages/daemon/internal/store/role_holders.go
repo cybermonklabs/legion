@@ -21,8 +21,9 @@ import (
 // so the change and the obligation to publish it commit together or not at all: no change of a
 // holder stands that nothing owes a publication, and a write the store refused leaves neither. An
 // end whose own write failed with an error the machine owes is published when the repair that
-// makes it good lands, whichever decision makes it; an end whose failed write is not owed is
-// never written, and the store, and so Dispatch's set, keeps the claim live
+// makes it good lands, whichever decision makes it. An end whose failed write is not owed is
+// written again only when a later decision retires a task the claim still holds, which writes the
+// claim with it; until then the store, and so Dispatch's set, keeps the claim live
 // (dispatch://INFRA-4099).
 
 // roleHoldersPublishKind is record.OutboxKindRoleHoldersPublish. This package cannot import record,

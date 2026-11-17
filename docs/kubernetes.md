@@ -1983,7 +1983,8 @@ It keeps its role until the daemon's publication of the end lands.
 The claim write that ends the claim queues that publication in its own transaction, so the end and its publication commit together or not at all.
 An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published only when the daemon makes that write again, at the claim's next decision, because until then the store still holds the claim live.
 In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
-An end whose claim write failed and is not owed, so that the daemon never makes that write again, leaves the daemon's memory ended and its store live, and the set follows the store: the session stays listed until a later write of that claim lands, and the daemon's next start takes the claim up from its row as live (dispatch://INFRA-4099).
+An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
 Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
 **Who can write the set.**
