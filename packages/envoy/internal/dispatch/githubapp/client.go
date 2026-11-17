@@ -561,8 +561,8 @@ func (c *Client) RepositoryToken(ctx context.Context, owner, repo string) (strin
 // RepositoryTokenWithStatuses is RepositoryToken with whether that token holds Commit statuses at
 // read or write, which is what Dispatch's CI reconcile decides by whether it reads a head's commit
 // statuses at all. Both answers come from the one cached token: the permissions are the ones
-// GitHub's access_tokens answer named for that token, kept beside it (Token), so a token is never
-// answered beside another mint's permissions.
+// GitHub's access_tokens answer named for that token, decoded and kept beside it in the one cache
+// entry (token), so a token is never answered beside another mint's permissions.
 //
 // The permission is the token's rather than the installation's, although the installation lookup
 // that resolves owner/repo names the installation's permissions too. A token lives about an hour

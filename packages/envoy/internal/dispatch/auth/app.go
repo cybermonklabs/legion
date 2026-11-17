@@ -44,7 +44,9 @@ type AppConfig struct {
 //
 // Statuses is Commit statuses. Dispatch's CI reconcile reads the commit statuses of a head only
 // where the token it holds names Commit statuses at read or write, and a minted token's own
-// permissions come in this shape too (githubapp.Client.Token).
+// permissions come in this shape too: githubapp's unexported Client.token decodes them from the
+// access_tokens answer and keeps them beside the token, and
+// githubapp.Client.RepositoryTokenWithStatuses answers from them.
 type AppPerms struct {
 	Issues       string `json:"issues,omitempty"`
 	PullRequests string `json:"pull_requests,omitempty"`

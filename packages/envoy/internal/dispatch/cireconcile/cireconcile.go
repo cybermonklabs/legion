@@ -9,12 +9,13 @@
 //
 // A pass reads GitHub in batches, over GraphQL: one query answers twenty open pull requests of
 // one repository with every check suite and every check run of each one's head commit
-// (headsQuery). Reading the same heads over REST takes two requests of each head and one of
-// each page of each repository's open pull requests, which for 833 heads of 16 repositories
-// measures 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute
-// interval, which no pass finishes within its bound and which leaves the loop looking dead for
-// the whole of it. The same read in queries is about 53 of them, about 318 points of the App's
-// GraphQL budget and about 178 seconds of GitHub's own processing time.
+// (headsQuery). Reading the same heads over REST takes two requests of each head, three where
+// the token holds Commit statuses (readStatuses), and one of each page of each repository's open
+// pull requests. Before the pass read statuses that measured, for 833 heads of 16 repositories,
+// 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute interval, which no
+// pass finishes within its bound and which leaves the loop looking dead for the whole of it. The
+// same read in queries is about 53 of them, about 318 points of the App's GraphQL budget and
+// about 178 seconds of GitHub's own processing time.
 //
 // What a query cannot answer whole is read over REST: paged, conditional on the ETags the pass
 // kept, and recorded through the same writes. That is a head with more check suites than one

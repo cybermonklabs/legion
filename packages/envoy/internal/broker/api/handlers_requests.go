@@ -478,9 +478,9 @@ func writeNarrowingRefusal(w http.ResponseWriter, err error) bool {
 		// and GitHub was not asked.
 		writeError(w, http.StatusForbidden, "NARROWING_OWNER_NOT_LISTED", err.Error())
 	case errors.Is(err, secrets.ErrMintNarrowingRefused):
-		// GitHub refused the narrowed token: a repository the installation does not reach, or a
-		// permission the App does not hold. The message says which it is, and the caller fixes
-		// the narrowing.
+		// The narrowing cannot be served: a repository the installation does not reach, or read
+		// access the App does not hold, which GitHub's 422 or the installations listing says.
+		// The message says which it is, and the caller fixes the narrowing.
 		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
 	default:
 		return false

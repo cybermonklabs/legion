@@ -53,8 +53,8 @@ type combineOutcome struct {
 // answers below are. A caller whose write failed, and one whose write was refused for bounds
 // (write answers boundsRefusal's error while still writing the record marked Overflowed), changed
 // nothing it meant to either, so changed is false whenever err is non-nil. A commit status the
-// bounds refused changed nothing and failed nothing either, whatever the batch it rode met
-// (batch.answer).
+// bounds refused changed nothing and failed nothing either, whatever the bounds did with the
+// batch it rode (batch.answer); a write that failed for another cause fails it too.
 //
 // status is the context of the commit status mutate records, and empty for a check run or a check
 // suite (pendingMutation).

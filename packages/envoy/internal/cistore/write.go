@@ -119,18 +119,18 @@ func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 		}
 		checks = len(st.Checks)
 		buf, err := sealRecord(key, &st, rev != 0, beforeHash, generation)
-		var refused error
-		landed := func() {}
+		// bounded is what a write past a bound writes in the batch's place, and the zero
+		// boundWrite for a write within its bounds, which warns of nothing and answers nil.
+		var bounded boundWrite
 		if errors.Is(err, bus.ErrTooLarge) {
-			var bounded boundWrite
-			if bounded, err = s.atBounds(key, identity, stored, rev != 0, b, err); err != nil {
+			if bounded, err = s.atBounds(key, stored, rev != 0, b, err); err != nil {
 				return err
 			}
-			if !bounded.write {
-				bounded.logged()
+			if bounded.buf == nil {
+				bounded.warn(s.logger, identity)
 				return bounded.refused
 			}
-			buf, refused, landed = bounded.buf, bounded.refused, bounded.logged
+			buf = bounded.buf
 		} else if err != nil {
 			return err
 		}
@@ -142,8 +142,8 @@ func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 		})
 		switch {
 		case err == nil:
-			landed()
-			return refused
+			bounded.warn(s.logger, identity)
+			return bounded.refused
 		case errors.Is(err, errKVUnanswered):
 			return spent(attempt+1, err)
 		case kvErrorLasts(err):
@@ -178,18 +178,45 @@ func sealRecord(key string, st *State, existing bool, hash string, generation ui
 	return buf, nil
 }
 
-// boundWrite is what a write past a bound writes in its place (atBounds).
+// boundWrite is what a write past a bound writes in its place (atBounds), and what that write
+// warns of once it lands (warn).
 type boundWrite struct {
-	// write says there is a record to write, encoded as buf. Without one the record stays as it
-	// was.
-	write bool
-	buf   []byte
+	// buf is the record to write, and nil where the record stays as it was.
+	buf []byte
 	// refused is the write's answer: nil where it fits once commit statuses gave way, and the
 	// bound's refusal where the record is marked Overflowed or already was.
 	refused error
-	// logged writes one WARN line for each status that gave way, once the write lands, or at once
-	// when there is nothing to write.
-	logged func()
+	// refusedStatuses is the contexts of the batch's commit statuses that gave way, and
+	// refusedFor the refusal of the batch applied whole, which they gave way to.
+	refusedStatuses []string
+	refusedFor      error
+	// dropped is how many statuses the record held that it dropped to keep a check within its
+	// bound, zero where it dropped none, and droppedFor the refusal they were dropped for.
+	dropped    int
+	droppedFor error
+}
+
+// warn logs what gave way at the bound, each line naming head: one WARN line for each of the
+// batch's statuses that gave way, and one line for the record's own statuses it dropped, with
+// how many. write calls it once the write lands, or at once when there is nothing to write.
+func (w boundWrite) warn(logger *logging.Logger, head State) {
+	if len(w.refusedStatuses) == 0 && w.dropped == 0 {
+		return
+	}
+	attrs := []slog.Attr{
+		slog.String("owner", head.Owner),
+		slog.String("repo", head.Repo),
+		slog.String("number", head.Number),
+		slog.String("sha", head.SHA),
+	}
+	for _, name := range w.refusedStatuses {
+		logger.Warn("ci record refused a commit status past its bound",
+			append(attrs, slog.String("context", name), slog.String("error", w.refusedFor.Error()))...)
+	}
+	if w.dropped > 0 {
+		logger.Warn("ci record dropped its commit statuses to keep a check within its bound",
+			append(attrs, slog.Int("statuses", w.dropped), slog.String("error", w.droppedFor.Error()))...)
+	}
 }
 
 // atBounds is the write of b to key's record when the record it would write, b applied whole,
@@ -208,80 +235,67 @@ type boundWrite struct {
 //     refusal.
 //
 // stored is the record as the write's attempt read it, decoded afresh at each call, and existing
-// says the attempt read one.
-func (s *Store) atBounds(key string, identity State, stored func() (State, error), existing bool, b *batch, refused error) (boundWrite, error) {
-	statuses, cause := b.statuses(), refused
-	dropped := 0
-	var droppedFor error
-	head := []slog.Attr{
-		slog.String("owner", identity.Owner),
-		slog.String("repo", identity.Repo),
-		slog.String("number", identity.Number),
-		slog.String("sha", identity.SHA),
-	}
-	logged := func() {
-		for _, name := range statuses {
-			s.logger.Warn("ci record refused a commit status past its bound",
-				append(head, slog.String("context", name), slog.String("error", cause.Error()))...)
-		}
-		if dropped > 0 {
-			s.logger.Warn("ci record dropped its commit statuses to keep a check within its bound",
-				append(head, slog.Int("statuses", dropped), slog.String("error", droppedFor.Error()))...)
-		}
-	}
+// says the attempt read one. A step that still passes a bound refuses the write afresh, and the
+// latest refusal is the one the record's dropped statuses and the write's answer name; a status
+// of the batch that gave way names the refusal of the batch applied whole.
+func (s *Store) atBounds(key string, stored func() (State, error), existing bool, b *batch, refused error) (boundWrite, error) {
+	bounded := boundWrite{refusedStatuses: b.statuses(), refusedFor: refused}
 	// fit applies b, without the statuses it carries, to the record as read, the record's own
-	// statuses dropped first when drop is set. It reports false when the result still passes a
-	// bound, whose refusal then stands.
-	fit := func(drop bool) (boundWrite, bool, error) {
+	// statuses dropped first when drop is set. It answers the record to write, nil where b then
+	// changes nothing, or the bound's refusal (bus.ErrTooLarge) where the result still passes a
+	// bound.
+	fit := func(drop bool) ([]byte, error) {
 		st, err := stored()
 		if err != nil {
-			return boundWrite{}, false, err
+			return nil, err
 		}
 		hash, generation := st.Hash(), st.Generation
 		if drop {
 			st.Statuses = nil
 		}
 		if !b.apply(&st, false) {
-			return boundWrite{logged: logged}, true, nil
+			return nil, nil
 		}
-		buf, err := sealRecord(key, &st, existing, hash, generation)
-		switch {
-		case errors.Is(err, bus.ErrTooLarge):
-			refused = err
-			return boundWrite{}, false, nil
-		case err != nil:
-			return boundWrite{}, false, err
-		}
-		return boundWrite{write: true, buf: buf, logged: logged}, true, nil
+		return sealRecord(key, &st, existing, hash, generation)
 	}
-	if len(statuses) > 0 {
-		if bounded, ok, err := fit(false); err != nil || ok {
-			return bounded, err
+	if len(bounded.refusedStatuses) > 0 {
+		buf, err := fit(false)
+		if err == nil {
+			bounded.buf = buf
+			return bounded, nil
 		}
+		if !errors.Is(err, bus.ErrTooLarge) {
+			return boundWrite{}, err
+		}
+		refused = err
 	}
 	st, err := stored()
 	if err != nil {
 		return boundWrite{}, err
 	}
 	if held := len(st.Statuses); held > 0 {
-		droppedFor = refused
-		bounded, ok, err := fit(true)
-		if err != nil || ok {
-			if bounded.write {
-				dropped = held
+		buf, err := fit(true)
+		if err == nil {
+			if buf != nil {
+				bounded.dropped, bounded.droppedFor = held, refused
 			}
-			return bounded, err
+			bounded.buf = buf
+			return bounded, nil
 		}
+		if !errors.Is(err, bus.ErrTooLarge) {
+			return boundWrite{}, err
+		}
+		refused = err
 	}
+	bounded.refused = refused
 	if st.Overflowed {
-		return boundWrite{refused: refused, logged: logged}, nil
+		return bounded, nil
 	}
 	st.Overflowed = true
-	buf, err := encodeRecord(&st)
-	if err != nil {
+	if bounded.buf, err = encodeRecord(&st); err != nil {
 		return boundWrite{}, err
 	}
-	return boundWrite{write: true, buf: buf, refused: refused, logged: logged}, nil
+	return bounded, nil
 }
 
 // boundsRefusal is the refusal of a write to key's record of record bytes whose settlement is

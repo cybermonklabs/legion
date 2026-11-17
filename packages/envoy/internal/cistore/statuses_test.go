@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -651,7 +652,9 @@ func assertWarning(t *testing.T, logs *bytes.Buffer, msg string, h head, fields 
 // run whose write passes the bound only for the statuses the record holds is recorded and the
 // statuses are dropped, a WARN line naming the head and how many, so the head still settles. Each
 // rule judges the write as the store batches it: a status and a check run written together, past
-// the bound together, record the check run alone.
+// the bound together, record the check run alone. Where the check run is past the bound with no
+// status left to give way, the record is marked Overflowed and the check run's write is refused,
+// while the status that rode the same write is answered no change and no error.
 func TestAStatusPastTheRecordBoundLeavesTheChecksSettling(t *testing.T) {
 	t.Run("a status past the bound is not recorded", func(t *testing.T) {
 		conn, cleanup := connectNATS(t)
@@ -766,6 +769,63 @@ func TestAStatusPastTheRecordBoundLeavesTheChecksSettling(t *testing.T) {
 		if _, ok := st.Checks["small-b"]; !ok || st.Overflowed || len(st.Statuses) != 0 {
 			t.Fatalf("the record holds small-b %v, overflowed %v, %d statuses; want the check run recorded, no status, not overflowed",
 				ok, st.Overflowed, len(st.Statuses))
+		}
+		assertWarning(t, &logs, "ci record refused a commit status past its bound", h, map[string]any{"context": status.Context})
+	})
+
+	t.Run("a status beside a check run past the bound is answered no change and no error", func(t *testing.T) {
+		conn, cleanup := connectNATS(t)
+		defer cleanup()
+		s, kv := wrapStore(t, conn, 0)
+		var logs bytes.Buffer
+		s.logger = logging.NewWithWriter("test", &logs)
+		h := statusHead
+		if err := recordBigCheck(s, h, 0); err != nil {
+			t.Fatalf("record check 0: %v", err)
+		}
+		// The record keeps room for one more big check run and not for two: the first is the
+		// write the batch queues behind, and the second rides the batch beside the status.
+		cost := sizeWith(t, s, h, withCheck(1)) - sizeWith(t, s, h, func(*State) {})
+		first := fillChecks(t, s, h, 1, cost)
+		second := first + 1
+		if one, two := sizeWith(t, s, h, withCheck(first)), sizeWith(t, s, h, func(st *State) { withCheck(first)(st); withCheck(second)(st) }); one > maxRecordBytes || two <= maxRecordBytes {
+			t.Fatalf("the record is %d bytes with check %d and %d with check %d beside it; the test needs the first within the %d-byte bound and the second past it",
+				one, first, two, second, maxRecordBytes)
+		}
+		status := bigStatus(t, h, 0)
+		var statusChanged bool
+		var statusErr error
+		entered, release := kv.holdNextWrite()
+		together := newCalls(t, s, h.key(), 3, func(i int) error {
+			switch i {
+			case 0:
+				return recordBigCheck(s, h, first)
+			case 1:
+				statusChanged, statusErr = s.recordStatus(context.Background(), status)
+				return nil
+			default:
+				return recordBigCheck(s, h, second)
+			}
+		})
+		together.behind(entered, 3)
+		release()
+		errs := together.wait("a status and a check run past the bound in one write")
+		kv.onWrite(nil)
+		if errs[0] != nil {
+			t.Fatalf("the check run the batch queued behind: %v, want it recorded", errs[0])
+		}
+		if statusChanged || statusErr != nil {
+			t.Fatalf("the status beside a check run past the bound: changed %v, %v; want no change and no error", statusChanged, statusErr)
+		}
+		if !errors.Is(errs[2], bus.ErrTooLarge) {
+			t.Fatalf("the check run past the bound: %v, want the bound's refusal (bus.ErrTooLarge)", errs[2])
+		}
+		st := getState(t, s, h.owner, h.repo, h.number, h.sha)
+		_, kept := st.Checks[bigCheckName(first)]
+		_, refused := st.Checks[bigCheckName(second)]
+		if !st.Overflowed || !kept || refused || len(st.Statuses) != 0 {
+			t.Fatalf("the record is overflowed %v, holds check %d %v, check %d %v and %d statuses; want it overflowed with check %d, without check %d and with no status",
+				st.Overflowed, first, kept, second, refused, len(st.Statuses), first, second)
 		}
 		assertWarning(t, &logs, "ci record refused a commit status past its bound", h, map[string]any{"context": status.Context})
 	})

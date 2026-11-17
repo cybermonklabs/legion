@@ -176,9 +176,6 @@ func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead,
 	if err != nil {
 		return r.headFailed(ctx, err, head, c)
 	}
-	// Both listings are in, so this head was read: a head the pass's own ending cut off before
-	// that is no head the pass read, and is the head the next pass takes the cycle up at.
-	c.heads++
 	// A head read over REST holds no fingerprint: these ETags are what the next pass reads it
 	// conditionally on, and a hash of a query's answer is no use to a head one query could not
 	// hold whole in the first place. A head a query answers again later is fingerprinted again
@@ -192,16 +189,23 @@ func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead,
 	}
 	changed, ok := r.recordHead(ctx, writer, head, runs, suites, nil, kept, hold, c)
 	if !ok {
+		// Both check listings were read, and a write of them did not land: the head was read,
+		// and recordHead dropped what the pass held of it.
+		c.heads++
 		return nil
 	}
 	notModified := everyPageNotModified(runs) && everyPageNotModified(suites)
 	if head.statuses {
-		statusesNotModified, at := r.readStatuses(ctx, writer, head, kept.statuses, changed, c)
-		if at != nil {
+		statusesNotModified, cut, at := r.readStatuses(ctx, writer, head, kept.statuses, changed, c)
+		if at != nil || cut {
 			return at
 		}
 		notModified = notModified && statusesNotModified
 	}
+	// Every listing is in, so this head was read: a head that a rate limit or the pass's own
+	// ending cut off before that is no head the pass read, and is the head the next pass takes
+	// the cycle up at.
+	c.heads++
 	if notModified {
 		c.notModified++
 	}
@@ -221,25 +225,26 @@ func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead,
 // reads it in full.
 //
 // recorded says the head's runs and suites changed its record already, which then counts once
-// whatever the statuses change. notModified says every page of the listing answered 304.
-func (r *Reconciler) readStatuses(ctx context.Context, writer Writer, head pullHead, kept []pageOf[object], recorded bool, c *counts) (notModified bool, at *stop) {
+// whatever the statuses change. notModified says every page of the listing answered 304, and cut
+// that the pass's own ending killed the read, which leaves the head to the next pass.
+func (r *Reconciler) readStatuses(ctx context.Context, writer Writer, head pullHead, kept []pageOf[object], recorded bool, c *counts) (notModified, cut bool, at *stop) {
 	statuses, err := readPages(ctx, r, c, &c.headRequests, kept, func(ctx context.Context, page int, etag string) (conditionalPage[object], error) {
 		answer, err := r.GitHub.CommitStatuses(ctx, head.token, head.owner, head.repo, head.sha, page, etag)
 		return objectPage(answer), err
 	})
 	if err != nil {
 		if at := stopAt(err, head.scope); at != nil {
-			return false, at
+			return false, false, at
 		}
 		if r.cutShort(ctx, c) {
 			// The pass's own ending killed the read, which says nothing about the head: the
 			// next pass reads the head again, on the ETags the pass holds.
-			return false, nil
+			return false, true, nil
 		}
 		r.Logger.Warn("ci reconcile read no commit status of a head",
 			"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", err)
 		r.holdStatuses(head, nil, 0)
-		return false, nil
+		return false, false, nil
 	}
 	wanted, changed, ok := r.recordStatuses(ctx, writer, head, statuses)
 	if changed && !recorded {
@@ -250,7 +255,7 @@ func (r *Reconciler) readStatuses(ctx context.Context, writer Writer, head pullH
 		hold = withoutItems(statuses)
 	}
 	r.holdStatuses(head, hold, wanted)
-	return everyPageNotModified(statuses), nil
+	return everyPageNotModified(statuses), false, nil
 }
 
 // holdStatuses keeps the pages of one head's status listing beside the ETags recordHead kept of
@@ -332,9 +337,12 @@ func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c
 }
 
 // recordHead writes one head's objects and then keeps or drops what the pass holds of that
-// head, which is the one tail both reads of a head end in: the head read over REST (readHead)
-// and the head a query answered whole (walk.visitHead). A head read over REST passes no statuses
-// here: its status listing is read after this record, and recorded by readStatuses.
+// head. It is the whole tail of a head a query answered whole (walk.visitHead), and the tail of
+// the check listings of a head read over REST (readHead). A head read over REST passes no
+// statuses here: it reads and records them after this tail (readStatuses, holdStatuses), once
+// its check runs and check suites are recorded and their ETags kept, so that nothing that befalls
+// the status read -- GitHub refusing it, a rate limit, or the pass's own ending -- takes those
+// from the head.
 //
 // hold is what the read itself has to keep -- the ETags of the listings, or the fingerprint of
 // the query's answer -- and kept is what the pass held of the head before this read, which is

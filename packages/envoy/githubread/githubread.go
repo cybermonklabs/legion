@@ -7,9 +7,10 @@
 // Each of the two cuts the set to what the App's installation holds, so an installation that
 // holds less gets a token that holds less.
 //
-// The set is the most such a token holds. The token reaches every repository its installation
-// holds, so what keeps it from writing is that each permission of the set is a read, and that the
-// set names nothing beside them. Each permission is here for a reason of its own:
+// The set is the most such a token holds. A read lease reaches every repository its installation
+// holds, and a broker token can, so what keeps it from writing is that each permission of the set
+// is a read, and that the set names nothing beside them. Each permission is here for a reason of
+// its own:
 //
 // contents:read is a clone, a fetch and a read of a file: a pod's repository is cloned and fetched
 // with it, and a role reads the code of another repository of its project through it. It stays a

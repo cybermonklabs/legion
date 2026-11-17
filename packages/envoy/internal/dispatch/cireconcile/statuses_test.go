@@ -1,8 +1,10 @@
 package cireconcile
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
 // todaysHeadsQuery is the query a pass sent every repository before it read commit statuses,
@@ -306,7 +309,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 	// A refused status field is no refusal of the head: GitHub answers it null beside an errors
 	// entry against its path, and the head is answered whole by its check suites, as a head with
 	// no error is. It is not read over REST, so the pass sends what the same pass sends with the
-	// query of before.
+	// query of before. The refusal is named at WARN, as a refused REST status read is.
 	t.Run("a refused status field", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
 		h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
@@ -328,6 +331,21 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 		for _, route := range []string{checkRunsRoute, checkSuitesRoute, statusRoute} {
 			if refused[route] != 0 {
 				t.Fatalf("the pass sent %d requests to %s, want none: a refused status field sends no head over REST: %v", refused[route], route, refused)
+			}
+		}
+		warned := h.lines("ci reconcile read no commit status of a head")
+		if len(warned) != 1 {
+			t.Fatalf("the pass logged %d lines naming the head's statuses unread, want one:\n%s", len(warned), h.logs.String())
+		}
+		for field, want := range map[string]any{
+			"level":      "WARN",
+			"repository": gitHubRepository,
+			"pr":         pullNumber,
+			"sha":        headSHA,
+			"error":      "FORBIDDEN Resource not accessible by integration",
+		} {
+			if warned[0][field] != want {
+				t.Fatalf("the line naming the head's statuses unread has %s %v, want %v: %v", field, warned[0][field], want, warned[0])
 			}
 		}
 
@@ -431,6 +449,104 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 			}
 		}
 	})
+
+	// A rate limit GitHub answers to a head's status read stops the pass there, as at any read.
+	// The head's check runs and suites, read and recorded before it, stay recorded, but the head
+	// was not read whole: it is not counted among the heads the pass read, the cursor names it,
+	// and the pass after the limit's reset reads it again and records its statuses.
+	t.Run("a rate-limited REST status read", func(t *testing.T) {
+		h := newHarness(t, reviewerAppID)
+		h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
+		h.github.refuseChecks(gitHubRepository, headSHA)
+		h.github.rateLimitNext("/repos/" + gitHubRepository + "/commits/" + headSHA + "/status")
+
+		h.pass()
+
+		line := h.passLine()
+		if line["rate_limited"] != true {
+			t.Fatalf("the pass reports rate_limited = %v, want true: GitHub answered the head's status read a rate limit: %v", line["rate_limited"], line)
+		}
+		if got := number(t, line, "heads"); got != 0 {
+			t.Errorf("the pass read %d heads, want none: the limit cut the head's read short: %v", got, line)
+		}
+		if resume := h.reconciler.resume; resume.repository != rowRepository || resume.number != 7 {
+			t.Errorf("the cursor is %+v, want pull request 7 of %s, the head the limit cut short", resume, rowRepository)
+		}
+		state := h.stateAt(gitHubRepository, 7, headSHA)
+		if state == nil {
+			t.Fatal("the head whose status read GitHub rate-limited has no record")
+		}
+		if _, held := state.Checks["ci-ok"]; !held || len(state.Suites) != 1 || len(state.Statuses) != 0 {
+			t.Fatalf("the record holds checks %v, suites %v and statuses %v; want ci-ok and its suite and no status yet", state.Checks, state.Suites, state.Statuses)
+		}
+
+		// GitHub's reset passes, which takes the limit out of the ledger every Dispatch process
+		// shares, and the pass after it takes the cycle up at the head the limit cut short.
+		scope := githubapp.InstallationScope(h.github.installationID())
+		limit, found, err := h.reconciler.Limits.Get(h.ctx, scope)
+		if err != nil || !found {
+			t.Fatalf("the limit GitHub answered with was recorded under %s: %v, %v", scope, found, err)
+		}
+		if err := h.reconciler.Limits.Clear(h.ctx, limit); err != nil {
+			t.Fatalf("clear the limit as its reset does: %v", err)
+		}
+
+		h.pass()
+
+		if state := h.stateAt(gitHubRepository, 7, headSHA); state == nil || statesOf(state)["ci/build"] != "failure" {
+			t.Fatalf("after the reset the record is %+v, want ci/build's failure recorded", state)
+		}
+		line = h.passLine()
+		if line["rate_limited"] != false {
+			t.Fatalf("the pass after the reset reports rate_limited = %v, want false: %v", line["rate_limited"], line)
+		}
+		if got := number(t, line, "heads"); got != 1 {
+			t.Errorf("the pass after the reset read %d heads, want the one the limit cut short: %v", got, line)
+		}
+	})
+}
+
+// An errors entry against a head commit's status field, or against a field under it, costs the
+// head its statuses alone (refusedPulls): the entry is kept for the node, to be named at WARN. An
+// entry against any other field of the node refuses the head's Checks, a status field of a check
+// suite included, and an entry that names no pull request node refuses the page whole.
+func TestARefusedStatusFieldIsToldFromTheRestOfAHead(t *testing.T) {
+	const commit = `"repository","pullRequests","nodes",3,"commits","nodes",0,"commit"`
+	for _, c := range []struct {
+		name                     string
+		path                     string
+		refused, statuses, whole bool
+	}{
+		{name: "the status field", path: `[` + commit + `,"status"]`, statuses: true},
+		{name: "a field under the status field", path: `[` + commit + `,"status","contexts",0,"targetUrl"]`, statuses: true},
+		{name: "the check suites", path: `[` + commit + `,"checkSuites"]`, refused: true},
+		{name: "a check suite's status", path: `[` + commit + `,"checkSuites","nodes",0,"status"]`, refused: true},
+		{name: "no path", whole: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			text := `{"type":"FORBIDDEN","message":"Resource not accessible by integration"}`
+			if c.path != "" {
+				text = `{"type":"FORBIDDEN","path":` + c.path + `,"message":"Resource not accessible by integration"}`
+			}
+			var entry graphQLError
+			if err := json.Unmarshal([]byte(text), &entry); err != nil {
+				t.Fatalf("decode the errors entry: %v", err)
+			}
+			wantRefused := map[int]struct{}{}
+			if c.refused {
+				wantRefused[3] = struct{}{}
+			}
+			var wantStatuses map[int][]graphQLError
+			if c.statuses {
+				wantStatuses = map[int][]graphQLError{3: {entry}}
+			}
+			refused, statuses, whole := refusedPulls([]graphQLError{entry})
+			if !maps.Equal(refused, wantRefused) || !reflect.DeepEqual(statuses, wantStatuses) || whole != c.whole {
+				t.Fatalf("an entry against %s: refused %v, statuses %v, whole %v; want %v, %v, %v",
+					c.name, refused, statuses, whole, wantRefused, wantStatuses, c.whole)
+			}
+		})
+	}
 }
 
 // R5: where the token the pass holds names no Commit statuses, the pass asks GitHub for no status

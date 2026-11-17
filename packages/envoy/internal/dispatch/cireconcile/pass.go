@@ -471,9 +471,14 @@ const refusedPage = "GitHub did not answer the query for the head's page"
 func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 	r, c := w.r, w.c
 	pull := w.repository.head(head.number, head.sha)
-	if head.statusesRefused {
+	if len(head.statusesRefused) > 0 {
 		// GitHub has just refused this head's statuses, which costs the head its statuses alone:
-		// a head read over REST for its checks asks for none of them again.
+		// they are named at WARN, as a refused REST read of them is (readStatuses), since what
+		// GitHub refused is the only way an operator tells a Commit statuses grant taken away
+		// while a token lives, and a head read over REST for its checks asks for none of them
+		// again.
+		r.Logger.Warn("ci reconcile read no commit status of a head",
+			"repository", pull.repository(), "pr", pull.number, "sha", pull.sha, "error", errorText(head.statusesRefused))
 		pull.statuses = false
 	}
 	if head.overflow != "" {

@@ -327,11 +327,11 @@ func narrowingRepositoryRefusal(name, repository string, narrowing *secrets.GitH
 }
 
 // narrowingPermissionsRefusal is the refusal of a read-only narrowing whose read permissions
-// GitHub will not grant: the App's installation does not hold contents, metadata and pull
-// requests, the three a read-only narrowing needs. The minter refuses an installation whose
-// listing says so without a token request, and asks for no other permission of the read set that
-// the installation does not hold (secrets' readOnlyRequest), so these three are the cause a
-// refusal of the read access names.
+// GitHub will not grant: the App's installation does not hold one or more of contents, metadata
+// and pull requests, the three a read-only narrowing needs. The minter refuses an installation
+// whose listing says so without a token request, and asks for no other permission of the read
+// set that the installation does not hold (secrets' readOnlyRequest), so these three are the
+// cause a refusal of the read access names.
 func narrowingPermissionsRefusal(name string, narrowing *secrets.GitHubNarrowing) error {
 	return fmt.Errorf("%w: %s: the App's installation on %s does not hold the read access the narrowing asks for: contents, metadata and pull requests", secrets.ErrMintNarrowingRefused, name, narrowing.Owner)
 }
