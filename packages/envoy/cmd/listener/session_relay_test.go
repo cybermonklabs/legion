@@ -267,6 +267,10 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 	}
 	// The relay sends what it pulls at once, to nobody now.
 	time.Sleep(300 * time.Millisecond)
+	// The registration below restarts the relay at the ack floor, which deletes the consumer
+	// holding those three unanswered and creates it again.
+	awaitAckState(t, rig.consumers, sessionID, len(away), beforeSeq)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 
 	second := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
@@ -397,6 +401,7 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 	ledgerMu.Lock()
 	held = ""
 	ledgerMu.Unlock()
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	second := startSessionStandIn(t, rig.url, sessionID, show)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
 	requireFrames(t, second.collect(t, 3, 5*time.Second), e1, e2, e3)
@@ -435,6 +440,7 @@ func TestSessionConsumerNewEpochHeardAfterTheRunRestartedRestartsNothing(t *test
 	rig.relays.registered(sessionID, true, heard)
 	standIn.none(t, time.Second)
 
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
 	again := standIn.collect(t, 1, 5*time.Second)[0]
 	requireFrames(t, []relayedFrame{again}, held)
@@ -538,6 +544,10 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 	e1, _ := rig.storeEvent(t, agent)
 	unanswered := standIn.collect(t, 1, 5*time.Second)[0]
 	requireFrames(t, []relayedFrame{unanswered}, e1)
+	// The relay's own restart after the pause deletes the consumer holding that frame and creates
+	// it again; nothing the consumer delivers or takes changes after this frame until then, since
+	// the paused relay pulls nothing.
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	// The relay stops receipt after that frame: a message stored once it has reaches the session
 	// only when the relay sends again, which is pauseFirst later.
 	time.Sleep(time.Until(unanswered.arrived.Add(receipt + 300*time.Millisecond)))
@@ -577,6 +587,7 @@ func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testin
 	}
 
 	standIn.silent.Store(false)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	requireFrames(t, standIn.collect(t, 2, 5*time.Second), e1, e2)
 	standIn.none(t, time.Second)
@@ -666,6 +677,9 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 		down = append(down, item)
 	}
 
+	// The restarted listener restarts the session's relay at the ack floor, which deletes the
+	// consumer holding the frame the session never finished and creates it again.
+	awaitSessionConsumerStored(t, publisher.Conn, sessionID)
 	restarted := startListenerProcess(t, binary, uri, machineID)
 	t.Cleanup(func() {
 		if t.Failed() {

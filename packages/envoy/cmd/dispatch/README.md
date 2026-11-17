@@ -3227,7 +3227,7 @@ It holds at most two answered question asks of projects other than the one asked
 An ask is offered only when it is a question, somebody answered it, the answer carries text, and it scores at or above the meaning floor the meaning search already uses.
 An issue create and the `GET` form answer none, so a client that predates the field reads what it read before, and the dashboard's new-issue dialog is unchanged.
 The leg runs beside the asking project's own meaning query, on a connection of its own, and reuses the one embedding the check already made.
-The stage waits for it at most 300 ms after its own query answered, and never past its own allowance;
+The check waits for it at most 300 ms after that query answered, and never past the meaning search's own allowance, holding the asking project's answer while it waits, so the wait never costs the check its meaning result;
 a leg that is slower than that, that fails, or that finds nothing leaves the asking project's result whole, with no cross-project item and no reason recorded.
 An issue create forced past the near-copy refusal also names those issues in `title_matches`, and its `issue.created` event records them under `forced.past`;
 an unforced create names its likely duplicate in `likely_duplicate` instead, and never fills `title_matches`.
