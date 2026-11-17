@@ -1149,13 +1149,25 @@ envoy-infra routes check --namespace envoy --statefulset envoy-nats --record rou
 ```
 
 `routes record` saves each pod's `uid`, its nats container's `restartCount` and `startedAt`, and
-the time, and refuses while any pod is not Ready with a running nats container. `routes check`
-reads, in one pass over the pods, each pod's IP from the API server, each server's `server_id`
-from its `/varz` and its routes from its `/routez` through a port-forward to 8222, the first line
-its route port sends through a port-forward to 6222, and its nats container's log. It exits 0
-when every rule below holds, 1 when one shows the password may be read, and 2 when it could not
-read all it needs or authorization is not yet in force; it prints no password, since it never
-has one.
+the time, and refuses while any pod is not Ready with a running nats container, and while any
+pod's route port already requires authorization: the record vouches that each log reaches back
+to `env`, and one taken later can follow a restart whose log holds none of the routes opened at
+`env` or `routes`. `routes check` reads, in one pass over the pods, each pod's IP from the API
+server, each server's `server_id` from its `/varz` and its routes from its `/routez` through a
+port-forward to 8222, its route port through a port-forward to 6222, and its nats container's
+log, then reads the pods again. It exits 0 when every rule below holds; 1 when one shows the
+password may be read; and 2 when it could not read all it needs, when authorization is not yet
+in force, when the mesh is not whole or the servers do not hold one password, when a route login
+from another address was refused, or when a pod changed during the check. It prints no password,
+since it never has one.
+
+Every log rule reads only lines in the form nats-server's logger writes (`logger/log.go`: the
+process id, the date and time to the microsecond, the level), and matches a line's level and its
+whole message, never a part of a line: a connection's lines carry text its peer chose, a client's
+`-ERR` text whole at the end of a `Client Error` line (`server/client.go:2268`), so a rule that
+matched the end of a line could be met or tripped by any client. Measured in this change's
+review: a client's line ending in `[INF] Starting nats-server` passed a rotated log as whole, and
+one ending in a `Route connection created` line forced exit 1.
 
 - **Every route is the hub's own.** Every route's `ip` is one of the pod IPs and every `remote_id`
   another pod's `server_id`, and each pod has a route to each of its peers. A route's
@@ -1175,26 +1187,41 @@ has one.
   and the `env` roll gives each new pod a new IP, so the logs of the pods it rolled first name
   the old IPs of the ones it rolled after. A log in which no reload loaded authorization is
   judged whole when the route port requires authorization, since the server then had it from its
-  start.
+  start. A connection from another address whose login the credential refused (`authentication
+  error` on the same `rid`) is exit 2, not 1: a refused login carries no password, but the log
+  does not say which side opened a connection, and a process the hub dialed with the password can
+  send a refused login of its own on it (`server/client.go:2433` checks every CONNECT). Find what
+  ran at that address, and treat the password as read unless it is accounted for. Exit 1 there
+  would let the process authorization refuses force a rotation, whose `env` and `routes` applies
+  open the routes to it again.
 - **The log reaches back to the `env` roll.** Each pod's `uid`, `restartCount` and `startedAt`
-  are the ones `routes record` saved, and its log begins with `Starting nats-server`
-  (`server/server.go:2295`). `kubectl logs` returns only the latest log file, which the kubelet
-  rotates at 10 MiB by default
+  are the ones `routes record` saved, its log begins with `Starting nats-server`
+  (`server/server.go:2295`), and that line's time, read as UTC, the zone of the hub's nats image,
+  is from 1 s before to 10 s after the container's `startedAt`. `kubectl logs` returns only the
+  latest log file, which the kubelet rotates at 10 MiB by default
   ([Logging architecture](https://kubernetes.io/docs/concepts/cluster-administration/logging/)),
   and the process this check looks for can rotate the earlier lines away, for example with failed
   client logins. A pod restarted since the record, or a log that does not begin at its start
-  line, keeps no log of the routes before it, so neither can be ruled out.
-- **Authorization is in force.** `/varz` shows no route authorization (`ClusterOptsVarz` has no
-  field for it), so the check reads the INFO each route port sends a new connection first, and
-  requires `"auth_required":true`, and a `Reloaded server configuration` line after the reload
-  that loaded authorization. Without either, the apply may have succeeded while every server
-  still takes a route with no credential: a reload that fails leaves the server on its old
-  configuration.
-- **No reload failed.** A `Failed to reload server configuration` line can hold the route
-  password whole: a password outside the minter's rule below is printed in it (`integer … is out
-  of the range` with the value, or `error parsing route url` with the URL), and so is a start on
-  that file, which exits 1. The check cannot tell which failure printed it, so any failed reload
-  counts.
+  line, keeps no log of the routes before it, so neither can be ruled out. A pod whose identity
+  or container differs when the check reads the pods again after the pass is exit 2: what the
+  pass read of it may be of two containers, and the next check finds the restart.
+- **Authorization is in force with a password.** `/varz` shows no route authorization
+  (`ClusterOptsVarz` has no field for it), so the check reads the INFO each route port sends a new
+  connection first, and requires `"auth_required":true`, and a `Reloaded server configuration`
+  line after the reload that loaded authorization. Without either, the apply may have succeeded
+  while every server still takes a route with no credential: a reload that fails leaves the
+  server on its old configuration. `auth_required` holds whenever the user is set, an empty
+  password too, which nats-server takes, so the check also sends each route port a route login
+  with no user and one with the user `route` and no password, each named as a gateway's so a
+  login the credential took is refused next and joins nothing (`server/route.go:3065-3073`), and
+  requires `-ERR 'Authorization Violation'` for both.
+- **No reload failed, and no line holds a credentialed URL.** A `Failed to reload server
+  configuration` line can hold the route password whole: a password outside the minter's rule
+  below is printed in it (`integer … is out of the range` with the value, or `error parsing route
+  url` with the URL), and so is a start on that file, which exits 1. The check cannot tell which
+  failure printed it, so any failed reload counts. So does any line the server wrote of itself,
+  not of a connection, that holds a URL with a user and a password, anywhere in the log: a
+  rollback's `Removed route` lines (below) are such lines.
 - **The hub holds one password.** A pod that started with a password its peers do not hold has
   routes to none of them, and their logs name its failed route logins (`authentication error -
   User "route"`). When a pod's routes do not reach all its peers and its log names such logins
@@ -1233,11 +1260,13 @@ secret, and pin its sync to a version number.
 Measured on two local servers: lowering `routes` to `env` logged 4 `Removed route` lines carrying
 the password, while the forward step from `env` to `routes` logged none.
 
-The password holds letters and digits only, a letter first. It is written into the route URLs
-whole, and nats-server types a variable's value as it types a literal of `nats.conf`: a password of
-digits alone is an integer it refuses (`could not be parsed: integer … is out of the range`, with
-the value), and one such as `1k` is a size. The component never sees the password, so its minter
-holds it to that.
+The password holds letters and digits only, a letter first, and at least 32 characters. It is
+written into the route URLs whole, and nats-server types a variable's value as it types a literal
+of `nats.conf`: a password of digits alone is an integer it refuses (`could not be parsed: integer
+… is out of the range`, with the value), one such as `1k` is a size, and `yes`, `on`, `true` or
+`False` is a boolean, which nats-server refuses with an error that does not print it; the length
+rules those words out, and an empty password, which nats-server takes, the route port check above
+refuses. The component never sees the password, so its minter holds it to that.
 
 `gcp/clusteredhub_route_test.go` pins each stage's chart values, and
 `gcp/clusteredhub_route_live_test.go` renders each stage with helm: the variables in the rendered
@@ -1252,11 +1281,15 @@ same server with no credential joins a server on the `env` render.
 its control, and its kubectl reads through a fake kubectl. `gcp/clusteredhub_routecheck_live_test.go`
 runs `routes record` and `routes check`'s functions over three local servers that move through
 the stages: the servers alone pass, and fail at `routes` alone; an impostor named `<n>-1` that
-joined during `env` fails by `ip` and `remote_id`; a peer that read the password after
-`authorization` and left fails by the log; a peer that left before `authorization` passes,
-though the logs name it before that reload; a password of digits fails every server's
-`authorization` reload, which logs it, and the check; and a refused `/varz`, a rotated log and a
-restart since the record each fail.
+joined during `env` fails by `ip` and `remote_id`, and one at a pod's own address by
+`remote_id` alone; a peer that read the password after `authorization` and left fails by the log;
+a peer that left before `authorization` passes, though the logs name it before that reload; a
+password of digits fails every server's `authorization` reload, which logs it, and the check; a
+refused route login from another address is exit 2; a client's lines meet no rule and trip none,
+and a log rotated to begin at one fails; a rollback's `Removed route` lines fail; a record taken
+after `authorization` is refused; an empty password fails, and a stranger with the user `route`
+and no password joins that hub; a restart during the check fails; and a refused `/varz`, a
+rotated log and a restart since the record each fail.
 
 ### The tailnet hosts
 

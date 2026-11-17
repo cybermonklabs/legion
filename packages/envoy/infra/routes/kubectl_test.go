@@ -1,6 +1,7 @@
 package routes_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -113,7 +114,8 @@ func fakeKubeHub(t *testing.T, h *fakeHub) (routes.Source, string) {
 }
 
 // routePort listens on a local port that sends each connection pod's route port INFO from h, as it
-// stands when the connection comes, and closes it, and returns the port.
+// stands when the connection comes, then answers a CONNECT and its PING with h's answer to that
+// login, and closes the connection; and returns the port.
 func routePort(t *testing.T, h *fakeHub, pod string) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -125,11 +127,26 @@ func routePort(t *testing.T, h *fakeHub, pod string) int {
 			if err != nil {
 				return
 			}
-			info, err := h.RouteInfo(context.Background(), pod)
-			if err == nil {
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				info, _, err := h.RouteExchange(context.Background(), pod, nil)
+				if err != nil {
+					return
+				}
 				_, _ = conn.Write(info)
-			}
-			_ = conn.Close()
+				reader := bufio.NewReader(conn)
+				connect, err := reader.ReadString('\n')
+				if err != nil || !strings.HasPrefix(connect, "CONNECT ") {
+					return
+				}
+				if _, err := reader.ReadString('\n'); err != nil {
+					return
+				}
+				if _, answer, err := h.RouteExchange(context.Background(), pod, []byte(connect)); err == nil {
+					_, _ = conn.Write(answer)
+				}
+			}()
 		}
 	}()
 	return listener.Addr().(*net.TCPAddr).Port
@@ -140,13 +157,15 @@ func routePort(t *testing.T, h *fakeHub, pod string) int {
 // container's log, each command under the given context and namespace; Close stops every forward.
 // Over the clean hub its check is Clean. Controls: a pod whose nats container is not running is
 // not Ready, so Take refuses; a pod whose monitoring port-forward exits before it listens leaves
-// that pod's /varz unread, so the check is Unknown; a route port whose INFO lacks auth_required
-// makes it Unknown, and a log rotated past the start makes it PasswordRead, each read through
-// kubectl as the clean one was.
+// that pod's /varz unread, so the check is Unknown; a route port whose INFO lacks auth_required,
+// and one that takes the route user with no password, make it Unknown, and a log rotated past the
+// start makes it PasswordRead, each read through kubectl as the clean one was.
 func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	h := cleanHub()
 	src, dir := fakeKubeHub(t, h)
+	back := h.atEnv()
 	rec, err := routes.Take(context.Background(), src, "envoy", "envoy-nats", started.Add(time.Minute))
+	back()
 	require.NoError(t, err)
 	require.Equal(t, recordOf(t, h), rec)
 	report := routes.Check(context.Background(), src, rec)
@@ -217,6 +236,16 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 		report := routes.Check(context.Background(), src, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 		require.Contains(t, fmt.Sprint(report.Findings), "envoy-nats-1: unknown: authorization is not in force: its route port's INFO has no auth_required")
+	})
+	t.Run("control: a route port that takes the route user with no password", func(t *testing.T) {
+		h := cleanHub()
+		src, _ := fakeKubeHub(t, h)
+		defer src.Close()
+		rec := recordOf(t, h)
+		h.answers["envoy-nats-2 empty password"] = `-ERR 'Rejecting connection from gateway "envoy-infra-routes-probe" on the Route port'`
+		report := routes.Check(context.Background(), src, rec)
+		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
+		require.Contains(t, fmt.Sprint(report.Findings), "envoy-nats-2: unknown: authorization is not in force: its route port took a route login with the user route and no password")
 	})
 	t.Run("control: a log rotated past the start", func(t *testing.T) {
 		h := cleanHub()

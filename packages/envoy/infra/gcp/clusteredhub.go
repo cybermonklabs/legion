@@ -237,8 +237,9 @@ func (l *ClusteredHubListenerArgs) Annotate(a infer.Annotator) {
 // (clusteredHubRouteStageNames says what each renders and why the order holds). The password is
 // written into the route URLs whole, and nats-server types a variable's value as it types a
 // literal of nats.conf, so a password of digits alone is an integer it refuses, printing the value
-// in its error, and one such as 1k is a size: the password holds letters and digits only, a letter
-// first. The component never sees it, so its minter holds it to that. Lowering stage below routes,
+// in its error, one such as 1k is a size, and yes, on, true or False a boolean: the password holds
+// letters and digits only, a letter first, and at least 32 characters, which rules the boolean
+// words out. The component never sees it, so its minter holds it to that. Lowering stage below routes,
 // or removing routeAuthorization from routes or authorization, makes each server log every route
 // URL it removes, password included (nats-server 2.15.1 server/reload.go:543, "Removed route %v"),
 // so the password must be changed after such a rollback. A new secretKey, or a new value under it,

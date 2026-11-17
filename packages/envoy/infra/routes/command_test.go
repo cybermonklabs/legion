@@ -36,12 +36,13 @@ func runRoutes(h *fakeHub, args ...string) (int, string, string, routes.Target) 
 // closes it. A record of another hub is refused.
 func TestRecordThenCheck(t *testing.T) {
 	h := cleanHub()
+	h.atEnv()
 	out := filepath.Join(t.TempDir(), "routes.json")
 	code, stdout, stderr, opened := runRoutes(h, "record", "--namespace", "envoy", "--statefulset", "envoy-nats", "--out", out,
 		"--context", "example-context", "--kubectl", "/usr/local/bin/kubectl")
 	require.Equal(t, 0, code, "stderr %q", stderr)
 	require.Contains(t, stdout, "recorded the 3 pods of envoy/envoy-nats at ")
-	require.Equal(t, routes.Target{Namespace: "envoy", StatefulSet: "envoy-nats", Kubectl: "/usr/local/bin/kubectl", Context: "example-context"}, opened)
+	require.Equal(t, routes.Target{Namespace: "envoy", StatefulSet: "envoy-nats", Kubectl: "/usr/local/bin/kubectl", Context: "example-context", RoutePort: 6222}, opened)
 	require.True(t, h.closed, "record closed the hub it opened")
 	body, err := os.ReadFile(out)
 	require.NoError(t, err)
@@ -79,14 +80,21 @@ func TestRecordThenCheck(t *testing.T) {
 	require.Contains(t, stderr, "is the record of envoy/envoy-nats, not of envoy/other")
 }
 
-// A record of a roll that has not finished is not written, and record exits 2.
+// A record of a roll that has not finished is not written, and record exits 2; nor is one taken
+// once a pod's route port requires authorization.
 func TestRecordRefusesAnUnfinishedRoll(t *testing.T) {
 	h := cleanHub()
+	h.atEnv()
 	h.pods[2].Ready = false
 	out := filepath.Join(t.TempDir(), "routes.json")
 	code, _, stderr, _ := runRoutes(h, "record", "--namespace", "envoy", "--statefulset", "envoy-nats", "--out", out)
 	require.Equal(t, 2, code)
 	require.Contains(t, stderr, "not recorded: envoy-nats-2 not Ready")
+	require.NoFileExists(t, out)
+
+	code, _, stderr, _ = runRoutes(cleanHub(), "record", "--namespace", "envoy", "--statefulset", "envoy-nats", "--out", out)
+	require.Equal(t, 2, code)
+	require.Contains(t, stderr, "not recorded: authorization is already in force on envoy-nats-0, envoy-nats-1, envoy-nats-2")
 	require.NoFileExists(t, out)
 }
 

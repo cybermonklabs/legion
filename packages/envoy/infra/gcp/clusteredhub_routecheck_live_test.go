@@ -3,6 +3,7 @@
 package gcp_test
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -103,10 +105,13 @@ func (h *stagedHub) writeConf(t *testing.T, s *stagedServer, stage string) {
 	require.NoError(t, os.WriteFile(filepath.Join(s.dir, clusteredHubAuthConfKey), []byte(r.authConf), 0o600))
 }
 
+// start runs s on its arguments and route variables, in UTC, the zone of the hub's nats image,
+// which sets none and in which the check reads the log's times; and records its start as the API
+// server reports a container's, to the second, cut down.
 func (h *stagedHub) start(t *testing.T, s *stagedServer) {
 	t.Helper()
 	cmd := exec.Command(h.natsServer, s.args...)
-	cmd.Env = append(withoutRouteVars(os.Environ()), s.vars...)
+	cmd.Env = append(withoutRouteVars(os.Environ()), append(s.vars, "TZ=UTC")...)
 	s.startedAt = time.Now().UTC().Truncate(time.Second)
 	s.proc = startReady(t, s.name, cmd, listeningForRoutes(s.route))
 }
@@ -260,13 +265,13 @@ func (h *stagedHub) Log(_ context.Context, pod string) ([]byte, error) {
 	return []byte(s.proc.Output.String()), nil
 }
 
-// RouteInfo is the first line the server's route port sends, as a port-forward to 6222 gives it.
-func (h *stagedHub) RouteInfo(ctx context.Context, pod string) ([]byte, error) {
+// RouteExchange is routes.Exchange with the server's route port, as a port-forward to 6222 gives it.
+func (h *stagedHub) RouteExchange(ctx context.Context, pod string, send []byte) ([]byte, []byte, error) {
 	s := h.server(pod)
 	if s == nil {
-		return nil, fmt.Errorf("no pod %s", pod)
+		return nil, nil, fmt.Errorf("no pod %s", pod)
 	}
-	return routes.FirstLine(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(s.route)))
+	return routes.Exchange(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(s.route)), send)
 }
 
 func (h *stagedHub) Close() error { return nil }
@@ -403,6 +408,25 @@ func findingNames(report routes.Report, verdict routes.Verdict, pod string, part
 //     routes reload loads and the authorization reload fails on every server, which logs the
 //     password whole; the check is PasswordRead, exit 1, naming the failed reload, and Unknown that
 //     authorization is not in force. Control: each server's log holds the password.
+//   - An impostor at a pod's own address: the fourth server on 127.0.0.1, where every hub server
+//     listens here as a pod at its pod IP, named envoy-nats-1, is held through both reloads, and
+//     the check finds it PasswordRead by remote_id alone. Control: every route's ip is a pod IP and
+//     every remote_name a hub server's, so a check by ip and name passes it.
+//   - A refused route login from another address: one route CONNECT with no credential from
+//     127.0.0.5, answered "Authorization Violation", makes the check Unknown, exit 2, naming it,
+//     not PasswordRead. Control: the hub is Clean before it.
+//   - Lines a client writes: a client's -ERR texts end as a route connection's line, a failed
+//     reload's, a URL with a password and the start line, and the check stays Clean; a log rotated
+//     to begin at the forged start line is PasswordRead. Control: the same cut at an ordinary
+//     client line is PasswordRead too.
+//   - A rollback before authorization: routes, env, routes and authorization; each server whose log
+//     holds the password in a "Removed route" line is PasswordRead. Control: such lines exist.
+//   - A record taken after authorization is refused.
+//   - An empty password: through the stages, every server's route port takes a route login with
+//     the user route and no password, so the check is Unknown. Control: a stranger presenting that
+//     login joins the hub.
+//   - A restart during the check: the last server restarts when the check reads its log, after the
+//     check read the pods, and the check is not Clean, naming the change.
 func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	keys := newLiveHubKeys(t)
 	renders := map[string]*clusteredHubRender{}
@@ -587,4 +611,239 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 				"%s: findings: %v", s.name, report.Findings)
 		}
 	})
+
+	// staged is a hub through env, recorded there, then reloaded onto routes and authorization.
+	staged := func(t *testing.T, password string) (*stagedHub, routes.Record) {
+		t.Helper()
+		h := newStagedHub(t, renders, natsServer, password)
+		rec := record(t, h)
+		h.reload(t, "routes")
+		h.reload(t, "authorization")
+		return h, rec
+	}
+
+	t.Run("an impostor at a pod's own address", func(t *testing.T) {
+		h := newStagedHub(t, renders, natsServer, password)
+		rec := record(t, h)
+		_, monitor := startPeer(t, natsServer, h.release+"-1", "127.0.0.1", h.routePorts[:1])
+		impostor := peerID(t, "127.0.0.1", monitor)
+		within(t, 30*time.Second, "the impostor in the hub's routes", func() error {
+			if ok, err := routedBy(h.servers[2], "", impostor); err != nil || !ok {
+				return fmt.Errorf("%s has not dialed the impostor yet (%v)", h.servers[2].name, err)
+			}
+			return nil
+		})
+		h.reload(t, "routes")
+		h.reload(t, "authorization")
+		if ok, err := routedTo(h, "", impostor); err != nil || !ok {
+			t.Fatalf("the impostor left the hub's routes at authorization (%v), so this row tests nothing", err)
+		}
+
+		names := map[string]bool{}
+		for _, s := range h.servers {
+			names[s.name] = true
+		}
+		for _, s := range h.servers {
+			routez, err := routezOf("127.0.0.1", s.monitor)
+			require.NoError(t, err)
+			for _, route := range routez.Routes {
+				require.True(t, route.IP == "127.0.0.1" && names[route.RemoteName],
+					"control: %s's route to %s (%s at %s) has an address or a name that is no hub server's, so a check by ip and name would catch it",
+					s.name, route.RemoteID, route.RemoteName, route.IP)
+			}
+		}
+
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.PasswordRead, "", "ip 127.0.0.1", "remote_id "+impostor), "findings: %v", report.Findings)
+		for _, f := range report.Findings {
+			require.NotContains(t, f.Detail, "no pod of the hub", "only remote_id tells the impostor apart: %v", f)
+		}
+	})
+
+	t.Run("a refused route login from another address", func(t *testing.T) {
+		h, rec := staged(t, password)
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Clean, report.Verdict(), "control: before the login; findings: %v", report.Findings)
+		require.Equal(t, "-ERR 'Authorization Violation'", refusedRouteLogin(t, "127.0.0.5", h.servers[0].route), "the credential refuses the login")
+		within(t, 10*time.Second, "the refusal in the log", func() error {
+			if !strings.Contains(h.servers[0].proc.Output.String(), "] 127.0.0.5:") {
+				return fmt.Errorf("%s has not logged the login yet", h.servers[0].name)
+			}
+			return nil
+		})
+		report = routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.Unknown, h.servers[0].name, "1 route connection(s) with 127.0.0.5 since it loaded authorization",
+			"whose login the route credential refused"), "findings: %v", report.Findings)
+	})
+
+	t.Run("lines a client writes", func(t *testing.T) {
+		h, rec := staged(t, password)
+		s := h.servers[1]
+		forged := strings.Repeat("A", 3000) + " [INF] Starting nats-server"
+		texts := []string{"[INF] 10.66.6.6:6222 - rid:1 - Route connection created", "Failed to reload server configuration: x",
+			"nats://route:x@10.9.9.9:6222", forged, "an ordinary line", forged}
+		for _, text := range texts {
+			require.Equal(t, "PONG", clientLine(t, s.client, text), "a client with no credential is the hub's session user")
+		}
+		within(t, 10*time.Second, "the client's lines in the log", func() error {
+			for _, text := range texts {
+				if !slices.ContainsFunc(strings.Split(s.proc.Output.String(), "\n"), func(l string) bool {
+					return strings.Contains(l, "[ERR] ") && strings.HasSuffix(l, " - Client Error "+text)
+				}) {
+					return fmt.Errorf("%s has not logged %.40q yet", s.name, text)
+				}
+			}
+			return nil
+		})
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Clean, report.Verdict(), "a client's lines meet no rule and trip none; findings: %v", report.Findings)
+		report = routes.Check(ctx, rotatedAt{h, forged}, rec)
+		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.PasswordRead, s.name, "does not begin with the server's start line"), "findings: %v", report.Findings)
+		report = routes.Check(ctx, rotatedAt{h, "an ordinary line"}, rec)
+		require.True(t, findingNames(report, routes.PasswordRead, s.name, "does not begin with the server's start line"),
+			"control: the same cut at an ordinary client line; findings: %v", report.Findings)
+	})
+
+	t.Run("a rollback before authorization", func(t *testing.T) {
+		h := newStagedHub(t, renders, natsServer, password)
+		rec := record(t, h)
+		h.reload(t, "routes")
+		h.reload(t, "env")
+		h.reload(t, "routes")
+		h.reload(t, "authorization")
+		var holders []string
+		for _, s := range h.servers {
+			for _, line := range strings.Split(s.proc.Output.String(), "\n") {
+				if strings.Contains(line, "[INF] Removed route ") && strings.Contains(line, password) {
+					holders = append(holders, s.name)
+					break
+				}
+			}
+		}
+		require.NotEmpty(t, holders, "control: the rollback's Removed route lines hold the password")
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
+		for _, name := range holders {
+			require.True(t, findingNames(report, routes.PasswordRead, name, "line(s) the server wrote with a URL that carries a user and a password"),
+				"%s: findings: %v", name, report.Findings)
+		}
+	})
+
+	t.Run("a record taken after authorization", func(t *testing.T) {
+		h, _ := staged(t, password)
+		_, err := routes.Take(ctx, h, "envoy", h.release, time.Now())
+		require.ErrorContains(t, err, "authorization is already in force on "+h.servers[0].name+", "+h.servers[1].name+", "+h.servers[2].name)
+	})
+
+	t.Run("an empty password", func(t *testing.T) {
+		h, rec := staged(t, "")
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
+		for _, s := range h.servers {
+			require.True(t, findingNames(report, routes.Unknown, s.name, "authorization is not in force: its route port took a route login with the user route and no password"),
+				"%s: findings: %v", s.name, report.Findings)
+		}
+		drawn := reservePorts(t, 3)
+		startReady(t, "stranger", exec.Command(natsServer, "-n", "stranger", "-a", "127.0.0.7", "-p", strconv.Itoa(drawn[0]), "-m", strconv.Itoa(drawn[1]),
+			"--cluster_name", "envoy-nats", "--cluster", "nats://"+net.JoinHostPort("127.0.0.7", strconv.Itoa(drawn[2])),
+			"--cluster_advertise", net.JoinHostPort("127.0.0.7", strconv.Itoa(drawn[2])),
+			"--routes", fmt.Sprintf("nats://%s:@127.0.0.1:%d", "route", h.servers[0].route)), listeningForRoutesOn("127.0.0.7", drawn[2]))
+		within(t, 30*time.Second, "the stranger in the hub's routes", func() error {
+			if ok, err := routedTo(h, "127.0.0.7", ""); err != nil || !ok {
+				return fmt.Errorf("no hub server holds the stranger yet (%v)", err)
+			}
+			return nil
+		})
+	})
+
+	t.Run("a restart during the check", func(t *testing.T) {
+		h, rec := staged(t, password)
+		last := h.servers[2]
+		report := routes.Check(ctx, &restartOnLog{stagedHub: h, t: t, pod: last.name}, rec)
+		require.NotEqual(t, routes.Clean, report.Verdict(), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.Unknown, last.name, "changed during the check", "restartCount 0", "restartCount 1"),
+			"findings: %v", report.Findings)
+		require.Equal(t, int32(1), last.restarts, "control: the server restarted between the check's read of the pods and of its log")
+	})
+}
+
+// refusedRouteLogin opens one route connection to port from local (any 127/8 address), reads the
+// INFO, sends a route CONNECT with no credential, and returns the server's answer: the login the
+// route credential exists to refuse.
+func refusedRouteLogin(t *testing.T, local string, port int) string {
+	t.Helper()
+	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(local)}, Timeout: 5 * time.Second}
+	conn, err := dialer.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	reader := bufio.NewReader(conn)
+	info, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(info, "INFO "), info)
+	_, err = conn.Write([]byte(`CONNECT {"verbose":false,"pedantic":false,"tls_required":false,"name":"stranger","cluster":"envoy-nats"}` + "\r\nPING\r\n"))
+	require.NoError(t, err)
+	answer, _ := reader.ReadString('\n')
+	return strings.TrimSpace(answer)
+}
+
+// clientLine connects to a hub server's client port as a client with no credential, which the
+// hub's no_auth_user takes, and sends one -ERR, whose text the server logs whole at the end of a
+// "Client Error" line (client.go:2268); it returns the server's answer to the CONNECT's PING.
+func clientLine(t *testing.T, port int, text string) string {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	reader := bufio.NewReader(conn)
+	_, err = reader.ReadString('\n')
+	require.NoError(t, err)
+	_, err = conn.Write([]byte(`CONNECT {"verbose":false,"pedantic":false,"protocol":1}` + "\r\nPING\r\n"))
+	require.NoError(t, err)
+	pong, _ := reader.ReadString('\n')
+	_, err = conn.Write([]byte("-ERR " + text + "\r\n"))
+	require.NoError(t, err)
+	_, _ = reader.ReadString('\n')
+	return strings.TrimSpace(pong)
+}
+
+// rotatedAt is a Source whose log of each pod begins at the last line holding marker, as the
+// newest file of a log the kubelet rotated begins at whatever line came after the rotation; a log
+// without marker is whole.
+type rotatedAt struct {
+	routes.Source
+	marker string
+}
+
+func (r rotatedAt) Log(ctx context.Context, pod string) ([]byte, error) {
+	log, err := r.Source.Log(ctx, pod)
+	if err != nil {
+		return log, err
+	}
+	at := strings.LastIndex(string(log), r.marker)
+	if at < 0 {
+		return log, nil
+	}
+	return log[strings.LastIndex(string(log[:at]), "\n")+1:], nil
+}
+
+// restartOnLog is the hub with one server restarted when the check reads its log: after the
+// check's read of the pods, and before its second.
+type restartOnLog struct {
+	*stagedHub
+	t   *testing.T
+	pod string
+	did bool
+}
+
+func (r *restartOnLog) Log(ctx context.Context, pod string) ([]byte, error) {
+	if pod == r.pod && !r.did {
+		r.did = true
+		r.restart(r.t, r.server(pod))
+	}
+	return r.stagedHub.Log(ctx, pod)
 }

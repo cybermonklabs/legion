@@ -269,39 +269,56 @@ func (k *Kubectl) Log(ctx context.Context, pod string) ([]byte, error) {
 	return k.kubectl(ctx, "logs", "pod/"+pod, "--container", natsContainer)
 }
 
-// infoTimeout is how long the route port may take to send its INFO.
-const infoTimeout = 10 * time.Second
+// exchangeTimeout is how long a route port may take to send its INFO and to answer.
+const exchangeTimeout = 10 * time.Second
 
-// RouteInfo is the first line the pod's route port sends a connection through its port-forward:
-// the INFO a server sends every route connection it accepts at once (route.go:1981, :2097-2100).
-// The connection is closed after that line, before it sends anything.
-func (k *Kubectl) RouteInfo(ctx context.Context, pod string) ([]byte, error) {
+// RouteExchange is Exchange with the pod's route port through its port-forward: the INFO a server
+// sends every route connection it accepts at once (route.go:1981, :2097-2100), and its answer to
+// send.
+func (k *Kubectl) RouteExchange(ctx context.Context, pod string, send []byte) ([]byte, []byte, error) {
 	f, err := k.forwardTo(ctx, pod, k.RoutePort)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return FirstLine(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(f.port)))
+	return Exchange(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(f.port)), send)
 }
 
-// FirstLine dials address and returns the first line it sends, within infoTimeout.
-func FirstLine(ctx context.Context, address string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, infoTimeout)
+// Exchange dials address and returns the first line it sends; and, when send is not empty, writes
+// send and returns the first line after it that is no INFO and no PING, the answer; all within
+// exchangeTimeout. The connection is closed after that, so a route login it sends never stays.
+func Exchange(ctx context.Context, address string, send []byte) ([]byte, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer conn.Close()
 	deadline, _ := ctx.Deadline()
-	if err := conn.SetReadDeadline(deadline); err != nil {
-		return nil, err
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, nil, err
 	}
-	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	reader := bufio.NewReader(conn)
+	info, err := reader.ReadBytes('\n')
 	if err != nil {
-		return nil, fmt.Errorf("read the first line from %s: %w", address, err)
+		return nil, nil, fmt.Errorf("read the first line from %s: %w", address, err)
 	}
-	return line, nil
+	if len(send) == 0 {
+		return info, nil, nil
+	}
+	if _, err := conn.Write(send); err != nil {
+		return info, nil, fmt.Errorf("write to %s: %w", address, err)
+	}
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return info, nil, fmt.Errorf("read the answer from %s: %w", address, err)
+		}
+		if text := strings.TrimSpace(string(line)); text != "PING" && !strings.HasPrefix(text, "INFO ") {
+			return info, line, nil
+		}
+	}
 }
 
 // Close stops every port-forward and waits for each to exit.

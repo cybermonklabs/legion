@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,8 +18,10 @@ import (
 )
 
 // fakeHub is a Source over a hub held in memory: its pods, each pod's server id, routes, log and
-// route port INFO, an error for any "<pod> <path>" read it refuses ("<pod> log" and "<pod> info"
-// among them), and a server id a pod's /routez answers in place of its own.
+// route port INFO, the answer a pod's route port gives a route login ("<pod> no user" or "<pod>
+// empty password", the refusal when unset), an error for any "<pod> <path>" read it refuses
+// ("<pod> log", "<pod> info" and "<pod> login" among them), a server id a pod's /routez answers in
+// place of its own, and a change made the first time a pod's log is read.
 type fakeHub struct {
 	pods      []routes.Pod
 	podsErr   error
@@ -26,8 +30,12 @@ type fakeHub struct {
 	routes    map[string][]routes.Route
 	logs      map[string]string
 	infos     map[string]string
+	answers   map[string]string
 	refused   map[string]error
+	onLog     map[string]func()
 	closed    bool
+	// mu guards infos, which atEnv sets while a fake route port's goroutine may read it.
+	mu sync.Mutex
 }
 
 func (h *fakeHub) Pods(context.Context) ([]routes.Pod, error) {
@@ -55,22 +63,58 @@ func (h *fakeHub) Monitor(_ context.Context, pod, path string) ([]byte, error) {
 }
 
 func (h *fakeHub) Log(_ context.Context, pod string) ([]byte, error) {
+	if change := h.onLog[pod]; change != nil {
+		delete(h.onLog, pod)
+		change()
+	}
 	if err := h.refused[pod+" log"]; err != nil {
 		return nil, err
 	}
 	return []byte(h.logs[pod]), nil
 }
 
-func (h *fakeHub) RouteInfo(_ context.Context, pod string) ([]byte, error) {
+func (h *fakeHub) RouteExchange(_ context.Context, pod string, send []byte) ([]byte, []byte, error) {
 	if err := h.refused[pod+" info"]; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return []byte(h.infos[pod]), nil
+	h.mu.Lock()
+	info := []byte(h.infos[pod])
+	h.mu.Unlock()
+	if len(send) == 0 {
+		return info, nil, nil
+	}
+	if err := h.refused[pod+" login"]; err != nil {
+		return info, nil, err
+	}
+	login := "no user"
+	if strings.Contains(string(send), `"user":"route","pass":""`) {
+		login = "empty password"
+	}
+	if answer, ok := h.answers[pod+" "+login]; ok {
+		return info, []byte(answer + "\r\n"), nil
+	}
+	return info, []byte("-ERR 'Authorization Violation'\r\n"), nil
 }
 
 func (h *fakeHub) Close() error {
 	h.closed = true
 	return nil
+}
+
+// atEnv sets every pod's route port INFO to one without auth_required, as at the env stage, and
+// returns the function that sets them back.
+func (h *fakeHub) atEnv() (back func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	was := maps.Clone(h.infos)
+	for _, p := range h.pods {
+		h.infos[p.Name] = authInfo(h.ids[p.Name], false)
+	}
+	return func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.infos = was
+	}
 }
 
 var started = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
@@ -79,6 +123,15 @@ var started = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 // prefixes.
 func logLine(level, text string) string {
 	return "[7] 2026/11/17 12:00:01.000000 [" + level + "] " + text
+}
+
+// removedRoute is the line a server logs for each route URL a rollback removes, with the route
+// password in it (reload.go:543). It builds the URL from its parts, and over two lines, so that
+// no line of this source holds a URL carrying a user and a password, which the repository's own
+// scan of what it pushes reads as a credential.
+func removedRoute(password string) string {
+	url := "nats://" + "route" + ":" + password
+	return logLine("INF", "Removed route "+url+"@envoy-nats-2.envoy-nats-headless:6222")
 }
 
 // The lines of each stage a hub server logs: its start, its routes' connections at env, and the
@@ -101,7 +154,7 @@ func authInfo(id string, required bool) string {
 // and names its peers' route connections again after.
 func cleanHub() *fakeHub {
 	h := &fakeHub{ids: map[string]string{}, routezIDs: map[string]string{}, routes: map[string][]routes.Route{}, logs: map[string]string{},
-		infos: map[string]string{}, refused: map[string]error{}}
+		infos: map[string]string{}, answers: map[string]string{}, refused: map[string]error{}, onLog: map[string]func(){}}
 	for i := range 3 {
 		name := fmt.Sprintf("envoy-nats-%d", i)
 		h.pods = append(h.pods, routes.Pod{Name: name, UID: "uid-" + name, IP: fmt.Sprintf("10.0.0.%d", 10+i), Ready: true, StartedAt: started})
@@ -152,9 +205,11 @@ func (h *fakeHub) editAuthorizationReload(pod, with string) {
 	h.logs[pod] = strings.Replace(h.logs[pod], authorizationReload, with, 1)
 }
 
-// recordOf is the record Take makes of h.
+// recordOf is the record Take makes of h at env, before its route ports require authorization.
 func recordOf(t *testing.T, h *fakeHub) routes.Record {
 	t.Helper()
+	back := h.atEnv()
+	defer back()
 	rec, err := routes.Take(context.Background(), h, "envoy", "envoy-nats", started.Add(time.Minute))
 	require.NoError(t, err)
 	return rec
@@ -165,9 +220,17 @@ func recordOf(t *testing.T, h *fakeHub) routes.Record {
 // Every row starts from the clean hub, which is the control: changed in that one way, it is no
 // longer Clean, or, for the rows whose verdict is Clean, a change the check must not count. A
 // route's remote_name is never what condemns it or clears it: the impostor rows carry a hub
-// server's name.
+// server's name. A client's line is one a client can make the server write: its -ERR text whole at
+// the end of a "Client Error" line (client.go:2268); no such line meets or trips a rule.
 func TestCheckJudgesEachRouteAndLog(t *testing.T) {
-	created := func(address string) string { return logLine("INF", address+" - rid:9 - Route connection created") }
+	createdAs := func(address, rid string) string {
+		return logLine("INF", address+" - rid:"+rid+" - Route connection created")
+	}
+	created := func(address string) string { return createdAs(address, "9") }
+	clientLine := func(text string) string { return logLine("ERR", "10.9.9.3:50000 - cid:7 - Client Error "+text) }
+	refusedAs := func(address, rid string) string {
+		return logLine("ERR", address+" - rid:"+rid+` - authentication error - User "route"`)
+	}
 	for _, row := range []struct {
 		name    string
 		change  func(h *fakeHub)
@@ -207,6 +270,49 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		{"a failed reload", func(h *fakeHub) {
 			h.beforeAuthorization("envoy-nats-1", logLine("ERR", "Failed to reload server configuration: error parsing route url"))
 		}, routes.PasswordRead, "envoy-nats-1", "1 failed reload(s)"},
+		{"a client's line that ends as a failed reload's", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += clientLine("Failed to reload server configuration: x") + "\n"
+		}, routes.Clean, "", ""},
+		{"a client's line that ends as a route connection's from another address", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += clientLine("[INF] 10.66.6.6:6222 - rid:1 - Route connection created") + "\n"
+		}, routes.Clean, "", ""},
+		{"a first line that is a client's, ending as the start line", func(h *fakeHub) {
+			rest := strings.SplitN(h.logs["envoy-nats-0"], "\n", 2)[1]
+			h.logs["envoy-nats-0"] = clientLine(strings.Repeat("A", 3000)+" [INF] Starting nats-server") + "\n" + rest
+		}, routes.PasswordRead, "envoy-nats-0", "does not begin with the server's start line"},
+		{"a start line written an hour after its container's start", func(h *fakeHub) {
+			rest := strings.SplitN(h.logs["envoy-nats-2"], "\n", 2)[1]
+			h.logs["envoy-nats-2"] = "[7] 2026/11/17 13:00:01.000000 [INF] Starting nats-server\n" + rest
+		}, routes.PasswordRead, "envoy-nats-2", "was written at 2026-11-17T13:00:01Z, and its container started at 2026-11-17T12:00:00Z"},
+		{"a refused route login from another address since authorization", func(h *fakeHub) {
+			h.logs["envoy-nats-0"] += createdAs("10.9.9.5:50000", "21") + "\n" + refusedAs("10.9.9.5:50000", "21") + "\n"
+		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.5 since it loaded authorization whose login the route credential refused"},
+		{"a refused login and an accepted connection from one address", func(h *fakeHub) {
+			h.logs["envoy-nats-0"] += createdAs("10.9.9.5:50000", "21") + "\n" + refusedAs("10.9.9.5:50000", "21") + "\n" +
+				createdAs("10.9.9.5:6222", "22") + "\n"
+		}, routes.PasswordRead, "envoy-nats-0", "1 route connection(s) with 10.9.9.5 since it loaded authorization, and"},
+		{"a client's line that names a refused login of a route connection", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += created("10.9.9.8:6222") + "\n" + clientLine("10.9.9.8:6222 - rid:9 - authentication error") + "\n"
+		}, routes.PasswordRead, "envoy-nats-1", "1 route connection(s) with 10.9.9.8 since it loaded authorization, and"},
+		{"a rollback's Removed route line before authorization", func(h *fakeHub) {
+			h.beforeAuthorization("envoy-nats-1", removedRoute("routePasswordAbc"))
+		}, routes.PasswordRead, "envoy-nats-1", "1 line(s) the server wrote with a URL that carries a user and a password"},
+		{"a client's line with a URL that carries a password", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += clientLine("nats://route:x@10.9.9.9:6222") + "\n"
+		}, routes.Clean, "", ""},
+		{"a route port that takes the route user with no password", func(h *fakeHub) {
+			h.answers["envoy-nats-1 empty password"] = `-ERR 'Rejecting connection from gateway "envoy-infra-routes-probe" on the Route port'`
+		}, routes.Unknown, "envoy-nats-1", "authorization is not in force: its route port took a route login with the user route and no password"},
+		{"a route port that takes a login with no user", func(h *fakeHub) { h.answers["envoy-nats-2 no user"] = "PONG" },
+			routes.Unknown, "envoy-nats-2", `its route port took a route login with no user (it answered "PONG"`},
+		{"a route login's answer unread", func(h *fakeHub) { h.refused["envoy-nats-0 login"] = errors.New("reset") },
+			routes.Unknown, "envoy-nats-0", "its route port's answer to a route login with no user could not be read"},
+		{"a restart during the check", func(h *fakeHub) {
+			h.onLog["envoy-nats-2"] = func() {
+				h.pods[2].RestartCount, h.pods[2].StartedAt = 1, started.Add(time.Hour)
+				h.logs["envoy-nats-2"] = strings.Join(slices.Concat(startLines, []string{created("10.0.0.10:6222"), created("10.0.0.11:6222")}), "\n") + "\n"
+			}
+		}, routes.Unknown, "envoy-nats-2", "changed during the check (at its start: uid uid-envoy-nats-2, ip 10.0.0.12, restartCount 0, startedAt 2026-11-17T12:00:00Z; at its end: uid uid-envoy-nats-2, ip 10.0.0.12, restartCount 1"},
 		{"authorization never loaded", func(h *fakeHub) {
 			h.withoutAuthorizationReload("envoy-nats-0")
 			h.infos["envoy-nats-0"] = authInfo("NSERVER0", false)
@@ -292,11 +398,13 @@ func TestCheckJudgesNoRemoteIDWithoutEveryServerID(t *testing.T) {
 	require.Contains(t, fmt.Sprint(report.Findings), "the hub's server ids are not all known, so routes are judged by IP alone")
 }
 
-// Take records every pod, sorted by name, once all are Ready with a running nats container, and
-// refuses otherwise, naming each pod that is not.
+// Take records every pod, sorted by name, once all are Ready with a running nats container and no
+// route port requires authorization, and refuses otherwise, naming each pod that is not so, and a
+// pod whose route port's INFO it cannot read.
 func TestTakeRecordsOnlyAFinishedRoll(t *testing.T) {
 	h := cleanHub()
 	slices.Reverse(h.pods)
+	h.atEnv()
 	rec, err := routes.Take(context.Background(), h, "envoy", "envoy-nats", started.Add(time.Minute))
 	require.NoError(t, err)
 	require.Equal(t, routes.Record{Namespace: "envoy", StatefulSet: "envoy-nats", RecordedAt: started.Add(time.Minute), Pods: []routes.PodRecord{
@@ -305,6 +413,16 @@ func TestTakeRecordsOnlyAFinishedRoll(t *testing.T) {
 		{Name: "envoy-nats-2", UID: "uid-envoy-nats-2", StartedAt: started},
 	}}, rec)
 
+	h.infos["envoy-nats-1"] = authInfo("NSERVER1", true)
+	h.infos["envoy-nats-0"] = authInfo("NSERVER0", true)
+	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)
+	require.ErrorContains(t, err, "authorization is already in force on envoy-nats-1, envoy-nats-0 (its route port's INFO has auth_required)")
+	h.atEnv()
+
+	h.refused["envoy-nats-1 info"] = errors.New("refused")
+	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)
+	require.ErrorContains(t, err, "the route port's INFO of envoy-nats-1 (refused) could not be read")
+	delete(h.refused, "envoy-nats-1 info")
 	h.pods[0].Ready = false
 	h.pods[2].StartedAt = time.Time{}
 	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)

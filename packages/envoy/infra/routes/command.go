@@ -12,15 +12,18 @@ import (
 	"time"
 )
 
-const usageText = `usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file> [--context <kubeconfig context>] [--kubectl <path>]
+const usageText = `usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file> [--context <kubeconfig context>] [--kubectl <path>] [--route-port <port>]
        envoy-infra routes check --namespace <ns> --statefulset <name> --record <file> [--context <kubeconfig context>] [--kubectl <path>] [--monitor-port <port>] [--route-port <port>]
-  record, once routeAuthorization's env stage has rolled every pod: saves each pod's uid and its nats
-    container's restart count and start; exit 0 when recorded, 2 otherwise.
-  check, once authorization is on every pod: exit 0 when authorization is in force and every route
-    since it loaded joined two of the hub's servers; 1 when another process held one or may have been
-    handed the password, or a log line may hold it (treat the route password as read, cut its reach,
-    rotate the password, then record and check again); 2 when it could not read all it needs, when
-    authorization is not in force, or when the mesh is not whole.
+  record, once routeAuthorization's env stage has rolled every pod, before routes: saves each pod's
+    uid and its nats container's restart count and start; exit 0 when recorded, 2 otherwise, and
+    while any pod's route port already requires authorization.
+  check, once authorization is on every pod: exit 0 when authorization is in force with a password
+    and every route since it loaded joined two of the hub's servers; 1 when another process held one
+    or may have been handed the password, or a log line may hold it (treat the route password as
+    read, cut its reach, rotate the password, then record and check again); 2 when it could not read
+    all it needs, when authorization is not in force, when the mesh is not whole or the servers do
+    not hold one password, when a route login from another address was refused, or when a pod
+    changed during the check.
 `
 
 // timeout bounds a whole command: every kubectl call, port-forward and read it makes.
@@ -55,12 +58,12 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer, open 
 	fs.StringVar(&target.StatefulSet, "statefulset", "", "the hub's StatefulSet")
 	fs.StringVar(&target.Context, "context", "", "the kubeconfig context")
 	fs.StringVar(&target.Kubectl, "kubectl", "kubectl", "the kubectl to run")
+	fs.IntVar(&target.RoutePort, "route-port", 6222, "the pods' route port")
 	if sub == "record" {
 		fs.StringVar(&out, "out", "", "the file the record is written to")
 	} else {
 		fs.StringVar(&recordPath, "record", "", "the file routes record wrote")
 		fs.IntVar(&target.MonitorPort, "monitor-port", 8222, "the pods' monitoring port")
-		fs.IntVar(&target.RoutePort, "route-port", 6222, "the pods' route port")
 	}
 	usage := func(problem string) int {
 		fmt.Fprintf(stderr, "envoy-infra routes %s: %s\n", sub, problem)
@@ -83,22 +86,27 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer, open 
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if sub == "record" {
-		if out == "" {
-			return usage("--out is required")
-		}
-		return record(ctx, target, out, stdout, stderr, open)
+	if sub == "record" && out == "" {
+		return usage("--out is required")
 	}
-	if recordPath == "" {
+	if sub == "check" && recordPath == "" {
 		return usage("--record is required")
 	}
-	for _, port := range []struct {
-		flag  string
+	type portFlag struct {
+		name  string
 		value int
-	}{{"--monitor-port", target.MonitorPort}, {"--route-port", target.RoutePort}} {
+	}
+	ports := []portFlag{{"--route-port", target.RoutePort}}
+	if sub == "check" {
+		ports = append(ports, portFlag{"--monitor-port", target.MonitorPort})
+	}
+	for _, port := range ports {
 		if port.value < 1 || port.value > 65535 {
-			return usage(port.flag + " is a port, 1 to 65535")
+			return usage(port.name + " is a port, 1 to 65535")
 		}
+	}
+	if sub == "record" {
+		return record(ctx, target, out, stdout, stderr, open)
 	}
 	return check(ctx, target, recordPath, stdout, stderr, open)
 }
