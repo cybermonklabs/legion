@@ -744,13 +744,21 @@ Three inputs work otherwise:
 A hub that comes up on a new, empty data disk (a new `hostname` or `zone` above) holds no key-value
 bucket, and no listener creates one (dispatch://INFRA-4094,
 [the module README](../README.md#envoy-infra-buckets)). Every listener that reaches it answers 503
-to each write and names the missing buckets on `/healthz` until the operator creates them. Before
-`pulumi up`, stop every listener and envoy-dispatch that reaches the hub (the hub's own listener
-comes up waiting for its buckets, and serves nothing until they exist); once the new VM's NATS
-answers, run `envoy-infra buckets create --nats nats://<h>.<tailnetDnsName>:4222` with the
-inventory of every writer, proven ended (`--host` for each machine, the hub's VM included); then
-start them. A replacement that keeps the disk (`recreate-instances`, a new template) keeps every
-bucket, and needs none of this.
+to each write and names the missing buckets on `/healthz` until the operator creates them, and
+`envoy-infra buckets` refuses while any listener runs, the hub's own included. So:
+
+1. Before `pulumi up`, stop every listener and envoy-dispatch that reaches the hub.
+2. `pulumi up`. The new VM starts its own listener with the VM (`envoy-listener.service`), which
+   waits for its buckets; stop it on the VM: `sudo systemctl stop envoy-listener.service`.
+3. Confirm on each host that its listener has ended, then run `envoy-infra buckets create --nats
+   nats://<h>.<tailnetDnsName>:4222` with the inventory of every writer (`--host` for each machine,
+   the hub's VM included). Its check is best effort; your stop in steps 1 and 2 is what it confirms.
+4. Start the hub's listener (`sudo systemctl start envoy-listener.service`), then every other.
+
+A first deployment of a hub is the same from step 2: its VM's listener starts with the VM and
+creates the `ENVOY_NOTIFICATIONS` stream at its first connect, so run `create` without
+`--first-deployment`. A replacement that keeps the disk (`recreate-instances`, a new template)
+keeps every bucket, and needs none of this.
 
 ## What a first Google Cloud deployment proves
 
@@ -943,11 +951,19 @@ The hub runs one listener, in a pod of its own, as that machine id.
 A move that restores the VM hub's streams into the clustered hub (`nats stream restore`) restores
 each key-value bucket from its snapshot, a bucket created again, so every writer of the buckets
 must have ended first: a write the old hub acknowledged after the snapshot is in no restored bucket
-(dispatch://INFRA-4094). Stop every listener and envoy-dispatch that reaches either hub, including
-the clustered hub's own listener (scale it to 0); run `envoy-infra buckets check` with the
-inventory of every writer, which must hold; restore; then start them. The clustered hub's listener
-waits at its start for any bucket the restore did not bring, and `envoy-infra buckets create`
-creates it, with the same inventory.
+(dispatch://INFRA-4094). In this order:
+
+1. Stop every listener and envoy-dispatch that reaches either hub, the clustered hub's own listener
+   included (scale it to 0), and confirm on each host that it has ended.
+2. Run `envoy-infra buckets check` with the inventory of every writer; it must hold.
+3. Restore.
+4. While every writer is still at zero, run `envoy-infra buckets create` with the same inventory:
+   it creates any copied bucket the restore did not bring, and leaves the others.
+5. Start them.
+
+Nothing holds the state `check` found through the restore: a writer that starts between steps 2
+and 5 gets past it, the "unheld restore" the command warns of on every run, until
+dispatch://INFRA-4015's hold (t-10) lands, which leaves no writer but the operator a connection.
 
 The rendered `auth.conf` is a key of the chart's ConfigMap `<n>-config`, beside `nats.conf`, which
 includes it; like the VM's metadata, the ConfigMap holds it in the clear, public keys only.
@@ -1193,10 +1209,10 @@ absent(nats_stream_last_seq{stream_name="KV_envoy_interests"})
 ```
 
 The listener says the same in its own log, the ERROR `listener KV bucket is missing` naming the
-bucket every 30 seconds, and in its `envoy_kv_buckets_missing` gauge; the AWS listener's
-`bucket-missing` alarm pages on that line ([the module README](../README.md#the-aws-components)).
-This module renders no alerting policy for Google Cloud, so the query pages wherever the
-deployment's own policies send the hub's other alerts.
+bucket every 30 seconds until a read confirms it is back, and in its `envoy_kv_buckets_missing`
+gauge; the AWS listener's `bucket-missing` alarm pages on that line
+([the module README](../README.md#the-aws-components)). This module renders no alerting policy for
+Google Cloud: the deployment repository's companion change installs this query for its hubs.
 
 A pod that is down, a hub pod (`<n>-0` to `<n>-2`, container `nats`), a tailnet host
 (`<n>-tailnet-…`, container `tailscale`) or the session listener (`<n>-listener-…`, container

@@ -24,41 +24,61 @@ them. More than 1 needs a clustered NATS: a single server, which is what `aws:Na
 `ENVOY_NATS_REPLICAS`.
 
 No listener creates the key-value buckets it keeps a copy of: `envoy_interests`, `envoy_roles`,
-`envoy_sessions`, `envoy_known_sessions` and `envoy_ci_state`. A bucket deleted and created again
-while a listener runs loses every write the deleted bucket acknowledged, and the listener told its
-caller each of them landed (dispatch://INFRA-4094). So the operator creates them with
-[`envoy-infra buckets`](#envoy-infra-buckets), the one command that does, and it refuses while any
-writer of them runs. A listener that finds one missing fails closed: a start waits for the bucket
-with every route answering 503, a running listener answers 503 to every write that needs it, and
-`/healthz` answers 200 `"degraded"` naming it under `"missing_buckets"`. Every check, every 30
-seconds, logs the ERROR `listener KV bucket is missing` with the bucket's name, which the AWS
-listener's `bucket-missing` alarm pages on, and the listener's `envoy_kv_buckets_missing` gauge
-counts the buckets missing. A deployment's buckets therefore come from the operator:
+`envoy_sessions`, `envoy_known_sessions` and `envoy_ci_state`, and nothing configures one to. A
+bucket deleted and created again while a listener runs loses every write the deleted bucket
+acknowledged, and the listener told its caller each of them landed (dispatch://INFRA-4094). So the
+operator creates them with [`envoy-infra buckets`](#envoy-infra-buckets), the one command that
+does. A listener that finds one missing fails closed:
 
-- **A first deployment** runs `envoy-infra buckets create --nats <url> --first-deployment` once
-  the NATS server is up and before any listener or envoy-dispatch starts. The command refuses a
-  server that holds the `ENVOY_NOTIFICATIONS` stream or any of the buckets: every listener and
-  envoy-dispatch create that stream at their first connect, so its absence proves none has run
-  against the server.
-- **Deleting a bucket under running listeners does not empty it for them:** each keeps serving
-  its last copy for reads, answers every write that needs the bucket 503, and never brings the
-  bucket back. To empty a bucket, or to replace one, stop every listener of the deployment first
-  (and every envoy-dispatch, for `envoy_ci_state`, which it writes too), then run `envoy-infra
-  buckets recreate --bucket <name>` with the inventory it proves ended
-  ([`envoy-infra buckets`](#envoy-infra-buckets)), then start them again. Never delete one with
-  `nats kv rm` or `nats stream rm`.
+- a start waits for each missing bucket with every route answering 503; that includes
+  `envoy_known_sessions` when the server says it is missing, but not when the listener's NATS user
+  may not read it - a hub whose users were rendered before that bucket's grant (#2643) and not
+  applied since - where the start goes on and the listener opens the bucket once the grant arrives;
+- a running listener answers 503 to every write that needs a missing bucket, a registration whose
+  30-day record cannot be written included (only that ungranted case stays best effort), and serves
+  reads from its last copy for at most the copy's stale bound, two minutes for these buckets
+  (`internal/kvwatch/serving.go`), after which they answer 503 too;
+- `/healthz` answers 200 `"degraded"` naming the bucket under `"missing_buckets"` while every
+  other check passes, and 503 when any other check fails; and every check, every 30 seconds, logs
+  the ERROR `listener KV bucket is missing` with the bucket's name, until a read confirms the bucket
+  is back. The AWS listener's `bucket-missing` alarm pages on that line, and the listener's
+  `envoy_kv_buckets_missing` gauge counts the buckets missing.
+
+A deployment's buckets therefore come from the operator. **The command's proof is best effort**
+until dispatch://INFRA-4015's server-side hold (t-10) lands: it checks only the Kubernetes contexts
+and hosts it is given, by process name, and holds nothing once it has checked. Before each step
+below, stop every listener of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and
+confirm on each host that it has ended ([`envoy-infra buckets`](#envoy-infra-buckets)).
+
+- **A first deployment:** once the NATS server is up and before any listener or envoy-dispatch
+  starts, run `envoy-infra buckets create --first-deployment` with the inventory of every place a
+  writer will run. A `gcp:NatsHub` VM starts its own listener with the VM (`envoy-listener.service`):
+  stop it (`sudo systemctl stop envoy-listener.service`) before the command and start it after.
+  That listener's first connect creates the `ENVOY_NOTIFICATIONS` stream, which `--first-deployment`
+  refuses; leave the flag off for such a hub, and name the VM with `--host`.
+- **Deleting a bucket under running listeners does not empty it for them:** each serves its last
+  copy for reads within its stale bound, answers every write that needs the bucket 503, and never
+  brings the bucket back. To empty a bucket, or to replace one, stop every listener of the
+  deployment first (and every envoy-dispatch, for `envoy_ci_state`, which it writes too), then run
+  `envoy-infra buckets recreate --bucket <name>` with the inventory, then start them again. Never
+  delete one with `nats kv rm` or `nats stream rm`.
 - **A hub whose storage is replaced** (`gcp:NatsHub` on a new disk, a new `hostname` or `zone`,
   [docs/nats-hub.md](docs/nats-hub.md#updating-a-hub)) comes up with no bucket: stop every
-  listener and envoy-dispatch that reaches it before its clients reconnect, then run `envoy-infra
-  buckets create` with the inventory, then start them.
+  listener and envoy-dispatch that reaches it before its clients reconnect, stop the new VM's own
+  `envoy-listener.service`, run `envoy-infra buckets create` with the inventory (the VM included),
+  then start them all.
 - **A clustered hub restored from a backup** (`nats stream restore`) recreates each bucket from
-  its snapshot: stop every listener and envoy-dispatch first, run `envoy-infra buckets check` with
-  the inventory, restore while it holds, then start them.
+  its snapshot: scale every listener and envoy-dispatch to zero, run `envoy-infra buckets check`
+  with the inventory, restore, run `envoy-infra buckets create` for any bucket the restore did not
+  bring while they are still at zero, then start them. Nothing holds the checked state through the
+  restore; that is the "unheld restore" the command warns of.
 
-A listener on a NATS server a test or a dev rig started for one run takes `ENVOY_THROWAWAY_NATS=1`
-and creates the buckets it finds missing at its start. Nothing this module renders sets it, and no
-deployment may: a listener restarted while a bucket is missing would create it under the writers
-of the deleted one.
+A test or a dev rig that starts a listener on a NATS server of its own provisions that server
+first, with the one fixture helper: `internal/bustest` in Go (`Provision`, or a connection marked
+with `Connect`/`Fixture` for a store opened in the test's own process), and the
+`internal/testnats/cmd/fixturebuckets` command in a script, which refuses a server that is not on
+loopback. Provisioning marks the server (`ENVOY_TEST_FIXTURE`), and refillrig's commands that create
+or recreate a copied bucket refuse a server without that mark.
 
 The command, `envoy-infra`, writes a NATS user's nkey seed into a secret store and checks the seed
 stored there ([NATS seeds](#nats-seeds)), prints what the AWS components register for a program
@@ -2636,30 +2656,51 @@ the one output format. The listener's first filter, for a listener named `exampl
 ## `envoy-infra buckets`
 
 `envoy-infra buckets` creates the key-value buckets a listener copies, and recreates one, once it
-has proven that no writer of them runs: every envoy-listener of the deployment, and every
+has checked that no writer of them runs: every envoy-listener of the deployment, and every
 envoy-dispatch when `envoy_ci_state` is among the buckets.
 
+**The check is best effort.** Every run prints so first, on standard error. A writer gets past it
+four ways: a host or dev box you do not name, a binary renamed to a name the check does not know, a
+writer that starts between the final scan and the create, and a restore after `check` that nothing
+holds. So before every run, stop every listener of the deployment (and every envoy-dispatch, for
+`envoy_ci_state`) and confirm on each host that it has ended; the check confirms what you did, and
+does not replace it. dispatch://INFRA-4015's hold (t-10) will exclude writers at the server
+instead: while it holds, the auth callout refuses every connection but the operator's, every other
+connection is kicked, every server's connz shows the operator alone, and a server it cannot reach
+stops the hold. Four tests (`TestBestEffort...`) assert today's outcome of each way, and must be
+inverted when the hold leaves no writer a connection.
+
 ```sh
-NATS_NKEY_SEED_FILE=operator.seed envoy-infra buckets create --nats nats://<hub>:4222 \
+NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets create --nats nats://<hub>:4222 \
   --kube-context <cluster> --host <machine> --connz http://<hub>:8222
-NATS_NKEY_SEED_FILE=operator.seed envoy-infra buckets recreate --bucket envoy_sessions \
+NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets recreate --bucket envoy_sessions \
   --nats nats://<hub>:4222 --kube-context <cluster> --host <machine>
-NATS_NKEY_SEED_FILE=operator.seed envoy-infra buckets check --nats nats://<hub>:4222 --host <machine>
+NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets check --nats nats://<hub>:4222 --host <machine>
 ```
+
+The command reaches a hub on another machine: it sets `ENVOY_ALLOW_REMOTE_NATS=1` for its own
+connection, as `--nats` names the hub. Its NATS user is granted exactly what it sends
+(`buckets.Grant`), and no listener's user may be used for it:
+
+- publish `$JS.API.INFO`, `$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS` (for `--first-deployment`),
+  and for each copied bucket `<B>`: `$JS.API.STREAM.INFO.KV_<B>`, `$JS.API.STREAM.CREATE.KV_<B>`,
+  `$JS.API.STREAM.UPDATE.KV_<B>` and `$JS.API.STREAM.DELETE.KV_<B>`, and for the restore after
+  `check`, run as the same user (`nats stream restore --inbox-prefix=_INBOX_envoy_buckets`),
+  `$JS.API.STREAM.RESTORE.KV_<B>` and `$JS.SNAPSHOT.RESTORE.KV_<B>.*`;
+- subscribe `_INBOX_envoy_buckets.>` alone, the prefix its replies take: a user that subscribes
+  `_INBOX.>` receives every other client's replies, sessions' push deliveries among them.
+
+This static user lasts until the cutover to dispatch://INFRA-840's auth callout, which replaces it.
 
 `create` creates every copied bucket that is missing (or each `--bucket`), with its configuration
 (file storage, `ENVOY_NATS_REPLICAS` copies or `--replicas`, and the session bucket's 5 minutes,
 the known sessions' 30 days and the CI state's 7 days of age), and leaves a bucket that exists as
-it is. `recreate` deletes each `--bucket`, proves again that no writer runs, since one started
-between the proof and the delete may have written to the deleted bucket, and only then creates it;
-a second proof that fails leaves the bucket deleted, and the operator stops that writer and runs
-`create`. `check` takes the proof and changes nothing, for a step another tool makes, such as a
-`nats stream restore`. The NATS user must be one that may create and delete the buckets' streams,
-such as an operator's user granted `>`; no listener's set may be used for it.
+it is. `recreate` deletes each `--bucket`, checks again that no writer runs, since one started
+between the check and the delete may have written to the deleted bucket, and only then creates it.
+`check` takes the check and changes nothing, for a step another tool makes, such as a `nats stream
+restore`.
 
-The proof is the process-end evidence of dispatch://INFRA-4015's plan, never a count of
-connections alone. It needs an inventory of every place a writer runs, and refuses with exit 2
-without one:
+The check needs an inventory of every place a writer runs, and refuses with exit 2 without one:
 
 - `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context): no
   pod the API lists, in any namespace, runs a container named `listener` or `envoy-listener` (or
@@ -2669,18 +2710,24 @@ without one:
   blocks, and so does an empty node list.
 - `--host <target>`, once for each machine, through `ssh -o BatchMode=yes` (`--ssh <program>`
   names another program taking ssh's arguments, such as a wrapper over SSM): no process on the
-  machine is named `envoy-listener` (or `envoy-dispatch`), read from each `/proc/<pid>/comm`. An
-  unreachable machine blocks, and so does a query that did not run to its end or read no process.
-  A dev box whose listener connects to the hub is such a machine.
-- `--connz <url>`, a hub server's monitoring URL, adds to the proof: each page of its
+  machine runs under a name this repository runs a writer as - `envoy-listener`, `listener`, the
+  held-port wrapper's `envoy-listener-heldport` (or, for `envoy_ci_state`, `envoy-dispatch`,
+  `dispatch` and `dispatch-<build>`) - read from each `/proc/<pid>/comm`. An unreachable machine
+  blocks, and so does a query that did not run to its end or read no process. A dev box whose
+  listener connects to the hub is such a machine.
+- `--connz <url>`, a hub server's monitoring URL, adds to the check: each page of its
   `/connz?auth=true` is read, and an open connection named `envoy-role-lane` (every listener opens
   one) or `envoy-session-consumers` (or `dispatch`) blocks. An empty census proves nothing absent: a
   frozen process holds no connection.
-- `--first-deployment`, instead of an inventory: the server holds no `ENVOY_NOTIFICATIONS` stream
-  and none of the buckets, so no listener or envoy-dispatch has connected to it.
+- `--first-deployment` adds that the server holds no `ENVOY_NOTIFICATIONS` stream and none of the
+  buckets. It replaces none of the inventory: an empty server is no proof that no writer runs.
 
-Each blocker is printed with what it found, the command exits 1, and nothing changes. A proof that
-holds prints what it read: the nodes and machines it checked and how many processes it read.
+Each kubectl and ssh call has a one-minute bound (kubectl's own `--request-timeout=45s` within
+it), and a call that does not finish blocks. Each blocker is printed with what it found and the
+command exits 1. A refusal before any change changes nothing; a refusal of `recreate`'s second
+check comes after its delete, and leaves each `--bucket` deleted and not created: stop the writer it
+names, then run `create`. A check that holds prints what it read: the nodes and machines it checked
+and how many processes it read.
 
 ## NATS seeds
 
