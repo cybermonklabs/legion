@@ -1079,7 +1079,7 @@ func (s *Service) unchangedCredit(room string, origin any, hold *roomHold) *Upda
 func connectedCreditLocked(state *roomState) *inflightCredit {
 	record := &inflightCredit{authors: make(map[string]model.Actor, len(state.connected))}
 	for _, actor := range state.connected {
-		record.authors[actorKey(actor)] = actor
+		mergeAuthor(record.authors, actor)
 	}
 	record.lastActor, _ = soleConnectedActor(state.connected)
 	return record

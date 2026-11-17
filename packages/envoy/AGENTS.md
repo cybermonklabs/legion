@@ -4086,6 +4086,10 @@ It is the only credential that proves a session of its own, so its caller writes
 a body `actor` naming the same session is taken, for its `Origin`, which nothing else carries, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A named project scope rides on `model.Actor.Project`, set from the token and never from a body, as `Service` is;
 a person-scoped token names no single project and carries none.
+Every actor a write records says whether the write's credential proved it (`model.Actor.Proven`, `proven` on the wire):
+this token's session, a browser's person (the API's cookie and the document socket's) and `actingPerson`'s person carry `true`, and a session a body names under the shared token, a personal token or a service-account token carries none, as does every row recorded before the mark.
+An act's `session_proven` (`model.ActorAct.SessionProven`) is the same mark for the session beside a person, set only for this token's own session and never for one a `?session=` or a body names.
+A document version's author is every write of one writer merged by kind and id (`docs.mergeAuthor`, the pending-author upsert in SQL, and the pending authors a transaction has queued for its write phase, which it reads back merged with the stored ones, `Ledger.queuedAuthors`, `transactionPendingAuthors`), and it is proven only when every one of those writes was.
 A read-only token is the token a read entry mints (`BROKER_EXCHANGE_READ_ACCOUNTS`): it holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 Dispatch's verifier accepts it because `brokerTokenVerifier` sets `brokertoken.Options.ServesReadOnly`, and marks its caller `brokertoken.Caller.ReadOnly`.
 `brokerTokenActor` carries that mark as `model.Credential.ReadOnly` with no OAuth scope, and the read-only gate below reads only that mark.

@@ -422,7 +422,7 @@ func TestAnAnswerThatIsTheWholeChangeSinceHisApprovalCarriesIt(t *testing.T) {
 				AskID   *string `json:"ask_id"`
 			}](t, event)
 			if payload.Version == 3 {
-				if event.Actor != (model.Actor{Kind: "user", ID: "alice"}) || payload.Reason == nil || *payload.Reason != carrySentence(1) || payload.AskID != nil {
+				if event.Actor != (model.Actor{Kind: "user", ID: "alice", Proven: true}) || payload.Reason == nil || *payload.Reason != carrySentence(1) || payload.AskID != nil {
 					t.Fatalf("carried artifact.approved = actor %#v payload %s", event.Actor, event.Payload)
 				}
 				approvedSeq = event.Seq
@@ -1073,7 +1073,7 @@ func TestAnOpenApprovalRequestIsAnsweredByTheCarry(t *testing.T) {
 			continue
 		}
 		if event.Type == "ask.answered" {
-			if answeredSeq != 0 || event.Actor != (model.Actor{Kind: "user", ID: "alice"}) {
+			if answeredSeq != 0 || event.Actor != (model.Actor{Kind: "user", ID: "alice", Proven: true}) {
 				t.Fatalf("ask.answered for the request: seq %d after %d, actor %#v; want one, by alice", event.Seq, answeredSeq, event.Actor)
 			}
 			answeredSeq = event.Seq

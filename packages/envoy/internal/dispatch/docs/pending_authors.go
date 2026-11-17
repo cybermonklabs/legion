@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"slices"
 	"sync"
@@ -279,19 +278,19 @@ func captureAuthors(state *roomState, owed map[string]model.Actor, durableLatest
 		authors:  make(map[string]model.Actor, len(owed)+1),
 		rAuthors: make([]model.Actor, 0, len(owed)),
 	}
-	for key, author := range owed {
-		capture.authors[key] = author
+	for _, author := range owed {
+		mergeAuthor(capture.authors, author)
 		capture.rAuthors = append(capture.rAuthors, author)
 	}
 	capture.inflight = state.unconsumedInflightLocked(through)
 	for _, record := range capture.inflight {
-		maps.Copy(capture.authors, record.authors)
+		mergeAuthors(capture.authors, record.authors)
 	}
 	if write != nil {
-		maps.Copy(capture.authors, write.credits)
+		mergeAuthors(capture.authors, write.credits)
 	}
 	if actor != nil {
-		capture.authors[actorKey(*actor)] = *actor
+		mergeAuthor(capture.authors, *actor)
 	}
 	capture.latest = latestEditSource(capture.inflight, write, durableLatest)
 	capture.durable = durableLatest
@@ -380,10 +379,10 @@ func cloneActor(actor *model.Actor) *model.Actor {
 func (capture authorCapture) withoutInflight(actor *model.Actor) authorCapture {
 	authors := make(map[string]model.Actor, len(capture.rAuthors)+1)
 	for _, author := range capture.rAuthors {
-		authors[actorKey(author)] = author
+		mergeAuthor(authors, author)
 	}
 	if actor != nil {
-		authors[actorKey(*actor)] = *actor
+		mergeAuthor(authors, *actor)
 	}
 	capture.authors, capture.inflight = authors, nil
 	capture.latest = latestEditSource(nil, nil, capture.durable)
@@ -471,6 +470,8 @@ func pendingAuthorsAt(authors map[string]model.Actor, version persistence.Versio
 // recorded it, so an upload that holds one of those updates and not another deletes only the
 // first. authors must name each author at most once per update: one statement cannot write one
 // row twice, so a repeated author and version is refused, naming it, before anything is written.
+// A row written again keeps its Proven mark only when both writes carried it (mergeAuthor), so
+// a claimed write is not lifted to proven by the row a proven one rewrites.
 func pendingAuthorsStatement(room string, authors []pendingAuthor) (writeStatement, error) {
 	type row struct {
 		key     string
@@ -501,7 +502,10 @@ func pendingAuthorsStatement(room string, authors []pendingAuthor) (writeStateme
 		insert into doc_pending_authors (artifact_id, actor_kind, actor_id, actor, written_through)
 		select $1::uuid, kind, id, actor, version
 		from unnest($2::text[], $3::text[], $4::jsonb[], $5::bigint[]) as author(kind, id, actor, version)
-		on conflict (artifact_id, actor_kind, actor_id, written_through) do update set actor = excluded.actor
+		on conflict (artifact_id, actor_kind, actor_id, written_through) do update set actor = case
+			when doc_pending_authors.actor @> '{"proven": true}'::jsonb then excluded.actor
+			else excluded.actor - 'proven'
+		end
 	`,
 		args: []any{room, kinds, ids, encoded, versions},
 		what: "record the document's pending authors",
@@ -547,14 +551,17 @@ func upsertPendingAuthors(ctx context.Context, tx pgx.Tx, room string, authors [
 // room's updates before it reads R (Ledger.flushThrough), and each of those appends writes the
 // authors of the edit it stores; where its writes are queued the table holds none of them yet, so
 // a version reading the table alone would neither list those authors nor delete their rows when
-// it commits, and the next version would be owed them again.
+// it commits, and the next version would be owed them again. An author both hold is one author,
+// Proven only when the stored rows and the queued ones all are (mergeAuthor), as the table reads
+// once the write phase has run: a queued row beside a stored one is another row of that author,
+// and one over a stored row is the upsert's.
 func transactionPendingAuthors(ctx context.Context, tx pgx.Tx, room string) (map[string]model.Actor, error) {
 	owed, err := readPendingAuthors(ctx, tx, room)
 	if err != nil {
 		return nil, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		maps.Copy(owed, ledger.owedAuthors[room])
+		mergeAuthors(owed, ledger.owedAuthors[room])
 	}
 	return owed, nil
 }
@@ -563,7 +570,8 @@ func transactionPendingAuthors(ctx context.Context, tx pgx.Tx, room string) (map
 // rows of one update are every peer that was connected when it landed, which is a set of names and
 // not an order (latestEditSource reads the sender instead). A version reads R in its own
 // transaction under the document's advisory lock, so no append or write changes it until that
-// version ends.
+// version ends. An author R holds rows of from several updates is one author, Proven only when
+// every row is (mergeAuthor).
 func readPendingAuthors(ctx context.Context, q Queryer, room string) (map[string]model.Actor, error) {
 	rows, err := q.Query(ctx, `
 		select actor from doc_pending_authors where artifact_id = $1
@@ -582,7 +590,7 @@ func readPendingAuthors(ctx context.Context, q Queryer, room string) (map[string
 		if err := json.Unmarshal(encoded, &actor); err != nil {
 			return nil, fmt.Errorf("decode a pending author of the document: %w", err)
 		}
-		owed[actorKey(actor)] = actor
+		mergeAuthor(owed, actor)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the document's pending authors: %w", err)

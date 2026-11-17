@@ -2,10 +2,13 @@ package docs
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -125,5 +128,97 @@ func TestAnAppendsPendingAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 	}
 	if stored[actorKey(bob)] != bob {
 		t.Fatalf("doc_pending_authors after the commit = %+v, want bob", stored)
+	}
+}
+
+// A pending author this transaction has queued reads back in it as the table reads once the
+// write phase has run (transactionPendingAuthors, readPendingAuthors): Proven only when every row
+// of that author is, the rows the table held before and the rows the transaction queued alike.
+// That holds for two rows of one author queued at two updates, in one statement or in two; a row
+// queued at the update a row already queued holds, which the upsert merges
+// (pendingAuthorsStatement); and a queued row beside, or over, a row the table holds, in either
+// order. The read inside the transaction and the read once it has committed must both give the
+// one author, so an overlay that kept the later row's mark as it stood fails where the table does
+// not.
+func TestAQueuedPendingAuthorIsProvenOnlyWhenEveryRowIs(t *testing.T) {
+	service, artifactID := newTestService(t)
+	ctx := context.Background()
+	claimed := model.Actor{Kind: "session", ID: "judge-session"}
+	proven := model.Actor{Kind: "session", ID: "judge-session", Proven: true}
+	at := func(actor model.Actor, version persistence.Version) pendingAuthor {
+		return pendingAuthor{actor: actor, writtenThrough: version}
+	}
+	for _, tc := range []struct {
+		name string
+		// stored is what the table holds before the transaction; queued is each upsert the
+		// transaction queues, in order.
+		stored []pendingAuthor
+		queued [][]pendingAuthor
+		want   model.Actor
+	}{
+		{"a claimed row and a proven one queued in one statement", nil, [][]pendingAuthor{{at(claimed, 5), at(proven, 6)}}, claimed},
+		{"a proven row and a claimed one queued in one statement", nil, [][]pendingAuthor{{at(proven, 5), at(claimed, 6)}}, claimed},
+		{"a proven row, then a claimed one queued at another update", nil, [][]pendingAuthor{{at(proven, 5)}, {at(claimed, 6)}}, claimed},
+		{"a proven row, then a claimed one queued at the same update", nil, [][]pendingAuthor{{at(proven, 5)}, {at(claimed, 5)}}, claimed},
+		{"a claimed row, then a proven one queued at the same update", nil, [][]pendingAuthor{{at(claimed, 5)}, {at(proven, 5)}}, claimed},
+		{"two proven rows queued", nil, [][]pendingAuthor{{at(proven, 5)}, {at(proven, 5), at(proven, 6)}}, proven},
+		{"a stored proven row, then a claimed one queued beside it", []pendingAuthor{at(proven, 4)}, [][]pendingAuthor{{at(claimed, 5)}}, claimed},
+		{"a stored claimed row, then a proven one queued beside it", []pendingAuthor{at(claimed, 4)}, [][]pendingAuthor{{at(proven, 5)}}, claimed},
+		{"a stored proven row, then a claimed one queued over it", []pendingAuthor{at(proven, 4)}, [][]pendingAuthor{{at(claimed, 4)}}, claimed},
+		{"a stored claimed row, then a proven one queued over it", []pendingAuthor{at(claimed, 4)}, [][]pendingAuthor{{at(proven, 4)}}, claimed},
+		{"a stored proven row, then proven ones queued beside and over it", []pendingAuthor{at(proven, 4)}, [][]pendingAuthor{{at(proven, 4), at(proven, 5)}}, proven},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.store.Pool.Exec(ctx, `delete from doc_pending_authors where artifact_id = $1`, artifactID); err != nil {
+				t.Fatalf("clear the pending authors: %v", err)
+			}
+			if len(tc.stored) > 0 {
+				tx, err := service.store.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatalf("begin: %v", err)
+				}
+				defer tx.Rollback(ctx)
+				if err := upsertPendingAuthors(ctx, tx, artifactID, tc.stored); err != nil {
+					t.Fatalf("store %+v: %v", tc.stored, err)
+				}
+				if err := tx.Commit(ctx); err != nil {
+					t.Fatalf("commit the stored rows: %v", err)
+				}
+			}
+			var owed map[string]model.Actor
+			if err := joinedWrite(service, func(ctx context.Context) error {
+				tx, _ := txFromContext(ctx)
+				for _, authors := range tc.queued {
+					if err := upsertPendingAuthors(ctx, tx, artifactID, authors); err != nil {
+						return err
+					}
+				}
+				// The queued rows are the ledger's alone until the write phase runs, so the read
+				// below takes them from its overlay.
+				var rows int
+				if err := tx.QueryRow(ctx, `select count(*) from doc_pending_authors where artifact_id = $1`, artifactID).Scan(&rows); err != nil {
+					return err
+				}
+				if rows != len(tc.stored) {
+					return fmt.Errorf("the table holds %d rows before the write phase, want the %d stored", rows, len(tc.stored))
+				}
+				var err error
+				owed, err = transactionPendingAuthors(ctx, tx, artifactID)
+				return err
+			}); err != nil {
+				t.Fatalf("queue %+v and read the pending authors back: %v", tc.queued, err)
+			}
+			want := map[string]model.Actor{actorKey(tc.want): tc.want}
+			if !reflect.DeepEqual(owed, want) {
+				t.Fatalf("the transaction reads the pending authors as %+v, want %+v", owed, want)
+			}
+			stored, err := readPendingAuthors(ctx, service.store.Pool, artifactID)
+			if err != nil {
+				t.Fatalf("read the pending authors back: %v", err)
+			}
+			if !reflect.DeepEqual(stored, want) {
+				t.Fatalf("doc_pending_authors after the commit reads %+v, want %+v", stored, want)
+			}
+		})
 	}
 }

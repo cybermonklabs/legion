@@ -413,6 +413,9 @@ func (l *Ledger) queuedVersion(artifactID string, pending pendingVersion) {
 // one caller is queuePendingAuthors, which queues that write, so every queue of it is here. A
 // queued delete of them (deleteCapturedPendingAuthors) is queued after the insert, so it takes
 // the rows back out in the write phase; nothing of this transaction reads R between the two.
+// Each author merges every row queued of them (mergeAuthor), as readPendingAuthors merges the
+// rows the write phase leaves and the upsert merges a row written again: Proven only when every
+// queued row is.
 func (l *Ledger) queuedAuthors(artifactID string, authors []pendingAuthor) {
 	if l.owedAuthors == nil {
 		l.owedAuthors = make(map[string]map[string]model.Actor, 1)
@@ -423,7 +426,7 @@ func (l *Ledger) queuedAuthors(artifactID string, authors []pendingAuthor) {
 		l.owedAuthors[artifactID] = owed
 	}
 	for _, author := range authors {
-		owed[actorKey(author.actor)] = author.actor
+		mergeAuthor(owed, author.actor)
 	}
 }
 
