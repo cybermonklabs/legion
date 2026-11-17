@@ -240,18 +240,19 @@ func (r *newsPathRig) dispatchEvent(kind intake.DispatchArtifactKind, version in
 }
 
 // complete applies the completion of key's phase by the role its phase names, as the handoff route
-// applies one once it has read the handoff record back: the tester's with a pass.
+// applies one once it has read the handoff record back: the tester's with a pass. It reports the
+// run the issue stands in, its generation, and names a handoff record of that run.
 func (r *newsPathRig) complete(key string) {
 	r.t.Helper()
 	issue := readIssue(r.t, r.pool, key)
 	role := phase.RoleFor(issue.Phase)
 	word, _, _ := phase.Handoff(issue.Phase)
-	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: mustClaimToken(r.t, key, role), Summary: "done",
-		Commit: pathHead(key), HandoffRecord: word + "-1", HandoffVersion: 1}
+	fact := intake.HandoffComplete{Generation: issue.Generation, Issue: key, Role: role, Claim: mustClaimToken(r.t, key, role), Summary: "done",
+		Commit: pathHead(key), HandoffRecord: fmt.Sprintf("%s-%d", word, issue.Generation), HandoffVersion: 1}
 	if role == claim.RoleTester {
 		fact.Verdict = "pass"
 	}
-	applyFact(r.t, r.pool, "api", fmt.Sprintf("complete-%s-%s", key, issue.Phase), fact, r.engine, r.admission)
+	applyFact(r.t, r.pool, "api", fmt.Sprintf("complete-%s-%s-%d", key, issue.Phase, issue.Generation), fact, r.engine, r.admission)
 }
 
 // completeThroughTheRoute is machine's worker completing its phase through the daemon's handoff

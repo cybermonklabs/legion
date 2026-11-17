@@ -142,9 +142,12 @@ func (r *newsRig) sendAs(issue string, role claim.Role, news record.DeliveryNews
 	return task, &decoded
 }
 
-// newsItem is the news of version to of step's document to issue's audience, which took from.
+// newsItem is the news of version to of step's document to issue's audience, which took from,
+// rendered in the run every rig here records its issues in: generation 1 of the issue and of its
+// tree's root.
 func newsItem(issue string, audience record.DesignAudience, step record.DesignStep, artifact string, from, to int) record.DeliveryNewsItem {
-	return record.DeliveryNewsItem{Issue: issue, Audience: audience, Step: step, Artifact: artifact, From: new(from), To: to}
+	return record.DeliveryNewsItem{Issue: issue, Audience: audience, Step: step, Artifact: artifact, From: new(from), To: to,
+		Generation: 1, TreeGeneration: 1}
 }
 
 // The text of a task carrying news is rendered at its send from the record as it stands then.
@@ -300,6 +303,7 @@ func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *
 	const testerText = "Test the change. Issue: LEGION-502. Phase: testing."
 	const reason = "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY"
 	attached := record.DeliveryNewsItem{Issue: newsTested, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", To: 5,
+		Generation: 1, TreeGeneration: 1,
 		HistoryUnread: &record.DeliveryHistoryUnread{Reason: reason, ReadAt: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}}
 	tester := record.DeliveryNews{Task: testerText, Items: []record.DeliveryNewsItem{attached}}
 	unreadWords := "The version your phase last took could not be read: " + strconv.Quote(reason) + "."

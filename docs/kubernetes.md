@@ -1973,8 +1973,8 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 #### Rolling back the release that tells a holder of an approved new version
 
-This release's migration `20261114082752_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told` and `design_news_told_in`, and the outbox kind `design_changes`.
-No statement of the release before this one names the three tables, the four new columns or the five functions, and the kind list it set is a subset of this one, so the schema needs no restore.
+This release's migration `20261114082752_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
+No statement of the release before this one names the three tables, the four new columns or the eight functions, and the kind list it set is a subset of this one, so the schema needs no restore.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -1984,7 +1984,9 @@ Such a start waits while its claim works a turn, and a merger's start waits whil
 It also refuses on every attempt a `design_gates_publish` row that carries `holds`, which is every such row this release queued with at least one entry (an emptied set carries none).
 Its `RoleRuns` decodes each queued supervise row of the role and generation it reads, so each admission pass that reads that role's run fails too.
 Its `pending_task_deliveries` upsert names only its own columns, and its `on conflict ... do update` leaves `design_news`, `carried_news`, `carried_ran` and `news_only` as this release wrote them.
-So a delivery that it writes over keeps the news of the task it replaced and the copy of that news a prompt carried (`carried_news`), and after a roll forward this release would count that copy in `design_news_told_in` as the credit of whatever delivery the earlier release confirmed in that row.
+So a delivery that it writes over keeps the news of the task it replaced and the copy of that news a prompt carried (`carried_news`).
+Each item and each opening of that copy names the run it was rendered in, the generation of its issue and the generation of its tree's root (`generation` and `tree_generation`), and counts only while the record still holds both (`design_news_current`).
+After a roll forward, this release would count each one that still does, in `design_news_told_in`, as the credit of whatever delivery the earlier release confirmed in that row.
 This release marks a pending task that it queued for news alone in its own column, `news_only`, and the earlier release reads no such mark.
 So the earlier release reads such a task as its claim's phase task, and a task it writes over such a row keeps the mark, which this release would read after the roll forward as a task of news alone.
 It also reads a root architect's untaken news-only task as a start of that architect's work on its way (`workflow.ArchitectStartPending`), so its sweep would send that architect no entry its row is owed until a turn took the news.

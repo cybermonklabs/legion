@@ -454,12 +454,12 @@ func pendingID(p *Delivery) string {
 // queue sends nothing, and sendPending hands a working claim nothing — so it goes at the next
 // point a turn may take it, once, and no turn is interrupted or started twice.
 //
-// A taken task retired so before its turn's result has come gives back the news of the approved
-// design its confirmation raised (Delivery.Carried, the claim store's RetireDelivery): the result
-// of that turn now answers a task the claim no longer holds, and the fence drops it, so a provider
-// error that ends the turn could take nothing back. The news is owed again, and the next start of
-// the phase, or the reconcile once the claim holds no untaken task, tells it: told twice, never not
-// at all.
+// A taken task retired so before its turn's result has come ends the credit its confirmation made
+// of the news of the approved design (Delivery.Carried, which goes with the row the claim store's
+// RetireDelivery deletes): the result of that turn now answers a task the claim no longer holds,
+// and the fence drops it, so a provider error that ends the turn could take nothing back. The news
+// is owed again, and the next start of the phase, or the reconcile once the claim holds no untaken
+// task, tells it: told twice, never not at all.
 //
 // An untaken pending delivery still refuses a second one, as it always has: that task has reached
 // nobody, so accepting over it would lose a task rather than save one. Four untaken deliveries are
@@ -670,13 +670,14 @@ func (m *Machine) given(request RequestDeliver) bool {
 // (Delivery.NewsOnly). It holds no work, only the news, and the start of an entry carries that
 // same news itself: the start executor reads what the record owes the claim when the start runs
 // (the daemon's newsForStart), and p's news is still owed then, since a task no turn confirmed
-// raised nothing (the claim store's settleDesignNews), and the send renders it again from the
-// record (currentNews). So the entry's task goes first and alone, and the work the role is owed
-// never waits a turn and a backoff behind news. Kept in front of it, p would also hold a root
-// architect's entry out of the first stall arm, which reads only a task of the row's entry (admit's
-// architectStalls). A start of no entry carries no news (the daemon's startNewsOf), so p is not
-// superseded by it: queue refuses it behind p and sends p first, as behind any untaken task, and
-// the reconcile tells p's news where no later start of an entry does.
+// holds no credit (the claim store counts only a confirmed row's copy, design_news_told_in), and
+// the send renders it again from the record (currentNews). So the entry's task goes first and
+// alone, and the work the role is owed never waits a turn and a backoff behind news. Kept in front
+// of it, p would also hold a root architect's entry out of the first stall arm, which reads only a
+// task of the row's entry (admit's architectStalls). A start of no entry carries no news (the
+// daemon's startNewsOf), so p is not superseded by it: queue refuses it behind p and sends p
+// first, as behind any untaken task, and the reconcile tells p's news where no later start of an
+// entry does.
 //
 // The second is the rule only a tree's root architect is held to (queue): request carries a run,
 // is no resend of an entry (RequestDeliver.ResendEntry), and p is a task of a run that is either
@@ -695,11 +696,12 @@ func (m *Machine) given(request RequestDeliver) bool {
 // would be confirmed by p's turn and retired by its end, unsent (replaceable says the same of the
 // relaunch's record).
 //
-// A superseded p gives back nothing, since it raised nothing: its retirement removes a row no turn
-// confirmed, and the claim store puts back news only for a confirmed one (RetireDelivery). So
-// what p carried of the approved design stays owed on the told rows, whatever became of p before
-// — never sent, sent and acknowledged by a daemon before a restart, or confirmed by a turn whose
-// confirmation was then taken back — and the task that takes its place, or the reconcile, tells it.
+// A superseded p ends no credit, since it holds none: its retirement removes a row no turn
+// confirmed, and the claim store counts only a confirmed row's copy as a credit
+// (design_news_told_in). So what p carried of the approved design stays owed on the told rows,
+// whatever became of p before — never sent, sent and acknowledged by a daemon before a restart, or
+// confirmed by a turn whose confirmation was then taken back — and the task that takes its place,
+// or the reconcile, tells it.
 func (m *Machine) supersedes(p Delivery, request RequestDeliver) bool {
 	if !p.ConfirmedAt.IsZero() || m.send != nil || m.awaitsResult() {
 		return false
@@ -1033,18 +1035,20 @@ func (m *Machine) asksRoot(d Delivery) bool {
 }
 
 // unsentNews says whether d carries news of the approved design (Delivery.News) that no
-// acknowledged prompt carried (Delivery.Carried). The write that records its confirmation raises
-// what the prompt its turn answers carried and clears the opening that prompt carried (the claim
-// store's settleDesignNews), so its confirmation must come from a turn that such a prompt started.
-// The mark is the copy, not Delivery.Prompted: Prompted is set as the send goes out, before the
-// send adopts the working copy and mints its identity, so a send whose adoption was refused
-// (runtime.ErrAdoptRefused) or whose mint failed (runtime.ErrIdentityUnavailable) is Prompted with
-// no prompt ever sent, where the copy is written only at Oh My Pi's acknowledgement (acked). A
-// restart that left such a task pending knows that no earlier daemon's prompt of it reached the
-// agent, so the question that restart left (askFirst) never takes a turn of the agent's own for it,
-// at the send (sendPending) or at a turn's start (beginTurn). The copy is persisted at that
-// acknowledgement, so a prompt acknowledged just before a crash reads as never sent and the news is
-// sent a second time: of the two faults, that is the one that loses nothing.
+// acknowledged prompt carried (Delivery.Carried). The write that records its confirmation makes
+// what the prompt its turn answers carried the delivery's credit, its items and the opening it
+// carried (the claim store reads the copy a confirmed row holds, design_news_told_in, and folds it
+// once the turn's result says it ran, settleDesignNews), so its confirmation must come from a turn
+// that such a prompt started. The mark is the copy, not Delivery.Prompted: Prompted is set as the
+// send goes out, before the send adopts the working copy and mints its identity, so a send whose
+// adoption was refused (runtime.ErrAdoptRefused) or whose mint failed
+// (runtime.ErrIdentityUnavailable) is Prompted with no prompt ever sent, where the copy is written
+// only at Oh My Pi's acknowledgement (acked). A restart that left such a task pending knows that no
+// earlier daemon's prompt of it reached the agent, so the question that restart left (askFirst)
+// never takes a turn of the agent's own for it, at the send (sendPending) or at a turn's start
+// (beginTurn). The copy is persisted at that acknowledgement, so a prompt acknowledged just before
+// a crash reads as never sent and the news is sent a second time: of the two faults, that is the
+// one that loses nothing.
 func unsentNews(d Delivery) bool { return len(d.News) > 0 && len(d.Carried) == 0 }
 
 // askFirstNeverTakes says whether a turn the agent started by itself is never taken for d's turn

@@ -92,16 +92,19 @@ func (r *toldRig) wantTold(why string, issue string, audience record.DesignAudie
 // took version 3, version 2 of the Verification document to the root's architect, whose row knows
 // no version of it and whose review history could not say which (record.DeliveryHistoryUnread),
 // and the opening to the child's holder, under the opening number the child's row holds as tell
-// writes it (0). Its prompt was acknowledged carrying exactly that news, so the delivery holds it as
-// the copy its confirmation credits (supervise.Delivery.Carried).
+// writes it (0). Each is rendered in the run the rig records its issues in, generation 1 of the
+// issue and of its tree's root (keptRig.issue). Its prompt was acknowledged carrying exactly that
+// news, so the delivery holds it as the copy its confirmation credits (supervise.Delivery.Carried).
 func (r *toldRig) newsTask(id string) supervise.Delivery {
 	r.t.Helper()
 	news, err := json.Marshal(record.DeliveryNews{Task: "Review the change.", Items: []record.DeliveryNewsItem{
-		{Issue: toldChild, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", From: new(3), To: 5},
+		{Issue: toldChild, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", From: new(3), To: 5,
+			Generation: 1, TreeGeneration: 1},
 		{Issue: toldRoot, Audience: record.AudienceArchitect, Step: record.DesignStepCriteria, Artifact: "artifact-checks", To: 2,
+			Generation: 1, TreeGeneration: 1,
 			HistoryUnread: &record.DeliveryHistoryUnread{Reason: "Dispatch failed 3 reads of the document's review history, the last with: 502 BAD_GATEWAY",
 				ReadAt: r.at}},
-	}, Openings: []record.DeliveryOpening{{Issue: toldChild, Audience: record.AudienceHolder}}})
+	}, Openings: []record.DeliveryOpening{{Issue: toldChild, Audience: record.AudienceHolder, Generation: 1, TreeGeneration: 1}}})
 	if err != nil {
 		r.t.Fatal(err)
 	}

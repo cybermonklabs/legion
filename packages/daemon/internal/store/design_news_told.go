@@ -43,12 +43,17 @@ import (
 // task sent twice, its acknowledgement lost to a crash before the copy was written, is the fault
 // left, and it loses nothing.
 //
-// The payload is read here in SQL, by its JSON names, as the kept decisions are read beside it
+// The payload is read in SQL, by its JSON names, as the kept decisions are read beside it
 // (kept_decisions.go): this package imports no record, whose own tests read the claim store, so
-// the shape is the one record.DeliveryNews writes and its doc names these readers. A final credit
-// is folded through the SQL function design_news_folded, the one write record.Postgres.RaiseTold
-// makes too, and its openings through design_news_opening_told, the delivery's settlement of the
-// owed opening.
+// the shape is the one record.DeliveryNews writes and its doc names these readers. The copy is read
+// as credits by two SQL functions alone, design_news_credits for its items and design_news_openings
+// for the openings it says opened, which the read of a standing credit (design_news_told_in) and
+// the fold here both call. Each counts an item or an opening only while the record still holds the
+// run it was rendered in (design_news_current: record.DeliveryNewsItem.Generation and
+// TreeGeneration), so a copy of a run that a clear of a generation ended tells the next run
+// nothing. A final credit is folded through the SQL function design_news_folded, the one write
+// record.Postgres.RaiseTold makes too, and its openings through design_news_opening_told, the
+// delivery's settlement of the owed opening.
 
 // settleDesignNews folds a delivery's final credit into the told rows: on a write of a confirmed
 // delivery whose turn's result said the turn ran (supervise.Delivery.Ran), what its copy carried
@@ -64,24 +69,20 @@ func settleDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, d super
 	return foldDesignNews(ctx, tx, token, d.ID, carried, d.ConfirmedAt)
 }
 
-// foldDesignNews folds what carried told into the told rows: the items of each audience it spoke
-// to as credits counted from each item's From (design_news_folded, which writes the row where there
-// is none), and each opening it said opened as owed no longer where the row still holds that same
-// opening (its Seq, design_news_opening_told). An opening it said closed clears nothing, an item of
-// an issue the record does not hold folds nothing, and a copy that carried no news folds nothing.
+// foldDesignNews folds what carried told into the told rows: the credits of each audience it spoke
+// to (design_news_credits), each counted from its item's From (design_news_folded, which writes the
+// row where there is none), and each opening it said opened (design_news_openings) as owed no
+// longer where the row still holds that same opening (its Seq, design_news_opening_told). An
+// opening it said closed clears nothing, an item or an opening of a run the record no longer holds
+// (design_news_current) folds nothing, and a copy that carried no news folds nothing.
 func foldDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, carried []byte, at time.Time) error {
-	if _, err := tx.Exec(ctx, `select design_news_folded(item.issue, item.audience,
-			jsonb_agg(jsonb_build_object('step', item.step, 'from', item."from", 'to', item."to")), $2::timestamptz)
-		from jsonb_to_recordset(coalesce($1::jsonb -> 'items', '[]'::jsonb))
-			as item (issue text, audience text, step text, "from" int, "to" int)
-		join issues owner on owner.key = item.issue
-		group by item.issue, item.audience`, carried, at); err != nil {
+	if _, err := tx.Exec(ctx, `select design_news_folded(credit.issue, credit.audience, jsonb_agg(credit.link), $2::timestamptz)
+		from design_news_credits($1::jsonb) credit
+		group by credit.issue, credit.audience`, carried, at); err != nil {
 		return fmt.Errorf("fold what the delivery %s on %s told of the approved design: %w", delivery, token, err)
 	}
 	if _, err := tx.Exec(ctx, `select design_news_opening_told(opened.issue, opened.audience, opened.seq)
-		from jsonb_to_recordset(coalesce($1::jsonb -> 'openings', '[]'::jsonb))
-			as opened (issue text, audience text, seq int, closed boolean)
-		where not coalesce(opened.closed, false)`, carried); err != nil {
+		from design_news_openings($1::jsonb) opened`, carried); err != nil {
 		return fmt.Errorf("clear the opening the delivery %s on %s carried: %w", delivery, token, err)
 	}
 	return nil

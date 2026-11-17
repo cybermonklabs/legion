@@ -1407,8 +1407,9 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // very turn whose start, with this send in flight, confirmed the task, so it stays the task's.
 // A confirmation that goes takes back what it told (moveTelling, confirm): the turn that confirmed
 // the task was another's, so the agent never read the sentence the task's prompt carried, and the
-// next prompt carries it again. The news of the approved design it raised goes back with it: the
-// copy goes (Delivery.Carried), and the store puts back what the row it replaces holds. A refused
+// next prompt carries it again. The credit it made of the news of the approved design goes with
+// it: the copy goes (Delivery.Carried), and the write of the delivery without it ends that credit,
+// since the store counts only the copy a confirmed row holds (design_news_told_in). A refused
 // send writes no copy of its own news, since only an acknowledgement does (acked): a task whose
 // every send was refused here — its adoption refused, its identity not minted, its prompt answered
 // busy — is one no acknowledged prompt carried, which no turn of the agent's own confirms across a
@@ -1488,7 +1489,7 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	untold, handshakeMoved := false, false
 	if !m.awaitsResult() {
 		// No acknowledged prompt of the task is left, so no copy of its news stands, and the
-		// write below puts back what a confirmation taken back raised (Delivery.Carried,
+		// write below ends the credit of a confirmation it takes back (Delivery.Carried,
 		// takeBackConfirmation).
 		handshakeMoved = m.takeBackConfirmation(p)
 		untold = m.moveTelling(p.ID, "")

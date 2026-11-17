@@ -34,7 +34,7 @@ func TestASecondConfirmationOverAConfirmationWhoseTakeBackWasLostCreditsOnlyItsO
 		t.Fatal(err)
 	}
 	copied.Items = []record.DeliveryNewsItem{{Issue: toldChild, Audience: record.AudienceHolder, Step: record.DesignStepSpec,
-		Artifact: "artifact-spec", From: new(3), To: 6}}
+		Artifact: "artifact-spec", From: new(3), To: 6, Generation: 1, TreeGeneration: 1}}
 	copied.Openings = nil
 	encoded, err := json.Marshal(copied)
 	if err != nil {
