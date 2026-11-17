@@ -8,18 +8,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// A child whose first phase started gets its own architect for the rest of its run, even when
-// its tree lingers before the outbox reaches that architect's start. The start waits behind the
-// child's branch row on the child's lane; a person moves the root out of the workflow meanwhile,
-// so the tree lingers and the outbox finishes the start without creating the claim (as it does
-// every start of a lingering tree's member); then the person sets the root back to todo inside its
-// linger, which reopens the tree and brings back each role of its mid-phase members
-// (admit's startMidPhaseMembers). The child's planner comes back there, and its architect must
-// come back with it: R1 starts an architect on every child at its first phase start, and D9's one
-// exception is a child started before the deploy. A later phase start revives only a failed claim
-// (workflow's reviveArchitect), so a start that brings back nothing here leaves the child with no
-// architect of its own until it closes.
-func TestAChildsArchitectStartDroppedByALingerComesBackWithTheTree(t *testing.T) {
+// A child whose first phase started gets its own architect for the rest of its run, even when its
+// tree lingers before the outbox reaches that architect's first start. That start is the plain one
+// the child's first phase start queues after the child's branch row (workflow's gateOpened), and it
+// finds no claim. A person moves the root out of the workflow before the outbox runs it, so the
+// tree lingers, and the outbox holds the start on its backoff with no claim created
+// (childArchitectFirstStart, startRoot), where it finishes every other start of a lingering tree's
+// member without acting. The person then sets the root back to todo inside its linger, which
+// re-admits the tree and brings back each role of its mid-phase members that holds a claim
+// (admit's startMidPhaseMembers): the child's planner, and not its architect, which holds none.
+// So the held first start is the one row that gives the child its architect, and it must still be
+// queued after the reopen. Had the outbox finished it, nothing would queue it again: a later phase
+// start revives only a failed claim (workflow's reviveArchitect), and the child would run to its
+// close with no architect of its own, which R1 allows only for a child started before the change
+// (plan D9). TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain reads the held start act.
+func TestAChildsArchitectFirstStartHeldByALingerIsQueuedWhenTheTreeReopens(t *testing.T) {
 	rig := newChildArchitectRig(t)
 	rig.written("release", childAt("todo", 2))
 	if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Planning {
@@ -30,12 +33,12 @@ func TestAChildsArchitectStartDroppedByALingerComesBackWithTheTree(t *testing.T)
 	}
 
 	// The root leaves the workflow before the outbox runs the child's rows: its tree lingers, and
-	// the outbox finishes every start of the tree's members without acting.
+	// the outbox holds the child's architect start with no claim created.
 	rig.apply("root-parked", intake.DispatchIssue{Key: doorRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "backlog", HandedOver: true,
 		Title: "root", Rank: "U"})
 	rig.drain()
 	if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {
-		t.Fatal("the lingering tree's child got an architect claim; want the start finished without acting, as every member's start of a lingering tree is")
+		t.Fatal("the lingering tree's child got an architect claim; want its first start held with no claim created while the tree lingers")
 	}
 
 	// The person sets the root back to todo inside its linger: the tree is reopened with its
@@ -54,6 +57,6 @@ func TestAChildsArchitectStartDroppedByALingerComesBackWithTheTree(t *testing.T)
 		t.Fatal("the reopened tree queued no start of the child's planner; the scenario did not reach the reopen's restart of its mid-phase members")
 	}
 	if starts := rig.architectStarts(doorChild); starts == 0 {
-		t.Fatalf("the reopened tree queued %d start of the child's planner and none of the child's own architect, which its first phase start owed it and the lingering tree's outbox never created", plannerStarts)
+		t.Fatalf("the reopened tree queued %d start of the child's planner and left no start of the child's own architect queued: its first phase start owed it one, and the lingering tree's outbox created no claim for it", plannerStarts)
 	}
 }
