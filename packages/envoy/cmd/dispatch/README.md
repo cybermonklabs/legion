@@ -4559,6 +4559,7 @@ Each item below names a path with its method and identity, then its purpose.
   The findings of a document out of scope are listed too, and `refuses_approval` is true only for a document in scope with a finding.
   `terms` is the list of terms of the root, sorted by term, each `{term, definition, document, version, issue}`.
   It is empty when no root holds the document.
+  `unread` is each approved version under the root that Dispatch cannot read, also a version of this document (When Dispatch cannot read a version, below).
   A version that the document does not have is `404 VERSION_NOT_FOUND`.
   A `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`.
   Without `version`, a document with no settled version is `409 NO_VERSION`.
@@ -4821,7 +4822,7 @@ A full-width letter or a ligature folds to its plain letters.
   A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
   So the agent's request, the person's Approve on the page and `dispatch spec-form` each show that finding and its way out.
   Another approved document under the root whose latest approved version Dispatch cannot read refuses nothing.
-  Each answer names it in `unread`, one line for each.
+  Each answer names it in `unread`, one line for each, also an answer about that document itself.
   A document that holds a definition is the exception, because no rule can compare the definition with the terms of that version.
   Dispatch refuses its request with one finding of kind `document` and rule `unreadable` that names that approved document and its version.
   No rule compares the texts of that version, so its component names are no nouns of the system.
@@ -4834,11 +4835,13 @@ A full-width letter or a ligature folds to its plain letters.
   So write the new version of one of them first with no definition, and the finding says so.
   When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.
   So the definition of another document can govern the term then, and no person approved that change.
+  Then Dispatch refuses a new version of that document with its definition, until the person approves a version of the other document without the term.
   The list reads no older version, so such a version refuses no request, and a new version changes nothing of it.
   Each answer names that version in `unread`, with a line that says that it changes the order alone.
 
 The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
-Dispatch reads the latest version of each that a person approved, and leaves out the documents that it judges.
+Dispatch reads the latest version of each that a person approved.
+A judgment compares a document with that list less the documents that it judges, and each answer gives the whole list.
 Dispatch compares the names of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run of spaces as one space.
 That form removes the characters that show nothing, such as a zero-width space or a soft hyphen.
 The list holds one definition of each term.

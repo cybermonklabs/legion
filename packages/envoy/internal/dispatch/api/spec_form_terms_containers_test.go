@@ -243,8 +243,11 @@ func olderUnreadLine(document string, version int, issue string) string {
 // outside the root with another definition, moves in. When B moves in after A's second approval,
 // A keeps lease. When B moves in before it (the reviewer's probe U1), A's definition joins at its
 // second approval once its first version cannot be read, so B's governs: the choice that the
-// README states ("an older approved version that Dispatch cannot read holds no term"). The control
-// of each row: before the first version is made unreadable, A keeps lease.
+// README states ("an older approved version that Dispatch cannot read holds no term"). Then A's
+// next version that keeps lease is a second definition. The way out that keeps A's definition is
+// B's next version without lease: once the person approves it, A's definition governs again. The
+// root's terms.md is no way out, since a definition of lease there is a second definition too. The
+// control of each row: before the first version is made unreadable, A keeps lease.
 func TestAnUnreadableOlderApprovedVersionOnlyOrdersTheList(t *testing.T) {
 	const second, third = "The hold of one session on one work unit.", "The hold that one session keeps on one work unit."
 	for _, row := range []struct {
@@ -291,7 +294,27 @@ func TestAnUnreadableOlderApprovedVersionOnlyOrdersTheList(t *testing.T) {
 			}
 			requireNewTermOpens("C defines gale", "gale")
 			if row.movesFirst {
-				return // B's definition governs lease, so a next version of A that defines it is a second definition.
+				reviseDocument(t, tree.handler, a.PrimaryArtifactID, termLine("lease", second), termLine("lease", third), 3)
+				awaitSettled(t, tree.database, a.PrimaryArtifactID)
+				refused := requestFormApproval(t, tree.handler, a.PrimaryArtifactID, nil)
+				byB := func(finding specFormFinding) bool {
+					return finding.Node == "lease" && finding.Rule == "term-second-definition" &&
+						strings.HasPrefix(finding.Detail, "spec.md version 1 of "+b.Key+" already defines this term")
+				}
+				if refused.Code != http.StatusConflict || !slices.ContainsFunc(decodeBody[specFormError](t, refused).Findings, byB) {
+					t.Fatalf("A's next version that keeps lease: status=%d body=%s; want 409 naming B's definition", refused.Code, refused.Body.String())
+				}
+				terms := uploadFormDocument(t, tree.handler, tree.root, "terms.md", termsMd(termLine("lease", third)))
+				if response := requestFormApproval(t, tree.handler, terms.ID, nil); response.Code != http.StatusConflict ||
+					!slices.ContainsFunc(decodeBody[specFormError](t, response).Findings, byB) {
+					t.Fatalf("the root's terms.md that defines lease: status=%d body=%s; want 409 naming B's definition", response.Code, response.Body.String())
+				}
+				approveRevisionThrough(t, tree, tree.handler, b, termLine("lease", otherLease), termLine("gust", "A short strong wind of one coast."), 2)
+				requireFormRequestOpened(t, requestFormApproval(t, tree.handler, a.PrimaryArtifactID, nil))
+				if listed, count := listedOf(t, tree.handler, a.PrimaryArtifactID, "lease"); count != 1 || listed != heldByA {
+					t.Fatalf("after B's version without lease: the list holds lease %d times, as %#v; want once, as %#v", count, listed, heldByA)
+				}
+				return
 			}
 			// The next version of A: the way out of a latest approved version, which changes nothing here.
 			approveRevisionThrough(t, tree, tree.handler, a, termLine("lease", second), termLine("lease", third), 3)
@@ -335,6 +358,104 @@ func TestTheWayOutOfTwoUnreadableDocumentsIsAVersionWithNoDefinition(t *testing.
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, y.PrimaryArtifactID, nil))
 	approveFormDocument(t, tree.handler, y.PrimaryArtifactID)
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, x.PrimaryArtifactID, nil))
+}
+
+// latestUnreadLine is the whole line that names the latest approved version of a document that
+// Dispatch cannot read: no rule compared its texts, the list of terms can lack its terms, and the
+// way out.
+func latestUnreadLine(document string, version int, issue string) string {
+	return unreadLine(document, version, issue) + " The list of terms can lack the terms of that version. " +
+		"To change that, write a new version of that document and request its approval."
+}
+
+// namesUnread reports whether unread names version of the document whose id is artifactID, with
+// line.
+func namesUnread(unread []specFormUnread, artifactID string, version int, line string) bool {
+	return slices.ContainsFunc(unread, func(each specFormUnread) bool {
+		return each.ArtifactID == artifactID && each.Version == version && each.Line == line
+	})
+}
+
+// R50: "The Spec holds a list of defined terms." The list reads the latest approved version of each
+// document, so when Dispatch cannot read that version, the list lacks its terms. Each answer that
+// gives the list then names that version in unread, with the line that says so, also when the
+// answer judges that same document (the reviewer's probe H1): the read at its newer version, which
+// `dispatch spec-form --terms` prints, and the read at the unreadable version itself, the answer of
+// its approval request, the refusal of its request and of the person's approval, and the reason
+// that a reopen writes on its request that breaks the form. The gate keeps its own view: the
+// version that a request names stands in for the approved one, so the request of that document
+// with a definition opens. The control: the read of another document names that version too.
+func TestEachAnswerThatGivesTheListNamesEachApprovedVersionThatDispatchCannotRead(t *testing.T) {
+	fault := formFaults[0]
+	spec := "# Spec\n\n" + formRequirement(fault.node, fault.clean) + "\n## Terms\n\n" + termList([]string{termLine("lease", leaseDefinition)})
+	session := specFormTerm{Term: "session", Definition: sessionDefinition, Document: "terms.md", Version: 1, Issue: "ACME-1"}
+	t.Run("the document itself", func(t *testing.T) {
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+		approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+		d := createFormIssue(t, tree.handler, tree.root, "D", spec)
+		approveFormDocument(t, tree.handler, d.PrimaryArtifactID)
+		e := createFormIssue(t, tree.handler, tree.root, "E", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
+		storeUnreadableVersion(t, tree.database, d.PrimaryArtifactID, 1)
+		line := latestUnreadLine("spec.md", 1, d.Key)
+		t.Run("control: the read of another document", func(t *testing.T) {
+			if read := specFormReadOf(t, tree.handler, e.PrimaryArtifactID); !namesUnread(read.Unread, d.PrimaryArtifactID, 1, line) {
+				t.Errorf("the read of E names %#v in unread; want %q", read.Unread, line)
+			}
+		})
+		t.Run("the read at the unreadable version", func(t *testing.T) {
+			response := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+d.PrimaryArtifactID+"/spec-form?version=1", nil, "alice")
+			if read := decodeBody[specFormRead](t, response); response.Code != http.StatusOK || !namesUnread(read.Unread, d.PrimaryArtifactID, 1, line) {
+				t.Errorf("the read of D at version 1: status=%d body=%s; want unread to name %q", response.Code, response.Body.String(), line)
+			}
+		})
+		reviseDocument(t, tree.handler, d.PrimaryArtifactID, leaseDefinition, otherLease, 2)
+		awaitSettled(t, tree.database, d.PrimaryArtifactID)
+		t.Run("the read at the newer version, which --terms prints", func(t *testing.T) {
+			read := specFormReadOf(t, tree.handler, d.PrimaryArtifactID)
+			if read.Version != 2 || !slices.Equal(read.Terms, []specFormTerm{session}) || !namesUnread(read.Unread, d.PrimaryArtifactID, 1, line) {
+				t.Errorf("the read of D at version %d lists %#v and names %#v in unread; want version 2, the list without lease, and unread to name %q",
+					read.Version, read.Terms, read.Unread, line)
+			}
+		})
+		t.Run("the answer of the request, which the gate opens", func(t *testing.T) {
+			opened := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, d.PrimaryArtifactID, nil))
+			if opened.SpecForm == nil || opened.SpecForm.Terms != 1 || !namesUnread(opened.SpecForm.Unread, d.PrimaryArtifactID, 1, line) {
+				t.Errorf("the request of D opened with spec_form %#v; want 1 term and unread to name %q", opened.SpecForm, line)
+			}
+		})
+	})
+	t.Run("a refusal", func(t *testing.T) {
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+		approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+		d := createFormIssue(t, tree.handler, tree.root, "D", spec)
+		approveFormDocument(t, tree.handler, d.PrimaryArtifactID)
+		reviseDocument(t, tree.handler, d.PrimaryArtifactID, fault.clean, fault.broken, 2)
+		awaitSettled(t, tree.database, d.PrimaryArtifactID)
+		storeUnreadableVersion(t, tree.database, d.PrimaryArtifactID, 1)
+		lines := append(fault.lines(2), latestUnreadLine("spec.md", 1, d.Key))
+		t.Run("the refusal of the request", func(t *testing.T) {
+			requireFormRefusal(t, "the request of D", requestFormApproval(t, tree.handler, d.PrimaryArtifactID, nil),
+				specform.ActRequest, lines, fault.findings(d, 2)...)
+		})
+		t.Run("the refusal of the person's approval", func(t *testing.T) {
+			requireFormRefusal(t, "the approval of D", reviewFormDocument(t, tree.handler, d.PrimaryArtifactID, "approved", ""),
+				specform.ActApproval, lines, fault.findings(d, 2)...)
+		})
+	})
+	t.Run("the reason of a reopen", func(t *testing.T) {
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+		approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+		d := createFormIssue(t, tree.handler, tree.outside, "D", spec)
+		approveFormDocument(t, tree.handler, d.PrimaryArtifactID)
+		reviseDocument(t, tree.handler, d.PrimaryArtifactID, fault.clean, fault.broken, 2)
+		awaitSettled(t, tree.database, d.PrimaryArtifactID)
+		request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, d.PrimaryArtifactID, nil)).Ask.ID
+		storeUnreadableVersion(t, tree.database, d.PrimaryArtifactID, 1)
+		reparentFormIssue(t, tree.handler, d.Key, tree.root)
+		seq := reopenFormIssue(t, tree, d.Key)
+		lines := append(fault.lines(2), latestUnreadLine("spec.md", 1, d.Key))
+		requireLeftResolved(t, tree.handler, tree.database, d.Key, seq, request, strings.Join(lines, "\n"), model.Actor{Kind: "user", ID: "alice"})
+	})
 }
 
 // The candidate inputs of the second reader of this rule that no row above pins, each as its spec,

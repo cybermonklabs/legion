@@ -169,14 +169,15 @@ type specFormTerm struct {
 	Issue      string `json:"issue"`
 }
 
-// specFormUnread is an approved version of a document under the root that a judgment did not
-// compare with the documents it judged, because Dispatch cannot read it (specform.UnreadableError).
-// cause is why the parser refuses it. The latest approved version of a document is a source of the
-// list: it refuses nothing of a document with no definition, and line says so, and a document that
+// specFormUnread is an approved version of a document under the root that Dispatch cannot read
+// (specform.UnreadableError), so no rule compares its texts. cause is why the parser refuses it.
+// The latest approved version of a document is a source of the list, so the list holds none of its
+// terms: it refuses nothing of a document with no definition, and line says so, and a document that
 // holds a definition is refused for it (specform.UnreadListFinding), since no rule can compare the
-// definition with its terms. An older approved version (orders) is no source of the list: it only
-// orders the definitions of its document, as a version that holds no term (definitionJoins), so it
-// refuses nothing, and line says that (specform.UnreadOlderLine).
+// definition with its terms, unless the judgment names its document (refusingDefinitions). An older
+// approved version (orders) is no source of the list: it only orders the definitions of its
+// document, as a version that holds no term (definitionJoins), so it refuses nothing, and line
+// says that (specform.UnreadOlderLine).
 type specFormUnread struct {
 	Document   string `json:"document"`
 	ArtifactID string `json:"artifact_id"`
@@ -187,10 +188,25 @@ type specFormUnread struct {
 	orders     bool
 }
 
+// specFormList is the list of terms of a root as each answer gives it (R50), one value with the
+// record of what Dispatch could not read as it made the list. The list can lack the terms of each
+// latest approved version in Unread, so no answer gives Terms without Unread whole, the versions of
+// the documents that the answer judges among them. Under a root approvedSpec.read makes this
+// value, and with no root both are empty.
+type specFormList struct {
+	// Terms is the list of terms of the root, sorted by term: the term lines of the approved
+	// versions of the root's terms.md and of the covered documents under it. It is empty for a
+	// document that no root holds.
+	Terms []specFormTerm `json:"terms"`
+	// Unread is each approved version under the root that Dispatch could not read as it made
+	// Terms, the versions of the documents that the answer judges among them.
+	Unread []specFormUnread `json:"unread"`
+}
+
 // specFormSummary is what an approval request's answer says of the form of the documents it
 // handed the person, when the document it names is in scope: the root, the count of each kind of
-// text it read, and each approved document under the root that it could not read. Terms counts
-// the terms of the root's list.
+// text it read, the count of the terms of the root's list, and the record of what Dispatch could
+// not read as it made that list (specFormList.Unread).
 type specFormSummary struct {
 	Root   string                `json:"root"`
 	Texts  map[specform.Kind]int `json:"texts"`
@@ -218,28 +234,24 @@ type specFormRead struct {
 	Texts         map[specform.Kind]int `json:"texts"`
 	Findings      []specFormFinding     `json:"findings"`
 	FindingsTotal int                   `json:"findings_total"`
-	// Terms is the list of terms of the root, sorted by term: the term lines of the approved
-	// versions of the root's terms.md and of the covered documents under it. It is empty for a
-	// document that no root holds.
-	Terms []specFormTerm `json:"terms"`
-	// Unread is each approved document under the root that the judgment could not read.
-	Unread []specFormUnread `json:"unread"`
+	// specFormList is the list of terms of the root and the record of what Dispatch could not read
+	// as it made the list, as one value.
+	specFormList
 	// RefusesApproval is whether an approval request or an approval of this version is refused.
 	RefusesApproval bool `json:"refuses_approval"`
 }
 
 // specFormDocument is one document a judgment named: the document, the version judged, where it
-// stands, and, once judged, the count of each kind of text, every finding, the list of terms of
-// its root, and each approved document under its root that the judgment could not read. A named
-// version that the parser refuses has its one finding in unreadable once read.
+// stands, and, once judged, the count of each kind of text, every finding, and the list of terms
+// of its root with its record of what Dispatch could not read (specFormList). A named version
+// that the parser refuses has its one finding in unreadable once read.
 type specFormDocument struct {
 	artifact model.Artifact
 	version  int
 	specScope
 	texts      map[specform.Kind]int
 	findings   []specFormFinding
-	terms      []specFormTerm
-	unread     []specFormUnread
+	list       specFormList
 	unreadable *specFormFinding
 }
 
@@ -259,11 +271,12 @@ func (r specFormResult) refusing() []specFormFinding {
 	return findings
 }
 
-// unread is each approved document that the judgment of a document in scope could not read, once.
+// unread is the record of what Dispatch could not read as it made the list of each document in
+// scope (specFormList.Unread), each version once.
 func (r specFormResult) unread() []specFormUnread {
 	unread := []specFormUnread{}
 	for _, document := range r.documents {
-		for _, each := range document.unread {
+		for _, each := range document.list.Unread {
 			if document.inScope() && !slices.Contains(unread, each) {
 				unread = append(unread, each)
 			}
@@ -298,7 +311,7 @@ func (r specFormResult) summary(artifactID string) *specFormSummary {
 	var summary *specFormSummary
 	for _, document := range r.documents {
 		if document.artifact.ID == artifactID && document.inScope() {
-			summary = &specFormSummary{Root: *document.root, Texts: map[specform.Kind]int{}, Terms: len(document.terms), Unread: r.unread()}
+			summary = &specFormSummary{Root: *document.root, Texts: map[specform.Kind]int{}, Terms: len(document.list.Terms), Unread: r.unread()}
 		}
 	}
 	if summary == nil {
@@ -546,28 +559,33 @@ func (j *specFormJudge) read(ctx context.Context, document *specFormDocument) (s
 // the call does not name, and the definitions under Terms of the documents it judged before this
 // one, since one request holds one definition of each term. A line of the term-line form outside
 // Terms is no definition: it is judged against the list and against the definitions under Terms
-// of every document of the call (defined), and it adds nothing.
+// of every document of the call (defined), and it adds nothing. The answer gets the root's whole
+// list with its whole record of what Dispatch could not read (approvedSpec.read): only the
+// comparisons leave out the documents that the call names.
 func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, extracted specform.Extracted) error {
 	context, err := j.baseContext(ctx)
 	if err != nil {
 		return err
 	}
-	document.terms, document.unread = []specFormTerm{}, []specFormUnread{}
-	var list, defined []specform.Term
+	document.list = specFormList{Terms: []specFormTerm{}, Unread: []specFormUnread{}}
+	var (
+		compared, defined []specform.Term
+		refusing          []specFormUnread
+	)
 	if document.root != nil {
 		approved, err := j.approvedUnder(ctx, *document.root)
 		if err != nil {
 			return err
 		}
 		context.SystemNames = approved.systemNames(j.skip)
-		list = append(approved.list(j.skip), j.proposed[*document.root]...)
+		compared = append(approved.list(j.skip), j.proposed[*document.root]...)
 		for _, other := range j.defined[*document.root] {
 			if other.artifactID != document.artifact.ID {
 				defined = append(defined, other.Term)
 			}
 		}
-		document.terms = approved.read()
-		document.unread = approved.unreadOf(j.skip)
+		document.list = approved.read()
+		refusing = approved.refusingDefinitions(j.skip)
 	}
 	document.texts = extracted.Counts
 	document.findings = []specFormFinding{}
@@ -575,19 +593,15 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, e
 		document.findings = append(document.findings, *document.unreadable)
 		return nil
 	}
-	for _, finding := range specform.Check(context, specform.Input{Texts: extracted.Texts, Proposed: extracted.Terms, List: list, Defined: defined}) {
+	for _, finding := range specform.Check(context, specform.Input{Texts: extracted.Texts, Proposed: extracted.Terms, List: compared, Defined: defined}) {
 		document.findings = append(document.findings, specFormFinding{
 			Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version, Finding: finding,
 		})
 	}
 	// R50 is a gate: a definition that no rule can compare with the terms of an approved document
-	// that Dispatch cannot read is refused, naming that document (specform.UnreadListFinding). An
-	// older approved version is no source of the list, so it refuses nothing.
+	// that Dispatch cannot read is refused, naming that document (specform.UnreadListFinding).
 	if len(extracted.Terms) > 0 {
-		for _, unread := range document.unread {
-			if unread.orders {
-				continue
-			}
+		for _, unread := range refusing {
 			document.findings = append(document.findings, specFormFinding{
 				Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version,
 				Finding: specform.UnreadListFinding(unread.Document, unread.Version, unread.Issue, unread.cause),
@@ -657,12 +671,12 @@ func lockSpecTerms(ctx context.Context, q queryer, root string) error {
 	return nil
 }
 
-// approvedSpec is what the approved covered documents under a root hold that a judgment of
-// another document reads: the names of the components and interfaces they define, which are
-// nouns of the system, the terms they define, which are the root's list of terms, one definition
-// of each term, sorted by term, and each approved version that Dispatch cannot read, which gives
-// nothing to compare. Each keeps the document that holds it, because a judgment leaves out the
-// documents it names: their named versions stand in for their approved ones.
+// approvedSpec is what the approved covered documents under a root hold that a judgment reads: the
+// names of the components and interfaces they define, which are nouns of the system, the terms
+// they define, which are the root's list of terms, one definition of each term, sorted by term,
+// and each approved version that Dispatch cannot read, which gives nothing to compare. Each keeps
+// the document that holds it, because a comparison leaves out the documents that a judgment
+// names: their named versions stand in for their approved ones. An answer leaves out none (read).
 type approvedSpec struct {
 	names  []approvedName
 	terms  []approvedTerm
@@ -687,16 +701,20 @@ func (a approvedSpec) systemNames(skip map[string]bool) []string {
 	return names
 }
 
-// unreadOf is each approved version that Dispatch cannot read of the documents skip does not
-// name: the version that a judgment names of a document stands in for its approved one.
-func (a approvedSpec) unreadOf(skip map[string]bool) []specFormUnread {
-	unread := []specFormUnread{}
+// refusingDefinitions is the gate's view of unread, which no answer gives: each latest approved
+// version that Dispatch cannot read of a document that skip does not name. No rule can compare a
+// definition with its terms, so each one refuses every definition of the judgment
+// (specform.UnreadListFinding). The version that a judgment names of a document stands in for its
+// approved one, so skip leaves that document out, and an older approved version (orders) only
+// orders the list, so it refuses nothing.
+func (a approvedSpec) refusingDefinitions(skip map[string]bool) []specFormUnread {
+	var refusing []specFormUnread
 	for _, each := range a.unread {
-		if !skip[each.ArtifactID] {
-			unread = append(unread, each)
+		if !skip[each.ArtifactID] && !each.orders {
+			refusing = append(refusing, each)
 		}
 	}
-	return unread
+	return refusing
 }
 
 // list is the root's list of terms as Check compares a definition with it, less the terms of the
@@ -713,12 +731,15 @@ func (a approvedSpec) list(skip map[string]bool) []specform.Term {
 	return list
 }
 
-// read is the root's whole list of terms, as the read route and an approval request's answer
-// show it.
-func (a approvedSpec) read() []specFormTerm {
-	read := make([]specFormTerm, len(a.terms))
+// read is the root's list of terms as every answer gives it: the whole list, with the whole record
+// of the approved versions that Dispatch could not read as it made the list (specFormList). It
+// leaves out no document that a judgment names, since the list lacks the terms of such a version
+// whoever reads it. Each answer shares the record, clipped, so an append to one answer's record
+// writes nothing into another's.
+func (a approvedSpec) read() specFormList {
+	read := specFormList{Terms: make([]specFormTerm, len(a.terms)), Unread: slices.Clip(a.unread)}
 	for index, term := range a.terms {
-		read[index] = term.specFormTerm
+		read.Terms[index] = term.specFormTerm
 	}
 	return read
 }
@@ -784,7 +805,7 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) 
 		return approvedSpec{}, fmt.Errorf("list the covered documents under %s: %w", root, err)
 	}
 	var (
-		approved  approvedSpec
+		approved  = approvedSpec{unread: []specFormUnread{}} // an answer with no unread version answers [], not null
 		documents []approvedSpecDocument
 	)
 	for _, artifact := range covered {
