@@ -125,9 +125,9 @@ func gcloudConfigurationList() string {
 // the file, not from `gcloud config list`, which on a Compute Engine VM answers a configuration
 // that names no account with the metadata server's service account (gcloud's core/account
 // callback), so a person's empty configuration would read as the machine's: measured on a
-// developer's Compute Engine VM on 2026-11-15, where `config list --configuration=theorem` named
-// the VM's account and `config configurations describe theorem` named none. A file it cannot read
-// is an error.
+// developer's Compute Engine VM on 2026-11-15, where `config list --configuration=<name>` for a
+// person's configuration named the VM's account and `config configurations describe <name>` named
+// none. A file it cannot read is an error.
 func gcloudConfigurationAccount(name string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(gcloudConfigDir(), "configurations", "config_"+name))
 	if err != nil {

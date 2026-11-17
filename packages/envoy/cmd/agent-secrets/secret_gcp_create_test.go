@@ -736,9 +736,9 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 		}},
 		{"a gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names", func(t *testing.T) {
 			useGcloudConfigurations(t, "box", orderConfigurations)
-			t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem")
+			t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "person")
 		}, func() (string, string) {
-			return "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem ", "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem "
+			return "CLOUDSDK_ACTIVE_CONFIG_NAME=person ", "CLOUDSDK_ACTIVE_CONFIG_NAME=person "
 		}},
 	} {
 		for _, scenario := range []struct {

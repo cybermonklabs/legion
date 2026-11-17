@@ -296,8 +296,9 @@ that sign-in is theirs to run in their own shell. Where the box's active gcloud 
 a person's login, the active gcloud account, which comes before the metadata server, is that
 person's as well. To write as the machine, name the machine's own gcloud login: set
 `CLOUDSDK_CORE_ACCOUNT` to the box's service account (on a Google VM `gcloud auth list` lists it),
-or `CLOUDSDK_ACTIVE_CONFIG_NAME` to the configuration that holds it. Or ask the person to run the
-command.
+or `CLOUDSDK_ACTIVE_CONFIG_NAME` to the configuration that holds it. `CLOUDSDK_CORE_ACCOUNT`
+outranks the account of any configuration, so unset it before you choose a configuration. Or ask
+the person to run the command.
 `agent-secrets secret set NAME` replaces the value of a secret that exists. A new one is
 `agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human`. `--owner me` is
 the email of the person the credential names, and is refused where it names none, as a token

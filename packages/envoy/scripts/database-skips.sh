@@ -9,7 +9,9 @@
 #
 #   go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/...
 #
-# and reads that report; `--report FILE` reads FILE instead and runs nothing, which a control
+# and reads that report; the -timeout bounds each package's test binary, not the run, since the
+# packages run several at a time, so a caller that must bound the run sets a limit of its own (CI's
+# step does). `--report FILE` reads FILE instead and runs nothing, which a control
 # uses. It prints each skipped test as `SKIP PACKAGE TEST`, then `database_skips=N`, and for a run
 # of its own `go_test_exit=E`. A report that is missing, empty or holds no test of a broker
 # package is no count at all: it prints `database_skips=UNKNOWN` and names what it could not read,

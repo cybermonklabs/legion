@@ -107,14 +107,15 @@ you complete the step.
 Sign in one time with `gcloud auth login`. This command does not change the credentials of the
 box. `agent-secrets` writes with the credential of the first source it finds, in this order: an
 access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then a credentials file that
-`GOOGLE_APPLICATION_CREDENTIALS` names, then the gcloud configuration that
-`CLOUDSDK_ACTIVE_CONFIG_NAME` names (or the login `CLOUDSDK_CORE_ACCOUNT` names), then the
-well-known credentials file, then the active gcloud account, and last the credentials of the box.
-Thus, before the `set`, unset the two variables that come first, so that your own login signs in
-and not a token you exported for an earlier step:
+`GOOGLE_APPLICATION_CREDENTIALS` names, then the gcloud login that `CLOUDSDK_CORE_ACCOUNT` names,
+else the gcloud configuration that `CLOUDSDK_ACTIVE_CONFIG_NAME` names (the account variable
+outranks the account of any configuration), then the well-known credentials file, then the
+active gcloud account, and last the credentials of the box. Thus, before the `set`, unset the
+three variables that come before the configuration, so that your own login signs in and not a
+token or a login you exported for an earlier step:
 
 ```sh
-unset CLOUDSDK_AUTH_ACCESS_TOKEN GOOGLE_APPLICATION_CREDENTIALS
+unset CLOUDSDK_AUTH_ACCESS_TOKEN GOOGLE_APPLICATION_CREDENTIALS CLOUDSDK_CORE_ACCOUNT
 ```
 
 Then, on the box, name the configuration your `gcloud auth login` signed in to, as the `set`
