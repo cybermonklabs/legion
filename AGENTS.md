@@ -901,15 +901,6 @@ Each item below names a task and where its code is, then notes on it.
   — not the repository, its Dispatch project key or issue keys, the company or its hostnames, and not in a file or directory name, a pull request title, body, branch name, commit message, comment or review, or a release note:
   write "the deployment repository" or `<deployment repo>`, and a neutral project key such as `ACME` in a fixture or example.
   `.github/scripts/check-private-names.sh` fails the build on any text file or path that names either, and on any text that names a private internal host or a Tailscale MagicDNS host, and `docs-site.yaml`, which the `docs` job of `ci.yaml` calls, runs it over the built site too.
-  The deployment's names that the script cannot spell, because the script is public too, are its term list, `PRIVATE_NAME_TERMS`:
-  one term a line, each matched as given in any case anywhere in a line or a path, read from the Actions secret of that name.
-  One engine, GNU grep with one pattern per term, reads the repository, a named path, every path and the masking, so a spelling one finds, all find (grep's case counterparts, plus the characters such as a Kelvin sign or a dotless i whose case mapping folds to a letter grep does not count beside it).
-  The allowed hosts of the host rules are no exception for a term.
-  Only jobs that run no dependency code map that secret: each checks out the repository or downloads what another job built, and runs the script (its header lists them).
-  A hit names its file and line, or its path with `<name>` where a term stands, or `<name>` alone for a path a term cannot be masked in; a file name holding a `:` or a newline stays whole, a named target and another command's message are masked the same way, a traced run prints nothing, and the log never prints a term.
-  With the list unset or empty, a `pull_request` or `pull_request_review` run, which a fork's pull request makes with no secret, and a run outside Actions warn that only the committed rules ran and keep their exit;
-  a merge group, a push or a dispatched run fails with exit 2.
-  A term lives in that secret alone, never in a file, commit, issue, pull request or log of this repository.
   `.github/scripts/check-pr-text.sh` runs it over a pull request's title, body, branch name, commits (each one's message, author and committer), issue comments, reviews and review comments, and requires the title to be a conventional commit subject, in `ci.yaml`'s `pr-title` job at every push to a pull request that is not a draft, when a draft is marked ready and on the merge queue's group (that job's own check run is the required `pr-title`, on the pull request's head or on the group's commit), and in `pr-title.yaml` on an edit and on a review, the events `ci.yaml` does not run on:
   this repository's squash settings make the title main's subject (which the merger passes with the number, and an empty body), and the body holds only the `Co-authored-by:` lines GitHub adds, one for each author of the branch's commits, the squash commit's own author included, so each of those authors' names and addresses reaches main's own history as well as the pull request's page (`e00cfac3b`, pull request #2851, carries one; `eb69b0a75`, #2823, carries two);
   the generated release notes list merged titles, each commit's message, author and committer stay public on the pull request's page, and a comment is public there once posted.
@@ -922,6 +913,16 @@ Each item below names a task and where its code is, then notes on it.
 
   - **The guard runs before the write; both scans above still run after it** — a pod's `git push`, its `jj git push` and its `legion gh` run Legion's leak guard before they write, so a name of any of these classes is refused in the pod rather than found on GitHub afterwards (`packages/daemon/internal/leakguard`, `docs/kubernetes.md`).
     Neither scan is changed by that, and deleting the pull-request half of them, once the guard has been driven in production, is dispatch://INFRA-1825
+
+- **The deployment's own names are a secret term list, `PRIVATE_NAME_TERMS`** — `.github/scripts/check-private-names.sh` cannot spell them, because the script is public too:
+  one term a line, each matched as given in any case anywhere in a line or a path, read from the Actions secret of that name.
+  One engine, GNU grep with one pattern per term, reads the repository, a named path, every path and the masking, so a spelling one finds, all find (grep's case counterparts, plus the characters such as a Kelvin sign or a dotless i whose case mapping folds to a letter grep does not count beside it).
+  The allowed hosts of the host rules are no exception for a term.
+  Only jobs that run no dependency code map that secret: each checks out the repository or downloads what another job built, and runs the script (its header lists them).
+  A hit names its file and line, or its path with `<name>` where a term stands, or `<name>` alone for a path a term cannot be masked in; a file name holding a `:` or a newline stays whole, a named target and another command's message are masked the same way, a traced run prints nothing, and the log never prints a term.
+  With the list unset or empty, a `pull_request` or `pull_request_review` run, which a fork's pull request makes with no secret, and a run outside Actions warn that only the committed rules ran and keep their exit;
+  a merge group, a push or a dispatched run fails with exit 2.
+  A term lives in that secret alone, never in a file, commit, issue, pull request or log of this repository.
 
 - **A skill, a role prompt and an `AGENTS.md` name no person**
   — write the role instead: "a person" for whoever sends a message or makes a request, "the operator" for whoever runs this deployment, "the human" for whoever an agent asks for a decision.
