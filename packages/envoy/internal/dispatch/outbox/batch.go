@@ -720,6 +720,15 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			settled(c.owner)
 		}
 	}
+	// holdBack ends c with the sends it has not made held back by the event whose failed send
+	// stopped them (held, chainSend.heldBy).
+	holdBack := func(c *chain, by *batchEvent) {
+		for _, rest := range c.sends[c.next:] {
+			rest.state, rest.heldBy = held, by
+		}
+		c.next = len(c.sends)
+		finish(c)
+	}
 	issue := func(c *chain) {
 		if stopped || ctx.Err() != nil {
 			finish(c)
@@ -752,32 +761,25 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 	// topic send reached the topic family, and to its end when it did not, its sends held back by
 	// the event whose failed send stopped it, the topic send's own or the one that held it back. A
 	// batch that stopped makes no further send, so a parked chain then ends with its sends unsent,
-	// as every other chain does. Nothing parks while unpark runs: issue parks only a send whose
-	// topic send has not reached its family.
+	// as every other chain does.
 	unpark := func() {
-		waiting := parked[:0]
-		for _, c := range parked {
+		taken := parked
+		parked = parked[:0]
+		for _, c := range taken {
 			after := c.sends[c.next].after
 			switch {
 			case stopped || ctx.Err() != nil:
 				finish(c)
 			case after.state == reached:
 				issue(c)
-			case after.state == failed, after.state == held:
-				by := after.event
-				if after.state == held {
-					by = after.heldBy
-				}
-				for _, rest := range c.sends[c.next:] {
-					rest.state, rest.heldBy = held, by
-				}
-				c.next = len(c.sends)
-				finish(c)
+			case after.state == failed:
+				holdBack(c, after.event)
+			case after.state == held:
+				holdBack(c, after.heldBy)
 			default:
-				waiting = append(waiting, c)
+				parked = append(parked, c)
 			}
 		}
-		parked = waiting
 	}
 	settle := func(index int, err error) {
 		// Every answer may be the one a parked chain waits for, or the one that stopped the batch.
@@ -861,21 +863,17 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			send.connection = errors.Is(err, bus.ErrNotAcknowledged)
 		}
 		c.next++
-		if send.state != reached {
-			if send.state == failed {
-				for _, rest := range c.sends[c.next:] {
-					rest.state, rest.heldBy = held, send.event
-				}
-			}
+		switch {
+		case send.state == failed:
+			holdBack(c, send.event)
+		case send.state != reached:
 			c.next = len(c.sends)
 			finish(c)
-			return
-		}
-		if c.next < len(c.sends) {
+		case c.next < len(c.sends):
 			issue(c)
-			return
+		default:
+			finish(c)
 		}
-		finish(c)
 	}
 	for _, c := range chains {
 		issue(c)
