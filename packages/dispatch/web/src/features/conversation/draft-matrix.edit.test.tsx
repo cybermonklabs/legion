@@ -31,6 +31,23 @@
  * and another thread's opening close the card the editor is in, and Back takes the thread view
  * off the page. Every move of this row is one, so each cell is checked on return alone.
  *
+ * The second half keeps the editor on screen while another writer changes the comment under it.
+ * Changed to newer text, the field shows the comment as it reads now and the edit waits beside it
+ * with the same words as on return, since that is what the away cells show for the same change.
+ * Changed to the very text the reader wrote, there is nothing to offer: the field shows that text
+ * and no line says the comment changed. Each cell then takes the editor off the screen with the
+ * host's move and back, and asserts the same both times, with no save in between.
+ *
+ * | Host · comment changed on screen, then move (off)       | typed  | typed   | refused | refused |
+ * |                                                         | newer  | own     | newer   | own     |
+ * | ------------------------------------------------------- | ------ | ------- | ------- | ------- |
+ * | Conversation card · Collapse thread, then Expand thread | cell   | cell    | cell    | cell    |
+ * | Conversation phone thread · Back, then back             | cell   | cell    | cell    | cell    |
+ * | margin card · another thread opened, then back          | cell   | cell    | cell    | cell    |
+ * | margin phone thread · Back, then back                   | cell   | cell    | cell    | cell    |
+ *
+ * "newer" is newer text another writer gave the comment, "own" the text the reader wrote.
+ *
  * The hosts that cannot make the move: the docked composer, the phone thread composer, an Agents
  * row and an Inbox thread box are never given an `edit`, so they draw no editor to move.
  */
@@ -281,6 +298,8 @@ async function leaveThreadView(user: UserEvent): Promise<void> {
  *  host's own move that takes the editor off the screen. */
 interface Host {
   readonly away: (page: Page) => Promise<void>;
+  /** Where the edited comment's thread shows while it is on screen, looked up afresh. */
+  readonly here: () => HTMLElement;
   readonly move: string;
   readonly name: string;
   readonly open: () => Promise<Page>;
@@ -293,6 +312,7 @@ const HOSTS: readonly Host[] = [
     away: async ({ user }) => {
       await user.click(within(turn()).getByRole("button", { name: "Collapse thread" }));
     },
+    here: turn,
     move: "Collapse thread, then Expand thread",
     name: "Conversation card",
     open: () => openConversation(false),
@@ -303,6 +323,7 @@ const HOSTS: readonly Host[] = [
   },
   {
     away: ({ user }) => leaveThreadView(user),
+    here: () => screen.getByRole("dialog", { name: "Thread" }),
     move: "Back, then back",
     name: "Conversation phone thread",
     open: () => openConversation(true),
@@ -313,6 +334,7 @@ const HOSTS: readonly Host[] = [
   },
   {
     away: ({ user }) => openThread(user, threadB.id),
+    here: () => card(threadA.id),
     move: "another thread opened, then back",
     name: "margin card",
     open: () => openMargin(false),
@@ -323,6 +345,7 @@ const HOSTS: readonly Host[] = [
   },
   {
     away: ({ user }) => leaveThreadView(user),
+    here: () => screen.getByRole("dialog", { name: "Thread" }),
     move: "Back, then back",
     name: "margin phone thread",
     open: () => openMargin(true),
@@ -368,6 +391,19 @@ function offered(place: HTMLElement): boolean {
     });
 }
 
+/** What the editor in `place` shows - the field's text, and whether the edit is offered beside
+ *  it - and how many saves of an edit the page has made so far. */
+function inEditor(
+  page: Page,
+  place: HTMLElement
+): { offered: boolean; saves: number; text: string } {
+  return {
+    offered: offered(place),
+    saves: page.editComment.mock.calls.length,
+    text: editField(place)?.value ?? "(no editor on screen)",
+  };
+}
+
 for (const host of HOSTS) {
   for (const held of HELD) {
     for (const base of BASES) {
@@ -380,11 +416,7 @@ for (const host of HOSTS) {
           await host.away(page);
           if (base === "changed") page.changeBody(NEWER);
           const place = await host.show(page);
-          const shown = {
-            offered: offered(place),
-            saves: page.editComment.mock.calls.length,
-            text: editField(place)?.value ?? "(no editor on screen)",
-          };
+          const shown = inEditor(page, place);
           if (base === "unchanged") {
             const note = within(place).queryByText(REFUSED_NOTE) === null ? "none" : "refused";
             expect({ ...shown, note }).toEqual({
@@ -396,6 +428,35 @@ for (const host of HOSTS) {
           } else {
             expect(shown).toEqual({ offered: true, saves, text: NEWER });
           }
+        } finally {
+          page.restore();
+        }
+      });
+    }
+  }
+}
+
+/** What another writer changes the comment to while the editor is on screen: newer text, or the
+ *  very text the reader wrote, which leaves nothing to offer. */
+type Change = "newer text" | "the edit's own text";
+const CHANGES: readonly Change[] = ["newer text", "the edit's own text"];
+
+for (const host of HOSTS) {
+  for (const held of HELD) {
+    for (const change of CHANGES) {
+      test(`${host.name} edit · comment changed on screen to ${change}, then ${host.move} · ${held}`, async () => {
+        const page = await host.open();
+        try {
+          await writeEdit(page, await host.show(page), held);
+          // Counted here, so a refused cell's own Save is not a save made since.
+          const saves = page.editComment.mock.calls.length;
+          const body = change === "newer text" ? NEWER : BODY;
+          page.changeBody(body);
+          const onScreen = inEditor(page, host.here());
+          await host.away(page);
+          const back = inEditor(page, await host.show(page));
+          const expected = { offered: change === "newer text", saves, text: body };
+          expect({ back, onScreen }).toEqual({ back: expected, onScreen: expected });
         } finally {
           page.restore();
         }
