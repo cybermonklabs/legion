@@ -279,7 +279,10 @@ test("an Inbox thread box, comment or Agent, draws no Cancel reply", async () =>
 
   spy("listAgents", [session]);
   spy("listAgentMessages", [
-    { message: message("message-1", "Have a look at the build"), replies: [] } satisfies MessageRead,
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [],
+    } satisfies MessageRead,
   ]);
   renderCard(plannerAgentRow());
   const agent = await screen.findByTestId("inbox-thread-agent");
