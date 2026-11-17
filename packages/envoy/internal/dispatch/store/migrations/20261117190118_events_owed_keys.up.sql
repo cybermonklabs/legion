@@ -33,6 +33,9 @@
 --
 -- The release before this one neither reads nor writes the column, so the two roll side by side
 -- (cmd/dispatch/README.md, "Database migrations"). An event a process of that release records
--- keeps the value this release last wrote, or null. Rolling back past this migration is an image
--- rollback alone; the column left behind is read by nothing.
+-- keeps the value this release last wrote, or null, which lists every send it still owed then:
+-- one the older process reached since is still listed, which holds copies longer, not shorter,
+-- and a role route is listed as its role topic, whose holder the copy's road reads when it asks.
+-- Rolling back past this migration is an image rollback alone; the column left behind is read by
+-- nothing.
 alter table events add column owed_keys text[];

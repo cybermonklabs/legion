@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
 )
 
@@ -172,5 +175,69 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 	if forNext == nil || forNext.EventID != earlier.ID {
 		t.Fatalf("the copy of comment %d for %s waits behind %s, want event %d, whose route reaches %s as the role's holder now",
 			comment.ID, next, describeHolder(forNext), earlier.ID, next)
+	}
+}
+
+// eventRecord is what the record left on an event: its owed_keys, its back-off and attempts, and
+// the row version (xmin), which moves on any write of the row.
+func eventRecord(t *testing.T, database *store.Store, id int64) (owed []string, next *time.Time, attempts int, version string) {
+	t.Helper()
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(owed_keys, array['<null>']), next_attempt_at, attempt_count, xmin::text from events where id = $1
+	`, id).Scan(&owed, &next, &attempts, &version); err != nil {
+		t.Fatalf("read event %d: %v", id, err)
+	}
+	return owed, next, attempts, version
+}
+
+// An event that is not due is read by every batch of its owner as a blocker, and the record
+// writes what it owes now and nothing else: a stale owed_keys - here a session it no longer goes
+// to - is replaced by its list as this batch read it, while its back-off and attempt count stay as
+// they were. A batch that finds what it owes unchanged writes nothing to it: the row's version is
+// the same after it, which is the control that the test can tell a write from none.
+func TestAnEventNotDueHasWhatItOwesWrittenAgain(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	route := "session:s1"
+	seedIssue(t, database, "T-1", &route)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	earlier := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "message.created", Actor: alice,
+		Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0202", IssueKey: new("T-1"), Body: "earlier"},
+	})
+	publisher := &failingPublisher{topic: "notifications.dispatch.issue.T-1.message.created", answer: errors.New("no responders")}
+	deps := Deps{Store: database, Publisher: publisher, Broker: broker}
+	holding(t, deps).scan(ctx, unfenced{})
+	owed, next, attempts, _ := eventRecord(t, database, earlier.ID)
+	if next == nil || attempts == 0 {
+		t.Fatalf("the earlier event has next_attempt_at %v and %d attempts, want it backed off", next, attempts)
+	}
+	t.Logf("backed off: owed_keys %v, next_attempt_at %v, %d attempts", owed, next, attempts)
+	if _, err := database.Pool.Exec(ctx, `update events set owed_keys = array['notifications.agent.ses_gone'] where id = $1`, earlier.ID); err != nil {
+		t.Fatalf("make the earlier event's owed_keys stale: %v", err)
+	}
+
+	commentID := seedComment(t, database, "T-1", alice, "a later comment", nil)
+	later := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
+		Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, IssueKey: new("T-1"), Body: "a later comment"}},
+	})
+	holding(t, deps).scan(ctx, unfenced{})
+	owedAfter, nextAfter, attemptsAfter, version := eventRecord(t, database, earlier.ID)
+	t.Logf("after a batch that read it not due: owed_keys %v, next_attempt_at %v, %d attempts", owedAfter, nextAfter, attemptsAfter)
+	// The route to s1 was reached by the first batch; the topic family alone is still owed.
+	want := []string{model.OwedTopicFamily}
+	if !slices.Equal(owedAfter, want) {
+		t.Fatalf("the earlier event owes %v after a batch read it not due, want %v", owedAfter, want)
+	}
+	if nextAfter == nil || !nextAfter.Equal(*next) || attemptsAfter != attempts {
+		t.Fatalf("the earlier event's back-off moved to %v with %d attempts, want %v and %d: the record writes only what it owes", nextAfter, attemptsAfter, next, attempts)
+	}
+
+	dueNow(t, database, later.ID)
+	holding(t, deps).scan(ctx, unfenced{})
+	if _, _, _, again := eventRecord(t, database, earlier.ID); again != version {
+		t.Fatalf("a batch that found the earlier event owing the same moved its row from version %s to %s, want no write", version, again)
 	}
 }

@@ -334,6 +334,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		var done settlement
 		for _, event := range owned {
 			if !event.due {
+				outcomes = append(outcomes, outcome{id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil)})
 				continue
 			}
 			event.outcome = settleEvent(event, releaseUnacknowledged)
@@ -547,6 +548,12 @@ const (
 	// connection was replaced or the process is stopping, so it is due again at once, with no
 	// attempt counted.
 	released outcomeState = "released"
+	// owedAgain: the event was not due, and the batch read its destinations only to hold its
+	// owner's later events back (planChains); the record writes what it owes now (owed_keys) and
+	// nothing else, so a destination it gained since its last record - a route that moved, a
+	// follower added - holds a mention's copy from the next batch of its owner on, as it holds the
+	// owner's later events.
+	owedAgain outcomeState = "owed_again"
 )
 
 // outcome is what one event of a batch came to, as recordBatch writes it.
@@ -827,7 +834,9 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // a release, and what the event still owes (owed_keys, from outcome.owed) are written only while
 // the hold is holder's and has not lapsed, checked in the same statement, so a process that lost
 // the hold mid-batch schedules nothing beside the holder that took it and leaves the owed keys to
-// that holder's record. Each row is guarded on published_at is null.
+// that holder's record. Each row is guarded on published_at is null. An event the batch read only
+// as a blocker, not due (owedAgain), has its owed_keys written alone, and only when they changed,
+// so an owner whose events wait rewrites no row a batch finds as it left it.
 //
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
@@ -912,6 +921,7 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					when not h.mine then e.next_attempt_at
 					when o.state = 'backed_off' then now() + make_interval(secs => o.delay)
 					when o.state = 'blocked' then least(now() + make_interval(secs => o.delay), o.until)
+					when o.state = 'owed_again' then e.next_attempt_at
 					else null
 				end,
 				owed_keys = case
@@ -924,6 +934,7 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			left join owed w on w.id = o.id
 			where e.id = o.id and e.published_at is null
 			  and (o.state = 'published' or h.mine or r.id is not null)
+			  and (o.state <> 'owed_again' or e.owed_keys is distinct from coalesce(w.keys, '{}'))
 		)
 		select mine from hold
 	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics,

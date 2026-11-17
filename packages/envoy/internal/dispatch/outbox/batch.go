@@ -27,7 +27,8 @@ type pendingEvent struct {
 	owner string
 	// due is whether the event may be sent now: it was never tried, or its back-off has passed.
 	// An event that is not due is read only as a blocker of its owner's later events
-	// (planChains): it is never sent, and nothing is recorded for it.
+	// (planChains): it is never sent, and the record writes nothing for it but what it owes now
+	// (owed_keys, owedAgain).
 	due bool
 	// nextAttempt is when an event that is not due falls due, on the database's clock.
 	nextAttempt  *time.Time

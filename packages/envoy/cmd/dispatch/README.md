@@ -2343,7 +2343,9 @@ an event the outbox cannot read, and a published one, hold an empty array, and a
 A copy of a mention - the API's own send and the outbox's fallback row - waits behind every earlier event of its owner that still owes a send its session may take (`model.MentionCopyHolderSQL`), and null owes the topic family, so an event written before the migration holds those copies until the outbox records it again or publishes it.
 The read walks `events_outbox_owner`.
 The column is a catalog change that rewrites no row, and the `ALTER` holds `events` `ACCESS EXCLUSIVE` for that alone; its census answers `0`.
-The previous release neither reads nor writes it, so the two roll side by side; an event that release records keeps the value this release wrote last, or null.
+The previous release neither reads nor writes it, so the two roll side by side.
+An event that release records keeps the value this release wrote last, or null: a send the previous release reached since is still listed, which holds copies longer, not shorter, and a role route is listed as its role topic, whose holder the copy's road reads when it asks.
+What neither release writes is a destination the event gains between two of this release's records; such an event is read again at the outbox's next batch of its owner.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
