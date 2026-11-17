@@ -1484,9 +1484,9 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "DSP-1", terms: "yes" }).success).toBe(false);
   });
 
-  test("dispatch_spec_form's description says what it reads, that it writes nothing, and what root and terms list", () => {
+  test("dispatch_spec_form's description says what it reads, that it writes nothing, the texts it names, and what root and terms list", () => {
     expect(specFor("dispatch_spec_form").description).toBe(
-      "Read the form of a document's texts of The Spec, as an approval request would judge them. It lists each statement, check, component purpose and term that breaks the form, with its rule. It writes nothing. It says whether the document is under a root of The Spec, and how many texts it read. With root, it lists each issue under that root and the form of each document that the root covers. With terms, it lists the terms of the document's root in place of the findings, each with its definition and the document that defines it."
+      "Read the form of a document's texts of The Spec, as an approval request would judge them. It lists each statement, check, component purpose and term that breaks the form, with its rule. It writes nothing. It says whether the document is under a root of The Spec, and how many texts it read. Then it names each text that it read, by its kind and its node, and each term that the document defines. With root, it lists each issue under that root and the form of each document that the root covers. With terms, it lists the terms of the document's root in place of the findings, each with its definition and the document that defines it."
     );
   });
 

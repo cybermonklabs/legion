@@ -127,6 +127,26 @@ function noVersionLine(name: string): string {
 }
 
 /**
+ * The texts that Dispatch read in `form`'s version, a part that an answer prints after its other
+ * lines: each text by its kind and its node, in the order of the document (`nodes`), then each
+ * term that the version itself defines (`definitions`), from the one reading that judged the
+ * version. The reviewer of skill://spec-statement-review reads these texts and no others. A
+ * version with no text adds no line.
+ */
+function textLines(form: SpecFormRead): string[] {
+  const texts = [
+    ...(form.nodes ?? []).map(({ kind, node }) => `${kind} ${node}`),
+    ...(form.definitions ?? []).map(({ term }) => `definition ${term}`),
+  ];
+  return texts.length === 0
+    ? []
+    : [
+        `Dispatch read these texts in ${form.name} version ${form.version}, each by its kind and its node:`,
+        ...texts,
+      ];
+}
+
+/**
  * The last line of an answer about a document that an approval request is judged on: a program
  * decides the form, and skill://spec-statement-review tells a reviewer what no program decides.
  */
@@ -214,7 +234,7 @@ async function issueForms(client: DispatchClient, issue: string): Promise<Dispat
   const lines = read.flatMap(({ artifact, form }) =>
     form === undefined
       ? [noVersionLine(artifact.name)]
-      : [`${form.name} version ${form.version}:`, ...documentLines(form)]
+      : [`${form.name} version ${form.version}:`, ...documentLines(form), ...textLines(form)]
   );
   if (read.some(({ form }) => form?.in_scope === true)) lines.push(REVIEWER_LINE);
   return {
@@ -375,7 +395,11 @@ export async function specFormCommand(context: CommandContext): Promise<Dispatch
     };
   }
   return {
-    text: [...documentLines(form), ...(form.in_scope ? [REVIEWER_LINE] : [])].join("\n"),
+    text: [
+      ...documentLines(form),
+      ...textLines(form),
+      ...(form.in_scope ? [REVIEWER_LINE] : []),
+    ].join("\n"),
     details: {
       ...documentOwnerDetails,
       artifact: form.artifact_id,
