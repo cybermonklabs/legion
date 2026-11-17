@@ -21,9 +21,10 @@
 //   - The census, for each --connz (a hub server's monitoring URL): no connection named as a
 //     writer's is open. It can only add a blocker: an empty census proves no process absent.
 //
-// A first deployment, whose hub has never served a listener, passes --first-deployment instead
-// of an inventory: the server must hold neither the notification stream, which every listener and
-// envoy-dispatch create at their first connect, nor any of the buckets.
+// --first-deployment adds one check to the proof, and replaces none of it: the server must hold
+// neither the notification stream, which every listener and envoy-dispatch create at their first
+// connect, nor any of the buckets. An empty server is no proof that no writer runs - a hub on a new
+// disk is empty while its old clients still run - so the inventory is required with it as without.
 package buckets
 
 import (
@@ -98,7 +99,7 @@ bucket is among the buckets. The proof is required before anything changes:
   --host TARGET        a machine to query through ssh, repeatable
   --ssh PROGRAM        the program run as ssh (default ssh), such as a wrapper over SSM
   --connz URL          a hub server's monitoring URL whose connections to read, repeatable
-  --first-deployment   instead of an inventory: the server holds no notification stream and no bucket
+  --first-deployment   also require that the server holds no notification stream and no bucket
 
   --nats URL           the NATS server, as a user that may create and delete the buckets'
                        streams (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED in the environment)
@@ -171,8 +172,8 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 			replicas = n
 		}
 	}
-	if !f.firstDeployment && len(f.kubeContexts) == 0 && len(f.hosts) == 0 {
-		fmt.Fprintln(stderr, "envoy-infra buckets: name every place a writer of the deployment runs: --kube-context for each cluster and --host for each machine (or --first-deployment for a hub that never served one)")
+	if len(f.kubeContexts) == 0 && len(f.hosts) == 0 {
+		fmt.Fprintln(stderr, "envoy-infra buckets: name every place a writer of the deployment runs: --kube-context for each cluster and --host for each machine; --first-deployment proves no writer absent and needs them too")
 		return 2
 	}
 	f.run, f.http = run, client

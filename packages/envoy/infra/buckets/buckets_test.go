@@ -276,11 +276,12 @@ func TestRecreateLeavesTheBucketDeletedWhenAWriterStartsBetweenItsProofs(t *test
 }
 
 // A first deployment's server holds no notification stream and no bucket, and create makes every
-// copied bucket with its configuration; a server a listener has connected to holds the stream, and
-// --first-deployment refuses it.
+// copied bucket with its configuration once the inventory is proven; a server a listener has
+// connected to holds the stream, and --first-deployment refuses it.
 func TestFirstDeploymentCreatesEveryBucketOnlyOnAServerNoWriterReached(t *testing.T) {
 	uri, js := server(t)
-	code, stdout, stderr := runCommand(t, &world{}, nil, "create", "--nats", uri, "--first-deployment", "--replicas", "1")
+	w := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}}}
+	code, stdout, stderr := runCommand(t, w, nil, "create", "--nats", uri, "--first-deployment", "--host", "box-1", "--replicas", "1")
 	if code != 0 {
 		t.Fatalf("create --first-deployment = %d\n%s%s", code, stdout, stderr)
 	}
@@ -298,7 +299,7 @@ func TestFirstDeploymentCreatesEveryBucketOnlyOnAServerNoWriterReached(t *testin
 	if err := js.DeleteKeyValue(bus.SessionBucket); err != nil {
 		t.Fatalf("delete a bucket: %v", err)
 	}
-	code, stdout, stderr = runCommand(t, &world{}, nil, "create", "--nats", uri, "--first-deployment")
+	code, stdout, stderr = runCommand(t, w, nil, "create", "--nats", uri, "--first-deployment", "--host", "box-1")
 	if code != 1 || !strings.Contains(stderr, "the server holds "+bus.Stream) {
 		t.Fatalf("create --first-deployment on a server a writer reached = %d\n%s%s", code, stdout, stderr)
 	}
@@ -307,13 +308,18 @@ func TestFirstDeploymentCreatesEveryBucketOnlyOnAServerNoWriterReached(t *testin
 	}
 }
 
-// No inventory and no --first-deployment is a usage error: nothing would be proven.
+// No inventory is a usage error, with --first-deployment as without it: an empty server is no
+// proof that no writer runs (a hub on a new disk is empty while its old clients still run), so
+// nothing would be proven. At 7b262c2e0a --first-deployment alone was accepted and created the
+// buckets with no writer proof.
 func TestTheCommandNeedsAnInventory(t *testing.T) {
-	code, _, stderr := runCommand(t, &world{}, nil, "create", "--nats", "nats://127.0.0.1:1")
-	if code != 2 || !strings.Contains(stderr, "name every place a writer of the deployment runs") {
-		t.Fatalf("create with no inventory = %d: %s", code, stderr)
+	for _, args := range [][]string{{"create", "--nats", "nats://127.0.0.1:1"}, {"create", "--nats", "nats://127.0.0.1:1", "--first-deployment"}} {
+		code, _, stderr := runCommand(t, &world{}, nil, args...)
+		if code != 2 || !strings.Contains(stderr, "name every place a writer of the deployment runs") {
+			t.Fatalf("%v with no inventory = %d: %s", args, code, stderr)
+		}
 	}
-	code, _, stderr = runCommand(t, &world{}, nil, "recreate", "--nats", "nats://127.0.0.1:1", "--host", "box-1", "--bucket", "legion_agents")
+	code, _, stderr := runCommand(t, &world{}, nil, "recreate", "--nats", "nats://127.0.0.1:1", "--host", "box-1", "--bucket", "legion_agents")
 	if code != 2 || !strings.Contains(stderr, "legion_agents is no bucket a listener copies") {
 		t.Fatalf("recreate of a bucket no listener copies = %d: %s", code, stderr)
 	}
