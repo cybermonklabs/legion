@@ -58,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -287,6 +288,18 @@ func (p *dispatchProcess) releaseLiveWritePause(t *testing.T, artifactID string,
 	return released.Parked
 }
 
+// pollBehindHorizon asks condition every horizontest.Poll until it holds, for as long as the
+// process's event horizon keeps saying it is held back (horizontest.Watch over its stall
+// warnings, reading the holder itself when they fall silent), and fails the test naming what,
+// with the process's output, when the horizon's account ends the wait first. Work behind the
+// horizon, such as an event the process's relay publishes, is as late as the longest transaction
+// open anywhere on the instance, which no fixed deadline bounds.
+func (p *dispatchProcess) pollBehindHorizon(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	horizontest.NewWatch(t, p.stallWarnings(), p.database, horizontest.Dialed(p.databaseURL)).
+		Poll(t, what, horizontest.Poll, p.Output.String, condition)
+}
+
 // ───── the live feed carries the other process's events ─────────────────────
 
 // A dashboard tab is open on one process and the work happens on the other: the event of an issue
@@ -302,21 +315,23 @@ func TestALiveStreamOnOneProcessCarriesTheOtherProcessesEvent(t *testing.T) {
 	events := pair.a.openEventFeed(t)
 	key, _ := pair.b.createIssueIn(t, project, "Created on the other process", "spec")
 
-	deadline := time.After(30 * time.Second)
-	for {
-		select {
-		case event, open := <-events:
-			if !open {
-				t.Fatalf("the feed A held closed before B's event arrived:\n%s", pair.a.Output.String())
+	// A's relay publishes B's event once A's event horizon has passed it, so the wait is A's
+	// horizon's.
+	pair.a.pollBehindHorizon(t, "the issue B created, on the feed A holds", func() bool {
+		for {
+			select {
+			case event, open := <-events:
+				if !open {
+					t.Fatalf("the feed A held closed before B's event arrived:\n%s", pair.a.Output.String())
+				}
+				if event.eventType == "issue.created" && strings.Contains(event.data, `"`+key+`"`) {
+					return true
+				}
+			default:
+				return false
 			}
-			if event.eventType == "issue.created" && strings.Contains(event.data, `"`+key+`"`) {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("the feed A held never carried the issue B created (%s):\nA:\n%s\nB:\n%s",
-				key, pair.a.Output.String(), pair.b.Output.String())
 		}
-	}
+	})
 }
 
 // ───── test sessions ────────────────────────────────────────────────────────

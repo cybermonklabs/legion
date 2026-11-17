@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The issue detail carries the open asks themselves, not a count: agents read them from here
@@ -1045,9 +1046,7 @@ func TestAnIgnoredMemberIsLoggedAtDebugWithItsRoute(t *testing.T) {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
 	logs := &bytes.Buffer{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "CORE", "Title": "Ship the widgets", "reviewers": 2, "due_date": "2026-11-01",

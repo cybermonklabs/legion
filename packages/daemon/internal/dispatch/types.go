@@ -48,6 +48,10 @@ type Client interface {
 	// the issue's Dispatch row, replacing whatever set it holds; an empty list is an issue whose
 	// gates record none.
 	PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error
+	// PutRoleHolders publishes the session that holds each Legion role of the issue onto the
+	// issue's Dispatch row, replacing whatever set it holds; an empty list is an issue where no
+	// session holds a role.
+	PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
@@ -69,6 +73,14 @@ type RepoProject struct {
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
+}
+
+// RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
+// is one of the six Legion roles and Session the session that holds it on the issue. The role is a
+// string here rather than claim.Role, because this package names Dispatch's wire shapes.
+type RoleHolder struct {
+	Role    string `json:"role"`
+	Session string `json:"session"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue
@@ -344,6 +356,25 @@ const (
 // one of them. No mechanism shares a value between this module and Dispatch's, so the spellings
 // change together.
 const IssueNotFound = "ISSUE_NOT_FOUND"
+
+// NoRoute is whether err is a Dispatch process's answer that it has no route for the request: its
+// router's 404 under the code NOT_FOUND whose message starts "no route for "
+// (packages/envoy/internal/dispatch/routes/router.go, staticHandler; the TypeScript clients'
+// NO_ROUTE_MESSAGE_PREFIX). A Dispatch older than a route answers it this way, and so does the
+// older build while a release rolls out, so no handler ran and the request is taken once the
+// release that serves the route is live. A handler's own 404 NOT_FOUND, for a resource it does not
+// know, says "not found" instead, and is not this answer. No mechanism shares a value between
+// this module and Dispatch's, so the spellings change together.
+func NoRoute(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
+		strings.HasPrefix(refusal.Message, noRouteMessagePrefix)
+}
+
+const (
+	noRouteCode          = "NOT_FOUND"
+	noRouteMessagePrefix = "no route for "
+)
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal

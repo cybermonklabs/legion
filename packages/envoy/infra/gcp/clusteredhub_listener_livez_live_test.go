@@ -24,9 +24,8 @@ import (
 // set.
 func TestClusteredNatsHubListenerAnswersLivez(t *testing.T) {
 	binary := buildLiveListener(t)
-	ports := newLoopbackPorts()
 	_, natsURL := testnats.Start(t)
-	process, port := startLiveListener(t, "the listener", binary, natsURL, ports)
+	process, port := startLiveListener(t, "the listener", binary, natsURL)
 
 	answers := 0
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))

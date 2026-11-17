@@ -188,12 +188,14 @@ func requireFailedNaming(t *testing.T, process *cmdtest.Process, socket string) 
 }
 
 // requireTheTestsAlone fails the test when a process other than the test's holds the socket held
-// listens on, then closes the test's copy and requires a bind of its address to succeed: nothing
-// kept the port.
+// listens on, then closes the test's copy and requires no socket of that inode to listen any more:
+// nothing kept it. The inode names the socket whoever holds it; the port does not, since another
+// program may bind it as soon as the socket is closed.
 func requireTheTestsAlone(t *testing.T, held net.Listener) {
 	t.Helper()
 	addr := held.Addr().String()
-	socket := "socket:[" + listeningInode(t, held.Addr().(*net.TCPAddr).Port) + "]"
+	inode := listeningInode(t, held.Addr().(*net.TCPAddr).Port)
+	socket := "socket:[" + inode + "]"
 	processes, err := filepath.Glob("/proc/[0-9]*")
 	if err != nil {
 		t.Fatal(err)
@@ -210,11 +212,9 @@ func requireTheTestsAlone(t *testing.T, held net.Listener) {
 	if err := held.Close(); err != nil {
 		t.Fatalf("close the test's copy of the socket on %s: %v", addr, err)
 	}
-	again, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatalf("bind %s once the test closed its copy: %v", addr, err)
+	if cmdtest.SocketListens(t, inode) {
+		t.Fatalf("the socket on %s (inode %s) still listens once the test closed its copy: a process kept it", addr, inode)
 	}
-	_ = again.Close()
 }
 
 // listeningInode returns the inode of the socket listening on 127.0.0.1:port, from /proc/net/tcp.
