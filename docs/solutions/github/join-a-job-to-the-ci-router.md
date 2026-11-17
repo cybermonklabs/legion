@@ -128,9 +128,9 @@ queue is at the moment the last of the verdict job's needs ends.
 The verdict stays a job regardless, because a late verdict is right while a verdict filed in
 another workflow's suite blocks the head until a person re-runs it.
 Those three readings were taken while the job ran on `ubuntu-24.04`. It runs on
-`ubuntu-24.04-arm` now, with `changes`, `pr-title` and `cancel-started`: that pool does not queue
-behind the x86_64 one, so the wait after the last need is the arm64 pool's start time rather than
-the x86_64 queue's (the "Choose the runner" section below has both measurements).
+`ubuntu-24.04-arm` now, with `changes`, `pr-title` and `cancel-started`. That pool queues apart
+from the x86_64 one, and by the time the last need ends the run's other arm64 jobs have long
+started, so the wait is short: 14 s on the run the "Choose the runner" section below measures.
 
 Two things still run outside that job. The `ci-ok-report` step every other job ends with posts
 the failing `ci-ok` of a merge-group run that job's own result decides — its failure or its
@@ -402,10 +402,14 @@ the fills live in workflows that run there.
 
 ## Choose the runner: ubuntu-24.04-arm unless the job needs an x86_64 machine
 
-A new job runs on `ubuntu-24.04-arm`. The two hosted pools queue apart, and the x86_64 one is the
-one this repository's runs wait on: on 2026-11-16 a job waited 456 s for an `ubuntu-24.04` runner
-at the median and 678 s at the 90th percentile, while an `ubuntu-24.04-arm` job created in the
-same windows started in 4 to 47 s. A job goes on `ubuntu-24.04` only for a reason of the machine,
+A new job runs on `ubuntu-24.04-arm`. The two hosted pools queue apart, and both queue. On
+2026-11-16 a job waited 456 s for an `ubuntu-24.04` runner at the median and 678 s at the 90th
+percentile. On the run that first moved this repository's jobs to arm64 (run 44069656523,
+2026-11-17), the 24 `ubuntu-24.04-arm` jobs waited 239 s at the median and 542 s at most, against
+890 s and 1428 s for the 19 `ubuntu-24.04` ones: an arm64 job created with twenty others waits its
+turn too, and the gating jobs (`lint`, `ci-ok`, `changes`, `pr-title`) started in 7 to 23 s. So
+the gain is a second pool, and gating jobs that no longer wait behind the x86_64 queue; it is not
+zero wait. A job goes on `ubuntu-24.04` only for a reason of the machine,
 and ci.yaml's "Runners" paragraph lists each one: a tool whose `.github/ci-tools.yaml` row is an
 x86_64 build alone, the pinned Oh My Pi build (linux-x64 alone), a browser, or an image built for
 linux/amd64. A job that installs a tool on arm64 needs that tool's arm64 row, and a Go cache
