@@ -96,10 +96,10 @@ function testClient(): QueryClient {
 
 /** The body over the statements given, with `checks` as the issue's results read, drawn from
  *  the Verification filter's own view: the tree it leaves and the rows it marks as context, and
- *  the view with no query as the slot builds it, which is that view itself where no query is
- *  typed. It is drawn inside `NoTooltips`, as the slot draws it, so an author is named as the
- *  page names one. A case that draws the body again with other reads passes it to `rerender`
- *  with the same `client`. */
+ *  the view with no query as the slot builds it, which is given only where a query is typed: a
+ *  query that is not empty once trimmed, as `presetView` reads it. It is drawn inside
+ *  `NoTooltips`, as the slot draws it, so an author is named as the page names one. A case that
+ *  draws the body again with other reads passes it to `rerender` with the same `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
@@ -110,7 +110,7 @@ function bodyOf(
   const view = presetView(issue, "verification", query, new Set(named));
   const whole =
     given ??
-    (query === "" ? view.root : presetView(issue, "verification", "", new Set(named)).root);
+    (query.trim() === "" ? undefined : presetView(issue, "verification", "", new Set(named)).root);
   return (
     <QueryClientProvider client={client}>
       <MemoryRouter>
@@ -187,16 +187,16 @@ function holdKeys(): { held: string[]; stop: () => void } {
   return { held, stop: () => document.removeEventListener("keydown", hold) };
 }
 
-/** The reads named refused before they first answered, in the order given, as the slot gives
- *  them: each with its own Retry, which notes that read in `retried`. */
+/** The reads named refused before they first answered, each by its name with its own Retry,
+ *  which notes that read in `retried`. The record holds them in the order named, which the body
+ *  does not draw them by. */
 function refusedReads(
   retried: VerificationRead[],
   ...reads: VerificationRead[]
 ): VerificationReads {
-  return {
-    failed: reads.map((read) => ({ read, retry: () => retried.push(read) })),
-    state: "failed",
-  };
+  const failed: Partial<Record<VerificationRead, () => void>> = {};
+  for (const read of reads) failed[read] = () => retried.push(read);
+  return { failed, state: "failed" };
 }
 
 /** A check's words with a link and a reference in them. */
@@ -1432,8 +1432,8 @@ test("a read that fails before it first answers says so with a Retry, for each o
     }
   }
 
-  // All three failed: three lines in the order the slot gives them, coverage, results, blocks,
-  // and each Retry asks its own read and no other.
+  // All three failed: three lines in the body's own order, coverage, results, blocks, and each
+  // Retry asks its own read and no other.
   const retried: VerificationRead[] = [];
   const all = drawBody(statements, [met], {
     reads: refusedReads(retried, "coverage", "results", "blocks"),
@@ -1510,6 +1510,54 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
     redraw({ state: "answered" });
     expect(document.activeElement, "the rows that came left the focus on the tree").toBe(
       view.container.querySelector("[data-verification-issue]")
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The body says the reads that failed in one order of its own, coverage, results, blocks,
+// whatever order it is given them in, so which Retry takes the focus when a line leaves with it
+// never hangs on the order the slot filled its record in. Given the results read before the
+// coverage read, it draws the coverage line first, and Enter on that line's Retry, once the line
+// is gone, moves the focus to the results read's Retry.
+test("the failed reads' lines stand in the body's own order whatever order they are given in, and the focus moves from the first to the next", async () => {
+  const user = userEvent.setup();
+  const met = passing("c-one");
+  const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
+  const retried: VerificationRead[] = [];
+  // One client for every drawing, as the page keeps one while its reads answer again.
+  const client = testClient();
+  const view = render(
+    bodyOf(statements, [met], { reads: refusedReads(retried, "results", "coverage") }, client)
+  );
+  /** The read each failed-read line names, in the order the lines stand. */
+  const lines = () =>
+    [...view.container.querySelectorAll("[data-verification-unreadable]")].map((line) =>
+      line.getAttribute("data-verification-unreadable")
+    );
+  /** The Retry on the line of `read`. */
+  const retryOf = (read: VerificationRead) =>
+    within(
+      view.container.querySelector<HTMLElement>(
+        `[data-verification-unreadable="${read}"]`
+      ) as HTMLElement
+    ).getByRole("button", { name: "Retry" });
+  try {
+    expect(lines(), "the lines stand in the order the reads were given in").toEqual([
+      "coverage",
+      "results",
+    ]);
+    const [first] = within(view.container).getAllByRole("button", { name: "Retry" });
+    expect(first).toBe(retryOf("coverage"));
+    act(() => first?.focus());
+    await user.keyboard("{Enter}");
+    expect(retried).toEqual(["coverage"]);
+    // The coverage read is out again, and the results read is still refused.
+    view.rerender(bodyOf(statements, [met], { reads: refusedReads(retried, "results") }, client));
+    expect(lines()).toEqual(["results"]);
+    expect(document.activeElement, "the focus moved elsewhere than the next line's Retry").toBe(
+      retryOf("results")
     );
   } finally {
     view.unmount();
@@ -1673,9 +1721,9 @@ async function retried(
   try {
     await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
     const before = hook.result.current.reads;
-    const failed = before.state === "failed" ? before.failed : [];
-    expect(failed.map(({ read }) => read)).toEqual([refused]);
-    act(() => failed[0]?.retry());
+    const failed = before.state === "failed" ? before.failed : undefined;
+    expect(Object.keys(failed ?? {})).toEqual([refused]);
+    act(() => failed?.[refused]?.());
     await act(() => Bun.sleep(20));
     return {
       asked: {
@@ -2486,6 +2534,16 @@ test("a query on a check's words and one earlier result's draws the check's newe
 // query draws it: its newest result, and its line of earlier results with their whole count, shut.
 test("a query on a check's words alone draws the check's newest result and the whole count of its earlier results", () => {
   expect(manyResultsRow("zebra"), "a query on the check's words drew less").toEqual(
+    MANY_RESULTS_ROW
+  );
+});
+
+// A query of spaces alone is no query: `presetView` trims what the reader typed, and the view with
+// no query is given to the body only where the query is not empty once trimmed. So the check is
+// drawn as with no query, its newest result alone and its line of earlier results shut, and no
+// earlier result of it counts as one a query kept.
+test("a query of spaces alone draws the check's newest result alone and its line of earlier results shut, as no query does", () => {
+  expect(manyResultsRow("   "), "a query of spaces alone drew more than no query").toEqual(
     MANY_RESULTS_ROW
   );
 });

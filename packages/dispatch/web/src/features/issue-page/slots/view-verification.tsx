@@ -33,11 +33,14 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
     () => presetView(root, "verification", address.filter, named),
     [address.filter, named, root]
   );
-  // The view with no words query, which is what the issue holds whatever a query left of it.
-  // With no query typed it is the view itself, so it is built a second time only under one.
+  // The view with no words query, where a query is typed: what the issue holds whatever the query
+  // left of it. A query is typed where it is not empty once trimmed, as `presetView` reads it, so
+  // a query of spaces alone draws as no query does; with none typed the body reads the view
+  // itself, and nothing is built a second time.
+  const typed = address.filter.trim() !== "";
   const whole = useMemo(
-    () => (address.filter === "" ? view.root : presetView(root, "verification", "", named).root),
-    [address.filter, named, root, view.root]
+    () => (typed ? presetView(root, "verification", "", named).root : undefined),
+    [named, root, typed]
   );
   return (
     <NoTooltips>
@@ -120,18 +123,16 @@ export function useVerificationReads(issueKey: string): {
     coverage.data !== undefined &&
     results.data !== undefined &&
     (documentId === undefined || blocks.data !== undefined);
-  const failed: { readonly read: VerificationRead; readonly retry: () => void }[] = [];
-  if (failedWithNothing(coverage)) {
-    failed.push({ read: "coverage", retry: () => void coverage.refetch() });
-  }
-  if (failedWithNothing(results)) {
-    failed.push({ read: "results", retry: () => void results.refetch() });
-  }
+  // Each read that failed with no answer held, by its name, with the press that asks that read
+  // alone again; the body says them in an order of its own.
+  const failed: Partial<Record<VerificationRead, () => void>> = {};
+  if (failedWithNothing(coverage)) failed.coverage = () => void coverage.refetch();
+  if (failedWithNothing(results)) failed.results = () => void results.refetch();
   if (documentId !== undefined && failedWithNothing(blocks)) {
-    failed.push({ read: "blocks", retry: () => void blocks.refetch() });
+    failed.blocks = () => void blocks.refetch();
   }
   const reads: VerificationReads =
-    failed.length > 0
+    Object.keys(failed).length > 0
       ? { failed, state: "failed" }
       : answered
         ? { state: "answered" }

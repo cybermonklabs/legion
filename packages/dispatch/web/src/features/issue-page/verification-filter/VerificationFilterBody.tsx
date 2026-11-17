@@ -75,14 +75,15 @@ import {
 export type VerificationRead = "coverage" | "results" | "blocks";
 
 /** How the reads the body is drawn from stand: one still out, all of them answered, or one or
- *  more failed before they first answered, each with the press that asks that read alone again,
- *  in the order the body says them, which is coverage, results, blocks. */
+ *  more failed before they first answered, each by its name with the press that asks that read
+ *  alone again. The body says the failed ones in an order of its own (`UNREADABLE_ORDER`),
+ *  whatever order they are given in. */
 export type VerificationReads =
   | { readonly state: "waiting" }
   | { readonly state: "answered" }
   | {
       readonly state: "failed";
-      readonly failed: readonly { readonly read: VerificationRead; readonly retry: () => void }[];
+      readonly failed: Partial<Record<VerificationRead, () => void>>;
     };
 
 /**
@@ -162,23 +163,25 @@ export function VerificationFilterBody({
   reads: VerificationReads;
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
-  /** The Verification view with no words query: what the issue holds, whatever a query left of
-   *  it. The summary, the chips' counts, each statement's state and its count of checks
-   *  elsewhere, and every check drawn are read from it. Where no query is typed it is `view`
-   *  itself, the same object, so the two readings are one and no result counts as kept by a
-   *  query. */
-  whole: TreeNode;
+  /** The Verification view with no words query, where a query is typed: what the issue holds,
+   *  whatever the query left of it. The summary, the chips' counts, each statement's state and
+   *  its count of checks elsewhere, and every check drawn are read from it. A query is typed
+   *  where it is not empty once trimmed, as `presetView` reads it, so a query of spaces alone is
+   *  none. Where none is typed it is `undefined`: the body reads all of that from `view`, and no
+   *  result counts as kept by a query. */
+  whole: TreeNode | undefined;
 }): ReactNode {
   // The query's reading, which says which rows the body draws, and the issue's, which every row
-  // drawn is read from and which says how the issue stands. With no query typed the two are one
-  // reading.
+  // drawn is read from and which says how the issue stands. With no query typed `whole` is not
+  // given, and the two are one reading.
+  const queried = whole !== undefined;
   const read = useMemo(() => verificationReading({ checks, view }), [checks, view]);
   const issue = useMemo(
-    () => (whole === view ? read : verificationReading({ checks, view: whole })),
-    [checks, read, view, whole]
+    () => (whole === undefined ? read : verificationReading({ checks, view: whole })),
+    [checks, read, whole]
   );
-  const statements = useMemo(() => drawnStatements(read, issue), [issue, read]);
-  const table = useMemo(() => drawnTable(read, issue), [issue, read]);
+  const statements = useMemo(() => drawnStatements(read, issue, queried), [issue, queried, read]);
+  const table = useMemo(() => drawnTable(read, issue, queried), [issue, queried, read]);
   // Which state the reader narrowed the body to, as the picture's chips do; nothing is
   // narrowed until they press one.
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
@@ -197,8 +200,9 @@ export function VerificationFilterBody({
   // The rows are drawn once all three reads hold an answer, and not while one is out or failed.
   const answered = reads.state === "answered";
   const rows = answered && holds ? treeRows(view.id, shown, loose, others) : [];
-  // Each read that failed before it first answered, which the body says over the tree.
-  const unreadable = reads.state === "failed" ? reads : undefined;
+  // Each read that failed before it first answered, by its name with the press that asks it
+  // alone again, which the body says over the tree.
+  const failed = reads.state === "failed" ? reads.failed : undefined;
   // Each statement of the issue by its address, named by its first words, which "Also under"
   // names a check's other statements by (`AlsoUnder`). Every statement a check is drawn under is
   // one of the issue's, whatever a query or a chip left of them.
@@ -371,14 +375,20 @@ export function VerificationFilterBody({
   return (
     <div className={BODY} data-verification-body="" ref={bodyRef}>
       {/* Each read that failed before it first answered, one line in the page's words with a
-          Retry that asks that read alone again, in the order the reads are given, which is
-          coverage, results, blocks. The lines stand over the tree and never in it: an alert
-          inside a tree would break the tree's own structure of rows. */}
-      {unreadable?.failed.map(({ read, retry }) => (
-        <div data-verification-unreadable={read} key={read} ref={unreadableLine}>
-          <QueryError message={UNREADABLE_LINES[read]} onRetry={retry} />
-        </div>
-      ))}
+          Retry that asks that read alone again, in the body's own order (`UNREADABLE_ORDER`)
+          whatever order the reads are given in, since the first line's Retry is the one that
+          takes the focus when a line leaves with it. The lines stand over the tree and never in
+          it: an alert inside a tree would break the tree's own structure of rows. This line and
+          its focus handling are the view's own copy of the page's shared failed-read line
+          (`FailedReadLine`), and go once a branch that exports that line is under this one. */}
+      {UNREADABLE_ORDER.map((read) => {
+        const retry = failed?.[read];
+        return retry === undefined ? null : (
+          <div data-verification-unreadable={read} key={read} ref={unreadableLine}>
+            <QueryError message={UNREADABLE_LINES[read]} onRetry={retry} />
+          </div>
+        );
+      })}
       {/* The page holds one tree on every address, and it holds everything the view draws: the
           issue's row and the table, or in their place the one line that says the issue holds
           nothing to draw. While a read is out or has failed it holds nothing, and is still the
@@ -480,8 +490,9 @@ export function VerificationFilterBody({
 /** What one part of the body draws of its checks, a statement's or the table's own after its
  *  statements (`keptChecks`). */
 interface DrawnChecks {
-  /** Each check drawn, as the issue's reading of it says it stands: the part's own checks, then
-   *  each check a result the query kept alone is drawn with. */
+  /** Each check drawn, as the issue's reading of it says it stands, in the order that reading
+   *  holds them: the part's own checks and each check a result the query kept alone is drawn
+   *  with. */
   readonly checks: readonly CheckReading[];
   /** Each check among `checks` the query kept an earlier result of, by its node's id, with the
    *  ids of those results: the check draws them under its latest result, and no other earlier
@@ -512,19 +523,22 @@ interface DrawnStatement extends StatementReading {
  * state, with its checks as `keptChecks` draws them. Its count of checks elsewhere is the checks
  * the coverage read counts for it less the distinct checks the issue's reading draws under it,
  * so a query never calls this issue's own checks "elsewhere". A statement the issue's reading
- * does not hold is read from the query's reading alone. With no query typed the two readings are
- * one, which keeps no result: every result is a child of its check there, and counted as kept
- * each would be drawn.
+ * does not hold is read from the query's reading alone. With no query typed (`queried` false)
+ * the two readings are one, which keeps no result: every result is a child of its check there,
+ * and counted as kept each would be drawn.
  */
-function drawnStatements(read: VerificationReading, issue: VerificationReading): DrawnStatement[] {
+function drawnStatements(
+  read: VerificationReading,
+  issue: VerificationReading,
+  queried: boolean
+): DrawnStatement[] {
   const standing = new Map(issue.statements.map((statement) => [statement.node.id, statement]));
   return read.statements.map((statement) => {
     const held = standing.get(statement.node.id) ?? statement;
     const drawn = new Set(held.checks.map((check) => check.node.id)).size;
-    const { checks, kept } =
-      read === issue
-        ? { checks: statement.checks, kept: NO_KEPT_CHECKS }
-        : keptChecks(statement.checks, statement.node.children, held.checks);
+    const { checks, kept } = queried
+      ? keptChecks(statement.checks, statement.node.children, held.checks)
+      : { checks: statement.checks, kept: NO_KEPT_CHECKS };
     return {
       ...statement,
       checks,
@@ -549,26 +563,22 @@ interface DrawnTable {
 
 /**
  * The rows the table draws after its statements: each check that serves no statement, and each
- * other row of the query's reading (`read`). Under a query its checks are drawn as `keptChecks`
- * draws a statement's, from the issue's reading (`issue`) of them, in the order that reading
- * holds them: the query's own, and each one a result the query kept alone is lifted from. Such
- * a result stands at the top of the query's view with its check as its parent line, where the
- * query's reading holds it among its other rows; it is drawn with its check instead, and not as
- * a row of its own. With no query typed the two readings are one, and the rows are drawn as they
- * read.
+ * other row of the query's reading (`read`). Under a query (`queried`) its checks are drawn as
+ * `keptChecks` draws a statement's, from the issue's reading (`issue`) of them and in the order
+ * that reading holds them: the query's own, and each one a result the query kept alone is lifted
+ * from. Such a result stands at the top of the query's view with its check as its parent line,
+ * where the query's reading holds it among its other rows; it is drawn with its check instead,
+ * and not as a row of its own. With no query typed the two readings are one, and the rows are
+ * drawn as they read.
  */
-function drawnTable(read: VerificationReading, issue: VerificationReading): DrawnTable {
-  if (read === issue) return { kept: NO_KEPT_CHECKS, loose: read.loose, others: read.others };
+function drawnTable(
+  read: VerificationReading,
+  issue: VerificationReading,
+  queried: boolean
+): DrawnTable {
+  if (!queried) return { kept: NO_KEPT_CHECKS, loose: read.loose, others: read.others };
   const { checks, kept, lifted } = keptChecks(read.loose, read.others, issue.loose);
-  const order = new Map(issue.loose.map((check, at) => [check.node.id, at]));
-  return {
-    kept,
-    loose: [...checks].sort(
-      (one, other) =>
-        (order.get(one.node.id) ?? order.size) - (order.get(other.node.id) ?? order.size)
-    ),
-    others: read.others.filter((node) => !lifted.has(node.id)),
-  };
+  return { kept, loose: checks, others: read.others.filter((node) => !lifted.has(node.id)) };
 }
 
 /** The `kept` of a part of the body drawn with no query, which keeps no result, and the kept
@@ -578,14 +588,14 @@ const NO_KEPT_CHECKS: ReadonlyMap<string, ReadonlySet<string>> = new Map();
 const NO_KEPT_RESULTS: ReadonlySet<string> = new Set();
 
 /**
- * The checks one part of the body draws under a query, a statement's or the table's own, each
- * the issue's reading of it (`held`, the checks that reading holds in that part) with the results
- * the query kept of it: the part's own checks in the query's reading (`own`), then each check
- * whose result the query kept where it did not keep the check (from `rows`, the rows the query's
- * reading holds in that part). So every check drawn reads as it does with no query, its state,
- * its latest result and its count of earlier results alike, and matching more of a check never
- * draws less of it. A check the issue's reading does not hold is drawn as the query's reading
- * has it.
+ * The checks one part of the body draws under a query, a statement's or the table's own, in the
+ * order the issue's reading holds them in that part (`held`), each that reading of it with the
+ * results the query kept of it: the part's own checks in the query's reading (`own`), and each
+ * check whose result the query kept where it did not keep the check (from `rows`, the rows the
+ * query's reading holds in that part). So every check drawn reads as it does with no query, its
+ * state, its latest result and its count of earlier results alike, and stands where it stands
+ * with no query, and matching more of a check never draws less of it. A check of the query's own
+ * that the issue's reading does not hold is drawn after those, as the query's reading has it.
  *
  * A query that matches a check's words keeps of its results those whose words it matches too,
  * and the query's reading takes the check's latest and earlier results from those alone
@@ -594,10 +604,10 @@ const NO_KEPT_RESULTS: ReadonlySet<string> = new Set();
  * matches a result's words and not its check's keeps the result and lifts it to where the check
  * stood, with the check as its parent line (`presets.ts`), where the query's reading draws no
  * check for it. That result is drawn with its check instead, read from the issue's reading, once
- * and after the part's own checks, as a row like any other (`lifted`). Where a result the query
- * kept is not the check's latest, the check draws it under its latest and leaves its other
- * earlier results folded behind their line (`kept`): a query that keeps one of a check's 26
- * results draws that one, not the 25 others.
+ * and as a row like any other (`lifted`). Where a result the query kept is not the check's
+ * latest, the check draws it under its latest and leaves its other earlier results folded behind
+ * their line (`kept`): a query that keeps one of a check's 26 results draws that one, not the 25
+ * others.
  */
 function keptChecks(
   own: readonly CheckReading[],
@@ -610,26 +620,34 @@ function keptChecks(
     if (results === undefined) kept.set(check, new Set([result]));
     else results.add(result);
   };
-  const checks = own.map((check) => {
-    const whole = held.find((one) => one.node.id === check.node.id) ?? check;
+  for (const check of own) {
+    const latest = (held.find((one) => one.node.id === check.node.id) ?? check).latest;
     for (const result of [check.latest, ...check.earlier]) {
-      if (result !== undefined && result.id !== whole.latest?.id) keep(check.node.id, result.id);
+      if (result !== undefined && result.id !== latest?.id) keep(check.node.id, result.id);
     }
-    return whole;
-  });
+  }
   const ownIds = new Set(own.map((check) => check.node.id));
-  const added = new Map<string, CheckReading>();
+  // The ids of the checks drawn: the part's own, and each check a kept result is lifted from.
+  const drawn = new Set(ownIds);
   const lifted = new Set<string>();
   for (const row of rows) {
     const parent = row.type === "result" ? row.parentLine?.id : undefined;
     if (parent === undefined || ownIds.has(parent)) continue;
     const check = held.find((one) => one.node.id === parent);
     if (check === undefined) continue;
-    added.set(parent, check);
+    drawn.add(parent);
     lifted.add(row.id);
     if (check.latest?.id !== row.id) keep(parent, row.id);
   }
-  return { checks: [...checks, ...added.values()], kept, lifted };
+  const heldIds = new Set(held.map((check) => check.node.id));
+  return {
+    checks: [
+      ...held.filter((check) => drawn.has(check.node.id)),
+      ...own.filter((check) => !heldIds.has(check.node.id)),
+    ],
+    kept,
+    lifted,
+  };
 }
 
 /** The ids of the rows the tree draws, in the order they stand on the page: the issue's row,
@@ -668,6 +686,10 @@ const UNREADABLE_LINES: Readonly<Record<VerificationRead, string>> = {
   coverage: ANSWER_LINES.statements_unreadable,
   results: ANSWER_LINES.results_unreadable,
 };
+
+/** The one order the body says the reads that failed in, whatever order it is given them in:
+ *  the statements' read, then the results', then the checks' blocks. */
+const UNREADABLE_ORDER: readonly VerificationRead[] = ["coverage", "results", "blocks"];
 
 /** The first failed read's Retry, and the row that holds the tree's one tab stop. */
 const UNREADABLE_RETRY = "[data-verification-unreadable] button";
