@@ -1484,6 +1484,8 @@ type SessionPodRequest =
 
 interface SessionPodListener {
   readonly seen: readonly SessionPodRequest[];
+  /** Each role a session handed back, in the order sent: `<role>@<session>`. */
+  readonly released: readonly string[];
   /** How many registrations of `session` the listener was sent. */
   readonly registrations: (session: string) => number;
   /** The bodies of the claims `seen` holds: of `session` when it is named, else of every one. */
@@ -1493,11 +1495,13 @@ interface SessionPodListener {
 /**
  * The listener a session pod's sessions register with, standing in `globalThis.fetch` for every
  * instance a row boots against it. Every registration and every role claim any of them sends
- * lands in `seen`, in the order sent; a role lookup names the session whose claim of that role
- * landed last, and none before one has.
+ * lands in `seen`, in the order sent, and every role lane a session takes out of its interests in
+ * `released`; a role lookup names the session whose claim of that role landed last, and none
+ * before one has.
  */
 function sessionPodListener(): SessionPodListener {
   const seen: SessionPodRequest[] = [];
+  const released: string[] = [];
   const registrations = new Map<string, number>();
   const holders = new Map<string, string>();
   globalThis.fetch = async (input, init) => {
@@ -1506,6 +1510,14 @@ function sessionPodListener(): SessionPodListener {
     if (pathname === "/v1/interests/subscribe") {
       registrations.set(body.session_id, (registrations.get(body.session_id) ?? 0) + 1);
       seen.push({ registered: body.session_id });
+    }
+    if (pathname === "/v1/interests/unsubscribe") {
+      for (const topic of body.topics as string[]) {
+        if (topic.startsWith("notifications.role.")) {
+          released.push(`${topic.slice("notifications.role.".length)}@${body.session_id}`);
+        }
+      }
+      return response({});
     }
     if (pathname === "/v1/roles/set") {
       seen.push({ claimed: body });
@@ -1529,6 +1541,7 @@ function sessionPodListener(): SessionPodListener {
   };
   return {
     seen,
+    released,
     registrations: (session) => registrations.get(session) ?? 0,
     claims: (session) =>
       seen.flatMap((request) =>
@@ -1543,9 +1556,11 @@ function sessionPodListener(): SessionPodListener {
  * A fresh session `sessionID` in a session pod, registering with `listener`. A `launch` names the
  * role the pod's launch names in `ENVOY_SESSION_ROLE` and, when it names one, the session it names
  * for it in `ENVOY_SESSION_ROLE_SESSION` (agent-infra's sessions workload); with no `launch` the
- * environment is left as it is. `heartbeat` runs one heartbeat pass and lets it settle, `fork`
- * moves the host to a `/fork` of the session open, which carries its branch, and `records` reads
- * the role claim records the session's transcript holds.
+ * environment is left as it is. The host has one session manager, as Oh My Pi's has: `move` takes
+ * it to session `id` the way `reason` does (a `/fork` or a tree branch carries the branch on, a
+ * `/new` starts an empty one, a resume opens the branch `resumed` gives). `heartbeat` runs one
+ * heartbeat pass and lets it settle, `records` reads the role claim records the session's
+ * transcript holds, and `notices` is every notice the extension showed on screen.
  */
 async function bootSessionPod(
   query: string,
@@ -1561,33 +1576,62 @@ async function bootSessionPod(
   const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const intervals: (() => void)[] = [];
-  let open = sessionID;
+  const notices: string[] = [];
+  const manager = { id: sessionID, branch: (): readonly unknown[] => fixture.entries };
   const base = sessionContext(sessionID);
   const context: SessionContext = {
     ...base,
     sessionManager: {
       ...base.sessionManager,
-      getSessionId: () => open,
-      getBranch: () => fixture.entries,
+      getSessionId: () => manager.id,
+      getBranch: () => manager.branch(),
     },
     setInterval: (callback) => intervals.push(callback),
+    ui: { ...base.ui, notify: (message: string) => notices.push(message) },
   };
   envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   return {
     fixture,
     context,
+    notices,
     records: () => fixture.entries.filter((entry) => entry.customType === "envoy-role-claim"),
+    /** The branch the session open now has, as a resume of it later opens it. */
+    branch: (): (() => readonly unknown[]) => {
+      const end = fixture.entries.length;
+      return () => fixture.entries.slice(0, end);
+    },
     heartbeat: async () => {
-      const before = listener.registrations(open);
+      const before = listener.registrations(manager.id);
       intervals[0]?.();
-      await until(() => listener.registrations(open) > before, "the heartbeat's registration");
+      await until(
+        () => listener.registrations(manager.id) > before,
+        "the heartbeat's registration"
+      );
       await settle();
     },
-    fork: async (fork: string) => {
-      await fixture.handlers.get("session_before_switch")?.({ reason: "fork" }, context);
-      open = fork;
-      await fixture.handlers.get("session_switch")?.({ reason: "fork" }, context);
+    move: async (
+      reason: "fork" | "branch" | "new" | "resume",
+      id: string,
+      resumed?: () => readonly unknown[]
+    ) => {
+      if (reason === "branch") {
+        await fixture.handlers.get("session_before_branch")?.({ entryId: "entry" }, context);
+        manager.id = id;
+        await fixture.handlers.get("session_branch")?.(
+          { previousSessionFile: "/tmp/old.jsonl" },
+          context
+        );
+        return;
+      }
+      await fixture.handlers.get("session_before_switch")?.({ reason }, context);
+      manager.id = id;
+      if (reason === "new") {
+        const from = fixture.entries.length;
+        manager.branch = () => fixture.entries.slice(from);
+      }
+      if (resumed !== undefined) manager.branch = resumed;
+      await fixture.handlers.get("session_switch")?.({ reason }, context);
     },
     shutdown: () => fixture.handlers.get("session_shutdown")?.({}, context),
   };
@@ -11516,14 +11560,19 @@ console.log(JSON.stringify(args));
       expect(lines).toEqual([
         "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_named; this session ses_pod_review claims nothing",
       ]);
+      expect(review.notices).toEqual([
+        "envoy: role fan-cloud stays with session ses_pod_named, the session this pod named for it, so this session claims nothing; /resume ses_pod_named takes the role back",
+      ]);
+      expect(named.notices).toEqual([]);
     } finally {
       stop();
     }
   });
 
-  // A second extension instance of the same process — a `task` subagent's, or another top-level
-  // session of an ACP host — reads the same variables, since nothing takes them out of the
-  // environment, and its session is another, so it claims nothing.
+  // Another top-level session of an ACP host is a second extension instance of the same process.
+  // It reads the same variables, since nothing takes them out of the environment, and its session
+  // is another, so it claims nothing. (A `task` subagent's instance is no such case: it registers
+  // nothing at all, whatever the rule.)
   test("a second instance of the process claims nothing for its session, which ENVOY_SESSION_ROLE_SESSION does not name", async () => {
     const listener = sessionPodListener();
     const first = await bootSessionPod("session-role-first", "ses_pod_first", listener, {
@@ -11540,18 +11589,48 @@ console.log(JSON.stringify(args));
     await second.shutdown();
   });
 
-  // A `/fork` of the named session carries its branch, and with it the record of the role's claim,
-  // to an id of its own. The role stays the named session's: the fork claims nothing for it.
-  test("a fork of the session ENVOY_SESSION_ROLE_SESSION names claims nothing for the role its branch records", async () => {
-    const listener = sessionPodListener();
-    const pod = await bootSessionPod("session-role-fork", "ses_pod_parent", listener, {
-      role: "fan-cloud",
-      session: "ses_pod_parent",
+  // A `/fork` or a tree branch of the named session carries its branch, and with it the record of
+  // the role's claim, to an id of its own. The role stays the named session's: the new session
+  // claims nothing for it, and the process hands back the hold it kept under the named one.
+  for (const reason of ["fork", "branch"] as const) {
+    test(`a ${reason} of the session ENVOY_SESSION_ROLE_SESSION names claims nothing for the role its branch records`, async () => {
+      const listener = sessionPodListener();
+      const pod = await bootSessionPod(`session-role-${reason}`, "ses_pod_parent", listener, {
+        role: "fan-cloud",
+        session: "ses_pod_parent",
+      });
+      await pod.move(reason, `ses_pod_${reason}`);
+      await pod.heartbeat();
+      await pod.shutdown();
+      expect(listener.claims()).toEqual([roleClaimBody("ses_pod_parent", "fan-cloud")]);
+      expect(listener.released).toEqual(["fan-cloud@ses_pod_parent"]);
     });
-    await pod.fork("ses_pod_fork");
+  }
+
+  // The comparison is made at every pass, with the session open then, not once for the instance:
+  // within one process the named session claims, a `/new` it moves to claims nothing and hands
+  // the role back, and a resume of the named session claims it again. The person is told once,
+  // on screen, where the role stays and how to take it back.
+  test("one process claims ENVOY_SESSION_ROLE while the session open is the one ENVOY_SESSION_ROLE_SESSION names, and only then", async () => {
+    const listener = sessionPodListener();
+    const pod = await bootSessionPod("session-role-moves", "ses_pod_named", listener, {
+      role: "fan-cloud",
+      session: "ses_pod_named",
+    });
+    const named = pod.branch();
+    await pod.move("new", "ses_pod_new");
+    await pod.heartbeat();
+    expect(listener.claims("ses_pod_new")).toEqual([]);
+    expect(listener.released).toEqual(["fan-cloud@ses_pod_named"]);
+    expect(pod.notices.filter((notice) => notice.includes("fan-cloud"))).toEqual([
+      "envoy: role fan-cloud stays with session ses_pod_named, the session this pod named for it, so this session claims nothing; /resume ses_pod_named takes the role back",
+    ]);
+
+    await pod.move("resume", "ses_pod_named", named);
     await pod.heartbeat();
     await pod.shutdown();
-    expect(listener.claims()).toEqual([roleClaimBody("ses_pod_parent", "fan-cloud")]);
+    const claim = roleClaimBody("ses_pod_named", "fan-cloud");
+    expect(listener.claims()).toEqual([claim, claim, claim]);
   });
 
   // A claim the model or a plugin asks for is no way round the rule: envoy_role_set and the Legion
@@ -11582,13 +11661,15 @@ console.log(JSON.stringify(args));
   });
 
   // A launch that names the role and no session names no holder: no session claims the role, and
-  // the process says so once, however many of its sessions it decides for and however often.
+  // the process says so once, in its log and on screen, however many of its sessions it decides
+  // for and however often. An empty session counts as none, and an empty role as no role.
   test("ENVOY_SESSION_ROLE with no ENVOY_SESSION_ROLE_SESSION claims nothing and says so once", async () => {
     const { lines, stop } = sessionRoleLines();
     try {
       const listener = sessionPodListener();
       const first = await bootSessionPod("session-role-unnamed", "ses_pod_unnamed", listener, {
         role: "fan-cloud",
+        session: " ",
       });
       await first.heartbeat();
       await first.heartbeat();
@@ -11604,6 +11685,27 @@ console.log(JSON.stringify(args));
       expect(lines).toEqual([
         "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session none; this session ses_pod_unnamed claims nothing",
       ]);
+      expect([...first.notices, ...second.notices]).toEqual([
+        "envoy: this pod names role fan-cloud for no session, so no session claims it",
+      ]);
+    } finally {
+      stop();
+    }
+  });
+
+  test("an empty ENVOY_SESSION_ROLE names no role", async () => {
+    const { lines, stop } = sessionRoleLines();
+    try {
+      const listener = sessionPodListener();
+      const pod = await bootSessionPod("session-role-empty", "ses_pod_empty", listener, {
+        role: "",
+        session: "ses_pod_named",
+      });
+      await pod.heartbeat();
+      await pod.shutdown();
+      expect(listener.claims()).toEqual([]);
+      expect(lines).toEqual([]);
+      expect(pod.notices).toEqual([]);
     } finally {
       stop();
     }

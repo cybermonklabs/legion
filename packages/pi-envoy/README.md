@@ -83,17 +83,21 @@ newest record already names writes none. A move the model makes with `envoy_role
 record of its own, which no pass undoes. Without the variables no pass claims a role the
 session's records do not name.
 
-The role is that one session's alone. Nothing takes the variables out of the environment, so
-every process the agent starts in the pod gets them, such as an `omp -p` review, whether it was
-started from the shell's environment or by a `Bun.spawn` that names no `env`; so does every other
-extension instance of the process, a `task` subagent's or an ACP host's other session. Each of
-those is another session id, as is an id a `/new` or a `/fork` mints, and none of them claims the
-role by any path: not at a registration, not from a fork's record of the claim, and not through
-`envoy_role_set` or the Legion plugin's claim, which refuse it. A launch that names the role and
-no session names no holder, and no session claims it. The first time a session the process
-decides for is refused the role, the process logs one line, and only once:
-`envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">; this session <id> claims
-nothing`.
+The role is that one session's alone, and each pass compares the session open then. Nothing
+takes the variables out of the environment, so every process the agent starts in the pod gets
+them, such as an `omp -p` review, whether it was started from the shell's environment or by a
+`Bun.spawn` that names no `env`; so does an ACP host's other session, another extension instance
+of the same process. Each of those is another session id, as is an id a `/new`, a `/fork` or a
+tree branch mints, and none of them claims the role by any path: not at a registration, not from
+the record of the claim a fork's or a branch's transcript copies, and not through `envoy_role_set`
+or the Legion plugin's claim, which refuse it. A session the process moves to from the named one
+hands the role back, and a resume of the named session claims it again. (A `task` subagent's
+instance registers nothing at all, so it never claims a role.) A launch that names the role and
+no session, or an empty one, names no holder, and no session claims it; an empty role names no
+role. The first time a session the process decides for is refused the role, the process says so,
+once: in its log, `envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">; this
+session <id> claims nothing`, and on screen, where the role stays and that `/resume <id>` takes it
+back.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so

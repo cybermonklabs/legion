@@ -323,11 +323,11 @@ export function resetNatsConnectForTests(): void {
 }
 
 /**
- * Whether this process has logged that a session it decides for is not the one a session pod's
- * launch named for its role (`sessionRoleRefusal` in the entry). The line is logged once per
- * process, whichever extension instance of it decides first, and an instance may come from a
- * later load of this entry (a `task` subagent's, or each top-level session of an ACP host), so the
- * mark lives on `globalThis`, as the NATS stand-in above does.
+ * Whether this process has said that a session it decides for is not the one a session pod's
+ * launch named for its role (`sessionRoleRefusal` in the entry). It says so once per process, in
+ * its log and on screen, whichever extension instance of it decides first, and an instance may
+ * come from a later load of this entry (each top-level session of an ACP host), so the mark lives
+ * on `globalThis`, as the NATS stand-in above does.
  */
 const SESSION_ROLE_NOTICE = Symbol.for("legion.pi-envoy.session-role-notice");
 
@@ -2950,15 +2950,17 @@ export default function envoyExtension(pi: PiApi): void {
   // sessions workload sets both once t-e-32 lands). That session claims the role itself, under its
   // own credential, which the listener holds to that very session, at every pass that registers
   // it (`settleRole`). No other session claims it, by any path: not a process the agent starts in
-  // the pod, such as an `omp -p` review, which gets the same environment; not another instance of
-  // this process (a `task` subagent's, an ACP host's other session); not an id a `/new` or a
-  // `/fork` mints. Read when the instance is created; nothing takes them out of the environment.
+  // the pod, such as an `omp -p` review, which gets the same environment; not an ACP host's other
+  // session; not an id a `/new`, a `/fork` or a tree branch mints, though a fork's or a branch's
+  // transcript carries the named session's record of the claim. Each pass compares the session
+  // open then. Read when the instance is created; nothing takes them out of the environment.
   const sessionRole = process.env.ENVOY_SESSION_ROLE?.trim() || undefined;
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
   // named session's alone, so every other session is refused it, and with no session named every
-  // session is. The process logs the refusal once (`SESSION_ROLE_NOTICE`), whichever session and
-  // path meets it first.
+  // session is. The process says so once (`SESSION_ROLE_NOTICE`), whichever session and path
+  // meets it first: a line in its log, and a notice on screen telling the person where the role
+  // stays and how to take it back.
   const sessionRoleRefusal = (id: string, role: string): string | undefined => {
     if (sessionRole === undefined || role !== sessionRole || id === sessionRoleSession) {
       return undefined;
@@ -2967,6 +2969,12 @@ export default function envoyExtension(pi: PiApi): void {
     if (sessionRoleNoticeStore[SESSION_ROLE_NOTICE] === undefined) {
       sessionRoleNoticeStore[SESSION_ROLE_NOTICE] = true;
       logger.warn(refusal);
+      activeSessionContext?.ui.notify(
+        sessionRoleSession === undefined
+          ? `envoy: this pod names role ${sessionRole} for no session, so no session claims it`
+          : `envoy: role ${sessionRole} stays with session ${sessionRoleSession}, the session this pod named for it, so this session claims nothing; /resume ${sessionRoleSession} takes the role back`,
+        "warning"
+      );
     }
     return refusal;
   };

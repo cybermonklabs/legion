@@ -1,0 +1,28 @@
+kind: Added
+body: |-
+  The session a session pod starts its agent with claims the Envoy role the pod's launch names,
+  for itself, under its own credential, at its first registration and at every registration a
+  pass makes after it, so a session pod no longer needs a claimer of its own that reads the
+  listener's session list under the shared token. `ENVOY_SESSION_ROLE` names the role and
+  `ENVOY_SESSION_ROLE_SESSION` the session, the id the pod starts the agent with; agent-infra's
+  sessions workload sets both once t-e-32 lands (it sets `AGENT_SESSION_ROLE` today). The claim is
+  outright, last-claim-wins: the launch named this session the role's holder, so a role that an
+  evicted pod's session still holds comes back to the live session at its next registration. The
+  claim writes its transcript record once; a later claim the newest record already names writes
+  none. A move the model makes with `envoy_role_set` is a record of its own, which no pass undoes.
+
+  No other session claims the role, by any path, and each pass compares the session open then.
+  Every process the agent starts in the pod gets the variables, such as an `omp -p` review,
+  however it was started, and so does an ACP host's other session; each of those is another
+  session id, as is an id a `/new`, a `/fork` or a tree branch mints. None of them claims the
+  role: not at a registration, not from the record of the claim a fork's or a branch's transcript
+  copies, and not through `envoy_role_set` or the Legion plugin's claim, which refuse it. A session
+  the process moves to from the named one hands the role back, and a resume of the named session
+  claims it again. A launch that names the role and no session, or an empty one, names no holder.
+  The first time a session is refused the role, the process logs one line, `envoy:
+  ENVOY_SESSION_ROLE <role> belongs to session <id or "none">; this session <id> claims nothing`,
+  and tells the person on screen where the role stays and that `/resume <id>` takes it back.
+  Without the variables nothing changes.
+time: 2026-11-17T03:28:50Z
+custom:
+    Issue: pr4266
