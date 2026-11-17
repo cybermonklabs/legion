@@ -4550,7 +4550,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Read the form of The Spec in one version of a document, with no side effect.
   The version is `?version=N`, or else the latest settled version, which an approval request would name.
-  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, terms, refuses_approval}`.
+  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, terms, unread, refuses_approval}`.
   `scope` is `covered` or `list` when the document is in scope.
   `no_root` means that the setting names no root, and `root` is a document of a root other than its `terms.md`.
   `outside` means that no named root holds the issue, or that the document has no issue.
@@ -4716,9 +4716,22 @@ These texts break the form: a statement of no sentence or of more than two, and 
 Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
 The reviewer of R25 reads each text for what these rules cannot refuse.
 
+- Which texts Dispatch judges: a statement, the claim and the procedure of a check, the purpose of a component and the definition of a term.
+  A statement is a `requirement` block or an entry line, and a check is a `check` block with its `run` and its `negative_control`.
+  A component is a heading of a component or an interface with the paragraph under it.
+  It is also a row of the components table, by its Name and Purpose cells.
+  A term is a term line under a heading `Terms`.
+  Dispatch judges no other prose of a document, such as a paragraph outside a block, another heading, another table or the title of a callout.
+  The reviewer of R25 reads the page for that prose.
+
 - How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
   A block in a code block or in a table cell is no block.
   Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
+  A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule.
+  The rules of links, of the names of records and of people also read each address and title of a link or an image.
+  An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
+  A footnote that a text refers to is part of that text, so its sentences count and each rule reads it.
+  A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
 
 - How the rules count sentences: a sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
   A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
@@ -4732,7 +4745,8 @@ The reviewer of R25 reads each text for what these rules cannot refuse.
   Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
   A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
   `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
-  Put the quoted text in code font, or write the text again in shorter sentences.
+  Put the stop after the closing quote, as in `answers "done". Then`, and both programs count two sentences.
+  Code font works only when at most 25 words stay outside it, because nothing in code font ends a sentence or counts as a word.
   An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
   A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
   So write the steps with words.
@@ -4746,6 +4760,7 @@ A link to a record of Dispatch, and the name of an incident, a pull request or a
   So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
   The finding of each rule lists the forms that it reads.
   A person's name is the name of one person who signed in: the parts of that person's email, in order, each with a capital letter.
+  A name has two parts or more, and each part has three letters or more, so the person `ada@example.com` has no name that the rules read.
   So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
   Parts of the emails of two people are no name.
   A part that is a word of an approved component name or term is no part of a name.
@@ -4767,6 +4782,7 @@ Such a heading reads as `terms` in another case or with a last colon, such as `#
 Emphasis is no part of the text that a person reads, so `## **Terms**` is the heading `Terms`.
 A line of the term-line form in another place is no definition, and it adds no term to the list.
 That is a list item under another heading or under none, also in a block quote, a list item, a callout or a decision block.
+A list item in a footnote is one too, because a footnote stands in no part of `Terms`.
 A line in a code block or in a table cell is no such line.
 A reader takes such a line for a second definition when it names a defined term.
 So it breaks the form (rule `term-second-definition`, kind `term_line`) when a definition defines its name.
@@ -4786,6 +4802,15 @@ A name with another character, or with no letter and no digit, breaks the form (
 The finding names each such character with its code point.
 So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>`, `limit's wait` and an empty name.
 A full-width letter or a ligature folds to its plain letters.
+
+- When Dispatch cannot read a version: an earlier release can store a version that today's parser refuses, and no route stores one now.
+  A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
+  Another approved document under the root whose approved version Dispatch cannot read refuses nothing, and each answer names it in `unread`, one line for each.
+  No rule compares the texts of that version, so its component names are no nouns of the system.
+  Its terms are no part of the list either.
+  When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.
+  Each answer names that version in `unread` too.
+  The way out of both is a new version of that document, and for the approved document its approval.
 
 The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
 Dispatch reads the latest version of each that a person approved, and leaves out the documents that it judges.
@@ -4827,8 +4852,9 @@ A person's approval of a covered document gets the same refusal through three ro
 These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
 That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
 A request for changes is never refused.
-When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms}`.
-`texts` counts each kind of text that Dispatch read in the documents it judged.
+When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
+`texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
+A refusal writes each `unread` line before its last line.
 `terms` counts the terms of the root's list.
 A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
 A carry of an approval to a new version passes the same gate, and it judges the same documents as the person's own Approve.

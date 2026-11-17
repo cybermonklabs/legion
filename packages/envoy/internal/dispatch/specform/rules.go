@@ -27,6 +27,10 @@ const (
 // otherwise pass the rules of R49 unread.
 const ruleTermLine Rule = "term-line"
 
+// ruleUnreadable is the rule of a version that the parser refuses (UnreadableError.Finding): a
+// judgment that names the version cannot read its texts, so it refuses the version.
+const ruleUnreadable Rule = "unreadable"
+
 // termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
 // of a term line, and the way out for a decision block, whose question line is such a line: the
 // block stands above the heading, and the chosen definition goes under it after the answer.
@@ -56,12 +60,14 @@ var (
 	// only dispatch:// and http(s):// references, so this one is this package's.
 	bareKey  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
 	recordID = regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	// incident and pullRequest name a record only by a form that only a name has: "#" and digits,
-	// the word "number" and digits, an incident's key or date, and a pull request's
-	// <owner>/<repo>#<digits> or address. A bare number after the words is a count, such as
-	// "each pull request 10 minutes after", and names nothing.
-	incident    = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
-	pullRequest = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|github\.com/[\w.-]+/[\w.-]+/pull/\d+|#\d+`)
+	// incident and pullRequestName name a record only by a form that only a name has: "#" and
+	// digits, the word "number" and digits, an incident's key or date, and a pull request's
+	// <owner>/<repo>#<digits>. A bare number after the words is a count, such as "each pull request
+	// 10 minutes after", and names nothing. pullRequestAddress is the address of a pull request,
+	// the one form of a name that an address holds.
+	incident           = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
+	pullRequestName    = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|#\d+`)
+	pullRequestAddress = regexp.MustCompile(`github\.com/[\w.-]+/[\w.-]+/pull/\d+`)
 	// email is an e-mail address: its domain's last label is letters, so a version after an at
 	// sign, as in "checker@v1.2.3", is no address.
 	email  = regexp.MustCompile(`[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}\b`)
@@ -81,10 +87,11 @@ type broken struct {
 }
 
 // breaks is each rule of R49 that text breaks, once for each detail: the form rules for the
-// kinds that are prose of The Spec, then the four reference rules for every kind. A line under
-// Terms that is no term line (Kind line) breaks the one rule term-line, and a heading that reads
-// as Terms in another form (Kind heading) the one rule terms-heading, and no other. people is the
-// name of each signed-in person (peopleNames).
+// kinds that are prose of The Spec, then the four reference rules for every kind, on the words of
+// the text, on each title it holds, as words, and on each address it holds, as an address. A line
+// under Terms that is no term line (Kind line) breaks the one rule term-line, and a heading that
+// reads as Terms in another form (Kind heading) the one rule terms-heading, and no other. people
+// is the name of each signed-in person (peopleNames).
 func breaks(c Context, people [][]string, text Text) []broken {
 	switch text.Kind {
 	case KindLine:
@@ -97,7 +104,13 @@ func breaks(c Context, people [][]string, text Text) []broken {
 	if text.Kind != KindFailingExample && text.Kind != KindName && text.Kind != KindTerm {
 		found = append(found, formBreaks(text.Kind, line)...)
 	}
-	found = append(found, referenceBreaks(c, people, line)...)
+	found = append(found, referenceBreaks(c, people, line, false)...)
+	for _, title := range text.Held.Titles {
+		found = append(found, referenceBreaks(c, people, oneLine(title), false)...)
+	}
+	for _, address := range text.Held.Addresses {
+		found = append(found, referenceBreaks(c, people, address, true)...)
+	}
 	seen := map[broken]bool{}
 	unique := found[:0]
 	for _, each := range found {
@@ -145,8 +158,12 @@ type span struct {
 }
 
 // referenceBreaks is each link to a record of Dispatch, incident, pull request and person that
-// line names, rule by rule, each rule's in the order of the line.
-func referenceBreaks(c Context, people [][]string, line string) []broken {
+// line names, rule by rule, each rule's in the order of the line. A line that is an address (the
+// address of a link or an image) names a record only by the forms that an address holds: a
+// reference to a record of Dispatch, the address of a pull request and an email address. A form
+// of a name that only words have, such as "#12" or "Ada Lovelace", names nothing in an address,
+// nor in a reference that words hold, such as "https://example.com/guide#12".
+func referenceBreaks(c Context, people [][]string, line string, address bool) []broken {
 	var references, links []span
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
 		raw := referenceAt(line, located.Offset)
@@ -156,12 +173,7 @@ func referenceBreaks(c Context, people [][]string, line string) []broken {
 		}
 	}
 	inReference := func(at int) bool {
-		for _, reference := range references {
-			if at >= reference.start && at < reference.end {
-				return true
-			}
-		}
-		return false
+		return inSpans(references, at)
 	}
 	for _, match := range bareKey.FindAllStringIndex(line, -1) {
 		key := line[match[0]:match[1]]
@@ -181,13 +193,37 @@ func referenceBreaks(c Context, people [][]string, line string) []broken {
 	for _, link := range links {
 		found = append(found, link.broken)
 	}
-	for _, match := range incident.FindAllString(line, -1) {
-		found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", match, incidentForms)})
+	if !address {
+		for _, match := range incident.FindAllString(line, -1) {
+			found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", match, incidentForms)})
+		}
 	}
-	for _, match := range pullRequest.FindAllString(line, -1) {
-		found = append(found, broken{rulePullRequest, fmt.Sprintf("it names a pull request: %q. %s", match, pullRequestForms)})
+	var pullRequests []span
+	for _, match := range pullRequestAddress.FindAllStringIndex(line, -1) {
+		pullRequests = append(pullRequests, span{start: match[0], end: match[1]})
 	}
-	for _, name := range personNames(people, line, inReference) {
+	if !address {
+		for _, match := range pullRequestName.FindAllStringIndex(line, -1) {
+			if !inReference(match[0]) && !inSpans(pullRequests, match[0]) {
+				pullRequests = append(pullRequests, span{start: match[0], end: match[1]})
+			}
+		}
+	}
+	sort.SliceStable(pullRequests, func(a, b int) bool { return pullRequests[a].start < pullRequests[b].start })
+	for _, each := range pullRequests {
+		found = append(found, broken{rulePullRequest, fmt.Sprintf("it names a pull request: %q. %s", line[each.start:each.end], pullRequestForms)})
+	}
+	var names []string
+	if address {
+		for _, match := range email.FindAllStringIndex(line, -1) {
+			if !inReference(match[0]) {
+				names = append(names, line[match[0]:match[1]])
+			}
+		}
+	} else {
+		names = personNames(people, line, inReference)
+	}
+	for _, name := range names {
 		found = append(found, broken{rulePerson, fmt.Sprintf("it names a person: %q", name)})
 	}
 	return found

@@ -287,7 +287,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. A request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec (DISPATCH_SPEC_ROOTS). A second definition of a term of the root's list of terms breaks it too. The refusal names each text and its rule. spec_form says what Dispatch read in a covered document. */
+    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. A request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec (DISPATCH_SPEC_ROOTS). A second definition of a term of the root's list of terms breaks it too. The refusal names each text and its rule. A version that the request names and the parser refuses is a finding of its document (rule unreadable). spec_form says what Dispatch read in a covered document, and its unread names each approved document under the root whose approved version Dispatch cannot read, so that no rule compared its texts. */
     post: operations["postApiV1ArtifactsByIdApprovalRequests"];
     delete?: never;
     options?: never;
@@ -492,7 +492,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read the form of The Spec in one version of a document, with no side effect: ?version=N, or the latest settled version. The answer names the scope, the root, the part the document plays, the count of each kind of text and each finding. It also names the list of terms of the root. The scope is covered, list, no_root, root, outside or not_spec. It lists the findings of a document out of scope too. refuses_approval says if Dispatch refuses an approval request or an approval of that version. A version that the document does not have is 404 VERSION_NOT_FOUND. */
+    /** @description Read the form of The Spec in one version of a document, with no side effect: ?version=N, or the latest settled version. The answer names the scope, the root, the part the document plays, the count of each kind of text and each finding. It also names the list of terms of the root. The scope is covered, list, no_root, root, outside or not_spec. It lists the findings of a document out of scope too. refuses_approval says if Dispatch refuses an approval request or an approval of that version. unread names each approved document under the root whose approved version Dispatch cannot read, so that no rule compared its texts. A version that the document does not have is 404 VERSION_NOT_FOUND. */
     get: operations["getApiV1ArtifactsByIdSpecForm"];
     put?: never;
     post?: never;
@@ -6109,6 +6109,7 @@ export interface components {
       texts: {
         [key: string]: number;
       } | null;
+      unread: components["schemas"]["SpecFormUnread"][] | null;
       version: number;
     };
     SpecFormSummary: {
@@ -6117,12 +6118,20 @@ export interface components {
       texts: {
         [key: string]: number;
       } | null;
+      unread: components["schemas"]["SpecFormUnread"][] | null;
     };
     SpecFormTerm: {
       definition: string;
       document: string;
       issue: string;
       term: string;
+      version: number;
+    };
+    SpecFormUnread: {
+      artifact_id: string;
+      document: string;
+      issue: string;
+      line: string;
       version: number;
     };
     StateResponse: {
@@ -14247,6 +14256,7 @@ export type SpecFormFinding = components["schemas"]["SpecFormFinding"];
 export type SpecFormRead = components["schemas"]["SpecFormRead"];
 export type SpecFormSummary = components["schemas"]["SpecFormSummary"];
 export type SpecFormTerm = components["schemas"]["SpecFormTerm"];
+export type SpecFormUnread = components["schemas"]["SpecFormUnread"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type Subscriber = components["schemas"]["Subscriber"];
 export type Suggestions = components["schemas"]["Suggestions"];

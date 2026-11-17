@@ -837,7 +837,7 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 			specform.KindName: 0, specform.KindPurpose: 0, specform.KindDefinition: 0,
 		},
 		Findings: fault.findings(issue, 1), FindingsTotal: 1,
-		Terms: []specFormTerm{}, RefusesApproval: true,
+		Terms: []specFormTerm{}, Unread: []specFormUnread{}, RefusesApproval: true,
 	}
 	if !reflect.DeepEqual(read, want) {
 		t.Fatalf("read =\n%#v\nwant\n%#v", read, want)

@@ -1,8 +1,10 @@
 package specform
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -29,37 +31,69 @@ var (
 	definitionTail = regexp.MustCompile(`^: (.+)$`)
 )
 
-// extraction is ExtractDocument's state: what it read, the bodies each node and kind had, and the
-// level of the heading Terms whose part the walk is in (0 outside one).
+// extraction is ExtractDocument's state: what it read, the bodies each node and kind had, the
+// level of the heading Terms whose part the walk is in (0 outside one), and the footnotes of the
+// document.
 type extraction struct {
 	where      string
 	out        Extracted
 	bodies     map[[2]string][]string
 	termsLevel int
+	// footnotes is each footnote definition of the document by the key that a reference finds it
+	// by (pmdoc.FootnoteLabelKey), the first one where two share a key, as the parser resolves a
+	// reference; notes is the reading of each one that a text refers to, made once.
+	footnotes map[string]*pmdoc.Node
+	notes     map[string]reading
 }
 
-// add keeps text once for each body: the same node, kind and body again is the same text, and the
-// same node and kind with another body is another text, named "<node> (2)", "<node> (3)".
-func (e *extraction) add(node string, kind Kind, body string) {
+// add keeps a text once for each body and what it holds: the same node, kind, body and held
+// again is the same text, and the same node and kind with another body or held is another text,
+// named "<node> (2)", "<node> (3)".
+func (e *extraction) add(node string, kind Kind, body string, held Held) {
 	key := [2]string{node, string(kind)}
-	for _, seen := range e.bodies[key] {
-		if seen == body {
-			return
-		}
+	seen := fmt.Sprintf("%q %q", body, held)
+	if slices.Contains(e.bodies[key], seen) {
+		return
 	}
-	e.bodies[key] = append(e.bodies[key], body)
+	e.bodies[key] = append(e.bodies[key], seen)
 	if n := len(e.bodies[key]); n > 1 {
 		node = fmt.Sprintf("%s (%d)", node, n)
 	}
-	e.out.Texts = append(e.out.Texts, Text{Node: node, Kind: kind, Body: body, Where: e.where})
+	e.out.Texts = append(e.out.Texts, Text{Node: node, Kind: kind, Body: body, Where: e.where, Held: held})
 	e.out.Counts[kind]++
+}
+
+// UnreadableError is ExtractDocument's answer for a version that the parser refuses, which no
+// reader of the application reads either.
+type UnreadableError struct {
+	Document string
+	Version  int
+	Err      error
+}
+
+func (e *UnreadableError) Error() string {
+	return fmt.Sprintf("read %s version %d: %v", e.Document, e.Version, e.Err)
+}
+
+func (e *UnreadableError) Unwrap() error { return e.Err }
+
+// Finding is the finding of a version that the parser refuses, which a judgment that names the
+// version refuses: Dispatch cannot judge a text that it cannot read, and the way out is a new
+// version of the document.
+func (e *UnreadableError) Finding() Finding {
+	return Finding{
+		Node: e.Document, Kind: KindDocument, Where: fmt.Sprintf("%s version %d", e.Document, e.Version), Rule: ruleUnreadable,
+		Detail: fmt.Sprintf("Dispatch cannot read this version (%v), so it cannot judge its texts. Write a new version of the document", e.Err),
+	}
 }
 
 // ExtractDocument reads the texts of The Spec in version of the markdown of document. It reads the
 // tree that every reader of a document's typed blocks reads (pmdoc.ParseRendering), so a block is
 // a text of The Spec wherever the application reads one, also in a block quote, a list item or a
-// callout, and nothing in code is. Each text is the text that a person reads (read): a character
-// reference is its character, a hard break is a space, and code and links keep their marks.
+// callout, and nothing in code is. Each text is the text that a person reads (inline): a link is
+// its words, an image its alternative text, a character reference its character and a hard break
+// a space, and code keeps its code font. Each address and title of its links and images is held
+// beside the words (Held), and the footnote that it refers to is part of it.
 //
 // The texts are each requirement block (a statement, of its paragraphs), each entry line of the
 // how-to (a statement, of its bold text), each check block (a claim of its paragraphs, a procedure
@@ -73,24 +107,37 @@ func (e *extraction) add(node string, kind Kind, body string) {
 // Terms in another form (readsAsTerms) is a text of Kind heading, named by its text in quotes, and
 // no Terms part: the heading Terms has one form too. A term line outside a Terms part is a text of
 // Kind term_line (termLineElsewhere): it is no definition and adds no term, and Check refuses it
-// when it names a defined term (R50). Each text's Where is "<document> version <n>". A document
-// that the parser refuses is an error: the application reads no block of it either.
+// when it names a defined term (R50). A heading opens and closes a part of Terms only among the
+// blocks of its own container (container). Each text's Where is "<document> version <n>". A
+// document that the parser refuses is an *UnreadableError: the application reads no block of it
+// either.
 func ExtractDocument(document string, version int, markdown string) (Extracted, error) {
 	if !utf8.ValidString(markdown) {
-		return Extracted{}, fmt.Errorf("%s version %d is not valid UTF-8", document, version)
+		return Extracted{}, &UnreadableError{document, version, errors.New("it is not valid UTF-8")}
 	}
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		return Extracted{}, fmt.Errorf("read %s version %d: %w", document, version, err)
+		return Extracted{}, &UnreadableError{document, version, err}
 	}
 	e := &extraction{
-		where:  fmt.Sprintf("%s version %d", document, version),
-		out:    Extracted{Counts: map[Kind]int{}},
-		bodies: map[[2]string][]string{},
+		where:     fmt.Sprintf("%s version %d", document, version),
+		out:       Extracted{Counts: map[Kind]int{}},
+		bodies:    map[[2]string][]string{},
+		footnotes: map[string]*pmdoc.Node{},
+		notes:     map[string]reading{},
 	}
 	for _, kind := range kinds {
 		e.out.Counts[kind] = 0
 	}
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "footnote_definition" {
+			label, _ := node.Attrs["label"].(string)
+			if key := pmdoc.FootnoteLabelKey(label); e.footnotes[key] == nil {
+				e.footnotes[key] = node
+			}
+		}
+		return true
+	})
 	e.blocks(tree.Children, "")
 	return e.out, nil
 }
@@ -103,15 +150,17 @@ func (e *extraction) blocks(nodes []*pmdoc.Node, container string) {
 		case "heading":
 			e.heading(node, nodes[index+1:])
 		case "requirement":
-			e.add(blockID(node), KindStatement, paragraphs(node))
+			body, held := e.text(e.paragraphs(node)...)
+			e.add(blockID(node), KindStatement, body, held)
 		case "check":
 			id := blockID(node)
-			e.add(id, KindClaim, paragraphs(node))
+			body, held := e.text(e.paragraphs(node)...)
+			e.add(id, KindClaim, body, held)
 			if run, _ := node.Attrs["run"].(string); run != "" {
-				e.add(id, KindProcedure, run)
+				e.add(id, KindProcedure, run, Held{})
 			}
 			if example, _ := node.Attrs["negative_control"].(string); example != "" {
-				e.add(id, KindFailingExample, example)
+				e.add(id, KindFailingExample, example, Held{})
 			}
 		case "paragraph":
 			e.paragraph(node)
@@ -119,11 +168,25 @@ func (e *extraction) blocks(nodes []*pmdoc.Node, container string) {
 			e.listItem(node, container)
 		case "table":
 			e.table(node)
+		case "footnote_definition":
+			// A footnote is part of each text that refers to it (note), so it is no line of the part
+			// of Terms where it is written.
+			e.container(node.Children, node.Type, 0)
 		case "code_block", "frontmatter", "hr", "html":
 		default:
-			e.blocks(node.Children, node.Type)
+			e.container(node.Children, node.Type, e.termsLevel)
 		}
 	}
+}
+
+// container reads the blocks of a container that starts in the part of Terms of the given level
+// (0 for none). A heading in it opens or closes a part only up to the container's end, and the
+// blocks after the container are in the part that they were in before it.
+func (e *extraction) container(nodes []*pmdoc.Node, container string, termsLevel int) {
+	outer := e.termsLevel
+	e.termsLevel = termsLevel
+	e.blocks(nodes, container)
+	e.termsLevel = outer
 }
 
 // heading reads a heading, with the blocks after it in its container: the heading Terms opens a
@@ -135,91 +198,99 @@ func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
 	if e.termsLevel > 0 && level <= e.termsLevel {
 		e.termsLevel = 0
 	}
-	heading := read(node.Children)
-	if heading == "Terms" {
+	heading := e.read(node.Children)
+	if heading.words == "Terms" {
 		e.termsLevel = level
 		return
 	}
-	if readsAsTerms(heading) {
-		e.add(fmt.Sprintf("%q", heading), KindHeading, heading)
+	if readsAsTerms(heading.words) {
+		e.add(fmt.Sprintf("%q", heading.words), KindHeading, heading.words, Held{})
 		return
 	}
-	component := componentHeading.FindStringSubmatch(heading)
+	component := componentHeading.FindStringSubmatch(heading.words)
 	if component == nil {
 		return
 	}
-	e.add(component[2], KindName, component[1])
+	heading.words = component[1]
+	name, held := e.text(heading)
+	e.add(component[2], KindName, name, held)
 	if len(after) > 0 && after[0].Type == "paragraph" {
-		if purpose := read(after[0].Children); purpose != "" {
-			e.add(component[2], KindPurpose, purpose)
+		if purpose := e.read(after[0].Children); purpose.words != "" {
+			body, held := e.text(purpose)
+			e.add(component[2], KindPurpose, body, held)
 		}
 	}
 }
 
 // paragraph reads a paragraph: a purpose line, or under a heading Terms a line.
 func (e *extraction) paragraph(node *pmdoc.Node) {
-	paragraph := read(node.Children)
-	if match := purposeLine.FindStringSubmatch(paragraph); match != nil {
-		e.add(match[1], KindPurpose, match[2])
+	paragraph := e.read(node.Children)
+	if match := purposeLine.FindStringSubmatch(paragraph.words); match != nil {
+		paragraph.words = match[2]
+		body, held := e.text(paragraph)
+		e.add(match[1], KindPurpose, body, held)
 		return
 	}
-	e.line(paragraph)
+	e.line(paragraph.words)
 }
 
 // line keeps body, a block under a heading Terms that is no term line, as a text of Kind line
 // named by its body in quotes. Outside a Terms part, or for a block with no text, it keeps nothing.
 func (e *extraction) line(body string) {
 	if e.termsLevel > 0 && body != "" {
-		e.add(fmt.Sprintf("%q", body), KindLine, body)
+		e.add(fmt.Sprintf("%q", body), KindLine, body, Held{})
 	}
 }
 
 // listItem reads a list item of list, the type of its list: its first paragraph as the line of
-// the item (itemLine), then its other blocks.
+// the item (itemLine), then its other blocks, as a container.
 func (e *extraction) listItem(node *pmdoc.Node, list string) {
 	children := node.Children
 	if len(children) > 0 && children[0].Type == "paragraph" {
 		e.itemLine(children[0], list)
 		children = children[1:]
 	}
-	e.blocks(children, node.Type)
+	e.container(children, node.Type, e.termsLevel)
 }
 
 // itemLine reads the first paragraph of a list item of list: bold text, its id in code font and
 // " · under:" are an entry line, a statement of the bold text. Bold text, ": " and a definition in
 // an item of a bullet list are a term line: under a heading Terms a term, and elsewhere a text of
-// Kind term_line (termLineElsewhere). Under a heading Terms any other item is a line.
+// Kind term_line (termLineElsewhere). Under a heading Terms any other item is a line. A footnote
+// of a term line is part of its definition.
 func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 	lead, rest := strongLead(paragraph.Children)
-	strong, after := read(lead), inline(rest)
-	if strong != "" {
-		if match := entryTail.FindStringSubmatch(after); match != nil {
-			e.add(match[1], KindStatement, strong)
+	strong, after := e.read(lead), e.inline(rest)
+	if strong.words != "" {
+		if match := entryTail.FindStringSubmatch(after.words); match != nil {
+			body, held := e.text(strong)
+			e.add(match[1], KindStatement, body, held)
 			return
 		}
 	}
-	if strong != "" && list == "bullet_list" {
-		if match := definitionTail.FindStringSubmatch(after); match != nil {
-			if definition := strings.TrimSpace(match[1]); definition != "" {
+	if strong.words != "" && list == "bullet_list" {
+		if match := definitionTail.FindStringSubmatch(after.words); match != nil {
+			if words := strings.TrimSpace(match[1]); words != "" {
+				definition, held := e.text(reading{words: words, notes: append(slices.Clip(strong.notes), after.notes...), held: after.held})
 				if e.termsLevel == 0 {
-					e.termLineElsewhere(strong, definition)
+					e.termLineElsewhere(strong.words, definition, held)
 					return
 				}
-				e.out.Terms = append(e.out.Terms, Term{Name: strong, Definition: definition, Where: e.where})
+				e.out.Terms = append(e.out.Terms, Term{Name: strong.words, Definition: definition, Where: e.where, NameHeld: strong.held, DefinitionHeld: held})
 				e.out.Counts[KindDefinition]++
 				return
 			}
 		}
 	}
-	e.line(read(paragraph.Children))
+	e.line(e.read(paragraph.Children).words)
 }
 
-// termLineElsewhere keeps a term line outside a Terms part, of its term name and its definition,
-// as a text of Kind term_line named by the name, with the definition as its body. It is no
-// definition and adds no term. Check refuses it when it names a defined term, since a reader would
-// take it for a second definition. Two such lines of one name are two texts.
-func (e *extraction) termLineElsewhere(name, definition string) {
-	e.out.Texts = append(e.out.Texts, Text{Node: name, Kind: KindTermLine, Body: definition, Where: e.where})
+// termLineElsewhere keeps a term line outside a Terms part, of its term name, its definition and
+// what the definition holds, as a text of Kind term_line named by the name, with the definition as
+// its body. It is no definition and adds no term. Check refuses it when it names a defined term,
+// since a reader would take it for a second definition. Two such lines of one name are two texts.
+func (e *extraction) termLineElsewhere(name, definition string, held Held) {
+	e.out.Texts = append(e.out.Texts, Text{Node: name, Kind: KindTermLine, Body: definition, Where: e.where, Held: held})
 }
 
 // readsAsTerms reports whether heading, the text of a heading as a person reads it and not
@@ -233,21 +304,28 @@ func readsAsTerms(heading string) bool {
 // a name and a purpose of the component that its Id cell names; under a heading Terms, each row
 // of any other table is a line, of its cells.
 func (e *extraction) table(node *pmdoc.Node) {
-	var rows [][]string
+	var rows [][]reading
 	for _, row := range node.Children {
-		var cells []string
+		var cells []reading
 		for _, cell := range row.Children {
-			var parts []string
+			var parts []reading
 			for _, block := range cell.Children {
-				parts = append(parts, read(block.Children))
+				parts = append(parts, e.read(block.Children))
 			}
-			cells = append(cells, strings.TrimSpace(strings.Join(parts, " ")))
+			cells = append(cells, joined(" ", parts))
 		}
 		rows = append(rows, cells)
 	}
-	if len(rows) == 0 || len(rows[0]) < 4 || rows[0][0] != "Id" || rows[0][1] != "Kind" || rows[0][2] != "Name" || rows[0][3] != "Purpose" {
+	words := func(cells []reading) []string {
+		texts := make([]string, len(cells))
+		for index, cell := range cells {
+			texts[index] = cell.words
+		}
+		return texts
+	}
+	if len(rows) == 0 || len(rows[0]) < 4 || !slices.Equal(words(rows[0])[:4], []string{"Id", "Kind", "Name", "Purpose"}) {
 		for _, cells := range rows {
-			e.line(strings.Join(cells, " | "))
+			e.line(strings.Join(words(cells), " | "))
 		}
 		return
 	}
@@ -255,12 +333,14 @@ func (e *extraction) table(node *pmdoc.Node) {
 		if len(cells) < 4 {
 			continue
 		}
-		node := strings.Trim(cells[0], "`")
-		if cells[2] != "" {
-			e.add(node, KindName, cells[2])
+		node := strings.Trim(cells[0].words, "`")
+		if cells[2].words != "" {
+			name, held := e.text(cells[2])
+			e.add(node, KindName, name, held)
 		}
-		if cells[3] != "" {
-			e.add(node, KindPurpose, cells[3])
+		if cells[3].words != "" {
+			purpose, held := e.text(cells[3])
+			e.add(node, KindPurpose, purpose, held)
 		}
 	}
 }
@@ -285,15 +365,13 @@ func headingLevel(node *pmdoc.Node) int {
 	return 1
 }
 
-// paragraphs is the text of each paragraph of a typed block, one paragraph to a line.
-func paragraphs(node *pmdoc.Node) string {
-	var lines []string
+// paragraphs is the reading of each paragraph of a typed block.
+func (e *extraction) paragraphs(node *pmdoc.Node) []reading {
+	var readings []reading
 	for _, child := range node.Children {
-		if line := read(child.Children); line != "" {
-			lines = append(lines, line)
-		}
+		readings = append(readings, e.read(child.Children))
 	}
-	return strings.Join(lines, "\n")
+	return readings
 }
 
 // strongLead splits inline content after the strong text it starts with, if any.
@@ -305,71 +383,139 @@ func strongLead(nodes []*pmdoc.Node) (lead, rest []*pmdoc.Node) {
 	return nodes[:end], nodes[end:]
 }
 
-// read is inline content as a person reads it (inline), without the white space at its ends.
-func read(nodes []*pmdoc.Node) string {
-	return strings.TrimSpace(inline(nodes))
+// reading is inline content as a person reads it: its words, the key of each footnote that it
+// refers to, in order, and what it holds beside its words.
+type reading struct {
+	words string
+	notes []string
+	held  Held
 }
 
-// inline is inline content as a person reads it: each run's characters, which already hold the
-// character a reference names and no backslash of an escape, a hard break as a space (a soft one
-// is a space in the tree), code in code font, as ste-lint reads code, and each link as its text
-// with its address after it, "[<text>](<address>)", so that the reference rules read the link. A
-// link whose text is its address is its text.
-func inline(nodes []*pmdoc.Node) string {
-	var out strings.Builder
-	for index := 0; index < len(nodes); {
-		href := linkHref(nodes[index])
-		end := index + 1
-		for end < len(nodes) && linkHref(nodes[end]) == href {
-			end++
+// joined is readings read one after the other, their words parted by sep.
+func joined(sep string, readings []reading) reading {
+	var out reading
+	var words []string
+	for _, each := range readings {
+		if each.words != "" {
+			words = append(words, each.words)
 		}
-		if href == "" {
-			writeRuns(&out, nodes[index:end])
-		} else {
-			var link strings.Builder
-			writeRuns(&link, nodes[index:end])
-			if words := link.String(); words == href || "mailto:"+words == href {
-				out.WriteString(words)
-			} else {
-				out.WriteString("[" + words + "](" + href + ")")
-			}
-		}
-		index = end
+		out.notes = append(out.notes, each.notes...)
+		out.held = out.held.with(each.held)
 	}
-	return out.String()
+	out.words = strings.Join(words, sep)
+	return out
 }
 
-// writeRuns writes inline content with no link in it, as inline reads it: an image is its alt text
-// and its address, as a link is, and a run of code is one code span.
-func writeRuns(out *strings.Builder, nodes []*pmdoc.Node) {
+// text is the body of a text of readings, the words of each on a line, then the words of each
+// footnote that they refer to, once and in the order of the first reference, also a footnote
+// that a footnote refers to, and everything they hold.
+func (e *extraction) text(readings ...reading) (string, Held) {
+	out := joined("\n", readings)
+	var lines []string
+	if out.words != "" {
+		lines = append(lines, out.words)
+	}
+	seen := map[string]bool{}
+	// The list grows while it is read: a footnote can refer to another one.
+	for index := 0; index < len(out.notes); index++ {
+		key := out.notes[index]
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		note := e.note(key)
+		if note.words != "" {
+			lines = append(lines, note.words)
+		}
+		out.notes = append(out.notes, note.notes...)
+		out.held = out.held.with(note.held)
+	}
+	return strings.Join(lines, "\n"), out.held
+}
+
+// note is the reading of the footnote whose key is key: the words of each paragraph and heading
+// in it, one to a line, read once.
+func (e *extraction) note(key string) reading {
+	if note, read := e.notes[key]; read {
+		return note
+	}
+	var parts []reading
+	if definition := e.footnotes[key]; definition != nil {
+		pmdoc.Walk(definition, func(node *pmdoc.Node) bool {
+			if node.Type == "paragraph" || node.Type == "heading" {
+				parts = append(parts, e.read(node.Children))
+				return false
+			}
+			return node.Type != "code_block"
+		})
+	}
+	e.notes[key] = joined("\n", parts)
+	return e.notes[key]
+}
+
+// read is inline content as a person reads it (inline), without the white space at the ends of
+// its words.
+func (e *extraction) read(nodes []*pmdoc.Node) reading {
+	out := e.inline(nodes)
+	out.words = strings.TrimSpace(out.words)
+	return out
+}
+
+// inline is inline content as a person reads it. Its words are each run's characters, which
+// already hold the character a reference names and no backslash of an escape, a link's words
+// without its address, an image's alternative text, a hard break as a space (a soft one is a
+// space in the tree), and code in code font, as ste-lint reads code. A footnote reference is no
+// word: the footnote is part of the text (note). It holds the address and the title of each link
+// and image.
+func (e *extraction) inline(nodes []*pmdoc.Node) reading {
+	var out reading
+	var words strings.Builder
 	for index := 0; index < len(nodes); {
 		node := nodes[index]
 		if node.Type == "text" && hasMark(node, "inlineCode") {
 			var code strings.Builder
 			for ; index < len(nodes) && nodes[index].Type == "text" && hasMark(nodes[index], "inlineCode"); index++ {
 				code.WriteString(nodes[index].Text)
+				out.held = linkHeld(out.held, nodes[index])
 			}
-			out.WriteString(codeSpan(code.String()))
+			words.WriteString(codeSpan(code.String()))
 			continue
 		}
+		out.held = linkHeld(out.held, node)
 		switch node.Type {
 		case "text":
-			out.WriteString(node.Text)
+			words.WriteString(node.Text)
 		case "hardbreak":
-			out.WriteByte(' ')
+			words.WriteByte(' ')
 		case "image":
 			alt, _ := node.Attrs["alt"].(string)
 			src, _ := node.Attrs["src"].(string)
-			out.WriteString("![" + alt + "](" + src + ")")
+			title, _ := node.Attrs["title"].(string)
+			words.WriteString(alt)
+			out.held = out.held.withAddress(src).withTitle(title)
 		case "footnote_reference":
 			label, _ := node.Attrs["label"].(string)
-			out.WriteString("[^" + label + "]")
+			out.notes = append(out.notes, pmdoc.FootnoteLabelKey(label))
 		case "html":
 			value, _ := node.Attrs["value"].(string)
-			out.WriteString(value)
+			words.WriteString(value)
 		}
 		index++
 	}
+	out.words = words.String()
+	return out
+}
+
+// linkHeld is held with the address and the title of the link that node carries, if any.
+func linkHeld(held Held, node *pmdoc.Node) Held {
+	for _, mark := range node.Marks {
+		if mark.Type == "link" {
+			href, _ := mark.Attrs["href"].(string)
+			title, _ := mark.Attrs["title"].(string)
+			return held.withAddress(href).withTitle(title)
+		}
+	}
+	return held
 }
 
 // codeSpan is code in code font: between runs of backticks longer than any run in it, with a space
@@ -389,17 +535,6 @@ func codeSpan(code string) string {
 		return fence + " " + code + " " + fence
 	}
 	return fence + code + fence
-}
-
-// linkHref is the address of the link that a text run of inline content carries, or "".
-func linkHref(node *pmdoc.Node) string {
-	for _, mark := range node.Marks {
-		if mark.Type == "link" {
-			href, _ := mark.Attrs["href"].(string)
-			return href
-		}
-	}
-	return ""
 }
 
 func hasMark(node *pmdoc.Node, markType string) bool {

@@ -23,26 +23,34 @@ const (
 )
 
 // Message is the refusal of act: its head, which counts the texts that hold a finding (textsOf),
-// one line for each of the first 20 findings, a count of the rest that more says how to list, and
-// the next step. findings is every finding, and total counts them.
-func Message(act Act, findings []Finding, total int, more string) string {
+// one line for each of the first 20 findings, a count of the rest that more says how to list,
+// each line of notes, and the next step. findings is every finding, and total counts them.
+func Message(act Act, findings []Finding, total int, more string, notes ...string) string {
 	switch act {
 	case ActApproval:
-		return refusal("Dispatch refused this approval", findings, total, more, requestChanges)
+		return refusal("Dispatch refused this approval", findings, total, more, notes, requestChanges)
 	case ActRestore:
-		return refusal("Dispatch did not open this approval request again", findings, total, more, fixAndRequest)
+		return refusal("Dispatch did not open this approval request again", findings, total, more, notes, fixAndRequest)
 	default:
-		return refusal("Dispatch refused this approval request", findings, total, more, fixAndRequest)
+		return refusal("Dispatch refused this approval request", findings, total, more, notes, fixAndRequest)
 	}
 }
 
 // ChangesReason is the reason that a person's Request changes sends to the author after Dispatch
 // refused the person's approval.
-func ChangesReason(findings []Finding, total int, more string) string {
-	return refusal("Dispatch refused my approval", findings, total, more, fixAndRequest)
+func ChangesReason(findings []Finding, total int, more string, notes ...string) string {
+	return refusal("Dispatch refused my approval", findings, total, more, notes, fixAndRequest)
 }
 
-func refusal(head string, findings []Finding, total int, more, last string) string {
+// UnreadLine is the line that says that a judgment compared no text with version of document, an
+// approved document of issue under the root, because Dispatch cannot read that version, and the
+// way out.
+func UnreadLine(document string, version int, issue string) string {
+	return fmt.Sprintf("Dispatch cannot read %s version %d of %s, an approved document under the root, so no rule compared its texts. "+
+		"To change that, write a new version of that document and request its approval.", document, version, issue)
+}
+
+func refusal(head string, findings []Finding, total int, more string, notes []string, last string) string {
 	var out strings.Builder
 	texts := textsOf(findings)
 	count := fmt.Sprintf("%d texts break", texts)
@@ -60,6 +68,9 @@ func refusal(head string, findings []Finding, total int, more, last string) stri
 		} else {
 			fmt.Fprintf(&out, "\nAnd %d more: %s", rest, more)
 		}
+	}
+	for _, note := range notes {
+		out.WriteString("\n" + note)
 	}
 	out.WriteString("\n" + last)
 	return out.String()

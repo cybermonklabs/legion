@@ -1,0 +1,230 @@
+package api
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/specform"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+)
+
+// formRequirement is a requirement block of id that holds body.
+func formRequirement(id, body string) string {
+	return ":::requirement{#" + id + "}\n" + body + "\n:::\n"
+}
+
+// The red team's and the review's inputs of a link, through the approval request route: the
+// rules of a sentence and of a name judge the words that the person reads, and the reference
+// rules also read each address and title. A footnote of a statement is part of it.
+func TestTheRequestJudgesTheWordsAndTheAddressesOfALink(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	requireFormRows(t, tree, []formRow{
+		{name: "a stop in the address of a link", spec: formRequirement("dot", "Dispatch opens [the record](https://example.com/Web.Config)."),
+			reads: specform.KindStatement},
+		{name: "a stop in another address", spec: formRequirement("type", "Dispatch reads [the type](https://learn.example.com/api/System.String)."),
+			reads: specform.KindStatement},
+		{name: "a number sign in an address", spec: formRequirement("guide", "Dispatch follows [the guide](https://example.com/guide#12)."),
+			reads: specform.KindStatement},
+		{name: "a name of a person split by a link", spec: formRequirement("name", "Dispatch asks [Ada](https://example.com/ada) Lovelace."),
+			want: []string{"statement name person"}},
+		{name: "a name of a person in two links", spec: formRequirement("links", "Dispatch asks [Ada](https://example.com/ada) [Lovelace](https://example.com/lovelace)."),
+			want: []string{"statement links person"}},
+		{name: "the title of an image", spec: formRequirement("image-title", "Dispatch shows ![the record](https://example.com/record.png \"Ada Lovelace\")."),
+			want: []string{"statement image-title person"}},
+		{name: "the title of a link", spec: formRequirement("link-title", "Dispatch shows [the record](https://example.com/record \"Ada Lovelace\")."),
+			want: []string{"statement link-title person"}},
+		{name: "a footnote that links to an issue",
+			spec: formRequirement("footnote", "Dispatch stores each record.[^note]") + "\n[^note]: See [the issue](dispatch://ACME-12).\n",
+			want: []string{"statement footnote dispatch-link"}},
+		{name: "the control: the address of a link to an issue", spec: formRequirement("issue", "Dispatch keeps [the issue](dispatch://ACME-12)."),
+			want: []string{"statement issue dispatch-link"}},
+	})
+}
+
+// The red team's two inputs of a part of Terms and a container, through the approval request
+// route: a heading in a block quote does not close the part around it, and a part in a block quote
+// or a callout ends with it.
+func TestTheRequestReadsAPartOfTermsInItsContainer(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	requireFormRows(t, tree, []formRow{
+		{name: "a heading in a block quote in the part",
+			spec: "## Terms\n\n- **lease**: One record of a claim.\n\n> ## Example\n>\n> A note.\n\n- **bad**: Dispatch performs a validation of each upload.\n",
+			want: []string{"definition bad ste100-nominalization"}},
+		{name: "the part in a block quote, then a paragraph",
+			spec:  "> ## Terms\n>\n> - **lease**: One record of a claim.\n\nDispatch stores each record.\n",
+			reads: specform.KindDefinition},
+		{name: "the part in a callout, then a paragraph",
+			spec:  ":::callout{#terms-note title=\"Terms\"}\n## Terms\n\n- **lease**: One record of a claim.\n:::\n\nDispatch stores each record.\n",
+			reads: specform.KindDefinition},
+	})
+}
+
+// Other prose of a document is no text of The Spec: three of the red team's inputs open the
+// request, beside a statement that the form reads.
+func TestTheRequestJudgesNoOtherProse(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	const control = ":::requirement{#control}\nDispatch stores each comment.\n:::\n\n"
+	requireFormRows(t, tree, []formRow{
+		{name: "an ordinary paragraph with a link to an issue", spec: control + "See [the issue](dispatch://ACME-12).\n", reads: specform.KindStatement},
+		{name: "an ordinary heading with the name of a person", spec: control + "## Ada Lovelace\n", reads: specform.KindStatement},
+		{name: "the title of a callout with the name of a person",
+			spec: control + ":::callout{#note title=\"Ada Lovelace\"}\nDispatch stores each record.\n:::\n", reads: specform.KindStatement},
+	})
+}
+
+// unreadableMarkdown is markdown that today's parser refuses, as a version that an earlier release
+// stored outside the schema.
+const unreadableMarkdown = "<div>\nblock HTML\n</div>\n"
+
+// storeUnreadableVersion writes unreadableMarkdown over version of the document, as only an edit
+// of the database can: no route stores it.
+func storeUnreadableVersion(t *testing.T, database *store.Store, artifactID string, version int) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2`,
+		artifactID, version, unreadableMarkdown); err != nil {
+		t.Fatalf("store an unreadable version: %v", err)
+	}
+}
+
+// unreadLine is the line that names an approved document that a judgment could not read.
+func unreadLine(document string, version int, issue string) string {
+	return fmt.Sprintf("Dispatch cannot read %s version %d of %s, an approved document under the root, so no rule compared its texts.", document, version, issue)
+}
+
+// unreadOf is the line of each unread document of an answer's form, as JSON reads it.
+func unreadOf(t *testing.T, form map[string]any) []string {
+	t.Helper()
+	listed, _ := form["unread"].([]any)
+	var lines []string
+	for _, each := range listed {
+		item, _ := each.(map[string]any)
+		line, _ := item["line"].(string)
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// containsLine reports whether lines holds one that starts with prefix.
+func containsLine(lines []string, prefix string) bool {
+	for _, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// One approved document under the root whose approved version today's parser refuses stops no
+// other judgment under the root: its texts are not compared, the request, the person's approval
+// and the carry's gate of another document go on, and each answer names that document and its
+// version in one line. A request that breaks the form names it too. So a rule that compares the
+// documents cannot see its texts: the names of its components are no nouns of the system.
+func TestAnApprovedVersionThatDispatchCannotReadStopsNoOtherJudgment(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	seedPeople(t, tree.database, "dispatch.admin@example.com")
+	components := createFormIssue(t, tree.handler, tree.root, "The components",
+		"# Components\n\n## Dispatch (component `dispatch`)\n\nThe server keeps each issue and each document.\n")
+	if response := reviewFormDocument(t, tree.handler, components.PrimaryArtifactID, "approved", ""); response.Code != http.StatusCreated {
+		t.Fatalf("approve the components: status=%d body=%s", response.Code, response.Body.String())
+	}
+	clean := createFormIssue(t, tree.handler, tree.root, "A clean spec", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
+	admin := createFormIssue(t, tree.handler, tree.root, "Uses a component name",
+		"# Spec\n\n"+formRequirement("reach-owner", "Each issue reaches Dispatch Admin before its owner starts work."))
+	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, admin.PrimaryArtifactID, nil))
+
+	storeUnreadableVersion(t, tree.database, components.PrimaryArtifactID, 1)
+	line := unreadLine("spec.md", 1, components.Key)
+
+	requested := requestFormApproval(t, tree.handler, clean.PrimaryArtifactID, nil)
+	if requested.Code != http.StatusCreated {
+		t.Fatalf("the request of a clean spec: status=%d body=%s, want 201", requested.Code, requested.Body.String())
+	}
+	answer := decodeBody[map[string]any](t, requested)
+	form, _ := answer["spec_form"].(map[string]any)
+	if !containsLine(unreadOf(t, form), line) {
+		t.Errorf("the request's spec_form names %q, want the line %q: %s", unreadOf(t, form), line, requested.Body.String())
+	}
+	read := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+clean.PrimaryArtifactID+"/spec-form", nil, "alice")
+	if body := decodeBody[map[string]any](t, read); read.Code != http.StatusOK || !containsLine(unreadOf(t, body), line) || body["refuses_approval"] != false {
+		t.Errorf("the read route: status=%d body=%s, want 200 naming %q and refusing nothing", read.Code, read.Body.String(), line)
+	}
+	gate, err := FormGate("ACME-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := tree.database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	breaks, err := gate(context.Background(), tx, nil, model.AskApprovalDocument{ArtifactID: clean.PrimaryArtifactID, Name: "spec.md", Version: 1})
+	_ = tx.Rollback(context.Background())
+	if breaks || err != nil {
+		t.Errorf("the carry's gate of the clean spec = %v, %v; want false and no error", breaks, err)
+	}
+	if approved := reviewFormDocument(t, tree.handler, clean.PrimaryArtifactID, "approved", ""); approved.Code != http.StatusCreated {
+		t.Errorf("the person's approval of the clean spec: status=%d body=%s, want 201", approved.Code, approved.Body.String())
+	}
+
+	// The stated limit: the names of the unreadable components are no nouns of the system now.
+	refused := requestFormApproval(t, tree.handler, admin.PrimaryArtifactID, nil)
+	if refused.Code != http.StatusConflict {
+		t.Fatalf("the request that names Dispatch Admin: status=%d body=%s, want 409", refused.Code, refused.Body.String())
+	}
+	refusal := decodeBody[map[string]any](t, refused)
+	message, _ := refusal["error"].(string)
+	if !strings.Contains(message, `statement reach-owner in spec.md version 1: it names a person: "Dispatch Admin".`) || !strings.Contains(message, "\n"+line) {
+		t.Errorf("the refusal's words are %q, want the person finding and the line %q", message, line)
+	}
+}
+
+// A version that the parser refuses, and that a judgment names, is one finding of its document,
+// which names the version and the way out: the request is refused with 409, never 500, the read
+// route says that the approval is refused, the person's approval is refused, and the carry's gate
+// answers a break, so the carry writes no approval.
+func TestAVersionThatTheJudgmentNamesAndDispatchCannotReadIsRefused(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	issue := createFormIssue(t, tree.handler, tree.root, "An unreadable spec", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
+	storeUnreadableVersion(t, tree.database, issue.PrimaryArtifactID, 1)
+	const finding = "- document spec.md in spec.md version 1: Dispatch cannot read this version ("
+	const wayOut = "so it cannot judge its texts. Write a new version of the document."
+	for _, test := range []struct {
+		name     string
+		response func() *httptest.ResponseRecorder
+	}{
+		{"the request", func() *httptest.ResponseRecorder {
+			return requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
+		}},
+		{"the person's approval", func() *httptest.ResponseRecorder {
+			return reviewFormDocument(t, tree.handler, issue.PrimaryArtifactID, "approved", "")
+		}},
+	} {
+		response := test.response()
+		body := decodeBody[map[string]any](t, response)
+		message, _ := body["error"].(string)
+		if response.Code != http.StatusConflict || body["code"] != "SPEC_FORM" || !strings.Contains(message, finding) || !strings.Contains(message, wayOut) {
+			t.Errorf("%s: status=%d body=%s, want 409 SPEC_FORM with %q and %q", test.name, response.Code, response.Body.String(), finding, wayOut)
+		}
+	}
+	read := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/spec-form", nil, "alice")
+	if body := decodeBody[map[string]any](t, read); read.Code != http.StatusOK || body["refuses_approval"] != true || !strings.Contains(read.Body.String(), `"rule":"unreadable"`) {
+		t.Errorf("the read route: status=%d body=%s, want 200, refuses_approval and the rule unreadable", read.Code, read.Body.String())
+	}
+	gate, err := FormGate("ACME-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := tree.database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	breaks, err := gate(context.Background(), tx, nil, model.AskApprovalDocument{ArtifactID: issue.PrimaryArtifactID, Name: "spec.md", Version: 1})
+	_ = tx.Rollback(context.Background())
+	if !breaks || err != nil {
+		t.Errorf("the carry's gate of the unreadable version = %v, %v; want a break and no error", breaks, err)
+	}
+}

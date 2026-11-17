@@ -200,6 +200,14 @@ function finding(
 const THREE_SENTENCES = "it has 3 sentences, and a statement has one or two";
 const LONG_SENTENCE =
   'a sentence has 26 words, and a sentence has at most 25: "Dispatch refuses a write of the whole text"';
+/** An approved document under the root whose approved version Dispatch cannot read, as the server writes it. */
+const UNREAD = {
+  document: "spec.md",
+  artifact_id: "ACME-3-spec",
+  issue: "ACME-3",
+  version: 1,
+  line: "Dispatch cannot read spec.md version 1 of ACME-3, an approved document under the root, so no rule compared its texts. To change that, write a new version of that document and request its approval.",
+};
 
 /** What `GET /api/v1/artifacts/{id}/spec-form` answers for one document. */
 function formRead(
@@ -232,6 +240,7 @@ function formRead(
     findings: [...findings],
     findings_total: findings.length,
     terms: [],
+    unread: [],
     refuses_approval: inScope && findings.length > 0,
   };
 }
@@ -398,6 +407,22 @@ describe("dispatch spec-form", () => {
     expect(stdout).toBe(
       "Dispatch found no text of The Spec in spec.md version 2, so it decided nothing about its form.\n"
     );
+  });
+
+  test("an approved document under the root that Dispatch could not read gets its line after what Dispatch read", async () => {
+    forms["ACME-2-spec"] = {
+      ...formRead("ACME-2-spec", "spec.md", 3, "covered", { statement: 1 }),
+      unread: [UNREAD],
+    };
+
+    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      UNREAD.line,
+      "",
+    ]);
   });
 
   test("a covered document with findings prints that Dispatch refuses its approval, then each finding as a statement line", async () => {
@@ -804,6 +829,23 @@ describe("dispatch request-approval and the form of The Spec", () => {
     expect(stdout.split("\n")).toContain(
       "Dispatch read the form of 59 statements, 0 claims, 40 purposes and 0 definitions against 48 terms: no text breaks it."
     );
+  });
+
+  test("a recorded request prints the line of each approved document that Dispatch could not read", async () => {
+    approval = {
+      kind: "recorded",
+      specForm: { root: "ACME-1", texts: { statement: 1 }, terms: 0, unread: [UNREAD] },
+    };
+
+    const { code, stdout } = await run([
+      "request-approval",
+      "ACME-2",
+      "--summary",
+      "The queue keeps each message for 72 hours.",
+    ]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toContain(UNREAD.line);
   });
 
   test("a recorded request whose documents hold no text of The Spec says Dispatch decided nothing", async () => {

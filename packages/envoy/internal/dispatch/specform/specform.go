@@ -10,7 +10,10 @@
 // and Message and ChangesReason write the refusal.
 package specform
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // Kind is the kind of a text of The Spec.
 type Kind string
@@ -27,6 +30,7 @@ const (
 	KindLine           Kind = "line"      // a line under a heading Terms that is no term line; the rule term-line only
 	KindHeading        Kind = "heading"   // a heading that reads as Terms in another form; the rule terms-heading only
 	KindTermLine       Kind = "term_line" // a line in the form of a term line outside Terms; the rule of a second definition only
+	KindDocument       Kind = "document"  // a version that the parser refuses, named by its document; the rule unreadable only
 )
 
 // kinds is every Kind that ExtractDocument counts in each document, in the order a count of them
@@ -38,17 +42,55 @@ var kinds = []Kind{KindStatement, KindClaim, KindProcedure, KindFailingExample, 
 // Rule is the stable id of a rule of the form, such as "sentences" or "ste100-semicolon".
 type Rule string
 
-// Text is one text of The Spec. Where is "<file>:<line>" or "<document> version <n>".
+// Text is one text of The Spec: the words that a person reads (Body), and what its node holds
+// that the person does not read as its words (Held). Where is "<file>:<line>" or "<document>
+// version <n>".
 type Text struct {
 	Node  string
 	Kind  Kind
 	Body  string
 	Where string
+	Held  Held
 }
 
-// Term is a term and its definition. Where of a listed term is "<document> version <n> of
-// <issue key>" or "<file>:<line>".
-type Term struct{ Name, Definition, Where string }
+// Held is what a text holds beside the words that a person reads: the address and the title of
+// each of its links and images. Only the reference rules read it: each address as an address, and
+// each title as words.
+type Held struct {
+	Addresses, Titles []string
+}
+
+// with is held and each address and title of more that held does not hold yet.
+func (held Held) with(more Held) Held {
+	for _, address := range more.Addresses {
+		held = held.withAddress(address)
+	}
+	for _, title := range more.Titles {
+		held = held.withTitle(title)
+	}
+	return held
+}
+
+func (held Held) withAddress(address string) Held {
+	if address != "" && !slices.Contains(held.Addresses, address) {
+		held.Addresses = append(slices.Clip(held.Addresses), address)
+	}
+	return held
+}
+
+func (held Held) withTitle(title string) Held {
+	if title != "" && !slices.Contains(held.Titles, title) {
+		held.Titles = append(slices.Clip(held.Titles), title)
+	}
+	return held
+}
+
+// Term is a term and its definition, with what each holds beside its words. Where of a listed
+// term is "<document> version <n> of <issue key>" or "<file>:<line>".
+type Term struct {
+	Name, Definition, Where  string
+	NameHeld, DefinitionHeld Held
+}
 
 // Context is what Check knows of the system: which project keys exist, the email of each person
 // who signed in, the names of the system's components and interfaces that a person approved, and
@@ -112,8 +154,8 @@ func Check(c Context, in Input) []Finding {
 		keep(text, breaks(c, people, text))
 	}
 	for at, term := range in.Proposed {
-		name := Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where}
-		definition := Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where}
+		name := Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where, Held: term.NameHeld}
+		definition := Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld}
 		keep(name, breaks(c, people, name))
 		keep(definition, append(terms.breaks(at, term), breaks(c, people, definition)...))
 	}

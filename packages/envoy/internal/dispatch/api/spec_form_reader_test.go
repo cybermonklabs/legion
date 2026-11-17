@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
 
@@ -190,11 +191,14 @@ var formContainers = []struct {
 // the set of statements that the form judges, and the set of checks that the results read lists is
 // the set of claims that the form judges. Each document also holds a block at the top level, which
 // both read, so an empty set on both sides cannot pass for a match; in a code fence or a table cell
-// the block is no block for both.
+// the block is no block for both. Each block holds a link, and the text that the form judges, its
+// excerpt, is the text that the page shows: the words of the block in the tree that the page is
+// drawn from (pmdoc.ReadForDisplay), as the application reads them (pmdoc.TextContent). The address
+// is no part of it, and it breaks no rule as words: a stop in it, or a number sign.
 func TestTheFormJudgesEachBlockThatTheApplicationLists(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	const statement = "Dispatch keeps each record. Dispatch reads each record. Dispatch shows each record."
-	const claim = "Legion merges each change, as #12 says."
+	const statement = "Dispatch keeps each [record](https://example.com/Web.Config). Dispatch reads each record. Dispatch shows each record."
+	const claim = "Legion merges each [change](https://example.com/guide#12), as #12 says."
 	if len(formContainers) < 20 {
 		t.Fatalf("%d places, want at least 20", len(formContainers))
 	}
@@ -236,8 +240,36 @@ func TestTheFormJudgesEachBlockThatTheApplicationLists(t *testing.T) {
 				t.Errorf("the form read %d statements and %d claims, want %d and %d",
 					specRead.Texts[specform.KindStatement], checksRead.Texts[specform.KindClaim], len(wantStatements), len(wantChecks))
 			}
+			if len(specRead.Findings)+len(checksRead.Findings) != len(wantStatements)+len(wantChecks) {
+				t.Errorf("the form found %d and %d, want one finding of each block: %#v %#v", len(specRead.Findings), len(checksRead.Findings), specRead.Findings, checksRead.Findings)
+			}
+			for _, read := range []specFormRead{specRead, checksRead} {
+				markdown := versionText(t, tree.database, read.ArtifactID, read.Version)
+				for _, finding := range read.Findings {
+					if shown := pageText(markdown, finding.Node); finding.Excerpt != shown {
+						t.Errorf("%s: the form judges %q, and the page shows %q", finding.Node, finding.Excerpt, shown)
+					}
+				}
+			}
 		})
 	}
+}
+
+// pageText is the text of the typed block id as the page shows it: each paragraph of the block in
+// the tree that the page is drawn from, as the application reads a node's text (pmdoc.TextContent),
+// a hard break as a space, one paragraph to a line.
+func pageText(markdown, id string) string {
+	var lines []string
+	pmdoc.Walk(pmdoc.ReadForDisplay(markdown, pmdoc.DisplayLatest), func(node *pmdoc.Node) bool {
+		if block, _ := node.Attrs[pmdoc.BlockIDAttr].(string); !pmdoc.IsTypedBlock(node.Type) || block != id {
+			return true
+		}
+		for _, paragraph := range node.Children {
+			lines = append(lines, strings.TrimSpace(strings.ReplaceAll(pmdoc.TextContent(paragraph), "\n", " ")))
+		}
+		return false
+	})
+	return strings.Join(lines, "\n")
 }
 
 // judgedNodes is the node of each finding of read of kind and rule.

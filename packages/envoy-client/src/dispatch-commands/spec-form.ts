@@ -45,13 +45,24 @@ function readLine(texts: TextCounts, terms: number, name: string, version: numbe
 }
 
 /**
- * The line `dispatch request-approval` adds from its answer's `spec_form`, which Dispatch sends
+ * The line of each approved document under the root that Dispatch could not read, which the
+ * server writes (`specform.UnreadLine`): no rule compared its texts, and the line says the way out.
+ */
+function unreadLines(unread: readonly { readonly line: string }[] | null | undefined): string[] {
+  return (unread ?? []).map(({ line }) => line);
+}
+
+/**
+ * The lines `dispatch request-approval` adds from its answer's `spec_form`, which Dispatch sends
  * only when a root of The Spec covers the document: what it read of every document the request
- * handed the person. A request Dispatch refused for the form never reaches here (409 SPEC_FORM).
+ * handed the person, and each approved document it could not read. A request Dispatch refused
+ * for the form never reaches here (409 SPEC_FORM).
  */
 export function approvalFormLines(result: ApprovalRequestResponse, name: string): string[] {
   const form = result.spec_form;
-  return form === undefined ? [] : [readLine(form.texts, form.terms, name, result.version)];
+  return form === undefined
+    ? []
+    : [readLine(form.texts, form.terms, name, result.version), ...unreadLines(form.unread)];
 }
 
 /** Why Dispatch refuses no approval request of a document out of scope, by its `scope`. */
@@ -85,23 +96,26 @@ function textsBreaking(findings: readonly SpecFormFinding[]): number {
  * The form of one document as Dispatch read it. A document an approval request is judged on
  * (`in_scope`) gets the line that says Dispatch refuses its approval and each finding, or the
  * line of what Dispatch read. One out of scope first says why Dispatch refuses nothing for it,
- * and still lists its findings, which are then for the reader alone.
+ * and still lists its findings, which are then for the reader alone. Each approved document under
+ * the root that Dispatch could not read has a line after them.
  */
 function documentLines(form: SpecFormRead): string[] {
   const findings = form.findings ?? [];
   const listed = findings.map((finding) => `- ${finding.kind} ${finding.node}: ${finding.detail}.`);
   const read = readLine(form.texts, (form.terms ?? []).length, form.name, form.version);
+  const unread = unreadLines(form.unread);
   if (!form.in_scope) {
     return findings.length === 0
-      ? [scopeLine(form), read]
-      : [scopeLine(form), "The findings below are for you to read.", ...listed];
+      ? [scopeLine(form), read, ...unread]
+      : [scopeLine(form), "The findings below are for you to read.", ...listed, ...unread];
   }
-  if (findings.length === 0) return [read];
+  if (findings.length === 0) return [read, ...unread];
   const texts = textsBreaking(findings);
   const breaks = texts === 1 ? "1 text breaks" : `${texts} texts break`;
   return [
     `Dispatch refuses an approval request of ${form.name} version ${form.version}, because ${breaks} the form of The Spec.`,
     ...listed,
+    ...unread,
   ];
 }
 
