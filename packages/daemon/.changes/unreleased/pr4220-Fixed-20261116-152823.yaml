@@ -27,4 +27,4 @@ body: |-
   answer at a relaunch is tried again at the probe interval, charging nothing.
 time: 2026-11-16T15:28:23Z
 custom:
-    Issue: INFRA-840
+    Issue: pr4220

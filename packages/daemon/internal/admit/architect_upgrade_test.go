@@ -2,9 +2,7 @@ package admit
 
 import (
 	"context"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -494,39 +492,28 @@ const (
 	entryVerbatimVersion  = 20261114061900
 )
 
-// wayBackDeletes is a way back's own `delete from schema_version where version = <n>;` lines,
-// read from its text as headerWayBack gives it.
-var wayBackDeletes = regexp.MustCompile(`(?m)^\s*delete from schema_version where version = (\d+);`)
+// wayBackVersions is every version the two ways back delete: this migration's block deletes its
+// own, the marks' table's, the handshake's and the mark's, and the phase entry's block deletes its
+// own. Written here, not read from the blocks' text, so a block that stops deleting one of them
+// fails the test rather than moving what it expects.
+var wayBackVersions = []int{architectUpgradeVersion, stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion, phaseEntryVersion}
 
 // leftStanding is every version the schema_version table records once the ways back have run,
-// ascending: each embedded migration that none of them deletes. It is computed from the
-// migrations the binary ships and from each block's own deletes rather than written here. A number
-// written here was true only until the next migration landed above these, which neither block
-// deletes (20261114031356_merge_queue_removal when #3711 wrote it, 20261116144907_claim_sessions
-// after dispatch://INFRA-840's #4220), and the highest version alone cannot see the deletes at all
-// once one such migration stands above them, so the test reads every version.
-func leftStanding(t *testing.T, ways ...string) []int {
+// ascending: each embedded migration but wayBackVersions. It is computed from the migrations the
+// binary ships rather than written here: a number written here was true only until the next
+// migration landed above these, which neither block deletes (20261114031356_merge_queue_removal
+// when #3711 wrote it, 20261116144907_claim_sessions after #4220), and the
+// highest version alone cannot see the deletes at all once one such migration stands above them,
+// so the test reads every version.
+func leftStanding(t *testing.T) []int {
 	t.Helper()
-	deleted := map[int]bool{}
-	for _, way := range ways {
-		for _, match := range wayBackDeletes.FindAllStringSubmatch(way, -1) {
-			version, err := strconv.Atoi(match[1])
-			if err != nil {
-				t.Fatalf("read the version a way back deletes, %q: %v", match[0], err)
-			}
-			deleted[version] = true
-		}
-	}
-	if len(deleted) == 0 {
-		t.Fatalf("the ways back delete no schema_version row, so nothing tells what they leave standing: %q", ways)
-	}
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
 	var standing []int
 	for _, migration := range all {
-		if !deleted[migration.Version] {
+		if !slices.Contains(wayBackVersions, migration.Version) {
 			standing = append(standing, migration.Version)
 		}
 	}
@@ -578,7 +565,7 @@ func versionsNotIn(a, b []int) []int {
 func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T) {
 	const settled, readmitted = "LEGION-850", "LEGION-851"
 	wayBack := headerWayBack(t, architectUpgradeVersion)
-	standing := leftStanding(t, wayBack, headerWayBack(t, phaseEntryVersion))
+	standing := leftStanding(t)
 	for _, version := range []int{stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion} {
 		if other := headerWayBack(t, version); other != wayBack {
 			t.Fatalf("the headers of migrations %d and %d carry two ways back, want the one block both are reversed by:\n%s\nagainst\n%s",

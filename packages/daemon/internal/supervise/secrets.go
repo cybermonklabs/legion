@@ -263,7 +263,7 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 // starts nothing.
 //
 // The session is held to the claim before the first write, as an enrollment's is (holdRecorded,
-// dispatch://INFRA-840, plan E's t-e-54): every name the claim's record gives it, or, for the id
+// plan E's t-e-54): every name the claim's record gives it, or, for the id
 // the runtime chose for this launch, that id. The broker answers an exchange naming the pod and
 // the session with the role's own token, so a registration of another claim's session is that
 // session's trade. A hold refused — another claim holds a name, no claim does, or the claim is at

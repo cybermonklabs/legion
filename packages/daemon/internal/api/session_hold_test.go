@@ -19,7 +19,7 @@ import (
 const sessionHeldSentence = "is recorded for another claim of this daemon; a claim registers only a session it recorded itself, or one no claim has recorded"
 
 // A Legion session id is held to the first claim that recorded it, whatever that claim's state
-// (dispatch://INFRA-840, plan E's t-e-54). The daemon enrolls the session a claim's agent reports
+// (plan E's t-e-54). The daemon enrolls the session a claim's agent reports
 // with the secrets broker, and the broker's enrollment takes over the grants and pending requests
 // of every other enrollment of the same principal and session (packages/envoy/internal/broker/
 // enroll's adopt), while every pod of a project enrolls as that project's one principal. So a role

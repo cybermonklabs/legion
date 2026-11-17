@@ -785,7 +785,7 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261114031356 does: the case of a database main migrated applies a version left out of the
 // list before the list's own rewrites of that check, which do not name the later kind, so the
 // row seeded of that kind fails the upgrade. So does one that reads a column a version of the list
-// adds, as dispatch://INFRA-840's 20261116144907 reads claims.abandoned_session (20261029121200):
+// adds, as t-e-54's 20261116144907 reads claims.abandoned_session (20261029121200):
 // applied before that version, it fails on the missing column. Any other version left out makes
 // the cases below weaker, never red, which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{

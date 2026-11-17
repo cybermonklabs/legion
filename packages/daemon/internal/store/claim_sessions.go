@@ -227,8 +227,11 @@ func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, 
 		kinds, names, holders := make([]string, len(holds)), make([]string, len(holds)), make([]string, len(holds))
 		for i, h := range holds {
 			kinds[i], names[i] = string(h.Kind), h.Name
-			if recorders := append(slices.Clone(current[h]), abandoned[h]...); len(recorders) == 1 {
-				holders[i] = string(recorders[0])
+			switch c, a := current[h], abandoned[h]; {
+			case len(c) == 1 && len(a) == 0:
+				holders[i] = string(c[0])
+			case len(c) == 0 && len(a) == 1:
+				holders[i] = string(a[0])
 			}
 		}
 		tag, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim)

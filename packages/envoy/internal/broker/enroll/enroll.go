@@ -778,7 +778,7 @@ func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment)
 //     (exchange.PodLaunchPrincipal). The pods of several daemons run as one account — every
 //     public Legion project's pods run as legion-worker — and each daemon logs in as an account
 //     of its own, so a role of one daemon's pod that names a session of another daemon's pod
-//     takes none of its grants (dispatch://INFRA-840, plan E's t-e-54). A pod enrolled under a
+//     takes none of its grants (plan E's t-e-54). A pod enrolled under a
 //     login that proved no account, one a person approved through a machine-login code, carries
 //     nothing: no such login says which launcher it is, and a service's login holds no operator
 //     (authorized refuses a pod to every credential that carries one).

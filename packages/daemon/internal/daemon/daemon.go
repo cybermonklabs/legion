@@ -1637,11 +1637,18 @@ func (s sessionStop) send(supervising context.Context, session string, goneAt ti
 // launch a crash cut short, and by then the stop has retired it, so launchUnfinished would not
 // relaunch it: its ReleaseUncertainLaunch acts only on a launch-uncertain claim. Dropping that token
 // is a second guard beside that check, so boot does not report the retired claim as an unrecorded
-// launch. Then every recorded session name no row holds is held, and every claim recording a name
-// it does not hold is suspended before anything can relaunch it into the hold's refusal
-// (suspendSessionConflicts). The steps before the relaunches run on boot, settle on budgets of its
-// own, and the relaunches on the machines' context; the daemon's stop ends all three (run).
+// launch. Before any of that, before the first machine exists, every recorded session name no row
+// holds is held (holdRecordedSessions): restore builds each machine with its timers armed, and a
+// timer decides on its own goroutine the moment it fires, so a restored claim's deadline could
+// otherwise relaunch it into a name the hold had not yet given to no claim, and keep it (review
+// round 9 of #4220). Then every claim recording a name it does not hold is suspended before
+// anything can relaunch it into the hold's refusal (suspendSessionConflicts). The steps before the
+// relaunches run on boot, settle on budgets of its own, and the relaunches on the machines'
+// context; the daemon's stop ends all three (run).
 func (s *supervision) start(boot context.Context, settle func() error) error {
+	if err := s.holdRecordedSessions(boot); err != nil {
+		return err
+	}
 	unfinished, err := s.supervisor.restore(boot, s.claims)
 	if err != nil {
 		return err

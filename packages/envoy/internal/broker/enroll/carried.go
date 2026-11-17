@@ -13,7 +13,7 @@ import (
 )
 
 // The bounds of one Carried question, which ErrInvalidSessionIDs's text states: 4,096 ids is
-// twice the 2,048 session ids one Legion daemon claim holds at its cap (dispatch://INFRA-840),
+// twice the 2,048 session ids one Legion daemon claim holds at its cap (plan E's t-e-54),
 // and 255 bytes an id. Exported for the route, whose body cap is sized to the longest list
 // these allow (api's maxCarriedBodyBytes).
 const (
@@ -53,7 +53,7 @@ type CarriedEnrollment struct {
 // Carried answers, for the session ids a launcher names, every pod enrollment a login of the
 // caller's own account launched that still carries something adopt would hand to the next
 // enrollment of the same session id under the same login: the question a Legion daemon asks
-// before it frees a session id it holds (dispatch://INFRA-840), which it frees only when the
+// before it frees a session id it holds (plan E's t-e-54), which it frees only when the
 // answer is empty. The answer is sorted by session id, byte for byte, and then by enrollment id;
 // it is empty, never nil, when nothing carries; and an id named twice is answered once.
 //

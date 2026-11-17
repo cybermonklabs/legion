@@ -1,5 +1,5 @@
-// daemon_carry_test.go is a pod's carry under the daemon that enrolled it (dispatch://INFRA-840,
-// plan E's t-e-54): every public Legion project's pods run as one account, legion-worker, and each
+// daemon_carry_test.go is a pod's carry under the daemon that enrolled it (plan E's t-e-54):
+// every public Legion project's pods run as one account, legion-worker, and each
 // project's daemon logs in as an account of its own, so a pod's grants follow the pair of the two
 // (carryPrincipal, exchange.PodLaunchPrincipal) while its session name is held under its account
 // alone (namePrincipal).
@@ -23,20 +23,20 @@ import (
 // The two daemons of these tests, each its project's own account, whose pods both run as
 // carryPodAccount, as every public project's pods run as legion-worker.
 const (
-	infraDaemonAccount = "system:serviceaccount:legion:legion-infra-daemon"
-	betDaemonAccount   = "system:serviceaccount:legion:legion-bet-daemon"
+	acmeDaemonAccount   = "system:serviceaccount:legion:legion-acme-daemon"
+	globexDaemonAccount = "system:serviceaccount:legion:legion-globex-daemon"
 )
 
 // twoDaemons is a Service whose deployment binds carryPodAccount to the daemon service both
 // daemons log in as, and each daemon's token login.
-func twoDaemons(t *testing.T) (svc *Service, issuer *oidctest.Issuer, key *oidctest.Key, infra, bet Credential) {
+func twoDaemons(t *testing.T) (svc *Service, issuer *oidctest.Issuer, key *oidctest.Key, acme, globex Credential) {
 	t.Helper()
 	svc = newService(t)
 	issuer, key = withPodVerifier(t, svc)
-	svc.ServiceLogins = map[string]string{infraDaemonAccount: "legion-daemon", betDaemonAccount: "legion-daemon"}
+	svc.ServiceLogins = map[string]string{acmeDaemonAccount: "legion-daemon", globexDaemonAccount: "legion-daemon"}
 	svc.ServicesByAccount = map[string]string{carryPodAccount: "legion-daemon"}
 	rig := podRig{svc: svc}
-	return svc, issuer, key, rig.login(t, infraDaemonAccount, ""), rig.login(t, betDaemonAccount, "")
+	return svc, issuer, key, rig.login(t, acmeDaemonAccount, ""), rig.login(t, globexDaemonAccount, "")
 }
 
 // enrolPod enrols pod podUID of carryPodAccount under session, by the daemon whose login cred is.
@@ -74,16 +74,16 @@ func spellAccountAlone(t *testing.T, svc *Service, id uuid.UUID) {
 	}
 }
 
-// TestAPodOfAnotherDaemonCannotAdoptASessionsGrants: INFRA's daemon enrols an INFRA pod under
+// TestAPodOfAnotherDaemonCannotAdoptASessionsGrants: ACME's daemon enrols an ACME pod under
 // session S and the session is granted a secret; the pod ends, leaving the grant for S's next
-// enrolment. BET's daemon then enrols a BET pod, of the same account, under S, as a BET role that
-// reported an INFRA claim's session id would have it do: nothing moves, the INFRA row still holds
-// the grant and the BET row holds none. INFRA's daemon's next enrolment of S takes it. The same
+// enrolment. GLOBEX's daemon then enrols a GLOBEX pod, of the same account, under S, as a GLOBEX
+// role that reported an ACME claim's session id would have it do: nothing moves, the ACME row still
+// holds the grant and the GLOBEX row holds none. ACME's daemon's next enrolment of S takes it. The same
 // holds of a row an older broker replica wrote under the account alone: its own daemon takes it,
 // and the other daemon does not.
 //
 // The control: the account alone as a pod's carry principal (carryPrincipal's pod branch
-// answering exchange.AccountPrincipal(*in.Subject)); BET's enrolment adopts the grant, and the test
+// answering exchange.AccountPrincipal(*in.Subject)); GLOBEX's enrolment adopts the grant, and the test
 // fails naming it (the pull request records the run).
 func TestAPodOfAnotherDaemonCannotAdoptASessionsGrants(t *testing.T) {
 	for _, spelling := range []struct {
@@ -94,27 +94,27 @@ func TestAPodOfAnotherDaemonCannotAdoptASessionsGrants(t *testing.T) {
 		{"a row an older broker replica wrote under the account alone", true},
 	} {
 		t.Run(spelling.name, func(t *testing.T) {
-			svc, issuer, key, infra, bet := twoDaemons(t)
-			const session = "ses_infra"
-			first := enrolPod(t, svc, issuer, key, infra, session, "infra-pod-1")
+			svc, issuer, key, acme, globex := twoDaemons(t)
+			const session = "ses_acme"
+			first := enrolPod(t, svc, issuer, key, acme, session, "acme-pod-1")
 			grant := insertLiveGrant(t, svc, first.ID)
-			endLeavingDormant(t, svc, infra, first)
+			endLeavingDormant(t, svc, acme, first)
 			if spelling.legacy {
 				spellAccountAlone(t, svc, first.ID)
 			}
 
-			taker := enrolPod(t, svc, issuer, key, bet, session, "bet-pod-1")
+			taker := enrolPod(t, svc, issuer, key, globex, session, "globex-pod-1")
 			if holder := grantHolder(t, svc, grant); holder != first.ID {
-				t.Fatalf("INFRA's grant %s hangs off %s after BET's daemon enrolled %s, want INFRA's own row %s: a pod of another daemon takes no grant of the session it names",
+				t.Fatalf("ACME's grant %s hangs off %s after GLOBEX's daemon enrolled %s, want ACME's own row %s: a pod of another daemon takes no grant of the session it names",
 					grant, holder, session, first.ID)
 			}
 			if took := readCarryState(t, svc, taker.ID); took.LiveGrants != 0 || took.Pending != 0 {
-				t.Fatalf("BET's pod enrolled under INFRA's session holds %+v, want nothing", took)
+				t.Fatalf("GLOBEX's pod enrolled under ACME's session holds %+v, want nothing", took)
 			}
 
-			next := enrolPod(t, svc, issuer, key, infra, session, "infra-pod-2")
+			next := enrolPod(t, svc, issuer, key, acme, session, "acme-pod-2")
 			if holder := grantHolder(t, svc, grant); holder != next.ID {
-				t.Fatalf("INFRA's grant %s hangs off %s after INFRA's daemon enrolled %s again, want its new row %s", grant, holder, session, next.ID)
+				t.Fatalf("ACME's grant %s hangs off %s after ACME's daemon enrolled %s again, want its new row %s", grant, holder, session, next.ID)
 			}
 		})
 	}

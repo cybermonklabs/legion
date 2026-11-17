@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -185,6 +186,99 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 	}
 	if got := len(rt.CallsOf("Spawn")) + len(rt.CallsOf("Resume")); got != launches {
 		t.Errorf("the queued claim's launch reached the runtime %d times, want none: it was refused before anything started", got-launches)
+	}
+}
+
+// A restored machine arms its timers as restore builds it, and a timer decides on its own
+// goroutine the moment it fires, so the boot holds every recorded name no row holds before
+// restore builds the first machine (start, review round 9 of #4220). Two claims record one session
+// no row holds, as a daemon rolled back to a release before the hold leaves them: one registered,
+// whose restored registration deadline relaunches it, and one idle. A transaction of the test holds
+// an uncommitted row of a third claim's name, the first the boot's backfill inserts (a file-id,
+// the kind it takes first, store.HoldRecordedSessions), so the backfill waits before it has
+// inserted any name of the other two; while it waits the registered claim's deadline is fired, if
+// one is armed, and its relaunch given time to reach the runtime, and then the row is let go. No
+// machine exists to fire, the backfill holds the session for no claim, both claims are suspended
+// by the operator's suspend, and nothing resumes the session.
+//
+// The control: today's order, the hold after restore (start calling holdRecordedSessions after
+// restore). The deadline fires while the backfill waits, the relaunch holds the session for the
+// registered claim and resumes it, the backfill keeps that claim's row, and the test fails naming
+// the resume and the holder (the pull request records the run).
+func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
+	cfg := testConfig(t)
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := projectTokens(t, project)
+	registered, idle, waiter := token("LEGION-911", claim.RoleImplementer), token("LEGION-912", claim.RoleImplementer), token("LEGION-913", claim.RoleImplementer)
+	const shared = "ses_shared"
+	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
+		{registered, "LEGION-911", shared, "/sessions/911.jsonl", supervise.StateRegistered},
+		{idle, "LEGION-912", shared, "/sessions/912.jsonl", supervise.StateIdle},
+		{waiter, "LEGION-913", "ses_waiter", "/sessions/2026-11-16T00-00-00-000Z_a-waiter.jsonl", supervise.StateIdle},
+	}, "")
+
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// The registered claim's tree is open, so its relaunch reaches its hold (treelifecycle.CheckWork).
+	if _, err := st.Pool().Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority) values ($1, 'LEGION-911', 1, 'workflow')`, project); err != nil {
+		t.Fatalf("open the registered claim's tree: %v", err)
+	}
+	if _, err := st.Pool().Exec(ctx, `update claims set tree_epoch = 1 where token = $1`, string(registered)); err != nil {
+		t.Fatalf("bind the registered claim to its tree's epoch: %v", err)
+	}
+	row, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := row.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ($1, 'file-id', 'a-waiter', $2)`,
+		project, string(waiter)); err != nil {
+		t.Fatalf("hold the waiting claim's row uncommitted: %v", err)
+	}
+
+	rt := fake.NewRuntime()
+	o := fakeRuntime(rt, &built{})
+	clock := &heldClock{}
+	o.clock = clock
+	deadline := cfg.WorkerBootTimeout * time.Duration(cfg.WorkerBootRegistrationDeadlineIntervals)
+	fired := make(chan int, 1)
+	go func() {
+		// The boot waits on the row; fire the registered claim's deadline while it does, wait for
+		// what it launches to reach the runtime, then let the row go. Three seconds is past the few
+		// milliseconds restore takes, should it run first.
+		n := 0
+		for until := time.Now().Add(3 * time.Second); n == 0 && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
+			n = clock.fire(deadline)
+		}
+		for until := time.Now().Add(3 * time.Second); n > 0 && len(rt.CallsOf("Resume")) == 0 && time.Now().Before(until); {
+			time.Sleep(10 * time.Millisecond)
+		}
+		_ = row.Rollback(ctx)
+		fired <- n
+	}()
+	d := startDaemon(t, cfg, o)
+	whileWaiting := <-fired
+	t.Logf("deadlines fired while the backfill waited: %d; the runtime was asked Suspend %d, Resume %d and Spawn %d times; %s is %s",
+		whileWaiting, len(rt.CallsOf("Suspend")), len(rt.CallsOf("Resume")), len(rt.CallsOf("Spawn")), registered, d.claim(registered).State)
+
+	if resumes := rt.CallsOf("Resume"); len(resumes) != 0 {
+		t.Errorf("the boot resumed %d processes (a deadline fired %d times while the backfill waited), want none: %s's session is %s, which %s records too",
+			len(resumes), whileWaiting, registered, shared, idle)
+	}
+	if holder, ok := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionID, shared); !ok || holder != "" {
+		t.Errorf("%s is held for %q (a row holds it: %t) after the boot, want it held for no claim: two claims record it", shared, holder, ok)
+	}
+	for _, tok := range []claim.Token{registered, idle} {
+		if got := d.claim(tok); got.State != string(supervise.StateSuspended) || got.SuspendedBy != string(supervise.SuspendedByOperator) {
+			t.Errorf("%s, whose session %s two claims record, is %s suspended by %q after the boot; want it suspended by the operator's suspend",
+				tok, shared, got.State, got.SuspendedBy)
+		}
 	}
 }
 

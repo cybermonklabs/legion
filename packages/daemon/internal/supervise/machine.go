@@ -2671,7 +2671,7 @@ func (m *Machine) backOff(ctx context.Context) error {
 // fresh agent on a claim that had one is what the same-agent refusal exists to catch.
 //
 // A resume runs under every name its record gives the session, so each is held to the claim
-// before anything starts (holdRecorded, dispatch://INFRA-840): an Oh My Pi launch continues the
+// before anything starts (holdRecorded, plan E's t-e-54): an Oh My Pi launch continues the
 // recorded file (`--resume=<file>`), the tmux runtime one of the file's name or id where that path
 // is missing (sessionFileOf), and a Claude Code launch the session the transcript's name gives
 // (claudelaunch.ResumeSession), any of which a claim recorded before the hold could name for

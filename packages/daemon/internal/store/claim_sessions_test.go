@@ -53,7 +53,7 @@ func holdOne(ctx context.Context, t *testing.T, s *Store, project string, token 
 }
 
 // Each name of a session is held for the first claim of its project that records it
-// (dispatch://INFRA-840, plan E's t-e-54), and nothing that happens to that claim after frees it:
+// (plan E's t-e-54), and nothing that happens to that claim after frees it:
 // two claims racing for the same new names are answered one holder, a call records all of its
 // names or none, the hold outlives the claim's retirement and its row, and a name two claims
 // recorded before the table existed is held for neither and named for an operator to settle. A hold
@@ -668,7 +668,7 @@ func tuplesReadBy(t *testing.T, store *Store, call func(one *Store)) int64 {
 	}
 }
 
-// productionClaims is the size of the largest project at the time of writing: INFRA's daemon booted
+// productionClaims is the size of the largest project at the time of writing: its daemon booted
 // with 7,508 claims on 2026-11-16 (`legion daemon started`, field claims), about 250 more a day.
 const productionClaims = 7508
 

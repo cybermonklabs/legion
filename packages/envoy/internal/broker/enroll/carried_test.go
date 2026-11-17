@@ -1,6 +1,6 @@
 // carried_test.go is Service.Carried: which pod enrollments a daemon's own account launched still
 // carry something adopt would hand to the next enrollment of the same session id, the question
-// a Legion daemon asks before it frees a session id it holds (dispatch://INFRA-840).
+// a Legion daemon asks before it frees a session id it holds (plan E's t-e-54).
 package enroll
 
 import (
@@ -23,13 +23,13 @@ const carriedWindow = 12 * time.Hour
 // carriedDaemons is twoDaemons with carriedWindow as its carry window.
 func carriedDaemons(t *testing.T) (*Service, func(cred Credential, session, podUID string) Enrollment, Credential, Credential) {
 	t.Helper()
-	svc, issuer, key, infra, bet := twoDaemons(t)
+	svc, issuer, key, acme, globex := twoDaemons(t)
 	svc.Carry = carriedWindow
 	enrol := func(cred Credential, session, podUID string) Enrollment {
 		t.Helper()
 		return enrolPod(t, svc, issuer, key, cred, session, podUID)
 	}
-	return svc, enrol, infra, bet
+	return svc, enrol, acme, globex
 }
 
 // askCarried is Carried, failing t on an error.
@@ -98,51 +98,51 @@ func wantCarried(t *testing.T, what string, got []CarriedEnrollment, want ...Car
 // enrollment comes; a dormant one is answered while it holds a live grant or a pending request.
 // A row an older broker replica wrote under the account alone is the daemon's own all the same.
 func TestCarriedAnswersADaemonsOwnPodEnrollments(t *testing.T) {
-	const session = "ses_infra"
+	const session = "ses_acme"
 	t.Run("a live row holding a grant is answered live with its lease end", func(t *testing.T) {
-		svc, enrol, infra, _ := carriedDaemons(t)
-		row := enrol(infra, session, "infra-pod-1")
+		svc, enrol, acme, _ := carriedDaemons(t)
+		row := enrol(acme, session, "acme-pod-1")
 		insertLiveGrant(t, svc, row.ID)
-		wantCarried(t, "a live row holding a grant", askCarried(t, svc, infra, session),
+		wantCarried(t, "a live row holding a grant", askCarried(t, svc, acme, session),
 			CarriedEnrollment{SessionID: session, EnrollmentID: row.ID, State: "live", EndsAt: leaseEnd(t, svc, row.ID)})
 	})
 	t.Run("a live row holding nothing is answered live", func(t *testing.T) {
-		svc, enrol, infra, _ := carriedDaemons(t)
-		row := enrol(infra, session, "infra-pod-1")
+		svc, enrol, acme, _ := carriedDaemons(t)
+		row := enrol(acme, session, "acme-pod-1")
 		if held := readCarryState(t, svc, row.ID); held.LiveGrants != 0 || held.Pending != 0 {
 			t.Fatalf("the fresh row holds %+v, want nothing", held)
 		}
-		wantCarried(t, "a live row holding nothing", askCarried(t, svc, infra, session),
+		wantCarried(t, "a live row holding nothing", askCarried(t, svc, acme, session),
 			CarriedEnrollment{SessionID: session, EnrollmentID: row.ID, State: "live", EndsAt: leaseEnd(t, svc, row.ID)})
 	})
 	t.Run("a dormant row holding a live grant is answered dormant with its carry window end", func(t *testing.T) {
-		svc, enrol, infra, _ := carriedDaemons(t)
-		row := enrol(infra, session, "infra-pod-1")
+		svc, enrol, acme, _ := carriedDaemons(t)
+		row := enrol(acme, session, "acme-pod-1")
 		insertLiveGrant(t, svc, row.ID)
-		endLeavingDormant(t, svc, infra, row)
-		wantCarried(t, "a dormant row holding a grant", askCarried(t, svc, infra, session),
+		endLeavingDormant(t, svc, acme, row)
+		wantCarried(t, "a dormant row holding a grant", askCarried(t, svc, acme, session),
 			CarriedEnrollment{SessionID: session, EnrollmentID: row.ID, State: "dormant", EndsAt: carryWindowEnd(t, svc, row.ID)})
 	})
 	t.Run("a dormant row holding only a pending request is answered dormant", func(t *testing.T) {
-		svc, enrol, infra, _ := carriedDaemons(t)
-		row := enrol(infra, session, "infra-pod-1")
+		svc, enrol, acme, _ := carriedDaemons(t)
+		row := enrol(acme, session, "acme-pod-1")
 		insertPendingRequest(t, svc, row.ID)
-		if err := svc.Revoke(context.Background(), infra, row.ID.String(), "launcher"); err != nil {
+		if err := svc.Revoke(context.Background(), acme, row.ID.String(), "launcher"); err != nil {
 			t.Fatalf("revoke %s: %v", row.ID, err)
 		}
 		if left := readCarryState(t, svc, row.ID); !left.Dormant || left.LiveGrants != 0 || left.Pending != 1 {
 			t.Fatalf("the end left %+v, want it dormant, holding its one pending request and no grant", left)
 		}
-		wantCarried(t, "a dormant row holding only a pending request", askCarried(t, svc, infra, session),
+		wantCarried(t, "a dormant row holding only a pending request", askCarried(t, svc, acme, session),
 			CarriedEnrollment{SessionID: session, EnrollmentID: row.ID, State: "dormant", EndsAt: carryWindowEnd(t, svc, row.ID)})
 	})
 	t.Run("a row an older broker replica wrote under the account alone is answered", func(t *testing.T) {
-		svc, enrol, infra, _ := carriedDaemons(t)
-		row := enrol(infra, session, "infra-pod-1")
+		svc, enrol, acme, _ := carriedDaemons(t)
+		row := enrol(acme, session, "acme-pod-1")
 		// No route writes this spelling any more: an older replica does while the broker rolls
-		// (adopt, migration 0032), so the row is rewritten to it here.
+		// (adopt, migration 0033), so the row is rewritten to it here.
 		spellAccountAlone(t, svc, row.ID)
-		wantCarried(t, "a legacy row of the daemon's own login", askCarried(t, svc, infra, session),
+		wantCarried(t, "a legacy row of the daemon's own login", askCarried(t, svc, acme, session),
 			CarriedEnrollment{SessionID: session, EnrollmentID: row.ID, State: "live", EndsAt: leaseEnd(t, svc, row.ID)})
 	})
 }
@@ -151,23 +151,23 @@ func TestCarriedAnswersADaemonsOwnPodEnrollments(t *testing.T) {
 // not answered, since adopt takes nothing from it: a row ended for good, a dormant row whose
 // grant has been revoked since it went dormant, and a dormant row the carry sweep ended.
 func TestCarriedLeavesOutARowThatCanHandNothingOn(t *testing.T) {
-	const session = "ses_infra"
+	const session = "ses_acme"
 	t.Run("a row ended for good", func(t *testing.T) {
-		svc, enrol, infra, _ := carriedDaemons(t)
-		row := enrol(infra, session, "infra-pod-1")
-		if err := svc.Revoke(context.Background(), infra, row.ID.String(), "launcher"); err != nil {
+		svc, enrol, acme, _ := carriedDaemons(t)
+		row := enrol(acme, session, "acme-pod-1")
+		if err := svc.Revoke(context.Background(), acme, row.ID.String(), "launcher"); err != nil {
 			t.Fatalf("revoke %s: %v", row.ID, err)
 		}
 		if left := readCarryState(t, svc, row.ID); !left.Ended || left.Dormant {
 			t.Fatalf("the end left %+v, want it ended for good", left)
 		}
-		wantCarried(t, "a row ended for good", askCarried(t, svc, infra, session))
+		wantCarried(t, "a row ended for good", askCarried(t, svc, acme, session))
 	})
 	t.Run("a dormant row whose grant was revoked since", func(t *testing.T) {
-		svc, enrol, infra, _ := carriedDaemons(t)
-		row := enrol(infra, session, "infra-pod-1")
+		svc, enrol, acme, _ := carriedDaemons(t)
+		row := enrol(acme, session, "acme-pod-1")
 		grant := insertLiveGrant(t, svc, row.ID)
-		endLeavingDormant(t, svc, infra, row)
+		endLeavingDormant(t, svc, acme, row)
 		// An operator's revoke of the grant itself, which leaves the row dormant (requests.Machine).
 		if _, err := svc.Store.Pool.Exec(context.Background(), `update grants set revoked_at=now(), revoked_by='human:ada@example.com' where id=$1`, grant); err != nil {
 			t.Fatalf("revoke grant %s: %v", grant, err)
@@ -175,30 +175,30 @@ func TestCarriedLeavesOutARowThatCanHandNothingOn(t *testing.T) {
 		if left := readCarryState(t, svc, row.ID); !left.Dormant || left.LiveGrants != 0 {
 			t.Fatalf("the row is %+v, want it dormant and holding no live grant", left)
 		}
-		wantCarried(t, "a dormant row holding nothing", askCarried(t, svc, infra, session))
+		wantCarried(t, "a dormant row holding nothing", askCarried(t, svc, acme, session))
 	})
 	t.Run("a dormant row the carry sweep ended", func(t *testing.T) {
-		svc, enrol, infra, _ := carriedDaemons(t)
-		row := enrol(infra, session, "infra-pod-1")
+		svc, enrol, acme, _ := carriedDaemons(t)
+		row := enrol(acme, session, "acme-pod-1")
 		insertLiveGrant(t, svc, row.ID)
-		endLeavingDormant(t, svc, infra, row)
+		endLeavingDormant(t, svc, acme, row)
 		backdateDormancy(t, svc, row.ID, carriedWindow+time.Minute)
 		if ended, err := svc.EndCarried(context.Background()); err != nil || len(ended) != 1 {
 			t.Fatalf("EndCarried = %+v, %v, want the one dormant row ended", ended, err)
 		}
-		wantCarried(t, "a row the carry sweep ended", askCarried(t, svc, infra, session))
+		wantCarried(t, "a row the carry sweep ended", askCarried(t, svc, acme, session))
 	})
 }
 
 // TestCarriedAnswersNoOtherDaemonsEnrollment: every public Legion project's pods run as one
-// account, so another daemon's pod may name the same session id. BET's live pod of S, holding a
-// grant, is not answered to INFRA, and once INFRA's own pod of S enrols each daemon is answered
+// account, so another daemon's pod may name the same session id. GLOBEX's live pod of S, holding
+// a grant, is not answered to ACME, and once ACME's own pod of S enrols each daemon is answered
 // its own row alone. The same holds of rows an older broker replica wrote under the account
 // alone, which the credential that enrolled them tells apart.
 //
 // The control: drop the caller's account from both spellings of the carry principal (the pair
-// matched on its pod account alone, the legacy row on its credential having any subject); INFRA
-// is answered BET's row, and the test fails naming it (the pull request records the run).
+// matched on its pod account alone, the legacy row on its credential having any subject); ACME
+// is answered GLOBEX's row, and the test fails naming it (the pull request records the run).
 func TestCarriedAnswersNoOtherDaemonsEnrollment(t *testing.T) {
 	for _, spelling := range []struct {
 		name   string
@@ -208,23 +208,23 @@ func TestCarriedAnswersNoOtherDaemonsEnrollment(t *testing.T) {
 		{"rows an older broker replica wrote under the account alone", true},
 	} {
 		t.Run(spelling.name, func(t *testing.T) {
-			svc, enrol, infra, bet := carriedDaemons(t)
+			svc, enrol, acme, globex := carriedDaemons(t)
 			const session = "ses_shared"
-			betRow := enrol(bet, session, "bet-pod-1")
-			insertLiveGrant(t, svc, betRow.ID)
+			globexRow := enrol(globex, session, "globex-pod-1")
+			insertLiveGrant(t, svc, globexRow.ID)
 			if spelling.legacy {
-				spellAccountAlone(t, svc, betRow.ID)
+				spellAccountAlone(t, svc, globexRow.ID)
 			}
-			wantCarried(t, "INFRA asking while only BET's pod names the session", askCarried(t, svc, infra, session))
+			wantCarried(t, "ACME asking while only GLOBEX's pod names the session", askCarried(t, svc, acme, session))
 
-			infraRow := enrol(infra, session, "infra-pod-1")
+			acmeRow := enrol(acme, session, "acme-pod-1")
 			if spelling.legacy {
-				spellAccountAlone(t, svc, infraRow.ID)
+				spellAccountAlone(t, svc, acmeRow.ID)
 			}
-			wantCarried(t, "INFRA asking once both daemons' pods name the session", askCarried(t, svc, infra, session),
-				CarriedEnrollment{SessionID: session, EnrollmentID: infraRow.ID, State: "live", EndsAt: leaseEnd(t, svc, infraRow.ID)})
-			wantCarried(t, "BET asking once both daemons' pods name the session", askCarried(t, svc, bet, session),
-				CarriedEnrollment{SessionID: session, EnrollmentID: betRow.ID, State: "live", EndsAt: leaseEnd(t, svc, betRow.ID)})
+			wantCarried(t, "ACME asking once both daemons' pods name the session", askCarried(t, svc, acme, session),
+				CarriedEnrollment{SessionID: session, EnrollmentID: acmeRow.ID, State: "live", EndsAt: leaseEnd(t, svc, acmeRow.ID)})
+			wantCarried(t, "GLOBEX asking once both daemons' pods name the session", askCarried(t, svc, globex, session),
+				CarriedEnrollment{SessionID: session, EnrollmentID: globexRow.ID, State: "live", EndsAt: leaseEnd(t, svc, globexRow.ID)})
 		})
 	}
 }
@@ -233,7 +233,7 @@ func TestCarriedAnswersNoOtherDaemonsEnrollment(t *testing.T) {
 // daemon asks about, live and holding a grant, is another principal's (carryPrincipal), which no
 // pod adopts from, so it is not answered.
 func TestCarriedAnswersNoPersonsSessionOfTheSameID(t *testing.T) {
-	svc, _, infra, _ := carriedDaemons(t)
+	svc, _, acme, _ := carriedDaemons(t)
 	const session = "ses_person"
 	person := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
 	row, err := svc.Create(context.Background(), person, Enrollment{Kind: "session", RuntimeID: "box-1", Thumbprint: "tp-box-1", SessionID: str(session)})
@@ -241,25 +241,25 @@ func TestCarriedAnswersNoPersonsSessionOfTheSameID(t *testing.T) {
 		t.Fatalf("enrol the person's session: %v", err)
 	}
 	insertLiveGrant(t, svc, row.ID)
-	wantCarried(t, "a person's session of the same id", askCarried(t, svc, infra, session))
+	wantCarried(t, "a person's session of the same id", askCarried(t, svc, acme, session))
 }
 
 // TestCarriedSortsItsAnswerAndAnswersAnIDOnce: the answer is sorted by session id, byte for
 // byte, then by enrollment id, and an id named twice is answered once; an id nothing names is
 // simply absent.
 func TestCarriedSortsItsAnswerAndAnswersAnIDOnce(t *testing.T) {
-	svc, enrol, infra, _ := carriedDaemons(t)
+	svc, enrol, acme, _ := carriedDaemons(t)
 	// "Z" sorts before "a" byte for byte, and after it in most collations, so a sort by the
 	// database's collation answers them the other way round.
-	a1, a2 := enrol(infra, "a-session", "infra-pod-a1"), enrol(infra, "a-session", "infra-pod-a2")
-	z := enrol(infra, "Z-session", "infra-pod-z")
+	a1, a2 := enrol(acme, "a-session", "acme-pod-a1"), enrol(acme, "a-session", "acme-pod-a2")
+	z := enrol(acme, "Z-session", "acme-pod-z")
 	if a2.ID.String() < a1.ID.String() {
 		a1, a2 = a2, a1
 	}
 	live := func(session string, row Enrollment) CarriedEnrollment {
 		return CarriedEnrollment{SessionID: session, EnrollmentID: row.ID, State: "live", EndsAt: leaseEnd(t, svc, row.ID)}
 	}
-	wantCarried(t, "three rows of two sessions, one named twice", askCarried(t, svc, infra, "a-session", "nobody", "Z-session", "a-session"),
+	wantCarried(t, "three rows of two sessions, one named twice", askCarried(t, svc, acme, "a-session", "nobody", "Z-session", "a-session"),
 		live("Z-session", z), live("a-session", a1), live("a-session", a2))
 }
 
@@ -270,12 +270,12 @@ func TestCarriedAnswersAReplacedDaemonPodItsPredecessorsRows(t *testing.T) {
 	svc, enrol, _, _ := carriedDaemons(t)
 	storetest.PerPodLoginSchema(t, svc.Store)
 	rig := podRig{svc: svc}
-	first, second := rig.login(t, infraDaemonAccount, "daemon-pod-1"), rig.login(t, infraDaemonAccount, "daemon-pod-2")
+	first, second := rig.login(t, acmeDaemonAccount, "daemon-pod-1"), rig.login(t, acmeDaemonAccount, "daemon-pod-2")
 	if first.ID == second.ID {
 		t.Fatalf("both daemon pods hold credential %s, want one each", first.ID)
 	}
-	const session = "ses_infra"
-	row := enrol(first, session, "infra-pod-1")
+	const session = "ses_acme"
+	row := enrol(first, session, "acme-pod-1")
 	insertLiveGrant(t, svc, row.ID)
 	endLeavingDormant(t, svc, first, row)
 	wantCarried(t, "the replacing daemon pod asking", askCarried(t, svc, second, session),
@@ -291,7 +291,7 @@ func TestCarriedRefusesALoginThatProvedNoAccount(t *testing.T) {
 		mintCredential(t, svc, str("ada@example.com"), nil, "devbox"),
 		mintCredential(t, svc, nil, str("legion-daemon"), "cluster.example"),
 	} {
-		if _, err := svc.Carried(context.Background(), cred, []string{"ses_infra"}); !errors.Is(err, ErrServiceLoginRequired) {
+		if _, err := svc.Carried(context.Background(), cred, []string{"ses_acme"}); !errors.Is(err, ErrServiceLoginRequired) {
 			t.Fatalf("Carried under credential %s (operator %v, service %v) = %v, want ErrServiceLoginRequired", cred.ID, cred.Operator, cred.Service, err)
 		}
 	}
@@ -301,7 +301,7 @@ func TestCarriedRefusesALoginThatProvedNoAccount(t *testing.T) {
 // bytes, and one that no session_id column can hold are each ErrInvalidSessionIDs; 4096 ids of
 // 255 bytes are answered.
 func TestCarriedRefusesSessionIDsOutsideItsBounds(t *testing.T) {
-	svc, _, infra, _ := carriedDaemons(t)
+	svc, _, acme, _ := carriedDaemons(t)
 	many := func(n, size int) []string {
 		ids := make([]string, n)
 		for i := range ids {
@@ -317,18 +317,18 @@ func TestCarriedRefusesSessionIDsOutsideItsBounds(t *testing.T) {
 		{"no id", nil},
 		{"an empty list", []string{}},
 		{"4097 ids", many(4097, 10)},
-		{"an empty id", []string{"ses_infra", ""}},
+		{"an empty id", []string{"ses_acme", ""}},
 		{"an id of 256 bytes", []string{strings.Repeat("x", 256)}},
-		{"an id holding a NUL", []string{"ses\x00infra"}},
-		{"an id that is not UTF-8", []string{"ses\xffinfra"}},
+		{"an id holding a NUL", []string{"ses\x00acme"}},
+		{"an id that is not UTF-8", []string{"ses\xffacme"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := svc.Carried(context.Background(), infra, c.ids); !errors.Is(err, ErrInvalidSessionIDs) {
+			if _, err := svc.Carried(context.Background(), acme, c.ids); !errors.Is(err, ErrInvalidSessionIDs) {
 				t.Fatalf("Carried(%s) = %v, want ErrInvalidSessionIDs", c.name, err)
 			}
 		})
 	}
 	t.Run("4096 ids of 255 bytes", func(t *testing.T) {
-		wantCarried(t, "the largest question", askCarried(t, svc, infra, many(4096, 255)...))
+		wantCarried(t, "the largest question", askCarried(t, svc, acme, many(4096, 255)...))
 	})
 }

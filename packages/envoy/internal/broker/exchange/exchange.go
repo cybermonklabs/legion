@@ -1178,7 +1178,7 @@ func PersonPrincipal(person string) string { return "person:" + person }
 // account is one principal, and the pods of several daemons can run as one account (every public
 // Legion project's pods run as legion-worker), so a session name's grant must follow the daemon
 // that enrolled it too: a pod of another daemon, enrolled under the same name, takes nothing
-// (dispatch://INFRA-840, plan E's t-e-54). It is never a name's holder: a pod's session name is
+// (plan E's t-e-54). It is never a name's holder: a pod's session name is
 // held under its account alone, the principal its own token exchange claims the name under, so
 // the pod's enrollment and its trade never refuse each other. No account or principal kind holds
 // a space, so no two pairs spell one string. The broker's migration 0033_pod_carry_launcher

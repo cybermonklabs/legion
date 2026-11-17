@@ -230,7 +230,7 @@ type carriedEnrollment struct {
 // still carry something for the named sessions, that the next enrollment of the session under
 // the same login would take: what enroll.Service.Carried reads, and why each row counts, is that
 // method's. A Legion daemon asks before it frees a session id it holds, and frees one only when
-// the answer names none of its enrollments (dispatch://INFRA-840). Another login's enrollments
+// the answer names none of its enrollments (plan E's t-e-54). Another login's enrollments
 // are never answered, so another daemon's session of the same id never keeps this one from
 // freeing it. A credential that proved no account, one a person approved, launched nothing it
 // could be answered for (403 SERVICE_LOGIN_REQUIRED).

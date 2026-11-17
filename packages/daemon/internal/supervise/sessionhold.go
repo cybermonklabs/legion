@@ -25,11 +25,11 @@ var errHoldUnanswered = errors.New("the store did not answer the session's hold"
 // The number: 10× what the busiest claim in production could hold, rounded up to a power of two.
 // Over 28 days of the daemons' `supervise: launched` lines (2026-10-20 to 2026-11-16: 11,391
 // claims, 36,345 launches), the most fresh sessions one claim launched was 42
-// (legion-infra-infra-3330-planner); a resumed launch registers the session and file it recorded,
+// (a planner); a resumed launch registers the session and file it recorded,
 // which holds nothing new; and the launched controllers re-registered at most 5 sessions. A session
 // gives at most 4 names (RecordedHolds), so that claim holds at most 42 × 4 + 8 (the two sessions
 // the migration held for it) = 176 names, and 10× is 1,760. Even the most-launched claim, at
-// generation 193 (legion-infra-infra-1148-architect), would hold 193 × 4 + 8 = 780 if every launch
+// generation 193 (an architect), would hold 193 × 4 + 8 = 780 if every launch
 // had started a fresh session. The average is about 4.5.
 const MaxHeldNamesPerClaim = 2048
 
@@ -288,7 +288,7 @@ func checkSessionNames(session, sessionFile string) error {
 
 // holdRecorded holds every name a claim's record gives its session (RecordedHolds) to the claim,
 // whatever the claim holding one became since: queued, working, idle, suspended, failed or retired
-// (dispatch://INFRA-840, plan E's t-e-54). The daemon enrolls the session a claim's agent reports
+// (plan E's t-e-54). The daemon enrolls the session a claim's agent reports
 // with the secrets broker, whose enrollment takes over the grants and pending requests of every
 // other enrollment of the same pod account and session, and a relaunch resumes the session the
 // record names, its transcript read and written; every pod of a project enrolls under the

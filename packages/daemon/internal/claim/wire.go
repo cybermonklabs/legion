@@ -277,7 +277,7 @@ var (
 // records with the secrets broker, whose enrollment takes over the grants of every other enrollment
 // of the same pod account and session, and resumes the session the record names at every
 // relaunch, so a role that registered a sibling's session, or an ended claim's, would take that
-// session's secrets and its transcript (dispatch://INFRA-840). It names no other claim's token: the
+// session's secrets and its transcript (plan E's t-e-54). It names no other claim's token: the
 // caller is told only that the name is not its own, and the daemon's log names the claim that
 // holds it. It is a 409, as the same-agent rule's refusal is, and every caller of the registration
 // exits on it.

@@ -12,4 +12,4 @@ body: |-
   grants are swept at their end and the sessions ask again.
 time: 2026-11-16T15:28:23Z
 custom:
-    Issue: INFRA-840
+    Issue: pr4220

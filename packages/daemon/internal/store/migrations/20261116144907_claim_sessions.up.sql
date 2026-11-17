@@ -7,8 +7,8 @@
 -- session (packages/envoy/internal/broker/enroll's adopt), and resumes the session at every
 -- relaunch. Every pod of a project enrolls under that project's one account, so a role that
 -- reported a sibling's session, or the session of another claim of its project, live or ended,
--- took that session's secret grants and could be relaunched into it (dispatch://INFRA-840, plan
--- E's t-e-54). The claims row keeps only the session a claim resumes now and the one it last
+-- took that session's secret grants and could be relaunched into it (plan E's t-e-54). The
+-- claims row keeps only the session a claim resumes now and the one it last
 -- abandoned, so nothing recorded which names the other claims had recorded before: this table
 -- does, one row per project, kind and name, written when a claim first records the name
 -- (supervise's holdRecorded, through Store.HoldSessions), and deleted only by an operator's release
