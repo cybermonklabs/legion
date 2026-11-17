@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 )
 
 // A listener never creates a bucket its watchers copy (bus.CopiedBuckets). A bucket deleted while
@@ -152,6 +153,21 @@ func (e *bucketsMissingError) Error() string {
 // the CI state bucket, which only a listener with the GitHub webhook route opens.
 func listenerCopiedBuckets(ci bool) []string {
 	return slices.DeleteFunc(bus.CopiedBuckets(), func(bucket string) bool { return bucket == bus.CIStateBucket && !ci })
+}
+
+// monitoredBuckets are the copied buckets the self-health monitor reads at a tick: copied, less the
+// known-session bucket while that store cannot read it (session.KnownSessions.Unreadable), a hub
+// whose users were rendered before that bucket's grant (#2643). There the server refuses and drops
+// the read, so it can find the bucket neither present nor missing: it would cost the tick
+// knownBucketCheckTimeout and log, every tick, the connection's `envoy nats async error` ERROR for
+// the refused publish and checkCopiedBuckets' WARN for a failed read, ten times the store's own
+// retry. The start's wait lets that read through for the same reason (awaitCopiedBuckets). Once the
+// store opens the bucket, or finds it missing, the monitor reads it again.
+func monitoredBuckets(copied []string, known *session.KnownSessions) []string {
+	if !known.Unreadable() {
+		return copied
+	}
+	return slices.DeleteFunc(slices.Clone(copied), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
 }
 
 // openExisting opens a store with open, which opens its buckets only if they exist, and when one

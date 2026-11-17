@@ -669,6 +669,17 @@ func (s *KnownSessions) Opened() bool {
 	return watcher != nil && watcher.Servable() == nil
 }
 
+// Unreadable reports whether the store's bucket is not open and its last attempt found it not
+// missing but unreadable: the listener's NATS user may not read it yet, a hub whose users were
+// rendered before that bucket's grant (#2643). The server refuses and drops a request for that
+// bucket's stream, so a read of it can find nothing, present or missing; the store's own retry
+// asks again (repairUntilStopped), and the listener's self-health monitor leaves the bucket to it.
+// A store whose bucket is open, or whose last attempt found it missing, answers false, and so does
+// a nil store, which made no attempt.
+func (s *KnownSessions) Unreadable() bool {
+	return s != nil && s.watch() == nil && !s.bucketMissing.Load()
+}
+
 // logger is the logger WithKnownSessionLogger set, or the default one.
 func (s *KnownSessions) logger() *slog.Logger {
 	if s.log == nil {
