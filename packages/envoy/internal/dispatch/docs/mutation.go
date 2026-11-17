@@ -1437,7 +1437,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if !changed && readsAs(latest.markdown, rendered.markdown) {
 		return VersionResult{Version: latest.Version}, nil
 	}
-	capture.authors[actorKey(actor)] = actor
+	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
 	// except the version a comment's anchor is pinned to, which a closed issue takes like the
 	// comment itself (WithCommentMarks, commentMarkOperation above).
@@ -2412,6 +2412,27 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 
 func actorKey(actor model.Actor) string {
 	return actor.Kind + "\x00" + actor.ID
+}
+
+// mergeAuthor puts actor into authors, a map keyed by actorKey that a version's author list is
+// read from. One writer can reach the map more than once - a write whose credential proved its
+// session and another that only named it - and the entry is Proven only when every write merged
+// into it was (model.Actor.Proven), in whichever order they came: a session that claimed a write
+// must not read as proven because a proven write of the same session sits beside it. Every
+// other field is the later actor's, as a plain assignment leaves it.
+func mergeAuthor(authors map[string]model.Actor, actor model.Actor) {
+	key := actorKey(actor)
+	if held, merged := authors[key]; merged {
+		actor.Proven = actor.Proven && held.Proven
+	}
+	authors[key] = actor
+}
+
+// mergeAuthors merges every author of from into authors (mergeAuthor).
+func mergeAuthors(authors, from map[string]model.Actor) {
+	for _, actor := range from {
+		mergeAuthor(authors, actor)
+	}
 }
 
 func actorSlice(actors map[string]model.Actor) []model.Actor {
