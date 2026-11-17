@@ -117,9 +117,14 @@ COPY packages/envoy/going ./going
 COPY packages/envoy/migrationid ./migrationid
 # roleholder: the no-holder reasons envoy-listener's role publish refusal names.
 COPY packages/envoy/roleholder ./roleholder
-# The Go contracts file is generated from packages/contracts/schemas; never
+# listenerwire: the listener's request and answer bodies, which envoy-listener writes and reads and
+# envoy-dispatch's listener client and envoy-broker's wake send and read, and the envelope
+# internal/contracts names.
+COPY packages/envoy/listenerwire ./listenerwire
+# The Go contracts files are generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go
+COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listenerwire/envelope_generated.go
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
 # the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's

@@ -1388,14 +1388,14 @@ NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their c
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
 NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
 
-# listenerwire's tests, which envoy-go-checks runs in a step of their own, their one run.
-# clients_test.go type-checks the daemon's listener clients (its RULES entry), so run in
-# envoy-go's unit step a change to one of those daemon packages would start that whole job, its
-# database and its 20-minute unit step, for one type check. They need no database. As with the
-# architecture-note and spec-file packages, that step's package list and the unit step's exclusion
-# are built from this one list.
-LISTENERWIRE_PACKAGES = ["listenerwire"]
-LISTENERWIRE_STEP = "Test the listener's wire package and its clients"
+# listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-checks runs
+# in a step of their own, their one run. clients_test.go type-checks the daemon's listener clients
+# (its RULES entry), so run in envoy-go's unit step a change to one of those daemon packages would
+# start that whole job, its database and its 20-minute unit step, for one type check. They need no
+# database. As with the architecture-note and spec-file packages, that step's package list and the
+# unit step's exclusion are built from this one list.
+LISTENERWIRE_PACKAGES = ["listenerwire", "internal/wirecheck"]
+LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck"
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
 LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
@@ -2985,12 +2985,12 @@ GATES = [
         ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
         ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
         ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :130"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :132"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :135"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :137"),
         # Each COPY of a tree of packages/envoy below reads every file of it but its test files,
         # which the root .dockerignore:24 (packages/envoy/**/*_test.go) leaves out of the context;
         # listenfd, which the held-port image copies too, is the one tree read whole.
-        *[(path, "packages/envoy/docker/Dockerfile:102 COPY packages/envoy/cmd ./cmd, which :146-153 builds the four binaries from")
+        *[(path, "packages/envoy/docker/Dockerfile:102 COPY packages/envoy/cmd ./cmd, which :151-158 builds the four binaries from")
           for path in files_but_tests(f"{ENVOY}/cmd", suffix="", tree=True)],
         # agentloop: the model loop cmd/broker's judge compiles in, a package outside internal/,
         # so the image build copies it beside cmd and internal (main's #2984). No go command of
@@ -3011,6 +3011,9 @@ GATES = [
           for path in files_but_tests(f"{ENVOY}/migrationid", suffix="", tree=True)],
         *[(path, "packages/envoy/docker/Dockerfile:119 COPY packages/envoy/roleholder ./roleholder")
           for path in files_but_tests(f"{ENVOY}/roleholder", suffix="", tree=True)],
+        *[(path, "packages/envoy/docker/Dockerfile:123 COPY packages/envoy/listenerwire ./listenerwire, whose "
+                 "envelope_generated.go :127 then replaces with the web stage's fresh generation")
+          for path in files_but_tests(f"{ENVOY}/listenerwire", suffix="", tree=True)],
         # The second image this job builds. Its context is that directory alone, test file and
         # all, so the filter owes every file of it: check-image-trigger-paths.sh refuses a
         # trigger that leaves one out, and rule 17 of check-ci-filters.sh would otherwise write

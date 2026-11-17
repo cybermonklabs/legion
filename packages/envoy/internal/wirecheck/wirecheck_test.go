@@ -22,6 +22,7 @@ const wireSource = `package wire
 type Body struct {
 	Message string ` + "`json:\"message\"`" + `
 	Payload string ` + "`json:\"payload\"`" + `
+	Detail  *string ` + "`json:\"detail\"`" + `
 }
 
 type Row struct {
@@ -184,6 +185,44 @@ func SendWire`, `return post(ctx, url, append(body, payload...))
 
 func SendWire`, 1)
 	want(t, check(t, sentWhole, "fixture/fixture.post"), "encoding/json.Marshal", "fixture.sendBody")
+}
+
+func TestCheckFindsAMarshalIndentBody(t *testing.T) {
+	source := strings.Replace(sendFixture, `json.Marshal(sendBody{Message: "hello"})`,
+		`json.MarshalIndent(sendBody{Message: "hello"}, "", "  ")`, 1)
+	want(t, check(t, source, "fixture/fixture.post"), "encoding/json.MarshalIndent", "fixture.sendBody")
+}
+
+// A marshal converted to a string is a payload only where the string goes into a body's field: the
+// same string sent as the request body itself is the body, and is judged.
+func TestCheckFindsABodySentAsAString(t *testing.T) {
+	source := strings.Replace(sendFixture, `return post(ctx, url, body)
+}
+
+func SendWire`, `return post(ctx, url, []byte(string(body)))
+}
+
+func SendWire`, 1)
+	want(t, check(t, source, "fixture/fixture.post"), "encoding/json.Marshal", "fixture.sendBody")
+}
+
+// A payload string may reach its body's field through a variable, by value or by its address, as
+// the daemon's publisher and the broker's wake carry theirs; it is a payload all the same.
+func TestCheckIgnoresAPayloadCarriedThroughAVariable(t *testing.T) {
+	source := strings.Replace(sendFixture, `body, err := json.Marshal(sendBody{Message: "hello"})`,
+		`payload, err := json.Marshal(sendBody{Message: "hello"})
+	if err != nil {
+		return err
+	}
+	text := string(payload)
+	detail := string(payload)
+	var outer wire.Body
+	outer.Payload = string(payload)
+	_ = outer
+	body, err := json.Marshal(wire.Body{Message: "hello", Payload: text, Detail: &detail})`, 1)
+	if findings := check(t, source, "fixture/fixture.post"); len(findings) != 0 {
+		t.Fatalf("findings = %v, want none for a payload carried through a variable", findings)
+	}
 }
 
 const answerFixture = `package fixture
