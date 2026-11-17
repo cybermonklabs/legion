@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cmdMachineLogin implements "machine login". It asks agent-secrets-helper to start a machine
@@ -46,11 +47,14 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets machine login: %s: %s\n", resp.Code, resp.Error)
 		return 1
 	}
-	fmt.Fprintf(stdout, "machine login code: %s\n", resp.Code)
+	// The code and the page are the broker's, as the helper relayed them, so each prints on
+	// one line (redact.OneLine): as it came, or Go-quoted where a control character in it
+	// would start a line of its own or rewrite this one.
+	fmt.Fprintf(stdout, "machine login code: %s\n", redact.OneLine(resp.Code))
 	if base := approveURL(); base != "" {
 		fmt.Fprintf(stdout, "enter it at %s/credentials/machine — approve only if the code matches this terminal\n", base)
 	} else if resp.VerificationURI != "" {
-		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", resp.VerificationURI)
+		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", redact.OneLine(resp.VerificationURI))
 	} else {
 		fmt.Fprintln(stdout, "enter it on the Dispatch credential page")
 	}
@@ -126,13 +130,16 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 	if resp.CredentialHeld || state == "issued" {
 		fmt.Fprintln(stdout, "issued")
 		const held = "the helper still holds the launcher credential an earlier login issued"
+		// The most recent login's code is the broker's, so it prints on one line as machine
+		// login prints it.
+		code := redact.OneLine(resp.Code)
 		switch state {
 		case "pending":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: a machine login is waiting for approval (code %s); %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: a machine login is waiting for approval (code %s); %s\n", code, held)
 		case "denied":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) was denied; %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) was denied; %s\n", code, held)
 		case "expired":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", code, held)
 		}
 		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now()))
 		return 0
@@ -140,7 +147,7 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, state)
 	reason := helper.NoCredentialReason(resp.LoginState, resp.LoginRefused, resp.CredentialDropped)
 	if state == "pending" {
-		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, resp.Code)
+		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, redact.OneLine(resp.Code))
 	} else {
 		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s; run: agent-secrets machine login\n", reason)
 	}

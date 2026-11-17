@@ -99,6 +99,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Exit codes beyond 0 and 1 use BSD sysexits.h values where applicable. Every value returned by
@@ -1345,11 +1346,13 @@ func reportPending(stderr io.Writer, requestID string, approver *string, brokerP
 // switch appends: a broker from before that page carries none, the suffix is empty, and the same
 // sentence names the approver alone, with no page - the request waits on the same person, who
 // opens the broker themselves. The broker names an approver for every pending request; one from
-// before it did names none, and the sentence says so rather than guessing.
+// before it did names none, and the sentence says so rather than guessing. The page is the
+// broker's, so it prints on one line (redact.OneLine): as it came, or Go-quoted where a control
+// character in it would start a line of its own.
 func waitingOn(approver *string, brokerPage string) string {
 	where := ""
 	if brokerPage != "" {
-		where = ": " + brokerPage
+		where = ": " + redact.OneLine(brokerPage)
 	}
 	switch {
 	case approver == nil:

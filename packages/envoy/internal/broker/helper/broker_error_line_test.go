@@ -4,9 +4,13 @@
 package helper
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -86,4 +90,44 @@ func TestABrokerRefusalPrintsOnOneLine(t *testing.T) {
 			t.Errorf("Error = %q, want %q", be.Error(), want)
 		}
 	})
+}
+
+// TestACredentialIDTheBrokerIssuedLogsOnOneLine: the helper's log lines name the credential_id
+// of the machine login the broker issued, and slog's handlers, the text one
+// agent-secrets-helper logs with (cmd/agent-secrets-helper) and the JSON one, already print a
+// value that holds a control character escaped on the line, so such an id starts no line of its
+// own and a plain id prints as it came. A second quoting on top would only print the quotes
+// escaped. The premise is checked first: an id written into the line as it came does start one.
+func TestACredentialIDTheBrokerIssuedLogsOnOneLine(t *testing.T) {
+	oneLine := func(out string) bool {
+		return strings.Count(out, "\n") == 1 && strings.HasSuffix(out, "\n") && !strings.ContainsAny(strings.TrimSuffix(out, "\n"), "\r\x1b")
+	}
+	const forged = "lcred-1\nagent-secrets-helper: FORGED machine login issued"
+	if oneLine("level=ERROR credential_id=" + forged + "\n") {
+		t.Fatal("the check passes an id written as it came, which starts a line of its own")
+	}
+	for _, id := range []string{"lcred-1", forged, "lcred-1\r\nFORGED", "lcred-1\x1b[2KFORGED"} {
+		for name, handler := range map[string]func(*bytes.Buffer) slog.Handler{
+			"text": func(b *bytes.Buffer) slog.Handler { return slog.NewTextHandler(b, nil) },
+			"json": func(b *bytes.Buffer) slog.Handler { return slog.NewJSONHandler(b, nil) },
+		} {
+			var out bytes.Buffer
+			b := &Broker{MachineFile: filepath.Join(t.TempDir(), "machine.json"), Log: slog.New(handler(&out))}
+			b.unsaveFile(&machineCredential{id: id}, errors.New("no space left on device"))
+			if !oneLine(out.String()) {
+				t.Errorf("the %s log line of credential_id %q is %q, want one line", name, id, out.String())
+			}
+			want := map[string]string{"text": "credential_id=" + id, "json": `"credential_id":"` + id + `"`}[name]
+			if id != "lcred-1" {
+				want = map[string]string{"text": "credential_id=" + strconv.Quote(id)}[name]
+				if name == "json" {
+					encoded, _ := json.Marshal(id)
+					want = `"credential_id":` + string(encoded)
+				}
+			}
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("the %s log line of credential_id %q is %q, want it to hold %s", name, id, out.String(), want)
+			}
+		}
+	}
 }
