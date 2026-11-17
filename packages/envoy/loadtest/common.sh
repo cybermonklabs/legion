@@ -178,10 +178,13 @@ lock_record_runs() {
 }
 
 # printable TEXT: TEXT with every byte outside printable ASCII written as an escape (\n, \r, \t,
-# and \xNN for any other), and a backslash as \\, as .github/scripts/race_memory.py prints a
-# process name. A process's command line is whatever its process gave itself, and a refusal
-# prints it to a terminal or a log, so a carriage return, an escape sequence or a newline must not
-# reach either as it is. Read byte by byte (LC_ALL=C), so a byte that is not UTF-8 is escaped too.
+# and \xNN for any other), and a backslash as \\. A process's command line is whatever its process
+# gave itself, and a refusal prints it to a terminal or a log, so a carriage return, an escape
+# sequence or a newline must not reach either as it is. It reads byte by byte (LC_ALL=C), so a byte
+# that is not UTF-8 is escaped, and so is each byte of a printable character outside ASCII: é is
+# \xc3\xa9. .github/scripts/race_memory.py's printable differs there: it keeps é, and writes a
+# character Python does not print, such as U+202E, as \u202e. Both keep every control character
+# out of the log.
 printable() {
   local LC_ALL=C
   local text=$1 out="" char i
