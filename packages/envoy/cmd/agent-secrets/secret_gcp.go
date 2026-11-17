@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -570,12 +571,45 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 	if err := b.signIn(ctx); err != nil {
 		return nil, err
 	}
-	client, err := gcpClientDial(ctx, b.creds)
+	client, err := gcpClientDial(ctx, b.storeCredentials())
 	if err != nil {
 		return nil, fmt.Errorf("create the Secret Manager client: %w", err)
 	}
 	b.client = client
 	return b, nil
+}
+
+// storeCredentials is the credential the Secret Manager client signs its calls with: b.creds,
+// except that a credentials file's token source - Google's libraries' own - fails as the
+// failure's class alone (redactedTokens). Those libraries keep the body of the token endpoint's
+// answer in the error a refused refresh answers (x/oauth2's RetrieveError, and
+// cloud.google.com/go/auth's Error, into which oauth2adapt turns any error that wraps one), and
+// gRPC prints that error into the call's status message with %v, so by the time a form prints the
+// store's error the body is text no redaction can tell apart; the status code stays gRPC's. The
+// other sources' token sources fail in this program's own words already: gcloudToken's,
+// googleidentity's, and a lent token that never refreshes. b.creds itself is unchanged, so
+// gcpUserinfo still classifies a refused refresh by its RetrieveError.
+func (b *gcpBackend) storeCredentials() *google.Credentials {
+	if b.source != sourceCredentialsFile && b.source != sourceWellKnownFile {
+		return b.creds
+	}
+	return &google.Credentials{
+		ProjectID: b.creds.ProjectID, TokenSource: redactedTokens{b.creds.TokenSource}, JSON: b.creds.JSON,
+		UniverseDomainProvider: b.creds.GetUniverseDomain,
+	}
+}
+
+// redactedTokens is a token source whose failure is its class alone (redact.Class), as text that
+// wraps nothing: an error that still wrapped the *oauth2.RetrieveError would be turned back into
+// one that prints the token endpoint's body (storeCredentials).
+type redactedTokens struct{ oauth2.TokenSource }
+
+func (s redactedTokens) Token() (*oauth2.Token, error) {
+	token, err := s.TokenSource.Token()
+	if err != nil {
+		return nil, errors.New("fetch an access token with the credentials file: " + redact.Class(err).Error())
+	}
+	return token, nil
 }
 
 // signIn sets b's credential from the first source present (newGCPBackend).
@@ -591,14 +625,19 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 	skip(sourceLentToken, "unset")
 
 	// The file holds a credential, so neither its refusal nor the phrase that names it in the
-	// "using" line and a store's refusal spells its path (credentialsFileRefusal).
+	// "using" line and a store's refusal spells its path (credentialsFileRefusal). A command printed
+	// for running again does carry the path, as an absolute one (signInPrefix): it is the file this
+	// sign-in read and signed in with, so it is no credential a person pasted.
 	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
 		const file = "the credentials file GOOGLE_APPLICATION_CREDENTIALS names"
 		creds, err := gcpCredentialsFile(ctx, path)
 		if err != nil {
 			return credentialsFileRefusal(file, err)
 		}
-		b.source, b.sourcePhrase, b.principal, b.creds = sourceCredentialsFile, file, credentialsFilePrincipal(creds), creds
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		b.source, b.sourcePhrase, b.principal, b.creds, b.credentialsFile = sourceCredentialsFile, file, credentialsFilePrincipal(creds), creds, path
 		return nil
 	}
 	skip(sourceCredentialsFile, "unset")
@@ -750,6 +789,10 @@ type gcpBackend struct {
 	// gcloudAccount is the gcloud login a gcloud source signed in with: a command the form prints
 	// for running again carries it (gcloudPin), so it signs in as this one did.
 	gcloudAccount string
+	// credentialsFile is the absolute path of the file GOOGLE_APPLICATION_CREDENTIALS named, which
+	// a credentials file source read and signed in with: a command the form prints for running
+	// again carries it (signInPrefix, gcloudPin).
+	credentialsFile string
 }
 
 // id is the Secret Manager resource name of the secret whose name under the prefix is slug.
@@ -823,19 +866,17 @@ func (b *gcpBackend) chooseAnother() string {
 }
 
 // signInPrefix is the shell assignments a command line a form prints for running again
-// (pipeCommand) needs to sign in as this one did, where a variable chose the source and may have
-// been set for this one command: GOOGLE_APPLICATION_CREDENTIALS for the file it names, and
-// CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT, as set and shell-quoted, for the gcloud
-// login they chose; "" for every other source. It never writes CLOUDSDK_AUTH_ACCESS_TOKEN: a
-// printed command carries no token. Nor does it spell the credentials file's path, which a person
-// may have set to the credential itself: it writes GOOGLE_APPLICATION_CREDENTIALS as the shell
-// expands it, `"$GOOGLE_APPLICATION_CREDENTIALS"`, so the command runs as this one did in the shell
-// that set the variable.
+// (pipeCommand) needs to sign in as this one did, each shell-quoted, where a variable chose the
+// source and may have been set for this one command: GOOGLE_APPLICATION_CREDENTIALS for the file
+// it named, as the absolute path of the file this sign-in read (credentialsFile), so the command
+// signs in with that same file in any shell and from any directory, and CLOUDSDK_ACTIVE_CONFIG_NAME
+// and CLOUDSDK_CORE_ACCOUNT, as set, for the gcloud login they chose; "" for every other source.
+// It never writes CLOUDSDK_AUTH_ACCESS_TOKEN: a printed command carries no token.
 func (b *gcpBackend) signInPrefix() string {
 	prefix := ""
 	switch b.source {
 	case sourceCredentialsFile:
-		prefix = `GOOGLE_APPLICATION_CREDENTIALS="$GOOGLE_APPLICATION_CREDENTIALS" `
+		prefix = "GOOGLE_APPLICATION_CREDENTIALS=" + shellWord(b.credentialsFile) + " "
 	case sourceChosenGcloud:
 		for _, name := range []string{"CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_ACCOUNT"} {
 			if value := os.Getenv(name); value != "" {

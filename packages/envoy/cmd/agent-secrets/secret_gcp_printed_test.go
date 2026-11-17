@@ -1,16 +1,21 @@
 // packages/envoy/cmd/agent-secrets/secret_gcp_printed_test.go
 //
 // What the GCP store forms print about Google's servers and the credentials file
-// GOOGLE_APPLICATION_CREDENTIALS names: the userinfo endpoint's status and registered code, never
-// its body or a library's text; the variable, never the file's path or content. Each test puts a
-// made-up secret where a person or a server could put one, runs the form, and reads its standard
-// error; a control row in each shows the clean case still works and still prints what it did.
+// GOOGLE_APPLICATION_CREDENTIALS names: the userinfo endpoint's and a token endpoint's status and
+// registered code, never their body or a library's text; the variable, never the file's path or
+// content, except in a command printed for running again, which carries the path of the file the
+// sign-in read. Each test puts a made-up secret where a person or a server could put one, runs the
+// form, and reads its standard error; a control row in each shows the clean case still works and
+// still prints what it did.
 package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,10 +25,14 @@ import (
 	"syscall"
 	"testing"
 
+	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/option"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 )
 
 // roundTripFunc is an http.RoundTripper made of one function.
@@ -250,32 +259,50 @@ func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) 
 	})
 }
 
-// TestGCPPrintedCommandsCarryTheCredentialsFileAsItsVariable: a create signed in with the file
+// TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith: a create signed in with the file
 // GOOGLE_APPLICATION_CREDENTIALS names prints the commands that settle what it left with that
-// variable as the shell holds it - `GOOGLE_APPLICATION_CREDENTIALS="$GOOGLE_APPLICATION_CREDENTIALS"`
-// before agent-secrets and `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$GOOGLE_APPLICATION_CREDENTIALS"`
-// before gcloud - so each still signs in as the create did, in the shell that set it, and none
-// spells the file's path. Under a gcloud login (the control) the commands still carry the login
-// itself, which names no file.
-func TestGCPPrintedCommandsCarryTheCredentialsFileAsItsVariable(t *testing.T) {
-	const secret = "hunter2pw-cmdfile-27d0ae"
+// file's absolute path, shell-quoted, before agent-secrets (GOOGLE_APPLICATION_CREDENTIALS=) and
+// before gcloud (CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=), so a pasted command signs in with the
+// same file in any shell and from any directory, though the variable named it relative to this
+// one. The file was read and signed in with, so its path is no credential a person pasted. No
+// command carries the access token the file's key was given. Where no variable chose the source
+// (the metadata server) the commands carry no prefix, and under a gcloud login they carry the
+// login (the controls).
+func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
+	const secret = "hunter2pw-cmdtoken-27d0ae"
 	for _, mode := range []struct {
-		name   string
-		signIn func(t *testing.T)
-		agent  string
-		gcloud string
+		name string
+		// signIn makes the mode's source present and answers the prefix of the agent-secrets
+		// lines and of the gcloud line, built by hand.
+		signIn func(t *testing.T) (agent, gcloud string)
+		// absent are what no line of the mode carries.
+		absent []string
 	}{
-		{"a key file", func(t *testing.T) {
+		{"a key file named by a relative path", func(t *testing.T) (string, string) {
 			useGcloudConfigurations(t, "box", orderConfigurations)
-			path := filepath.Join(t.TempDir(), secret, "credentials.json")
-			writeServiceAccountFile(t, path, "gac@example.iam.gserviceaccount.com", startGoogleTokenServer(t))
-			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
-		}, `GOOGLE_APPLICATION_CREDENTIALS="$GOOGLE_APPLICATION_CREDENTIALS" `, `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$GOOGLE_APPLICATION_CREDENTIALS" `},
-		{"control: a named gcloud login", func(t *testing.T) {
+			tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"access_token":"` + secret + `","expires_in":3600,"token_type":"Bearer"}`))
+			}))
+			t.Cleanup(tokens.Close)
+			dir := filepath.Join(t.TempDir(), "keys dir")
+			writeServiceAccountFile(t, filepath.Join(dir, "credentials.json"), "gac@example.iam.gserviceaccount.com", tokens.URL)
+			t.Chdir(dir)
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
+			quoted := "'" + filepath.Join(dir, "credentials.json") + "'"
+			return "GOOGLE_APPLICATION_CREDENTIALS=" + quoted + " ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + quoted + " "
+		}, []string{secret, "$GOOGLE_APPLICATION_CREDENTIALS"}},
+		{"control: the metadata server, no variable set", func(t *testing.T) (string, string) {
+			useGCPIdentity(t, "", "robot@example.iam.gserviceaccount.com")
+			useNoGcloud(t)
+			return "", ""
+		}, []string{"GOOGLE_APPLICATION_CREDENTIALS=", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="}},
+		{"control: a named gcloud login", func(t *testing.T) (string, string) {
 			useNoADC(t)
 			useGcloud(t, "ada@example.com", "grace@example.com")
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
-		}, "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "},
+			return "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "
+		}, []string{"GOOGLE_APPLICATION_CREDENTIALS=", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="}},
 	} {
 		for _, scenario := range []struct {
 			name  string
@@ -301,7 +328,7 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileAsItsVariable(t *testing.T) {
 				fake := newFakeSecretManager()
 				scenario.setUp(fake)
 				startFakeSecretManager(t, fake)
-				mode.signIn(t)
+				agent, gcloud := mode.signIn(t)
 				startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 				useStdin(t, "")
 
@@ -309,15 +336,105 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileAsItsVariable(t *testing.T) {
 				if code != 1 {
 					t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 				}
-				if strings.Contains(stderr, secret) {
-					t.Errorf("stderr %q holds the credentials file's path", stderr)
-				}
-				for _, want := range scenario.want(mode.agent, mode.gcloud) {
-					if !strings.Contains(stderr, want) {
-						t.Errorf("stderr %q does not name %s", stderr, want)
-					}
-				}
+				requireSays(t, "stderr", stderr, mode.absent, scenario.want(agent, gcloud))
 			})
 		}
 	}
+}
+
+// useProductionShapedDial serves fake over TLS on loopback (HTTP/2, as gRPC needs) for the rest of
+// t, and points gcpClientDial at it the way the real gcpClientDial dials Secret Manager: through
+// option.WithCredentials, so the credential's token source is spent by Google's own transport
+// (cloud.google.com/go/auth and its oauth2adapt), not by the test's bearerOf.
+func useProductionShapedDial(t *testing.T, fake *fakeSecretManager) {
+	t.Helper()
+	server := grpc.NewServer(grpc.UnaryInterceptor(fake.recordAuthorization))
+	secretmanagerpb.RegisterSecretManagerServiceServer(server, fake)
+	listener := httptest.NewUnstartedServer(server)
+	listener.EnableHTTP2 = true
+	listener.StartTLS()
+	t.Cleanup(listener.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(listener.Certificate())
+	restore := gcpClientDial
+	gcpClientDial = func(ctx context.Context, creds *google.Credentials) (*secretmanager.Client, error) {
+		return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)),
+			option.WithEndpoint(listener.Listener.Addr().String()),
+			option.WithGRPCDialOption(grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots}))))
+	}
+	t.Cleanup(func() { gcpClientDial = restore })
+}
+
+// TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass: a store call whose credential's token
+// the token endpoint refuses fails with the gRPC status the transport gives it, Unauthenticated,
+// and the refusal's class - its status and registered code - never the body of the token
+// endpoint's answer, which x/oauth2 and cloud.google.com/go/auth keep in their error and gRPC
+// prints into the status message. It holds for a key file GOOGLE_APPLICATION_CREDENTIALS names and
+// for the well-known credentials file, through the test's dial and through one shaped as the real
+// one. A token endpoint that answers still signs the call in (the control).
+func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
+	const secret = "hunter2pw-refresh-5d82c1"
+	refusing := func(t *testing.T) string {
+		t.Helper()
+		tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"echo of ` + secret + `"}`))
+		}))
+		t.Cleanup(tokens.Close)
+		return tokens.URL
+	}
+	for _, row := range []struct {
+		name       string
+		wellKnown  bool
+		production bool
+	}{
+		{"a key file GOOGLE_APPLICATION_CREDENTIALS names", false, false},
+		{"a key file GOOGLE_APPLICATION_CREDENTIALS names, the real dial", false, true},
+		{"the well-known credentials file", true, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			if row.production {
+				useProductionShapedDial(t, fake)
+			}
+			holdScratchTest(fake)
+			dir := useGcloudConfigurations(t, "box", orderConfigurations)
+			path := filepath.Join(t.TempDir(), "credentials.json")
+			if row.wellKnown {
+				path = filepath.Join(dir, "application_default_credentials.json")
+			}
+			writeServiceAccountFile(t, path, "gac@example.iam.gserviceaccount.com", refusing(t))
+			if !row.wellKnown {
+				t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+			}
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+
+			_, stderr, code := runSecret("show", "SCRATCH_TEST")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			requireSays(t, "stderr", stderr, []string{secret, "Response:", "error_description"},
+				[]string{"code = Unauthenticated", "the server answered HTTP 400"})
+		})
+	}
+	t.Run("control: a token endpoint that answers, the real dial", func(t *testing.T) {
+		fake := newFakeSecretManager()
+		startFakeSecretManager(t, fake)
+		useProductionShapedDial(t, fake)
+		holdScratchTest(fake)
+		useGcloudConfigurations(t, "box", orderConfigurations)
+		path := filepath.Join(t.TempDir(), "credentials.json")
+		writeServiceAccountFile(t, path, "gac@example.iam.gserviceaccount.com", startGoogleTokenServer(t))
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+		startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+
+		if _, stderr, code := runSecret("show", "SCRATCH_TEST"); code != 0 {
+			t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
+		}
+		if got, calls := fake.calledUnder(); got != "Bearer not-a-secret-for-gac@example.iam.gserviceaccount.com" || calls == 0 {
+			t.Fatalf("Secret Manager calls ran under %q (%d calls), want the key's token", got, calls)
+		}
+	})
 }

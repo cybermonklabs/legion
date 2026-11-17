@@ -83,6 +83,19 @@ func keyDir() string {
 	return filepath.Dir(helper.DefaultSocket(os.Getenv))
 }
 
+// keyDirName is how a message names the key dir (keyDir): AGENT_SECRETS_KEY_DIR where that is set,
+// else its default's own expression, never the directory's path. The key dir holds key.pem, and a
+// setting meant for a credential's place is where a person who pasted the credential puts it.
+func keyDirName() string {
+	if os.Getenv("AGENT_SECRETS_KEY_DIR") != "" {
+		return "AGENT_SECRETS_KEY_DIR"
+	}
+	return "$XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)"
+}
+
+// keyDirFile is how a message names the file name in the key dir: name in keyDirName.
+func keyDirFile(name string) string { return name + " in " + keyDirName() }
+
 // brokerBaseURL is the broker's address as brokerURLVar gives it (clientGetenv: the environment,
 // else the settings file), without the slashes it ends in (brokerclient.WithoutTrailingSlashes,
 // the rule both halves of this client read an address by), and the empty Address when neither

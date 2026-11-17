@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // errSourceAbsent is what a source of the chain answers, through sourceAbsent, when it has nothing
@@ -114,28 +115,27 @@ func noBrokerIdentity(reasons []string) error {
 // again, so its signer registers nothing. A fresh enrollment.pending with no key.pem beside it is
 // a launcher still enrolling this process, which is present: the chain stops there rather than
 // sign as a weaker identity while the launcher is slow (buildSigner has already waited for it).
+// dir holds key.pem, so no line names it or a file in it by its path: each names the setting
+// (keyDirName), with the system's reason where a file call failed.
 func keyDirSource(dir string) signerSource {
 	build := func(context.Context) (string, Signer, error) {
 		keyPath := filepath.Join(dir, keyFile)
 		if !exists(keyPath) {
 			if freshMarker(dir) {
-				return "", nil, fmt.Errorf("%s is there and no key.pem yet: the launcher that wrote it is still enrolling this process", filepath.Join(dir, pendingMarker))
+				return "", nil, fmt.Errorf("%s holds %s and no key.pem yet: the launcher that wrote it is still enrolling this process", keyDirName(), pendingMarker)
 			}
-			return "", nil, absent("no key.pem in %s (AGENT_SECRETS_KEY_DIR; a launcher puts one there for a box or a pod)", dir)
+			return "", nil, absent("no key.pem in %s (a launcher puts one there for a box or a pod)", keyDirName())
 		}
-		key, err := loadKey(keyPath, keyDirKeyFile)
+		key, err := loadKey(keyPath, keyDirFile(keyFile))
 		if err != nil {
 			return "", nil, err
 		}
-		id, err := readTrimmed(filepath.Join(dir, enrollmentFile))
+		id, err := readEnrollment(filepath.Join(dir, enrollmentFile), keyDirFile("the enrollment file"))
 		if err != nil {
 			if reason, rerr := readTrimmed(filepath.Join(dir, enrollmentErrorFile)); rerr == nil {
 				return "", nil, fmt.Errorf("%w (%s: %s)", err, enrollmentErrorFile, reason)
 			}
 			return "", nil, err
-		}
-		if id == "" {
-			return "", nil, fmt.Errorf("%s: empty", filepath.Join(dir, enrollmentFile))
 		}
 		return id, &fileSigner{key: key, enrollmentID: id}, nil
 	}
@@ -143,8 +143,23 @@ func keyDirSource(dir string) signerSource {
 		if _, _, err := build(ctx); err != nil {
 			return "", err
 		}
-		return dir, nil
+		return keyDirName(), nil
 	}}
+}
+
+// readEnrollment is the enrollment id the enrollment file at path holds, which every refusal names
+// as file (the key dir's or the machine cache's) and never by its path: a file it cannot read
+// prints the system's reason alone (redact.File), and one that holds no id says so.
+func readEnrollment(path, file string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", file, redact.File(err))
+	}
+	id := strings.TrimSpace(string(data))
+	if id == "" {
+		return "", fmt.Errorf("%s is empty", file)
+	}
+	return id, nil
 }
 
 // signInSource is the sign-in of the person this process acts for (signInSigner).
@@ -248,7 +263,7 @@ func machineChainSource() signerSource {
 				return "", err
 			}
 			if cached != nil {
-				return "the cached enrollment in " + machineCacheDir(), nil
+				return "the cached enrollment in " + machineCacheName, nil
 			}
 			identity, skipped, err := machineSource(ctx, false)
 			if err != nil {

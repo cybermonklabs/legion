@@ -167,11 +167,11 @@ func (b *gcpBackend) gcloud(args ...string) string {
 // shell-quoted, by the source the credential came from: CLOUDSDK_ACTIVE_CONFIG_NAME for the
 // configuration CLOUDSDK_ACTIVE_CONFIG_NAME named, the variables that chose a gcloud configuration or login as they
 // were set, CLOUDSDK_CORE_ACCOUNT for the active gcloud account's login, and
-// CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE for the key file GOOGLE_APPLICATION_CREDENTIALS named,
-// as the shell expands that variable (`"$GOOGLE_APPLICATION_CREDENTIALS"`), never its path, as
-// signInPrefix writes it; "" for a token CLOUDSDK_AUTH_ACCESS_TOKEN lent, which gcloud reads from
-// the same environment, and for credentials gcloud cannot be pointed at (the metadata server's,
-// or the well-known file's), which the name after the command (gcloud) says to use.
+// CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE for the key file GOOGLE_APPLICATION_CREDENTIALS named, as
+// the absolute path of the file this sign-in read (credentialsFile), as signInPrefix writes it;
+// "" for a token CLOUDSDK_AUTH_ACCESS_TOKEN lent, which gcloud reads from the same environment,
+// and for credentials gcloud cannot be pointed at (the metadata server's, or the well-known
+// file's), which the name after the command (gcloud) says to use.
 func (b *gcpBackend) gcloudPin() string {
 	switch b.source {
 	case sourceChosenGcloud:
@@ -179,7 +179,7 @@ func (b *gcpBackend) gcloudPin() string {
 	case sourceActiveGcloud:
 		return "CLOUDSDK_CORE_ACCOUNT=" + shellWord(b.gcloudAccount) + " "
 	case sourceCredentialsFile:
-		return `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$GOOGLE_APPLICATION_CREDENTIALS" `
+		return "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + shellWord(b.credentialsFile) + " "
 	}
 	return ""
 }

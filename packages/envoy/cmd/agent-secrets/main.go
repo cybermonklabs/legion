@@ -607,16 +607,10 @@ func encodeKeyPEM(key *ecdsa.PrivateKey) ([]byte, error) {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
-// keyDirKeyFile is how a message names the key dir's key.pem (keyDir): by the setting that names
-// its directory, never by its path. key.pem holds a session key, and a setting meant for its
-// directory is where a person who pasted a credential itself puts it. pod.go's outKeyFile names
-// the one in the directory keygen's and enroll --pod's --out names the same way.
-const keyDirKeyFile = "key.pem in AGENT_SECRETS_KEY_DIR"
-
 // loadKey is the session key the key.pem at path holds, which every refusal names as file
-// (keyDirKeyFile, outKeyFile, machineCacheKeyFile) and never by its path: a file it cannot read
-// prints the system's reason alone (redact.File), and content that is no key prints parseKeyPEM's
-// fixed text.
+// (outKeyFile, keyDirFile(keyFile), machineCacheKeyFile) and never by its path: a file it cannot
+// read prints the system's reason alone (redact.File), and content that is no key prints
+// parseKeyPEM's fixed text.
 func loadKey(path, file string) (*ecdsa.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -662,7 +656,7 @@ func buildSigner() (enrollmentID string, signer Signer, err error) {
 	gaveUp := awaitEnrollment(dir, wait)
 	enrollmentID, signer, err = selectSigner(dir)
 	if err != nil && gaveUp {
-		err = fmt.Errorf("%w (waited %s while %s was there)", err, wait, filepath.Join(dir, pendingMarker))
+		err = fmt.Errorf("%w (waited %s while %s held %s)", err, wait, keyDirName(), pendingMarker)
 	}
 	return enrollmentID, signer, err
 }
