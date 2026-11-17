@@ -2136,13 +2136,18 @@ printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/li
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
-echo "case: a package whose every file is under a tag, a tag in another script, and a +build line"
+echo "case: a package whose every file is under a tag, a tag in another script, a +build line, and headers gofmt would rewrite"
 root=$(fixture vet-tags-unlisted)
 darwin_vet "$root" probe
 mkdir -p "$root/mod/only"
 printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
 printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
 printf '// +build legacy\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
+# Three headers go/build reads a constraint from although gofmt would rewrite each: one behind a
+# block comment, one indented, one after a byte-order mark.
+printf '/* A block comment. */\n//go:build blocked\n\npackage lib\n\nfunc Blocked() {}\n' > "$root/mod/lib/blocked.go"
+printf '  //go:build indented\n\npackage lib\n\nfunc Indented() {}\n' > "$root/mod/lib/indented.go"
+printf '\xef\xbb\xbf//go:build marked\n\npackage lib\n\nfunc Marked() {}\n' > "$root/mod/lib/marked.go"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file of the package go list ./... leaves out" \
@@ -2151,6 +2156,12 @@ check "names the file under the tag a byte-wise reader would cut short" \
   "$(contains "$out" $'::error file=mod/lib/beta.go::.*which go builds for darwin/arm64 with -tags probe_\xce\xb2:')"
 check "names the file whose only constraint is a +build line" \
   "$(contains "$out" '::error file=mod/lib/legacy.go::.*which go builds for darwin/arm64 with -tags legacy')"
+check "names the file whose constraint follows a block comment" \
+  "$(contains "$out" '::error file=mod/lib/blocked.go::.*which go builds for darwin/arm64 with -tags blocked')"
+check "names the file whose constraint is indented" \
+  "$(contains "$out" '::error file=mod/lib/indented.go::.*which go builds for darwin/arm64 with -tags indented')"
+check "names the file whose constraint follows a byte-order mark" \
+  "$(contains "$out" '::error file=mod/lib/marked.go::.*which go builds for darwin/arm64 with -tags marked')"
 
 # go_build_tags.py, the script the vet steps take their sets from, over a module holding each
 # shape above: the first set is every tag, and the file under the negated tag adds a set

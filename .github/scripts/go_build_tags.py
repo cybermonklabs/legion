@@ -10,7 +10,7 @@ the module's own files, one per line, each as the whole go flag that selects it:
 and `-tags=` for the set with no tag. No line is ever empty, since a shell's command
 substitution drops trailing empty lines and with them a last set with no tag:
 
-    flags=$(python3 .github/scripts/go_build_tags.py packages/envoy darwin arm64)
+    cd packages/envoy && flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
     while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./...; done <<< "$flags"
 
 The first set is every tag a build constraint of the module names. Then, for each file no set
@@ -72,14 +72,28 @@ def platforms(module: Path) -> tuple:
 
 def constraint_names(path: Path) -> set:
     """The names a Go file's build constraint lines use, `//go:build` and `// +build` alike, read
-    from the comments above its package clause."""
-    names = set()
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        found = CONSTRAINT_LINE.match(line)
-        if found:
-            names |= set(NAME.findall(found.group(1) or ""))
-        elif line.strip() and not line.lstrip().startswith("//"):
-            break
+    from the file's header as go/build's parseFileHeader reads it: a byte-order mark aside, each
+    line trimmed, line comments and `/* */` comments passed over (a constraint line inside a
+    block comment is none), up to the first text that is no comment."""
+    names, in_block = set(), False
+    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        line = raw.strip()
+        if not in_block:
+            found = CONSTRAINT_LINE.match(line)
+            if found:
+                names |= set(NAME.findall(found.group(1) or ""))
+        while line:
+            if in_block:
+                end = line.find("*/")
+                if end < 0:
+                    break
+                in_block, line = False, line[end + 2:].strip()
+            elif line.startswith("//"):
+                break
+            elif line.startswith("/*"):
+                in_block, line = True, line[2:].strip()
+            else:
+                return names
     return names
 
 
