@@ -8,9 +8,8 @@ module the day a new tag lands. This prints the module's tags instead, read off 
 
     go vet -tags "$(python3 .github/scripts/go_build_tags.py packages/envoy)" ./...
 
-It reads the `//go:build` line of every .go file the go command's `./...` walks - testdata, a
-directory whose name starts with `.` or `_`, node_modules and a nested module aside, as
-ci_filter_coverage.go_skips_dir has it - and prints every name such a line uses, sorted and
+It reads the `//go:build` line of every .go file the go command's `./...` walks (go_skips_dir
+below says which directories it passes over) and prints every name such a line uses, sorted and
 comma-joined, but the ones that are not a choice of the vet's:
 
   * every GOOS and GOARCH `go tool dist list` names: the target platform sets those, and a
@@ -34,8 +33,8 @@ import sys
 from pathlib import Path
 
 # The names a //go:build line may use that no vet chooses: Go's toolchain sets each of them
-# itself, or, for `ignore`, nothing ever does. check-ci-filters.sh's rule 20 reads this set too,
-# so the two agree on what a missing tag is.
+# itself, or, for `ignore`, nothing ever does. check-ci-filters.sh's rule 20 decides what a tag
+# is by is_tag below too, so the two agree on what a missing tag is.
 NOT_TAGS = frozenset({"unix", "cgo", "gc", "gccgo", "race", "msan", "asan", "ignore"})
 NOT_TAG_PATTERN = re.compile(r"go1\.\d+|goexperiment\..+")
 CONSTRAINT = re.compile(r"^//go:build\s+(.+)$")
@@ -64,12 +63,22 @@ def names_of(expression: str) -> set:
     return set(NAME.findall(expression))
 
 
+def go_skips_dir(parent: Path, name: str) -> bool:
+    """Whether the go command passes over a directory of a `<root>/...` pattern: testdata, a name
+    starting with `.` or `_`, node_modules, and a nested module. The one copy of that rule:
+    go_files below, ci_filter_coverage.py's closure engine and ci_job_reads.py's race-lane walk
+    all read it, so their walks cannot drift. It lives here, in a module that imports nothing
+    beyond the standard library, so the darwin vet steps can run this script on a runner with no
+    PyYAML."""
+    return (name == "testdata" or name.startswith((".", "_")) or name == "node_modules"
+            or (parent / name / "go.mod").is_file())
+
+
 def go_files(module: Path):
     """Every .go file under `module` that its `./...` pattern walks."""
     for path in sorted(module.iterdir()):
         if path.is_dir():
-            if not (path.name == "testdata" or path.name.startswith((".", "_")) or path.name == "node_modules"
-                    or (path / "go.mod").is_file()):
+            if not go_skips_dir(module, path.name):
                 yield from go_files(path)
         elif path.suffix == ".go":
             yield path

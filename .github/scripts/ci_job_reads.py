@@ -53,9 +53,9 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, go_skips_dir, run
+from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, run
 from ci_filter_coverage import at as at_in, gate as gate_in
-from go_build_tags import module_tags
+from go_build_tags import go_skips_dir, module_tags
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"

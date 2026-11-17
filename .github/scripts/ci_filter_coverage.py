@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from go_build_tags import constraint, go_skips_dir, is_tag, names_of
 from workflow_paths import PathsFilter, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -531,14 +532,6 @@ def embedded_tree(top: Path, everything: bool) -> list:
         files += [here / n for n in sorted(names)
                   if embeddable(n) and (here / n).is_file() and not (here / n).is_symlink()]
     return files
-
-
-def go_skips_dir(parent: Path, name: str) -> bool:
-    """Whether the go command passes over a directory of a `<root>/...` pattern: testdata, a name
-    starting with `.` or `_`, node_modules, and a nested module. ci_job_reads.py walks the race
-    lane's `/...` packages by this rule too, so the two walks cannot drift."""
-    return (name == "testdata" or name.startswith((".", "_")) or name == "node_modules"
-            or (parent / name / "go.mod").is_file())
 
 
 def test_build_files(listing: list) -> dict:
@@ -2372,13 +2365,10 @@ def check_vet_tags(session: Session, data, problems: list) -> list:
     of the files it ignores there (IgnoredGoFiles, test files included), each whose `//go:build`
     line names a tag the Run does not set is a candidate, and a candidate go list compiles once
     those tags are added is a file the vet skips for want of a tag. A tag is a name of such a
-    line that is neither a GOOS nor a GOARCH of `go tool dist list`, run with the module's own
-    toolchain, nor one go_build_tags.NOT_TAGS names: that set is the one place the names Go's
-    toolchain sets are written, and the script the darwin vets take their -tags from reads it
-    too, so the two agree on what a missing tag is while this rule asks go list, not that script,
-    which files the vet compiles."""
-    from go_build_tags import NOT_TAG_PATTERN, NOT_TAGS, constraint, names_of
-
+    line that go_build_tags.is_tag accepts against the GOOS and GOARCH names of `go tool dist
+    list`, run with the module's own toolchain: the script the darwin vets take their -tags from
+    decides what a tag is by that same function, so the two agree on what a missing tag is while
+    this rule asks go list, not that script, which files the vet compiles."""
     report = []
     platforms: dict = {}
     for g in data.GATES:
@@ -2389,7 +2379,7 @@ def check_vet_tags(session: Session, data, problems: list) -> list:
             if r.workdir not in platforms:
                 listed = subprocess.run([session.toolchain(r.workdir), "tool", "dist", "list"], cwd=REPO / r.workdir,
                                         capture_output=True, text=True)
-                platforms[r.workdir] = {part for line in listed.stdout.split() for part in line.split("/")}
+                platforms[r.workdir] = frozenset(part for line in listed.stdout.split() for part in line.split("/"))
                 if listed.returncode != 0 or not platforms[r.workdir]:
                     problems.append(error(None, f"in {r.workdir}, go tool dist list failed, so which names of a "
                                                 f"//go:build line are platforms is unknown: "
@@ -2401,8 +2391,7 @@ def check_vet_tags(session: Session, data, problems: list) -> list:
             ignored = ignored_files(session, r, tags)
             needed: dict = {}
             for path in sorted(ignored):
-                extra = {name for name in names_of(constraint(REPO / path) or "")
-                         if not (name in known or name in NOT_TAGS or NOT_TAG_PATTERN.fullmatch(name))} - tags
+                extra = {name for name in names_of(constraint(REPO / path) or "") if is_tag(name, known)} - tags
                 if extra:
                     needed[path] = extra
             skipped = sorted(needed.keys() - ignored_files(session, r, tags.union(*needed.values()))) if needed else []
