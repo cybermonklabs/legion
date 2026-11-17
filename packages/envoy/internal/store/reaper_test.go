@@ -44,8 +44,8 @@ func putRenewedRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder, instanc
 
 // putHandedBackRoleClaim stores that same claim carrying the mark its holder's own release left
 // on it (RoleClaim.HandedBack), which is the one thing that frees a claim past a holder session
-// isAlive reports alive. It names a process because a hand-back marks no claim that names none:
-// such a claim its own session's release frees outright.
+// isAlive reports alive. A hand-back marks a claim that names no process too; the reaper reads
+// the mark the same way on either (TestARoleClaimThatNamesNoProcess).
 func putHandedBackRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder, instance string, answered time.Time) {
 	t.Helper()
 	storeRoleClaim(t, kv, role, RoleClaim{

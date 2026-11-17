@@ -3190,10 +3190,12 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// The registration is this process's heartbeat, so it is where the claims it holds
 		// say they are still held: every claim naming this session and this client instance
 		// is stamped renewed, and a claim that names no process at all is adopted by the
-		// first registration of the session holding it. A registration stating no process
-		// renews the claims of this session that name none and adopts nothing, so a claim
-		// standing at a deploy ages out for nobody. The write is the registration's last, so
-		// a renewal never costs the records above it.
+		// first registration of the session holding it that states a process, while no
+		// registration that states none has renewed it (store.RoleClaim.RenewedWithoutProcess).
+		// A registration stating no process renews the claims of this session that name none
+		// and adopts nothing, so the claim of a client that states none ages out for nobody
+		// while it runs. The write is the registration's last, so a renewal never costs the
+		// records above it.
 		//
 		// The roles it weighs are the role topics of the stored row this registration's own
 		// UpsertPlanned returned - the bucket's row, read by that write and merged with the
@@ -3296,9 +3298,9 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 			// what decides the role claims this release frees: the claims naming that
 			// same process and no others (store.RoleReleaseAuthority). It is trimmed
 			// like session_id, and a request that leaves it out states no process: it
-			// frees a claim that names none outright, marks a claim it cannot free as
-			// handed back and keeps that claim's lane topic in the record, and removes
-			// the session's other topics.
+			// frees no claim, marks this session's claim of each role lane it names as
+			// handed back, whether that claim names a process or none, keeps that claim's
+			// lane topic in the record, and removes the session's other topics.
 			ClientInstanceID string `json:"client_instance_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

@@ -18,7 +18,10 @@
 // finds among the record's role topics, and a role the record does not name, which only the claim
 // view can name - the path this change rewrote. Both are released by one release of the two
 // sources' roles together (releaseAllRoleClaims). A case written with the record's role alone
-// would pass with no view sweep at all.
+// would pass with no view sweep at all. Both claims name the process holding them
+// (holdingProcess), and the unsubscribe states that process: a release frees only the claims of
+// the process it states, and a claim that names no process is freed by nothing but the DELETE's
+// force.
 //
 // A third case drives the DELETE over a role bucket of about 20,000 claims with the role claim
 // view held where it cannot be served, which is the state a listener warming up, or one whose
@@ -32,6 +35,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -145,11 +149,12 @@ func delayRoleBucketCalls(t *testing.T, registry *store.Registry) *sweepRouteRol
 	return handle
 }
 
-// putSweepRouteRoleClaim stores role's claim naming holder, as a claim POST /v1/roles/set wrote
-// reads from the bucket. It returns its error rather than failing the test, because the pool below
-// calls it from goroutines of its own.
-func putSweepRouteRoleClaim(kv natsgo.KeyValue, role, holder string) error {
-	value, err := json.Marshal(store.RoleClaim{HolderSessionID: holder, ClaimedAt: time.Now().UnixMilli()})
+// putSweepRouteRoleClaim stores role's claim naming holder, and instance as the process holding it
+// (none where instance is empty), as a claim POST /v1/roles/set wrote reads from the bucket. It
+// returns its error rather than failing the test, because the pool below calls it from goroutines
+// of its own.
+func putSweepRouteRoleClaim(kv natsgo.KeyValue, role, holder, instance string) error {
+	value, err := json.Marshal(store.RoleClaim{HolderSessionID: holder, ClaimedAt: time.Now().UnixMilli(), ClientInstanceID: instance})
 	if err != nil {
 		return err
 	}
@@ -176,7 +181,7 @@ func seedOtherSessionsRoleClaims(t *testing.T, kv natsgo.KeyValue, count int) {
 		go func() {
 			defer pool.Done()
 			for role := range pending {
-				if err := putSweepRouteRoleClaim(kv, role, "ses_holder_of_"+role); err != nil {
+				if err := putSweepRouteRoleClaim(kv, role, "ses_holder_of_"+role, ""); err != nil {
 					failed.Do(func() { firstFailure = err })
 				}
 			}
@@ -238,15 +243,15 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 		},
 		{
 			// The other caller of Remove with no topics, which smoke-clear-rebind.sh drives: an
-			// unsubscribe whose request names no topic clears the session's interests and its role
-			// claims exactly as the DELETE does, and answers the topics it removed - none.
+			// unsubscribe whose request names no topic clears the session's interests and the role
+			// claims of the process it states, and answers the topics it removed - none.
 			name:         "POST /v1/interests/unsubscribe with an empty topic list",
 			sessionID:    "ses_sweep_route_unsubscribe",
 			onRecordRole: "sweep-route-unsubscribe-on-record",
 			viewOnlyRole: "sweep-route-unsubscribe-view-only",
 			method:       http.MethodPost,
 			path:         "/v1/interests/unsubscribe",
-			body:         `{"session_id":"ses_sweep_route_unsubscribe"}`,
+			body:         `{"session_id":"ses_sweep_route_unsubscribe","client_instance_id":"` + holdingProcess + `"}`,
 			wantStatus:   http.StatusOK,
 			wantBody:     `{"removed":[]}`,
 		},
@@ -268,11 +273,16 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 
 	roleKV := registryRoleKV(t, registry)
 	for _, testCase := range cases {
-		claimRoles(t, registry, testCase.sessionID, testCase.onRecordRole)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		claim := store.RoleClaimRequest{SessionID: testCase.sessionID, MachineID: "test-machine", ClientInstanceID: holdingProcess, Role: testCase.onRecordRole}
+		if _, err := registry.SetRoleWithPrevious(ctx, claim); err != nil {
+			t.Fatalf("claim %s for %s: %v", testCase.onRecordRole, testCase.sessionID, err)
+		}
+		cancel()
 		// The view-only claim is written straight to the bucket, so the session's interest record
 		// never names this role and the pass over that record cannot release it: the claim view is
 		// the only place the deregistration can learn the session holds it.
-		if err := putSweepRouteRoleClaim(roleKV, testCase.viewOnlyRole, testCase.sessionID); err != nil {
+		if err := putSweepRouteRoleClaim(roleKV, testCase.viewOnlyRole, testCase.sessionID, holdingProcess); err != nil {
 			t.Fatalf("seed %s's claim on %s: %v", testCase.sessionID, testCase.viewOnlyRole, err)
 		}
 	}
@@ -422,7 +432,7 @@ func TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotARea
 	// The second claim is written straight to the bucket, so the session's interest record never
 	// names this role and the pass over that record cannot release it: the scan is the only place
 	// this deregistration can learn the session holds it.
-	if err := putSweepRouteRoleClaim(roleKV, scanOnlyRole, sessionID); err != nil {
+	if err := putSweepRouteRoleClaim(roleKV, scanOnlyRole, sessionID, ""); err != nil {
 		t.Fatalf("seed %s's claim on %s: %v", sessionID, scanOnlyRole, err)
 	}
 	seedingStarted := time.Now()

@@ -40,18 +40,28 @@ type RoleClaim struct {
 	// claim is read at the time it was claimed rather than at the epoch: every reader of a
 	// renewal reads it through LastAnsweredAt, which says so.
 	RenewedAt int64 `json:"renewed_at,omitempty"`
+	// RenewedWithoutProcess is the note a registration that states no process leaves on a
+	// claim that names none when it renews it (Registry.renewRoleClaim): the claim's holder
+	// answers for it without saying which process it is, so from then on no registration that
+	// states a process adopts it. It is absent on every other claim. Every grant writes a fresh
+	// record without it (SetRoleWithPrevious), and a claim an earlier build stored has none
+	// either, so the first registration of its session that states a process adopts it: the
+	// one heartbeat in which a claim that names no process is open to any process of its
+	// session. A note rather than a comparison of RenewedAt with ClaimedAt, because a clock
+	// that does not move, and two listeners whose clocks differ, make those two equal or
+	// reversed for a claim that was renewed.
+	RenewedWithoutProcess bool `json:"renewed_without_process,omitempty"`
 	// HandedBack is the mark a hand-back left on this claim: the release named this role's own
 	// lane topic and stated no process, so it was not authorised to free the claim
-	// (RoleReleaseAuthority.frees) and marked it instead (Registry.releaseReadRoleClaim). It is
-	// written by that release alone - never by the administrator's force, which frees the claim
-	// outright, never by the empty-topics deregistration, and never onto a claim that names no
-	// process, which its own session's release frees. Its readers are the renewal, which renews
-	// no marked claim whoever registers (Registry.renewRoleClaim), so the role claim reaper
-	// frees the role once that renewal has lapsed, a live window and up to one reap interval
-	// later, and GET /v1/roles/<role>, which reports it as
-	// handed_back. Absent means no hand-back of that shape has reached this claim: a claim
-	// granted since clears the mark, because every grant writes a fresh record
-	// (SetRoleWithPrevious).
+	// (RoleReleaseAuthority.frees) and marked it instead (Registry.markRoleClaimHandedBack),
+	// whether the claim names a process or none. It is written by that release alone - never by
+	// the administrator's force, which frees the claim outright, and never by the empty-topics
+	// deregistration. Its readers are the renewal, which renews and adopts no marked claim
+	// whoever registers (Registry.renewRoleClaim), so the role claim reaper frees the role once
+	// that renewal has lapsed, a live window and up to one reap interval later, and GET
+	// /v1/roles/<role>, which reports it as handed_back. Absent means no hand-back of that shape
+	// has reached this claim: a claim granted since clears the mark, because every grant writes
+	// a fresh record (SetRoleWithPrevious).
 	HandedBack bool `json:"handed_back,omitempty"`
 	// Revision is the role bucket revision the claim was read at, which RoleClaim stamps on
 	// every claim it decodes and nothing stores: it belongs to the entry, not to the record,
@@ -80,12 +90,13 @@ func (c RoleClaim) LastAnsweredAt() int64 {
 // holder's. It is the one strict test of a claim against a process, which every decision that
 // weighs the two reads through: the release (RoleReleaseAuthority.frees), a claim of a role held
 // under the claimant's own session id (POST /v1/roles/set), and the renewal
-// (Registry.renewRoleClaim, which also writes where the claim names no process at all).
+// (Registry.renewRoleClaim, which also adopts a claim that names no process at its first
+// heartbeat).
 //
-// An absent id on either side names no process, so it matches nothing: a claim an earlier build
-// wrote names none, and a caller that states none says nothing about which process it is. That
-// is the opposite of session.InstanceMatches, the loose test the predecessor rule reads, where
-// an absent id on either side is a client predating the field and the claim goes through.
+// An absent id on either side names no process, so it matches nothing: a claim whose claimant
+// stated none names none, and a caller that states none says nothing about which process it is.
+// That is the opposite of session.InstanceMatches, the loose test the predecessor rule reads,
+// where an absent id on either side is a client predating the field and the claim goes through.
 func (c RoleClaim) HeldByProcess(instance string) bool {
 	return instance != "" && c.ClientInstanceID == instance
 }
