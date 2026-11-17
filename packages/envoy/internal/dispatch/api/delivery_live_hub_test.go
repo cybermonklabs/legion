@@ -1406,7 +1406,14 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 		t.Fatalf("truncate events: %v", err)
 	}
 	patchHubIssue(t, rig.handler, key, map[string]any{"title": "Ship the widgets"})
-	delta := conn.delta(t, eventFeedWait, "t")
+	// The delta comes from the first recompute that reads the retitle. When the recompute the hub's
+	// first feed asked for (applyFeed) read before it, that is the recompute of every view the hub
+	// takes once it has a feed again, which stands once the relay's next generation does, behind a
+	// horizon proven after the reset (firstRelayCursor); or, when the relay found the reset before
+	// the retitle committed and the new feed began below the retitle's event, the one that event
+	// asks for, which the relay publishes once the horizon has passed it. A transaction held
+	// anywhere on the Postgres instance puts off either, so the wait is the horizon's.
+	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("after the event log's reset the delta's issue_titles = %v, want %s retitled", got, key)
 	}
@@ -1422,10 +1429,11 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 
 	// Again, with the log refilled past the relay's cursor in the commit that resets it: the row at
 	// its cursor was created at another time than the relay read, so that is a reset too. The title
-	// changes in that commit with no event of its own, so only the recompute can show it. The relay
-	// finds this reset at a read that a transaction held anywhere on the instance can put off, so
-	// the wait for the hub to lose its feed is the horizon's; the recompute after it waits on
-	// nothing more.
+	// changes in that commit with no event of its own, so only a recompute that reads after it can
+	// show it. The reset ends the hub's feed too, and the recompute of every view the hub takes once
+	// it has a feed again (applyFeed) reads after it; that feed stands once a horizon proven after
+	// the reset does (firstRelayCursor). So the wait for that feed is the horizon's, and the delta
+	// after it waits on nothing more.
 	reset := rig.mark()
 	if _, err := rig.database.Pool.Exec(t.Context(), `
 		truncate events restart identity cascade;
@@ -1438,7 +1446,8 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 		t.Fatalf("reset and refill the event log: %v", err)
 	}
 	rig.waitForEvent(t, reset, "the hub losing its feed to the second reset", func(note deliveryHubNote) bool { return note.what == "feed closed" })
-	delta = conn.delta(t, 3*time.Second, "t")
+	rig.waitForEvent(t, reset, "the hub's event feed after the second reset", func(note deliveryHubNote) bool { return note.what == "events seeded" })
+	delta = conn.delta(t, eventFeedWait, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship every widget" {
 		t.Fatalf("after the second reset the delta's issue_titles = %v, want %s retitled", got, key)
 	}
