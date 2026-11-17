@@ -1010,7 +1010,7 @@ jobs:
 
   # why: .github/ci-notes/release.md#why-the-image-attestation-is-a-second-call-of-worker-imageyaml
   worker_image_attest:
-    needs: [worker_image, publish]
+    needs: [worker_image, publish, no_such_job]
     if: always() && needs.worker_image.result == 'success'
     uses: ./.github/workflows/worker-image.yaml
     # The same scopes as worker_image, for the same reason: the grant must cover every
