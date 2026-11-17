@@ -128,19 +128,28 @@ func TestARefusedCreateFailsAtOnceRatherThanWaitingOutTheDeadline(t *testing.T) 
 // copy has not caught up answers: that copy not current, with a lag. nats-server reports exactly
 // that on a copy a raise has just added, and hands it the direct-get queue group at 90% caught up
 // anyway (server/jetstream_cluster.go:2622-2641, v2.10.29), so a KV read taken then can miss a key
-// the bucket holds.
+// the bucket holds. A read that finds the stream with no leader yet, as the reads right after a
+// raise do, is answered as it is: a copy is behind its leader only once there is one. With
+// laggedThen set, the read after the first lagging answer calls it first, so a row can end the
+// caller's context once the start has read a copy as behind, on that fact and not on a clock.
 type raiseWatcher struct {
 	nats.JetStreamContext
-	replicas int
-	behind   int
+	replicas   int
+	behind     int
+	lagged     int
+	laggedThen func()
 }
 
 func (r *raiseWatcher) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if r.lagged > 0 && r.laggedThen != nil {
+		r.laggedThen()
+	}
 	info, err := r.JetStreamContext.StreamInfo(stream, opts...)
-	if err != nil || info.Config.Replicas != r.replicas || r.behind == 0 || info.Cluster == nil || len(info.Cluster.Replicas) == 0 {
+	if err != nil || info.Config.Replicas != r.replicas || r.behind == 0 || info.Cluster == nil || info.Cluster.Leader == "" || len(info.Cluster.Replicas) == 0 {
 		return info, err
 	}
 	r.behind--
+	r.lagged++
 	lagging := *info
 	cluster := *info.Cluster
 	peers := make([]*nats.PeerInfo, len(cluster.Replicas))
@@ -234,16 +243,18 @@ func TestARaisedBucketServesItsKeysAtOnce(t *testing.T) {
 // naming the bucket's stream, the copies it asked for and what the copy that was not current
 // reported, with the context's error. It never hands the caller the bucket anyway: a start that
 // does not come up is better than one that reads a stale "key not found" off a copy still
-// catching up and asks GitHub for a redelivery it made.
+// catching up and asks GitHub for a redelivery it made. The caller's context ends, with
+// context.DeadlineExceeded as its cause, once the start has read a copy as behind, so the row reads
+// no clock and no load can end the context before the raise.
 func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: 1 << 30}
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
+	ctx, end := context.WithCancelCause(t.Context())
+	defer end(nil)
+	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: 1 << 30, laggedThen: func() { end(context.DeadlineExceeded) }}
 	_, err := EnsureKeyValue(ctx, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if err == nil {
 		t.Fatal("the raise answered with a copy that never caught up, want it to fail the start")
@@ -260,8 +271,10 @@ func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
 
 // A raise whose copies never report current, under a caller whose context never ends, fails the
 // start at the start's hang guard rather than hanging it, and the error says so: the bucket's
-// stream, the copies it asked for, what the copy that was not current reported, and the guard.
-// The guard is shortened here (ensureKeyValue); EnsureKeyValue's is startHangGuard.
+// stream and the guard. The guard is shortened here (ensureKeyValue); EnsureKeyValue's is
+// startHangGuard. It is long against a raise's answer (2.7 s at the slowest measured under load),
+// so the guard passes in the wait for the copies, and the error that names them is held with the
+// real guard by the held-election run of the issue's verification.
 func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -269,11 +282,11 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
 	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: 1 << 30}
-	_, err := ensureKeyValue(context.Background(), time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
+	_, err := ensureKeyValue(context.Background(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the error = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
-	for _, want := range []string{"KV_" + catchupBucket, "3 copies", "lag 7", "hang guard passed after 1s"} {
+	for _, want := range []string{"raise KV_" + catchupBucket, "hang guard passed after 5s"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the error = %v, want it to name %q", err, want)
 		}

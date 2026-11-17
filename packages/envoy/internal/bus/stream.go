@@ -891,17 +891,19 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 			return nil, refusedSettings(err, nil, &created)
 		}
 		info, err = sentAgain(ctx, read, readStream)
-		if err == nil && info.Config.Replicas > 1 {
-			// Another start's create is this start's create too: the stream it reads may still be
-			// in its first election, and the answer that start drew does not reach this one.
-			err = awaitStreamLeader(ctx, js, "create", Stream)
-		}
 	}
 	if unanswered(err) || ctx.Err() != nil {
 		return nil, namedRequest(read, err)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if leaderless(info) {
+		// The stream another start created or raised a moment ago is still in its first election:
+		// that start's own wait does not reach this one, and a write sent now draws no answer.
+		if err := awaitStreamLeader(ctx, js, "open", Stream); err != nil {
+			return nil, err
+		}
 	}
 	deployedGeneration := MetadataGeneration(info.Config.Metadata, streamGenerationKey)
 	if deployedGeneration > streamConfigGeneration {
@@ -914,15 +916,30 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		reconciliation.log()
 		return info.Config.Subjects, nil
 	}
+	// Each write below is a request a server can leave unanswered (updateStream says when), and
+	// each is abandoned when ctx ends (Bounded), so the ensure ends at ctx or the start's hang
+	// guard like every other wait of it, naming the write that was in flight.
+	written := func(step string, write func() error) error {
+		_, answered, err := Bounded(ctx, func() (struct{}, error) { return struct{}{}, write() })
+		if !answered {
+			return fmt.Errorf("%s %s: no answer when the wait ended: %w", step, Stream, context.Cause(ctx))
+		}
+		return err
+	}
 	migratingRoleLanes := streamCapturesRoleLanes(info.Config.Subjects) && !streamCapturesRoleLanes(desired.Subjects)
-	if err := migrateRoleLanesOffStream(js, &info.Config, &desired); err != nil {
+	if err := written("migrate", func() error { return migrateRoleLanesOffStream(js, &info.Config, &desired) }); err != nil {
 		return nil, err
 	}
-	if err := updateStream(js, &desired, func(again *nats.StreamInfo) bool {
-		reconciled, _ := reconciledStream(again, cfg, defaultsAnUnsetCap)
-		return reflect.DeepEqual(reconciled, again.Config)
+	if err := written("update", func() error {
+		if err := updateStream(js, &desired, func(again *nats.StreamInfo) bool {
+			reconciled, _ := reconciledStream(again, cfg, defaultsAnUnsetCap)
+			return reflect.DeepEqual(reconciled, again.Config)
+		}); err != nil {
+			return refusedSettings(err, &info.Config, &desired)
+		}
+		return nil
 	}); err != nil {
-		return nil, refusedSettings(err, &info.Config, &desired)
+		return nil, err
 	}
 	reconciliation.log()
 	if desired.Replicas > info.Config.Replicas {
@@ -931,7 +948,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		}
 	}
 	if migratingRoleLanes {
-		if err := purgeLegacyRoleMessages(js); err != nil {
+		if err := written("purge", func() error { return purgeLegacyRoleMessages(js) }); err != nil {
 			return nil, err
 		}
 	}

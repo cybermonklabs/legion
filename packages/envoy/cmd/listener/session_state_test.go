@@ -335,7 +335,7 @@ func TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass(t *te
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := bus.SetKeyValueMaxAge(js, bus.SessionBucket, 90*time.Minute); err != nil {
+	if _, err := bus.SetKeyValueMaxAge(t.Context(), js, bus.SessionBucket, 90*time.Minute); err != nil {
 		t.Fatalf("another process raising the bucket's maximum age: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

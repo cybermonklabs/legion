@@ -662,6 +662,107 @@ func TestAStartThatRaisesTheStreamToThreeCopiesServesItsFirstPublish(t *testing.
 	}
 }
 
+// hasLeader reads stream once and reports whether it has a leader then: the fact a start that
+// answered must leave behind, read with one request so that the row does not itself wait for it.
+func hasLeader(t *testing.T, js nats.JetStreamContext, stream string) bool {
+	t.Helper()
+	info, err := js.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read %s: %v", stream, err)
+	}
+	return info.Cluster != nil && info.Cluster.Leader != ""
+}
+
+// A start that finds a bucket another program raised a moment ago, whose new group has not elected
+// its leader yet, waits for that leader before it answers. Its own raise is nothing (the bucket has
+// the copies already), and the other program's raise was answered at once, with the stream
+// leaderless, so a start that took the stream as it found it handed its caller a bucket whose first
+// put drew no answer.
+func TestAStartThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	conn, js := memberJetStream(t, cluster, 0)
+	const bucket = "envoy_found_raised_test"
+	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
+		t.Fatalf("create the one-copy bucket: %v", err)
+	}
+	if _, err := raiseReplicas(js, bucket, 3); err != nil {
+		t.Fatalf("another program's raise: %v", err)
+	}
+	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
+	if err != nil {
+		t.Fatalf("a start that finds the raised bucket: %v", err)
+	}
+	if !hasLeader(t, js, "KV_"+bucket) {
+		t.Fatal("the start answered while the raised bucket's stream had no leader")
+	}
+	if _, err := kv.Put("key", []byte("value")); err != nil {
+		t.Fatalf("the first put after the start: %v", err)
+	}
+}
+
+// A start that finds the notification stream another program raised a moment ago waits for its
+// leader too, for the same reason: the raise was answered at once, and a publish sent while the
+// stream has no leader draws no answer.
+func TestAStartThatFindsAJustRaisedStreamAnswersOnceItHasALeader(t *testing.T) {
+	cluster, js := startClusterJetStream(t)
+	startOnCluster(t, cluster, WithReplicas(1)).Close()
+	info, err := js.StreamInfo(Stream)
+	if err != nil {
+		t.Fatalf("read the one-copy stream: %v", err)
+	}
+	raised := info.Config
+	raised.Replicas = 3
+	if _, err := js.UpdateStream(&raised); err != nil {
+		t.Fatalf("another program's raise: %v", err)
+	}
+	client := startOnCluster(t, cluster, WithReplicas(3))
+	if !hasLeader(t, js, Stream) {
+		t.Fatal("the start answered while the raised stream had no leader")
+	}
+	if err := client.Publish(contracts.Envelope{
+		EventID: "event-found-raised", Source: "dispatch",
+		Topic: "notifications.agent.ses_found_raised", DedupeKey: "dispatch.event.found_raised",
+	}); err != nil {
+		t.Fatalf("the first publish after the start: %v", err)
+	}
+}
+
+// earlyAnswerJetStream loses the answer to a start's first create: that send goes out through a
+// context of a millisecond, so the server takes the create and the answer, which the server gives
+// only at the stream's first leader election, finds nobody waiting. The start sends the create
+// again, and the server answers that equal create at once, while the stream has no leader: the
+// order a slow election makes, forced without holding the election.
+type earlyAnswerJetStream struct {
+	nats.JetStreamContext
+	sent int
+}
+
+func (js *earlyAnswerJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if js.sent++; js.sent == 1 {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		return js.JetStreamContext.AddStream(cfg, append(slices.Clone(opts), nats.Context(ctx))...)
+	}
+	return js.JetStreamContext.AddStream(cfg, opts...)
+}
+
+// A start whose create of the stream at three copies is answered before the stream's first
+// election ends answers only once the stream has a leader.
+func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testing.T) {
+	cluster, js := startClusterJetStream(t)
+	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3)}).streamConfig()
+	early := &earlyAnswerJetStream{JetStreamContext: js}
+	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream); err != nil {
+		t.Fatalf("a start whose create's first answer was lost: %v", err)
+	}
+	if early.sent < 2 {
+		t.Fatalf("creates sent = %d, want the first one's answer lost and the create sent again", early.sent)
+	}
+	if !hasLeader(t, cluster.JetStream(t), Stream) {
+		t.Fatal("the start answered while the stream it created had no leader")
+	}
+}
+
 // A server's refusal of the stream names each setting the refused create or update carried, with
 // its value, and wraps the server's error (single server). A single nats-server v2.15.1 refuses a
 // create at more than one copy but takes an update to more, recording the count while it holds one

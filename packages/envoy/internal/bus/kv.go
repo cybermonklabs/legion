@@ -349,10 +349,26 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
 		created = err == nil
-	case err == nil:
-		var before int
-		before, err = raiseReplicas(js, config.Bucket, config.Replicas)
-		if err == nil && before > 0 {
+	case err == nil && config.Replicas > 1:
+		// The bucket is there: its stream is read for its copies, sent again while the server
+		// leaves the read unanswered as the lookup is (nats.go's lookup answers a handle, not the
+		// stream's info), and raised when it has fewer than the deployment's count. The raise is
+		// a write the server answers at once, and the wait is bounded by ctx: a raise in flight
+		// when ctx ends is abandoned (Bounded), and a raise that lands after that is one the
+		// keeper would have made.
+		var info *nats.StreamInfo
+		info, err = sentAgain(ctx, lookup, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+		if err != nil {
+			err = fmt.Errorf("raise %s: %w", stream, namedRequest(lookup, err))
+			break
+		}
+		before, answered, raiseErr := Bounded(ctx, func() (int, error) { return raiseStream(js, info, config.Replicas) })
+		switch {
+		case !answered:
+			err = fmt.Errorf("raise %s: the raise drew no answer when the wait ended: %w", stream, context.Cause(ctx))
+		case raiseErr != nil:
+			err = raiseErr
+		case before > 0:
 			// The copies this raise added are behind until they have caught up with the bucket's
 			// stream, and a KV read is a direct get, which nats-server hands a copy the queue
 			// group at 90% caught up rather than when it is current (server/jetstream_cluster.go:
@@ -362,6 +378,13 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			// there asks GitHub for a delivery it has already redelivered, so the start waits for
 			// the copies and fails rather than reading early.
 			err = awaitReplicasCurrent(ctx, js, stream, config.Replicas)
+		case leaderless(info):
+			// Another program raised or created the bucket's stream just before this start read
+			// it, and the stream's new group has not elected its leader yet: a write sent now draws
+			// no answer. The start waits for the leader, the fact another program's own start
+			// waits for, and not for every copy current, so a bucket with a member offline still
+			// opens (awaitStreamLeader).
+			err = awaitStreamLeader(ctx, js, "open", stream)
 		}
 	}
 	if err != nil {
@@ -386,17 +409,9 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 }
 
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
-// returns the copies it had then, 0 when it left the bucket alone. The update writes back the
-// stream's deployed configuration with only its replicas changed, so the bucket's TTL, history,
-// discard policy, direct get, rollup, delete settings, metadata and the rest stay as they are. A
-// bucket with as many copies or more is left alone, and one copy needs no read: every stream has at
-// least one. As for the stream (ensureStreamWithConfig), two starts raising at once each write the
-// deployment's one count. A raise whose answer never came succeeds when the stream, read again,
-// has the copies, and one the server refused as overlapping the bucket's own stream is sent again
-// until the stream has them or its sends run out (updateStream). Its error names the bucket's
-// stream and, for a refused raise, the setting (refusedSettings):
-// `raise KV_envoy_interests: ENVOY_NATS_REPLICAS=3: ...`, so the keeper's line says which bucket
-// it could not raise.
+// returns the copies it had then, 0 when it left the bucket alone: the keeper's raise, which reads
+// the stream once and is made again at its next pass (raiseStream). One copy needs no read: every
+// stream has at least one.
 func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, error) {
 	if replicas <= 1 {
 		return 0, nil
@@ -406,15 +421,37 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 	if err != nil {
 		return 0, fmt.Errorf("raise %s: %w", stream, err)
 	}
+	return raiseStream(js, info, replicas)
+}
+
+// raiseStream raises the stream info describes to replicas copies when it has fewer, and returns
+// the copies it had then, 0 when it left the stream alone. The update writes back the stream's
+// deployed configuration with only its replicas changed, so the bucket's TTL, history, discard
+// policy, direct get, rollup, delete settings, metadata and the rest stay as they are. A stream
+// with as many copies or more is left alone. As for the notification stream
+// (ensureStreamWithConfig), two starts raising at once each write the deployment's one count. A
+// raise whose answer never came succeeds when the stream, read again, has the copies, and one the
+// server refused as overlapping the bucket's own stream is sent again until the stream has them
+// or its sends run out (updateStream). Its error names the stream and, for a refused raise, the
+// setting (refusedSettings): `raise KV_envoy_interests: ENVOY_NATS_REPLICAS=3: ...`, so the
+// keeper's line says which bucket it could not raise.
+func raiseStream(js nats.JetStreamContext, info *nats.StreamInfo, replicas int) (int, error) {
 	if info.Config.Replicas >= replicas {
 		return 0, nil
 	}
 	raised := info.Config
 	raised.Replicas = replicas
 	if err := updateStream(js, &raised, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas }); err != nil {
-		return 0, fmt.Errorf("raise %s: %w", stream, refusedSettings(err, &info.Config, &raised))
+		return 0, fmt.Errorf("raise %s: %w", info.Config.Name, refusedSettings(err, &info.Config, &raised))
 	}
 	return info.Config.Replicas, nil
+}
+
+// leaderless reports whether info describes a stream of more than one copy that has no leader:
+// one whose group has not elected one yet, after a create or a raise. A stream of one copy is its
+// one member's, and needs no election.
+func leaderless(info *nats.StreamInfo) bool {
+	return info.Config.Replicas > 1 && (info.Cluster == nil || info.Cluster.Leader == "")
 }
 
 // awaitReplicasCurrent waits until stream reports replicas copies, each one current with its
@@ -530,7 +567,7 @@ func copiesBehind(info *nats.StreamInfo, replicas int) string {
 // another, and returns the age the bucket carries once it has: maxAge, whether it was written now
 // or already there, and 0 only when no age was asked for and the bucket was left alone - so a
 // caller that must know the age it is expiring against is answered by this call and makes no
-// second read of its own. As raiseReplicas does for the copies, the update writes back the
+// second read of its own. As raiseStream does for the copies, the update writes back the
 // stream's deployed configuration with only its MaxAge changed, so the bucket's replicas,
 // history, discard policy, direct get, rollup, delete settings, metadata and the rest stay as
 // they are. A non-positive maxAge sets none: a caller whose setting is unset leaves the bucket's
@@ -538,21 +575,36 @@ func copiesBehind(info *nats.StreamInfo, replicas int) string {
 // An age an answer never came for succeeds when the stream, read again, carries it, and one the
 // server refused as overlapping the bucket's own stream is sent again (updateStream). Its error
 // names the bucket's stream: `set KV_envoy_sessions max age: ...`.
-func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Duration) (time.Duration, error) {
+//
+// The session registry's start makes this call right after it opens the bucket, and a failed call
+// fails that start, so it waits on the cluster as EnsureKeyValue does: the read is sent again
+// while the server leaves it unanswered (sentAgain), and the read and the update end when ctx
+// ends or the start's hang guard passes (startHangGuard), the update in flight then abandoned
+// (Bounded).
+func SetKeyValueMaxAge(ctx context.Context, js nats.JetStreamContext, bucket string, maxAge time.Duration) (time.Duration, error) {
 	if maxAge <= 0 {
 		return 0, nil
 	}
+	ctx, cancel := hangGuard(ctx, startHangGuard)
+	defer cancel()
 	stream := "KV_" + bucket
-	info, err := js.StreamInfo(stream)
+	read := stream + " STREAM.INFO"
+	info, err := sentAgain(ctx, read, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
-		return 0, fmt.Errorf("set %s max age: %w", stream, err)
+		return 0, fmt.Errorf("set %s max age: %w", stream, namedRequest(read, err))
 	}
 	if info.Config.MaxAge == maxAge {
 		return maxAge, nil
 	}
 	aged := info.Config
 	aged.MaxAge = maxAge
-	if err := updateStream(js, &aged, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge }); err != nil {
+	_, answered, err := Bounded(ctx, func() (struct{}, error) {
+		return struct{}{}, updateStream(js, &aged, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge })
+	})
+	if !answered {
+		return 0, fmt.Errorf("set %s max age: the update drew no answer when the wait ended: %w", stream, context.Cause(ctx))
+	}
+	if err != nil {
 		return 0, fmt.Errorf("set %s max age: %w", stream, err)
 	}
 	return maxAge, nil

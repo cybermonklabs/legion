@@ -426,7 +426,7 @@ func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...Sessio
 	// the age the bucket carries from here on. A bucket created by an older build at the 5-minute
 	// default is raised here, and a record then stands past the gone horizon instead of being
 	// dropped while its session is only unresponsive.
-	if _, err := bus.SetKeyValueMaxAge(js, bus.SessionBucket, opts.maxAge); err != nil {
+	if _, err := bus.SetKeyValueMaxAge(ctx, js, bus.SessionBucket, opts.maxAge); err != nil {
 		return nil, err
 	}
 	// Expire against the bucket's real MaxAge, not the hardcoded default. If the
@@ -701,9 +701,9 @@ func (r *SessionRegistry) EntryState(entry SessionEntry) State {
 // as likely a bucket this build did not create as one that truly keeps its records for good, and
 // turning local expiry off on that word would keep every row of a recreated bucket for the life
 // of the process.
-func (r *SessionRegistry) applyMaxAge() error {
+func (r *SessionRegistry) applyMaxAge(ctx context.Context) error {
 	if r.js != nil && r.maxAge > 0 {
-		written, err := bus.SetKeyValueMaxAge(r.js, bus.SessionBucket, r.maxAge)
+		written, err := bus.SetKeyValueMaxAge(ctx, r.js, bus.SessionBucket, r.maxAge)
 		if err != nil {
 			return err
 		}

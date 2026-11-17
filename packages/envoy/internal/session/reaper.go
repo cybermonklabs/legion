@@ -138,7 +138,7 @@ func (r *SessionRegistry) StartSessionReaper(ctx context.Context, interval time.
 // threshold takes it, as every session consumer did before, and the records behind this one are
 // reaped whatever became of it.
 func (r *SessionRegistry) ReapSessions(ctx context.Context, reaper SessionReaper) int {
-	if err := r.applyMaxAge(); err != nil {
+	if err := r.applyMaxAge(ctx); err != nil {
 		r.logger().Warn("session reaper could not settle the session bucket's maximum age", slog.String("error", err.Error()))
 	}
 	now := r.now()
