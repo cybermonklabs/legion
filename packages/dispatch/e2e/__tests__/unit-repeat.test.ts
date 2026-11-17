@@ -29,14 +29,11 @@ import {
   type RowlessKind,
   summarise,
 } from "../tools/unit-repeat";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const scratch = temporaryDirectories("unit-repeat");
 
 const SEED = 4242;
-/** A Bun run over a few tiny files takes a fraction of a second. This is its deadline. */
-const BUN_DEADLINE_MS = 10_000;
-/** A row runs Bun up to three times. */
-const ROW_TIMEOUT_MS = 40_000;
 
 /** Passes its first run and fails every later one. */
 const failsAfterFirstRun = `import { describe, expect, test } from "bun:test";
@@ -60,37 +57,26 @@ test.skip("is skipped", () => {});
 `;
 
 interface Spawned {
-  readonly code: number | null;
+  readonly code: number;
   readonly output: string;
 }
 
-/** Runs Bun in `directory` with `args`, under the deadline. */
+/** Runs Bun in `directory` with `args`, a bounded child under the short bound, the bound of one
+ *  command that starts nothing: a `bun test` over a few tiny files, with no `--parallel`, runs in
+ *  one process and takes a fraction of a second. */
 async function spawnBun(
   directory: string,
   args: readonly string[],
   environment: Readonly<Record<string, string>> = {}
 ): Promise<Spawned> {
-  const child = Bun.spawn([process.execPath, ...args], {
+  const { code, stderr, stdout } = await runBounded({
+    argv: [process.execPath, ...args],
+    bound: "short",
     cwd: directory,
     env: { HOME: directory, PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), ...environment },
-    killSignal: "SIGKILL",
-    stdin: "ignore",
-    stderr: "pipe",
-    stdout: "pipe",
-    timeout: BUN_DEADLINE_MS,
+    from: import.meta.url,
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  await child.exited;
-  if (child.signalCode !== null) {
-    throw new Error(
-      `bun ${args.join(" ")} was ended by ${child.signalCode}, past its deadline of ` +
-        `${BUN_DEADLINE_MS} ms:\n${stdout}${stderr}`
-    );
-  }
-  return { code: child.exitCode, output: `${stdout}${stderr}` };
+  return { code, output: `${stdout}${stderr}` };
 }
 
 /** Writes `files` into a fresh directory and runs `bun test` there as a lane run would. */
@@ -189,7 +175,7 @@ test(
         `outer > fails after its first run failed 2/3 runs (seed ${SEED}): `
     );
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -219,7 +205,7 @@ test(
         `always fails failed 3/3 runs (seed ${SEED}): always`
     );
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -237,7 +223,7 @@ test(
     expect(summarise(empty).failingRows).toEqual([]);
     expect(summarise(empty).exitCode).toBe(1);
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -253,7 +239,7 @@ test(
     expect(kinds(run)).toEqual(["junit-unreadable"]);
     expect(summarise(run).exitCode).toBe(1);
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -280,7 +266,7 @@ test(
       "::error title=Failure outside any test::Bun exited with status 1"
     );
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -294,7 +280,7 @@ test(
     expect(kinds(run)).toEqual(["uneven-file"]);
     expect(summarise(run).exitCode).toBe(1);
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -314,7 +300,7 @@ test(
     ]);
     expect(markdown(report)).toContain('`a <describe> > keeps & < and " in its name`');
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -337,7 +323,7 @@ test(
     );
     expect(annotations(report).every((line) => !line.includes("\n"))).toBe(true);
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -377,7 +363,7 @@ test(
       expect(text).not.toMatch(/\b0 MiB/);
     }
   },
-  ROW_TIMEOUT_MS
+  rowLimit("short")
 );
 
 test(
@@ -402,5 +388,6 @@ test(
     }
     expect((await spawnBun(directory, ["test", "--seed=4294967296"])).code).not.toBe(0);
   },
-  ROW_TIMEOUT_MS
+  // The three runs of Bun, one after another, each a bounded child under the short bound.
+  rowLimit("short", "short", "short")
 );

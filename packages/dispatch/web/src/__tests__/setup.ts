@@ -65,21 +65,21 @@ expect.extend(reportableJestDomMatchers());
 // assumed: a row carrying `}, 500)` that slept 1.2 s failed at 500 ms under
 // `bun test --timeout 60000`, and a row carrying `}, 5_000)` that slept 1.2 s passed under
 // `bun test --timeout 200`. So a row's own deadline takes the flag's place whether it is larger
-// or smaller. Rows that set 60 s, equal to the flag, are
-// `e2e/__tests__/compare-recordings-refusal.test.ts:28`, `stub-web-server.test.ts:29`,
-// `playwright-argv.test.ts:29`, `replace-blocks-guard.test.ts:47` and
-// `outside-path-reach-fixtures.ts:46`, and the two hooks at `psql-session.test.ts:62,74`. Rows
-// that set less are not protected by the flag: `web/src/features/refs/MarkdownBody.test.tsx:1911`
-// sets 40 s, above the 25 s wait that row must let run out, and 30 s is set at
-// `web/src/features/refs/fixture-table-readings.test.ts:128`, and at
-// `e2e/__tests__/delivery-live-probe.test.ts:53`, `local-instance-support.test.ts:95` and
-// `replace-blocks-guard.test.ts:45`. Rows that set more get more than the flag: 90 s at
-// `e2e/__tests__/costly-row-ms.ts:57`, `row-configurations.test.ts:114`, `row-map.test.ts:24`
-// and `pull-request-lane.test.ts:52`, 180 s at `no-browser-rows.test.ts:68`, and 30 minutes at
-// `second-global-setup.test.ts:47`. The list is checked by nothing: a row added tomorrow may set
-// any number, as dispatch://INFRA-1571 does with a 90 s limit of its own. What lowering the flag
-// would cut is every row that sets none, and what raising it would not reach is every row that
-// sets one.
+// or smaller. In `e2e/__tests__` a row's or a hook's own limit is a call of `rowLimit` of
+// `e2e/__tests__/bounded-subprocess.ts`, read from the bounds of the children and the polls it
+// waits for, or a number with its reason on the line directly above it: `e2e/row-limits.ts`
+// holds every test file of that directory to that rule, and `e2e/__tests__/row-limits.test.ts`
+// runs it on that lane, so a limit there is checked rather than listed here. `web/src` has no
+// such rule, and its rows that set less than the flag are the ones the flag does not protect. A
+// grep of its test files and a parse of them with the TypeScript parser find three rows that
+// set a limit, all of them less: `web/src/features/refs/MarkdownBody.test.tsx`'s "ends formatted
+// on the page's own thread when the worker misses its deadline" sets 40 s, above the 25 s wait
+// that row must let run out, and `web/src/features/refs/fixture-table-readings.test.ts` sets
+// 30 s, as `WHOLE_TABLE_TIMEOUT_MS`, on "every document of the table reads in a DOM as the table
+// says it reads" and "no mark element stands between an inline leaf and its paragraph, in any
+// document of the table". The list is checked by nothing: a row added tomorrow may set any
+// number. What lowering the flag would cut is every row that sets none, and what raising it
+// would not reach is every row that sets one.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
 // which a loaded run of this suite passes while a page is still rendering: it failed
