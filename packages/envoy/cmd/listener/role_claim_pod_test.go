@@ -156,6 +156,25 @@ func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 					if stood := rig.stored(); stood != marked {
 						t.Fatalf("the claim after the agent's next registration is %+v, want it exactly as the hand-back left it, %+v: no registration adopts or renews a marked claim", stood, marked)
 					}
+
+					// The way back is the outright claim: the pod's role claimer's next claim,
+					// a hard claim with no client_instance_id, reads no holder and lands at
+					// once, writing a fresh record that carries no mark. The agent's own soft
+					// claim is weighed by the marked claim's renewal and refused meanwhile.
+					t.Run("the pod's outright claim takes the marked claim back at once", func(t *testing.T) {
+						refused := rig.send(http.MethodPost, "/v1/roles/set",
+							`{"session_id":"`+sessionID+`","role":"`+role+`","soft":true,"client_instance_id":"`+holdingProcess+`"}`)
+						if refused.Code != http.StatusConflict {
+							t.Fatalf("the agent's soft claim over the marked claim: status %d %s, want 409 while the marked claim's renewal is inside the live window", refused.Code, refused.Body.String())
+						}
+						again := rig.claimRoleForPod()
+						if again == nil {
+							t.FailNow()
+						}
+						if again.HandedBack || again.HolderSessionID != sessionID || again.ClientInstanceID != "" || again.Revision == marked.Revision {
+							t.Fatalf("the claim after the outright claim is %+v (revision %d), want a fresh unmarked claim of %s past revision %d", *again, again.Revision, sessionID, marked.Revision)
+						}
+					})
 				})
 				t.Run("control: a claim that names a process is marked as before", func(t *testing.T) {
 					rig := newRoleClaimHandBackRig(t, sessionID, role)

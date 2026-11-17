@@ -4988,7 +4988,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   No registration renews or adopts a marked claim, so the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval — and `GET /v1/roles/<role>` answers `handed_back` meanwhile.
   The empty-topics deregistration names no one role's lane and so hands no one role back, a release that names a process frees the claims of that process and marks none, and the administrator's force frees them all.
   A current client reads a marked claim as a role it does not hold (`roleHeldBy`) and claims it again at its next heartbeat, which writes a fresh record and so clears the mark, so a live holder whose claim names its process and an older client's hand-back marked keeps its role.
-  A marked claim that names no process is not granted back at once: its holder's claim is weighed by the claim's renewal, so it comes back once that renewal is older than the live window, or after the reaper frees it.
+  A marked claim that names no process is not granted back to a soft claim at once: that claim is weighed by the marked claim's renewal and refused `409` until the renewal is older than the live window or the reaper frees the claim.
+  The way back is an outright claim (`/v1/roles/set` without `soft`, as a session pod's role claimer sends), which reads no holder and lands at once, writing a fresh record with no mark.
 
 - `/v1/sessions` (GET)
 

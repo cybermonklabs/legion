@@ -426,8 +426,9 @@ window plus up to one reap interval, about ten minutes with the defaults above.
 on the 200 and on a lapsed holder's 404 alike, and leaves the key out otherwise. Both Oh My Pi
 and Claude Code read a marked claim as a role they do not hold, so a holder whose claim names its
 process and was marked this way claims the role again at its next heartbeat and has it back, the
-fresh record carrying no mark; a marked claim that names no process comes back once its renewal
-is older than the live window, or after the reaper frees it. A release that states no client
+fresh record carrying no mark. A soft claim over a marked claim that names no process is refused
+until its renewal is older than the live window, or the reaper frees it; the way back is an
+outright claim (no `soft`), which lands at once. A release that states no client
 instance frees no claim, and no release but the administrator's force frees a claim that names
 no process. A registration that states no client instance at all renews the claims of its own
 session that name no process, so the claim of a client that states none is kept while it runs. A

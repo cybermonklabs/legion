@@ -290,9 +290,10 @@ process named, exactly as an absent one. The mark is why a holder an older clien
 reached claims its role again at its next heartbeat and has it back, the grant writing a fresh
 record that carries no mark, rather than reading the lookup as confirmation until the role claim
 reaper frees the role a live window and up to one reap interval later. That holds for a claim
-that names the holder's process; a marked claim that names no process is weighed by its
-renewal like any other such claim, so the holder gets it back once that renewal is older than
-the live window, or after the reaper frees it.
+that names the holder's process. A soft claim over a marked claim that names no process is
+weighed by that claim's renewal and refused until the renewal is older than the live window or
+the reaper frees the claim; the way back is an outright claim (`setRole` without `soft`), which
+lands at once and writes a fresh record with no mark.
 
 `setRole` and `unsubscribe` take a `clientInstanceID` of their own, sent as `client_instance_id`
 and omitted from the wire when the caller states none: the listener records the claim's as the
