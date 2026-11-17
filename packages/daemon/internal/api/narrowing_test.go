@@ -277,9 +277,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		if len(written) != 1 {
 			t.Fatalf("the daemon wrote %d lines for the wait answer it took, want one: %+v", len(written), narrowings)
 		}
-		if written[0].PluginContract != behind || written[0].Follows != followsTheLowest {
+		if written[0].PluginContract != behind || written[0].Follows != followsRestore {
 			t.Errorf("the line names contract %d and follows %q, want the pod's lowest %d and %q",
-				written[0].PluginContract, written[0].Follows, behind, followsTheLowest)
+				written[0].PluginContract, written[0].Follows, behind, followsRestore)
 		}
 	})
 
@@ -389,9 +389,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 					band.Follows)
 			}
 			value := narrowings[len(narrowings)-1]
-			if restore := restoreContract(contract); value.PluginContract != restore || value.Follows != followsTheLowest {
+			if restore := restoreContract(contract); value.PluginContract != restore || value.Follows != followsRestore {
 				t.Errorf("the value strip's line of a caller at %d names contract %d and follows %q, want the pod's lowest %d and %q",
-					contract, value.PluginContract, value.Follows, restore, followsTheLowest)
+					contract, value.PluginContract, value.Follows, restore, followsRestore)
 			}
 		}
 		for _, narrowing := range stateNarrowings {

@@ -2130,33 +2130,29 @@ package api
 // Contract 133 is one of them too: a caller below 133 is served every issue without
 // `mergeWait` (`withoutMergeWait`, the band of `mergeWaitContract`).
 // Contract 141 is one of them as well: a caller below 141 is served every issue without
-// `assignments` (`withoutAssignments`, the band of `assignmentsContract`); its
-// `settings.projects.<KEY>.experiments` is read loosely by every plugin and is recorded at every
-// contract, as 87's two settings keys are. That rests on a measurement made the way entry 87's
-// was, at the commit of each contract since: at 123 (25f3e38a), 132 (8b0f29b9), 133 (2e546572)
-// and 137 (7baa398b) `legionSettings` is a `z.looseObject` that types `review_round_cap` and
-// `worker_boot_timeout_seconds` alone, nothing types `projects`, and no plugin source names
-// `experiments`, so the reading of 46 to 111 holds to 137 and no reader refuses the key.
+// `assignments` (`withoutAssignments`, the band of `assignmentsContract`).
 // Contract 144 is served with no code of its own here: its two shapes are on the launcher's wire,
-// which the image probe pairs by number, and the one key it adds to the state,
-// `settings.runtime.kubernetes.memory_guard`, is read loosely and recorded at every contract, on
-// the same measurement made at 141's commit (7ed02373) and 144's (adebbf6d): `legionSettings` is
-// still that `z.looseObject`, nothing types `projects` or `runtime` under it, and no plugin source
-// names `memory_guard`. Its records are 141's under its own number.
+// which the image probe pairs by number.
 // Contract 146, the entry right above, is one of the contracts served down here too, by its row
 // of shaping.go's stateNarrowings, and this contract is served above it: a caller below 146 is
 // served every issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls`
 // (`withoutEntryTimes`, the band of `entryTimesContract`).
+// Four settings keys are read loosely by every plugin and recorded at every contract, with no
+// band and no strip, as 87's two settings keys are. That rests on one measurement, made the way
+// entry 87's was: `legionSettings` in `packages/contracts/src/legion-api.ts` is a `z.looseObject`
+// that types `review_round_cap` and `worker_boot_timeout_seconds` alone, nothing types the
+// parents of these keys under it (`projects`, `experiments`, `runtime`, `kubernetes` and
+// `agent_secrets`), and no plugin source names the keys (`experiments`, `memory_guard`, `roles`
+// under `experiments`, and `exchange_audience`), so no reader refuses them. The four keys, each
+// with the commits that measurement was made at, are these. 141's
+// `settings.projects.<KEY>.experiments`, at the commit of each contract since: 123 (25f3e38a),
+// 132 (8b0f29b9), 133 (2e546572) and 137 (7baa398b), so the reading of 46 to 111 holds to 137.
+// `settings.runtime.kubernetes.memory_guard`, the one key 144 adds to the state, at 141's commit
+// (7ed02373) and 144's (adebbf6d); 144's records are 141's under its own number.
 // `settings.projects.<KEY>.experiments.<name>.roles`, which main's #4241 (4357585e) added with no
-// contract number of its own, is read loosely and recorded at every contract, on the same
-// measurement made at 146's commit (858e9644), at #4241's and at this change's merge with it:
-// `legionSettings` is still that `z.looseObject`, nothing types `projects` or `experiments` under
-// it, and no plugin source names `roles` there.
-// `settings.runtime.kubernetes.agent_secrets.exchange_audience`, which main's #4153 (8a4dbb9f)
-// added the same way, is read loosely and recorded at every contract on the same measurement,
-// made at #4153's commit and at this change's merge with it: nothing types `runtime`,
-// `kubernetes` or `agent_secrets` under that `z.looseObject`, and no plugin source names
-// `exchange_audience`.
+// contract number of its own, at 146's commit (858e9645), at #4241's and at this change's merge
+// with it. `settings.runtime.kubernetes.agent_secrets.exchange_audience`, which main's #4153
+// (8a4dbb9f) added the same way, at #4153's commit and at this change's merge with it.
 // Contract 137 is served with no code of its own here: it moved no key path, no value and no
 // request field, and changed no answer's status or meaning (its flag is on the launcher's command
 // line, which the image probe holds, entry 137 above), so a caller at 137 is served what a caller

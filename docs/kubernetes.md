@@ -2366,7 +2366,7 @@ An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from th
 Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
 A root at `admitted` carried neither key at contract 94, when `phase.RoleFor` named no role for that phase;
 from contract 146 that phase is the architect's, so such a root carries its architect's two numbers by the same rules, and the two times the next paragraph names by its own.
-A caller from a pod whose claims record a contract below 94 is served the issues without either key (`withoutPhaseEntries` in `internal/api/server.go`).
+A caller from a pod whose claims record a contract below 94 is served the issues without either key (`withoutPhaseEntries` in `internal/api/shaping.go`).
 Store migration 20261111225552_phase_entry adds the six columns, fills them from the assignment token the release before it minted at each phase change (a role that release had handed work stands at entry 1, with the task of the start row its issue still owes it), stamps that entry into the payload of each of those start rows, and drops the three columns that token was held in:
 `phases.assignment`, `claims.serving_assignment` and `pending_task_deliveries.assignment`.
 
@@ -2377,7 +2377,7 @@ Both are read from the claim's own record of its handshake of the last entry it 
 A tree's own root carries its architect's handshake whatever phase it stands in, through `awaiting_person` and the phases a phase role works, where `phaseEntry` and `givenEntry` are that role's;
 any other issue carries the handshake of the role of its current phase.
 Both are absent where no entry was queued to that claim in the issue's current generation, so a root re-admitted carries neither until its new architect entry is queued, and `entryConfirmedAt` alone is absent while no turn has confirmed a task of the entry.
-A caller from a pod whose claims record a contract below 146 is served the issues without either time and without `architectStalls` (`withoutEntryTimes` in `internal/api/server.go`).
+A caller from a pod whose claims record a contract below 146 is served the issues without either time and without `architectStalls` (`withoutEntryTimes` in `internal/api/shaping.go`).
 The daemon wakes the project's controller with `architect-stalled on <KEY>` (`skill://legion-controller/references/wakes.md`), once for each arm in each run of the root:
 
 - the architect took nothing: the task of the entry its `phases` row names was first queued to its claim more than ten minutes ago, and no turn confirmed it.

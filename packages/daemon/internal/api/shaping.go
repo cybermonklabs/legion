@@ -474,7 +474,7 @@ type stateNarrowing struct {
 //
 // The value strips are no rows of this table: they follow restore rather than strip, and take a
 // value rather than a key a contract added, which are questions this table's one number cannot
-// ask (shapeState). They are the rows of valueStrips, applied, recorded and described from there
+// ask (valueStrip). They are the rows of valueStrips, applied, recorded and described from there
 // as a band is from here (tookOff, recordShaping), so a body served without a value says so in
 // the log as a body served without a key does. A value that arrived with its field is this
 // table's (fieldArrivals.heldBack says which values and why).
@@ -587,16 +587,16 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 		}
 		s.log.Info(narrowedTheState, "caller", r.RemoteAddr, "pod", at.pod,
 			"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion,
-			"follows", followsTheLowest, "dropped", row.dropped)
+			"follows", followsRestore, "dropped", row.dropped)
 	}
 }
 
-// followsTheLowest is the clause each value strip's line carries and no band's line does: it
+// followsRestore is the clause each value strip's line carries and no band's line does: it
 // says that the number beside it is restore, the contract the caller states or else the lowest
 // its pod records, and not strip, the contract it states or else its pod's highest, which a key
 // follows (contractsFor). The line of a fresh session served the failure contract 103 gave
 // carries it too, since that decision follows restore as a value strip does (refusedAfterTheStop).
-const followsTheLowest = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
+const followsRestore = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
 // droppedStrandedState, droppedWaitAnswer and droppedLineKind are what the rows of valueStrips
 // name as dropped. They are named rather than written in the rows because the tests that read
@@ -1296,7 +1296,7 @@ type fieldArrivals struct {
 // below the value's arrival. A reader from the field's arrival up to the contract before the
 // value's knows the field and reads it with an enumeration that does not name the value, so it
 // refuses the whole body for it. No reader requires a value, so the strip follows restore where
-// a band follows strip (shapeState). The pod's reading keeps its lowest and its highest contract
+// a band follows strip (contractsFor). The pod's reading keeps its lowest and its highest contract
 // alone (podContracts), so a pod whose lowest contract is below the field's arrival may hold
 // such a reader too, and the value is held back from that pod as well.
 //

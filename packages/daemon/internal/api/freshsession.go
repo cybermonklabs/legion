@@ -867,7 +867,7 @@ func (s *server) refusedAfterTheStop(w http.ResponseWriter, r *http.Request, m *
 	}
 	s.operatorFailure(w, r, step.request, token, err)
 	s.log.Info(servedTheStopAsAFailure, "caller", r.RemoteAddr, "pod", at.pod,
-		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion, "follows", followsTheLowest,
+		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion, "follows", followsRestore,
 		"claim", token, "request", step.request, "served", servedTheRefusedStep)
 	return 0, "", false, false
 }
@@ -891,7 +891,7 @@ const (
 //
 // The decision reads restore (the contract the caller states, else the lowest its pod records;
 // contractsFor) and not strip. What moved at processReadContract is what one answer means, and
-// no key of it, so the decision follows restore as a value strip does (followsTheLowest).
+// no key of it, so the decision follows restore as a value strip does (followsRestore).
 //
 // It reads the header before it reads the store. A caller that states its contract in
 // pluginContractHeader is placed by the header alone, so no claim is read for it. A plugin below
