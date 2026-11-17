@@ -1,7 +1,7 @@
 /** Every zero-wait probe of the browser suite whose answer decides what a row or a helper does
- *  next - an `isVisible()`, a `count()` or a `getAttribute()` read as the condition of a branch -
- *  read from the source of this suite's own files, so one that says nothing about why one
- *  instant's answer is safe can be named.
+ *  next - an `isVisible()`, a `count()` or a `getAttribute()` read as the condition of a branch,
+ *  or an `all()` whose answer a loop walks - read from the source of this suite's own files, so
+ *  one that says nothing about why one instant's answer is safe can be named.
  *
  * A probe is two different things wearing one face. It is the measurement when the row's claim
  * IS what one instant shows: a sampler that logs whether a span is in the page at each tick, where
@@ -12,7 +12,8 @@
  * control right after `page.goto`, got `false` while the shell still drew its loading skeleton,
  * and skipped opening the rail. The two are told apart by one thing only - whether the writer
  * said which it is - and this module is that rule's machine check.
- * `e2e/__tests__/zero-wait-probes.test.ts` is what runs it over the suite.
+ * `e2e/__tests__/zero-wait-probes.test.ts` is what runs it over the suite, and
+ * `e2e/__tests__/zero-wait-loops.test.ts` holds it to the loops.
  *
  * THE RULE. A probe whose answer decides a path reads a state the page has settled on, or carries
  * a reason. The settled read is `settledState` of `e2e/settled.ts`: it reads its probes inside one
@@ -30,9 +31,11 @@
  *
  * WHAT A PROBE IS. A call `x.<name>(...)` whose member name is one of `probeMethods`: the reads
  * Playwright answers for the page as it stands when they are read. `isVisible`, `isHidden`,
- * `count`, `allTextContents` and `allInnerTexts` wait for nothing, and the rest wait at most for
- * an element to match and then answer for that instant, so none of them waits for the state a
- * branch chooses between. A call of a wrapper is a probe as well. A wrapper is a function
+ * `count`, `all`, `allTextContents` and `allInnerTexts` wait for nothing, and the rest wait at
+ * most for an element to match and then answer for that instant, so none of them waits for the
+ * state a branch chooses between. A call whose receiver is the plain identifier `Promise` is no
+ * probe, though its member is named like one: `Promise.all(...)` waits for the promises it is
+ * handed and reads no page. A call of a wrapper is a probe as well. A wrapper is a function
  * declaration, or a `const name =` arrow or function expression, one of whose own `return`
  * statements - a nested function's do not count - returns a probe or `await` of one, or an arrow
  * whose expression body is one, parentheses read through. The wrappers are collected by name in
@@ -48,11 +51,15 @@
  *   as `index < (await rows.count())` is reached by the same climb. An `if` whose only branch is a
  *   `throw`, with no `else`, is no decision: it picks no path but fails the row, as an assertion
  *   does;
+ * - the iterable of a `for...of`, whose answer decides how many turns the loop runs: `for (const
+ *   row of await rows.all())`, read before the page has drawn the rows, runs no turn, and a row
+ *   whose assertions stand inside the loop passes without one of them run;
  * - the first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail`, which decides
  *   how the row runs, where that argument is no string, template or function;
- * - the initializer of a `const` or a `let` with a plain name that a later condition of either
- *   kind above refers to, in the same function as the declaration: `const shown = await
- *   menu.textContent()` read by `shown === "Menu" ? ... : ...` below it.
+ * - the initializer of a `const` or a `let` with a plain name that a later condition of any kind
+ *   above refers to, in the same function as the declaration: `const shown = await
+ *   menu.textContent()` read by `shown === "Menu" ? ... : ...` below it, or `const items = await
+ *   rows.all()` walked by `for (const item of items)` below it.
  *
  * Anything else decides no path of this rule's: a probe returned, stored as data, or handed to
  * `expect(...)`, which asserts what the row reads rather than branching on it.
@@ -91,8 +98,9 @@
  *   return shown;` - and a wrapper that is a method, a `let` or a `var`, or that returns a call
  *   of another wrapper, since a call of a wrapper is a probe for judging and not for collecting;
  * - an answer that leaves the climb: `Boolean(await menu.isVisible())`, `(await rows.count()) - 1`,
- *   an answer passed to a function that branches on it, a name copied into another name, or a
- *   name tested in a condition of a function nested inside the declaration's own;
+ *   `(await rows.all()).slice(1)` walked by a `for...of`, an answer passed to a function that
+ *   branches on it, a name copied into another name, or a name tested in a condition of a
+ *   function nested inside the declaration's own;
  * - shadowing of a name, and any other name read by its spelling rather than by its binding,
  *   since the scan models no scope: a function of one file named like a wrapper of another is
  *   read as that wrapper, a condition that refers to an inner binding named like a probe's
@@ -124,8 +132,8 @@ export type DecidingProbe = {
   /** What is called: the method, `isVisible`, or the name of a wrapper, `menuShows`. */
   name: string;
   /** What the answer decides, as WHAT DECIDES A PATH reads it: `if`, `ternary`, `while`,
-   *  `do-while`, `for`, `test.skip` and its kin, or `const shown -> ternary@42` for a name bound to
-   *  the answer, with the kind and the line of each condition that refers to it. */
+   *  `do-while`, `for`, `for-of`, `test.skip` and its kin, or `const shown -> ternary@42` for a
+   *  name bound to the answer, with the kind and the line of each condition that refers to it. */
   position: string;
   /** The reason comment that ends on the line directly above the call, its markers stripped and
    *  its lines joined by a space; the empty string when no comment ends there. */
@@ -147,6 +155,7 @@ const probeMethods: ReadonlySet<string> = new Set([
   "isChecked",
   "isEditable",
   "count",
+  "all",
   "allTextContents",
   "allInnerTexts",
   "textContent",
@@ -194,13 +203,21 @@ const climbedOperators: ReadonlySet<ts.SyntaxKind> = new Set([
 /** One file of the scan, parsed. */
 type ParsedFile = { readonly file: string; readonly sourceFile: ts.SourceFile };
 
-/** Whether `node` is a call `x.<name>(...)` of a probe, read by the member name. */
+/** The member name of `call` where it is a call `x.<name>(...)` of a probe, read by that name,
+ *  and nothing where it is not. A call on the plain identifier `Promise` is none: `Promise.all`
+ *  waits for the promises it is handed and reads no page. */
+function probeMethodOf(call: ts.CallExpression): string | undefined {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || !probeMethods.has(callee.name.text)) {
+    return undefined;
+  }
+  const receiver = callee.expression;
+  return ts.isIdentifier(receiver) && receiver.text === "Promise" ? undefined : callee.name.text;
+}
+
+/** Whether `node` is a call `x.<name>(...)` of a probe, as `probeMethodOf` reads one. */
 function isProbeCall(node: ts.Node): node is ts.CallExpression {
-  return (
-    ts.isCallExpression(node) &&
-    ts.isPropertyAccessExpression(node.expression) &&
-    probeMethods.has(node.expression.name.text)
-  );
+  return ts.isCallExpression(node) && probeMethodOf(node) !== undefined;
 }
 
 /** Whether `node` is a function written in place: an arrow or a function expression. */
@@ -337,9 +354,7 @@ function wrapperNames(parsed: readonly ParsedFile[]): Set<string> {
  *  calls. Nothing where it is neither. */
 function probeName(call: ts.CallExpression, wrappers: ReadonlySet<string>): string | undefined {
   const callee = call.expression;
-  if (ts.isPropertyAccessExpression(callee)) {
-    return probeMethods.has(callee.name.text) ? callee.name.text : undefined;
-  }
+  if (ts.isPropertyAccessExpression(callee)) return probeMethodOf(call);
   return ts.isIdentifier(callee) && wrappers.has(callee.text) ? callee.text : undefined;
 }
 
@@ -377,8 +392,9 @@ function testModifier(node: ts.Node): string | undefined {
 }
 
 /** What `node` is the condition of, as the first two kinds of WHAT DECIDES A PATH read it: `if`,
- *  `ternary`, `while`, `do-while`, `for` or a `test` modifier. Nothing where it decides no path,
- *  an `if` whose only branch is a `throw` among them. */
+ *  `ternary`, `while`, `do-while`, `for`, `for-of` for the iterable a `for...of` walks, or a
+ *  `test` modifier. Nothing where it decides no path, an `if` whose only branch is a `throw` among
+ *  them. */
 function conditionKind(node: ts.Expression): string | undefined {
   const parent = node.parent;
   if (ts.isIfStatement(parent) && parent.expression === node) {
@@ -392,6 +408,7 @@ function conditionKind(node: ts.Expression): string | undefined {
   if (ts.isWhileStatement(parent) && parent.expression === node) return "while";
   if (ts.isDoStatement(parent) && parent.expression === node) return "do-while";
   if (ts.isForStatement(parent) && parent.condition === node) return "for";
+  if (ts.isForOfStatement(parent) && parent.expression === node) return "for-of";
   const modifier = testModifier(parent);
   if (
     modifier !== undefined &&

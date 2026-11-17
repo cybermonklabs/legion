@@ -704,8 +704,11 @@ test("phone status labels are readable and closed issues load from the Status fi
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/projects/CORE/issues");
     const strip = page.getByRole("group", { name: "Issues by status" });
+    // The seed's three open statuses, Triage, Todo and Testing, each draw one cell.
+    await expect(strip.getByRole("button")).toHaveCount(3);
     // No Done cell at all while closed issues are unloaded: the bar counts what it has.
     await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
+    // The count of three above waited for every cell the strip draws, so one read lists them.
     for (const button of await strip.getByRole("button").all()) {
       await button.scrollIntoViewIfNeeded();
       const readable = await button.evaluate((element) => {

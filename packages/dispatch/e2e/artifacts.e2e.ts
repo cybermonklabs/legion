@@ -396,7 +396,7 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
 
   // Every row shows its whole detail line: it wraps where it must rather than truncating on a
-  // row with room beside it.
+  // row with room beside it. The count of two above waited for both rows, so one read lists them.
   for (const row of await rows.all()) {
     const details = row.locator("p").first();
     await expect(details).toContainText("Updated");

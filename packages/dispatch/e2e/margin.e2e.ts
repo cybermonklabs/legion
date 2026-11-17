@@ -731,6 +731,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     await expect(bobCard).toContainText("Because it is precise.");
     const timestamps = bobCard.locator("time");
     await expect(timestamps).toHaveCount(2);
+    // The count of two above waited for both of the card's timestamps, so one read lists them.
     for (const timestamp of await timestamps.all()) {
       await expect(timestamp).toHaveAttribute("datetime", /.+/);
     }
@@ -804,6 +805,7 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     await expect(options.getByRole("radio")).toHaveCount(4);
     const cardBox = await card.boundingBox();
     if (cardBox === null) throw new Error("the ask card has no layout box");
+    // The count of four radios above settled these rows: each radio stands inside its label.
     const rows = await options.locator("label").all();
     expect(rows).toHaveLength(4);
     for (const row of rows) {

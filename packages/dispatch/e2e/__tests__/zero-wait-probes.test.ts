@@ -120,6 +120,20 @@ test("a probe a retry or the page reads, or that decides no path, is no instance
   expect(fixtureProbes.map((probe) => probe.line)).toEqual([30, 32, 35, 37, 41, 44, 72]);
 });
 
+// `Promise.all` is named like `locator.all()`, but it waits for the promises it is handed and
+// reads no page, so a loop over its answer, in place or through a `const`, is no instance. Each
+// line is held to the loop it plants, so a fixture edit that moved one cannot pass for the scan
+// skipping it.
+test("a loop over `Promise.all` is no instance", () => {
+  const passes: [number, string][] = [
+    [79, "for (const box of await Promise.all(["],
+    [83, "const writes = Promise.all(["],
+    [85, "for (const request of await writes)"],
+  ];
+  for (const [line, text] of passes) expect(fixtureLines[line - 1]).toContain(text);
+  expect(fixtureProbes.filter((probe) => probe.line >= 79)).toEqual([]);
+});
+
 // The evidence a reader of CI records for this check. It prints the result the rule's own test
 // asserts, so the line is there only when the rule held in this run.
 test("the suite's deciding probes are reported for the record", () => {

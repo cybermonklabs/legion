@@ -71,3 +71,16 @@ export async function plantedPasses(page: Page, menu: Locator, rows: Locator): P
   // One read of this instant is enough here.
   if (await menu.isChecked()) await menu.uncheck();
 }
+
+/** Two loops over `Promise.all`, which is no probe: it waits for the promises it is handed and
+ *  reads no page, though its member is named like `locator.all()`. One walks it in place, and one
+ *  walks a `const` bound to it, as e2e/keyboard-inbox.e2e.ts walks the requests it awaits. */
+export async function plantedPromiseAll(page: Page, rows: Locator): Promise<void> {
+  for (const box of await Promise.all([rows.first().boundingBox(), rows.last().boundingBox()])) {
+    expect(box).not.toBeNull();
+  }
+
+  const writes = Promise.all([page.waitForRequest("**/issues"), page.waitForRequest("**/asks")]);
+  await rows.first().click();
+  for (const request of await writes) expect(request.method()).toBe("POST");
+}

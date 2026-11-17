@@ -2249,15 +2249,21 @@ controls.
 over the suite, refuses a zero-wait probe whose answer decides a path, unless a
 reason stands directly above it.
 A probe is a read that answers for the page as it stands and waits for no state:
-`isVisible`, `count`, `getAttribute` and the like, or a call of a wrapper that
-returns one.
+`isVisible`, `count`, `all`, `getAttribute` and the like, or a call of a wrapper
+that returns one.
+A call on the plain identifier `Promise` is none: `Promise.all(...)` waits for
+the promises it is handed and reads no page.
 Its answer decides a path when it is the condition of a branch (an `if`, a `?:`
-or a loop), the first argument of `test.skip`, `test.fixme`, `test.slow` or
-`test.fail`, or a `const` or `let` that a later condition of the same function
-reads.
+or a loop), the list a `for...of` walks (`for (const row of await rows.all())`,
+which runs no turn on a page that has not drawn the rows yet, so the assertions
+inside it never run), the first argument of `test.skip`, `test.fixme`,
+`test.slow` or `test.fail`, or a `const` or `let` that a later condition or
+`for...of` of the same function reads.
 The reason is a comment of at least eight words that ends on the line directly
 above the probe, measured as `e2e/fixed-waits.ts` measures one, and says why one
 instant's answer is safe there.
+Above a loop, the reason names the wait that settled the elements it walks, and
+that wait comes first (`await expect(rows).toHaveCount(3)` before the loop).
 A page that has not drawn its layout yet answers no to every probe, so a probe
 that stands in for a wait sends the row down the wrong path, and the row fails
 later, at a line that has nothing to do with the branch.
@@ -2269,7 +2275,8 @@ of `expect(...).toPass` and a page-side callback (`evaluate`, `waitForFunction`,
 `route` and the others its header lists), because each of those is read again,
 or at a moment the row did not pick.
 `e2e/__tests__/fixtures/zero-wait-probes.fixture.ts` holds its planted
-controls.
+controls, and `e2e/__tests__/fixtures/zero-wait-loops.fixture.ts`, which
+`e2e/__tests__/zero-wait-loops.test.ts` reads, its planted loops.
 A value read that is then checked by an `expect` that does not retry
 (`expect(await rows.count()).toBe(3)`) is the same defect: it reads one instant,
 and the check never reads again.

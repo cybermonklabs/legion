@@ -14,7 +14,14 @@ import {
   getAsk,
   patchIssue,
 } from "./api";
-import { actionBar, barAction, documentEditor, needsYouCards, selectEditorText } from "./editor";
+import {
+  actionBar,
+  barAction,
+  connectedDot,
+  documentEditor,
+  needsYouCards,
+  selectEditorText,
+} from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
@@ -136,6 +143,8 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     // D11: choosing Comment on a selection autofocuses the composer's body field.
     await selectEditorText(page, "brown");
     if (isPhone) {
+      // selectEditorText waited for the bar to show, and the bar builds its buttons before it
+      // first shows, so one read lists them all.
       for (const button of await actionBar(page).getByRole("button").all()) {
         const box = await button.boundingBox();
         expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -334,6 +343,13 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
       )
     ).toBe(true);
     if (testInfo.project.name === "iphone") {
+      // The page draws its controls in parts: the header with the document, the toolbar beside
+      // the connection dot, and the review panel's toggle once the margin knows the document.
+      await expect(connectedDot(page)).toHaveText("connected");
+      const reviewToggle = page.getByRole("button", { name: /Open review panel/ });
+      await expect(reviewToggle).toBeVisible();
+      // The waits above saw the editor, the toolbar and the review toggle drawn, so every part
+      // of the page that holds a control is here when it is read.
       const controls = await page
         .getByRole("main")
         .locator("button:visible, a:visible, select:visible")
@@ -342,7 +358,7 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
         const box = await control.boundingBox();
         expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
       }
-      await page.getByRole("button", { name: /Open review panel/ }).click();
+      await reviewToggle.click();
       await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
       await expect(page.getByRole("tab", { name: "Pinned" })).toHaveCount(0);
     }
@@ -376,6 +392,8 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     await expect(picker).toBeVisible();
     const option = picker.getByRole("option", { exact: true, name: "planner" });
     await expect(option).toBeVisible();
+    // The planner option above shows the live list has drawn, and a new issue has no
+    // collaborators to add a Not running option, so one read lists every control.
     for (const control of await composer.locator("button:visible, textarea:visible").all()) {
       const box = await control.boundingBox();
       expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
