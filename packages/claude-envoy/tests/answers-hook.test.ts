@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
+import { hasErrnoCode } from "@legion/envoy-client/errors"
 import {
   renderSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -747,7 +748,9 @@ function runs(pid: number, marker: string): boolean {
       return false
     }
   }
-  return Bun.spawnSync(["ps", "-o", "args=", "-p", String(pid)]).stdout.toString().includes(marker)
+  return Bun.spawnSync(["ps", "-o", "args=", "-p", String(pid)])
+    .stdout.toString()
+    .includes(marker)
 }
 
 /** The pid a token command wrote to `file` as its first act (`echo $$ >file`); undefined until
@@ -763,11 +766,19 @@ function commandPid(file: string): number | undefined {
   return Number.isInteger(pid) && pid > 0 ? pid : undefined
 }
 
-/** Whether the token command that wrote its pid to `file` still runs: its shell's command line
- *  holds `gate`, a path no other process names. */
-function commandRuns(file: string, gate: string): boolean {
+/** Whether any process of the token command's process group still runs: its shell, or anything it
+ *  started. envoy-config starts the command `detached`, so its shell leads a group of its own and
+ *  its pid is the group's id, and one `kill(-pid, 0)` asks the kernel about that group alone. EPERM
+ *  means the group exists. */
+function commandRuns(file: string): boolean {
   const pid = commandPid(file)
-  return pid !== undefined && runs(pid, gate)
+  if (pid === undefined) return false
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (error) {
+    return hasErrnoCode(error, "EPERM")
+  }
 }
 
 /** Whether no refresher of the session runs for the project directory `home` (its command line
@@ -789,8 +800,8 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   dispatch.route = { kind: "list", items }
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
-  // The command writes its pid, then waits until the test opens the gate, a path no other process
-  // names: its shell's command line holds that path.
+  // The command writes its shell's pid, its process group's id, then waits until the test opens
+  // the gate.
   const gate = join(home, "gate")
   const pidFile = join(home, "command.pid")
   await writeFile(
@@ -813,12 +824,12 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   expectWithinDeadline(first)
   // The command outlives the hook, in the refresher the hook started (whose own bun start-up may
   // end after the hook did).
-  await eventually(() => commandRuns(pidFile, gate), "the command's start")
+  await eventually(() => commandRuns(pidFile), "the command's start")
 
   await writeFile(gate, "")
   await refresherFinished(state, firstSince)
   expect(await readdir(tmp)).toEqual([])
-  expect(commandRuns(pidFile, gate)).toBe(false)
+  expect(commandRuns(pidFile)).toBe(false)
   expect(dispatch.requests).toEqual([`Bearer hook-token /api/v1/agents/${SESSION}/answers`])
 
   await rm(gate)
@@ -831,7 +842,7 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   expectWithinDeadline(second)
   await writeFile(gate, "")
   await refresherFinished(state, secondSince)
-  expect(commandRuns(pidFile, gate)).toBe(false)
+  expect(commandRuns(pidFile)).toBe(false)
 }, 20_000)
 
 test("with a slow token command, a list read from another Dispatch than envoy.json names now never stands in", async () => {
@@ -918,7 +929,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
 
   // The refresher resolves envoy.json before its command runs: once the command runs, it reads
   // `before` whatever envoy.json names next.
-  await eventually(() => commandRuns(pidFile, gate), "the command's start")
+  await eventually(() => commandRuns(pidFile), "the command's start")
 
   // envoy.json now names another Dispatch. A hook starts while the refresher runs; it opens the
   // gate once its process has started and holds its code until the refresher has read `before`

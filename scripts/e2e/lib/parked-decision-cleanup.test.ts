@@ -57,13 +57,17 @@ describe("wait_for_run_processes", () => {
   });
 
   test("a process of the run that never ends fails the wait once the poll floor is reached", () => {
-    // The harness's own shell ($$) is a survivor that runs, so the failure's note names it, its
-    // command line included; 4343 stands for one that the note may find gone.
-    const r = wait("printf '%s\\n' \"$$\" 4343", "0 3");
+    // Three survivors: the harness's own shell ($$) and this test process ($PPID), which run, and
+    // a process that has ended. The failure names all three, and its note names each one that
+    // runs, its command line included, and none that has ended.
+    const ended = Bun.spawnSync(["true"]).pid;
+    const r = wait(`printf '%s\\n' "$$" "$PPID" ${ended}`, "0 3");
     expect(r.code).not.toBe(0);
     expect(r.calls).toBe(3);
-    expect(r.stderr).toContain(`still running: ${r.pid} 4343`);
+    expect(r.stderr).toContain(`still running: ${r.pid} ${process.pid} ${ended}`);
     expect(r.stdout).toMatch(new RegExp(`^ +${r.pid} .*bash -c set `, "m"));
+    expect(r.stdout).toMatch(new RegExp(`^ +${process.pid} .*bun`, "m"));
+    expect(r.stdout).not.toMatch(new RegExp(`^ +${ended} `, "m"));
   });
 
   // Catches a wait that gives up on the poll floor alone, the wall-clock half dropped: it would

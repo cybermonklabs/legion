@@ -271,16 +271,21 @@ describe("the box-login lock", () => {
     try {
       const first = await holder.stdout.getReader().read();
       expect(new TextDecoder().decode(first.value)).toBe("locked\n");
+      // The holder's shell has taken the lock and recorded its own command line; it then becomes
+      // `sleep 60`. The refusal must name what the holder runs now, not what the lock file
+      // recorded, so the row waits until the holder runs `sleep 60`. That exec is another
+      // process's and sends no event, so the wait reads the holder's command line again; the
+      // row's own limit bounds it.
+      while (readFileSync(`/proc/${holder.pid}/cmdline`, "utf8") !== "sleep\u000060\u0000") {
+        await Bun.sleep(5);
+      }
       const second = Bun.spawnSync(["bash", "-c", helpers(file, "take_box_login_lock")], {
         env: { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(dir, "xdg-b") },
       });
       expect(second.exitCode).toBe(1);
-      // The refusal names the holder's command as it runs now: `sleep 60`, or the holder's shell
-      // when the read comes before its `exec`. A lookup that found no such process says the holder
-      // "has exited", which this line refuses.
-      const held = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const pattern = `^take_box_login_lock: another box-login proof holds ${held}: pid ${holder.pid} \\((sleep 60|bash -c \\. .*exec sleep 60)\\); one box-login proof runs at a time$`;
-      expect(second.stderr.toString().trim()).toMatch(new RegExp(pattern));
+      expect(second.stderr.toString()).toBe(
+        `take_box_login_lock: another box-login proof holds ${file}: pid ${holder.pid} (sleep 60); one box-login proof runs at a time\n`
+      );
     } finally {
       holder.kill();
       await holder.exited;

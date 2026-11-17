@@ -253,11 +253,11 @@ start_process() {
 # PID prints each of PID's children, one a line. Each reads that one process (fields 4 and 5 of
 # /proc/PID/stat, read past the last `) ` because the command name between the parentheses may
 # hold both; /proc/PID/task/*/children), never every process on the machine as `ps -p` and
-# `pgrep -P` do: procps-ng's `ps -o ppid= -p PID` read /proc/<pid>/stat 43,778 times for one pid
-# at 21,742 processes, about a second each on a loaded devbox. Each prints nothing for a process
-# that is gone. A host with no /proc (macOS) asks ps and pgrep. The files are read with `read` and
-# `mapfile`: under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open FILE, even on the
-# left of `||`.
+# `pgrep -P` do: procps-ng's `ps -o args= -p PID` opened /proc/<pid>/stat 12,564 times for one
+# pid at about 13,000 processes, about a second on a loaded devbox. Each prints nothing for a
+# process that is gone. A host with no /proc (macOS) asks ps and pgrep. The files are read with
+# `read` and `mapfile`: under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open FILE,
+# even on the left of `||`.
 proc_stat_field() {
   local stat fields
   if [ -d /proc/self ]; then
