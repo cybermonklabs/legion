@@ -151,8 +151,10 @@ func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
 
 // A tree drawn into a control arm — one that names neither an overlay nor an instructions file —
 // launches the bytes a tree in no experiment launches, pod, process and the files its launcher
-// writes alike, its system prompt file among them: a launch names the files its arms name, and a
-// control arm names none.
+// writes alike, its system prompt file among them, but for one value: a launch names the files its
+// arms name, and a control arm names none. The one value is the process's spend attributes,
+// which name the control arms in legion.arms, so a call of a control tree reads as control rather
+// than as a tree in no experiment.
 func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.T) {
 	r := twoExperimentRuntime(t, false)
 	control := workerSpec(t)
@@ -161,8 +163,21 @@ func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.
 	if got, want := podOf(t, r, control), podOf(t, r, none); !reflect.DeepEqual(got, want) {
 		t.Errorf("a control tree's pod =\n%+v\nwant the one a tree in no experiment gets:\n%+v", got, want)
 	}
-	if got, want := workerOf(t, r, control), workerOf(t, r, none); !reflect.DeepEqual(got, want) {
-		t.Errorf("a control tree's process =\n%+v\nwant the one a tree in no experiment gets:\n%+v", got, want)
+	const arms = "," + runtime.SpendArmsAttribute + "=alpha%3Aoff%2Cbeta%3Aoff"
+	process := workerOf(t, r, control)
+	process.Env = slices.Clone(process.Env)
+	named := 0
+	for i, entry := range process.Env {
+		if entry.Name == runtime.SpendAttributesVariable && strings.HasSuffix(entry.Value, arms) {
+			process.Env[i].Value = strings.TrimSuffix(entry.Value, arms)
+			named++
+		}
+	}
+	if named != 1 {
+		t.Errorf("a control tree's process names %s %d times in %s, want once: %+v", arms, named, runtime.SpendAttributesVariable, process.Env)
+	}
+	if want := workerOf(t, r, none); !reflect.DeepEqual(process, want) {
+		t.Errorf("a control tree's process, its arms aside =\n%+v\nwant the one a tree in no experiment gets:\n%+v", process, want)
 	}
 	if got, want := launcherCommand(launchOf(t, r, control), r).Files, launcherCommand(launchOf(t, r, none), r).Files; !reflect.DeepEqual(got, want) {
 		t.Errorf("a control tree's launcher writes\n%q\nwant the files a tree in no experiment's writes:\n%q", got, want)

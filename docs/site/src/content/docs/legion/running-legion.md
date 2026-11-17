@@ -590,13 +590,12 @@ What each part is for:
   billed under (`theorem.project=widgets`), and each launch carries them with its own
   `legion.issue` and `legion.role` after them, so each launch's attributes name the issue it
   serves. A launch in an arm of one of the project's experiments carries `legion.arms` after
-  those: one `<experiment>:<variant>` for each arm whose overlays it runs with
-  (`legion.arms=memory:memory` once decoded), and none for an arm whose overlays the pod it keeps
-  was built without, so each model call says which arm's files it ran with. The agent takes the
-  last value a key is given, which is why Legion's pairs come
-  last. Both keys reach the spend collector today, and its keep-list of six `theorem.*`
-  attributes drops every other key, so no spend row names an issue yet. A spend row grouped by
-  issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list.
+  those: one `<experiment>:<variant>` for each arm it runs with all the overlays of
+  (`legion.arms=memory:memory` once decoded), and none for an arm the pod it keeps holds only
+  some or none of the overlays of, so each model call says which arm's files it ran with. The agent
+  takes the last value a key is given, which is why Legion's pairs come last. A spend row names an
+  issue, a role or an arm only where your spend collector keeps that key: a collector that keeps
+  a list of `theorem.*` attributes alone drops all three (dispatch://INFRA-1835).
   The project controller serves no issue and carries the role alone. The image probe's container
   runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
   role either and keeps it with its trailing commas and whitespace dropped and nothing added.

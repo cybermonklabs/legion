@@ -430,10 +430,9 @@ provider_keys:
   project's experiments carries `legion.arms` after those, one `<experiment>:<variant>` for each
   arm it runs in (`legion.arms=memory:memory` once decoded), so each model call says which arm's
   files it ran with. The agent keeps the last value a key is
-  given, so the daemon's pairs come last. Both keys reach the spend collector today, and
-  its keep-list of six `theorem.*` attributes drops every other key, so no spend row names an
-  issue yet. A row grouped by issue follows when the collector keeps them, which
-  dispatch://INFRA-1835 adds to that list. A controller pane serves no issue and carries the
+  given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
+  where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
+  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it
