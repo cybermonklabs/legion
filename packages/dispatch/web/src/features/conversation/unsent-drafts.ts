@@ -7,14 +7,19 @@ import type { SentDraft, SentRequest } from "./send-request";
 
 /**
  * A draft a composer whose address its host moves - the Conversation's docked composer, a phone
- * thread's, an Agents row's, the margin's compose - keeps for the address it was written at, once
- * the field no longer shows it: its host moved the composer to another reply, or took it off the
- * page. The address is the reply the draft answers, or none, with the owner it was written for,
- * which is what the composer's line about it names.
+ * thread's, an Agents row's, the margin's compose, a comment's editor - keeps for the address it
+ * was written at, once the field no longer shows it: its host moved the composer to another
+ * reply, or took it off the page. The address is the reply the draft answers, or none, with the
+ * owner it was written for, which is what the composer's line about it names. An editor's
+ * address is the comment it edits, which its send name names.
  */
 export interface AwayDraft {
   /** An ask's settings and options, which a compose of the ask kind keeps with its question. */
   readonly ask?: SentRequest["ask"];
+  /** For an edit, the comment's body it was written over, as the editor last saw it: the edit is
+   *  put back in the field only while the comment still holds that body, and is offered beside
+   *  the newer body otherwise (`MentionComposer`'s `changed`). */
+  readonly base?: string;
   readonly draft: SentDraft;
   readonly owner: ComposerOwner;
   readonly replyTo: ReplyTarget | null;
@@ -33,6 +38,8 @@ export interface AwayDraft {
  * A composer whose host moves its address keeps a draft by the address too (`AwayDraft`): under
  * its send name, one per reply it was written for, so the reply typed for one message waits for
  * that message while the same composer answers another, and comes back with that message's Reply.
+ * An editor keeps one with the comment's body it was written over, which decides whether the edit
+ * comes back in the field or beside a newer body.
  */
 export interface UnsentDrafts {
   read(name: string): SentDraft | undefined;

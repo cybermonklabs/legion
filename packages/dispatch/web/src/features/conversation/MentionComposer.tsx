@@ -699,12 +699,13 @@ export function MentionComposer({
    *  the page with its thread - Cancel reply, another thread, a phone thread's Back - and the
    *  draft is that thread's until the reader sends or drops it. */
   const unsentName = standing || inline ? composerName : undefined;
-  /** Where every other named composer but an edit keeps a draft by the address it was written
-   *  at (`AwayDraft`): its host moves it from reply to reply - a Reply on a message or a comment -
+  /** Where every other named composer keeps a draft by the address it was written at
+   *  (`AwayDraft`): its host moves it from reply to reply - a Reply on a message or a comment -
    *  or takes it off the page, so a draft is the reply's it answers, or its owner's when it
    *  answers none, and waits under the send name until the composer is back there. An edit's
-   *  draft opens from the comment it edits. */
-  const awayName = standing || inline || edit !== undefined ? undefined : composerName;
+   *  address is the comment it edits, which its send name names, and its draft is kept with the
+   *  comment's body it was written over (`AwayDraft.base`). */
+  const awayName = standing || inline ? undefined : composerName;
   const unsent = useUnsentDrafts();
   // The drafts kept for other addresses than the one the composer shows, each of which the
   // composer names with the way back to it.
@@ -715,11 +716,15 @@ export function MentionComposer({
   // send's draft, else the unsent draft kept under the send name or for this address, else what
   // the channel seeds. A refusal the host has moved the composer off since - another reply, a
   // newer message - gives way to a draft the reader wrote here and that was kept for it, since
-  // the refusal keeps its own draft for its own address.
+  // the refusal keeps its own draft for its own address. An edit refused or kept over a body
+  // another writer has changed since - one the comment no longer holds - is not put back in the
+  // field, which opens on the newer body, and waits beside it (`changed`, below).
   const [initial] = useState(() => {
     const held = outgoing.held;
     const unsentHere = unsentName === undefined ? undefined : unsent.read(unsentName);
-    const kept: { readonly ask?: SentRequest["ask"]; readonly draft: SentDraft } | undefined =
+    const kept:
+      | { readonly ask?: SentRequest["ask"]; readonly base?: string; readonly draft: SentDraft }
+      | undefined =
       unsentHere === undefined
         ? awayName === undefined
           ? undefined
@@ -727,35 +732,47 @@ export function MentionComposer({
         : { draft: unsentHere };
     const heldElsewhere =
       held?.status === "refused" && !sameAddress(held.request, { anchor, edit, owner, replyTo });
+    const seeded = seededDraft(seedMentions, undefined, owner);
+    const fresh = {
+      ask: undefined,
+      away: false,
+      body: edit?.body ?? seeded.body,
+      changed: undefined,
+      mentions: seeded.mentions,
+      replacement: "",
+      taken: false,
+    };
     if (held !== undefined && !(heldElsewhere && kept !== undefined)) {
+      if (
+        held.status === "refused" &&
+        edit !== undefined &&
+        held.request.edit?.base !== edit.body
+      ) {
+        return { ...fresh, changed: held.draft.draft };
+      }
       return {
         ask: held.draft.ask,
         away: false,
         body: held.draft.draft.body,
+        changed: undefined,
         mentions: [...held.draft.draft.mentions],
         replacement: held.draft.draft.replacement,
         taken: true,
       };
     }
     if (kept !== undefined) {
+      if (edit !== undefined && kept.base !== edit.body) return { ...fresh, changed: kept.draft };
       return {
         ask: kept.ask,
         away: unsentHere === undefined,
         body: kept.draft.body,
+        changed: undefined,
         mentions: [...kept.draft.mentions],
         replacement: kept.draft.replacement,
         taken: true,
       };
     }
-    const seeded = seededDraft(seedMentions, undefined, owner);
-    return {
-      ask: undefined,
-      away: false,
-      body: edit?.body ?? seeded.body,
-      mentions: seeded.mentions,
-      replacement: "",
-      taken: false,
-    };
+    return fresh;
   });
   const textarea = useRef<HTMLTextAreaElement>(null);
   const replacementTextarea = useRef<HTMLTextAreaElement>(null);
@@ -779,6 +796,12 @@ export function MentionComposer({
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
   const [mentions, setMentions] = useState<AcceptedMention[]>(initial.mentions);
+  /** An edit written over a body the comment no longer holds, refused or kept for the comment
+   *  while its editor was off the page: it waits beside the newer body the field shows until the
+   *  reader takes it back into the field (`takeChanged`) or drops it (`discard`). Meanwhile the
+   *  field is read only and Save refuses, so nothing is saved over a body the reader has not
+   *  seen, and nothing they wrote goes with no word. */
+  const [changed, setChanged] = useState<SentDraft | undefined>(initial.changed);
   /** The edited comment's blocks as the field's edits moved them, while the blocks route has
    *  answered them; Save carries their ids (`carriedBlocks`). */
   const followedBlocks = useRef<FollowedBlocks | undefined>(undefined);
@@ -1022,16 +1045,19 @@ export function MentionComposer({
   /** How many times the reader has ended the reply here (Cancel reply, or Escape): a move of the
    *  address with the composer's own control, which the draft goes with (`ownMoves`). */
   const [cancels, setCancels] = useState(0);
-  /** Set as the reader ends the reply here, until a commit still draws this composer: a host that
-   *  ends the composer with the reply - the phone thread composer, whose Cancel reply puts its
-   *  draft in the docked one (`intake`) - has taken the draft, so nothing keeps it here as well. */
-  const handedOff = useRef(false);
+  /** Set as the reader ends the reply here or drops the draft (`discard`), until a commit still
+   *  draws this composer: a host that ends the composer with the reply - the phone thread
+   *  composer, whose Cancel reply puts its draft in the docked one (`intake`) - has taken the
+   *  draft, and a dropped one is gone, so nothing keeps it here as well. A host that unmounts the
+   *  composer in the same press draws no commit in between, and the unmount must not keep the
+   *  draft the last commit showed. */
+  const keepsNothing = useRef(false);
   /** Ends the reply, handing the host the draft as the field holds it. The draft stays where it
    *  is kept - the field, the unsent draft under the send name, the held send - so nothing the
    *  reader wrote goes with no word: the host moves the reader, and an own move carries the
    *  draft's send with it (`ownMoves`). */
   const cancelReply = () => {
-    handedOff.current = true;
+    keepsNothing.current = true;
     setCancels((count) => count + 1);
     onCancelReply?.({ body, mentions, replacement });
   };
@@ -1060,10 +1086,11 @@ export function MentionComposer({
   // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
   // keystroke, and as the page goes, which no unmount follows. A refusal the host has moved the
   // composer off (`elsewhere`, below) keeps the draft it was written with: what is typed over it
-  // there is for that other address.
+  // there is for that other address. So does an edit's refusal while it waits beside a newer body
+  // (`changed`): the field shows that body, not the reader's edit.
   const keepDraft = useRef(() => {});
   keepDraft.current = () => {
-    if (elsewhere !== undefined) return;
+    if (elsewhere !== undefined || changed !== undefined) return;
     outgoing.keep({
       ask: { multiple, options: submittedAskOptions(askOptions), urgency },
       draft: { body, mentions, replacement },
@@ -1072,18 +1099,28 @@ export function MentionComposer({
   useEffect(() => () => keepDraft.current(), []);
   // What the reader wrote for this address and did not send waits for it once the composer leaves
   // the page (`awayName`): its host took the composer away - the tab, the Agents page, the
-  // margin's document - and the composer drawn at this address next shows it. A draft a held send
-  // keeps at its own address is that send's, and one the reader's Cancel reply handed to the host
-  // is wherever the host put it.
+  // margin's document, a comment's card - and the composer drawn at this address next shows it.
+  // An edit is kept with the comment's body the field started from, so it comes back only over
+  // that body. A draft a held send keeps at its own address is that send's, one the reader's
+  // Cancel reply handed to the host is wherever the host put it, and an edit waiting beside a
+  // newer body stays kept as it was until the reader takes it back or drops it.
   const keepAway = useRef(() => {});
   keepAway.current = () => {
-    if (awayName === undefined || handedOff.current || (holdsSend && !refusedElsewhere)) return;
+    if (
+      awayName === undefined ||
+      keepsNothing.current ||
+      changed !== undefined ||
+      (holdsSend && !refusedElsewhere)
+    ) {
+      return;
+    }
     unsent.writeAway(
       awayName,
       replyTo,
       wroteOver(freshBody)
         ? {
             ask: { multiple, options: submittedAskOptions(askOptions), urgency },
+            base: edit?.body,
             draft: { body, mentions, replacement },
             owner,
             replyTo,
@@ -1396,6 +1433,9 @@ export function MentionComposer({
       edit === undefined
         ? undefined
         : {
+            // The body the field started from, which an editor checks before it puts this edit
+            // back should it be refused (`changed`).
+            base: edit.body,
             // Worked out from the body the send carries, never from another copy of the text:
             // the field holds LF where a comment stored with CR LF had CR LF, and so do the
             // followed spans.
@@ -1509,9 +1549,9 @@ export function MentionComposer({
     const address: Address = { anchor, edit, owner, replyTo };
     const before = shown.current;
     shown.current = { address, fresh: freshBody, moves, uploadOwner };
-    // A commit that still draws this composer after the reader's Cancel reply: the host kept the
-    // composer, and the draft is still this composer's to keep.
-    handedOff.current = false;
+    // A commit that still draws this composer after the reader's Cancel reply or Discard: the
+    // host kept the composer, and what the field holds now is still this composer's to keep.
+    keepsNothing.current = false;
     if (before === undefined) {
       // The field took the draft kept for this address, which is kept there no longer.
       if (initial.away && awayName !== undefined) unsent.writeAway(awayName, replyTo, undefined);
@@ -1575,10 +1615,13 @@ export function MentionComposer({
     mountedHeld.current = true;
   });
   // A closed issue refuses a suggestion or an ask: the composer is only still here for a send of
-  // its own that is out, or its refusal, and Send says why it cannot go.
+  // its own that is out, or its refusal, and Send says why it cannot go. An edit waiting beside a
+  // newer body is the reader's to take back or drop before anything is saved.
   const submitReason = refusedKind
     ? "This issue is closed. Reopen it to send."
-    : (elsewhere ?? draftRefusal(kind, body, replacement, outbound));
+    : (elsewhere ??
+      (changed === undefined ? undefined : "Use your edit or discard it before you save.") ??
+      draftRefusal(kind, body, replacement, outbound));
   const footId = useId();
   const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
@@ -1606,15 +1649,32 @@ export function MentionComposer({
     event.preventDefault();
     if (canSubmit) send();
   };
-  /** Drops the draft and a refusal with it. Offered only while no send is out - the prompt never
-   *  shows then (`send` closes it, and Escape raises none), and a closed composer's Discard sits
-   *  beside a refusal - so the send it resets has its answer: the refusal goes with the draft it
-   *  was about. */
+  /** Drops the draft and a refusal with it, and an edit waiting beside a newer body, which is the
+   *  draft the reader wrote there. Offered only while no send is out - the prompt never shows
+   *  then (`send` closes it, and Escape raises none), and a closed composer's Discard sits beside
+   *  a refusal - so the send it resets has its answer: the refusal goes with the draft it was
+   *  about. A host whose `onClose` unmounts the composer draws no commit with the empty field, so
+   *  nothing is kept for this address as it goes (`keepsNothing`). */
   const discard = () => {
+    keepsNothing.current = true;
     clearDraft();
     outgoing.discard();
+    if (changed !== undefined && awayName !== undefined) {
+      unsent.writeAway(awayName, replyTo, undefined);
+    }
+    setChanged(undefined);
     setConfirmingDiscard(false);
     onClose();
+  };
+  /** Takes an edit waiting beside a newer body back into the field, which the reader saves with
+   *  their own press, having had the newer body before them. It is the field's draft from here
+   *  on, kept over the body it now replaces should the host take the editor away again, and a
+   *  refusal's Retry sends it. */
+  const takeChanged = () => {
+    if (changed === undefined) return;
+    replaceDraft(changed);
+    setChanged(undefined);
+    if (awayName !== undefined) unsent.writeAway(awayName, replyTo, undefined);
   };
   /** An anchored composer's Close, which asks as Escape does: over a draft the reader has not
    *  sent - typed, or handed back by a refusal - it raises `Discard draft?` rather than dropping
@@ -1839,11 +1899,46 @@ export function MentionComposer({
                   upload.paste(event, uploadOwner, draft);
                 }
           }
+          readOnly={changed !== undefined}
           ref={bodyFieldRef}
           rows={1}
           value={body}
         />
       </label>
+      {/* An edit written over a body the comment no longer holds: the field shows the comment as
+          it reads now, and the edit waits beside it with the words that say why, until the reader
+          takes it back into the field or drops it. Nothing is saved meanwhile. */}
+      {changed === undefined ? null : (
+        <div className="space-y-2">
+          <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
+            <p>
+              This comment changed since you wrote your edit. The field shows the comment as it
+              reads now. Your edit is kept here:
+            </p>
+            <blockquote
+              className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
+            >
+              {changed.body}
+            </blockquote>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button
+              className={`text-sm font-medium ${linkText} ${linkHoverText}`}
+              onClick={takeChanged}
+              type="button"
+            >
+              Use my edit
+            </button>
+            <button
+              className={`text-sm font-medium underline ${dangerText}`}
+              onClick={discard}
+              type="button"
+            >
+              Discard my edit
+            </button>
+          </div>
+        </div>
+      )}
       {activeMentions.length === 0 ? null : (
         <ul
           aria-label="Mention targets"

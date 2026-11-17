@@ -139,8 +139,10 @@ export interface ThreadCardProps {
   selected?: boolean;
   thread: Thread;
   viewerLogin: string;
-  /** The comment whose inline editor is open; owned by the margin so a card that moves between
-   *  the anchored and discussion lists (a remount) keeps an edit in progress. */
+  /** The comment whose inline editor is open; owned by the host - the margin, the Conversation by
+   *  thread - so a card drawn again keeps an edit in progress: one that moves between the anchored
+   *  and discussion lists, or a phone thread view opened again. The editor keeps what the reader
+   *  wrote while the card is closed or gone (`MentionComposer`'s `awayName`). */
   editingCommentId: string | undefined;
   /** The comment whose edit save is in flight; owned with the shared editor state. */
   savingCommentEditId: string | undefined;

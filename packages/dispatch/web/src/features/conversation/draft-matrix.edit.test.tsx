@@ -42,6 +42,7 @@ import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
 import type { Comment } from "../../api/types";
 import { Margin } from "../margin/Margin";
@@ -105,7 +106,7 @@ function stubEditor(): { editComment: Mock<typeof api.editComment>; restore: () 
   const commentBlocks = spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
     blocks: [],
     indexed: false,
-    item: { id, issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
   }));
   return {
     editComment,

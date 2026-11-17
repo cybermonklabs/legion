@@ -59,12 +59,14 @@ export interface ComposerSend {
   readonly stoppedSend?: SentRequest;
 }
 
-/** A comment edit as a send keeps it across a reload: which comment it saves, and the ids its
- *  press carried (`SentRequest.edit.carried`), since the host that gave the page its save and the
- *  blocks the editor followed are both gone with the page. A record the build before this one
- *  kept holds the comment's id alone: that build kept no ids, so its edit restores carrying
- *  none, and the server matches its blocks by their text. */
-type KeptEdit = string | { readonly carried?: CarriedBlockIds; readonly id: string };
+/** A comment edit as a send keeps it across a reload: which comment it saves, the ids its press
+ *  carried (`SentRequest.edit.carried`), and the body it was written over (`base`), since the
+ *  host that gave the page its save and the blocks the editor followed are both gone with the
+ *  page. A record the build before this one kept holds the comment's id alone: that build kept no
+ *  ids, so its edit restores carrying none, and the server matches its blocks by their text. */
+type KeptEdit =
+  | string
+  | { readonly base?: string; readonly carried?: CarriedBlockIds; readonly id: string };
 
 /** A send's request as it is kept across a reload: an edit by what it saves, not how. */
 type KeptSentRequest = Omit<SentRequest, "edit"> & { readonly edit: KeptEdit | null };
@@ -196,11 +198,15 @@ const keptCarried = shape.record({
   blocks: shape.array(shape.record({ from: shape.number, id: shape.string })),
 }) satisfies Shape<CarriedBlockIds>;
 
-/** A kept edit: the comment it saves with the ids its press carried, or, from the build before
- *  those ids were kept, that comment's id alone. */
+/** A kept edit: the comment it saves with the ids its press carried and the body it was written
+ *  over, or, from the build before those ids were kept, that comment's id alone. */
 const keptEdit = shape.either(
   shape.string,
-  shape.record({ carried: shape.optional(keptCarried), id: shape.string })
+  shape.record({
+    base: shape.optional(shape.string),
+    carried: shape.optional(keptCarried),
+    id: shape.string,
+  })
 ) satisfies Shape<KeptEdit>;
 
 const keptRequest = shape.record({
@@ -286,12 +292,15 @@ function hold(client: QueryClient, mutationKey: MutationKey, answer: () => Promi
 function restoredEdit(edit: KeptEdit): NonNullable<SentRequest["edit"]> {
   return typeof edit === "string"
     ? { carried: undefined, id: edit, save: saveCommentEdit }
-    : { carried: edit.carried, id: edit.id, save: saveCommentEdit };
+    : { base: edit.base, carried: edit.carried, id: edit.id, save: saveCommentEdit };
 }
 
 /** `request` as it is kept across a reload: its edit by what it saves. */
 function keptRequestOf({ edit, ...request }: SentRequest): KeptSentRequest {
-  return { ...request, edit: edit === undefined ? null : { carried: edit.carried, id: edit.id } };
+  return {
+    ...request,
+    edit: edit === undefined ? null : { base: edit.base, carried: edit.carried, id: edit.id },
+  };
 }
 
 /** A kept request as the send it belongs to makes it again (`restoredEdit`). */
