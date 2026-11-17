@@ -30,12 +30,13 @@ acknowledged, and the listener told its caller each of them landed. So the
 operator creates them with [`envoy-infra buckets`](#envoy-infra-buckets), the one command that
 does. A listener that finds one missing fails closed:
 
-- a start waits for each missing bucket with every route answering 503; that includes
-  `envoy_known_sessions` once a read finds it missing. A read of it that fails holds nothing that
-  turn and is made again on the next, and once the server refuses a read of it - the listener's
-  NATS user may not read it, on a hub whose users were rendered before that bucket's grant (#2643)
-  and not applied since - the start reads it no more and goes on, and the listener opens the
-  bucket once the grant arrives; a read the hub did not answer in time is no refusal;
+- a start waits for each missing bucket with every route answering 503, and a read of any bucket
+  that fails, `envoy_known_sessions` included, holds that turn and is made again on the next, so a
+  read the hub did not answer in time never lets the start go with a bucket missing. The one
+  exception is a read the server refused: `envoy_known_sessions` when the listener's NATS user may
+  not read it, on a hub whose users were rendered before that bucket's grant (#2643) and not
+  applied since. Then the start reads that bucket no more and goes on, and the listener opens it
+  once the grant arrives;
 - a running listener answers 503 to every write that needs a missing bucket, a registration whose
   30-day record cannot be written included (only that ungranted case stays best effort), and serves
   reads from its last copy for at most the copy's stale bound, two minutes for these buckets

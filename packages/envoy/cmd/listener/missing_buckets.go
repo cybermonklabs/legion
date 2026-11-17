@@ -275,24 +275,24 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 // missingBucketLine every missingBucketLogInterval. It creates nothing: only the operator's
 // `envoy-infra buckets` does.
 //
-// The known-session bucket holds the start only once a read finds it missing. A turn whose read of
-// it fails waits for the others alone, and the next turn reads it again: a hub whose users were
-// rendered before that bucket's grant (#2643), and not applied since, lets the listener read no
-// part of it, and its store then opens it once the grant arrives (session.OpenKnownSessions); and
-// a read that waits out knownBucketCheckTimeout says nothing of the bucket either. So a
-// known-session bucket the server says it does not hold holds the start as every other does,
-// while one whose only reads failed does not.
+// The known-session bucket holds the start as every other bucket does, but for one case: a read of
+// it that fails holds the turn, as a failed read of any other bucket does, and is made again on the
+// next, so a read that waits out knownBucketCheckTimeout on a slow hub, or one the hub did not
+// answer, never lets the start go with the bucket missing. The one case is a read the server
+// refused: a hub whose users were rendered before that bucket's grant (#2643), and not applied
+// since, lets the listener read no part of it, and its store then opens it once the grant arrives
+// (session.OpenKnownSessions).
 //
 // Once the server refuses a read of the wait to the known-session bucket - the refusal conn's
 // client recorded for that read (bus.RefusedRequest), which only a user whose grant does not carry
-// the bucket earns - the wait reads it no more: on such a hub the server refuses every read of it,
-// each one a permissions violation and the connection's `envoy nats async error` ERROR, every
-// three seconds for as long as another bucket holds the start, and none of them can tell the wait
-// anything. The store's own attempts cover the bucket from its open on (session.KnownSessions),
-// and the self-health monitor's reads once the store can read it (monitoredBuckets). A read that
-// failed for any other cause, a hub that did not answer in time, is made again on the next turn,
-// so a bucket the hub then answers missing still holds the start. A connection no client owns
-// records no refusal, and its wait reads the bucket on every turn.
+// the bucket earns - the wait holds nothing for it and reads it no more: on such a hub the server
+// refuses every read of it, each one a permissions violation and the connection's `envoy nats
+// async error` ERROR, every three seconds for as long as another bucket holds the start, and none
+// of them can tell the wait anything. The store's own attempts cover the bucket from its open on
+// (session.KnownSessions), and the self-health monitor's reads once the store can read it
+// (monitoredBuckets). A refusal recorded only after the turn's check costs one more turn. A
+// connection no client owns records no refusal, so on one a refused read holds the start for
+// good, as any read that keeps failing does; only tests pass such a connection.
 func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, conn *nats.Conn, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
 	var logged time.Time
 	for {
@@ -302,11 +302,9 @@ func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, conn *nats.
 			return err
 		}
 		missing.observe(reads)
-		if _, unread := reads.unread[bus.KnownSessionBucket]; unread {
+		if _, unread := reads.unread[bus.KnownSessionBucket]; unread && bus.RefusedRequest(conn, knownBucketReadSubject, sent) != nil {
 			delete(reads.unread, bus.KnownSessionBucket)
-			if bus.RefusedRequest(conn, knownBucketReadSubject, sent) != nil {
-				buckets = slices.DeleteFunc(slices.Clone(buckets), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
-			}
+			buckets = slices.DeleteFunc(slices.Clone(buckets), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
 		}
 		if len(reads.missing) == 0 && len(reads.unread) == 0 {
 			return nil
