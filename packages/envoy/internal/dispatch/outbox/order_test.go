@@ -570,9 +570,16 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 // the last event's send to the session is never made: the first event backs off, and every later
 // one is blocked behind it, with no attempt of its own and a next attempt, rather than sent or
 // released. Once the topic family takes sends again, the retry reaches the session only after every
-// earlier event reached the topic family; the last event's own two copies have no order between
-// them. The last row has two earlier events, so the session send waits on the second's topic send,
-// which the first's failure held back and which was never made.
+// earlier event reached the topic family. The last event's own two copies may go either way round:
+// the order asked for is that each session takes an event once, a second copy dropped by its
+// dedupe key, and takes one issue's events in order, so the session takes that event once
+// whichever copy comes first and drops the other. Both copies carry the event's event_id
+// (dispatch-<event id>), which a host's dedupe (createDeliveryDedupe in envoy-client) drops a
+// repeat by whatever its key, and a dedupe key that names its event
+// (contracts.DedupeKeyNamesTheUpstreamEvent): dispatch-<event id> on every copy but a role
+// forward, whose key is that one behind the forward prefix. The last row has two earlier events,
+// so the session send waits on the second's topic send, which the first's failure held back and
+// which was never made.
 func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T) {
 	const topic = "notifications.dispatch.issue.T-1.message.created"
 	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
@@ -635,12 +642,28 @@ func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T)
 			}
 			outbox.scan(ctx, unfenced{})
 			// The last event's own topic send and its session copy may go either way round: the
-			// copies of one event have no order among themselves (planChains).
+			// copies of one event have no order among themselves (planChains), and the session drops
+			// whichever comes second as a repeat, which the checks after this one hold.
 			earlier := slices.Repeat([]string{topic}, len(written)-1)
 			want := append(slices.Clone(earlier), topic, tc.copyTopic)
 			alsoWant := append(slices.Clone(earlier), tc.copyTopic, topic)
-			if got := topicsOf(publisher.all()); !slices.Equal(got, want) && !slices.Equal(got, alsoWant) {
+			sent := publisher.all()
+			if got := topicsOf(sent); !slices.Equal(got, want) && !slices.Equal(got, alsoWant) {
 				t.Fatalf("the retry sent %v, want %v or %v: the session's copy only once every earlier event reached the topic family", got, want, alsoWant)
+			}
+			last := sent[len(sent)-2:]
+			if last[0].EventID != last[1].EventID || last[0].EventID != fmt.Sprintf("dispatch-%d", written[len(written)-1].ID) {
+				t.Fatalf("the last event's two copies carry event ids %q and %q, want both dispatch-%d: a host drops a second copy by it",
+					last[0].EventID, last[1].EventID, written[len(written)-1].ID)
+			}
+			for _, copied := range last {
+				if !contracts.DedupeKeyNamesTheUpstreamEvent(copied) {
+					t.Fatalf("the copy to %s carries dedupe key %q from source %q, which names no event: a host would not drop a second copy by it",
+						copied.Topic, copied.DedupeKey, copied.Source)
+				}
+			}
+			if tc.copyTopic != roleTopic && last[0].DedupeKey != last[1].DedupeKey {
+				t.Fatalf("the last event's two copies carry dedupe keys %q and %q, want one key", last[0].DedupeKey, last[1].DedupeKey)
 			}
 			for _, event := range written {
 				if publishedAt(t, database, event.ID) == nil {
