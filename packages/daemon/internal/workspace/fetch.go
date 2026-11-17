@@ -916,9 +916,12 @@ func (r *countingReader) Read(p []byte) (int, error) {
 // CacheStreamLowSpeedBytes arrived. It reads the count the Reads keep rather than checking inside
 // one, so a stream whose Read has blocked on a cache that sends nothing is ended at the same
 // bound as one that dribbles. It returns when ctx ends, which unpackCache's own cancel does as
-// soon as the answer has been read to its end.
+// soon as the answer has been read to its end. The first window counts from the reader's start,
+// zero, and not from whatever count this goroutine finds when it first runs: one the scheduler
+// starts after Reads have begun would otherwise leave those bytes out of the first window and
+// could end a stream that delivered them.
 func (r *countingReader) watchStall(ctx context.Context, stop context.CancelFunc) {
-	for at := r.read.Load(); ; {
+	for at := int64(0); ; {
 		select {
 		case <-ctx.Done():
 			return
