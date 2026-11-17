@@ -83,9 +83,9 @@ const (
 	// controllerLiveMappedBound bounds the mapped file's reader, which writes and reads about
 	// 10 GiB at 8 GiB before its 60 seconds.
 	controllerLiveMappedBound = 30 * time.Minute
-	// controllerLivePoolBound bounds the pool's exit: its growers reach the mark from a quarter of
-	// the limit in a few seconds, and the guard ends one at a reading, or after its wait of 1
-	// second, until none is left.
+	// controllerLivePoolBound bounds the pool's exit, and the exit of each of the tester's probes of
+	// six growers (awaitTraced): their growers reach the mark in a few seconds, and the guard ends
+	// one at a reading, or after its wait of 1 second, until none is left.
 	controllerLivePoolBound = 5 * time.Minute
 	// controllerLivePoolGrowers is how many growers the pool starts at once: six of `grow`'s rise
 	// about 1.5 GiB a second together, the fastest rise INFRA-3531's tester measured.
@@ -103,6 +103,12 @@ const (
 	// window, and ten seconds for the test to start the window after the holder's word and to end
 	// it before the holder lets go.
 	controllerLiveBandHold = controllerLiveBandWindow + 10*time.Second
+	// controllerLiveExitSlice is how long one poll of a killed process's pidfd waits while a traced
+	// scenario measures the process's exit (controllerLiveWatch.timeExit). The poll is taken again
+	// until the process has exited, so its exit is seen within one slice whether or not the sandbox
+	// wakes a poll that waits on a pidfd, which the guard itself never does: it asks without
+	// waiting (Handle.Exited).
+	controllerLiveExitSlice = 5 * time.Millisecond
 	// controllerLiveStopGrace is the launcher's stop grace, and controllerLiveStopBound bounds its
 	// return once its context has ended.
 	controllerLiveStopGrace = 5 * time.Second
@@ -142,6 +148,24 @@ const (
 // AnonPages is within 1 MiB of the bytes its first argument names, writes the AnonPages it then
 // reads to the path its second names, holds it for the seconds its third names with nothing
 // growing, and exits 0. Each writes its file whole, so the test reads it only once it is there.
+//
+// controllerLiveSharedPoolScript and controllerLiveLatePoolScript are the tester's probes of a
+// fast rise over a high baseline, of the same day, their text as the tester wrote it
+// (dispatch://INFRA-3531/artifact/tester-evidence-a97e6a44-2026-11-17-tar-gz), so a run measures
+// what the tester measured. Each starts six growers at once, each the grow one-liner it holds
+// itself (controllerLiveGrowScript's). controllerLiveSharedPoolScript runs protpool and
+// sharedpool: where its second argument names a block of bytes, it writes every page of one and
+// forks three children that only sleep, as controllerLiveSharedScript does, and protpool names 0,
+// so it forks none. It then starts its growers, writes its own pid, the sleepers' and the
+// growers' to the path its first argument names, waits on every grower, ends the sleepers and
+// exits 0. controllerLiveLatePoolScript runs latepool. It takes the paths of its pids, of its word
+// that it holds and of the test's word to go, then four numbers: a block's bytes, which it writes
+// and shares with three sleeping forks as above, how many idle children of how many bytes each it
+// starts, and an AnonPages it fills the pod to; latepool names the block alone and 0 for the
+// other three, as the tester did. Once it holds, it writes the AnonPages it reads to the path of
+// its word, waits for the path to go, starts its growers, writes its pids by kind (parent,
+// sleeper, idle, grower), waits on every grower, ends the sleepers and the idle children and
+// exits 0.
 const (
 	controllerLiveGrowScript   = "import time; b=[]; [(b.append(bytearray(64<<20)), time.sleep(0.25)) for _ in iter(int, 1)]"
 	controllerLiveMappedScript = `import mmap, os, sys, time
@@ -226,11 +250,100 @@ os.replace(held + ".tmp", held)
 time.sleep(hold)
 print("band: done", flush=True)
 `
+	controllerLiveSharedPoolScript = `import os, signal, subprocess, sys, time
+pids, shared_n = sys.argv[1], int(sys.argv[2])
+grow = "import time; b=[]; [(b.append(bytearray(64<<20)), time.sleep(0.25)) for _ in iter(int, 1)]"
+sleepers = []
+if shared_n:
+    b = bytearray(shared_n)
+    for i in range(0, shared_n, 4096):
+        b[i] = 1
+    for _ in range(3):
+        pid = os.fork()
+        if pid == 0:
+            time.sleep(3600)
+            os._exit(0)
+        sleepers.append(pid)
+growers = [subprocess.Popen([sys.executable, "-c", grow]) for _ in range(6)]
+with open(pids + ".tmp", "w") as f:
+    f.write("parent %d\nsleeper %s\ngrower %s\n" % (os.getpid(), " ".join(map(str, sleepers)), " ".join(str(g.pid) for g in growers)))
+os.replace(pids + ".tmp", pids)
+print("trace: growers", [g.pid for g in growers], "sleepers", sleepers, flush=True)
+for g in growers:
+    g.wait()
+for p in sleepers:
+    try:
+        os.kill(p, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+print("trace: done", flush=True)
+`
+	controllerLiveLatePoolScript = `import os, signal, subprocess, sys, time
+pids, held, go = sys.argv[1], sys.argv[2], sys.argv[3]
+shared_n, idle_n, idle_bytes, target = int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7])
+grow = "import time; b=[]; [(b.append(bytearray(64<<20)), time.sleep(0.25)) for _ in iter(int, 1)]"
+def anon():
+    with open("/proc/meminfo") as f:
+        for l in f:
+            if l.startswith("AnonPages:"):
+                return int(l.split()[1]) << 10
+sleepers = []
+if shared_n:
+    b = bytearray(shared_n)
+    for i in range(0, shared_n, 4096):
+        b[i] = 1
+    for _ in range(3):
+        pid = os.fork()
+        if pid == 0:
+            time.sleep(3600)
+            os._exit(0)
+        sleepers.append(pid)
+idle_src = "import time; b=bytearray(%d)\nfor i in range(0, len(b), 4096): b[i] = 1\ntime.sleep(3600)" % idle_bytes
+idle = [subprocess.Popen([sys.executable, "-c", idle_src]) for _ in range(idle_n)]
+if idle:
+    time.sleep(5)
+blocks = []
+while target:
+    short = target - anon()
+    if short < (1 << 20):
+        break
+    x = bytearray(min(short, 64 << 20))
+    for i in range(0, len(x), 4096):
+        x[i] = 1
+    blocks.append(x)
+with open(held + ".tmp", "w") as f:
+    f.write("%d\n" % anon())
+os.replace(held + ".tmp", held)
+print("probe: held at AnonPages", anon(), "sleepers", sleepers, "idle", len(idle), flush=True)
+while not os.path.exists(go):
+    time.sleep(0.05)
+growers = [subprocess.Popen([sys.executable, "-c", grow]) for _ in range(6)]
+with open(pids + ".tmp", "w") as f:
+    f.write("parent %d\nsleeper %s\nidle %s\ngrower %s\n" % (os.getpid(), " ".join(map(str, sleepers)),
+            " ".join(str(p.pid) for p in idle), " ".join(str(g.pid) for g in growers)))
+os.replace(pids + ".tmp", pids)
+print("probe: growers", [g.pid for g in growers], flush=True)
+for g in growers:
+    g.wait()
+    print("probe: grower", g.pid, "returncode", g.returncode, flush=True)
+for p in sleepers:
+    try:
+        os.kill(p, signal.SIGKILL)
+    except ProcessLookupError:
+        print("probe: sleeper", p, "already gone", flush=True)
+for p in idle:
+    p.kill()
+print("probe: done", flush=True)
+`
 	// controllerLiveCommandPIDs is the file in the run's directory where the shared and the pool
-	// probes write their own pids by what each process is, and controllerLiveBandHeld the one
-	// where the band's holder writes the AnonPages it holds the pod at.
+	// probes and the tester's protpool, sharedpool and latepool write their own pids by what each
+	// process is, controllerLiveBandHeld the one where the band's holder writes the AnonPages it
+	// holds the pod at, and controllerLiveLateHeld and controllerLiveLateGo latepool's word that its
+	// block holds the pod and the test's word that its growers may start.
 	controllerLiveCommandPIDs = "command-pids"
 	controllerLiveBandHeld    = "band-held"
+	controllerLiveLateHeld    = "late-held"
+	controllerLiveLateGo      = "late-go"
 )
 
 // TestControllerPodMemoryGuardLiveSandbox runs the controller pod's memory guard for real, in the
@@ -250,8 +363,8 @@ print("band: done", flush=True)
 // the launcher sends. The guard the launcher builds also hands the test each reading it takes and
 // each kill, on its own loop (controllerLiveWatch): every scenario prints the time from the
 // guard's first reading at or above the mark to its first kill, or that none came, and one that
-// kills passes only where that time is within one interval and the kill's own processing
-// (markToKill).
+// kills passes only where that time is within one interval, the settings' Interval; beside it the
+// line prints the kill's own processing, from the reading it acted on to the kill (markToKill).
 //
 // `grow` is a python3 that adds 64 MiB every quarter second. It passes where the command ends by
 // SIGKILL (the agent's wait reads the status), the shim and the agent live, and exactly one
@@ -269,6 +382,21 @@ print("band: done", flush=True)
 // its growers are gone, and the shim and the agent live. Either passes only where the pod lived to
 // the verdict line, and each prints every kill by what the probe says the process is.
 //
+// `protpool`, `sharedpool` and `latepool` are the tester's probes of a fast rise over a high
+// baseline, six of `grow`'s growers started at once. In `protpool` the agent holds 60% of the
+// limit, protected as Oh My Pi is. In `sharedpool` a python3 parent writes a block of 3/8 of the
+// limit and forks three children that only sleep, then starts the growers, beside the agent's
+// usual quarter. In `latepool` such a block holds the pod's AnonPages at about 83% of the limit,
+// in the band and below the mark, and once the test has read that it holds there, six fresh
+// growers start, whose first reads come at or near the mark. Each passes where all of these hold,
+// and fails naming the first that does not (awaitTraced): the pod lived to the verdict line and
+// the shim and the agent live; the guard's first kill came within one interval of its first
+// reading at or above the mark (markToKill); every kill made while a grower lived ended a grower,
+// and not a sleeping fork or the parent, whose end frees nothing while a grower fills the pod; and
+// the guard went on as R1 says (judgeTrace): for each kill whose process had exited before a later
+// reading of the guard's, at the first such reading at or above the mark and above the reading at
+// that kill while a grower lived, the guard's next kill acted on that reading.
+//
 // `band` is a python3 that allocates until the pod's AnonPages is 5% of the limit below the mark,
 // in the middle of the band where the guard reads the sizes of what it may end at each reading,
 // and holds it there with nothing growing. The test measures a minute of it: the test process's
@@ -284,11 +412,15 @@ print("band: done", flush=True)
 // relayed; each frame the daemon end reads but the generation's states; AnonPages and the
 // cgroup's counter once a second from the test's own readings, which it takes every 100 ms; for
 // `grow`, the reading at the kill and the time AnonPages took to fall below it from the kill; for
-// `shared` and `pool`, each kill; for `band`, its measure (`live: band …`); and for each, the time
-// from the mark to the first kill (`live: mark_to_kill …`). The last is `live: verdict PASS
-// <reason>` or `live: verdict FAIL <reason>`. Once LEGION_MEMORY_GUARD_LIVE=1 the test fails, and
-// never skips, where it is not PID 1, finds no python3, or cannot read the cgroup's files or
-// meminfo.
+// `shared`, `pool` and the tester's three, each kill; for `pool` and the tester's three, the
+// guard's trace as it goes (`live: trace …`, printTrace): each of the guard's readings at or above
+// the band's start, each kill, each killed process's exit with the time to it from the kill
+// (`live: trace exit pid=… after=…`), and at the end the longest of those times beside the
+// settings' wait; for `latepool`, the AnonPages its block holds the pod at (`live: late held …`);
+// for `band`, its measure (`live: band …`); and for each, the time from the mark to the first kill
+// (`live: mark_to_kill …`). The last is `live: verdict PASS <reason>` or `live: verdict FAIL
+// <reason>`. Once LEGION_MEMORY_GUARD_LIVE=1 the test fails, and never skips, where it is not
+// PID 1, finds no python3, or cannot read the cgroup's files or meminfo.
 func TestControllerPodMemoryGuardLiveSandbox(t *testing.T) {
 	if os.Getenv(memoryGuardLiveEnv) != "1" {
 		t.Skip("the live test runs only where " + memoryGuardLiveEnv + "=1: it runs the controller pod's guard on this machine's own memory, as the container's first process")
@@ -323,9 +455,9 @@ type controllerLiveRun struct {
 	settings memoryguard.Settings
 	limit    uint64
 	mark     uint64
-	// hold is what the agent holds, mappedBytes the mapped file's size, sharedBytes the shared
-	// probe's block, bandTarget the AnonPages the band's holder holds the pod at, and commandArgv
-	// the command the agent runs, the scenario's python3.
+	// hold is what the agent holds, mappedBytes the mapped file's size, sharedBytes the block the
+	// parent of shared, sharedpool or latepool writes, bandTarget the AnonPages the band's holder
+	// holds the pod at, and commandArgv the command the agent runs, the scenario's python3.
 	hold        int
 	mappedBytes int
 	sharedBytes int
@@ -363,6 +495,10 @@ func (r *controllerLiveRun) run() (pass, fail string) {
 	}
 	r.sampler = startControllerLiveSampler(r.out, r.limit)
 	defer r.finish()
+	if r.watch.traced {
+		stop := r.printTrace()
+		defer stop()
+	}
 	if reason := r.awaitAgent(); reason != "" {
 		return "", reason
 	}
@@ -375,6 +511,8 @@ func (r *controllerLiveRun) run() (pass, fail string) {
 		return r.awaitShared()
 	case "pool":
 		return r.awaitPool()
+	case "protpool", "sharedpool", "latepool":
+		return r.awaitTraced()
 	}
 	return r.awaitBand()
 }
@@ -394,9 +532,9 @@ func controllerLiveDeadline(t *testing.T) (context.Context, context.CancelFunc) 
 // command, the test's pid and the kernel's version (gVisor's own under gVisor).
 func (r *controllerLiveRun) prepare() string {
 	switch r.scenario = os.Getenv(controllerLiveScenarioEnv); r.scenario {
-	case "grow", "mapped", "shared", "pool", "band":
+	case "grow", "mapped", "shared", "pool", "protpool", "sharedpool", "latepool", "band":
 	default:
-		return fmt.Sprintf("%s is %q, want grow, mapped, shared, pool or band", controllerLiveScenarioEnv, r.scenario)
+		return fmt.Sprintf("%s is %q, want grow, mapped, shared, pool, protpool, sharedpool, latepool or band", controllerLiveScenarioEnv, r.scenario)
 	}
 	if pid := os.Getpid(); pid != 1 {
 		return fmt.Sprintf("the test binary is pid %d, not the container's first process: exec it as PID 1, so the launcher runs its guard as a deployed one does (containerInit)", pid)
@@ -444,6 +582,20 @@ func (r *controllerLiveRun) prepare() string {
 		r.commandArgv = []string{python, "-c", controllerLiveSharedScript, strconv.Itoa(r.sharedBytes), pids, controllerLiveGrowScript}
 	case "pool":
 		r.commandArgv = []string{python, "-c", controllerLivePoolScript, strconv.Itoa(controllerLivePoolGrowers), pids, controllerLiveGrowScript}
+	case "protpool":
+		// The tester's protpool: the agent, protected as Oh My Pi is, holds 60% of the limit, and
+		// the probe forks no sleeper.
+		r.hold = int(controllerLiveShare(limit, 60) / page * page)
+		r.commandArgv = []string{python, "-c", controllerLiveSharedPoolScript, pids, "0"}
+	case "sharedpool":
+		r.sharedBytes = int(limit * 3 / 8)
+		r.commandArgv = []string{python, "-c", controllerLiveSharedPoolScript, pids, strconv.Itoa(r.sharedBytes)}
+	case "latepool":
+		// The tester's reckoning: beside the agent's quarter and 2% of the limit more, the block
+		// brings the pod's AnonPages to about 83% of the limit, in the band and below the mark.
+		r.sharedBytes = int(controllerLiveShare(limit, 83) - uint64(r.hold) - controllerLiveShare(limit, 2))
+		r.commandArgv = []string{python, "-c", controllerLiveLatePoolScript, pids, filepath.Join(r.dir, controllerLiveLateHeld),
+			filepath.Join(r.dir, controllerLiveLateGo), strconv.Itoa(r.sharedBytes), "0", "0", "0"}
 	case "band":
 		r.bandTarget = r.mark - controllerLiveShare(limit, controllerLiveBandBelowMark)
 		r.commandArgv = []string{python, "-c", controllerLiveBandScript, strconv.FormatUint(r.bandTarget, 10),
@@ -480,7 +632,8 @@ func controllerLiveBandStart(limit uint64, act int) uint64 {
 // goroutine of its own (controllerLiveFrames). The guard the launcher builds is handed the run's
 // watch through newMemoryGuard: its Config.Observe, the guard's measurement seam, and its sink,
 // which goes on to the launcher's own, so the watch takes each reading and each kill on the
-// guard's own loop (controllerLiveWatch).
+// guard's own loop (controllerLiveWatch), and keeps the guard's trace in a scenario that prints it
+// (controllerLiveTraced).
 func (r *controllerLiveRun) startGeneration() string {
 	self, err := os.Executable()
 	if err != nil {
@@ -491,7 +644,7 @@ func (r *controllerLiveRun) startGeneration() string {
 	if err := copyExecutable(self, r.agentExe); err != nil {
 		return fmt.Sprintf("copy the test binary for the agent: %v", err)
 	}
-	r.watch = &controllerLiveWatch{act: r.settings.ActPercent}
+	r.watch = &controllerLiveWatch{act: r.settings.ActPercent, traced: controllerLiveTraced(r.scenario)}
 	previous := newMemoryGuard
 	newMemoryGuard = func(guard memoryguard.Config) *memoryguard.Guard {
 		guard.Observe = r.watch.observe
@@ -816,6 +969,98 @@ func (r *controllerLiveRun) awaitPool() (pass, fail string) {
 		controllerLivePercent(kills[0].ReadingBytes, kills[0].LimitBytes), took, r.command, controllerLiveStatus(status), r.shim, r.agent), ""
 }
 
+// awaitTraced runs protpool, sharedpool and latepool, the tester's probes of a fast rise over a
+// high baseline, which the guard's trace judges. For latepool it first waits for the probe's block
+// to hold the pod in the band and starts the probe's growers (awaitLateHold). It waits for the
+// guard's first kill and for the probe's exit, which comes once every grower is gone, and prints
+// every kill, each by what the probe says the process is. It passes where all of these hold, and
+// fails naming the first that does not: the pod lived to the verdict line, and the shim and the
+// agent live; the guard's first kill came within one interval of its first reading at or above the
+// mark (markToKill); and the guard's trace holds (judgeTrace).
+func (r *controllerLiveRun) awaitTraced() (pass, fail string) {
+	if r.scenario == "latepool" {
+		if reason := r.awaitLateHold(); reason != "" {
+			return "", reason
+		}
+	}
+	if reason := r.awaitFirstKill("the guard's first kill in " + r.scenario); reason != "" {
+		return "", reason
+	}
+	if reason := r.await(controllerLivePoolBound, "the probe's exit once its growers are gone", func() bool {
+		_, exited := r.commandStatus()
+		return exited
+	}); reason != "" {
+		return "", reason
+	}
+	if reason := r.pause(controllerLiveSettle); reason != "" {
+		return "", reason
+	}
+	names, err := controllerLivePIDs(filepath.Join(r.dir, controllerLiveCommandPIDs))
+	if err != nil {
+		return "", fmt.Sprintf("the probe's pids: %v", err)
+	}
+	r.printKills(r.frames.kills(), names)
+	took, late := r.markToKill()
+	wentOn, wrong := r.judgeTrace(names)
+	switch {
+	case !controllerLiveAlive(r.shim):
+		return "", fmt.Sprintf("the shim pid=%d is gone", r.shim)
+	case !controllerLiveAlive(r.agent):
+		return "", fmt.Sprintf("the agent pid=%d is gone", r.agent)
+	case late != "":
+		return "", late
+	case wrong != "":
+		return "", wrong
+	}
+	t := r.watch.traceCopy()
+	growers, ended := 0, 0
+	for _, name := range names {
+		if name == "grower" {
+			growers++
+		}
+	}
+	for _, k := range t.kills {
+		if names[k.PID] == "grower" {
+			ended++
+		}
+	}
+	first := t.kills[0]
+	longest, _, measured := controllerLiveLongestExit(t.kills)
+	return fmt.Sprintf("the guard ended %d processes of %s, %d of its %d growers and, while a grower lived, nothing else; its first kill pid=%d at a reading of %d (%.2f%% of the limit) came %s after its first reading at or above the mark; %d times a killed process had exited and a later reading at or above the mark rose above the reading at its kill while a grower lived, and each time the guard's next kill acted on that reading; the longest of %d measured times from a kill to its process's exit was %s, against the wait of %s; and the shim pid=%d and the agent pid=%d live",
+		len(t.kills), r.scenario, ended, growers, first.PID, first.ReadingBytes, controllerLivePercent(first.ReadingBytes, first.LimitBytes),
+		took, wentOn, measured, longest, r.settings.Wait, r.shim, r.agent), ""
+}
+
+// awaitLateHold waits for latepool's word that its block holds the pod's AnonPages in the band,
+// prints what it holds (`live: late held …`), and tells the probe to start its growers, by its go
+// file. The growers must start from below the mark with nothing ended, so it fails where the guard
+// ended a process, or the probe ended, before the hold.
+func (r *controllerLiveRun) awaitLateHold() string {
+	var held []byte
+	if reason := r.await(controllerLiveStartBound, "the probe's word that its block holds the pod in the band", func() bool {
+		var err error
+		held, err = os.ReadFile(filepath.Join(r.dir, controllerLiveLateHeld))
+		_, exited := r.commandStatus()
+		return err == nil || exited || r.watch.snapshot().firstKill != nil
+	}); reason != "" {
+		return reason
+	}
+	if k := r.watch.snapshot().firstKill; k != nil {
+		r.markToKill()
+		return fmt.Sprintf("the guard ended pid=%d (executable=%q, size=%d) at a reading of %d (%.2f%% of the limit) before the probe's growers started",
+			k.PID, k.Executable, k.SizeBytes, k.ReadingBytes, controllerLivePercent(k.ReadingBytes, k.LimitBytes))
+	}
+	if status, exited := r.commandStatus(); exited {
+		return fmt.Sprintf("the probe pid=%d ended with %s before its block held the pod in the band", r.command, controllerLiveStatus(status))
+	}
+	r.out.printf("late held anon_pages=%s shared_bytes=%d band_start=%d mark=%d",
+		strings.TrimSpace(string(held)), r.sharedBytes, controllerLiveBandStart(r.limit, r.settings.ActPercent), r.mark)
+	if err := controllerLiveWrite(filepath.Join(r.dir, controllerLiveLateGo), "go\n"); err != nil {
+		return fmt.Sprintf("the probe's go file: %v", err)
+	}
+	return ""
+}
+
 // awaitBand waits for the holder's word that it holds the pod's AnonPages in the band, measures
 // the guard over controllerLiveBandWindow from there, and waits for the holder's exit. It prints
 // the measure, `live: band cpu=… per_tick=… longest_gap=… ticks=…`: the CPU time the test process
@@ -936,14 +1181,16 @@ func (r *controllerLiveRun) awaitFirstKill(what string) string {
 // them (controllerLiveWatch), or that no kill came, and answers that time and why it fails the
 // run, "" where it does not.
 //
-// The bound is one interval of the guard's (its settings' Interval, 100 ms) plus the kill's own
-// processing: the time from the reading the kill acted on to the kill's At, in which the guard
-// took that reading, scanned the processes, read the sizes of those it may end, and opened,
-// checked and signalled the one it ended. Each is measured, not assumed, since under gVisor and
-// six growers its work can take longer than at rest. The guard waits one interval after a
-// reading's work before it takes its next reading, so two of its readings are always more than
-// one interval apart: a first kill on the first reading at or above the mark comes within the
-// bound, and a first kill on any later one comes past it.
+// The bound is one interval of the guard's (its settings' Interval, 100 ms), from that first
+// reading to the first kill's At, as R1 bounds the first kill. The kill's own processing, the time
+// from the reading it acted on to its At, in which the guard took that reading, scanned the
+// processes, read the sizes of those it may end, and opened, checked and signalled the one it
+// ended, counts within the bound, and the line prints it beside the bound, measured and not
+// assumed, since under gVisor and six growers the guard's work can take longer than at rest. The
+// guard waits one interval after a reading's work before it takes its next reading, so two of its
+// readings are always more than one interval apart: a first kill on any reading after the first
+// at or above the mark comes past the bound, and one on the first comes within it where its
+// processing took less than one interval.
 func (r *controllerLiveRun) markToKill() (took time.Duration, fail string) {
 	seen := r.watch.snapshot()
 	k := seen.firstKill
@@ -963,14 +1210,14 @@ func (r *controllerLiveRun) markToKill() (took time.Duration, fail string) {
 	}
 	took = k.At.Sub(seen.firstAtMark)
 	processing := k.At.Sub(seen.killReadingAt)
-	bound := r.settings.Interval + processing
-	r.out.printf("mark_to_kill %s bound=%s interval=%s processing=%s first_at_mark=%s first_at_mark_reading=%d first_at_mark_share=%.2f%% kill_reading_at=%s kill_reading=%d readings_at_mark=%d kill_at=%s pid=%d",
-		took, bound, r.settings.Interval, processing, controllerLiveTime(seen.firstAtMark), seen.firstAtMarkReading,
+	bound := r.settings.Interval
+	r.out.printf("mark_to_kill %s bound=%s processing=%s first_at_mark=%s first_at_mark_reading=%d first_at_mark_share=%.2f%% kill_reading_at=%s kill_reading=%d readings_at_mark=%d kill_at=%s pid=%d",
+		took, bound, processing, controllerLiveTime(seen.firstAtMark), seen.firstAtMarkReading,
 		controllerLivePercent(seen.firstAtMarkReading, r.limit), controllerLiveTime(seen.killReadingAt), k.ReadingBytes,
 		seen.atMark, controllerLiveTime(k.At), k.PID)
 	if took > bound {
-		return took, fmt.Sprintf("the guard's first kill came %s after its first reading at or above the mark, past one interval (%s) and the kill's own processing (%s): it acted at its reading number %d at or above the mark, and not its first",
-			took, r.settings.Interval, processing, seen.atMark)
+		return took, fmt.Sprintf("the guard's first kill came %s after its first reading at or above the mark, past one interval (%s): it acted at its reading number %d at or above the mark, and its own processing, from that reading to the kill, took %s",
+			took, bound, seen.atMark, processing)
 	}
 	return took, ""
 }
@@ -983,6 +1230,178 @@ func (r *controllerLiveRun) printKills(kills []shimwire.LauncherMemoryKill, name
 			i+1, len(kills), k.PID, controllerLiveName(names, k.PID), k.Executable, k.SizeBytes, k.ReadingBytes,
 			controllerLivePercent(k.ReadingBytes, k.LimitBytes), k.CounterBytes, k.Sequence, controllerLiveTime(k.At))
 	}
+}
+
+// controllerLiveTraced is whether scenario prints the guard's trace (printTrace): pool and the
+// tester's three probes of a fast rise, each of which ends process after process in one rise.
+func controllerLiveTraced(scenario string) bool {
+	switch scenario {
+	case "pool", "protpool", "sharedpool", "latepool":
+		return true
+	}
+	return false
+}
+
+// printTrace prints the guard's trace (controllerLiveTrace) as it grows, at each of the test's own
+// readings: one `live: trace reading …` line for each of the guard's readings at or above the
+// band's start, with its time since the first of them and its share of the limit; one `live: trace
+// kill …` for each kill, with its time, the pid, what the probe says the process is, its size and
+// the reading it acted on; and one `live: trace exit pid=… after=…` for each killed process's
+// exit, with the time from the kill to the exit. A kill's line names the process by the probe's
+// pids, which the probe writes once its growers have started, so the lines from the first kill on
+// wait for them. It answers the stop that prints the rest, the probe's pids written or not, and
+// then the longest time from a kill to its process's exit beside the settings' wait, which
+// c-gvisor-real asks be longer than every such time (`live: trace longest_exit=…`).
+func (r *controllerLiveRun) printTrace() (stop func()) {
+	path := filepath.Join(r.dir, controllerLiveCommandPIDs)
+	var names map[int]string
+	next := 0
+	flush := func(end bool) {
+		if names == nil {
+			names, _ = controllerLivePIDs(path)
+		}
+		var lines []string
+		lines, next = r.watch.traceLines(next, names, !end)
+		for _, line := range lines {
+			r.out.printf("%s", line)
+		}
+	}
+	quit, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(controllerLiveSampleEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-quit:
+				flush(true)
+				return
+			case <-tick.C:
+				flush(false)
+			}
+		}
+	}()
+	return func() {
+		close(quit)
+		<-done
+		kills := r.watch.traceCopy().kills
+		longest, pid, measured := controllerLiveLongestExit(kills)
+		if measured == 0 {
+			r.out.printf("trace longest_exit=none wait=%s exits=0 kills=%d", r.settings.Wait, len(kills))
+			return
+		}
+		r.out.printf("trace longest_exit=%s pid=%d is=%s wait=%s wait_longer=%v exits=%d kills=%d",
+			longest, pid, controllerLiveName(names, pid), r.settings.Wait, r.settings.Wait > longest, measured, len(kills))
+	}
+}
+
+// judgeTrace judges the guard's trace by the probe's pids (names), and answers how many times its
+// go-on rule applied and held, and why the trace fails, "" where it holds. First, every kill made
+// while a grower lived (controllerLiveGrowerAt) ended a grower, and not a sleeping fork or the
+// parent, whose end frees nothing while a grower fills the pod. Then the go-on rule of R1 (spec
+// version 25): once a killed process has exited, where the reading has not fallen below the
+// reading at its kill and a process the guard may end has grown since that kill, the guard ends
+// the next in its order at once. For each kill whose process its pidfd showed exited before a
+// later reading of the guard's, the first such reading at or above the mark and above the reading
+// at that kill while a grower lived (controllerLiveGoOnReading) is one at which something the
+// guard may end has grown, since the killed process's memory is gone and the reading is higher
+// still, so the guard's next kill must have acted on that reading.
+func (r *controllerLiveRun) judgeTrace(names map[int]string) (wentOn int, fail string) {
+	t := r.watch.traceCopy()
+	for i, k := range t.kills {
+		if names[k.PID] == "grower" {
+			continue
+		}
+		if grower := controllerLiveGrowerAt(names, t.kills, k.At); grower != 0 {
+			return 0, fmt.Sprintf("the guard's kill %d of %d at +%dms ended pid=%d, the probe's %s (executable=%q, size=%d), while its grower pid=%d lived",
+				i+1, len(t.kills), k.At.Sub(t.first).Milliseconds(), k.PID, controllerLiveName(names, k.PID), k.Executable, k.SizeBytes, grower)
+		}
+	}
+	for i, k := range t.kills {
+		reading, grower, found := controllerLiveGoOnReading(t, i, names, r.settings.ActPercent)
+		if !found {
+			continue
+		}
+		next := "it ended nothing more"
+		if i+1 < len(t.kills) {
+			n := t.kills[i+1]
+			if n.readingAt.Equal(reading.at) {
+				wentOn++
+				continue
+			}
+			next = fmt.Sprintf("its next kill, pid=%d, acted on its reading at +%dms (%.2f%% of the limit)",
+				n.PID, n.readingAt.Sub(t.first).Milliseconds(), controllerLivePercent(n.ReadingBytes, n.LimitBytes))
+		}
+		return wentOn, fmt.Sprintf("the process of the guard's kill %d of %d (pid=%d, on its reading of %.2f%% of the limit at +%dms) exited %s after the kill, and the guard's reading at +%dms was %.2f%%, at or above the mark and above the reading at that kill, while its grower pid=%d lived, but the guard did not act on that reading: %s",
+			i+1, len(t.kills), k.PID, controllerLivePercent(k.ReadingBytes, k.LimitBytes), k.readingAt.Sub(t.first).Milliseconds(),
+			k.exitAt.Sub(k.At), reading.at.Sub(t.first).Milliseconds(), controllerLivePercent(reading.reading, reading.limit), grower, next)
+	}
+	return wentOn, ""
+}
+
+// controllerLiveGoOnReading is, for the trace's kill i, the first of the guard's readings after
+// the one that kill acted on, and up to the one the next kill acted on, that was taken after the
+// killed process's exit, is at or above the mark of act percent and above the reading at the
+// kill, and at which a grower of names lived, with that grower, and false where none is. A
+// reading after the next kill's is the next kill's to answer for, and a kill whose exit was not
+// measured has none.
+func controllerLiveGoOnReading(t controllerLiveTrace, i int, names map[int]string, act int) (controllerLiveReading, int, bool) {
+	k := t.kills[i]
+	if k.exitAt.IsZero() {
+		return controllerLiveReading{}, 0, false
+	}
+	for _, rd := range t.readings {
+		switch {
+		case !rd.at.After(k.readingAt):
+			continue
+		case i+1 < len(t.kills) && rd.at.After(t.kills[i+1].readingAt):
+			return controllerLiveReading{}, 0, false
+		case !k.exitAt.Before(rd.at) || rd.reading < controllerLiveShare(rd.limit, act) || rd.reading <= k.ReadingBytes:
+			continue
+		}
+		if grower := controllerLiveGrowerAt(names, t.kills, rd.at); grower != 0 {
+			return rd, grower, true
+		}
+	}
+	return controllerLiveReading{}, 0, false
+}
+
+// controllerLiveGrowerAt is the lowest pid of a grower of names that lived at at, 0 where none
+// did. A grower grows until it is ended, and in the probes only the guard ends one, so it lived at
+// at unless the guard had ended it and the pidfd its sink opened had shown it exited by then; an
+// exit that was not measured counts as none.
+func controllerLiveGrowerAt(names map[int]string, kills []controllerLiveTraceKill, at time.Time) int {
+	found := 0
+	for pid, name := range names {
+		if name != "grower" || (found != 0 && pid > found) {
+			continue
+		}
+		exited := false
+		for _, k := range kills {
+			if k.PID == pid && !k.exitAt.IsZero() && !k.exitAt.After(at) {
+				exited = true
+			}
+		}
+		if !exited {
+			found = pid
+		}
+	}
+	return found
+}
+
+// controllerLiveLongestExit is the longest time from a kill of kills to its process's exit, the
+// pid it was of, and how many of the exits were measured.
+func controllerLiveLongestExit(kills []controllerLiveTraceKill) (longest time.Duration, pid, measured int) {
+	for _, k := range kills {
+		if k.exitAt.IsZero() {
+			continue
+		}
+		measured++
+		if took := k.exitAt.Sub(k.At); measured == 1 || took > longest {
+			longest, pid = took, k.PID
+		}
+	}
+	return longest, pid, measured
 }
 
 // guardHasStarted is whether the guard has said it started.
@@ -1163,7 +1582,9 @@ func controllerLiveCPU() (user, sys time.Duration, err error) {
 }
 
 // controllerLivePIDs reads the pids a probe wrote at path, one line for each kind of process it
-// started, the kind's name and then its pids, and answers each pid by its kind's name.
+// starts, the kind's name and then its pids, none where it started none of that kind (the tester's
+// probes write `sleeper` alone where they fork no sleeper), and answers each pid by its kind's
+// name.
 func controllerLivePIDs(path string) (map[int]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1172,8 +1593,8 @@ func controllerLivePIDs(path string) (map[int]string, error) {
 	names := map[int]string{}
 	for line := range strings.Lines(string(data)) {
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			return nil, fmt.Errorf("%s holds the line %q, want a name and its pids", path, strings.TrimSpace(line))
+		if len(fields) == 0 {
+			return nil, fmt.Errorf("%s holds an empty line, want a name and its pids", path)
 		}
 		for _, field := range fields[1:] {
 			pid, err := strconv.Atoi(field)
@@ -1344,13 +1765,17 @@ func (f *controllerLiveFrames) stopped() string {
 // controllerLiveWatch is what the test learns from the guard's own loop: each reading through
 // Config.Observe and each kill through the guard's sink, both called on that loop and read by the
 // test under mu (startGeneration hands both to the guard the launcher builds). act is the guard's
-// act share, by which the watch reckons the mark and the band's start from each reading's limit.
+// act share, by which the watch reckons the mark and the band's start from each reading's limit,
+// and traced whether it keeps the guard's trace (controllerLiveTrace) and holds each process the
+// guard ends by a pidfd until it exits.
 type controllerLiveWatch struct {
-	act int
+	act    int
+	traced bool
 
-	mu   sync.Mutex
-	seen controllerLiveSeen
-	band controllerLiveBand
+	mu    sync.Mutex
+	seen  controllerLiveSeen
+	band  controllerLiveBand
+	trace controllerLiveTrace
 }
 
 // controllerLiveSeen is what the watch has taken of the guard's readings and kills so far.
@@ -1388,6 +1813,53 @@ type controllerLiveBand struct {
 	prevIn         bool
 }
 
+// controllerLiveTrace is the guard's trace in a traced scenario, from which the test prints one
+// line for each entry (printTrace) and judges the guard (judgeTrace): each of its readings at or
+// above the band's start, each kill as its sink took it with the exit of the process it ended, and
+// events, every one of those in the order it came. first is the time of the first reading at or
+// above the band's start, from which each line counts its time.
+type controllerLiveTrace struct {
+	first    time.Time
+	readings []controllerLiveReading
+	kills    []controllerLiveTraceKill
+	events   []controllerLiveEvent
+}
+
+// controllerLiveReading is one of the guard's readings as Observe handed it: the time its clock
+// read as it took the reading, AnonPages and the limit.
+type controllerLiveReading struct {
+	at             time.Time
+	reading, limit uint64
+}
+
+// controllerLiveTraceKill is one kill as the guard's sink took it. readingAt is the time of the
+// reading it acted on, the guard's latest when its sink took the kill, and exitAt the time the
+// pidfd the sink opened on the process it ended first read readable, the process's exit, zero
+// while it has not or where it was not measured; exitNote says why it was not, or how it was where
+// that was not the pidfd's own word (sink).
+type controllerLiveTraceKill struct {
+	shimwire.LauncherMemoryKill
+	readingAt time.Time
+	exitAt    time.Time
+	exitNote  string
+}
+
+// controllerLiveEvent is one entry of a trace, in the order it came: a reading, a kill or a
+// killed process's exit, by its index in the trace's readings or kills.
+type controllerLiveEvent struct {
+	kind  controllerLiveEventKind
+	index int
+}
+
+// controllerLiveEventKind is what one entry of a trace is.
+type controllerLiveEventKind int
+
+const (
+	controllerLiveEventReading controllerLiveEventKind = iota
+	controllerLiveEventKill
+	controllerLiveEventExit
+)
+
 // observe is the guard's Config.Observe.
 func (w *controllerLiveWatch) observe(now time.Time, reading, limit uint64) {
 	mark, bandStart := controllerLiveShare(limit, w.act), controllerLiveBandStart(limit, w.act)
@@ -1403,6 +1875,14 @@ func (w *controllerLiveWatch) observe(now time.Time, reading, limit uint64) {
 			s.firstAtMark, s.firstAtMarkReading = now, reading
 		}
 		s.atMark++
+	}
+	if w.traced && reading >= bandStart {
+		t := &w.trace
+		if t.first.IsZero() {
+			t.first = now
+		}
+		t.readings = append(t.readings, controllerLiveReading{at: now, reading: reading, limit: limit})
+		t.events = append(t.events, controllerLiveEvent{kind: controllerLiveEventReading, index: len(t.readings) - 1})
 	}
 	b := &w.band
 	if !b.on {
@@ -1423,12 +1903,38 @@ func (w *controllerLiveWatch) observe(now time.Time, reading, limit uint64) {
 	b.prevAt, b.prevIn = now, in
 }
 
-// sink takes the guard's kills before the launcher's own sink does, and keeps the first.
+// sink takes the guard's kills before the launcher's own sink does, and keeps the first. A traced
+// watch keeps each in its trace and holds the process it ended by a pidfd, opened here on the
+// guard's loop right after the kill, before the process's parent can reap it and its pid pass to
+// another, and waited on off that loop (timeExit). A process its parent reaped before the open is
+// gone by then, and the open's time is taken as its exit: later than the real one, never earlier.
 func (w *controllerLiveWatch) sink(k memoryguard.Kill) {
+	var fd int
+	var err error
+	var opened time.Time
+	if w.traced {
+		fd, err = unix.PidfdOpen(k.PID, 0)
+		opened = time.Now()
+	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	if s := &w.seen; s.firstKill == nil {
+	s, t := &w.seen, &w.trace
+	if s.firstKill == nil {
 		s.firstKill, s.killReadingAt = &k.LauncherMemoryKill, s.lastAt
+	}
+	i := len(t.kills)
+	if w.traced {
+		t.kills = append(t.kills, controllerLiveTraceKill{LauncherMemoryKill: k.LauncherMemoryKill, readingAt: s.lastAt})
+		t.events = append(t.events, controllerLiveEvent{kind: controllerLiveEventKill, index: i})
+	}
+	w.mu.Unlock()
+	switch {
+	case !w.traced:
+	case err == nil:
+		go w.timeExit(i, fd)
+	case errors.Is(err, unix.ESRCH):
+		w.noteExit(i, opened, "reaped before the sink held it: the exit is taken at that pidfd_open")
+	default:
+		w.noteExit(i, time.Time{}, fmt.Sprintf("pidfd_open: %v", err))
 	}
 }
 
@@ -1437,6 +1943,91 @@ func (w *controllerLiveWatch) snapshot() controllerLiveSeen {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.seen
+}
+
+// traceCopy is the trace so far, its readings and its kills copied, without its events.
+func (w *controllerLiveWatch) traceCopy() controllerLiveTrace {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	t := w.trace
+	t.readings = append([]controllerLiveReading(nil), t.readings...)
+	t.kills = append([]controllerLiveTraceKill(nil), t.kills...)
+	t.events = nil
+	return t
+}
+
+// traceLines is the trace's lines from its event from on, one for each reading, kill and exit
+// (printTrace), and the event the next call starts at. A kill's line names the process by names,
+// `other` where it names nothing of the pid; held is whether the lines from a kill on wait while
+// names is nil, the probe's pids not yet written.
+func (w *controllerLiveWatch) traceLines(from int, names map[int]string, held bool) ([]string, int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	t := &w.trace
+	var lines []string
+	for ; from < len(t.events); from++ {
+		e := t.events[from]
+		switch e.kind {
+		case controllerLiveEventReading:
+			rd := t.readings[e.index]
+			lines = append(lines, fmt.Sprintf("trace reading +%dms share=%.2f%% reading=%d",
+				rd.at.Sub(t.first).Milliseconds(), controllerLivePercent(rd.reading, rd.limit), rd.reading))
+		case controllerLiveEventKill:
+			if names == nil && held {
+				return lines, from
+			}
+			k := t.kills[e.index]
+			lines = append(lines, fmt.Sprintf("trace kill +%dms pid=%d is=%s size=%d reading_share=%.2f%% reading=%d reading_at=+%dms sequence=%d",
+				k.At.Sub(t.first).Milliseconds(), k.PID, controllerLiveName(names, k.PID), k.SizeBytes,
+				controllerLivePercent(k.ReadingBytes, k.LimitBytes), k.ReadingBytes, k.readingAt.Sub(t.first).Milliseconds(), k.Sequence))
+		case controllerLiveEventExit:
+			k := t.kills[e.index]
+			switch {
+			case k.exitAt.IsZero():
+				lines = append(lines, fmt.Sprintf("trace exit pid=%d after=none reason=%q", k.PID, k.exitNote))
+			case k.exitNote != "":
+				lines = append(lines, fmt.Sprintf("trace exit pid=%d after=%s note=%q", k.PID, k.exitAt.Sub(k.At), k.exitNote))
+			default:
+				lines = append(lines, fmt.Sprintf("trace exit pid=%d after=%s", k.PID, k.exitAt.Sub(k.At)))
+			}
+		}
+	}
+	return lines, from
+}
+
+// noteExit keeps the exit of the process the trace's kill i ended, at at, zero where it was not
+// measured, with note, and adds it to the trace's events.
+func (w *controllerLiveWatch) noteExit(i int, at time.Time, note string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	t := &w.trace
+	t.kills[i].exitAt, t.kills[i].exitNote = at, note
+	t.events = append(t.events, controllerLiveEvent{kind: controllerLiveEventExit, index: i})
+}
+
+// timeExit waits, off the guard's loop, for the process the trace's kill i ended to exit, which
+// its pidfd fd shows by reading readable, as the guard's own Handle.Exited reads it, and keeps the
+// time it first read so, or why it did not within controllerLiveExitBound (noteExit). It polls in
+// slices of controllerLiveExitSlice, and closes fd.
+func (w *controllerLiveWatch) timeExit(i, fd int) {
+	defer func() { _ = unix.Close(fd) }()
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	for deadline := time.Now().Add(controllerLiveExitBound); time.Now().Before(deadline); {
+		n, err := unix.Poll(fds, int(controllerLiveExitSlice/time.Millisecond))
+		switch {
+		case errors.Is(err, unix.EINTR):
+		case err != nil:
+			w.noteExit(i, time.Time{}, fmt.Sprintf("poll of its pidfd: %v", err))
+			return
+		case n > 0 && fds[0].Revents&unix.POLLIN != 0:
+			w.noteExit(i, time.Now(), "")
+			return
+		case n > 0:
+			w.noteExit(i, time.Time{}, fmt.Sprintf("its pidfd polled %#x, not readable", fds[0].Revents))
+			return
+		}
+	}
+	w.noteExit(i, time.Time{}, fmt.Sprintf("it had not exited %s after the kill", controllerLiveExitBound))
 }
 
 // startBand starts the band's count afresh, and endBand ends it and answers it.
