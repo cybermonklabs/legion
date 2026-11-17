@@ -48,7 +48,11 @@ type mentionListener struct {
 	// (dropRepeats); delivered holds the keys it has taken.
 	dedupe    bool
 	delivered map[string]struct{}
-	arrived   chan string
+	// landed, when set, is called with each send the listener hands its recipient - recorded,
+	// neither refused nor answered as a repeat - while the listener's lock is held, so a test can
+	// place it in one order with copies that reach the recipient some other way.
+	landed  func(mentionListenerSend)
+	arrived chan string
 }
 
 // mentionStall is one held-back send: reached is closed when that send arrives at the listener,
@@ -131,10 +135,14 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 				_, repeat = state.delivered[frame]
 				state.delivered[frame] = struct{}{}
 			}
-			state.sends = append(state.sends, mentionListenerSend{
+			landedSend := mentionListenerSend{
 				session: request.TargetSession, body: request.Message,
 				key: request.IdempotencyKey, duplicate: repeat,
-			})
+			}
+			state.sends = append(state.sends, landedSend)
+			if state.landed != nil && !refused && !repeat {
+				state.landed(landedSend)
+			}
 			gate := state.held[request.TargetSession]
 			answer := state.answers[request.TargetSession]
 			delete(state.answers, request.TargetSession)
