@@ -3026,7 +3026,7 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
 
 - `liveness-probe-against-the-listener`
 
-  `controller.Prober` on the live listener calls the second session alive and the first gone
+  `controller.Prober` on the live listener calls the second session `live` and the first `gone`
 
 - `exit-code-is-oh-my-pis`
 

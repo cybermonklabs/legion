@@ -417,14 +417,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/controller"
 )
 
 func main() {
 	token, _ := os.ReadFile(os.Args[2])
-	p := controller.NewProber(controller.ProberOptions{EnvoyURL: os.Args[1], EnvoyToken: strings.TrimSpace(string(token)), Project: os.Args[3], BootTimeout: 120 * time.Second})
+	p := controller.NewProber(controller.ProberOptions{EnvoyURL: os.Args[1], EnvoyToken: strings.TrimSpace(string(token)), Project: os.Args[3]})
 	for _, session := range os.Args[4:] {
 		fmt.Printf("%s=%s\n", session, p.Probe(context.Background(), session))
 	}
@@ -433,9 +432,9 @@ GO
 printf '{"Replace":{"%s":"%s"}}' "$root/packages/daemon/cmd/liveprobe-accept/main.go" "$work/liveprobe.go" >"$work/overlay.json"
 verdicts=$(cd "$root/packages/daemon" && go run -overlay "$work/overlay.json" ./cmd/liveprobe-accept \
   "http://127.0.0.1:$envoy_port" "$work/envoy-token" "$ptoken" "$session2" "$session1" 2>"$evidence/checks/liveprobe.log" | tr '\n' ' ')
-[ "$verdicts" = "$session2=alive $session1=gone " ] || fail "verdicts: $verdicts; log $(cat "$evidence/checks/liveprobe.log")"
+[ "$verdicts" = "$session2=live $session1=gone " ] || fail "verdicts: $verdicts; log $(cat "$evidence/checks/liveprobe.log")"
 note "controller.Prober on the live listener: $verdicts"
-note "$(grep -o 'msg=.*' "$evidence/checks/liveprobe.log" | head -1)"
+note "$(grep -o 'controller liveness: .*' "$evidence/checks/liveprobe.log" | head -1)"
 pass
 
 begin exit-code-is-oh-my-pis
