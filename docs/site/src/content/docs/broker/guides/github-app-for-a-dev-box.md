@@ -233,10 +233,10 @@ secret:
   one time for each repository, at most 100 times. Give the repository name without the account.
   The token keeps every permission the App holds, its organization permissions too, unless you
   also give `--github-read-only`.
-- `--github-read-only` limits the token to `contents: read`, `metadata: read`,
-  `pull_requests: read` and `actions: read`, the last of which an App whose installation has not
-  been granted Actions does not get. A machine that must only read needs it, with or without
-  `--github-repo`.
+- `--github-read-only` limits the token to read access. The token gets `contents: read`,
+  `metadata: read` and `pull_requests: read`. It also gets `issues: read`, `actions: read`,
+  `checks: read`, `statuses: read` and `attestations: read` for each of them that the App's
+  installation holds. A machine that must only read needs it, with or without `--github-repo`.
 - `--github-token` hands over that one installation's token alone, in place of the JSON object
   of installations. A command that sends the token to GitHub in a header needs this form.
 
@@ -256,9 +256,14 @@ and no account key. The case you type in `--github-owner` therefore does not mat
 Without the flag the variable holds the JSON object of installations, which the examples
 earlier on this page read with `jq`.
 
-The broker sends the narrowing to GitHub. GitHub refuses a repository or a permission that the
-installation does not have, and `agent-secrets` then exits 1 with `NARROWING_REFUSED`. An
-account that the `github-owners` tag does not list exits 1 with `NARROWING_OWNER_NOT_LISTED`.
+The broker sends the narrowing to GitHub. GitHub refuses a repository that the installation does
+not have, and `agent-secrets` then exits 1 with `NARROWING_REFUSED`. With `--github-read-only`,
+the broker first reads which permissions the installation holds. When the installation does not
+hold contents, metadata or pull requests, the broker asks GitHub for no token, and
+`agent-secrets` exits 1 with `NARROWING_REFUSED`. The message names each of the three that the
+installation does not hold. A permission of the other five that the installation does not hold
+is left out of the token, and the broker writes a warning in its log.
+An account that the `github-owners` tag does not list exits 1 with `NARROWING_OWNER_NOT_LISTED`.
 An account that the tag lists but that the App is not installed on exits 1 with a message that
 says `has no installation on` that account: `NARROWING_REFUSED` when the broker refuses the
 request, and `MINT_FAILED` when the refusal comes as the broker reads the grant.
@@ -266,6 +271,8 @@ request, and `MINT_FAILED` when the refusal comes as the broker reads the grant.
 When a person approves the request for this secret, the broker makes these refusals
 before the approval request. With `--github-repo` or `--github-read-only`, it makes the token
 that your read would get, reads GitHub's answer, and gives that token back to GitHub at once.
+Where your read would get no token, as for an installation that does not hold contents, metadata
+or pull requests, it makes none.
 With `--github-owner` alone, it reads only the list of the App's installations, and it makes no
 token. No token reaches your command, no request waits, and the person is not asked. A flag that
 you typed wrongly thus costs that person nothing, and you read the refusal at once. The refusal

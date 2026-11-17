@@ -62,6 +62,8 @@ share one), so a consumer takes the repository from the payload's `repo`.
 
 `notifications.github.{owner}.{repo}.pr.{number}.checks` publishes once a commit of the pull request has its recorded checks and suites settle after the quiet period, whether or not that commit is still the head. The payload's `sha` names the commit, and a consumer decides which commit a settlement stands for.
 
+The payload's `statuses` names each commit status the record holds for that commit, as `{context, state}` in context order, with `state` one of `success`, `failure` and `error`. The field is left out when the record holds no status. A commit status is no check run: `check_runs`, the status groups and the failing names hold check runs alone, and a status and a check run of one name are two entries. Dispatch's CI reconcile records the statuses from GitHub's read of each open head, since GitHub's `status` webhook event names no pull request. `fixtures/checks-settlement/listener-rules.json` holds a settlement with statuses.
+
 ## Slack Topic Hierarchy
 
 The Slack receiver publishes channel-level and thread-level topics. Consumers

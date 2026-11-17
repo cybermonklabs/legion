@@ -368,7 +368,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the tree's architect, the worker of the issue's current phase
-  and the implementer whose code the checks ran on, and moves the issue nowhere. A red is for
+  and the implementer whose code the checks ran on, and moves the issue nowhere. The message
+  names the head's commit statuses too, each with its state: Dispatch reads them from GitHub for
+  each open head where its GitHub App holds Commit statuses, since GitHub's status event names no
+  pull request. A red is for
   those roles to decide on — re-run a check that failed on itself, fix code that is at fault, or
   wait — and for GitHub to hold the merge over, under the base branch's own required checks, which
   Legion neither reads nor re-implements. The reviewer reads the head's checks on GitHub itself

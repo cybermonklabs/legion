@@ -5638,19 +5638,26 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
   a recreated record may reuse one and is dropped).
 
+- A settlement also carries `statuses` where the record holds a commit status (`cistore.Summary.Statuses`): each `{context, state}`, in context order, with `state` one of `success`, `failure` and `error`, and no `statuses` field where the record holds none, so a head with no status settles in the same bytes as before the record held statuses.
+  A commit status is an entry of its own kind: `check_runs`, the status groups and the failing names hold check runs alone, a status and a check run of one name are two entries, and a status is in no attempt set and takes no part in whether a head is ready to settle.
+  The record keeps the newest status of each context in one of those three states, by GitHub's `created_at`, and only Dispatch's CI reconcile writes one (`cmd/dispatch/README.md`, "CI reconcile"): the listener drops GitHub's `status` event (`githubSkip`), which carries a commit and no pull request.
+  A new context or a changed state moves the record's `snapshot` and `generation` and settles the head again;
+  a new time, link or description in the same state is recorded and settles nothing.
+  The settlement's summary line adds `; statuses: <n> passed, <m> failed`, and `; failing statuses: <context>, …` where one failed, after the failing check runs.
+
 - A live settlement is a possibly incomplete view of the head (a missed webhook, a record recreated after the KV TTL):
   it decides the outcome of every name it reports
   — at any id the ordering accepted, including the same run observed in place
   — and says nothing about the rest: a known failure among them stands (the consumer keeps failure names, not a per-name status map), and the head is red while any failure remains.
   A consumer that reconciles a verdict from GitHub's rollup compares the rollup's attempt set the same way, but GitHub's read is complete:
   its failing check runs and failing commit statuses replace the stored ones wholesale.
-  Statuses have no check run and the listener never sees them, so a consumer keeps them apart from check-run failures:
-  a check run that shares a status's name cannot retire it — only GitHub does (likewise a deleted check's failure).
+  Statuses have no check run, so a consumer keeps them apart from check-run failures:
+  a check run that shares a status's name cannot retire it — only a newer status of that context does, named in a settlement's `statuses` or in GitHub's read, and only GitHub's read retires a deleted check's failure.
   A newer rollup set merges into the fence and takes the identity (no listener generation);
   the same set applies GitHub's verdict and keeps the listener identity for duplicate detection; an older, mixed, or empty-over-fenced set is ignored.
   A terminal read (green or red) then holds the tie at that set:
   a live settlement at the same set is accepted only if its effective outcome
-  — the check-run failures it reports plus the stored ones it omits and the stored commit-status failures
+  — the check-run failures it reports plus the stored ones it omits, and the failed commit statuses it names plus the stored status failures of the contexts it omits
   — agrees with the reconciled verdict, refreshing the listener identity without releasing GitHub's authority;
   a disagreeing one is stale whatever its generation until the set advances;
   a pending or cancelled-only read uncertifies a green head, leaves a red one untouched, and holds nothing
@@ -5681,11 +5688,11 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A finished Actions job on the default branch, of a run with no pull request, publishes `job.<run_id>.completed`:
   a completed `check_run` that lists no pull request, from the GitHub Actions App, whose `check_suite.head_branch` is the repository's `default_branch` and whose `details_url` names `/actions/runs/<run_id>/job/<job_id>`.
   Its payload fields are `kind: "job"`, `repo`, `run_id`, `job_id`, `name`, `status`, `conclusion`, `started_at`, `completed_at`, `head_sha` and `url` (the job's page).
-  A check run that lists a pull request goes to the CI store instead, as does one whose check suite is on `refs/pull/<n>/head`, and any other check run or suite with no pull request (a merge queue's commit, a branch push) is published nowhere and recorded nowhere by the listener; Dispatch's CI reconcile pass (`cmd/dispatch/README.md`, "CI reconcile") reads GitHub every 5 minutes and records the completed checks of an open pull request's head that no webhook put in its record.
+  A check run that lists a pull request goes to the CI store instead, as does one whose check suite is on `refs/pull/<n>/head`, and any other check run or suite with no pull request (a merge queue's commit, a branch push) is published nowhere and recorded nowhere by the listener; Dispatch's CI reconcile pass (`cmd/dispatch/README.md`, "CI reconcile") reads GitHub every 5 minutes and records the completed checks of an open pull request's head that no webhook put in its record, and that head's commit statuses where Dispatch's App token holds Commit statuses.
 
 - Every other text a webhook payload copies from its body (a title, a ref, a path, a workflow name, a URL) is capped at 2,048 runes with a trailing `…` too (`maxEnvelopeTextRunes`;
-  a comment's or review's body is cut there without one and says so in `body_truncated`), and so is every text a check run copies into the CI store (its name, URL, status, conclusion and times), so no envelope or record grows with the body it came from.
-  The record is keyed by check name, so a name past the cap keeps a digest of the whole name after its `…`, and two names that share their first 2,048 runes stay two checks.
+  a comment's or review's body is cut there without one and says so in `body_truncated`), and so is every text a check run copies into the CI store (its name, URL, status, conclusion and times) and every text a commit status copies there (its context, link and description), so no envelope or record grows with the body it came from.
+  The record is keyed by check name and by status context, so a name or a context past the cap keeps a digest of the whole text after its `…`, and two names that share their first 2,048 runes stay two checks.
   What NATS still refuses however often it is sent is refused (`bus.ErrRefused`):
   an envelope past the server's max payload or a subject past the server's 4 KiB protocol line, over which the server would close the listener's connection (`bus.ErrTooLarge`, naming the size), or a subject holding whitespace or an empty token, which no stream matches (`bus.ErrInvalidSubject`).
   The webhook is answered 422, which Dispatch's redelivery sweep asks for again like any failed delivery, until GitHub records it `OK` or 72 hours after its first failed attempt, and logged `<source> publish refused` (or `github ci record refused`);
@@ -5695,7 +5702,8 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   the newest 4,096 deliveries, each for 72 hours).
   A commit's CI record is bounded at 384 KiB (`maxRecordBytes`, about 1,300 checks) and its settlement at 960 KiB (`maxSettlementBytes`;
   a failing check's `"` costs three times as much there), since GitHub allows 50,000 check runs in a suite:
-  a check past either is refused the same way, and the record is marked `overflowed` and never settles again.
+  a check run or check suite past either is refused the same way, and the record is marked `overflowed` and never settles again.
+  A commit status never marks a record overflowed: a status write past either bound is not recorded, logged at WARN as `ci record refused a commit status past its bound` with the head and the context, and a check run or suite that passes a bound only because of the record's statuses is written with the record's statuses dropped, logged at WARN as `ci record dropped its commit statuses to keep a check within its bound` with the head and how many it dropped.
   A commit that had already settled keeps its last settlement, which nothing supersedes, so a consumer holding it learns about the refused checks only from GitHub's own read.
   A settlement NATS refuses anyway (a server whose max payload is set lower) marks the record overflowed too, logged once as `checks settlement refused`, rather than being published again at every attempt.
 
@@ -6159,9 +6167,11 @@ A `github-app` secret whose `github-owners` names no account is refused `github-
 none) and `Secret.GitHubOwners` the lowercased, sorted, single-spaced list as one string, so a `Secret` compares equal to an unchanged reread of itself.
 `Values` takes one policy snapshot for its re-check and passes the same snapshot's name, tier and owners to the minter in a `secrets.MintRequest`, and `secrets.GitHubApp.Mint` asks GitHub for no token for an installation on an account they do not list, nor for a record with no positive installation id.
 A release may narrow its GitHub App tokens (`secrets.GitHubNarrowing`, the `github_app` body of `POST /v1/grants/{id}/values`):
-the token of one listed account's installation alone, sent GitHub's `access_tokens` body naming repositories of that account, `contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, or both, and nothing else, so a caller can only narrow.
-`actions: read` is the one permission an App is not always granted (`secrets.optionalReadOnlyPermission`), so a read-only request GitHub answers 422 is sent once more without it, logged at WARN, and the release then carries the other three rather than nothing; only a 422 that stands is `NARROWING_REFUSED`.
-This set is the Legion daemon's own read set (`appauth.readPermissions`), so a `token_command` lease and a key-backed one read the same things.
+the token of one listed account's installation alone, sent GitHub's `access_tokens` body naming repositories of that account, read permissions, or both, and nothing else, so a caller can only narrow.
+A read-only narrowing asks for the read set (`githubread.Permissions`: `contents`, `metadata`, `pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`), cut to what the installation holds (`secrets.readOnlyRequest`): `GitHubApp.Mint` reads each installation's `permissions` from the installations listing it already reads, and asks for each permission of the set the installation holds at read, write or admin, at `read`.
+An installation whose listing does not hold `contents`, `metadata` or `pull_requests` is refused `secrets.ErrMintNarrowingRefused` before any token request, the error naming each of the three it lacks, and a listing that names no permissions at all is asked for those three alone.
+A release then logs one WARN line for each permission of the set its token request left out (`secrets.leftOutMessage`, with `app=`, `installation=` and `permission=`), and a check of a narrowing logs none.
+This set is the Legion daemon's own read set (`appauth.readPermissions` reads the same `githubread.Permissions`), so a `token_command` lease and a key-backed one read the same things.
 A body naming repositories alone names no permissions, and GitHub then gives the token every permission the App holds, its organization permissions among them: only `read_only` limits those.
 The narrowing is that release's alone: the grant records none (each release's `grant.used` audit row does) and the broker keeps no token, so its next release without one mints the owner-wide tokens, and no approval, record, request object or grant changes, since the session holding the grant can always have the owner-wide token.
 `policy.ParseGitHubNarrowing` checks the body (one login by `policy.ParseGitHubLogin`;
@@ -6170,8 +6180,8 @@ an answer read in part leaves a minted token neither released nor revoked) and a
 The CLI runs the same function before it sends any request (exit 2), so the two cannot drift and its comparison of the answer with its request compares like with like.
 `Values` refuses, releasing nothing and running no minter, a narrowing of a grant that holds no github-app secret (`400 NARROWING_NOT_APPLICABLE`), one to an account a github-app secret of the grant does not list in the snapshot it mints from (`403 NARROWING_OWNER_NOT_LISTED`), and one of a grant any of whose names is behind the airlock (`409 NARROWING_BEHIND_AIRLOCK`, naming that name): the proxy spends such a grant's values itself and mints them owner-wide for the life of the grant, so a narrowing answered as applied would be a promise the proxy does not keep;
 `GitHubApp.Mint` refuses that account again before it asks GitHub anything.
-GitHub's 422 to a narrowed token is `secrets.ErrMintNarrowingRefused`, answered `422 NARROWING_REFUSED` with the narrowing's likely mistake.
-Both refusals are the caller's, so each is logged at WARN as `requests.NarrowingRefusedMessage`, never as `broker: mint failed`.
+GitHub's 422 to a narrowed token is `secrets.ErrMintNarrowingRefused`, answered `422 NARROWING_REFUSED` with the narrowing's likely mistake, and so is the refusal of a read-only narrowing for an installation that does not hold the three permissions above.
+These refusals are the caller's, so each is logged at WARN as `requests.NarrowingRefusedMessage`, never as `broker: mint failed`.
 `GitHubApp.Mint` releases a narrowed token only when GitHub's answer describes no more than the narrowing asked (`GitHubNarrowing.heldBy`:
 the repositories selected, the permissions held), so the narrowing the answer echoes as `github_app` is true by construction.
 A token it refuses it revokes at GitHub first (`DELETE /installation/token`, as the token), logging a WARN when GitHub does not confirm the revoke, and the refusal names the rule the answer failed, never a value from it; a 401 or a 404 to the first attempt is GitHub refusing the request and logs that WARN, since nothing in the revoke can have revoked a token minted moments before, while one to a later attempt confirms the revoke, since an earlier attempt may have revoked the token and lost its answer, and an earlier attempt that was a rate limit cannot be told apart from that (the call's error is its last attempt's).
@@ -6189,7 +6199,7 @@ Such a narrowing sends GitHub no `access_tokens` body, so GitHub's answer to its
 So GitHub's 422 is `422 NARROWING_REFUSED`, and an App with no installation on the account (`secrets.ErrMintNoInstallation`, which wraps `ErrMintRefused` so the release's own answer does not move) is `422 NARROWING_REFUSED` there too, in an arm of `createRequest`'s own rather than the `writeNarrowingRefusal` both routes share, where the release answers `502 MINT_FAILED`.
 That sentinel is narrow on purpose: `mintStatusError` wraps `ErrMintRefused` for every 4xx that is no rate limit, so a 401 to the App's own JWT, a 403 and a 404 would otherwise be told to the caller as a narrowing to fix, and each of those is trouble that leaves the request on its old path instead.
 A narrowing GitHub refused is asked for again with less of it (`narrowingCause`): a read-only narrowing that names repositories is asked for without them first, which says whether the read access or a repository is the cause, a read-only narrowing that names none needs no such probe, the verdict mint having been exactly it, and a narrowing that is not read-only names no permissions to be refused and so makes no such probe either, and then comes one probe per repository in the narrowing's own order, stopping at the first GitHub refuses.
-Each probe is another check mint whose token is revoked the moment GitHub answers it, so the refusal names the repository the installation does not reach or the read access the App does not hold, and where the search finds no part `narrowingCauseNotFound` says so and names the whole narrowing the caller asked for.
+Each probe is another check mint whose token is revoked the moment GitHub answers it, and a read-only probe of an installation whose listing does not hold `contents`, `metadata` or `pull_requests` asks GitHub for no token at all, so the refusal names the repository the installation does not reach or the read access the App does not hold, and where the search finds no part `narrowingCauseNotFound` says so and names the whole narrowing the caller asked for.
 Trouble that is no verdict leaves the request on the path it took before the check existed — the person is asked, and the release makes the refusal — and that is deliberate: an outage at GitHub must not stop every GitHub App request of the fleet.
 Trouble is a transport failure, a 5xx, a rate limit, a 4xx of GitHub's that is no verdict on the narrowing, a stored value that could not be read or minted from, the check's whole budget (`DefaultNarrowingCheckBudget`, 10 s), one mint's own bound (`DefaultNarrowingCheckMint`, 5 s) or an enrollment past `DefaultNarrowingChecks` (five checks that reach GitHub, refilled one every twelve seconds, per process as `DefaultMissRereads` is).
 Each of those writes one INFO line, `requests.NarrowingCheckSkippedMessage` (`broker: the narrowing check was skipped`), with `enrollment=`, `name=` (empty where the check had reached no secret), `reason=` and `error=` where something failed.

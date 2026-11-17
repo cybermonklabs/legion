@@ -567,8 +567,10 @@ listing alone. What follows the colon says where to look:
   could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
   configuration, and the implement App's installation on theorem-labs.
 - `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
-  account grants the implement App's installation on theorem-labs. The read lease needs contents,
-  pull requests and metadata read. The daemon asks for no wider token in its place.
+  account grants the implement App's installation on theorem-labs. The read lease needs read
+  access to contents, metadata and pull requests: the secrets broker refuses a read-only release
+  for an installation that does not hold all three. The daemon asks for no wider token in its
+  place.
 - `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
   tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.

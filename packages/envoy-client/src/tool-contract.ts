@@ -58,8 +58,9 @@ const TOPIC_GUIDE =
   "github.<owner>.<repo>.pr.<n>.> (it receives the quiet PR family): pr.<n> (lifecycle: " +
   "opened/synchronize/closed; closed carries merged, merge_commit_sha, merged_by, head_sha), " +
   "pr.<n>.comment, pr.<n>.review, pr.<n>.mention, pr.<n>.checks (one settlement event per commit whose checks settle, the head or not, naming its sha: " +
-  'passed/failed/cancelled/skipped with failing names and URLs; re-fires with superseded_settlement: "true" ' +
-  "when new runs appear for the same commit). Other GitHub: issue.<n>, issue.<n>.comment, " +
+  "passed/failed/cancelled/skipped check runs with failing names and URLs, and statuses, each commit status as " +
+  '{context, state} with state success, failure or error, left out when none is recorded; re-fires with superseded_settlement: "true" ' +
+  "when new runs or a changed commit status appear for the same commit). Other GitHub: issue.<n>, issue.<n>.comment, " +
   "issue.<n>.mention, mention, push.branch.<name>, push.tag.<name>, workflow.<file>.<action> (only " +
   "runs without an associated PR); slack.<team>.<channel>.message|mention and " +
   "slack.<team>.<channel>.thread.<ts>.message|mention; ghostwispr.<session>.<kind>; " +
