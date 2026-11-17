@@ -32,22 +32,24 @@ Ignore names that only the stored set has: a check can vanish from GitHub's view
 
 A status has no id, and a record recreated after the KV TTL numbers its settlements afresh, so a generation does not order two statuses of one context. Each entry's `created_at` orders them:
 
-- A settlement whose attempt set is the same, newer or mixed, and that names a context you keep no status of for that commit or an entry with a later `created_at` than the one you keep for its context, is newer, whatever its generation says.
-- A settlement with an older attempt set that names such an entry changes those statuses alone. Keep your check runs, failing and cancelled names, generation and snapshot as they are, so the newer settlement delivered again is still a duplicate.
+- A settlement whose attempt set is newer or mixed, or the same at a higher generation, is newer, and you apply it whole: its check runs, failing and cancelled names, generation, snapshot and statuses.
+- A settlement whose attempt set is older, or the same at a generation no higher than yours, and that names a context you keep no status of for that commit or an entry with a later `created_at` than the one you keep for its context, changes those statuses alone. Keep your check runs, failing and cancelled names, generation and snapshot as they are, so the newer settlement delivered again is still a duplicate.
+- The same set includes one that names fewer checks than yours, because names that only the stored set has are ignored. A settlement that a record sent before a later check name appeared compares equal to the fence of the one it sent after, so at a generation no higher than yours it changes its newer statuses alone.
 - A settlement with an older attempt set that names no such entry is older for every check run and every status. It is stale.
 - At the same set, a settlement that names no such entry is ordered by its generation, as the next section says.
 
 ## At the same set, with no newer status, order by generation
 
+- A higher `generation` is newer. It is newer with a newer status too, as the first rule above says.
 - A lower `generation` is stale.
-- An equal `generation` with the same `snapshot` is a duplicate. With a different `snapshot`, drop it as a conflict: that pair occurs only when a record was recreated and reused a generation. A status that changed on such a record still applies, because its later `created_at` makes the settlement newer.
+- An equal `generation` with the same `snapshot` is a duplicate. With a different `snapshot`, drop it as a conflict: that pair occurs only when a record was recreated and reused a generation. A status that changed on such a record still applies, alone, because its later `created_at` makes it news.
 
 ## Apply a live settlement
 
 - A live settlement (one the listener sent) may be an incomplete view of the head: a webhook was missed, or the record was recreated after the KV TTL.
 - It decides the outcome of every name it reports, at any id the ordering accepted, the same run seen in place included. It says nothing about the names it leaves out.
 - Its `statuses` is every status the record holds for that commit. A record at its size bound, or one that a listener of an earlier release wrote, names fewer statuses than GitHub holds.
-- Merge its `statuses` into the statuses you keep for that commit, one context at a time: keep the entry with the later `created_at`, and the settlement's entry when the two times are equal. A context it leaves out stays as you kept it, and an older entry never puts back a state that a later one replaced. The Legion daemon does the same (`ApplySettlement` and `mergedStatuses` in `packages/daemon/internal/classify`).
+- Merge its `statuses` into the statuses you keep for that commit, one context at a time: keep the entry with the later `created_at`. When the two times are equal, keep the settlement's entry where you apply the settlement whole, and your own where it changes its statuses alone, because it is then the older view. A context it leaves out stays as you kept it, and an older entry never puts back a state that a later one replaced. The Legion daemon does the same (`ApplySettlement` and `mergedStatuses` in `packages/daemon/internal/classify`).
 - A known failure among the names it leaves out stands, because you keep failure names, not a per-name status map. The head is red while any check-run failure remains, or while a status you keep for it is `failure` or `error`.
 
 ## Reconcile with GitHub's rollup

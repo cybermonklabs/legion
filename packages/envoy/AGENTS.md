@@ -5803,9 +5803,10 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   Within one producer record per-name ids never decrease, and a consumer's fence is the per-name maximum over every view it has accepted
   — an accepted set merges into the fence, nothing is pruned
   — so the fence never decreases either: a newer attempt is newer whatever its completion time, no timestamps take part in ordering check runs, and a name an incomplete view omitted cannot later reappear as new.
-  At the same set, where the settlement names no newer commit status (below), the listener's `generation` orders its own settlements:
-  lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
-  a recreated record numbers its settlements afresh and may reuse one, and such a settlement is dropped unless it names a commit status of a context the consumer keeps none of, or one newer by its `created_at`).
+  At the same set the listener's `generation` orders its own settlements:
+  higher is newer; lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
+  a recreated record numbers its settlements afresh and may reuse one).
+  A lower or equal one that names a commit status of a context the consumer keeps none of, or one newer by its `created_at`, changes those statuses alone instead (below).
 
 - A settlement also carries `statuses` where the record holds a commit status (`cistore.Summary.Statuses`): each `{context, state, created_at}` (`cistore.StatusRef`), in context order, with `state` one of `success`, `failure` and `error` and `created_at` GitHub's RFC 3339 text of when it created the status, as the record keeps it, and no `statuses` field where the record holds none, so a head with no status settles in the same bytes as before the record held statuses.
   A commit status is an entry of its own kind: `check_runs`, the status groups and the failing names hold check runs alone, a status and a check run of one name are two entries, and a status is in no attempt set and takes no part in whether a head is ready to settle.
@@ -5813,11 +5814,15 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A new context or a changed state moves the record's `snapshot` and `generation` and settles the head again;
   a new time, link or description in the same state is recorded and settles nothing.
   The settlement's summary line adds `; statuses: <n> passed, <m> failed`, and `; failing statuses: <context>, …` where one failed, after the failing check runs.
-  A status has no id, and a recreated record numbers its settlements afresh, so a consumer orders two statuses of one context by `created_at`, never by `generation`:
-  a settlement that names a context the consumer keeps no status of for that commit, or one with a later `created_at` than the kept one, is newer whatever its `generation` when its attempt set is the same, newer or mixed;
-  one whose attempt set is older and that names such a status changes those statuses alone: the check runs, the failing and cancelled names, the `generation` and the `snapshot` the consumer keeps stay as they are, so the newer settlement delivered again is still a duplicate;
-  one whose attempt set is older and that names no such status is older for every check run and every status, and is stale.
-  A consumer merges the `statuses` of each settlement it applies into the statuses it keeps for that commit, one context at a time: the entry with the later `created_at` stands, the settlement's on an equal time, so a context the settlement leaves out stays as kept and an older settlement never puts back a state a later one replaced.
+  A status has no id, and a recreated record numbers its settlements afresh, so a consumer orders two statuses of one context by `created_at`, never by `generation`.
+  A settlement that names a context the consumer keeps no status of for that commit, or one with a later `created_at` than the kept one, and whose attempt set is older, or the same at a `generation` no higher than the kept one, changes those statuses alone:
+  the check runs, the failing and cancelled names, the `generation` and the `snapshot` the consumer keeps stay as they are, so the newer settlement delivered again is still a duplicate.
+  The same set includes one that names fewer checks than the kept one, since names only in the stored set are ignored:
+  a settlement a record sent before a later check name appeared compares equal to the fence of the one it sent after.
+  A settlement is applied whole, its `generation` and `snapshot` with its statuses, only where its attempt set is newer or mixed, or the same at a higher `generation`.
+  One whose attempt set is older and that names no such status is older for every check run and every status, and is stale.
+  A consumer merges the `statuses` of each settlement it applies into the statuses it keeps for that commit, one context at a time: the entry with the later `created_at` stands, so a context the settlement leaves out stays as kept and an older settlement never puts back a state a later one replaced.
+  On an equal `created_at` the settlement's entry stands where the settlement is applied whole, and the kept one where it changes those statuses alone, since it is then the older view.
   The Legion daemon applies this rule (`classify.ClassifySettlement` and its `statusNews`, `classify.ApplySettlement` and its `mergedStatuses`).
 
 - A live settlement is a possibly incomplete view of the head (a missed webhook, a record recreated after the KV TTL):

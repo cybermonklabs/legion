@@ -193,7 +193,8 @@ func redundantSettlement(steps []record.RunStep, settlement record.Settlement) b
 // settlement of the record written again can carry a generation and snapshot an earlier one
 // carried, with a status created later. Each such pair is two steps, and the replay decides the
 // second by its statuses (ClassifySettlement): one that names no newer status replays as the
-// duplicate it is, and one that names a newer status as newer.
+// duplicate it is, and one that names a newer status as newer for its statuses alone
+// (SettlementStatusesOnly).
 func sameSettlement(a, b record.Settlement) bool {
 	return a.Head == b.Head && a.Generation == b.Generation && a.Snapshot == b.Snapshot && sameItems(a.CheckRuns, b.CheckRuns) &&
 		sameItems(a.Failing, b.Failing) && sameItems(a.Cancelled, b.Cancelled) && sameItems(a.Statuses, b.Statuses)

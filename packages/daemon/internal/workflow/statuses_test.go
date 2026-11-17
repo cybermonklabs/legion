@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -38,6 +40,30 @@ func keptStatus(context string, state record.CommitStatusState, minute int, head
 	return kept
 }
 
+// seedSettlingRound seeds LEGION-208 in testing, its pull request #42 open at head with no
+// settlement yet, and the implementer's and the tester's phases claimed: the issue each settlement
+// below is applied to, whose CI message reaches three roles (tell).
+func seedSettlingRound(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+}
+
+// tell is messages with the CI message settled added for each role a settlement of
+// seedSettlingRound's issue is told to - the architect, the tester and the implementer - in the
+// order the daemon queues them.
+func tell(t *testing.T, messages []record.RoleMessage, settled string) []record.RoleMessage {
+	t.Helper()
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
+		messages = append(messages, record.RoleMessage{Role: roleToken(t, role), Body: toldBody(settled)})
+	}
+	return messages
+}
+
 // The CI message names every commit status the settlement standing for the head names, each
 // with its state as GitHub spells it, in context order, after the check runs and apart from them:
 // one message to each of the three roles, as for a settlement that names none. A later settlement
@@ -45,12 +71,7 @@ func keptStatus(context string, state record.CommitStatusState, minute int, head
 // told again.
 func TestTheCIMessageNamesEachStatus(t *testing.T) {
 	pool := migratedPool(t)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+	seedSettlingRound(t, pool)
 	engine := mergingEngine()
 	messages := []record.RoleMessage{}
 	for i, step := range []struct {
@@ -63,9 +84,7 @@ func TestTheCIMessageNamesEachStatus(t *testing.T) {
 			`CI settled at head: "build" succeeded, "unit" failed; commit statuses: "ci/untested-draft" failure, "deploy" failure, "sched-suite" error`},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
-		for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-			messages = append(messages, record.RoleMessage{Role: roleToken(t, role), Body: toldBody(step.settled)})
-		}
+		messages = tell(t, messages, step.settled)
 		assertRoleMessages(t, pool, "LEGION-208", messages)
 		if got := issuePhase(t, pool); got != phase.Testing {
 			t.Fatalf("after settlement %d the issue is in %s, want testing", i+1, got)
@@ -198,12 +217,7 @@ func TestAFailedStatusMovesNoIssue(t *testing.T) {
 // and it says nothing new, so nobody is told again.
 func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 	pool := migratedPool(t)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+	seedSettlingRound(t, pool)
 	engine := mergingEngine()
 	unread := naming(settledAt("head", 3))
 	unread.StatusesUnread = true
@@ -224,9 +238,7 @@ func TestAStatusThatTurnsGreenLeavesNoRedName(t *testing.T) {
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
 		if step.settled != "" {
-			for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-				messages = append(messages, record.RoleMessage{Role: roleToken(t, role), Body: toldBody(step.settled)})
-			}
+			messages = tell(t, messages, step.settled)
 		}
 		assertRoleMessages(t, pool, "LEGION-208", messages)
 		pr := recordedPR(t, pool, "LEGION-208")
@@ -308,57 +320,62 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 	}
 }
 
-// A settlement whose check runs are older than the ones the pull request keeps, arriving after the
-// newer settlement, and that names a commit status the record does not hold yet - one created
-// later than the kept status of its context, or one of a context the newer settlement left out, as
-// a record that dropped its statuses at the size bound or a listener of an earlier release
-// writes it - changes that status alone. The kept check runs, the names failing and cancelled, the
-// generation and the snapshot stay as the newer settlement left them: e2e, a check GitHub never
-// started, stays cancelled as the newer settlement says, though the older one names it failing.
-// The roles are told of the changed status, and the newer settlement delivered again after it
-// changes nothing, tells nobody and marks no movement of the issue (record.Issue.MovedAt).
+// A settlement that names a commit status the record does not hold yet - one created later than
+// the kept status of its context, or one of a context the newer settlement left out, as a record
+// that dropped its statuses at the size bound or a listener of an earlier release writes it - and
+// that arrives after a newer settlement changes that status alone: one whose check runs are older
+// than the kept ones, and one whose check runs are the same at a lower generation, as a settlement
+// the listener sent before a check name appeared is to the fence of the one it sent after, which
+// adds lint. The kept check runs, the names failing and cancelled, the generation and the snapshot
+// stay as the newer settlement left them: e2e, a check GitHub never started, stays cancelled as
+// the newer settlement says, though the older one names it failing. The roles are told of the
+// changed status, and the newer settlement delivered again after it changes nothing, tells nobody
+// and marks no movement of the issue (record.Issue.MovedAt).
 func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
+	build1, build2 := []record.AttemptRun{{Name: "build", ID: 1}}, []record.AttemptRun{{Name: "build", ID: 2}}
 	for _, tc := range []struct {
 		name string
-		// newer is what the newer settlement names of the statuses, and told what the roles are
-		// told of it.
-		newer []record.CommitStatus
-		told  string
+		// newerRuns and newer are the check runs and the statuses the newer settlement names, and
+		// told what the roles are told of it; olderRuns are the check runs of the settlement that
+		// arrives after it, and toldOlder what the roles are told of that one.
+		newerRuns, olderRuns []record.AttemptRun
+		newer                []record.CommitStatus
+		told, toldOlder      string
 	}{
-		{"a status created later than the kept one", []record.CommitStatus{status("ci", "success", 1)},
-			`CI settled at head: "build" succeeded, "e2e" cancelled; commit statuses: "ci" success`},
-		{"a context the newer settlement left out", nil, `CI settled at head: "build" succeeded, "e2e" cancelled`},
+		{"a status created later than the kept one", build2, build1, []record.CommitStatus{status("ci", "success", 1)},
+			`CI settled at head: "build" succeeded, "e2e" cancelled; commit statuses: "ci" success`,
+			`CI settled at head: "build" succeeded, "e2e" cancelled; commit statuses: "ci" failure`},
+		{"a context the newer settlement left out", build2, build1, nil,
+			`CI settled at head: "build" succeeded, "e2e" cancelled`,
+			`CI settled at head: "build" succeeded, "e2e" cancelled; commit statuses: "ci" failure`},
+		{"the same runs as the newer settlement but the check name it added", []record.AttemptRun{{Name: "build", ID: 2}, {Name: "lint", ID: 3}}, build2, nil,
+			`CI settled at head: "build" succeeded, "e2e" cancelled, "lint" succeeded`,
+			`CI settled at head: "build" succeeded, "e2e" cancelled, "lint" succeeded; commit statuses: "ci" failure`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-				Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
-			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-				Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+			seedSettlingRound(t, pool)
 			// Each settlement is applied at a moment of its own after the record's own stamp, so a
 			// movement one of them marks is one no other could have written: the mark only ever
 			// moves forwards (record.Store.MarkIssueMoved).
 			base := issueRecord(t, pool, "LEGION-208").MovedAt.Add(time.Minute)
-			newer := intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", CheckRuns: []record.AttemptRun{{Name: "build", ID: 2}},
+			newer := intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", CheckRuns: tc.newerRuns,
 				Generation: 6, Snapshot: "head-6", Failing: []string{}, Cancelled: []string{"e2e"}, Statuses: tc.newer}
-			older := intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", CheckRuns: []record.AttemptRun{{Name: "build", ID: 1}},
+			older := intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", CheckRuns: tc.olderRuns,
 				Generation: 5, Snapshot: "head-5", Failing: []string{"e2e"}, Cancelled: []string{}, Statuses: []record.CommitStatus{status("ci", "failure", 2)}}
-			messages := []record.RoleMessage{}
-			tell := func(settled string) {
-				for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-					messages = append(messages, record.RoleMessage{Role: roleToken(t, role), Body: toldBody(settled)})
-				}
+			fence := make([]record.AttemptRun, 0, len(tc.newerRuns))
+			for _, run := range tc.newerRuns {
+				fence = append(fence, record.AttemptRun{Name: run.Name, ID: run.ID, Head: "head", Conclusion: record.RunSucceeded})
 			}
+			messages := []record.RoleMessage{}
 
 			applyRefusingNothing(t, pool, mergingEngineAt(base), newer)
 			settled := recordedPR(t, pool, "LEGION-208")
-			if want := []record.AttemptRun{{Name: "build", ID: 2, Head: "head", Conclusion: record.RunSucceeded}}; !reflect.DeepEqual(settled.CheckRuns, want) ||
-				len(settled.Failing) != 0 || !reflect.DeepEqual(settled.Cancelled, []string{"e2e"}) || settled.Generation != 6 || settled.Snapshot != "head-6" {
-				t.Fatalf("the newer settlement left %+v; want build's run 2, e2e cancelled at generation 6, head-6: this test proves nothing without it", settled)
+			if !reflect.DeepEqual(settled.CheckRuns, fence) || len(settled.Failing) != 0 || !reflect.DeepEqual(settled.Cancelled, []string{"e2e"}) ||
+				settled.Generation != 6 || settled.Snapshot != "head-6" {
+				t.Fatalf("the newer settlement left %+v; want the runs %+v, e2e cancelled at generation 6, head-6: this test proves nothing without it", settled, fence)
 			}
-			tell(tc.told)
+			messages = tell(t, messages, tc.told)
 			assertRoleMessages(t, pool, "LEGION-208", messages)
 
 			applyRefusingNothing(t, pool, mergingEngineAt(base.Add(time.Minute)), older)
@@ -367,7 +384,7 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 			if got := recordedPR(t, pool, "LEGION-208"); !reflect.DeepEqual(got, want) {
 				t.Fatalf("after the older settlement the pull request is\n  %+v\nwant the newer settlement's record with ci's failure its one change:\n  %+v", got, want)
 			}
-			tell(`CI settled at head: "build" succeeded, "e2e" cancelled; commit statuses: "ci" failure`)
+			messages = tell(t, messages, tc.toldOlder)
 			assertRoleMessages(t, pool, "LEGION-208", messages)
 			moved := issueRecord(t, pool, "LEGION-208").MovedAt
 
@@ -386,17 +403,12 @@ func TestAnOlderCheckRunSetChangesItsNewerStatusesAlone(t *testing.T) {
 // The listener numbers the settlements of a record the bucket's TTL removed and the reconcile
 // wrote again afresh, so a settlement of the recreated record can come at generation 0 after one
 // of a higher generation, with the same check runs. A failed commit status it names, created later
-// than the kept status of its context, makes it newer all the same: the pull request keeps the
-// failure, at the recreated record's numbering, and the daemon names that failed status to the
-// roles.
+// than the kept status of its context, makes it newer for its statuses alone: the pull request
+// keeps the failure at its own numbering, 4 and head-4, and the daemon names that failed status to
+// the roles.
 func TestARecreatedRecordStillNamesARedStatus(t *testing.T) {
 	pool := migratedPool(t)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+	seedSettlingRound(t, pool)
 	engine := mergingEngine()
 	recreated := naming(settledAt("head", 4), status("ci", "failure", 2))
 	recreated.Generation, recreated.Snapshot = 0, "head-recreated"
@@ -410,14 +422,12 @@ func TestARecreatedRecordStillNamesARedStatus(t *testing.T) {
 		{recreated, `CI settled at head: "build" succeeded, "unit" succeeded; commit statuses: "ci" failure`},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
-		for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-			messages = append(messages, record.RoleMessage{Role: roleToken(t, role), Body: toldBody(step.settled)})
-		}
+		messages = tell(t, messages, step.settled)
 		assertRoleMessages(t, pool, "LEGION-208", messages)
 	}
 	pr := recordedPR(t, pool, "LEGION-208")
-	if want := []record.CommitStatus{keptStatus("ci", "failure", 2, "head")}; !reflect.DeepEqual(pr.Statuses, want) || pr.Generation != 0 || pr.Snapshot != "head-recreated" {
-		t.Fatalf("the pull request keeps %+v at generation %d, snapshot %q; want %+v at the recreated record's 0, head-recreated",
+	if want := []record.CommitStatus{keptStatus("ci", "failure", 2, "head")}; !reflect.DeepEqual(pr.Statuses, want) || pr.Generation != 4 || pr.Snapshot != "head-4" {
+		t.Fatalf("the pull request keeps %+v at generation %d, snapshot %q; want %+v at its own 4, head-4: the recreated record's settlement changes its statuses alone",
 			pr.Statuses, pr.Generation, pr.Snapshot, want)
 	}
 }

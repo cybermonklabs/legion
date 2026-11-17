@@ -801,9 +801,10 @@ type PullRequest struct {
 	// release names none. So each applied settlement of the checked head is merged into it per
 	// context, the entry with the later created_at kept (classify.ApplySettlement): a context the
 	// settlement leaves out stays as it is kept, and an older status never puts back a state a
-	// newer one replaced. A settlement whose check runs are older than the kept ones and that
-	// names a newer status is applied to this list alone, and leaves the check runs, Failing,
-	// Cancelled, Generation and Snapshot as they are (classify.SettlementStatusesOnly). A
+	// newer one replaced. A settlement that names a newer status and whose check runs are older
+	// than the kept ones, or the same at a generation no higher than the kept one, is applied to
+	// this list alone, the kept entry standing on an equal created_at, and leaves the check runs,
+	// Failing, Cancelled, Generation and Snapshot as they are (classify.SettlementStatusesOnly). A
 	// settlement the daemon does not apply leaves it as it is. A settlement of a new checked head,
 	// a reopen and a new generation clear it with the check runs (classify.SettlementFor, the
 	// reopen step of a head run, Store.ClearGeneration). A move of the head leaves it stamped with

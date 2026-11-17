@@ -1009,18 +1009,21 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 // context the status with the later created_at stands, so a settlement that names fewer statuses
 // than the record keeps - the candidate's list is the whole list the head's CI record holds, which
 // can be fewer than GitHub holds, as record.PullRequest.Statuses says - leaves each context it
-// leaves out as it is, and an older settlement never puts back a status a newer one replaced. A
-// settlement this does not apply leaves the kept list as it is.
+// leaves out as it is, and an older settlement never puts back a status a newer one replaced. On
+// an equal created_at the settlement's entry stands. A settlement this does not apply leaves the
+// kept list as it is.
 //
-// A settlement whose check runs are older than the fence's and that names a newer status
-// (SettlementStatusesOnly) changes the kept statuses alone, merged as above, where it is of the
-// checked head: the fence, the failing and cancelled names, the generation and the snapshot stay
-// as the newer settlements left them, so the newer settlement delivered again is the duplicate it
-// was before (ClassifySettlement says why).
+// A settlement that names a newer status and whose check runs are older than the fence's, or the
+// same at a generation no higher than the kept one (SettlementStatusesOnly), changes the kept
+// statuses alone, merged as above where it is of the checked head, but with the kept entry
+// standing on an equal created_at, since the settlement is the older view: the fence, the failing
+// and cancelled names, the generation and the snapshot stay as the newer settlements left them,
+// so the newer settlement delivered again is the duplicate it was before (ClassifySettlement says
+// why).
 func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	classified := ClassifySettlement(pr, candidate)
 	if classified == SettlementStatusesOnly && candidate.Head == pr.CheckedHead {
-		pr.Statuses = mergedStatuses(pr, candidate)
+		pr.Statuses = mergedStatuses(pr, candidate, false)
 		return pr, true
 	}
 	if classified != SettlementNewer {
@@ -1032,7 +1035,7 @@ func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (reco
 	if candidate.Head == pr.CheckedHead {
 		pr.Generation = candidate.Generation
 		pr.Snapshot = candidate.Snapshot
-		pr.Statuses = mergedStatuses(pr, candidate)
+		pr.Statuses = mergedStatuses(pr, candidate, true)
 	}
 	pr.Failing = append([]string(nil), outcome.Failing...)
 	pr.Cancelled = append([]string(nil), outcome.Cancelled...)

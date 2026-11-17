@@ -272,11 +272,12 @@ func (r *Reconciler) holdStatuses(head pullHead, pages []pageOf[object], wanted 
 }
 
 // statusesUnread names at WARN a head whose commit statuses the pass read none of, with cause,
-// what GitHub answered: the error of a REST read of the listing (readStatuses) or the errors
-// entries a query answered against the head commit's status field (walk.visitHead). Both
-// refusals are this one line, which packages/envoy/cmd/dispatch/README.md ("CI reconcile") gives
-// operators with these four fields.
-func (r *Reconciler) statusesUnread(head pullHead, cause any) {
+// what GitHub answered: the error of a REST read of the listing (readStatuses), or the errors
+// entries a query answered against the head commit's status field as one error of their text
+// (errorText, walk.visitHead). Both refusals are this one line, which
+// packages/envoy/cmd/dispatch/README.md ("CI reconcile") gives operators with these four fields;
+// slog writes cause as its Error() text.
+func (r *Reconciler) statusesUnread(head pullHead, cause error) {
 	r.Logger.Warn("ci reconcile read no commit status of a head",
 		"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", cause)
 }

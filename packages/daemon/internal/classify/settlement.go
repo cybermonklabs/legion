@@ -15,8 +15,9 @@ const (
 	SettlementDuplicate SettlementClassification = "duplicate"
 	SettlementConflict  SettlementClassification = "conflict"
 	SettlementNewer     SettlementClassification = "newer"
-	// SettlementStatusesOnly is a settlement whose check runs are older than the ones kept and
-	// that names a commit status the pull request does not hold yet (statusNews): its statuses
+	// SettlementStatusesOnly is a settlement that names a commit status the pull request does not
+	// hold yet (statusNews) and is otherwise no newer than what it keeps: its check runs are older
+	// than the ones kept, or the same at a generation no higher than the kept one. Its statuses
 	// alone apply, and nothing else of it (ApplySettlement).
 	SettlementStatusesOnly SettlementClassification = "statuses-only"
 )
@@ -53,10 +54,11 @@ type SettlementCandidate struct {
 	// GitHub's created_at and with no stamp (record.CommitStatus): the whole list the head's CI
 	// record holds, which can be fewer than GitHub holds (record.PullRequest.Statuses says why).
 	// A status newer than the one the pull request keeps for its context, or of a context it keeps
-	// none of, makes a settlement of the same or a newer attempt set newer, and one of an older
-	// attempt set newer for its statuses alone (ClassifySettlement). The list is merged into the
-	// kept one per context wherever the settlement applies to the checked head (ApplySettlement).
-	// They are no check runs and decide nothing of the fence or what fails in it.
+	// none of, makes a settlement of an older attempt set, or of the same one at a generation no
+	// higher than the kept one, newer for its statuses alone (ClassifySettlement). The list is
+	// merged into the kept one per context wherever the settlement applies to the checked head
+	// (ApplySettlement). They are no check runs and decide nothing of the fence or what fails in
+	// it.
 	Statuses []record.CommitStatus `json:"statuses,omitempty"`
 }
 
@@ -82,17 +84,24 @@ type CiOutcome struct {
 // numbers the settlements of a record the bucket's TTL removed and the reconcile wrote again
 // afresh, so after such a recreation the generation is no order of a status, and a change of a
 // status's state would otherwise be stale or a conflict until the new record's generation passed
-// the old one's. So at the same attempt set such a settlement is newer. One whose attempt set is
-// older is newer for its statuses alone (SettlementStatusesOnly): its check runs, the names it
-// reports failing and cancelled, its generation and its snapshot are an older view than the
-// kept ones, and taking them would put the fence's numbering, and what a check name with no run
-// comes to, back to that view, after which the newer settlement delivered again would be newer
-// once more and move the issue for nothing. A settlement older for every check run it reports
-// and every status it names is stale, and one of the same attempt set, generation and snapshot
-// that names no newer status is the same observation delivered again.
+// the old one's. So a settlement that names such a status, and that neither its attempt set nor
+// its generation makes newer, is newer for its statuses alone (SettlementStatusesOnly): one whose
+// attempt set is older, and one of the same attempt set at a generation no higher than the kept
+// one. The same set includes one that names fewer checks than the fence, since a name only the
+// fence holds is ignored (CompareAttemptSets): a settlement a record sent before a later check
+// name appeared compares equal to the fence of the one it sent after. Such a settlement's check
+// runs, the names it reports failing and cancelled, its generation and its snapshot are no newer
+// view than the kept ones, and taking them would put the fence's numbering, and what a check name
+// with no run comes to, back to that view, after which the newer settlement delivered again would
+// be newer once more and move the issue for nothing. A recreated record's status changes so apply
+// as statuses alone, and its numbering is taken once a newer attempt set or a higher generation
+// of it comes, as for its check runs. A settlement older for every check run it reports and every
+// status it names is stale, and one of the same attempt set, generation and snapshot that names
+// no newer status is the same observation delivered again.
 //
-// The order of the statuses is read only where the attempt set leaves the answer open, so a
-// settlement the attempt set already makes newer builds no map of the kept statuses.
+// The order of the statuses is read only where the attempt set and the generation leave the
+// answer open, so a settlement either of them already makes newer builds no map of the kept
+// statuses.
 func ClassifySettlement(pr record.PullRequest, in SettlementCandidate) SettlementClassification {
 	if pr.CheckRuns == nil {
 		return SettlementNewer
@@ -107,20 +116,19 @@ func ClassifySettlement(pr record.PullRequest, in SettlementCandidate) Settlemen
 		}
 		return SettlementStale
 	}
-	if statusNews(pr, in) {
+	if in.Generation > pr.Generation {
 		return SettlementNewer
 	}
-
+	if statusNews(pr, in) {
+		return SettlementStatusesOnly
+	}
 	if in.Generation < pr.Generation {
 		return SettlementStale
 	}
-	if in.Generation == pr.Generation {
-		if in.Snapshot == pr.Snapshot {
-			return SettlementDuplicate
-		}
-		return SettlementConflict
+	if in.Snapshot == pr.Snapshot {
+		return SettlementDuplicate
 	}
-	return SettlementNewer
+	return SettlementConflict
 }
 
 // statusNews says whether in names a commit status the pull request does not hold yet for
@@ -213,12 +221,14 @@ func stampedRuns(in SettlementCandidate) []record.AttemptRun {
 }
 
 // mergedStatuses is the statuses pr keeps for in.Head merged with in's: for each context the
-// entry with the later created_at, in's on an equal time, each stamped with in.Head, which is
-// how the pull request keeps them (record.PullRequest.Statuses), in context order. A status
-// stamped with another head is dropped, a context in leaves out stays as it is kept, and an
-// older status of a context never puts back a state a newer one replaced. It is an empty list
-// where neither names any.
-func mergedStatuses(pr record.PullRequest, in SettlementCandidate) []record.CommitStatus {
+// entry with the later created_at, each stamped with in.Head, which is how the pull request keeps
+// them (record.PullRequest.Statuses), in context order. On an equal created_at the newer view's
+// entry stands: in's where newer says in is applied whole, and the kept one where in changes its
+// statuses alone (SettlementStatusesOnly), since in is then the older view. A status stamped with
+// another head is dropped, a context in leaves out stays as it is kept, and an older status of a
+// context never puts back a state a newer one replaced. It is an empty list where neither names
+// any.
+func mergedStatuses(pr record.PullRequest, in SettlementCandidate, newer bool) []record.CommitStatus {
 	byContext := make(map[string]record.CommitStatus, len(pr.Statuses)+len(in.Statuses))
 	for _, status := range pr.Statuses {
 		if status.StampedWith(in.Head) {
@@ -226,7 +236,7 @@ func mergedStatuses(pr record.PullRequest, in SettlementCandidate) []record.Comm
 		}
 	}
 	for _, status := range in.Statuses {
-		if kept, held := byContext[status.Context]; held && kept.CreatedAt.After(status.CreatedAt) {
+		if kept, held := byContext[status.Context]; held && (kept.CreatedAt.After(status.CreatedAt) || !newer && kept.CreatedAt.Equal(status.CreatedAt)) {
 			continue
 		}
 		status.Head = in.Head

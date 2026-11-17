@@ -128,10 +128,11 @@ func TestStatusesSurviveAReplayUnderAnOpenHeadRun(t *testing.T) {
 // The listener numbers the settlements of a record the bucket's TTL removed and the reconcile
 // wrote again afresh, so after such a recreation a settlement of the same head and the same check
 // runs comes at a generation below the one the pull request keeps. A status that changed state
-// since, with a later created_at, makes it newer all the same: it is applied and the kept status
-// takes the new state. The same settlement naming the status the pull request already keeps says
-// nothing new and changes nothing. One naming a context the pull request keeps no status of is
-// applied, and the kept statuses take the new context beside the ones they held.
+// since, with a later created_at, makes it newer for its statuses alone: the kept status takes the
+// new state, and the pull request keeps its own generation and snapshot. The same settlement
+// naming the status the pull request already keeps says nothing new and changes nothing. One
+// naming a context the pull request keeps no status of is applied as the first, and the kept
+// statuses take the new context beside the ones they held.
 func TestAStatusChangeAfterTheRecordWasRecreatedIsApplied(t *testing.T) {
 	pr := record.PullRequest{HeadSHA: "h1", CheckedHead: "h1", Failing: []string{}, Cancelled: []string{}, Generation: 7, Snapshot: "h1-7",
 		CheckRuns: []record.AttemptRun{{Name: "build", ID: 5, Head: "h1", Conclusion: record.RunSucceeded}},
@@ -143,14 +144,14 @@ func TestAStatusChangeAfterTheRecordWasRecreatedIsApplied(t *testing.T) {
 
 	t.Run("a status that changed state", func(t *testing.T) {
 		candidate := recreated(statusOf("ci", record.CommitStatusSuccess, 2))
-		if got := ClassifySettlement(pr, candidate); got != SettlementNewer {
-			t.Fatalf("the recreated record's settlement with ci's newer success is %s, want newer whatever its generation", got)
+		if got := ClassifySettlement(pr, candidate); got != SettlementStatusesOnly {
+			t.Fatalf("the recreated record's settlement with ci's newer success is %s, want statuses-only: its generation is below the kept one", got)
 		}
 		got, changed := ApplySettlement(pr, candidate)
 		got = stored(t, got)
 		want := []record.CommitStatus{keptStatus("ci", record.CommitStatusSuccess, 2, "h1")}
-		if !changed || !reflect.DeepEqual(got.Statuses, want) || got.Generation != 0 || got.Snapshot != "h1-recreated" {
-			t.Fatalf("applied %t, statuses %+v, generation %d, snapshot %q; want it applied, %+v kept and the candidate's numbering",
+		if !changed || !reflect.DeepEqual(got.Statuses, want) || got.Generation != 7 || got.Snapshot != "h1-7" {
+			t.Fatalf("applied %t, statuses %+v, generation %d, snapshot %q; want it applied, %+v kept and the pull request's own 7, h1-7",
 				changed, got.Statuses, got.Generation, got.Snapshot, want)
 		}
 	})
@@ -176,9 +177,74 @@ func TestAStatusChangeAfterTheRecordWasRecreatedIsApplied(t *testing.T) {
 	})
 }
 
+// settledAtH1 is a pull request whose head h1 is settled at ci's run 10, generation 5 and snapshot
+// h1-5, with deploy's failure created at minute 2 the one status it keeps: with h1's push applied
+// and no head run open, or, with underRun, with h1 arrived before its push, so that the
+// settlement is a step of the head run that opened then. Each fact goes through the store's JSON
+// (stored).
+func settledAtH1(t *testing.T, underRun bool) record.PullRequest {
+	t.Helper()
+	pr := record.PullRequest{HeadSHA: "h0", CheckedHead: "h0", Failing: []string{}, Generation: 1, Snapshot: "h0-1",
+		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 9, Head: "h0", Conclusion: record.RunSucceeded}}}
+	if !underRun {
+		pr = ApplyPush(pr, record.ClassifiedPush{SHA: "h1", Before: "h0"})
+	}
+	pr = stored(t, AdvancePullRequestHead(pr, Arrival{}, "h1"))
+	settled, changed := ApplyCheckSettlement(pr, SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}},
+		Generation: 5, Snapshot: "h1-5", Failing: []string{}, Statuses: []record.CommitStatus{statusOf("deploy", record.CommitStatusFailure, 2)}})
+	pr = stored(t, settled)
+	kept := []record.CommitStatus{keptStatus("deploy", record.CommitStatusFailure, 2, "h1")}
+	if !changed || (pr.Run != nil) != underRun || !reflect.DeepEqual(pr.Statuses, kept) {
+		t.Fatalf("h1's settlement (a run open: %t): changed %t, run %+v, statuses %+v; want %+v", underRun, changed, pr.Run, pr.Statuses, kept)
+	}
+	return pr
+}
+
+// withAndUnderRun runs check as the subtest name with no head run open, and again as name under
+// an open head run, as settledAtH1 sets each up.
+func withAndUnderRun(t *testing.T, name string, check func(t *testing.T, underRun bool)) {
+	t.Helper()
+	for _, underRun := range []bool{false, true} {
+		subtest := name
+		if underRun {
+			subtest += ", under an open head run"
+		}
+		t.Run(subtest, func(t *testing.T) { check(t, underRun) })
+	}
+}
+
 // A commit status created before the one the pull request keeps for its context changes nothing
-// of the kept statuses, whatever the settlement naming it does with the rest: one newer by its
-// generation or by its check runs is applied, and the kept status of the context stays as it is.
+// of the kept statuses where the settlement naming it is applied for its check runs: one newer by
+// its generation or by its check runs is applied at its own generation and snapshot, and the kept
+// status of the context stays as it is. Each is judged with no head run open and with one open,
+// where the settlement is a step of the run.
+func TestAnOlderStatusOfAContextStaysOutOfAnAppliedSettlement(t *testing.T) {
+	// green is deploy's success created before the kept failure, so it is no news of deploy.
+	green := []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 1)}
+	for _, tc := range []struct {
+		name      string
+		candidate SettlementCandidate
+	}{
+		{"a newer generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 6,
+			Snapshot: "h1-6", Failing: []string{}, Statuses: green}},
+		{"a newer run", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 11}}, Generation: 6,
+			Snapshot: "h1-6", Failing: []string{}, Statuses: green}},
+	} {
+		withAndUnderRun(t, tc.name, func(t *testing.T, underRun bool) {
+			pr := settledAtH1(t, underRun)
+			got, changed := ApplyCheckSettlement(pr, tc.candidate)
+			got = stored(t, got)
+			if !reflect.DeepEqual(got.Statuses, pr.Statuses) {
+				t.Fatalf("statuses %+v; want %+v kept: no status the settlement names is newer than deploy's kept failure", got.Statuses, pr.Statuses)
+			}
+			if !changed || got.Generation != tc.candidate.Generation || got.Snapshot != tc.candidate.Snapshot {
+				t.Fatalf("changed %t, generation %d, snapshot %q; want the settlement applied at %d, %q",
+					changed, got.Generation, got.Snapshot, tc.candidate.Generation, tc.candidate.Snapshot)
+			}
+		})
+	}
+}
+
 // A settlement older for every check run it reports and every status it names changes nothing at
 // all - one that names the kept status itself again among them, since a status created in the
 // same second is no newer - and nor does any other settlement that names no newer status and is
@@ -187,72 +253,107 @@ func TestAStatusChangeAfterTheRecordWasRecreatedIsApplied(t *testing.T) {
 // head run open and with one open, where the settlement is a step of the run and the replay with
 // it changes the same and no more.
 func TestAnOlderStatusOfAContextChangesNothing(t *testing.T) {
-	kept := []record.CommitStatus{keptStatus("deploy", record.CommitStatusFailure, 2, "h1")}
 	// green is deploy's success created before the kept failure, so it is no news of deploy.
 	green := []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 1)}
-	settledAtH1 := func(t *testing.T, underRun bool) record.PullRequest {
-		t.Helper()
-		pr := record.PullRequest{HeadSHA: "h0", CheckedHead: "h0", Failing: []string{}, Generation: 1, Snapshot: "h0-1",
-			CheckRuns: []record.AttemptRun{{Name: "ci", ID: 9, Head: "h0", Conclusion: record.RunSucceeded}}}
-		if !underRun {
-			pr = ApplyPush(pr, record.ClassifiedPush{SHA: "h1", Before: "h0"})
-		}
-		pr = stored(t, AdvancePullRequestHead(pr, Arrival{}, "h1"))
-		settled, changed := ApplyCheckSettlement(pr, SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}},
-			Generation: 5, Snapshot: "h1-5", Failing: []string{}, Statuses: []record.CommitStatus{statusOf("deploy", record.CommitStatusFailure, 2)}})
-		pr = stored(t, settled)
-		if !changed || (pr.Run != nil) != underRun || !reflect.DeepEqual(pr.Statuses, kept) {
-			t.Fatalf("h1's settlement (a run open: %t): changed %t, run %+v, statuses %+v; want %+v", underRun, changed, pr.Run, pr.Statuses, kept)
-		}
-		return pr
-	}
 	for _, tc := range []struct {
 		name      string
 		candidate SettlementCandidate
-		// applied is whether the settlement is applied for what it says of its check runs.
-		applied bool
 	}{
-		{"a newer generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 6,
-			Snapshot: "h1-6", Failing: []string{}, Statuses: green}, true},
-		{"a newer run", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 11}}, Generation: 6,
-			Snapshot: "h1-6", Failing: []string{}, Statuses: green}, true},
 		{"an older run", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 8}}, Generation: 6,
-			Snapshot: "h1-6", Failing: []string{}, Statuses: green}, false},
+			Snapshot: "h1-6", Failing: []string{}, Statuses: green}},
 		{"an older run naming the kept status again", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 8}},
-			Generation: 6, Snapshot: "h1-6", Failing: []string{}, Statuses: []record.CommitStatus{statusOf("deploy", record.CommitStatusFailure, 2)}}, false},
+			Generation: 6, Snapshot: "h1-6", Failing: []string{}, Statuses: []record.CommitStatus{statusOf("deploy", record.CommitStatusFailure, 2)}}},
 		{"an older generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 4,
-			Snapshot: "h1-4", Failing: []string{}, Statuses: green}, false},
+			Snapshot: "h1-4", Failing: []string{}, Statuses: green}},
 		{"the same settlement again", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 5,
-			Snapshot: "h1-5", Failing: []string{}, Statuses: green}, false},
+			Snapshot: "h1-5", Failing: []string{}, Statuses: green}},
 		{"a conflicting settlement", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 5,
-			Snapshot: "h1-5-recreated", Failing: []string{}, Statuses: green}, false},
+			Snapshot: "h1-5-recreated", Failing: []string{}, Statuses: green}},
 		{"another head's settlement", SettlementCandidate{Head: "h0", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 11}}, Generation: 7,
-			Snapshot: "h0-7", Failing: []string{}, Statuses: green}, false},
+			Snapshot: "h0-7", Failing: []string{}, Statuses: green}},
 	} {
-		for _, underRun := range []bool{false, true} {
-			name := tc.name
-			if underRun {
-				name += ", under an open head run"
+		withAndUnderRun(t, tc.name, func(t *testing.T, underRun bool) {
+			pr := settledAtH1(t, underRun)
+			got, changed := ApplyCheckSettlement(pr, tc.candidate)
+			got = stored(t, got)
+			if !reflect.DeepEqual(got.Statuses, pr.Statuses) {
+				t.Fatalf("statuses %+v; want %+v kept: no status the settlement names is newer than deploy's kept failure", got.Statuses, pr.Statuses)
 			}
-			t.Run(name, func(t *testing.T) {
-				pr := settledAtH1(t, underRun)
-				got, changed := ApplyCheckSettlement(pr, tc.candidate)
-				got = stored(t, got)
-				if !reflect.DeepEqual(got.Statuses, kept) {
-					t.Fatalf("statuses %+v; want %+v kept: no status the settlement names is newer than deploy's kept failure", got.Statuses, kept)
+			if changed || got.Generation != 5 || got.Snapshot != "h1-5" || !reflect.DeepEqual(got.CheckRuns, pr.CheckRuns) {
+				t.Fatalf("changed %t, generation %d, snapshot %q, check runs %+v; want nothing changed from 5, h1-5, %+v",
+					changed, got.Generation, got.Snapshot, got.CheckRuns, pr.CheckRuns)
+			}
+		})
+	}
+}
+
+// A settlement that names a commit status newer than the kept one of its context, or one of a
+// context the pull request keeps none of, and that neither its check runs nor its generation make
+// newer changes the kept statuses alone (SettlementStatusesOnly): one whose check runs are older
+// than the kept ones, whatever its generation, and one of the same check runs at a generation no
+// higher than the kept one, lint's run left out or not - a settlement the listener sent before
+// lint's run appeared compares equal to the fence of the one it sent after. The check runs, the
+// names failing and cancelled, the generation and the snapshot stay as the newer settlement left
+// them, though the settlement names e2e failing where the newer one has it cancelled. A status it
+// names that was created in the same second as the kept one of its context leaves the kept one
+// standing, since the settlement is the older view. The settlement delivered again, and the newer
+// one delivered again after it, change nothing. Each is judged with no head run open and with one
+// open, where the settlement is a step of the run.
+func TestASettlementOfNoNewerRunsChangesItsNewerStatusesAlone(t *testing.T) {
+	// newer settles h1 after settledAtH1's settlement: it adds lint's run, has e2e, a check GitHub
+	// never started, cancelled, and names no status, as a record that dropped its statuses at the
+	// size bound or a listener of an earlier release writes it.
+	newer := SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}, {Name: "lint", ID: 3}}, Generation: 6,
+		Snapshot: "h1-6", Failing: []string{}, Cancelled: []string{"e2e"}}
+	fence := []record.AttemptRun{{Name: "ci", ID: 10, Head: "h1", Conclusion: record.RunSucceeded},
+		{Name: "lint", ID: 3, Head: "h1", Conclusion: record.RunSucceeded}}
+	// deployPassed is deploy's success, created after the kept failure of deploy.
+	deployPassed := []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 3)}
+	passedKept := []record.CommitStatus{keptStatus("deploy", record.CommitStatusSuccess, 3, "h1")}
+	for _, tc := range []struct {
+		name      string
+		candidate SettlementCandidate
+		// statuses is what the pull request keeps once the settlement is applied.
+		statuses []record.CommitStatus
+	}{
+		{"an older run at a higher generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 8}},
+			Generation: 7, Snapshot: "h1-7", Failing: []string{"e2e"}, Cancelled: []string{}, Statuses: deployPassed}, passedKept},
+		{"the same runs without lint at a lower generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}},
+			Generation: 5, Snapshot: "h1-5", Failing: []string{"e2e"}, Cancelled: []string{}, Statuses: deployPassed}, passedKept},
+		{"the same runs at the same generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}, {Name: "lint", ID: 3}},
+			Generation: 6, Snapshot: "h1-6-recreated", Failing: []string{"e2e"}, Cancelled: []string{}, Statuses: deployPassed}, passedKept},
+		{"a status created in the same second as the kept one", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}},
+			Generation: 5, Snapshot: "h1-5", Failing: []string{"e2e"}, Cancelled: []string{},
+			Statuses: []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 2), statusOf("sched-suite", record.CommitStatusError, 3)}},
+			[]record.CommitStatus{keptStatus("deploy", record.CommitStatusFailure, 2, "h1"), keptStatus("sched-suite", record.CommitStatusError, 3, "h1")}},
+	} {
+		withAndUnderRun(t, tc.name, func(t *testing.T, underRun bool) {
+			pr, changed := ApplyCheckSettlement(settledAtH1(t, underRun), newer)
+			pr = stored(t, pr)
+			if !changed || !reflect.DeepEqual(pr.CheckRuns, fence) || len(pr.Failing) != 0 || !reflect.DeepEqual(pr.Cancelled, []string{"e2e"}) ||
+				pr.Generation != 6 || pr.Snapshot != "h1-6" {
+				t.Fatalf("the newer settlement: changed %t, pull request %+v; want %+v, e2e cancelled at generation 6, h1-6: this test proves nothing without it",
+					changed, pr, fence)
+			}
+			if got := ClassifySettlement(pr, tc.candidate); got != SettlementStatusesOnly {
+				t.Fatalf("the settlement is %s, want statuses-only: neither its check runs nor its generation are newer", got)
+			}
+			got, changed := ApplyCheckSettlement(pr, tc.candidate)
+			got = stored(t, got)
+			if !changed || !reflect.DeepEqual(got.Statuses, tc.statuses) {
+				t.Fatalf("changed %t, statuses %+v; want the settlement applied and %+v kept", changed, got.Statuses, tc.statuses)
+			}
+			if !reflect.DeepEqual(got.CheckRuns, pr.CheckRuns) || !reflect.DeepEqual(got.Failing, pr.Failing) || !reflect.DeepEqual(got.Cancelled, pr.Cancelled) ||
+				got.Generation != pr.Generation || got.Snapshot != pr.Snapshot {
+				t.Fatalf("check runs %+v, failing %v, cancelled %v at generation %d, snapshot %q; want the newer settlement's %+v, %v, %v at %d, %q",
+					got.CheckRuns, got.Failing, got.Cancelled, got.Generation, got.Snapshot, pr.CheckRuns, pr.Failing, pr.Cancelled, pr.Generation, pr.Snapshot)
+			}
+			for _, again := range []SettlementCandidate{tc.candidate, newer} {
+				if after, changed := ApplyCheckSettlement(got, again); changed || !reflect.DeepEqual(stored(t, after), got) {
+					t.Fatalf("the settlement at generation %d, snapshot %q delivered again: changed %t, pull request %+v; want nothing changed from %+v",
+						again.Generation, again.Snapshot, changed, after, got)
 				}
-				if tc.applied {
-					if !changed || got.Generation != tc.candidate.Generation || got.Snapshot != tc.candidate.Snapshot {
-						t.Fatalf("changed %t, generation %d, snapshot %q; want the settlement applied at %d, %q",
-							changed, got.Generation, got.Snapshot, tc.candidate.Generation, tc.candidate.Snapshot)
-					}
-					return
-				}
-				if changed || got.Generation != 5 || got.Snapshot != "h1-5" || !reflect.DeepEqual(got.CheckRuns, pr.CheckRuns) {
-					t.Fatalf("changed %t, generation %d, snapshot %q, check runs %+v; want nothing changed from 5, h1-5, %+v",
-						changed, got.Generation, got.Snapshot, got.CheckRuns, pr.CheckRuns)
-				}
-			})
-		}
+			}
+		})
 	}
 }
