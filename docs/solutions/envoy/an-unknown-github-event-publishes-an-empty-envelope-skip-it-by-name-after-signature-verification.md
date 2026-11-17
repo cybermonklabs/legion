@@ -26,8 +26,8 @@ symptoms:
 
 Envoy's GitHub webhook (`packages/envoy/internal/webhook/github.go`) does not refuse an event type
 it has never heard of. Until cybermonklabs/legion#4315 it normalized one through defaults that each
-looked harmless and together published one contentless envelope. LEGION-99 met this with GitHub's
-`merge_group` event and skipped that event by name; #4315 fixed the default, which was LEGION-114,
+looked harmless and together published one contentless envelope. An earlier change met this with
+GitHub's `merge_group` event and skipped that event by name; #4315 fixed the default itself,
 after a local CI's commit statuses made every Legion daemon of five repositories log hundreds of
 poison lines a day.
 
@@ -35,7 +35,7 @@ poison lines a day.
 
 In `packages/envoy/internal/contracts/normalize.go`, for an event with no case of its own:
 
-- `githubKind` falls through to `"comment"`;
+- `githubKind` fell through to `"comment"`;
 - `githubNumber` returns `""`, so `githubTopic` falls through to
   `GithubSubject(owner, repo, "comment")` — the **repository-wide** `notifications.github.<owner>.<repo>.comment`;
 - `githubSummary` falls through to `fmt.Sprintf("%s %s", event, action)` — non-empty, so
@@ -52,7 +52,7 @@ ERROR line per delivery (`valid` in `packages/daemon/internal/intake/decode.go`)
 
 ## The fix: publish only what the listener normalizes
 
-`githubKind` no longer falls through to `"comment"`: an event `githubEventKinds` does not name has
+The topic kind no longer falls through to `"comment"`: an event `githubEventKinds` does not name has
 no topic, and `GithubEnvelopes` publishes no envelope whose topic or payload is empty. An unknown
 event is answered 200 and published nowhere, after the signature check, because the handler
 reaches `GithubEnvelopes` only after it. `githubSkip` went with the default it worked around.
@@ -102,7 +102,9 @@ unsigned subtest.
 
 To publish another GitHub event, give it a kind in `githubEventKinds`, a case in `githubPayload`
 and `githubSummary`, and a body in `TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload`.
-Never bring back a default kind: it is how a commit status was filed as a comment.
+Never bring back a default kind: it is how a commit status was filed as a comment, and
+`TestGithubEnvelopesPublishNoEventTheListenerDoesNotNormalize` fails on it, as
+`TestGithubEnvelopesPublishNoEnvelopeWithAnEmptyPayload` fails on a publish with no payload.
 
 ## The fixed listener is not autodeployed
 

@@ -371,7 +371,7 @@ func githubTopic(owner string, repo string, event string, body map[string]any) s
 		}
 		return GithubWorkflowSubject(owner, repo, filename, action)
 	}
-	kind := githubKind(event)
+	kind := githubEventKinds[event]
 	if kind == "" {
 		return ""
 	}
@@ -448,12 +448,6 @@ var githubEventParents = map[string]string{
 	"issues":                      "issue",
 	"sub_issues":                  "issue",
 	"issue_comment":               "issue",
-}
-
-// githubKind is the topic kind githubEventKinds names for event, and "" for an event it does not
-// name, which has no topic.
-func githubKind(event string) string {
-	return githubEventKinds[event]
 }
 
 // githubEventKinds names the topic kind of each GitHub event the listener publishes. An event it does
@@ -551,6 +545,11 @@ func githubNumber(event string, body map[string]any) string {
 	case "issues":
 		return GithubPRNumber(nested(body, "issue", "number"))
 	case "sub_issues":
+		// GitHub delivers a sub-issue's change to each issue's repository: sub_issue_* to the
+		// parent's, parent_issue_* to the child's. The number is that repository's issue.
+		if strings.HasPrefix(stringValue(body["action"]), "parent_issue_") {
+			return GithubPRNumber(nested(body, "sub_issue", "number"))
+		}
 		return GithubPRNumber(nested(body, "parent_issue", "number"))
 	case "issue_comment":
 		return GithubPRNumber(nested(body, "issue", "number"))
@@ -924,9 +923,10 @@ func githubPayload(event string, body map[string]any) string {
 		}
 		addCappedBody(data, issueBody)
 	case "sub_issues":
-		// The event is published on the parent issue's topic, so number is the parent's. The two
-		// issues can be in two repositories: GitHub names the other in parent_issue_repo or
-		// sub_issue_repo, and each falls back to the webhook's own repository.
+		// The event is published on the topic of the issue in the webhook's own repository
+		// (githubNumber), so number is that issue's. The two issues can be in two repositories:
+		// GitHub names the other in parent_issue_repo or sub_issue_repo, and each falls back to
+		// the webhook's own repository.
 		parentRepo, subIssueRepo := nestedString(body, "parent_issue_repo", "full_name"), nestedString(body, "sub_issue_repo", "full_name")
 		if parentRepo == "" {
 			parentRepo = repo
@@ -939,8 +939,9 @@ func githubPayload(event string, body map[string]any) string {
 			"action":           action,
 			"repo":             repo,
 			"number":           number,
-			"title":            nestedString(body, "parent_issue", "title"),
-			"url":              nestedString(body, "parent_issue", "html_url"),
+			"parent_number":    GithubPRNumber(nested(body, "parent_issue", "number")),
+			"parent_title":     nestedString(body, "parent_issue", "title"),
+			"parent_url":       nestedString(body, "parent_issue", "html_url"),
 			"parent_repo":      parentRepo,
 			"sub_issue_number": GithubPRNumber(nested(body, "sub_issue", "number")),
 			"sub_issue_title":  nestedString(body, "sub_issue", "title"),

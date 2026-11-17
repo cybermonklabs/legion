@@ -675,8 +675,8 @@ RULES = {
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/golden_test.go:50"),
         (f"{FIX}/github-envelopes/*", "internal/contracts/golden_test.go:89")),
     f"{ENVOY}/internal/contracts/normalize_test.go": reads(
-        (f"{FIX}/github-envelopes/*", "internal/contracts/normalize_test.go:734"),
-        (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2032,2659")),
+        (f"{FIX}/github-envelopes/*", "internal/contracts/normalize_test.go:753"),
+        (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2078,2711")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:264 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
     f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:982,1013")),

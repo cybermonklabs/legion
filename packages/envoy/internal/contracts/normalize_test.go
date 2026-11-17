@@ -385,47 +385,66 @@ func TestGithubEnvelopesIssueCommentNumber(t *testing.T) {
 	}
 }
 
-// A sub-issue and its parent can be in two repositories. GitHub names the other one in
-// parent_issue_repo (on the child's repository's parent_issue_* delivery) or sub_issue_repo (on the
-// parent's repository's sub_issue_* delivery), and the payload says which repository each issue's
-// number is in: the webhook's own repository when GitHub names no other.
-func TestASubIssuesPayloadNamesTheRepositoryOfEachIssue(t *testing.T) {
+// GitHub delivers a sub_issues event to each issue's repository: a sub_issue_* action to the
+// parent's, naming the child's repository in sub_issue_repo, and a parent_issue_* action to the
+// child's, naming the parent's in parent_issue_repo. Each delivery is published on the topic of the
+// issue in the webhook's own repository, the parent for a sub_issue_* action and the child for a
+// parent_issue_* one, so a number on a topic is always that repository's issue. The payload names
+// both issues and the repository each is in: the webhook's own when GitHub names no other.
+func TestASubIssuesDeliveryIsPublishedOnItsOwnRepositorysIssue(t *testing.T) {
 	repository := map[string]any{"name": "example-repo", "full_name": "example-org/example-repo", "owner": map[string]any{"login": "example-org"}}
 	other := map[string]any{"name": "other-repo", "full_name": "example-org/other-repo", "owner": map[string]any{"login": "example-org"}}
+	issues := map[string]any{"parent_issue": map[string]any{"number": float64(41)}, "sub_issue": map[string]any{"number": float64(7)}}
+	body := func(fields map[string]any) map[string]any {
+		out := map[string]any{"repository": repository}
+		maps.Copy(out, issues)
+		maps.Copy(out, fields)
+		return out
+	}
 	for _, tc := range []struct {
 		name                  string
 		body                  map[string]any
+		wantNumber            string
 		wantParent, wantChild string
 	}{
 		{
-			name: "a sub-issue in another repository added to this repository's issue",
-			body: map[string]any{
-				"action": "sub_issue_added", "repository": repository, "sub_issue_repo": other,
-				"parent_issue": map[string]any{"number": float64(41)}, "sub_issue": map[string]any{"number": float64(7)},
-			},
-			wantParent: "example-org/example-repo", wantChild: "example-org/other-repo",
+			name:       "a sub-issue in another repository added to this repository's issue",
+			body:       body(map[string]any{"action": "sub_issue_added", "sub_issue_repo": other}),
+			wantNumber: "41", wantParent: "example-org/example-repo", wantChild: "example-org/other-repo",
 		},
 		{
-			name: "this repository's issue given a parent in another repository",
-			body: map[string]any{
-				"action": "parent_issue_added", "repository": repository, "parent_issue_repo": other,
-				"parent_issue": map[string]any{"number": float64(41)}, "sub_issue": map[string]any{"number": float64(7)},
-			},
-			wantParent: "example-org/other-repo", wantChild: "example-org/example-repo",
+			name:       "this repository's issue given a parent in another repository",
+			body:       body(map[string]any{"action": "parent_issue_added", "parent_issue_repo": other}),
+			wantNumber: "7", wantParent: "example-org/other-repo", wantChild: "example-org/example-repo",
 		},
 		{
-			name: "both in this repository",
-			body: map[string]any{
-				"action": "sub_issue_added", "repository": repository,
-				"parent_issue": map[string]any{"number": float64(41)}, "sub_issue": map[string]any{"number": float64(7)},
-			},
-			wantParent: "example-org/example-repo", wantChild: "example-org/example-repo",
+			name:       "a sub-issue of this repository added to an issue of this repository",
+			body:       body(map[string]any{"action": "sub_issue_added"}),
+			wantNumber: "41", wantParent: "example-org/example-repo", wantChild: "example-org/example-repo",
+		},
+		{
+			name:       "this repository's issue taken from its parent in this repository",
+			body:       body(map[string]any{"action": "parent_issue_removed"}),
+			wantNumber: "7", wantParent: "example-org/example-repo", wantChild: "example-org/example-repo",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			payload := decodePayload(t, GithubEnvelope(GithubEnvelopeInput{Event: "sub_issues", Delivery: "d", EventID: "e", TraceID: "t", Body: tc.body}).Payload)
-			if payload["parent_repo"] != tc.wantParent || payload["sub_issue_repo"] != tc.wantChild {
-				t.Fatalf("parent_repo = %q, sub_issue_repo = %q; want %q and %q", payload["parent_repo"], payload["sub_issue_repo"], tc.wantParent, tc.wantChild)
+			items := GithubEnvelopes(GithubEnvelopeInput{Event: "sub_issues", Delivery: "d", EventID: "e", TraceID: "t", Body: tc.body}, "@legion")
+			if len(items) != 1 {
+				t.Fatalf("published %d envelopes, want 1", len(items))
+			}
+			if want := "notifications.github.example-org.example-repo.issue." + tc.wantNumber + ".sub_issue"; items[0].Topic != want {
+				t.Fatalf("topic = %q, want %q", items[0].Topic, want)
+			}
+			payload := decodePayload(t, items[0].Payload)
+			want := map[string]string{
+				"number": tc.wantNumber, "parent_number": "41", "sub_issue_number": "7",
+				"parent_repo": tc.wantParent, "sub_issue_repo": tc.wantChild,
+			}
+			for key, value := range want {
+				if payload[key] != value {
+					t.Errorf("payload %s = %q, want %q", key, payload[key], value)
+				}
 			}
 		})
 	}
@@ -724,7 +743,7 @@ func TestGithubTopicKindsHoldEveryTokenAfterTheRepository(t *testing.T) {
 		events = append(events, event)
 	}
 	for _, event := range events {
-		topics = append(topics, prefix+githubKind(event))
+		topics = append(topics, prefix+githubEventKinds[event])
 		for _, body := range []map[string]any{{}, {"issue": map[string]any{"pull_request": map[string]any{}}}} {
 			if parent := githubParentKind(event, body); parent != "" {
 				topics = append(topics, prefix+parent)
@@ -2016,7 +2035,34 @@ func TestGithubEnvelopesPublishNoEventTheListenerDoesNotNormalize(t *testing.T) 
 			if len(items) != 0 {
 				t.Fatalf("%s published %d envelopes, the first on %s with payload %q; want none", event, len(items), items[0].Topic, items[0].Payload)
 			}
+			// No topic either: no event is a comment, or any other kind, by default.
+			if topic := githubTopic("example-org", "example-repo", event, body); topic != "" {
+				t.Fatalf("%s has topic %s, want none", event, topic)
+			}
 		})
+	}
+}
+
+// GithubEnvelopes publishes no envelope with an empty payload, even for an event the topic table
+// names: an event given a kind and no case in githubPayload is published nowhere, rather than on
+// its topic with no payload, which every Legion daemon that hears the repository would terminate
+// as poison.
+func TestGithubEnvelopesPublishNoEnvelopeWithAnEmptyPayload(t *testing.T) {
+	const event = "example_unnormalized_event"
+	githubEventKinds[event] = "example"
+	t.Cleanup(func() { delete(githubEventKinds, event) })
+	body := map[string]any{
+		"action": "created",
+		"repository": map[string]any{
+			"name": "example-repo", "full_name": "example-org/example-repo",
+			"owner": map[string]any{"login": "example-org"},
+		},
+	}
+	if topic := githubTopic("example-org", "example-repo", event, body); topic == "" {
+		t.Fatal("the named event has no topic, so this test would not reach the payload check")
+	}
+	if items := GithubEnvelopes(GithubEnvelopeInput{Event: event, Delivery: "d", EventID: "e", TraceID: "t", Body: body}, "@legion"); len(items) != 0 {
+		t.Fatalf("published %d envelopes, the first on %s with payload %q; want none", len(items), items[0].Topic, items[0].Payload)
 	}
 }
 
@@ -2071,6 +2117,9 @@ func TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload(t *testing.T) {
 		// none is an event the two tables name that is published nowhere: a pull request's CI
 		// folds into the CI store, which publishes the settlement.
 		none bool
+		// mentions is a body that mentions the trigger, so it is published three times: on its
+		// resource's mention topic, on the repository's, and on its own.
+		mentions bool
 	}{
 		{name: "pull_request", event: "pull_request", body: fixture("pull-request-opened")},
 		{name: "issues", event: "issues", body: issue},
@@ -2082,13 +2131,13 @@ func TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload(t *testing.T) {
 		{name: "issue_comment", event: "issue_comment", body: fixture("issue-comment-created")},
 		{name: "issue_comment edited", event: "issue_comment", body: fixture("issue-comment-edited")},
 		{name: "issue_comment deleted", event: "issue_comment", body: withAction("issue-comment-created", "deleted")},
-		{name: "issue_comment past every cap", event: "issue_comment", body: withBody("issue-comment-pr-created", "comment", long)},
-		{name: "issue_comment not UTF-8", event: "issue_comment", body: withBody("issue-comment-pr-created", "comment", notUTF8)},
+		{name: "issue_comment past every cap", event: "issue_comment", body: withBody("issue-comment-pr-created", "comment", long), mentions: true},
+		{name: "issue_comment not UTF-8", event: "issue_comment", body: withBody("issue-comment-pr-created", "comment", notUTF8), mentions: true},
 		{name: "pull_request_review", event: "pull_request_review", body: fixture("pull-request-review-submitted")},
-		{name: "pull_request_review past every cap", event: "pull_request_review", body: withBody("pull-request-review-submitted", "review", long)},
+		{name: "pull_request_review past every cap", event: "pull_request_review", body: withBody("pull-request-review-submitted", "review", long), mentions: true},
 		{name: "pull_request_review_comment", event: "pull_request_review_comment", body: fixture("pull-request-review-comment-created")},
 		{name: "pull_request_review_comment edited", event: "pull_request_review_comment", body: withAction("pull-request-review-comment-created", "edited")},
-		{name: "pull_request_review_comment not UTF-8", event: "pull_request_review_comment", body: withBody("pull-request-review-comment-created", "comment", notUTF8)},
+		{name: "pull_request_review_comment not UTF-8", event: "pull_request_review_comment", body: withBody("pull-request-review-comment-created", "comment", notUTF8), mentions: true},
 	}
 	published := map[string]bool{}
 	for _, tc := range cases {
@@ -2103,6 +2152,9 @@ func TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload(t *testing.T) {
 			}
 			if len(items) == 0 {
 				t.Fatal("published nothing")
+			}
+			if tc.mentions && len(items) != 3 {
+				t.Fatalf("published %d envelopes, want 3: a body that mentions the trigger fans out", len(items))
 			}
 			for _, item := range items {
 				wire, err := json.Marshal(item)
