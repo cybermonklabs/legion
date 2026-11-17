@@ -2217,15 +2217,18 @@ package api
 // Contract 137 is served with no code of its own here: it moved no key path, no value and no
 // request field, and changed no answer's status or meaning (its flag is on the launcher's command
 // line, which the image probe holds, entry 137 above), so a caller at 137 is served what a caller
-// at 133 is, and its records are 133's under its own number. main's #3983 took no number and so
-// belongs to 137: the sentence of `HANDOFF_NO_RUN` and when `fresh_session` restarts a phase,
-// which move no key and reach every caller alike.
+// at 133 is, and its records are 133's under its own number. main's #3983 (86218fbc) took no
+// number of its own and merged when main declared 133, so legion-v20.19.3 and v20.19.4 carry it
+// under 133, and 137 is the first contract every daemon of which carries it: the sentence of
+// `HANDOFF_NO_RUN` and when `fresh_session` restarts a phase, which move no key and reach every
+// caller alike.
 // main's #3982 replaced `settings.pod_update_retask_hours` and `settings.pod_update_notice_hours`
 // with `settings.pod_update_grace_minutes`. #3982 merged when main declared 111 and took no
-// contract number of its own. An unnumbered change belongs to the first contract number whose
-// daemon carries it, and 123 is the first contract whose daemon carries
-// `pod_update_grace_minutes`: a daemon at 123 sends that key and neither of the two old keys. A
-// caller below 123 is served the settings block
+// contract number of its own, so a daemon at 111 may send either shape: legion-v20.14.0 is
+// #3982's merge commit (50bfbb0d) itself, declares 111 and sends `pod_update_grace_minutes`.
+// 123 is the first contract every daemon of which carries the change: a daemon at 123 sends
+// `pod_update_grace_minutes` and neither of the two old keys. A caller below 123 is served the
+// settings block
 // without `pod_update_grace_minutes` (`withoutPodUpdateGrace`, the band of
 // `podUpdateGraceContract`). It is served the two removed keys as stand-ins, with the defaults an
 // unconfigured daemon sent before #3982: 1 and 4 (`withPodUpdateHours`). A caller at 123 or above

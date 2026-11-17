@@ -815,16 +815,17 @@ const quietTimeContract = 111
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 154
 
-// podUpdateGraceContract is the daemon contract whose settings block carries
+// podUpdateGraceContract is the first daemon contract every daemon of which sends
 // `pod_update_grace_minutes` in place of `pod_update_retask_hours` and `pod_update_notice_hours`
-// (main's #3982). #3982 merged when main declared 111 and took no contract number of its own. An
-// unnumbered change belongs to the first contract number whose daemon carries it, and a daemon at
-// 123 is the first to send `pod_update_grace_minutes` and neither of the two old keys
-// (version.go's 154). A caller below it is served the block without the new key
+// (main's #3982). #3982 merged when main declared 111 and took no contract number of its own, so a
+// daemon at 111 may send either shape (legion-v20.14.0, #3982's own merge commit, declares 111 and
+// sends the new key); a daemon at 123 sends `pod_update_grace_minutes` and neither of the two old
+// keys (version.go's 154). A caller below it is served the block without the new key
 // (withoutPodUpdateGrace) and with the two old keys as stand-ins (withPodUpdateHours).
 //
 // It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
-// that constant, and the contract whose daemon first carried the new key stays where it is.
+// that constant, and the first contract every daemon of which carries the new key stays where it
+// is.
 const podUpdateGraceContract = 123
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
