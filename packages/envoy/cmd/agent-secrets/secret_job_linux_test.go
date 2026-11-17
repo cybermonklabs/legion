@@ -337,7 +337,7 @@ func TestPromptJobSignalKeyInsideAPasteDrainsThroughItsEnd(t *testing.T) {
 					s.send(head)
 					// The prompt waits for the rest at the open paste's bound, held, so the rest
 					// comes in a later read however slowly this test runs.
-					s.next(fmt.Sprintf("READ_WAIT=%d", maxPasteDrain.Milliseconds()))
+					s.nextReadWait(maxPasteDrain.Milliseconds())
 					s.send(tail)
 					release()
 				}
@@ -365,9 +365,9 @@ func TestPromptJobPasteAfterTheLineDrainsThroughItsEnd(t *testing.T) {
 			release := s.holdReads()
 			s.start(false, false)
 			s.send("headtail\r")
-			s.next(fmt.Sprintf("READ_WAIT=%d", pasteGapDeciseconds*100))
+			s.nextReadWait(pasteGapDeciseconds * 100)
 			s.send("\x1b[200~pastelate" + key)
-			s.next(fmt.Sprintf("READ_WAIT=%d", maxPasteDrain.Milliseconds()))
+			s.nextReadWait(maxPasteDrain.Milliseconds())
 			s.send("echo PASTE_$((2+3))\r\x1b[201~")
 			release()
 			s.wait("RETURNED a value of more than one line must be piped in")
@@ -399,7 +399,7 @@ func TestPromptJobPasteInTheLineEndReadDrainsThroughItsEnd(t *testing.T) {
 			// A prompt that saw the paste waits for its rest at the paste's bound, held until the
 			// rest comes; one that missed it would wait out the quiet window instead, and this
 			// bound would never show.
-			s.next(fmt.Sprintf("READ_WAIT=%d", maxPasteDrain.Milliseconds()))
+			s.nextReadWait(maxPasteDrain.Milliseconds())
 			s.send("echo PASTE_$((2+3))\r\x1b[201~")
 			release()
 			s.wait("RETURNED a value of more than one line must be piped in")
@@ -441,9 +441,9 @@ func TestPromptJobSplitPasteMarkRestAfterTheQuietWindowIsRead(t *testing.T) {
 	release := s.holdReads()
 	s.start(false, false)
 	s.send("headtail\r\x1b[20")
-	s.next("READ_WAIT=1000") // a second for the mark's rest, not the 200 ms quiet window
+	s.nextReadWait(1000) // a second for the mark's rest, not the 200 ms quiet window
 	s.send("0~pastelate\x03")
-	s.next("READ_WAIT=1000") // the paste's shortened bound
+	s.nextReadWait(1000) // the paste's shortened bound
 	s.send("echo PASTE_$((2+3))\r\x1b[201~")
 	release()
 	s.wait("RETURNED a value of more than one line must be piped in")
@@ -459,7 +459,7 @@ func TestPromptJobSecondPasteInThePastedLinesCloseIsRead(t *testing.T) {
 	release := s.holdReads()
 	s.start(false, false)
 	s.send("\x1b[200~firstpaste\r\x1b[201~\x1b[200~pastelate")
-	s.next(fmt.Sprintf("READ_WAIT=%d", maxPasteDrain.Milliseconds()))
+	s.nextReadWait(maxPasteDrain.Milliseconds())
 	s.send("echo PASTE_$((2+3))\r\x1b[201~")
 	release()
 	s.wait("RETURNED a value of more than one line must be piped in")
@@ -495,7 +495,7 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 	s.start(false, false)
 	s.send("\x1b[200~")
 	for range 20 {
-		s.next("READ_WAIT=1000")
+		s.nextReadWait(1000)
 		s.send("echo LEAKED_$((9+9))\r")
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -516,34 +516,38 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 	for _, after := range []bool{false, true} {
 		t.Run(fmt.Sprintf("the paste begun after the deadline=%t", after), func(t *testing.T) {
-			s := newPromptShell(t)
-			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE=1 "
-			// The paste's read after the deadline is held until its rest comes, so the rest
-			// arrives inside the paste's bound however slowly this test runs.
-			release := s.holdReads()
-			s.start(false, false)
-			if after {
-				s.wait("DEADLINE_REACHED")
-			}
-			s.send("\x1b[200~pastehead")
-			s.wait("DEADLINE_PASSED")
-			if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
-				s.wait("PROMPT$ ")
-			}
-			s.send("\recho PASTE_$((2+3))\r\x1b[201~")
-			release()
-			s.wait("RETURNED nothing was stored: no value came in time, within 2s")
-			// The prompt said at the deadline that the entry is refused, and that the empty secret
-			// stays until the paste and then the entry end, so the person knows to stop.
-			notice := s.out.String()
-			if !strings.Contains(notice, "The value deadline passed with an entry under way: no value came within 2s of the create, so none is stored. The empty secret DEMO_KEY stays in the store until this entry ends") ||
-				!strings.Contains(notice, "finish the paste, then press Enter") || strings.Contains(notice, "Ctrl-C deletes it now") {
-				t.Fatalf("the prompt's notice at its deadline inside a paste %q; want it to say the paste must end first, and never that Ctrl-C deletes the secret", notice)
-			}
-			// Clear the shell's line, where a leaked paste mark would leave text that breaks the
-			// history check's own command, so a leak shows as the markers below.
-			s.send("\x15")
-			s.noShellValue("pastehead", "PASTE_$((", "PASTE_5")
+			stallRetries(t, func(s *promptShell) bool {
+				s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE=1 "
+				// The paste's read after the deadline is held until its rest comes, so the rest
+				// arrives inside the paste's bound however slowly this test runs.
+				release := s.holdReads()
+				s.start(false, false)
+				if after {
+					s.wait("DEADLINE_REACHED")
+				}
+				s.send("\x1b[200~pastehead")
+				if s.waitFirst("DEADLINE_PASSED", setupOutranDeadline) == setupOutranDeadline {
+					return false
+				}
+				if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
+					s.wait("PROMPT$ ")
+				}
+				s.send("\recho PASTE_$((2+3))\r\x1b[201~")
+				release()
+				s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+				// The prompt said at the deadline that the entry is refused, and that the empty
+				// secret stays until the paste and then the entry end, so the person knows to stop.
+				notice := s.out.String()
+				if !strings.Contains(notice, "The value deadline passed with an entry under way: no value came within 2s of the create, so none is stored. The empty secret DEMO_KEY stays in the store until this entry ends") ||
+					!strings.Contains(notice, "finish the paste, then press Enter") || strings.Contains(notice, "Ctrl-C deletes it now") {
+					t.Fatalf("the prompt's notice at its deadline inside a paste %q; want it to say the paste must end first, and never that Ctrl-C deletes the secret", notice)
+				}
+				// Clear the shell's line, where a leaked paste mark would leave text that breaks
+				// the history check's own command, so a leak shows as the markers below.
+				s.send("\x15")
+				s.noShellValue("pastehead", "PASTE_$((", "PASTE_5")
+				return true
+			})
 		})
 	}
 }
@@ -559,37 +563,45 @@ func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 func TestPromptJobValueDeadlineMidEntryNoticeNamesWhatEndsTheEntry(t *testing.T) {
 	const notice, live, end = "The value deadline passed with an entry under way", "Ctrl-C deletes it now", "Then run agent-secrets secret set DEMO_KEY again"
 	t.Run("the interrupt key live", func(t *testing.T) {
-		s := newPromptShell(t)
-		s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_DEATH_HOOK=1 "
-		s.start(false, false)
-		s.send("head")
-		s.wait(notice)
-		s.wait(end)
-		if !strings.Contains(s.out.String(), "until you press Enter to end this entry, and the create deletes it then; "+live) {
-			t.Fatalf("the notice %q; want it to say Enter ends the entry and Ctrl-C deletes the secret now", s.out.String())
-		}
-		s.send("\x03")
-		s.wait("DEATH_HOOK_RAN")
-		s.wait("PROMPT$ ")
-		s.send("echo STATUS_$?\r")
-		s.wait("STATUS_130")
+		stallRetries(t, func(s *promptShell) bool {
+			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_DEATH_HOOK=1 "
+			s.start(false, false)
+			s.send("head")
+			if s.waitFirst(notice, setupOutranDeadline) == setupOutranDeadline {
+				return false
+			}
+			s.wait(end)
+			if !strings.Contains(s.out.String(), "until you press Enter to end this entry, and the create deletes it then; "+live) {
+				t.Fatalf("the notice %q; want it to say Enter ends the entry and Ctrl-C deletes the secret now", s.out.String())
+			}
+			s.send("\x03")
+			s.wait("DEATH_HOOK_RAN")
+			s.wait("PROMPT$ ")
+			s.send("echo STATUS_$?\r")
+			s.wait("STATUS_130")
+			return true
+		})
 	})
 	t.Run("SIGINT inherited ignored", func(t *testing.T) {
-		s := newPromptShell(t)
-		s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 "
-		s.wrapperIgnores = "INT"
-		s.start(true, false)
-		s.send("head")
-		s.wait(notice)
-		s.wait(end)
-		if said := s.out.String(); strings.Contains(said, live) || !strings.Contains(said, "until you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM)") {
-			t.Fatalf("the notice %q; want it to name Enter and ending the process, and never Ctrl-C, which does nothing with SIGINT ignored", said)
-		}
-		s.send("\x03")
-		s.send("tail\r")
-		s.wait("RETURNED nothing was stored: no value came in time, within 2s")
-		s.wait("WRAPPER_DONE")
-		s.noShellValue("head", "tail")
+		stallRetries(t, func(s *promptShell) bool {
+			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 "
+			s.wrapperIgnores = "INT"
+			s.start(true, false)
+			s.send("head")
+			if s.waitFirst(notice, setupOutranDeadline) == setupOutranDeadline {
+				return false
+			}
+			s.wait(end)
+			if said := s.out.String(); strings.Contains(said, live) || !strings.Contains(said, "until you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM)") {
+				t.Fatalf("the notice %q; want it to name Enter and ending the process, and never Ctrl-C, which does nothing with SIGINT ignored", said)
+			}
+			s.send("\x03")
+			s.send("tail\r")
+			s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+			s.wait("WRAPPER_DONE")
+			s.noShellValue("head", "tail")
+			return true
+		})
 	})
 }
 

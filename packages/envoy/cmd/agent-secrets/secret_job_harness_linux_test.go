@@ -148,6 +148,32 @@ func (s *promptShell) holdReads() (release func()) {
 	}
 }
 
+// nextReadWait waits for the helper's next held read whose bound is ms (holdReads): the whole
+// line, so a bound of 1000 is not taken for one of 10000.
+func (s *promptShell) nextReadWait(ms int64) {
+	s.t.Helper()
+	s.next(fmt.Sprintf("READ_WAIT=%d\r\n", ms))
+}
+
+// setupOutranDeadline is what the helper prints when its prompt, given a deadline inside the
+// entry (AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY), reached its first check of that deadline only
+// after it had passed, before it read anything: the machine stalled across the moment between
+// the helper setting the deadline and the prompt's first read.
+const setupOutranDeadline = "SETUP_OUTRAN_DEADLINE"
+
+// stallRetries runs scenario in a new shell, and again in another when it answers false: it does
+// so when the helper printed setupOutranDeadline, a run that says nothing of the prompt. A third
+// such run fails the test.
+func stallRetries(t *testing.T, scenario func(s *promptShell) bool) {
+	t.Helper()
+	for attempt := 1; !scenario(newPromptShell(t)); attempt++ {
+		if attempt == 3 {
+			t.Fatalf("the machine stalled past the value deadline before the prompt's first read in %d runs", attempt)
+		}
+		t.Logf("run %d: the machine stalled past the value deadline before the prompt's first read; running it again", attempt)
+	}
+}
+
 // reset forgets what the terminal has shown so far.
 func (s *promptShell) reset() {
 	s.out.Reset()
@@ -458,7 +484,9 @@ func TestPromptJobHelper(t *testing.T) {
 			}
 		}
 	}
+	reads := 0
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
+		reads++
 		if stopRead {
 			// The preceding read included Ctrl-Z. Reaching the next read means feed has
 			// handled it, unlike READ_SOME, which is printed before feed sees the bytes.
@@ -513,6 +541,12 @@ func TestPromptJobHelper(t *testing.T) {
 		}
 	}
 	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", "", deadline, label)
+	if midEntry && reads == 0 && errors.Is(err, errValueTimedOut) {
+		// The prompt reached its first check of the deadline only after the deadline had passed,
+		// before it read at all: the machine stalled between the helper setting the deadline and
+		// the prompt's first read, and this run says nothing of the entry (stallRetries).
+		fmt.Println(setupOutranDeadline)
+	}
 	restored, restoreErr := unix.IoctlGetTermios(0, unix.TCGETS)
 	fmt.Printf("RETURNED %v MATCH=%t EMPTY=%t RESTORED=%t LABEL_HELD=%t\n", err, value == "headtail", value == "",
 		restoreErr == nil && termiosKey(restored) == reference, label.shown && label.held)
