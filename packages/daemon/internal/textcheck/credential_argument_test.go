@@ -21,20 +21,25 @@ import (
 // `printf 'Authorization: Bearer %s' "$token" | curl -H @- …` (printf is a shell builtin, which
 // starts no process), `-H @<(printf …)`, `--data @-`, or a curl config on standard input (`-K -`).
 // This check holds every text file of the repository to that, but docs/plans and
-// docs/superpowers, which are dated history. (dispatch://INFRA-3950)
+// docs/superpowers, which are dated history.
 
-// bearerArgument matches a header argument that carries a bearer from a variable, a command
+// credentialHeader matches a header argument that carries a credential from a variable, a command
 // substitution or a placeholder for one, in each spelling a text of this repository writes:
 // `-H "Authorization: Bearer $…`, `--header='Authorization: Bearer '"$…`, `-H "Authorization:
-// Bearer \$…` inside a heredoc that writes a script, and `-H "Authorization: Bearer <token>"`.
-// A header curl reads with `-H @…` names no `Authorization:` after the flag, so it matches nothing.
-var bearerArgument = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\s*)\\?["']?authorization:\s*(?:bearer|token)\s+(?:\\?["'])*\\?[$<]`)
+// Bearer \$…` inside a heredoc that writes a script, and `-H "Authorization: Bearer <token>"`. The
+// credential is a bearer, a GitHub `token` or a `Basic` password, or the value of a header named
+// for a key or a token (`X-Api-Key:`, `x-goog-api-key:`, `X-Auth-Token:`, IMDSv2's
+// `X-aws-ec2-metadata-token:`); `X-Key:` and `Idempotency-Key:` name no credential. A whole header
+// in a variable named for one (`-H "$auth_header"`) matches too. A header curl reads with `-H @…`
+// names nothing after the flag, so it matches nothing.
+var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\s*)\\?["']?(?:(?:authorization:\s*(?:bearer|token|basic)\s+|[\w-]*(?:api-key|-token)\s*:\s*)(?:\\?["'])*\\?[$<]|\\?\$\{?\w*(?:auth|token|bearer|credential))`)
 
 // credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`), a
 // request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`) or a token
-// itself (`--token`, kubectl's and gh's). It is written case-sensitive, since `-D` and `-U` are
-// other flags; `--token-file` and `--github-token` are other flags too, and match nothing.
-var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--post-data|-F|--form|--token)(?:=|[ \t]+)`)
+// itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`). It is written
+// case-sensitive, since `-D` and `-U` are other flags; `--token-file` and `--github-token` are
+// other flags too, and match nothing.
+var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--post-data|-F|--form|--token|--oauth2-bearer)(?:=|[ \t]+)`)
 
 // passwordWord matches a `-u` word whose password is a variable, a token file read into it or a
 // placeholder (`"$user:$token"`, `"ada:$(cat …)"`, `"ada:<password>"`), or a variable named for a
@@ -47,10 +52,11 @@ var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:c
 // `$app_tokens_dir`), or a token file read into it.
 var tokenWord = regexp.MustCompile(`(?i)token\\?["']?\s*[=:]\s*\\?["']?\\?[$<]|\$\{?\w*token\b|\$\(\s*(?:cat\s|<)[^)]*token`)
 
-// tokenValue matches a `--token` value that is one variable, one command substitution or one
-// placeholder, quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`. A value that joins
-// several, dev-oidc-issuer's `--token "$audience=$account=$file"`, names a file and no token, and
-// a fixed fixture value (`--token fixture-token`) is no secret, so neither matches.
+// tokenValue matches a `--token` or `--oauth2-bearer` value that is one variable, one command
+// substitution or one placeholder, quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`. A
+// value that joins several, dev-oidc-issuer's `--token "$audience=$account=$file"`, names a file
+// and no token, and a fixed fixture value (`--token fixture-token`) is no secret, so neither
+// matches.
 var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>)\\?["']?(?:[\s;|&)]|$)`)
 
 // shellWord is the shell word s starts with: up to the first blank, `|`, `;`, `&`, `<`, `>` or `)`
@@ -103,7 +109,7 @@ func shellWord(s string) string {
 
 // credentialArgument says whether a line gives a command a credential as an argument.
 func credentialArgument(line string) bool {
-	if bearerArgument.MatchString(line) {
+	if credentialHeader.MatchString(line) {
 		return true
 	}
 	for _, at := range credentialFlag.FindAllStringSubmatchIndex(line, -1) {
@@ -113,7 +119,7 @@ func credentialArgument(line string) bool {
 			if passwordWord.MatchString(word) {
 				return true
 			}
-		case "--token":
+		case "--token", "--oauth2-bearer":
 			if tokenValue.MatchString(line[at[1]:]) {
 				return true
 			}
@@ -228,6 +234,15 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`kubectl --token ${!name} get pods`,
 		`  --token "$model_token" --refusal "${workdir}/model-refusal" --status "$model_status" \`,
 		`run_search.py --url http://127.0.0.1:8799 --token <bearer> --out out.jsonl`,
+		`curl -H "Authorization: Basic $(printf '%s:%s' "$user" "$password" | base64)" "$url"`,
+		`curl --oauth2-bearer "$TOKEN" "$url"`,
+		`curl --oauth2-bearer=$(cat "$token_file") "$url"`,
+		`curl -H "X-Api-Key: $ANTHROPIC_API_KEY" "$url"`,
+		`curl -H "x-goog-api-key: ${key}" "$url"`,
+		`curl -H "X-Auth-Token: <token>" "$url"`,
+		`curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4`,
+		`curl -H "$auth_header" "$url"`,
+		`curl --header "${AUTHORIZATION}" "$url"`,
 	} {
 		if !credentialArgument(line) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
@@ -257,6 +272,12 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`agent-secrets "$GITHUB_SECRET" --github-owner "$owner" --github-token -- sh -c 'exit 0'`,
 		`python3 run_search.py --url http://127.0.0.1:8799 --token fixture-token --workers 8`,
 		`kubectl config set users.legion-daemon.tokenFile "$token_file"`,
+		`human -X POST "$url/api/v1/broadcasts" -H "Idempotency-Key: broadcast-$run"`,
+		`say "xkey=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Key: \$P" $AIRLOCK_S_URL/read)"`,
+		`curl -H "$content_type" "$url"`,
+		`curl -H @"$auth_header_file" "$url"`,
+		`printf 'X-Api-Key: %s' "$KEY" | curl -H @- "$url"`,
+		`curl --oauth2-bearer fixture-token "$url"`,
 	} {
 		if credentialArgument(line) {
 			t.Errorf("catches a line that gives no credential as an argument: %s", line)

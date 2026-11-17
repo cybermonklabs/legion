@@ -506,8 +506,8 @@ RULES = {
     # but docs/plans and docs/superpowers, which the text_checks filter leaves out with two `!`
     # patterns (credential_check_reads says how the read is written).
     f"{DAEMON}/internal/textcheck/credential_argument_test.go": reads(
-        *[(glob, "internal/textcheck/credential_argument_test.go:123 lists the repository's files with git ls-files "
-                 "under ../../../.. and :154 reads each of them but docs/plans and docs/superpowers")
+        *[(glob, "internal/textcheck/credential_argument_test.go:143 lists the repository's files with git ls-files "
+                 "under ../../../.. and :174 reads each of them but docs/plans and docs/superpowers")
           for glob in credential_check_reads()]),
     # The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
     # it moved here because it walks every .go file of the module, test files included, and a row

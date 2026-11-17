@@ -295,10 +295,10 @@ func TestDispatchCertPublishWritesOnlyALaterCertificate(t *testing.T) {
 }
 
 // The ServiceAccount's token and the certificate's private keys reach the API server, and no
-// command's arguments, which every process of the pod can read (dispatch://INFRA-3950). The
-// publisher runs under a curl that writes down every argument it is handed and then runs the real
-// one. The server admits only the mounted token, so the write proves the bearer arrived; the
-// record must hold the Secret's URL, so it is the publish call's own, and none of the three.
+// command's arguments, which every process of the pod can read. The publisher runs under a curl
+// that writes down every argument it is handed and then runs the real one. The server admits only
+// the mounted token, so the write proves the bearer arrived; the record must hold the Secret's
+// URL, so it is the publish call's own, and none of the three.
 func TestDispatchCertPublishPutsNoCredentialInACommandLine(t *testing.T) {
 	store := newFrontDoorSecretStore(t)
 	p := newPublishPod(t, store)

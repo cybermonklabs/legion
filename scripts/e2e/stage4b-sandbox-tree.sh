@@ -3354,7 +3354,7 @@ refuse_leftovers legion-e2e4b
 ports_free "$port_daemon" "$port_worker_stream" "$port_session_db"
 imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
   fail "instance metadata is unreachable; the daemon binds the devbox's private address, read from it"
-host=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4) || fail "instance metadata has no local-ipv4"
+host=$(printf 'X-aws-ec2-metadata-token: %s' "$imds" | curl -sf -m 5 -H @- http://169.254.169.254/latest/meta-data/local-ipv4) || fail "instance metadata has no local-ipv4"
 unset imds
 leftover=$(op get sandboxes,pods,pvc,configmaps -l "legion.dev/project=$run_label" -o name 2>&1) || fail "the operator context cannot list namespace $namespace: $leftover"
 [ -z "$leftover" ] || fail "namespace $namespace already holds objects labelled legion.dev/project=$run_label, which another run left or owns: $(tr '\n' ' ' <<<"$leftover")"

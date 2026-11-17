@@ -2787,7 +2787,7 @@ jobs:
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
-              # credential_argument_test.go:123,154 lists every file git tracks or would track and
+              # credential_argument_test.go:143,174 lists every file git tracks or would track and
               # reads each of them, but docs/plans and docs/superpowers, which are dated history.
               - '**'
               - '!docs/plans/**'
