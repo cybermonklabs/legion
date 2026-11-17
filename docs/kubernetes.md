@@ -123,7 +123,8 @@ It carries:
   the image sets no `GOROOT`), with the warm module cache of the two modules `go.work` binds, which the second paragraph after this list places;
   the AWS CLI v2's `aws`;
   mikefarah's `yq` 4, the YAML processor, fetched rather than installed from apt because Debian's `yq` is a different program (kislyuk's Python wrapper over `jq`, 3.4.3 in trixie);
-  and `kubectl` 1.35, the minor version of the API server of the production cluster the workers run on, which Kubernetes' version skew policy requires within one minor of kubectl (a deployment whose cluster runs another minor layers its own `kubectl` on the image:
+  and `kubectl` 1.35, the minor version of the API server of the production cluster the workers run on,
+  which Kubernetes' version skew policy requires within one minor of kubectl (a deployment whose cluster runs another minor layers its own `kubectl` on the image:
   [Per-deployment toolchains layer on top](#per-deployment-toolchains-layer-on-top)) — all at `/usr/local/bin`, which is on the image's `PATH` and every pod's.
   Each is a pinned release whose linux/amd64 download the build checks against a pinned SHA-256 before unpacking or installing it (the `ARG`s at the top of `worker.Dockerfile`;
   `kubectl`'s is the SHA-256 Kubernetes publishes beside the binary, taken once the binary's Sigstore signature verifies).
