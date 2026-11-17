@@ -1044,7 +1044,8 @@ Without `routeAuthorization`, the servers' routes carry no credential: any proce
 hub pod's port 6222 can join the cluster as a server. The NetworkPolicy `<n>` admits 6222 from the
 hub pods alone, and that is then the routes' only guard. A NetworkPolicy cannot fence a pod's own
 node, so [Route authorization](#route-authorization) adds a credential, which fences a process that
-can connect to 6222 and not one that can read the node's traffic (see that section).
+can connect to 6222 and not one with access to a node's network namespace or its traffic (see that
+section).
 
 Beside a callout, the routes keep their own ping. The top-level `ping_interval` of 20 s the callout
 adds to `auth.conf` would also govern the routes, since a route reads `cluster.ping_interval` and
@@ -1096,13 +1097,24 @@ finished:
 | `routes` | Also `routes: $NATS_ROUTE_URLS` in the `cluster` block. | The reloader applies it: each server presents the credential on the routes it opens. |
 | `authorization` | Also `authorization { user: "route", password: $NATS_ROUTE_PASSWORD }` in the `cluster` block. | The reloader applies it: each server refuses a route that does not present the credential. |
 
-The component renders no TLS for the cluster, so each route URL's password crosses the pod
-network in clear text, on every route a server opens. The credential fences a process that can
-connect to port 6222, and not one that can read the node's traffic: such a process reads the
-password and can then join as a route. Route TLS fences both, and it is this residual's fix. The
-chart has the switch (`config.cluster.tls`, a `secretName` holding `tls.crt` and `tls.key`, and
-`tlsCA` for the CA that verifies a peer), but the component exposes none of it and mints no
-certificate, and a route URL of `tls://` replaces `nats://` in `NATS_ROUTE_URLS` when it is on.
+The component renders no TLS for the cluster, so NATS sends each route URL's password unencrypted,
+on every route a server opens. The route URLs name the pods by their headless Service,
+`<n>-<i>.<n>-headless:6222`, which resolves to the pods' internal IPs, and `noAdvertise` keeps a
+server from offering any other address, so a route never leaves the cluster's VPC. Between nodes,
+Google's network layer encrypts that traffic, not NATS and not GKE: VM-to-VM connections inside
+Google's production network are integrity-protected and encrypted
+([Encryption in transit](https://cloud.google.com/docs/security/encryption-in-transit), "Google
+Cloud virtual network authentication and encryption"). GKE's own inter-node transparent encryption
+(`networkConfig.inTransitEncryptionConfig`) is a separate setting, and it is unset on the
+deployment's cluster (read 2026-11-17 with `gcloud container clusters describe`). On each node the
+password is in clear, so the residual is node-level: a process with access to a node's network
+namespace or its traffic, which can read the password and then join as a route, and the
+infrastructure provider. The credential fences a process that can connect to port 6222, and not
+that one. Route TLS fences both, and it is this residual's fix. Its cost is a CA and per-server
+certificates, new component inputs, the `tls://` switch and a staged rollout: the chart has the
+switch (`config.cluster.tls`, a `secretName` holding `tls.crt` and `tls.key`, and `tlsCA` for the
+CA that verifies a peer), but the component exposes none of it and mints no certificate, and a
+route URL of `tls://` replaces `nats://` in `NATS_ROUTE_URLS` when it is on.
 
 The order holds because nats-server reads a variable of `nats.conf` from its own environment at
 each load. A `nats.conf` that names `$NATS_ROUTE_URLS` before the container holds it fails every
