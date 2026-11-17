@@ -20,7 +20,7 @@ import (
 
 // A copied bucket deleted after the start's wait found it and before its store opened it holds the
 // start, and never ends it (openExisting): the open answers bus.ErrBucketMissing, the start waits
-// for the bucket again as its first wait does, /healthz answers 200 "degraded" naming it, nothing
+// for the bucket again as its first wait does, /healthz answers 503 "waiting" naming it, nothing
 // creates it, and once the operator creates it the open completes and the store serves.
 //
 // The order is forced: the wait runs and finds the bucket, the test deletes it, and only then does
@@ -85,8 +85,8 @@ func TestABucketDeletedBetweenTheStartsWaitAndItsOpenHoldsTheStart(t *testing.T)
 		Missing []string `json:"missing_buckets"`
 	}
 	_ = json.Unmarshal(recorder.Body.Bytes(), &health)
-	if recorder.Code != http.StatusOK || health.Status != "degraded" || !slices.Equal(health.Missing, []string{bus.SessionBucket}) {
-		t.Fatalf("/healthz while the open waits = %d %s, want 200 degraded naming %s", recorder.Code, recorder.Body.String(), bus.SessionBucket)
+	if recorder.Code != http.StatusServiceUnavailable || health.Status != "waiting" || !slices.Equal(health.Missing, []string{bus.SessionBucket}) {
+		t.Fatalf("/healthz while the open waits = %d %s, want 503 waiting naming %s: the listener serves no route until the bucket exists", recorder.Code, recorder.Body.String(), bus.SessionBucket)
 	}
 	select {
 	case got := <-done:

@@ -49,8 +49,8 @@ func TestAMissingKnownSessionBucketHoldsTheStartAndRefusesARegistration(t *testi
 	waited := time.Now()
 	for time.Since(waited) < 5*time.Second {
 		code, status, missing := healthzMissing(t, listener.port)
-		if code != http.StatusOK || status != "degraded" || !slices.Equal(missing, []string{bus.KnownSessionBucket}) {
-			t.Fatalf("/healthz of a start with the known-session bucket missing = %d %q %v, want 200 degraded naming %s", code, status, missing, bus.KnownSessionBucket)
+		if code != http.StatusServiceUnavailable || status != "waiting" || !slices.Equal(missing, []string{bus.KnownSessionBucket}) {
+			t.Fatalf("/healthz of a start with the known-session bucket missing = %d %q %v, want 503 waiting naming %s", code, status, missing, bus.KnownSessionBucket)
 		}
 		if code, answer := callListener(t, listener.port, http.MethodPost, "/v1/interests/subscribe", registration); code != http.StatusServiceUnavailable {
 			t.Fatalf("a registration while the start waits on the known-session bucket answered %d %s, want 503", code, answer)

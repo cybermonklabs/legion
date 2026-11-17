@@ -543,7 +543,9 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 
 // healthzHandler is the listener's /healthz. It answers 200 "starting" until main publishes deps
 // once the durable consumer binds, which during a rolling deploy waits out the task being replaced
-// while /v1 already serves; 200 "healthy" with the durable consumer's lag once every dependency
+// while /v1 already serves; 503 "waiting" before that while the start waits for a copied bucket it
+// found missing, since no route serves then (writeWaitingForBuckets); 200 "healthy" with the
+// durable consumer's lag once every dependency
 // answers; 503 "unhealthy" when NATS is unavailable, the durable subscription is inactive, a
 // cache's watcher has stopped, the durable consumer is gone, a bus check did not answer within
 // healthzBudget, or the durable consumer is
@@ -626,9 +628,9 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], missing *missingBuckets)
 		d := deps.Load()
 		if d == nil {
 			// A start that found a copied bucket missing waits for it (awaitCopiedBuckets) and
-			// says so here, rather than reading as merely starting.
+			// serves no route meanwhile, so it answers 503 "waiting" rather than merely starting.
 			if names := missing.list(); len(names) > 0 {
-				writeMissingBuckets(w, names)
+				writeWaitingForBuckets(w, names)
 				return
 			}
 			w.WriteHeader(http.StatusOK)

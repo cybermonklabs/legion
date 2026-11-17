@@ -128,16 +128,42 @@ func (m *missingBuckets) err() error {
 	return &bucketsMissingError{buckets: names}
 }
 
-// writeMissingBuckets answers /healthz for copied buckets found missing: 200 "degraded", naming
-// them in "error" and listing them in "missing_buckets". Degraded and not 503: the listener is
-// the one that answers each write to a missing bucket its 503, which a 503 here would take out of
-// a load balancer's rotation, and a 503 would have ECS replace the task with one that waits at its
-// start for the same bucket, or roll a deployment back to an older build that creates it.
+// writeMissingBuckets answers /healthz for a running listener whose copied buckets a read found
+// missing: 200 "degraded", naming them in "error" and listing them in "missing_buckets". Degraded
+// and not 503: a running listener still serves every route that needs no missing bucket, reads
+// from its copy within the stale bound included, and answers each write to a missing bucket its
+// 503; a 503 here would take it out of a load balancer's rotation, and have ECS replace the task
+// with one that waits at its start for the same bucket and serves nothing.
 func writeMissingBuckets(w http.ResponseWriter, names []string) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "degraded",
 		"error":           (&bucketsMissingError{buckets: names}).Error(),
+		"missing_buckets": names,
+	})
+}
+
+// writeWaitingForBuckets answers /healthz while the start waits for copied buckets it found
+// missing (awaitCopiedBuckets): 503 "waiting", naming them in "error" and listing them in
+// "missing_buckets". The wait comes before both starting gates open (openWebhooks, openV1Routes),
+// so every webhook and /v1 route answers 503 "service starting" until they exist: the listener
+// serves nothing, and each reader of /healthz's status is told so:
+//   - GKE's readiness probe (curl -fsS, infra/gcp) takes the pod out of service, and a rollout
+//     waits instead of replacing a pod that serves with one that serves nothing; its startup and
+//     liveness probes read /livez, so the waiting pod is not restarted;
+//   - the ECS container health check (curl -sf, infra/aws/rendering/listener.go) replaces the
+//     task, whose replacement waits the same way, and a deployment keeps the task it replaces;
+//   - the docker provider's wait for a healthy container (infra/host) fails `pulumi up`;
+//   - a Docker or compose health check (curl -f) reads the container unhealthy, so
+//     `docker compose up --wait` fails instead of passing a listener that serves nothing.
+//
+// None of them can repair the wait: only the operator's `envoy-infra buckets create` does, and the
+// ERROR the wait logs for each bucket (logMissingBuckets) pages for it.
+func writeWaitingForBuckets(w http.ResponseWriter, names []string) {
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":          "waiting",
+		"error":           (&bucketsMissingError{buckets: names}).Error() + "; the listener's start waits for it and serves no route until it exists",
 		"missing_buckets": names,
 	})
 }

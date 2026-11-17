@@ -744,8 +744,9 @@ Three inputs work otherwise:
 A hub that comes up on a new, empty data disk (a new `hostname` or `zone` above) holds no key-value
 bucket, and no listener creates one ([the module README](../README.md#envoy-infra-buckets)).
 Every listener that reaches it answers 503 to each write and names the missing buckets on
-`/healthz` until the operator creates them, and `envoy-infra buckets` refuses while any listener
-runs, the hub's own included. So:
+`/healthz` until the operator creates them: a running one as 200 `degraded`, and one that starts
+meanwhile as 503 `waiting`, since its start serves no route, so its health check fails. And
+`envoy-infra buckets` refuses while any listener runs, the hub's own included. So:
 
 1. Before `pulumi up`, stop every listener and envoy-dispatch that reaches the hub.
 2. `pulumi up`. The new VM starts its own listener with the VM (`envoy-listener.service`), which

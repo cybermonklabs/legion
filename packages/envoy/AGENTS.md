@@ -125,7 +125,7 @@ Each item below names a task and where its code is, then notes on it.
 - **A listener with a copied bucket missing**:
   `cmd/listener/missing_buckets.go` (`awaitCopiedBuckets`, `openExisting`, `checkCopiedBuckets`, `monitoredBuckets`)
 
-  A start waits for every copied bucket the server says is missing before it opens a store (`awaitCopiedBuckets`), behind its starting gates, which answer every route 503, while `/healthz` answers 200 `"degraded"` naming them under `"missing_buckets"`; a store whose bucket goes missing between that wait and its open waits again (`openExisting`).
+  A start waits for every copied bucket the server says is missing before it opens a store (`awaitCopiedBuckets`), behind its starting gates, which answer every route 503, while `/healthz` answers 503 `"waiting"` naming them under `"missing_buckets"` (`writeWaitingForBuckets`), so every probe that reads its status takes the listener out of service; a store whose bucket goes missing between that wait and its open waits again (`openExisting`).
   A read of any bucket that fails, `envoy_known_sessions` included, holds its turn and is made again on the next, so a read the hub did not answer in time - none, or slower than its bound - never lets a start go with a bucket missing.
   The one exception is a read the server refused (`bus.RefusedRequest`): `envoy_known_sessions` when a listener's user may not read it, on a hub whose users were rendered before that bucket's grant, #2643, and not applied since; the wait then holds nothing for that bucket and reads it no more, since every later read would be refused too.
   On a connection no client owns no refusal is recorded, so there a refused read holds the start for good; only tests pass such a connection.

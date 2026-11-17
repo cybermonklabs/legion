@@ -177,8 +177,9 @@ var ListenerLogSignals = []LogSignal{
 		description: "An Envoy listener found a KV bucket it copies missing (`listener KV bucket is missing`, " +
 			"the line's `bucket` names it): no listener creates one, since a bucket created again under a " +
 			"running listener loses every write the deleted bucket acknowledged. Until it is back, " +
-			"every write that needs it answers 503, a start waits at its gate, and `/healthz` answers 200 " +
-			"`degraded` with `missing_buckets`. Make it with `envoy-infra buckets create`, with `--break-glass` " +
+			"every write that needs it answers 503, and `/healthz` answers 200 `degraded` with `missing_buckets`; " +
+			"a start waits at its gate, serving no route, and its `/healthz` answers 503 `waiting`, which the " +
+			"container health check reads as unhealthy. Make it with `envoy-infra buckets create`, with `--break-glass` " +
 			"until the auth service's cutover, which needs no listener stopped, by the runbook " +
 			"(cybermonklabs/legion packages/envoy/infra/README.md#envoy-infra-buckets). Read %s for the bucket.",
 	},

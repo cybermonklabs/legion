@@ -49,7 +49,8 @@ func requireBucketMissing(t *testing.T, js natsgo.JetStreamContext, bucket, when
 // "degraded", the self-health monitor neither rebuilds nor restarts over it through three of its
 // intervals, and every check logs the line the AWS listener's bucket-missing alarm pages on. A
 // listener that starts while the bucket is missing creates it no more: it waits at its starting
-// gate, which answers 503, and /healthz names the bucket there too.
+// gate, which answers 503, and /healthz names the bucket there as 503 "waiting", since that start
+// serves no route.
 //
 // At main the self-health monitor terminates the listener after its third interval (a missing
 // stream was terminal) and the restart's store open creates the bucket again, so the write the
@@ -130,8 +131,8 @@ func TestACopiedBucketDeletedUnderARunningListenerStaysMissing(t *testing.T) {
 	waited := time.Now()
 	for time.Since(waited) < 10*time.Second {
 		code, status, missing := healthzMissing(t, restarted.port)
-		if code != http.StatusOK || status != "degraded" || !slices.Equal(missing, []string{bus.SessionBucket}) {
-			t.Fatalf("/healthz of a start waiting on the bucket = %d %q %v, want 200 degraded naming %s", code, status, missing, bus.SessionBucket)
+		if code != http.StatusServiceUnavailable || status != "waiting" || !slices.Equal(missing, []string{bus.SessionBucket}) {
+			t.Fatalf("/healthz of a start waiting on the bucket = %d %q %v, want 503 waiting naming %s", code, status, missing, bus.SessionBucket)
 		}
 		if code, answer := callListener(t, restarted.port, http.MethodPost, "/v1/interests/subscribe", registration); code != http.StatusServiceUnavailable {
 			t.Fatalf("a registration while the start waits on the bucket answered %d %s, want 503", code, answer)
