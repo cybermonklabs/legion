@@ -272,6 +272,23 @@ func TestTheCommandNeedsAnInventory(t *testing.T) {
 	}
 }
 
+// The command is run from an operator's workstation against the deployment's hub, which is on
+// another machine: it connects to such a server rather than refusing it as bus.Connect refuses a
+// non-loopback server by default (ENVOY_ALLOW_REMOTE_NATS). The control is bus.Connect itself with
+// the process environment, which refuses the same URL. The .invalid name never resolves, so the
+// command's connect fails, for its own reason, not the refusal's. At 7b262c2e0a it was refused.
+func TestTheCommandReachesAServerOnAnotherMachine(t *testing.T) {
+	const remote = "nats://envoy-buckets-test.invalid:4222"
+	if _, err := bus.Connect([]string{remote}); !errors.Is(err, bus.ErrRemoteNATS) {
+		t.Fatalf("control: bus.Connect(%s) = %v, want the remote refusal", remote, err)
+	}
+	w := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
+	code, stdout, stderr := runCommand(t, w, nil, "check", "--nats", remote, "--host", "box-1")
+	if code != 1 || strings.Contains(stderr, bus.ErrRemoteNATS.Error()) || !strings.Contains(stderr, "connect to "+remote) {
+		t.Fatalf("check against a server on another machine = %d, want a connect attempt, not the remote refusal\n%s%s", code, stdout, stderr)
+	}
+}
+
 // The host query, run on this machine, sees a real process under every name this repository runs a
 // writer as - the listener as envoy-listener, as listener (`go run`, dev-stack.sh, e2e-refill.sh)
 // and as the held-port wrapper, Dispatch as envoy-dispatch, dispatch and a two-build dispatch-<x> -

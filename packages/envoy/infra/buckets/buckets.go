@@ -70,6 +70,17 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return command(ctx, args, stdout, stderr, execRunner, http.DefaultClient)
 }
 
+// operatorEnvironment is the environment the command connects with: the process's own, but for
+// ENVOY_ALLOW_REMOTE_NATS, which it always answers "1". The command is the operator's, run from a
+// workstation against the deployment's hub on another machine, which bus.Connect refuses unless
+// that variable says the run means it (bus.AllowRemoteEnvVar); --nats names the hub explicitly.
+func operatorEnvironment(name string) (string, bool) {
+	if name == bus.AllowRemoteEnvVar {
+		return "1", true
+	}
+	return os.LookupEnv(name)
+}
+
 const usage = `usage: envoy-infra buckets create|recreate|check --nats URL [options]
 
   create     create every copied bucket that is missing (or each --bucket), once no writer runs
@@ -162,7 +173,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	f.run, f.http = run, client
 	f.dispatch = slices.Contains(buckets, bus.CIStateBucket)
 
-	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets"))
+	nc, err := bus.Connect([]string{natsURL}, bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment))
 	if err != nil {
 		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", natsURL, err)
 		return 1
