@@ -85,37 +85,40 @@ const RequestTimeout = 10 * time.Second
 // two reads of a raised stream's copies (awaitReplicasCurrent).
 const bucketAppliedInterval = 25 * time.Millisecond
 
-// startHangGuard bounds a start's wait on a fact of the cluster that the start cannot hurry: an
-// answer the server gives only once a stream's group has elected a leader (the create of a bucket
-// or of the stream with more than one copy, a lookup at a member while the stream's leader is
-// gone), a member applying a create (awaitBucketApplied), or the copies of a raise becoming
-// current (awaitReplicasCurrent). Each of those waits ends on the fact, on the server's own error,
-// or when the caller's context ends, whichever comes first; the guard ends the wait only on a
-// cluster that never settles, so that start fails with an error naming what it waited for
-// (errHangGuard) rather than hanging with its port answering "starting". No shorter bound decides
-// the result: how long an election takes depends on the machine and on the election's own timers.
+// startHangGuard bounds one step of a start that waits on a fact of the cluster the start cannot
+// hurry: an answer the server gives only once a stream's group has elected a leader (the create of
+// a bucket or of the stream with more than one copy, a lookup at a member while the stream's leader
+// is gone), a member applying a create (awaitBucketApplied), a stream's leader after a create or a
+// raise (awaitStreamLeader), or the copies of a raise becoming current (awaitReplicasCurrent).
+// Each of those waits ends on the fact, on the server's own error, or when the caller's context
+// ends, whichever comes first; the guard ends the wait only on a cluster that never settles, so
+// that start fails with an error naming what it waited for (errHangGuard) rather than hanging with
+// its port answering "starting". No shorter bound decides the result: how long an election takes
+// depends on the machine and on the election's own timers.
 //
-// The guard is three times the longest election measured under load, the sizing docs/testing.md
+// The guard is three times the slowest such wait measured under load, the sizing docs/testing.md
 // gives a bound of this kind. On 2026-11-17, on a dev box with 288 CPUs at a one-minute load of
 // 1,375 to 2,125, fresh three-member clusters of nats-server v2.15.1 were raised and created 64 at a
-// time. In 400 raises of a one-copy bucket to three copies, the copies were current at most 5.1 s
-// after the raise was answered, and a create of a three-copy bucket was answered within 3.3 s. In
-// 160 more, whose preferred member did not campaign at once, the group elected on its election
-// timers alone (4 s to 9 s, minElectionTimeout and maxElectionTimeout in server/raft.go), which is
-// the election a group holds when the preferred member's first campaign is lost: the copies were
-// current at most 11.9 s after the raise was answered (one in ten took more than 10 s), and a create
-// was answered within 8.7 s. Three times 11.9 s is 36 s, inside the listener's start-up probe of
-// 300 s (infra/gcp/testdata/dispatch-listener-pod.golden) for the one step that fails a start.
+// time. In 400 raises of a one-copy bucket to three copies, the stream had a leader and every copy
+// was current at most 5.1 s after the raise was answered, and a create of a three-copy bucket was
+// answered, at its first election, within 3.3 s. In 160 more, whose preferred member did not
+// campaign at once, the group elected on its election timers alone (4 s to 9 s,
+// minElectionTimeoutDefault and maxElectionTimeoutDefault in server/raft.go), which is the election
+// a group holds when the preferred member's first campaign is lost: a leader and every copy current
+// came at most 11.9 s after the raise was answered (one in ten took more than 10 s), and a create
+// was answered within 8.7 s. Three times 11.9 s is 36 s. A step the guard ends fails the start at
+// once, well inside the listener's start-up probe of 300 s
+// (infra/gcp/testdata/dispatch-listener-pod.golden).
 const startHangGuard = 36 * time.Second
 
-// errHangGuard is the cause a start's wait ends with when its hang guard passes before the fact it
-// waits on holds (hangGuard).
+// errHangGuard is what a start's wait ends with, wrapped, when its hang guard passes before the
+// fact it waits on holds (hangGuard).
 var errHangGuard = errors.New("the start's hang guard passed")
 
-// hangGuard is ctx bounded by guard as well. When guard passes first, its cause is errHangGuard
-// naming guard, with context.DeadlineExceeded wrapped too, so a caller that reads a deadline off a
-// start's error reads one whichever of the two ended the wait, and one that reads the cause
-// (context.Cause, waitEnded) is told it was the guard.
+// hangGuard is ctx bounded by guard as well. When guard passes first, ctx's cause is an error that
+// wraps both errHangGuard, naming guard, and context.DeadlineExceeded, so a caller that reads a
+// deadline off a start's error reads one whichever of the two ended the wait, and one that reads
+// errHangGuard is told it was the guard.
 func hangGuard(ctx context.Context, guard time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeoutCause(ctx, guard, fmt.Errorf("%w after %s: %w", errHangGuard, guard, context.DeadlineExceeded))
 }
@@ -136,16 +139,21 @@ func pause(ctx context.Context, d time.Duration) error {
 // awaitBucketApplied is read, a read of the bucket a start has just created, taken again every
 // bucketAppliedInterval while the member answering reports the bucket missing (missing) and ctx
 // lasts. It returns the first answer that is not that, and once ctx ends the last miss with ctx's
-// cause wrapped beside it, so its caller wraps one error however the wait ended. Any other error,
-// a refusal included, is returned at once: only a member that has not caught up is waited out.
-// The first miss is logged, as bindListenerDurable logs its first refusal, so a start that waited
-// says which bucket it waited for.
+// cause wrapped beside it, so its caller wraps one error however the wait ended: between two reads,
+// or during a read that ctx cut. Any other error, a refusal included, is returned at once: only a
+// member that has not caught up is waited out. The first miss is logged, as bindListenerDurable
+// logs its first refusal, so a start that waited says which bucket it waited for.
 func awaitBucketApplied[T any](ctx context.Context, bucket string, missing func(error) bool, read func() (T, error)) (T, error) {
+	var lastMiss error
 	for attempt := 1; ; attempt++ {
 		value, err := read()
+		if err != nil && !missing(err) && lastMiss != nil && ctx.Err() != nil {
+			return value, fmt.Errorf("%w; the member had not applied the bucket when the wait ended: %w", lastMiss, err)
+		}
 		if err == nil || !missing(err) {
 			return value, err
 		}
+		lastMiss = err
 		if attempt == 1 {
 			slog.Warn("envoy nats kv bucket not applied yet, waiting",
 				slog.String("bucket", bucket),
@@ -334,6 +342,9 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
 			kv, err = awaitBucketApplied(ctx, config.Bucket, bucketMissing, lookUpBucket)
+		} else if unanswered(err) || ctx.Err() != nil {
+			// No answer, or the wait ended: the server refused nothing, so no setting is named.
+			err = namedRequest(create, err)
 		} else {
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
@@ -366,7 +377,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// "no response from stream"). The caller writes as soon as this call answers, so the
 		// start waits for the stream's leader here (awaitStreamLeader). This read follows the
 		// handle open, which has waited for the member to apply the create.
-		err = awaitStreamLeader(ctx, js, stream)
+		err = awaitStreamLeader(ctx, js, "create", stream)
 	}
 	if err != nil {
 		return KeyValue{}, err
@@ -428,15 +439,18 @@ func awaitReplicasCurrent(ctx context.Context, js nats.JetStreamContext, stream 
 	})
 }
 
-// awaitStreamLeader waits until stream, which this start has just created with more than one
-// copy, reports a leader, for as long as ctx lasts. A create sent again while the stream's first
-// election runs is answered before that election ends (EnsureKeyValue, ensureStreamWithConfig),
-// and a stream with no leader answers no write. It asks for the leader alone and not for every
-// copy current: a new stream holds no message a copy could be behind on, and a create with one
-// member of three stopped lands with that member offline, and serves on the other two
-// (TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp).
-func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, stream string) error {
-	return awaitStream(ctx, js, "create", stream, "the stream had no leader", "envoy nats stream created with no leader yet, waiting", func(info *nats.StreamInfo) string {
+// awaitStreamLeader waits until stream reports a leader, for as long as ctx lasts, after step: a
+// create of more than one copy that this start made or that a concurrent start made ("create"),
+// or a raise of the notification stream's copies ("raise"). A create sent again while the
+// stream's first election runs is answered before that election ends, and a raise of a one-copy
+// stream at once (EnsureKeyValue, ensureStreamWithConfig); a stream with no leader answers no
+// write, and a publish sent then draws no answer even once the leader is there. It asks for the
+// leader alone and not for every copy current: a new stream holds no message a copy could be
+// behind on, a create with one member of three stopped lands with that member offline and serves
+// on the other two (TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp),
+// and the notification stream is read through consumers, which its leader serves.
+func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step, stream string) error {
+	return awaitStream(ctx, js, step, stream, "the stream had no leader", "envoy nats stream has no leader yet, waiting", func(info *nats.StreamInfo) string {
 		if info.Cluster == nil || info.Cluster.Leader == "" {
 			return "the stream has no leader yet"
 		}

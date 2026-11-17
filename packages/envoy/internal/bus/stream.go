@@ -849,12 +849,15 @@ func (r streamReconciliation) log() {
 // on until the server answers, ctx ends or the start's hang guard passes (startHangGuard): the
 // first send of a create of a stream of more than one copy is answered only once its group has
 // elected a leader, however long the election takes. A request that drew no answer by then is
-// named in the error, `ENVOY_NOTIFICATIONS STREAM.CREATE: 4 sends drew no answer when the wait
+// named in the error, `ENVOY_NOTIFICATIONS STREAM.CREATE: 3 sends drew no answer when the wait
 // ended: ...`. A create sent again while that election runs is answered before it ends, with the
-// stream still leaderless, so a create of more than one copy is followed by a wait for the
-// stream's leader (awaitStreamLeader): measured with nats-server v2.15.1, a start whose stream's
-// first election was held 11 s and 30 s answered after its second send at 10 s, and its first
-// publish then failed "no response from stream".
+// stream still leaderless, and so is a raise of the stream's copies, at once (as a bucket's
+// raise is, awaitReplicasCurrent): so a create of more than one copy, and an update that raises
+// the copies, are followed by a wait for the stream's leader (awaitStreamLeader). Measured with
+// nats-server v2.15.1: a start whose stream's first election was held 11 s and 30 s answered
+// after its second send at 10 s, and its first publish then failed "no response from stream"; a
+// start that raised the stream from one copy to three answered at once, and its first publish,
+// with no election held, drew no answer within its 5 s.
 func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
@@ -874,22 +877,27 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		_, err = sentAgain(ctx, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
 		if err == nil {
 			if created.Replicas > 1 {
-				err = awaitStreamLeader(ctx, js, Stream)
+				err = awaitStreamLeader(ctx, js, "create", Stream)
 			}
 			if err != nil {
 				return nil, err
 			}
 			return created.Subjects, nil
 		}
-		if unanswered(err) {
+		if unanswered(err) || ctx.Err() != nil {
 			return nil, namedRequest(create, err)
 		}
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
 		info, err = sentAgain(ctx, read, readStream)
+		if err == nil && info.Config.Replicas > 1 {
+			// Another start's create is this start's create too: the stream it reads may still be
+			// in its first election, and the answer that start drew does not reach this one.
+			err = awaitStreamLeader(ctx, js, "create", Stream)
+		}
 	}
-	if unanswered(err) {
+	if unanswered(err) || ctx.Err() != nil {
 		return nil, namedRequest(read, err)
 	}
 	if err != nil {
@@ -917,6 +925,11 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		return nil, refusedSettings(err, &info.Config, &desired)
 	}
 	reconciliation.log()
+	if desired.Replicas > info.Config.Replicas {
+		if err := awaitStreamLeader(ctx, js, "raise", Stream); err != nil {
+			return nil, err
+		}
+	}
 	if migratingRoleLanes {
 		if err := purgeLegacyRoleMessages(js); err != nil {
 			return nil, err

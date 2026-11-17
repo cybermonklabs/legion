@@ -644,6 +644,24 @@ func TestAStartThatCreatesTheStreamAtThreeCopiesServesItsFirstPublish(t *testing
 	}
 }
 
+// A start that raises the notification stream from one copy to three answers only once the raised
+// stream has a leader, so the first publish after it is answered. The server answers the raise at
+// once, from the member that held the one copy, and the stream has no leader until its new group
+// elects one; a publish sent then draws no answer even after the leader is there, so a start that
+// took the raise's answer as the stream's left its first publish to fail at its 5 s bound, with no
+// election held.
+func TestAStartThatRaisesTheStreamToThreeCopiesServesItsFirstPublish(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	startOnCluster(t, cluster, WithReplicas(1)).Close()
+	client := startOnCluster(t, cluster, WithReplicas(3))
+	if err := client.Publish(contracts.Envelope{
+		EventID: "event-raised", Source: "dispatch",
+		Topic: "notifications.agent.ses_raised", DedupeKey: "dispatch.event.raised",
+	}); err != nil {
+		t.Fatalf("the first publish after a start that raised the stream to three copies: %v", err)
+	}
+}
+
 // A server's refusal of the stream names each setting the refused create or update carried, with
 // its value, and wraps the server's error (single server). A single nats-server v2.15.1 refuses a
 // create at more than one copy but takes an update to more, recording the count while it holds one
