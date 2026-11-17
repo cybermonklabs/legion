@@ -128,7 +128,7 @@ first_pid=$!
 # The driver prints its build line only once it holds out/e2e and has cleared it. Its output file is
 # this test's own, so nothing a finished run left behind can be mistaken for it.
 deadline=$((SECONDS + 60))
-until grep -q '^building listener and NATS server$' "$first_output_file"; do
+until grep -q '^building listener, NATS server and fixturebuckets$' "$first_output_file"; do
   if ! kill -0 "$first_pid" 2>/dev/null; then
     cat "$first_output_file" >&2
     printf 'FAIL: the first run ended before it held out/e2e\n' >&2
