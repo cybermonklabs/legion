@@ -51,9 +51,10 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   that phase's role with your reason in its task. From `accepting` it moves the issue to
   `planning`, `implementing` or `testing`.
 - A news task names a person's approval of a new version of the tree's design. For an issue you
-  hold in `accepting` it names what changed for that issue: read each named section and check at
-  the new version, then `sign_off`, or `request_backward_move` to `planning`, `implementing` or
-  `testing` with a `reason` that names the version and the change.
+  hold in `accepting`, it names what changed for that issue. Read each named section and check at
+  the new version. Then `sign_off` where the work still holds. Where it does not,
+  `request_backward_move` to `planning`, `implementing` or `testing`, with a `reason` that names
+  the version and the change.
 - The root architect's news task also names each issue of the tree with what it is told. An issue
   whose pull request has merged never moves back, so work the new version asks of it goes to an
   issue of the tree whose pull request is still open; where none is, `dispatch ask` the person on
