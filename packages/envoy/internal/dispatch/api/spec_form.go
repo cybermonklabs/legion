@@ -36,8 +36,9 @@ import (
 // turns. A move into a root changes the list too, and takes the same lock before it appends its
 // event (lockSpecTermsOfMove), and the list reads that event. Two calls read findings and refuse
 // nothing: the read route (getArtifactSpecForm) and the restore of a reopen and of the repair pass
-// (restoreIssueAsksTx), which leaves a broken approval request resolved rather than open it again.
-// Every route that opens an approval request or answers one reaches one of these calls;
+// (restoreIssueAsksTx), which judges a request at the versions it names once the reopen ends and
+// leaves a broken approval request resolved rather than open it again. Every route that opens an
+// approval request or answers one reaches one of these calls;
 // TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
 //
 // One way past the gate stays open, and it is known: an approval given before the setting named
@@ -149,11 +150,15 @@ type specFormFinding struct {
 }
 
 // specFormError is the 409 SPEC_FORM body of a refused approval request or approval: the
-// refusal's words, the findings it holds (at most 500) and the count of all of them. On a person's
-// approval, changes_reason is the text a Request changes sends to the author.
+// refusal's words, the findings it holds (at most 500) and the count of all of them. Error is the
+// whole refusal, and Refusal and NextStep are its two parts (specform.Words), so that a client
+// with a next step of its own shows Refusal beside it. On a person's approval, changes_reason is
+// the text a Request changes sends to the author.
 type specFormError struct {
 	Code          string            `json:"code"`
 	Error         string            `json:"error"`
+	Refusal       string            `json:"refusal"`
+	NextStep      string            `json:"next_step"`
 	ChangesReason string            `json:"changes_reason,omitempty"`
 	Findings      []specFormFinding `json:"findings"`
 	FindingsTotal int               `json:"findings_total"`
@@ -346,16 +351,24 @@ func (r *specFormRefusal) plain() []specform.Finding {
 	return plain
 }
 
-// Error is the refusal's words (specform.Message).
-func (r *specFormRefusal) Error() string {
+// words are the refusal's words (specform.Message).
+func (r *specFormRefusal) words() specform.Words {
 	return specform.Message(r.act, r.plain(), len(r.findings), r.more, r.notes...)
+}
+
+// Error is the refusal's words, whole.
+func (r *specFormRefusal) Error() string {
+	return r.words().String()
 }
 
 // body is the refusal's 409 SPEC_FORM body.
 func (r *specFormRefusal) body() specFormError {
+	words := r.words()
 	body := specFormError{
 		Code:          specFormCode,
-		Error:         r.Error(),
+		Error:         words.String(),
+		Refusal:       words.Refusal,
+		NextStep:      words.NextStep,
 		Findings:      r.findings[:min(len(r.findings), specFormFindingsHeld)],
 		FindingsTotal: len(r.findings),
 	}

@@ -1,9 +1,13 @@
 package specform
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -68,6 +72,10 @@ func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 		{"<owner>/<repo>#<n>", "acme/widgets#12", []string{"pull-request acme/widgets#12"}},
 		{"<owner>/<repo>#<n>", "docs/acme/widgets#12", nil},
 		{"<owner>/<repo>#<n>", "acme/widgets#12x", nil},
+		{"<owner>/<repo>#<n>, an owner starts with a letter or a digit", ".acme/widgets#12", nil},
+		{"<owner>/<repo>#<n>, an owner starts with a letter or a digit", "-acme/widgets#12", nil},
+		{"<owner>/<repo>#<n>, an owner starts with a letter or a digit", "_acme/widgets#12", nil},
+		{"<owner>/<repo>#<n>, an owner that starts with a digit", "0acme/widgets#12", []string{"pull-request 0acme/widgets#12"}},
 		{"#<n>", "#12", []string{"pull-request #12"}},
 		{"#<n>", "(#12).", []string{"pull-request #12"}},
 		{"#<n>", "x#12", nil},
@@ -120,7 +128,15 @@ func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 		{"an email address, a letter with a combining mark", "jose\u0301@example.com", []string{"person jose\u0301@example.com"}},
 		{"an email address, then a colon and a space", "ada@example.com: she", []string{"person ada@example.com"}},
 		{"an email address, then a colon at the end", "ada@example.com:", []string{"person ada@example.com"}},
-		{"an SSH address: a colon that no white space follows continues it", "git@github.com:owner/repo.git", nil},
+		{"an SSH address: a colon and a character of a path after it", "git@github.com:owner/repo.git", nil},
+		{"an SSH address whose path starts at the root", "deploy@build.example.com:/srv/app", nil},
+		{"an SSH address whose path starts at the home folder", "git@github.com:~/repo.git", nil},
+		{"the URL form of an SSH address: a / before it", "ssh://git@github.com/acme/widgets.git", nil},
+		{"the URL form of an SSH address: a / before it", "git+ssh://git@github.com/acme/widgets.git", nil},
+		{"the cost of the rule: a / before an address", "x/ada@example.com", nil},
+		{"an email address in brackets, then a colon", "(ada@example.com:)", []string{"person ada@example.com"}},
+		{"an email address, then a colon and a comma", "ada@example.com:,", []string{"person ada@example.com"}},
+		{"the control: an email address after mailto:", "mailto:ada@example.com", []string{"person ada@example.com"}},
 		{"a handle", "@josé", []string{"person @josé"}},
 		{"a handle", "é@legion", nil},
 		{"a handle, a letter with a combining mark", "@jose\u0301", []string{"person @jose\u0301"}},
@@ -206,6 +222,58 @@ func TestNoFormHoldsAnotherNotionOfAWord(t *testing.T) {
 	}
 	if refuses(`[`+wordClass+`.+\-]+@example\.com`, "", "") {
 		t.Error("the control: a form built on wordClass is refused")
+	}
+}
+
+// Every regular expression of the rules file is built through the guard: no call of a compile
+// function of package regexp stands in rules.go outside wordRegexp, so no form of a name can hold
+// a notion of a word that the guard did not read. The test sees the one call inside wordRegexp, so
+// it reads the file it names.
+func TestEveryPatternOfTheRulesIsBuiltThroughTheGuard(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "rules.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := ""
+	for _, spec := range file.Imports {
+		if spec.Path.Value == `"regexp"` {
+			name = "regexp"
+			if spec.Name != nil {
+				name = spec.Name.Name
+			}
+		}
+	}
+	if name == "" {
+		t.Fatal("rules.go imports no package regexp, so this test reads nothing")
+	}
+	inside, outside := 0, []string{}
+	for _, declaration := range file.Decls {
+		guard := false
+		if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Name.Name == "wordRegexp" {
+			guard = true
+		}
+		ast.Inspect(declaration, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != name ||
+				!strings.HasPrefix(selector.Sel.Name, "Compile") && !strings.HasPrefix(selector.Sel.Name, "MustCompile") {
+				return true
+			}
+			if guard {
+				inside++
+			} else {
+				outside = append(outside, name+"."+selector.Sel.Name)
+			}
+			return true
+		})
+	}
+	if inside == 0 {
+		t.Fatal("wordRegexp calls no compile function of package regexp, so this test reads nothing")
+	}
+	if len(outside) > 0 {
+		t.Errorf("rules.go compiles %q outside wordRegexp; build each pattern through wordRegexp", outside)
 	}
 }
 

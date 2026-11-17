@@ -67,8 +67,8 @@ interface AskAnswerFailure {
   retryable: boolean;
 }
 
-/** The last line of a form refusal on the card, once it has picked Request changes and filled
- *  the reason with what Dispatch wrote for the author. */
+/** The next step of a form refusal on the card, once it has picked Request changes and filled the
+ *  reason with what Dispatch wrote for the author. */
 const CARD_FORM_NEXT_STEP = "To send these findings to the author, choose Answer.";
 
 /**
@@ -87,9 +87,9 @@ function withRefusalReason(reason: string, note: string): string {
  * it, so the next answer is to the new wording), writing even its server state would leave the
  * document's live state past what the server can decode, or an approval of a document whose text
  * breaks the form of The Spec. For that one the card shows Dispatch's own words, which name each
- * text, but its own last line: Dispatch's names Request changes, which the card has already
- * picked, so the card's names the press that is left (`CARD_FORM_NEXT_STEP`). Any other failure
- * may pass on a retry.
+ * text (`ApiError.refusal`), with its own next step: Dispatch's names Request changes, which the
+ * card has already picked, so the card's names the press that is left (`CARD_FORM_NEXT_STEP`).
+ * Any other failure may pass on a retry.
  */
 function answerFailure(error: Error): AskAnswerFailure {
   if (error instanceof ApiError) {
@@ -131,7 +131,10 @@ function answerFailure(error: Error): AskAnswerFailure {
         };
       case "SPEC_FORM":
         return {
-          message: [...error.message.split("\n").slice(0, -1), CARD_FORM_NEXT_STEP].join("\n"),
+          message:
+            error.refusal === undefined
+              ? error.message
+              : `${error.refusal}\n${CARD_FORM_NEXT_STEP}`,
           retryable: false,
         };
     }

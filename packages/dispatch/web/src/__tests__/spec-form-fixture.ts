@@ -7,13 +7,16 @@ const findingLines = [
 
 /**
  * What Dispatch answers a person's approval of a document that breaks the form of The Spec, as
- * its 409 `SPEC_FORM` body carries it: `error` names each text and the person's next step, and
- * `changes_reason` is the reason a request for changes then sends to the author.
+ * its 409 `SPEC_FORM` body carries it: `error` names each text and the person's next step, which
+ * `refusal` and `next_step` hold apart, and `changes_reason` is the reason a request for changes
+ * then sends to the author.
  */
+const refusal = `Dispatch refused this approval, because 2 texts break the form of The Spec.\n${findingLines}`;
+const nextStep = "To send these findings to the author, choose Request changes.";
 export const specFormRefusalBody = {
   changes_reason: `Dispatch refused my approval, because 2 texts break the form of The Spec.\n${findingLines}\nFix each text, then request approval again.`,
   code: "SPEC_FORM",
-  error: `Dispatch refused this approval, because 2 texts break the form of The Spec.\n${findingLines}\nTo send these findings to the author, choose Request changes.`,
+  error: `${refusal}\n${nextStep}`,
   findings: [
     {
       artifact_id: "artifact-1",
@@ -39,6 +42,8 @@ export const specFormRefusalBody = {
     },
   ],
   findings_total: 2,
+  next_step: nextStep,
+  refusal,
 };
 
 /** That refusal, as the client raises it. */

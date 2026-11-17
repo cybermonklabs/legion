@@ -135,13 +135,6 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 // gets one ask.opened event whose actor is actor, the reopener, as settlement's own restoration
 // of an ask appends.
 //
-// An approval request is judged first, at the versions it names, by the form of The Spec
-// (specFormOf, spec_form.go): one a text of whose covered documents breaks the form is not opened
-// again. It is recorded resolved, with kind resolved and the findings as its reason
-// (specform.ActRestore), naming actor, and gets one ask.resolved event after the ask.opened
-// events. It has no block, so no document write changes, and the resolution takes it out of
-// withdrawnAsk, so no later restore or repair finds it again. Its author reads the findings.
-//
 // It also marks owing a settlement each document of the issue whose ask blocks a settlement after
 // the reopen has to reconcile (docs.MarkReopenOwedAskDocuments), once the rows read open: one that
 // holds an ask block no settlement has indexed, which a settlement while the issue was closed
@@ -154,9 +147,20 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 // after the ask-state write and before the first event, and no copy lock comes after them
 // (docs.lockProjectCopies).
 //
-// Once those events are in, it does for each document of the issue what a settlement while the
-// issue was closed skipped (docs.Service.FollowClosedIssueVersions): it moves the open approval
-// request that names the document to the document's latest version, in the name of the editor a
+// An approval request has no block, so its own restore writes no document: the other asks are
+// restored, written and marked first. It then reads the versions it follows for each document of
+// the issue (docs.Service.ClosedIssueVersions), and judges each approval request by the form of
+// The Spec (specFormOf, spec_form.go) at the versions it names once the follow has moved it
+// (docs.FollowedDocuments), which are the versions it names when the reopen ends. One a text of
+// whose covered documents breaks the form at those versions is not opened again. It is recorded
+// resolved, with kind resolved and the findings as its reason (specform.ActRestore), naming
+// actor, and gets one ask.resolved event after the ask.opened events. It has no block, so no
+// document write changes, and the resolution takes it out of withdrawnAsk, so no later restore or
+// repair finds it again. Its author reads the findings, which name the version that broke the form.
+//
+// Once those events are in, it does for each document of those versions what a settlement while
+// the issue was closed skipped (docs.Service.FollowClosedIssueVersions): it moves the open
+// approval request that names the document to that version, in the name of the editor a
 // settlement while the issue was closed credited, and carries an approval to that version, as the
 // version's own write does on an open issue. A document with stored updates its latest version
 // does not hold, this reopen's ask-state write among them, is left to the settlement that saves
@@ -181,46 +185,73 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	opened := map[string]bool{}
+	reopen := func(asks []model.Ask) error {
+		ids := make([]string, len(asks))
+		for index, ask := range asks {
+			ids[index] = ask.ID
+			opened[ask.ID] = true
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `update asks set state = 'open', answer = null, resolution = null where id = any($1::uuid[])`, ids); err != nil {
+			return fmt.Errorf("restore withdrawn ask: %w", err)
+		}
+		return nil
+	}
+	var requests, others []model.Ask
+	for _, ask := range withdrawn {
+		if ask.Kind == "approval" && ask.Approval != nil {
+			requests = append(requests, ask)
+			continue
+		}
+		ask.State = "open"
+		ask.Answer = nil
+		ask.Resolution = nil
+		others = append(others, ask)
+	}
+	if err := reopen(others); err != nil {
+		return nil, nil, nil, err
+	}
+	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, others, actor, false); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := s.deps.Docs.MarkReopenOwedAskDocuments(ctx, issueKey); err != nil {
+		return nil, nil, nil, err
+	}
+	versions, err := s.deps.Docs.ClosedIssueVersions(ctx, issueKey)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	type brokenRequest struct {
 		ask    model.Ask
 		reason string
 	}
 	var broken []brokenRequest
-	reopening := make([]model.Ask, 0, len(withdrawn))
+	opening := make([]model.Ask, 0, len(requests))
+	for _, ask := range requests {
+		form, err := s.specFormOf(ctx, tx, docs.FollowedDocuments(ask.Approval.Documents, versions), specform.ActRestore)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if refusal := form.refusal(specform.ActRestore); refusal != nil {
+			broken = append(broken, brokenRequest{ask: ask, reason: refusal.Error()})
+			continue
+		}
+		opening = append(opening, ask)
+	}
+	if err := reopen(opening); err != nil {
+		return nil, nil, nil, err
+	}
+	restored = make([]model.Ask, 0, len(opened))
 	for _, ask := range withdrawn {
-		if ask.Kind == "approval" && ask.Approval != nil {
-			form, err := s.specFormOf(ctx, tx, ask.Approval.Documents, specform.ActRestore)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			if refusal := form.refusal(specform.ActRestore); refusal != nil {
-				broken = append(broken, brokenRequest{ask: ask, reason: refusal.Error()})
-				continue
-			}
+		if opened[ask.ID] {
+			ask.State = "open"
+			ask.Answer = nil
+			ask.Resolution = nil
+			restored = append(restored, ask)
 		}
-		reopening = append(reopening, ask)
-	}
-	ids := make([]string, len(reopening))
-	for index, ask := range reopening {
-		ids[index] = ask.ID
-	}
-	if len(ids) > 0 {
-		if _, err := tx.Exec(ctx, `update asks set state = 'open', answer = null, resolution = null where id = any($1::uuid[])`, ids); err != nil {
-			return nil, nil, nil, fmt.Errorf("restore withdrawn ask: %w", err)
-		}
-	}
-	restored = make([]model.Ask, 0, len(reopening))
-	for _, ask := range reopening {
-		ask.State = "open"
-		ask.Answer = nil
-		ask.Resolution = nil
-		restored = append(restored, ask)
-	}
-	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored, actor, false); err != nil {
-		return nil, nil, nil, err
-	}
-	if err := s.deps.Docs.MarkReopenOwedAskDocuments(ctx, issueKey); err != nil {
-		return nil, nil, nil, err
 	}
 	appended = make([]model.Event, 0, len(withdrawn))
 	restoredAt := time.Now().UTC()
@@ -265,7 +296,7 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		leftResolved = append(leftResolved, ask)
 		appended = append(appended, event)
 	}
-	followed, err := s.deps.Docs.FollowClosedIssueVersions(ctx, issueKey)
+	followed, err := s.deps.Docs.FollowClosedIssueVersions(ctx, issueKey, versions)
 	if err != nil {
 		return nil, nil, nil, err
 	}
