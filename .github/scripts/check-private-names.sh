@@ -96,7 +96,11 @@
 # calls; over the built site in docs-site.yaml's private-names job, which ci.yaml's docs job and
 # docs-pages.yaml's build job call; over the packed Claude Code plugin's dist/ and legion/ through
 # .github/actions/private-names-packed-plugin, in ci-job-claude-envoy.yaml's private-names job and
-# release.yaml's claude_envoy_names job; over a pull request's title, body, branch name, commits
+# release.yaml's claude_envoy_names job; over each release's rendered changelog entries, the file
+# its publish job writes into the GitHub release's body, through
+# .github/actions/private-names-release-notes, in release.yaml's legion_names, pi_envoy_names,
+# pi_legion_names and claude_envoy_names jobs and release-envoy-listener.yaml's release_names job;
+# over a pull request's title, body, branch name, commits
 # (each one's message, author and committer), issue comments, reviews and review comments through
 # check-pr-text.sh (ci.yaml's pr-title job at each push to a pull request that is not a draft, when
 # a draft is marked ready and on the merge queue's group, and pr-title.yaml when the pull request

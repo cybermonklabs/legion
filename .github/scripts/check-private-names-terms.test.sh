@@ -318,6 +318,32 @@ check "names the file and its line" \
   "$(contains "$out" 'packages/claude-envoy/legion/skills/notes.md:1: names a term')"
 check "prints no spelling of the term" "$(is "$(names_planted "$out")" false)"
 
+echo "case: a release's rendered changelog entries, scanned as the private-names-release-notes action scans them"
+# The action downloads the entries a release's build job rendered (release-push.sh fold-notes) to
+# $RUNNER_TEMP/private-names-release-notes, outside the checkout, and runs the check over that one
+# file from the checkout's root, on a push or a dispatched run; the publish job posts that file.
+root=$(fixture term-release-notes)
+notes_dir="$work/term-release-notes-runner-temp/private-names-release-notes"
+mkdir -p "$notes_dir"
+notes="$notes_dir/release-notes.md"
+printf '### Fixed\n\n* Keep the inbox order.\n' > "$notes"
+for event in push workflow_dispatch; do
+  run_check_as "$event" "$planted_terms" "$root" "$notes"
+  check "$event: clean entries pass" "$(is "$status" 0)"
+done
+printf '### Fixed\n\n* Move the %s runbook.\n' "${planted^}" > "$notes"
+run_check_as push "$planted_terms" "$root" "$notes"
+check "an entry naming a term fails" "$(is "$status" 1)"
+check "names the file and its line" "$(contains "$out" 'release-notes\.md:3: names a term')"
+check "prints no spelling of the term" "$(is "$(names_planted "$out")" false)"
+run_check_as push "$planted_dotted" "$root" "$notes"
+check "the same entry passes under a list without that term, so the finding is the list's" "$(is "$status" 0)"
+run_check_as push - "$root" "$notes"
+check "a push with no list exits 2, so an unmapped secret releases nothing" "$(is "$status" 2)"
+rm "$notes"
+run_check_as push "$planted_terms" "$root" "$notes"
+check "a missing file exits 2, so an artifact without the entries never passes as clean" "$(is "$status" 2)"
+
 echo "case: an unset or empty list on a pull request's events warns, and keeps the other rules' exit"
 root=$(fixture terms-unset-pr)
 unset_warning='^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the'

@@ -73,9 +73,9 @@ concurrency:
   cancel-in-progress: false
 
 # Every job declares its own permissions (targets, build, docker, image_index, attest,
-# release_build, release_publish below); nothing runs under this workflow-level default, so it
-# stays empty rather than becoming an unreviewed grant to a job added later with no block of its
-# own.
+# release_build, release_names, release_publish below); nothing runs under this workflow-level
+# default, so it stays empty rather than becoming an unreviewed grant to a job added later with no
+# block of its own.
 #
 # The release is split into build jobs and credentialed jobs. build, docker and release_build run
 # the module's code and every third-party module it links, so they hold no secret and no write
@@ -86,7 +86,9 @@ concurrency:
 # pinned actions below. Neither restores a cache (`cache-mode: none`), and the deploy key is in the
 # env of the one step that pushes the tag. image_index is neither: it holds docker's package push
 # alone and runs no dependency code, only `docker buildx imagetools` over the digests the docker
-# legs hand over.
+# legs hand over. Nor is release_names, which holds the deployment's term list and no write scope
+# and runs no dependency code: it checks the changelog entries release_build rendered for private
+# names, and release_publish releases only when it succeeded.
 permissions: {}
 
 env:
@@ -598,6 +600,37 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # The private-name check of the changelog entries release_build rendered, over the very file
+  # release_publish writes into the GitHub release's body. A job of its own, because the check
+  # reads the deployment's term list (PRIVATE_NAME_TERMS) and no build job holds it: this one
+  # checks out the .github cone and runs .github/actions/private-names-release-notes, which
+  # downloads the entries and runs the check, and no dependency code
+  # (.github/scripts/check-release-credentials.sh reads the action's steps). It runs whenever
+  # release_build released and checks when that release rendered entries; the check fails a push's
+  # or a dispatched run's scan without the list. release_publish needs this job, and its release
+  # steps run only when it succeeded, so a finding releases nothing; `latest` still moves, since
+  # the image carries no changelog.
+  release_names:
+    needs: release_build
+    if: always() && needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # contents: read is for the checkout.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.release_build.outputs.notes == 'true'
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: ./.github/actions/private-names-release-notes
+        if: needs.release_build.outputs.notes == 'true'
+        with:
+          artifact: envoy-release-notes
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # Moves `latest` and, when release_build decided a release, publishes it: confirms the version
   # against the tags inside the concurrency group, checks what build and release_build handed over,
   # writes SHA256SUMS, tags the commit, attests the host binaries and creates the GitHub release.
@@ -611,12 +644,12 @@ jobs:
     # release jobs, outside this group; this job serializes only moving tags and releases. Only
     # main moves `latest` or cuts a `legion-envoy-v*` tag and release: a workflow_dispatch from
     # any other branch publishes its `envoy:<sha>` image above and stops there. `latest` moves
-    # whatever release_build did; the release steps run only on its success and once "Confirm the
-    # version" finds no other run took the version.
+    # whatever release_build did; the release steps run only on its success and release_names',
+    # and once "Confirm the version" finds no other run took the version.
     # targets too: this job holds contents: write, the deploy key and the rest, so it runs no
     # script to derive the image it tags and reads back, and takes it from targets' output, which
     # `needs` carries only to a job naming targets directly.
-    needs: [build, image_index, release_build, targets]
+    needs: [build, image_index, release_build, release_names, targets]
     # On `always()`, so a skipped release_build does not skip this job; every job whose outputs
     # the steps below read has its result tested, targets' among them.
     if: >-
@@ -825,7 +858,7 @@ jobs:
       # $LEGION_ENVOY_VERSION_ARGS is expanded unquoted on purpose, as in release_build.
       - name: Confirm the version
         id: confirm
-        if: needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'
+        if: needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true' && needs.release_names.result == 'success'
         env:
           VERSION: ${{ needs.release_build.outputs.version }}
           GH_TOKEN: ${{ github.token }}

@@ -46,9 +46,9 @@ on:
       - ".github/workflows/worker-image.yaml"
   workflow_dispatch:
 
-# Every job declares its own permissions (legion_build, pi_envoy_build, pi_legion_build,
-# claude_envoy_build, claude_envoy_names, publish,
-# worker_image, worker_image_attest, worker_image_release below); nothing runs under this
+# Every job declares its own permissions (legion_build, legion_names, pi_envoy_build,
+# pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names,
+# publish, worker_image, worker_image_attest, worker_image_release below); nothing runs under this
 # workflow-level default, so it stays empty rather than becoming an unreviewed grant to a job
 # added later with no block of its own.
 #
@@ -56,19 +56,23 @@ on:
 # versions, installs, packs, builds and tests: it runs the dependencies' code and every third-party
 # module it links, so it holds no write scope and no secret, uploads what it made as an artifact,
 # and ends in a tripwire (`release-push.sh no-credential`) that fails when a credential is reachable
-# from it anyway. claude_envoy_names, between claude_envoy_build and publish, checks the plugin's
-# packed build for private names with the deployment's term list, which no build job holds; it
-# runs no dependency code. The publish job holds the credentials and runs no dependency code: only
+# from it anyway. Each build job's names job (legion_names, pi_envoy_names, pi_legion_names,
+# claude_envoy_names), between it and publish, checks what that build hands publish for private
+# names with the deployment's term list, which no build job holds: the changelog entries publish
+# writes into the release's body, and claude_envoy_names the plugin's packed build too. A names
+# job runs no dependency code, and publish runs a package's release only when its names job
+# succeeded. The publish job holds the credentials and runs no dependency code: only
 # release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of a handed tarball) and the
 # pinned actions below, with no cache restored (`cache-mode: none`) and the deploy key in the env
 # of the steps that push. release-push.sh handed checks what each build job handed over before
 # anything acts on it.
 #
-# So a release waits for a runner three times: for the four build jobs together; for publish beside
-# worker_image's build; and for worker_image_attest's attestation beside worker_image_release. Each
-# stage holds what the one before it may not: publish cannot run in a job that built what it
-# publishes, the image build needs the plugin pair legion_build decides, and the attestation, which
-# holds id-token and attestations: write, cannot run in the job that ran the Dockerfile.
+# So a release waits for a runner four times: for the four build jobs together; for their names
+# jobs; for publish beside worker_image's build; and for worker_image_attest's attestation beside
+# worker_image_release. Each stage holds what the one before it may not: publish cannot run in a
+# job that built what it publishes, a names job holds the term list no build job may, the image
+# build needs the plugin pair legion_build decides, and the attestation, which holds id-token and
+# attestations: write, cannot run in the job that ran the Dockerfile.
 #
 # Every job condition downstream of a skippable job takes one shape: `always() &&
 # needs.<job>.result == 'success' && …` before it reads that job's outputs. GitHub gives an `if:`
@@ -375,6 +379,35 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # The private-name check of the changelog entries legion_build rendered, over the very file
+  # publish writes into the GitHub release's body. A job of its own, because the check reads the
+  # deployment's term list (PRIVATE_NAME_TERMS) and no build job holds it: this one checks out the
+  # .github cone and runs .github/actions/private-names-release-notes, which downloads the entries
+  # and runs the check, and no dependency code (.github/scripts/check-release-credentials.sh reads
+  # the action's steps). It runs whenever legion_build released and checks when that release
+  # rendered entries; the check fails a push's run without the list. publish needs this job, and
+  # its legion steps run only when it succeeded, so a finding releases nothing of legion.
+  legion_names:
+    needs: legion_build
+    if: always() && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # contents: read is for the checkout.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.legion_build.outputs.notes == 'true'
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: ./.github/actions/private-names-release-notes
+        if: needs.legion_build.outputs.notes == 'true'
+        with:
+          artifact: legion-notes
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # The Envoy Oh My Pi plugin, @sjawhar/pi-envoy. pi_envoy_build versions it, installs the
   # workspace and packs it (the dependencies' code, so no write scope and no secret), and hands the
   # tarball to publish, which publishes those bytes to npm, tags the release and creates the
@@ -515,6 +548,29 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # The private-name check of the changelog entries pi_envoy_build rendered, as legion_names says;
+  # publish's pi-envoy steps run only when it succeeded.
+  pi_envoy_names:
+    needs: pi_envoy_build
+    if: always() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # contents: read is for the checkout.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.pi_envoy_build.outputs.notes == 'true'
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: ./.github/actions/private-names-release-notes
+        if: needs.pi_envoy_build.outputs.notes == 'true'
+        with:
+          artifact: pi-envoy-notes
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # The Legion Oh My Pi plugin, @sjawhar/pi-legion, built and published as @sjawhar/pi-envoy is.
   pi_legion_build:
     # Only main publishes, as pi_envoy_build says.
@@ -635,6 +691,29 @@ jobs:
 
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
+
+  # The private-name check of the changelog entries pi_legion_build rendered, as legion_names
+  # says; publish's pi-legion steps run only when it succeeded.
+  pi_legion_names:
+    needs: pi_legion_build
+    if: always() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # contents: read is for the checkout.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.pi_legion_build.outputs.notes == 'true'
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: ./.github/actions/private-names-release-notes
+        if: needs.pi_legion_build.outputs.notes == 'true'
+        with:
+          artifact: pi-legion-notes
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # The Claude Code plugin, @sjawhar/claude-envoy, built and published as the two Oh My Pi plugins
   # are. The difference is what it packs: the plugin's own tree carries no built file, so this job
@@ -808,15 +887,17 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
-  # The private-name check of the plugin claude_envoy_build packed, over the tarball publish will
-  # hand npm: its dist/ and legion/, the very bytes verify-build.sh tarred and extract-built put
-  # into the package before the pack. A job of its own, because the check reads the deployment's
-  # term list (PRIVATE_NAME_TERMS) and no build job holds it: this one checks out the .github cone
-  # and runs .github/actions/private-names-packed-plugin, which downloads the tarball, lays its two
-  # directories out at their repository path and runs the check, and no dependency code
-  # (.github/scripts/check-release-credentials.sh reads the action's steps). The check fails a
-  # push's run without the list. publish needs this job, and its claude-envoy steps run only when
-  # it succeeded.
+  # The private-name checks of what claude_envoy_build hands publish: the plugin it packed, over
+  # the tarball publish will hand npm (its dist/ and legion/, the very bytes verify-build.sh tarred
+  # and extract-built put into the package before the pack), and the changelog entries it rendered,
+  # as legion_names says. A job of its own, because the check reads the deployment's term list
+  # (PRIVATE_NAME_TERMS) and no build job holds it: this one checks out the .github cone and runs
+  # .github/actions/private-names-packed-plugin, which downloads the tarball, lays its two
+  # directories out at their repository path and runs the check, and
+  # .github/actions/private-names-release-notes when the release rendered entries, and no
+  # dependency code (.github/scripts/check-release-credentials.sh reads the actions' steps). The
+  # check fails a push's run without the list. publish needs this job, and its claude-envoy steps
+  # run only when it succeeded.
   claude_envoy_names:
     needs: claude_envoy_build
     if: always() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true'
@@ -836,6 +917,12 @@ jobs:
           artifact: claude-envoy-tarball
           private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
 
+      - uses: ./.github/actions/private-names-release-notes
+        if: needs.claude_envoy_build.outputs.notes == 'true'
+        with:
+          artifact: claude-envoy-notes
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # Publishes what the four build jobs made, in one job for all four packages, so their release
   # waits for a runner once: pi-envoy, pi-legion, claude-envoy, then legion, which links the two
   # Oh My Pi plugins and so goes only once both are on npm. It runs no bun, no node, no Go,
@@ -851,16 +938,18 @@ jobs:
   # It runs on main even when nothing releases: its pair_ok output decides
   # whether worker_image_attest attests the image, and each step decides for its own package.
   #
-  # A package's first step runs when its build released, and each later step when the one before it
-  # in the same package succeeded (`steps.<id>.outcome`, under `!cancelled()`). So a failed step
-  # stops the rest of its own package and no other: one package's failure never holds back another
-  # whose build released. Each package starts from the run's commit (`git checkout --force --detach
+  # A package's first step runs when its build released and its names job succeeded, and each later
+  # step when the one before it in the same package succeeded (`steps.<id>.outcome`, under
+  # `!cancelled()`). So a private name in a package's changelog entries, or a failed step, stops
+  # the rest of its own package and no other: one package's failure never holds back another
+  # whose build released (legion, which links the two Oh My Pi plugins, waits for both). Each
+  # package starts from the run's commit (`git checkout --force --detach
   # "$GITHUB_SHA"` and `git clean -ffdx`, in its hand-over check), and nothing of a release is
   # committed: `release-push.sh tag` tags $GITHUB_SHA itself, which main already holds, and
   # `tagged` finds a tag only on HEAD. So no package's steps move main, and a re-run of this job
   # reads the same tags its first attempt pushed.
   publish:
-    needs: [pi_envoy_build, pi_legion_build, claude_envoy_build, claude_envoy_names, legion_build]
+    needs: [pi_envoy_build, pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names, legion_build, legion_names]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -902,7 +991,7 @@ jobs:
       # package's reset of the checkout removes it and no git command sees it.
       - name: "pi-envoy: Download the tarball"
         id: pi_envoy_download
-        if: ${{ !cancelled() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true' && needs.pi_envoy_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pi-envoy-tarball
@@ -1004,7 +1093,7 @@ jobs:
       # pi-legion: what pi_legion_build packed, published as pi-envoy's above is.
       - name: "pi-legion: Download the tarball"
         id: pi_legion_download
-        if: ${{ !cancelled() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true' && needs.pi_legion_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pi-legion-tarball
@@ -1232,12 +1321,13 @@ jobs:
             echo "pi_legion_version=$pi_legion"
           } >> "$GITHUB_OUTPUT"
 
-      # legion: what legion_build built and smoke-tested. It goes only once both plugins it links
-      # are on npm, and this first step refuses archives that link any pair but the one npm now
-      # carries: the binary installs that pair from npm on a stale-plugin relaunch.
+      # legion: what legion_build built and smoke-tested, once legion_names found no private name in
+      # its changelog entries. It goes only once both plugins it links are on npm, and this first
+      # step refuses archives that link any pair but the one npm now carries: the binary installs
+      # that pair from npm on a stale-plugin relaunch.
       - name: "legion: Check the linked plugin pair"
         id: legion_pair
-        if: ${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true' && needs.legion_names.result == 'success' }}
         env:
           LINKED_PI_ENVOY: ${{ needs.legion_build.outputs.pi_envoy_version }}
           LINKED_PI_LEGION: ${{ needs.legion_build.outputs.pi_legion_version }}

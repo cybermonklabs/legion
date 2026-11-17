@@ -88,7 +88,9 @@
 # code. check-private-names.sh is not dependency code: it sources nothing, and runs bash builtins
 # and dirname, mktemp, rm, git (ls-files), grep, find, sort, xargs, env, sh, tr, cat and wc, all
 # the runner's own; it is the one script a job holding the deployment's term list runs
-# (release.yaml's claude_envoy_names, through .github/actions/private-names-packed-plugin). The
+# (release.yaml's legion_names, pi_envoy_names, pi_legion_names and claude_envoy_names and
+# release-envoy-listener.yaml's release_names, through .github/actions/private-names-packed-plugin
+# and .github/actions/private-names-release-notes). The
 # classification is of a command a step runs, never of a word a comment or another command's
 # argument holds: a script named only that way is no exemption. A step whose `uses:` is a local
 # action and no DEPENDENCY_USES entry is read through that action's action.yml: a composite
