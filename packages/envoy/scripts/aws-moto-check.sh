@@ -33,7 +33,9 @@ trap cleanup EXIT
 
 # moto binds a port the kernel chooses (-p 0) and prints it, as werkzeug's development server does
 # (" * Running on http://127.0.0.1:<port>"). A port picked here and freed for moto to bind would be
-# any other program's to take in between.
+# any other program's to take in between. The log is made first: the background shell opens it
+# when it gets to run, and on a loaded machine the loop's first read can come before that.
+: >"$work/moto.log"
 MOTO_ACCOUNT_ID=111122223333 uvx --from 'moto[server]==5.2.5' moto_server -H 127.0.0.1 -p 0 >"$work/moto.log" 2>&1 &
 moto_pid=$!
 
