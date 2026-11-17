@@ -271,8 +271,9 @@ not have, and `agent-secrets` then exits 1 with `NARROWING_REFUSED`. With `--git
 the broker first reads which permissions the installation holds. When the installation does not
 hold contents, metadata or pull requests, the broker asks GitHub for no token, and
 `agent-secrets` exits 1 with `NARROWING_REFUSED`. The message names each of the three that the
-installation does not hold. A permission of the other five that the installation does not hold
-is left out of the token, and the broker writes a warning in its log.
+installation does not hold. Each of issues, actions, checks, statuses and attestations
+that the installation does not hold is left out of the token, and the broker writes a warning
+in its log for each one.
 An account that the `github-owners` tag does not list exits 1 with `NARROWING_OWNER_NOT_LISTED`.
 An account that the tag lists but that the App is not installed on exits 1 with a message that
 says `has no installation on` that account: `NARROWING_REFUSED` when the broker refuses the

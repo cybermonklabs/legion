@@ -5798,21 +5798,26 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   — a new name counts as higher) is newer;
   every shared id equal and no new name is the same set;
   no id higher, no new name, and some id lower is older;
-  anything else (a higher or new alongside a lower) is a mixed view and is dropped as a conflict (names only in the stored set are ignored
+  anything else (a higher or new alongside a lower) is a mixed view, which the Legion daemon applies, deciding each name by its newest run as it merges the set into its fence (`classify.ClassifySettlement`, `mergeAttemptSets`) (names only in the stored set are ignored
   — a check can vanish from GitHub's view, and a record recreated after the seven-day KV TTL starts sparse).
   Within one producer record per-name ids never decrease, and a consumer's fence is the per-name maximum over every view it has accepted
   — an accepted set merges into the fence, nothing is pruned
-  — so the fence never decreases either: a newer attempt is newer whatever its completion time, no timestamps take part in ordering, and a name an incomplete view omitted cannot later reappear as new.
-  At the same set the listener's `generation` orders its own settlements:
+  — so the fence never decreases either: a newer attempt is newer whatever its completion time, no timestamps take part in ordering check runs, and a name an incomplete view omitted cannot later reappear as new.
+  At the same set, where the settlement names no newer commit status (below), the listener's `generation` orders its own settlements:
   lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
-  a recreated record may reuse one and is dropped).
+  a recreated record numbers its settlements afresh and may reuse one, and such a settlement is dropped unless a commit status it names is newer by its `created_at`).
 
-- A settlement also carries `statuses` where the record holds a commit status (`cistore.Summary.Statuses`): each `{context, state}`, in context order, with `state` one of `success`, `failure` and `error`, and no `statuses` field where the record holds none, so a head with no status settles in the same bytes as before the record held statuses.
+- A settlement also carries `statuses` where the record holds a commit status (`cistore.Summary.Statuses`): each `{context, state, created_at}` (`cistore.StatusRef`), in context order, with `state` one of `success`, `failure` and `error` and `created_at` GitHub's RFC 3339 text of when it created the status, as the record keeps it, and no `statuses` field where the record holds none, so a head with no status settles in the same bytes as before the record held statuses.
   A commit status is an entry of its own kind: `check_runs`, the status groups and the failing names hold check runs alone, a status and a check run of one name are two entries, and a status is in no attempt set and takes no part in whether a head is ready to settle.
   The record keeps the newest status of each context in one of those three states, by GitHub's `created_at`, and only Dispatch's CI reconcile writes one (`cmd/dispatch/README.md`, "CI reconcile"): the listener drops GitHub's `status` event (`githubSkip`), which carries a commit and no pull request.
   A new context or a changed state moves the record's `snapshot` and `generation` and settles the head again;
   a new time, link or description in the same state is recorded and settles nothing.
   The settlement's summary line adds `; statuses: <n> passed, <m> failed`, and `; failing statuses: <context>, …` where one failed, after the failing check runs.
+  A status has no id, and a recreated record numbers its settlements afresh, so a consumer orders two statuses of one context by `created_at`, never by `generation`:
+  a settlement that names a context the consumer keeps no status of for that commit, or one with a later `created_at` than the kept one, is newer whatever its attempt set and its `generation`;
+  one whose attempt set is older and that names no such status is older for every check run and every status, and is stale.
+  A consumer merges the `statuses` of each settlement it applies into the statuses it keeps for that commit, one context at a time: the entry with the later `created_at` stands, the settlement's on an equal time, so a context the settlement leaves out stays as kept and an older settlement never puts back a state a later one replaced.
+  The Legion daemon applies this rule (`classify.ClassifySettlement` and its `statusNews`, `classify.ApplySettlement` and its `mergedStatuses`).
 
 - A live settlement is a possibly incomplete view of the head (a missed webhook, a record recreated after the KV TTL):
   it decides the outcome of every name it reports
@@ -5821,12 +5826,12 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A consumer that reconciles a verdict from GitHub's rollup compares the rollup's attempt set the same way, but GitHub's read is complete:
   its failing check runs and failing commit statuses replace the stored ones wholesale.
   Statuses have no check run, so a consumer keeps them apart from check-run failures:
-  a check run that shares a status's name cannot retire it — only a newer status of that context does, named in a settlement's `statuses` or in GitHub's read, and only GitHub's read retires a deleted check's failure.
+  a check run that shares a status's name cannot retire it — a settlement's `statuses` is merged into the kept statuses per context by `created_at` (above), GitHub's read replaces them whole, and only GitHub's read retires a deleted check's failure.
   A newer rollup set merges into the fence and takes the identity (no listener generation);
   the same set applies GitHub's verdict and keeps the listener identity for duplicate detection; an older, mixed, or empty-over-fenced set is ignored.
   A terminal read (green or red) then holds the tie at that set:
   a live settlement at the same set is accepted only if its effective outcome
-  — the check-run failures it reports plus the stored ones it omits, and the failed commit statuses it names plus the stored status failures of the contexts it omits
+  — the check-run failures it reports plus the stored ones it omits, and each failed status among the kept statuses once its `statuses` is merged in
   — agrees with the reconciled verdict, refreshing the listener identity without releasing GitHub's authority;
   a disagreeing one is stale whatever its generation until the set advances;
   a pending or cancelled-only read uncertifies a green head, leaves a red one untouched, and holds nothing

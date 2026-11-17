@@ -421,7 +421,9 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   A status in `success`, `failure` or `error` is mapped into the REST shape (`context`, `state`, `created_at`, `target_url`, `description`) and recorded through `contracts.GithubStatusObservation`, and a `pending` or `expected` one is not recorded.
   The record keeps the newest status of each context (`packages/envoy/AGENTS.md`, "Topic shapes"), and a query's statuses are part of the head's fingerprint, so a pass in which only a status changed records it.
   A refused status read costs the head its statuses alone: a `FORBIDDEN` error at the head commit's `status` field of a query's answer, or a 403 or 404 to the REST status read, leaves the head's check runs and suites recorded and sends no further request for that head in that pass.
-  The REST refusal is named at WARN, `ci reconcile read no commit status of a head`, and a rate limit stops the pass, as at any read.
+  Either refusal is named at WARN, `ci reconcile read no commit status of a head`, with the repository, the pull request, the head's sha and what GitHub answered, and a rate limit stops the pass, as at any read.
+  Deploy the listener first, then each Legion daemon, then Dispatch.
+  A rollback of the listener below the release that records commit statuses goes with a rollback of Dispatch: an earlier listener drops the statuses of each record it writes, and nothing writes them back while GitHub's answer for that head stays the same.
 
 - Every REST page is conditional on the `ETag` of its own last answer, so an unchanged page costs none of the rate limit; a query carries no ETag and is always answered in full.
   A head's ETags are kept only when every page answered and every observation the rules name was recorded, and are dropped when a page failed, when a write a later pass might land did not, and when the record they stand for has gone (the bucket's seven-day TTL, or a delete), so nothing is hidden behind a `304`.
@@ -1418,7 +1420,7 @@ A process that finds it held tries again
   A reconcile pass re-reads the pull request heads first, whether or not the deployment has delivery settings and outside the deploy repository's permission check (`Reconcile.runOnce`), since every deployment compares a recorded result with those heads;
   every other step of the pass is gated on the settings and on that check, so a deployment with no settings runs the head pass and nothing else.
 
-- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps, recording every completed check run and completed check suite Envoy's listener record of that head lacks.
+- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps, recording every completed check run and completed check suite Envoy's listener record of that head lacks, and the head's commit statuses where the App's token holds Commit statuses (CI reconcile, above).
   A webhook GitHub never delivered leaves a head short of a check, and a head short of a check never settles, which no notification announces either.
   It needs NATS, whose `envoy_ci_state` bucket it binds and never creates, and the App private key; without either it is off and says so at start.
   The pass compares a `tester` or `architect` check run's `app.id` against `DISPATCH_REVIEWER_APP_ID`, and with that variable unset records no verdict check at all.
