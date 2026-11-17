@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,10 +25,10 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -143,12 +142,7 @@ func podJSON(namespace, name, uid, node, container string, terminated bool) stri
 func server(t *testing.T) (string, natsgo.JetStreamContext) {
 	t.Helper()
 	_, uri := testnats.Start(t)
-	conn := testnats.Connect(t, uri)
-	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
-	if err != nil {
-		t.Fatalf("jetstream: %v", err)
-	}
+	_, js := jetStream(t, uri)
 	return uri, js
 }
 
@@ -357,16 +351,11 @@ func TestTheCommandReachesAServerOnAnotherMachine(t *testing.T) {
 // default _INBOX prefix, which gets no JetStream answer: the grant bites. At 7b262c2e0a the
 // command used the default prefix and failed as the control does.
 func TestAUserGrantedOnlyTheCommandsInboxRunsIt(t *testing.T) {
-	user, err := nkeys.CreateUser()
-	if err != nil {
-		t.Fatalf("create a user: %v", err)
-	}
-	seed, _ := user.Seed()
-	public, _ := user.PublicKey()
+	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, InboxPrefix+".>"), []string{"-js"}, false)
-	t.Setenv("NATS_NKEY_SEED", string(seed))
+	t.Setenv("NATS_NKEY_SEED", seed)
 
-	control, err := testnats.ConnectSeed(t, uri, string(seed))
+	control, err := testnats.ConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("control: connect as the user: %v", err)
 	}
@@ -386,18 +375,21 @@ func TestAUserGrantedOnlyTheCommandsInboxRunsIt(t *testing.T) {
 	}
 }
 
-// grantConfig is a server configuration with JetStream whose one user, the nkey user public, may
-// publish only to publish and subscribe only to subscribe.
-func grantConfig(public string, publish, subscribe []string) string {
-	quote := func(subjects []string) string {
-		quoted := make([]string, len(subjects))
-		for i, subject := range subjects {
-			quoted[i] = fmt.Sprintf("%q", subject)
-		}
-		return strings.Join(quoted, ", ")
+// grantConfig is the authorization of a server whose one restricted user, the nkey user public, may
+// publish only to publish and subscribe only to subscribe, and whose users unrestricted, each an
+// nkey user's public key, may do anything, as the hub's users are rendered (core.Authorization).
+func grantConfig(t *testing.T, public string, publish, subscribe []string, unrestricted ...string) string {
+	t.Helper()
+	users := []core.User{{Name: "granted", NKey: public, Publish: &core.Rules{Allow: publish}, Subscribe: &core.Rules{Allow: subscribe}}}
+	everything := core.Rules{Allow: []string{">"}}
+	for i, key := range unrestricted {
+		users = append(users, core.User{Name: fmt.Sprintf("unrestricted-%d", i), NKey: key, Publish: &everything, Subscribe: &everything})
 	}
-	return fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } } ]\n}\n",
-		public, quote(publish), quote(subscribe))
+	config, err := core.Authorization{Users: users}.Render(nil)
+	if err != nil {
+		t.Fatalf("render the server's users: %v", err)
+	}
+	return config
 }
 
 // A NATS user granted exactly Grant() - the deployment's buckets user - runs every step the command
@@ -410,7 +402,7 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 	run := func(t *testing.T, publish []string, args ...string) (int, string) {
 		t.Helper()
 		seed, public := testnats.User(t)
-		_, uri := testnats.StartConfig(t, grantConfig(public, publish, subscribe), []string{"-js"}, false)
+		_, uri := testnats.StartConfig(t, grantConfig(t, public, publish, subscribe), []string{"-js"}, false)
 		t.Setenv("NATS_NKEY_SEED", seed)
 		answers := []string{}
 		for range 8 {
@@ -422,7 +414,7 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 	}
 	t.Run("every step with the whole grant", func(t *testing.T) {
 		seed, public := testnats.User(t)
-		_, uri := testnats.StartConfig(t, grantConfig(public, publish, subscribe), []string{"-js"}, false)
+		_, uri := testnats.StartConfig(t, grantConfig(t, public, publish, subscribe), []string{"-js"}, false)
 		t.Setenv("NATS_NKEY_SEED", seed)
 		for _, args := range [][]string{
 			{"create", "--first-deployment"},
@@ -468,30 +460,11 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 // At 7b262c2e0a the query knew only envoy-listener and envoy-dispatch, and the listener and
 // dispatch cases fail.
 func TestTheHostQuerySeesARealWriterProcessUnderEachOfItsNamesUntilItEnds(t *testing.T) {
-	sleep, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Fatalf("no sleep binary to run as a stand-in writer: %v", err)
-	}
-	raw, err := os.ReadFile(sleep)
-	if err != nil {
-		t.Fatalf("read sleep: %v", err)
-	}
-	ssh := filepath.Join(t.TempDir(), "local-ssh")
-	if err := os.WriteFile(ssh, []byte("#!/bin/sh\nfor last; do :; done\nexec sh -c \"$last\"\n"), 0o755); err != nil {
-		t.Fatalf("write the local ssh: %v", err)
-	}
+	ssh := localSSH(t)
 	uri, _ := server(t)
 	for _, name := range []string{"envoy-listener", "listener", "envoy-listener-heldport", "envoy-dispatch", "dispatch", "dispatch-e2e"} {
 		t.Run(name, func(t *testing.T) {
-			binary := filepath.Join(t.TempDir(), name)
-			if err := os.WriteFile(binary, raw, 0o755); err != nil {
-				t.Fatalf("write the stand-in: %v", err)
-			}
-			process := exec.Command(binary, "300")
-			if err := process.Start(); err != nil {
-				t.Fatalf("start the stand-in: %v", err)
-			}
-			t.Cleanup(func() { _ = process.Process.Kill(); _ = process.Wait() })
+			process := startStandIn(t, name)
 			comm := name[:min(len(name), 15)]
 			line := strconv.Itoa(process.Process.Pid) + " " + comm
 			query := func() string {
@@ -709,39 +682,6 @@ func TestBestEffortCheckHoldsNothingThroughARestoreUntilINFRA4015BarrierLands(t 
 	}
 }
 
-// capturedLog swaps the default logger for one that writes text lines into a buffer until the test
-// ends, and puts back the log package's output, which slog.SetDefault redirects, then too.
-func capturedLog(t *testing.T) *lockedBuffer {
-	t.Helper()
-	buffer := &lockedBuffer{}
-	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buffer, nil)))
-	t.Cleanup(func() {
-		slog.SetDefault(previous)
-		log.SetOutput(output)
-		log.SetFlags(flags)
-	})
-	return buffer
-}
-
-// lockedBuffer is a buffer the bus's goroutines may write to while the test reads it.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
 // listenerUsers is the authorization of a hub with two users: a listener's, the nkey user the hub
 // renders for the in-cluster gke listener, holding exactly core.ListenerHostPermissions("gke"); and
 // a watcher, which a client presenting no credential becomes and which may do anything, so the test
@@ -860,7 +800,8 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 	requests := watchStreamRequests(t, watcher)
 
 	// The server's refusal reaches the connection as an async error, which the bus logs (slog).
-	logs := capturedLog(t)
+	logs := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	code, stdout, stderr := runCommand(t, &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}, nil, "create", "--nats", uri, "--bucket", bus.SessionBucket, "--host", "box-1")
 	const unanswered = "envoy-infra buckets: read " + bus.SessionBucket + ": context deadline exceeded"
 	refusal := `Permissions Violation for Subscription to \"` + InboxPrefix + `.`
@@ -1432,5 +1373,3 @@ func TestABucketNamedTwiceIsOneBucket(t *testing.T) {
 		t.Fatalf("create --break-glass with %s named twice sent %v, want %v", bus.SessionBucket, got, want)
 	}
 }
-
-var _ = io.Discard

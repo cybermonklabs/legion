@@ -117,16 +117,7 @@ func TestTheRestoreRunsUnderExactlyTheCommandsGrant(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			adminSeed, admin := testnats.User(t)
 			bucketsSeed, buckets := testnats.User(t)
-			quote := func(subjects []string) string {
-				quoted := make([]string, len(subjects))
-				for i, subject := range subjects {
-					quoted[i] = fmt.Sprintf("%q", subject)
-				}
-				return strings.Join(quoted, ", ")
-			}
-			config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q }, { nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } } ]\n}\n",
-				admin, buckets, quote(c.publish), quote(subscribe))
-			_, uri := testnats.StartConfig(t, config, []string{"-js"}, false)
+			_, uri := testnats.StartConfig(t, grantConfig(t, buckets, c.publish, subscribe, admin), []string{"-js"}, false)
 			operator, err := testnats.ConnectSeed(t, uri, adminSeed)
 			if err != nil {
 				t.Fatalf("connect as the operator: %v", err)
