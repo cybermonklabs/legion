@@ -367,17 +367,21 @@ the fills live in workflows that run there.
   (`key: <family>-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`), with the
   family's prefix as `restore-keys`
   (`restore-keys: ${{ format('<family>-{0}-', runner.os) }}`; the families are `go-daemon`,
-  `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`; `go-envoy-infra`'s key
-  also ends in `-and-darwin`, for the reason its fill in ci-caches.yaml gives). In `ci.yaml` that
+  `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`). In `ci.yaml` that
   fallback applies on every run, a dispatched one on main included, because no job there saves.
   A job that does save keeps the prefix off main alone
   (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-', runner.os) || '' }}`),
   so the entry it saves after a Go bump holds nothing the older Go built; docs-site.yaml's build,
   which docs-pages.yaml calls on main, is the one such job. Each family keeps one
   entry, refreshed only when Go is bumped. Do not
-  key on go.sum: every go.sum change would leave a whole entry, up to a gigabyte, for seven days. A
-  go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a
-  stale entry costs a run only what changed. Share a family only with the jobs that build the same
+  key on go.sum without deleting the entry the new key replaces: every go.sum change would leave a
+  whole entry, up to a gigabyte, for seven days. A go.sum change downloads only the changed
+  modules, and Go's build cache is content-addressed, so a stale entry costs a run only what
+  changed; where that is most of the build, as for `go-envoy-infra`, whose linux vet took 83 to 85%
+  of what the same vet for darwin took with nothing cached, from an eleven-day-old entry, key on the
+  hash of the module files too and delete
+  the replaced entry, as ci-caches.yaml's `envoy-infra` and `envoy-infra-superseded` jobs do. Share
+  a family only with the jobs that build the same
   packages, or whichever job saves first owns the entry the others then miss.
 - Add no `actions/cache/save` step here, and no `if:` that tests `github.event_name == 'push'` or
   compares `github.ref` with a branch ref: the workflow runs on no push, so such a condition gates

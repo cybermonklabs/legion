@@ -75,7 +75,11 @@ name: CI
 # entry, keyed on the Go version its job's setup-go installed, so it is
 # refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
 # build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
-# go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
+# go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy-infra is
+# the exception: what changed under it in eleven days cost its linux vet 83 to 85% of what the
+# same vet for darwin took with nothing cached, so its key carries the hash of its module files
+# too, and ci-caches.yaml deletes the entry each fill replaces (its envoy-infra job says how). The
+# fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
 # older Go built, and no step of this workflow saves a family any more (the two check actions
