@@ -106,7 +106,7 @@ func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheFirstSequ
 	// Another session's messages, so the stream's last sequence is past its first and a resume
 	// point inside the stream names a message of it.
 	for range 5 {
-		rig.store(t, contracts.AgentSubject("ses_resume_past_end_bystander"))
+		rig.store(t, contracts.LegacyAgentSubject("ses_resume_past_end_bystander"))
 	}
 	first, lastSeq := rig.streamSeqs(t)
 	streamID := rig.streamID(t)
@@ -160,10 +160,10 @@ func TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheFirstSequ
 func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_resume_clamped_once"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	// Another session's messages, so the stream's last sequence is past its first.
 	for range 3 {
-		rig.store(t, contracts.AgentSubject("ses_resume_clamped_once_bystander"))
+		rig.store(t, contracts.LegacyAgentSubject("ses_resume_clamped_once_bystander"))
 	}
 	firstSeq, lastSeq := rig.streamSeqs(t)
 	streamID := rig.streamID(t)
@@ -184,6 +184,7 @@ func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testi
 	requireFrames(t, standIn.collect(t, len(taken), 5*time.Second), taken...)
 	awaitAcked(t, rig.consumers, sessionID, floor)
 
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
 	var away []contracts.Envelope

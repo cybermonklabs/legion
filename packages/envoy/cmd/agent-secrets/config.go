@@ -11,8 +11,9 @@
 // what the client uses. It takes the settings that say where the broker is and who this machine
 // and its person are, and no others; any other key is a usage error naming the line, since a
 // setting the client would silently ignore is a mistake the person who wrote it cannot see. A
-// file its group or others can write is a usage error too, and nothing in it is read: whoever can
-// write it chooses the broker this machine proves its own identity to.
+// path that is not a regular file, a file another user than this one or root owns, and one its
+// group or others can write are usage errors too, and nothing in them is read: whoever can write
+// the file chooses the broker this machine proves its own identity to.
 //
 // HOME is the environment's, else the home the password database gives this process's user
 // (homeGetenv), so a system unit that systemd starts with no HOME still reads its user's file.
@@ -86,18 +87,31 @@ func clientConfigPath() string {
 }
 
 // loadClientConfig reads the file into clientConfig, once per command (run). A file that is not
-// there is no settings and no error; one that cannot be read, that its group or others can write,
-// or that holds a line the format does not take, is an error naming the file and the line.
+// there is no settings and no error; one that cannot be read, that is not a regular file, that
+// another user than this one or root owns, that its group or others can write, or that holds a
+// line the format does not take, is an error naming the file and the line. The file names the
+// broker this machine proves its identity to, so it is held as OpenSSH holds a user's own
+// configuration: whoever but its user (and root, who can change any file) could change it could
+// point the machine at a broker of their own. Owning the file covers its directory too: a file
+// someone else put in its place is theirs.
 func loadClientConfig() error {
 	clientConfig = nil
 	path := clientConfigPath()
 	if path == "" {
 		return nil
 	}
-	file, err := os.Open(path)
+	// Stat before the open: an open of a FIFO left at the path would wait for a writer forever.
+	named, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("read the settings file %s: %w", path, err)
+	}
+	if !named.Mode().IsRegular() {
+		return fmt.Errorf("the settings file %s is not a regular file (%s); nothing was read from it", path, named.Mode().Type())
+	}
+	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("read the settings file %s: %w", path, err)
 	}
@@ -105,6 +119,13 @@ func loadClientConfig() error {
 	info, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("read the settings file %s: %w", path, err)
+	}
+	if !os.SameFile(named, info) || !info.Mode().IsRegular() {
+		return fmt.Errorf("the settings file %s changed while it was opened; nothing was read from it", path)
+	}
+	if uid, ok := fileOwner(info); ok && uid != os.Getuid() && uid != 0 {
+		return fmt.Errorf("the settings file %s is owned by uid %d, not by this user (uid %d), and it names the broker this machine proves its identity to; nothing in it was read: make it yours, or remove it",
+			path, uid, os.Getuid())
 	}
 	if mode := info.Mode().Perm(); mode&0o022 != 0 {
 		return fmt.Errorf("the settings file %s can be written by its group or by others (mode %04o), and it names the broker this machine proves its identity to; nothing in it was read: run chmod go-w %s",

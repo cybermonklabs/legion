@@ -233,10 +233,11 @@ func serverList(urls []string) string {
 // options starts from nats.GetDefaultOptions: Connect fills in only some zero fields, and the
 // defaults are what turn on reconnecting, the client's pings and the drain and flusher timeouts. A
 // lost server is reconnected in place, forever, so JetStream handles taken from the connection
-// keep working; ReconnectedCB re-subscribes and runs the reconnect hooks. DisconnectedErrCB logs
-// the disconnect and then calls disconnectedCB: the reconnect loop keeps every subscription open
-// through an outage, so a KV watcher never ends on its own and only this callback says its cache
-// stopped following the bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
+// keep working; ReconnectedCB starts the re-subscribe and a run of the reconnect hooks off nats.go's
+// callback goroutine (onReconnect). DisconnectedErrCB logs the disconnect and then calls
+// disconnectedCB: the reconnect loop keeps every subscription open through an outage, so a KV
+// watcher never ends on its own and only this callback says its cache stopped following the
+// bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
 // on the connection itself: the same authorization error twice in a row, or a server -ERR it does
 // not classify. Those two are why onClosed still starts a recovery that dials a replacement. The
 // reconnect buffer is off, so nothing is held and sent after its caller saw an error: a publish
