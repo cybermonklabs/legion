@@ -1981,9 +1981,10 @@ A `400` from the route is final: the daemon ends the row and logs one ERROR line
 **The session of an ended claim keeps its role for a time.**
 It keeps its role until the daemon's publication of the end lands.
 The claim write that ends the claim queues that publication in its own transaction, so the end and its publication commit together or not at all.
-An end whose own write the store did not take is published only when the daemon makes that write, at the claim's next decision, because until then the store still holds the claim live.
+An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published only when the daemon makes that write again, at the claim's next decision, because until then the store still holds the claim live.
 In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
-A suspension whose write the database refused, and a stop whose retirement of its round's ask failed, leave the daemon's store behind its memory, and the set follows the store, so the session stays listed until a later claim write lands (dispatch://INFRA-4099 owns both).
+An end whose claim write failed and is not owed, so that the daemon never makes that write again, leaves the daemon's memory ended and its store live, and the set follows the store: the session stays listed until a later write of that claim lands, and the daemon's next start takes the claim up from its row as live (dispatch://INFRA-4099).
+Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
 **Who can write the set.**
 The route takes a write that names the actor `legion-daemon:<project>`.

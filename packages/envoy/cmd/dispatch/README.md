@@ -4389,14 +4389,15 @@ Each item below names a path with its method and identity, then its purpose.
     A write holds a lock of the issue row that a second write of the same issue waits for, so the stored set is always one whole set.
     When two writes of one issue run at the same time, the one that finishes last wins.
     The daemon sends one write of an issue at a time: its outbox holds one `role_holders_publish` row for each issue, and a lane runs the rows of its issue one at a time (`packages/daemon/internal/daemon/outbox_lanes.go`).
-    A claim change while the daemon's write of that issue is in flight leaves the older set stored until that row's lease of 30 s ends, and the row then runs again with the live set.
+    A claim change while the daemon's write of that issue is in flight leaves the older set stored until the outbox's first sweep after that row's lease ends: the lease ends 30 s after its last renewal, and the sweep runs every 30 s, so the older set can stay for about a minute before the row runs again with the live set.
 
   - **When the daemon publishes.**
     The daemon publishes the set when a claim readies, at each boot, and at each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
     The claim write queues the publication in its own transaction in the daemon's store, so the change and its publication commit together or not at all.
-    An end whose own write the store did not take is published when the daemon makes that write, at the claim's next decision, and not before: until then the store still holds the claim live.
+    An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published when the daemon makes that write again at the claim's next decision, and not before: until then the store still holds the claim live.
     The session of an ended claim keeps its role until the next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
-    A suspension whose write the database refused, and a stop whose retirement of its round's ask failed, leave the daemon's store behind its memory, and the set follows the store, so the session stays listed until a later claim write lands (dispatch://INFRA-4099 owns both).
+    An end whose claim write failed and is not owed, so that the daemon never makes that write again, leaves the daemon's memory ended and its store live, and the set follows the store: the session stays listed until a later write of that claim lands, and the daemon's next start takes the claim up from its row as live (dispatch://INFRA-4099).
+    Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
     The boot publishes each issue with a live claim or a claim that changed in the last seven days, for the claims that an earlier release changed and did not publish.
     The daemon ends a publication that this route refuses with `400`, and logs one ERROR line with the issue and the code; the next ready, end or other change of a claim on the issue queues a fresh publication of the live set.
     A live claim whose session this route refuses stops each publication of its issue in that way, with one ERROR line each time, until that claim ends.

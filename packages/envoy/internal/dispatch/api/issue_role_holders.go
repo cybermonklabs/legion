@@ -33,10 +33,14 @@ import (
 // process of a failed or a suspended claim can still run during that window: the daemon lets go of
 // a process whose stop the runtime refused. Such a process keeps the pane's bearer, and its session
 // keeps its role, until the publication lands. The daemon queues the publication in the
-// transaction of each claim write that changes the session holding a role, so an end whose own
-// write the store did not take is published when the daemon makes that write at the claim's next
-// decision. The set follows the daemon's store, so a claim whose store lags the daemon's memory
-// keeps its session listed until a later claim write lands (dispatch://INFRA-4099).
+// transaction of each claim write that changes the session holding a role, so an end whose claim
+// write failed with an error that the daemon owes is published when the daemon makes that write
+// again at the claim's next decision. An end whose claim write failed and is not owed, so that the
+// daemon never makes that write again, leaves the daemon's memory ended and its store live, and the
+// set follows the store: the session stays listed until a later write of that claim lands, and the
+// daemon's next start takes the claim up from its row as live (dispatch://INFRA-4099). Such ends
+// include a suspension, a stop or a failure whose claim write the database refused, and a stop
+// whose retirement of its round's ask failed.
 //
 // Each write replaces the issue's whole set under a lock of the issue row that a second write of
 // the same issue waits for, so the stored set is always one whole set, and each write answers the

@@ -366,9 +366,10 @@ Each item below names a task and where its code is, then notes on it.
   A write locks the issue row (`for no key update`), so two writes of one issue store one whole set, the set of the one that finishes last, and each answers the set that it stored.
   The write appends no event, notifies nobody and takes a closed issue, and `GET` answers the set in workflow order.
   `heldRole` is the read that a later release of the results route makes in its own write transaction.
-  The daemon queues the publication in the transaction of each claim write that changes the session that holds a role (`internal/store`'s `putClaim`), so the change and its publication commit together, and an end whose own write the store did not take is published when the daemon makes that write at the claim's next decision.
+  The daemon queues the publication in the transaction of each claim write that changes the session that holds a role (`internal/store`'s `putClaim`), so the change and its publication commit together, and an end whose claim write failed with an error that the daemon owes is published when the daemon makes that write again at the claim's next decision.
   The session of an ended claim keeps its role until the daemon's next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
-  A suspension whose write the database refused, and a stop whose retirement of its round's ask failed, leave the daemon's store behind its memory, and the set follows the store, so the session stays listed until a later claim write lands (dispatch://INFRA-4099 owns both).
+  An end whose claim write failed and is not owed, so that the daemon never makes that write again, leaves the daemon's memory ended and its store live, and the set follows the store: the session stays listed until a later write of that claim lands, and the daemon's next start takes the claim up from its row as live (dispatch://INFRA-4099).
+  Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 

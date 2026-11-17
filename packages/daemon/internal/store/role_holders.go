@@ -20,8 +20,10 @@ import (
 // write's own transaction (putClaim), where every write of a claim's state and session converges,
 // so the change and the obligation to publish it commit together or not at all: no change of a
 // holder stands that nothing owes a publication, and a write the store refused leaves neither. An
-// end whose own write failed is published when the write that makes it good lands, whichever
-// decision makes it.
+// end whose own write failed with an error the machine owes is published when the repair that
+// makes it good lands, whichever decision makes it; an end whose failed write is not owed is
+// never written, and the store, and so Dispatch's set, keeps the claim live
+// (dispatch://INFRA-4099).
 
 // roleHoldersPublishKind is record.OutboxKindRoleHoldersPublish. This package cannot import record,
 // whose tests import this package, so the name is written here once, and role_holders_test.go reads
