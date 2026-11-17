@@ -859,16 +859,17 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 // mention their thread's author, resolutions of those threads, ask answers, replies to messages,
 // comments on documents and a person's settled edits of documents, on an issue a session holds the
 // claim of, and comments on an issue nobody routes or claims, whose primary document a session
-// wrote - reads their followers, authors, comment recipients and mention deliveries in at most
-// seven statements, one per kind, and publishes every one of them. The kinds are the ask
-// followers, the thread root authors a resolution reads, the message authors, the document
-// authors, the mention deliveries a new comment whose mentions resolved to a session reads
-// (loadMentionDeliveries), and #2366's two: the sessions of the threads the replies are in
-// (loadCommentRecipients) and the sessions of the unclaimed issues' primary documents
-// (loadPrimaryDocumentAuthors). The claimant costs no statement: the batch's own read carries the
-// issue's claim (readBatch). A document's writers are one kind, whether a comment on it or an edit
-// of it asks for them, so the edits add no statement.
-func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostSevenStatements(t *testing.T) {
+// wrote - runs eight lookup statements, one per kind and two for the mention read, and publishes
+// every one of them. The statements are the ask followers, the thread root authors a resolution
+// reads, the message authors, the document authors, the mention deliveries a new comment whose
+// mentions resolved to a session reads and the comment_fallback_copies rows that already own a
+// destination of one (loadMentionDeliveries, its two statements), and #2366's two: the sessions of
+// the threads the replies are in (loadCommentRecipients) and the sessions of the unclaimed issues'
+// primary documents (loadPrimaryDocumentAuthors). The claimant costs no statement: the batch's own
+// read carries the issue's claim (readBatch). A document's writers are one kind, whether a comment
+// on it or an edit of it asks for them, so the edits add no statement. The count is exact, so a
+// lookup statement added to loadLookups, or a kind the batch stops reading, fails it.
+func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
@@ -962,11 +963,11 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 	if want := each/2 + each*6 + each*5; agents != want {
 		t.Fatalf("the batch reached %d sessions' own subjects, want %d", agents, want)
 	}
-	lookups := tracer.matchingAny("ask_followers", "from comments", "from messages", "artifact_versions", "from comment_deliveries", "is_primary")
-	if len(lookups) > 7 {
-		t.Fatalf("the batch of %d events ran %d follower, author, recipient and mention delivery lookups, want at most 7", len(seeded), len(lookups))
+	lookups := tracer.matchingAny("ask_followers", "from comments", "from messages", "artifact_versions", "from comment_deliveries", "is_primary", mentionFallbackHoldsQuery)
+	if len(lookups) != 8 {
+		t.Fatalf("the batch of %d events ran %d lookup statements, want 8: one per kind and two for the mention read (loadLookups)", len(seeded), len(lookups))
 	}
-	t.Logf("the batch of %d events ran %d follower, author, recipient and mention delivery lookups", len(seeded), len(lookups))
+	t.Logf("the batch of %d events ran %d lookup statements", len(seeded), len(lookups))
 }
 
 // One row no recipient read can take, among a batch's many ids of that read, fails only the event
