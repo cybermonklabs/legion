@@ -719,7 +719,7 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 	head := streamHead(t, js)
 
 	forwards := make(chan contracts.Envelope, 256)
-	holderSub, err := conn.Subscribe(contracts.AgentSubject(outboxRoleHolder), func(msg *natsgo.Msg) {
+	holderSub, err := conn.Subscribe(contracts.LegacyAgentSubject(outboxRoleHolder), func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err == nil && strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
 			forwards <- item
@@ -1203,8 +1203,8 @@ func newOutboxScene(t *testing.T, pair *dispatchPair, issues, roleIssues, replyI
 	}
 	scene.watcher = newTestSession(t, rig, "ses_"+name+"_watcher", families...)
 	holder, author := "ses_"+name+"_holder", "ses_"+name+"_author"
-	scene.holder = newTestSession(t, rig, holder, contracts.AgentSubject(holder))
-	scene.author = newTestSession(t, rig, author, contracts.AgentSubject(author))
+	scene.holder = newTestSession(t, rig, holder, contracts.LegacyAgentSubject(holder))
+	scene.author = newTestSession(t, rig, author, contracts.LegacyAgentSubject(author))
 	rig.registerHolder(t, scene.role, holder)
 	for index, key := range scene.issues {
 		switch {
@@ -2235,7 +2235,7 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 
 	t.Run("the holder's connection drops", func(t *testing.T) {
 		role := "drop-" + name
-		holder := newTestSession(t, rig, "ses_"+name+"_dropping", contracts.AgentSubject("ses_"+name+"_dropping"))
+		holder := newTestSession(t, rig, "ses_"+name+"_dropping", contracts.LegacyAgentSubject("ses_"+name+"_dropping"))
 		rig.registerHolder(t, role, holder.id)
 		key := routedIssue(t, role)
 		first := writeComment(t, key, "Event N.")
@@ -2252,8 +2252,8 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 
 	t.Run("the role moves to another session", func(t *testing.T) {
 		role := "move-" + name
-		leaving := newTestSession(t, rig, "ses_"+name+"_leaving", contracts.AgentSubject("ses_"+name+"_leaving"))
-		arriving := newTestSession(t, rig, "ses_"+name+"_arriving", contracts.AgentSubject("ses_"+name+"_arriving"))
+		leaving := newTestSession(t, rig, "ses_"+name+"_leaving", contracts.LegacyAgentSubject("ses_"+name+"_leaving"))
+		arriving := newTestSession(t, rig, "ses_"+name+"_arriving", contracts.LegacyAgentSubject("ses_"+name+"_arriving"))
 		rig.registerHolder(t, role, leaving.id)
 		rig.registerSession(t, arriving.id)
 		key := routedIssue(t, role)
@@ -2273,8 +2273,8 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 
 	t.Run("the role moves while a forward of it is unacknowledged", func(t *testing.T) {
 		role := "unacknowledged-" + name
-		leaving := newTestSession(t, rig, "ses_"+name+"_stranded", contracts.AgentSubject("ses_"+name+"_stranded"))
-		arriving := newTestSession(t, rig, "ses_"+name+"_taking", contracts.AgentSubject("ses_"+name+"_taking"))
+		leaving := newTestSession(t, rig, "ses_"+name+"_stranded", contracts.LegacyAgentSubject("ses_"+name+"_stranded"))
+		arriving := newTestSession(t, rig, "ses_"+name+"_taking", contracts.LegacyAgentSubject("ses_"+name+"_taking"))
 		rig.registerHolder(t, role, leaving.id)
 		rig.registerSession(t, arriving.id)
 		key := routedIssue(t, role)
@@ -2322,13 +2322,13 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 		if frames := framesOfComment(arriving, first); frames != 1 {
 			t.Errorf("the session the role moved to was handed the event %d times, want the one forward that was made once it held the role", frames)
 		}
-		if copies := storedCopiesOf(t, js, head, contracts.AgentSubject(arriving.id), event); copies != 1 {
+		if copies := storedCopiesOf(t, js, head, contracts.LegacyAgentSubject(arriving.id), event); copies != 1 {
 			t.Errorf("the stream holds %d copies of event %s on %s, want the one the new holder's consumer delivers",
-				copies, event, contracts.AgentSubject(arriving.id))
+				copies, event, contracts.LegacyAgentSubject(arriving.id))
 		}
-		if copies := storedCopiesOf(t, js, head, contracts.AgentSubject(leaving.id), event); copies != 0 {
+		if copies := storedCopiesOf(t, js, head, contracts.LegacyAgentSubject(leaving.id), event); copies != 0 {
 			t.Errorf("the stream holds %d copies of event %s on %s, want none: the session the role left is delivered what its consumer holds, and nothing of this event is its to read",
-				copies, event, contracts.AgentSubject(leaving.id))
+				copies, event, contracts.LegacyAgentSubject(leaving.id))
 		}
 	})
 }
@@ -2390,7 +2390,7 @@ func narrowAgentCapture(t *testing.T, js natsgo.JetStreamContext, holders ...str
 		return subject == contracts.AgentTopicPrefix+">"
 	})
 	for _, holder := range holders {
-		narrowed.Subjects = append(narrowed.Subjects, contracts.AgentSubject(holder))
+		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
 	}
 	update := func(config *natsgo.StreamConfig, what string) {
 		if _, err := js.UpdateStream(config); err != nil {

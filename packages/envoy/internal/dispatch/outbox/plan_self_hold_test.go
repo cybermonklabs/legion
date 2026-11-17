@@ -47,7 +47,7 @@ func TestAWaitingCopyHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	const first = "role:unanswered-first-when-the-comment-was-written"
 	const second = "role:unanswered-second-when-the-comment-was-written"
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.AgentSubject(holder)
+	holderSubject := contracts.LegacyAgentSubject(holder)
 
 	rig := newRoleRig(t)
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})

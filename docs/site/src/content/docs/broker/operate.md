@@ -90,7 +90,9 @@ machine-login revokes and their sign-in revokes; it decides no secret request
 
 The four `BROKER_SIGNIN_*` settings are required, and a broker started without one of them exits
 naming the missing ones. They are the page where a person approves a secret request, signed in to
-the broker itself ([Approval sign-in](#approval-sign-in)).
+the broker itself ([Approval sign-in](#approval-sign-in)). A deployment that has not settled how
+its people sign in sets `BROKER_SIGNIN=off` instead, and that broker approves nothing
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)).
 
 A caller's **name** decides which of those routes its account reaches, so listing an account is
 not one authority but a choice between them. The broker knows three names: `dispatch`, which
@@ -110,8 +112,10 @@ otherwise wait for a person ([Concepts](/legion/broker/concepts/#the-model-judge
 and the id of the model it asks, the audience of the Google identity token the broker presents to
 that endpoint, and the Dispatch it reads an issue from with the file holding the broker's own
 projected ServiceAccount token for it. They are all-or-none: with none of them set there is no
-judge, and every human-tier request waits for the person who decides it today. A sixth setting
-names the protocol that endpoint speaks and has a default. The
+judge, and every human-tier request waits for the person who decides it today, except on a broker
+with `BROKER_SIGNIN=off`, which denies every such request at once and takes no judge
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)); its `model judge state=off`
+boot line says so. A sixth setting names the protocol that endpoint speaks and has a default. The
 [configuration reference](/legion/broker/reference/config/) names each and gives its accepted
 values. `BROKER_JUDGE_TEST_SKIP_CHECKS` turns the judge's checks before the model off, as the
 local stack's negative control of them, and a production start — one with
@@ -514,7 +518,7 @@ A person approves or denies a secret request on the broker's own page,
 `<BROKER_PUBLIC_URL>/approve/<record>`, signed in to the broker with OpenID Connect through an
 OAuth client of the broker's own; Dispatch's Inbox only links there, and no route a service calls
 decides a secret request ([Concepts](/legion/broker/concepts/#approvals)). Four settings are the
-sign-in, and every one of them is required:
+sign-in, and every one of them is required unless `BROKER_SIGNIN=off`:
 
 | Setting | What it is |
 | --- | --- |
@@ -526,9 +530,10 @@ sign-in, and every one of them is required:
 
 A broker missing any of the four refuses to start, naming the ones it is missing: `broker: fatal
 error="the broker's approval page needs BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID,
-BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_DOMAIN"`. There is
-no broker that serves machines but approves nothing: a deployment either signs people in or does
-not run.
+BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_DOMAIN"`. The one
+broker that starts without them is one told outright to sign nobody in, `BROKER_SIGNIN=off`
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)): a deployment either signs
+people in, says it signs nobody in, or does not run.
 
 On Google, create the client once, in the Google Cloud project whose OAuth consent screen is the
 Workspace's **Internal** one (APIs & Services → Credentials → Create credentials → OAuth client ID,
@@ -603,6 +608,74 @@ visit to a request's page signs them in again, if the provider still lets them; 
 them out of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first. It is the only subcommand the
 broker takes: anything else is refused with a usage line, and `envoy-broker` with no argument
 serves.
+
+### A broker that signs nobody in
+
+A deployment whose way of signing people in is not settled yet runs the broker with
+`BROKER_SIGNIN=off` and none of the `BROKER_SIGNIN_*` settings. It serves machines and pods as any
+broker does and approves nothing.
+
+In a Kubernetes manifest, quote the value. YAML 1.1 reads a bare `off` as the boolean `false`, so
+the API server refuses the manifest, or a template renders it as `"false"`, which the broker
+refuses (`BROKER_SIGNIN must be off or unset, got "false"`):
+
+```yaml
+env:
+  - name: BROKER_SIGNIN
+    value: "off"
+```
+
+Such a broker:
+
+- It serves no approval page: every route under `/approve` and `/signin/`, `GET /signin/status`
+  among them, answers 404, and no sign-in client check runs.
+- A request naming a secret whose answer would be a person's approval — a human-tier secret,
+  another person's `tier=agent` secret, a secret the session's operator withheld from it — is
+  denied at once, whatever its reason says, and nothing waits in anyone's Inbox. The session reads
+  `<NAME>: a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)` after
+  `was denied: `, and the command exits 77.
+- What the policy grants at once is granted as on any broker: a person's own and a shared
+  `tier=agent` secret for their sessions, and a service's own secret for its pods. A machine
+  login, which a person decides on Dispatch's machine-login page, is unchanged.
+- A request still pending from a broker with sign-in on — one an earlier run left, or one a pod
+  still on sign-in queues during a roll — is denied by the next sweep, within
+  `BROKER_SWEEP_SECONDS`, and leaves the approver's Inbox: the session reads `was denied: a person
+  must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)`, and the request records
+  `broker:signin-off` as having decided it. The sweep expires overdue requests first, as on any
+  broker, so one whose deadline has passed is normally expired instead; if that expiry fails,
+  the same sweep denies it. No clock bounds the selection, so the database's `created_at` cannot
+  hide a request from it. A grant approved before stays until it ends as any grant does, and a
+  request signed for another broker sharing the database, at another `BROKER_PUBLIC_URL`, is
+  left to that broker.
+- `BROKER_PUBLIC_URL` is held to an `http` or `https` URL whether sign-in is on or off, by the
+  broker's last configuration check: `BROKER_PUBLIC_URL must be an http or https URL, got the
+  scheme "ftp"`.
+
+`off` is the one value it takes: any other, `OFF` or `disabled` among them, refuses to start
+naming it, `broker: fatal error="BROKER_SIGNIN must be off or unset, got \"disabled\""`. `off`
+beside any `BROKER_SIGNIN_*` setting refuses to start naming the ones set, since the deployment
+has asked for both: `BROKER_SIGNIN=off turns the broker's person sign-in off, and
+BROKER_SIGNIN_DOMAIN is set: set BROKER_SIGNIN=off or the sign-in settings, not both`. `off`
+beside the [model judge](/legion/broker/concepts/#the-model-judge)'s settings refuses too, since
+the judge decides only a request that waits for a person. With `BROKER_SIGNIN` unset, a broker
+missing a sign-in setting refuses exactly as above, so a deployment that lost its sign-in settings
+never starts without its approval page.
+
+Moving between the two settings is a roll of the broker's pods, and while pods of both kinds
+share the database, a request a person would decide is refused unless it is approved on a pod
+with sign-in on, by a person or by that pod's model judge, before the sweep reaches it. A grant
+approved that way stays when the switch is made, as any grant does. An `off` pod denies at once
+each such request it serves, and its sweep, within `BROKER_SWEEP_SECONDS`, denies each one a pod
+with sign-in on queued that is still pending. A pod cannot tell a request queued in the overlap
+from one an earlier run left, so a cutover that denies nothing queued during it has no overlap:
+stop every pod of the old setting before the first pod of the new one starts.
+
+- **Turning sign-in on.** Set the four `BROKER_SIGNIN_*` settings, unset `BROKER_SIGNIN`, and
+  roll the pods. A session denied during the roll reads `BROKER_SIGNIN=off` in its denial and asks
+  again once the last `off` pod has stopped.
+- **Turning sign-in off.** Set `BROKER_SIGNIN=off`, unset every `BROKER_SIGNIN_*` setting and
+  the model judge's, and roll the pods. Every request still pending when the first `off` pod's
+  sweep reaches it, whether an earlier run or a pod still on sign-in queued it, is denied.
 
 ## Signing in to RDS by IAM token
 
@@ -901,6 +974,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `database sign-in method=<method>` | At startup, before the broker reaches for AWS or its database: `rds-iam` when each connection signs in with an RDS IAM token the broker mints, `password` when it signs in as `BROKER_DATABASE_URL` and libpq's defaults say (a password in the URL, `PGPASSWORD`, a passfile, or none for a server that trusts it). |
 | `secret store store=<store> credentials=<source>` | At startup, once the store is built: `aws-secrets-manager` under the AWS SDK's credential chain (`aws-sdk`), `gcp-secret-manager` under Application Default Credentials (`application-default`), or either name over `BROKER_FAKE_SECRETS_FILE` (`fake secrets file`). |
 | `approval sign-in on issuer=<issuer> client_id=<client id> domain=<domain>` | At startup: the approval page signs people in through that client, holding each person to that Workspace domain ([Approval sign-in](#approval-sign-in)). The client's secret is never logged. |
+| `approval sign-in off detail=…` | At startup, in place of the line above: `BROKER_SIGNIN=off`, so the broker serves no approval page and denies at once a request a person would approve ([A broker that signs nobody in](#a-broker-that-signs-nobody-in)). No sign-in client check runs. |
 | `broker: the sign-in client check state=<state> issuer=<issuer> error=…` | At WARN, from the check each pod takes at startup and every hour after, when it finds a state other than `ready` that the pod did not log last: the provider refused the broker's client (`state=client_rejected`, so nobody can sign in) or could not be asked (`state=issuer_unreachable`). A check that finds the state the pod logged last, or finds the client ready with no such line before it, logs nothing, so a provider that stays away for a day is one line. Every check writes its answer to `GET /signin/status`. |
 | `broker: the sign-in client check finds the client ready again issuer=<issuer> was=<state>` | At INFO: the first check that finds the client ready after the line above. `was` is the state that line named. |
 | `broker: the sign-in client check was not written state=<state> error=…` | At WARN: a check could not write its answer to Postgres after the check before it wrote, so `GET /signin/status` answers the last answer written. The checks after it log nothing more until one writes. |
@@ -930,7 +1004,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: grant log …` | At INFO, once for each request decision, each `request.judged` row and each grant end. Every line carries the event's `kind`, its `actor`, whichever of the enrollment, request and grant ids the row names, and `raw`, the audit row's own detail; it carries no audit id and no timestamp, since the line is written once the row has committed and the log keeps its own time. The rest is what the writer of that line had in hand, which differs by line: a `request.created` line adds the session and its person, the service the broker verified, the service the session's credential claims (`claimed_service`), the secrets and how each was decided, the state, the approver, the lifetime, the reason and the detail; a `request.granted` or `request.denied` line adds the session and its person, the claimed service, the state, the approver, who decided, the lifetime, the reason and the detail, and neither the verified service nor the secrets; a `request.cancelled` or `request.expired` line adds the state, the detail and, for a cancel, who decided; a `request.judged` line, written for every judge run that reached a verdict, its referrals and its failed checks included, adds the session and its person, the claimed service, and the grant where the verdict granted one; a `grant.revoked` or `grant.withheld` line adds nothing more, except the session's person when a person's revoke ended it. A reader joins a line to its request's own `request.created` line by `request_id` for the rest, or reads that row from `GET /v1/grant-log`, which joins the tables and holds every field. The line is the copy a deployment's log pipeline keeps of the rows that route answers from the `audit` table, so a closed period's decisions can be read without the database ([the audit record](/legion/broker/concepts/#the-audit-record)). A release (`grant.used`) writes the line below instead, and an enrollment row writes none. |
 | `broker: released a grant grant=… request=… enrollment=… names=[<NAME> …] reason=<reason> call_reason=<reason> command=[<argument> …] github_app=…` | At INFO, once for each release of a grant, after its `grant.used` audit row is written: what each grant was spent on, and why. `reason` is the reason the grant's request gave. A session's release adds `call_reason`, the `--reason` its own call gave, where that differs from the grant's: a session that asks again for secrets it holds a live grant of gets that grant back, and its new reason is in no request. The broker drops the characters a request's reason may not hold and cuts it to 400 characters. A session's release also adds `command`, the argument vector the `agent-secrets NAME -- <command>` form said the release starts: its first 32 arguments, each cut to 256 bytes, and `github_app`, the narrowing of its GitHub App tokens the release applied, where it applied one. In the cut command the broker replaces with `[redacted]` each secret it can name: each value of eight bytes or more that the release handed out, each string of eight bytes or more inside a stored JSON value, each token inside a document a minter made, each placeholder of a name the airlock holds back, and every GitHub token, AWS access key id, Google OAuth access token, Slack token of any `xox` prefix and PEM private key, wherever it came from; an argument the cut ended loses any end that starts one of them. **A secret of no such kind — a value from another store, a password typed in, a value shorter than eight bytes — is logged as the session typed it, so pass secrets in the command's environment, as the exec form does, and never on its command line.** `call_reason` and `command` are the session's own word, which the broker records and does not check, and a client from before the fields names neither, which logs an empty `command`. The airlock proxy's release of a grant writes `airlock=true` in their place, since it starts no command. The `grant.used` row's `detail` holds the same fields, and `GET /v1/grant-log` answers that detail to every account with the power to read the grant log. While a client of this version meets a broker from before these fields, that broker refuses each release once with `400 INVALID_NARROWING` naming the unknown field, and the client sends it again without them: the older broker writes a `broker: answer refused … code=INVALID_NARROWING` line and counts `broker_answers_total{outcome="refused",code="INVALID_NARROWING"}` for each, which is expected until the broker is rolled. |
 | `broker sweeper: ended an enrollment whose lease lapsed enrollment_id=… kind=… runtime_id=… slot=… lease_expired_at=… grants_revoked=… requests_cancelled=… left_dormant=…` | A session stopped renewing (a pod that is gone, a box whose `agent-secrets renew` stopped) while a broker was serving; the sweep ended it, revoking its grants and cancelling its pending requests. A lease that ran out while no broker was serving is not ended ([when no broker is serving](/legion/broker/concepts/#when-no-broker-is-serving)). |
-| `broker sweeper: end lapsed enrollments sweep=lapsed-enrollments error=…`, and the failure lines of the six other sweeps | At WARN, when one of the seven sweeps the sweeper runs every `BROKER_SWEEP_SECONDS` fails after its run before did not. That sweep logs nothing more until it succeeds, which writes `broker sweeper: a sweep that failed succeeded again`, so a database that stays away for an hour is two lines for each sweep and not one for each run. Each sweep's line has its own message and `sweep`: `broker sweeper: end lapsed enrollments` (`lapsed-enrollments`), `broker sweeper: end dormant enrollments` (`dormant-enrollments`), `broker sweeper: expire pending requests` (`pending-requests`), `broker sweeper: expire pending machine logins` (`pending-machine-logins`), `broker sweeper: delete spent OAuth state` (`spent-oauth-state`), `broker sweeper: delete expired browser sessions` (`expired-browser-sessions`) and `broker sweeper: delete the placeholders of grants that have ended` (`ended-grant-placeholders`). A sweep the broker's shutdown cuts short logs nothing. |
+| `broker sweeper: end lapsed enrollments sweep=lapsed-enrollments error=…`, and the failure lines of the six other sweeps | At WARN, when one of the seven sweeps the sweeper runs every `BROKER_SWEEP_SECONDS` fails after its run before did not. That sweep logs nothing more until it succeeds, which writes `broker sweeper: a sweep that failed succeeded again`, so a database that stays away for an hour is two lines for each sweep and not one for each run. Each sweep's line has its own message and `sweep`: `broker sweeper: end lapsed enrollments` (`lapsed-enrollments`), `broker sweeper: end dormant enrollments` (`dormant-enrollments`), `broker sweeper: expire or deny pending requests` (`pending-requests`: the expiry of overdue requests and, with `BROKER_SIGNIN=off`, the denial of the rest), `broker sweeper: expire pending machine logins` (`pending-machine-logins`), `broker sweeper: delete spent OAuth state` (`spent-oauth-state`), `broker sweeper: delete expired browser sessions` (`expired-browser-sessions`) and `broker sweeper: delete the placeholders of grants that have ended` (`ended-grant-placeholders`). A sweep the broker's shutdown cuts short logs nothing. |
 | `broker sweeper: a sweep that failed succeeded again sweep=<sweep>` | At INFO: the first run of that sweep that succeeds after its failure line. `sweep` names it as that line did. |
 | `broker: gave back the time no broker was serving to every lease still running when the last broker served gap=… last_serving_at=… enrollments=…` | At INFO, on the first beat after more than three sweeps in which no broker beat: every broker process was down, or none could reach the database. Each enrollment not revoked whose lease was still running at `last_serving_at` had its lease moved on by `gap`, but no further than `BROKER_LEASE_SECONDS` from now; `enrollments` counts them. Their sessions renew as before. |
 | `broker: the serving clock could not beat; it retries every interval and logs again once it beats error=… timed_out=…` | At WARN: this process could not record its beat, usually because the database is out of reach. A beat may take at most one `BROKER_SWEEP_SECONDS`; `timed_out=true` says it ran out of that (its deadline, or a lock or statement past it), as when another transaction holds this process's row, while the other brokers go on beating. It retries every `BROKER_SWEEP_SECONDS` and logs `broker: the serving clock beats again` once it does. |

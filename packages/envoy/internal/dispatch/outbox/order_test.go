@@ -216,7 +216,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		}
 	}
 	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.AgentSubject("S")
+	session := contracts.LegacyAgentSubject("S")
 	order := map[string][]int64{}
 	sequence := map[string]uint64{}
 	stream, err := js.StreamInfo(bus.Stream)
@@ -262,7 +262,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 		arrivals []int64
 		marks    markers
 	)
-	sub, err := rig.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
+	sub, err := rig.conn.Subscribe(contracts.LegacyAgentSubject(holder), func(msg *natsgo.Msg) {
 		if marks.took(msg) {
 			return
 		}
@@ -328,7 +328,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	// handed the same message on its own connection, which can arrive just after that
 	// acknowledgement on a busy machine: S is read once it has taken every forward sent to it
 	// (markers.await).
-	marks.await(t, rig.client, contracts.AgentSubject(holder))
+	marks.await(t, rig.client, contracts.LegacyAgentSubject(holder))
 	var order []int64
 	for _, got := range taken() {
 		if !slices.Contains(order, got) {
@@ -569,7 +569,7 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 		if strings.HasPrefix(item.Topic, contracts.AgentTopicPrefix) {
 			agents++
 		}
-		if item.Topic == contracts.AgentSubject("claimant") {
+		if item.Topic == contracts.LegacyAgentSubject("claimant") {
 			claimant++
 		}
 	}
@@ -641,7 +641,7 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 			}
 			continue
 		}
-		want := []string{contracts.AgentSubject(fmt.Sprintf("author-%d", index))}
+		want := []string{contracts.LegacyAgentSubject(fmt.Sprintf("author-%d", index))}
 		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), want) {
 			t.Fatalf("edit %d has published_at %v, attempt_count %d and published_destinations %v, want it published to %v",
 				index, row.publishedAt, row.attempts, row.destinations, want)
