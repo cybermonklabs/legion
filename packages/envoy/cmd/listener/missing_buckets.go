@@ -131,6 +131,24 @@ func startCopiedBuckets(ci bool) []string {
 	return slices.DeleteFunc(listenerCopiedBuckets(ci), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
 }
 
+// openExisting opens a store with open, which opens its buckets only if they exist, and when one
+// went missing after the start's wait found it (bus.ErrBucketMissing) waits for it again with
+// wait (awaitCopiedBuckets) and opens it again, so a bucket deleted between the wait and the open
+// holds the start at its gates, every route answering 503 and /healthz naming the bucket, and
+// never ends it. Any other error is the open's, and wait's error ends the wait.
+func openExisting[T any](wait func() error, open func() (T, error)) (T, error) {
+	for {
+		opened, err := open()
+		if !errors.Is(err, bus.ErrBucketMissing) {
+			return opened, err
+		}
+		if err := wait(); err != nil {
+			var none T
+			return none, err
+		}
+	}
+}
+
 // readMissingBuckets asks the server for each bucket's stream and answers those it says it does
 // not hold. A read that fails any other way is returned as the error, after every bucket was
 // asked, and says nothing of that bucket.

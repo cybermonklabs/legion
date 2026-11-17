@@ -1236,8 +1236,13 @@ func main() {
 	// The copied buckets, before any store opens: no listener creates one (missing_buckets.go), so
 	// a start that finds one missing waits here, every route behind its starting gate answering
 	// 503 and /healthz naming the bucket, until the operator's `envoy-infra buckets` creates it.
-	if err := awaitCopiedBuckets(context.Background(), logger, client.JS(), client.Conn,
-		startCopiedBuckets(webhookCfg.GitHub != nil), missing, os.Getenv(throwawayNATSEnv) == "1", cfg.NATSReplicas); err != nil {
+	// Each store below opens through openExisting, which waits here again for a bucket deleted
+	// between this wait and its open, rather than ending the start.
+	awaitBuckets := func() error {
+		return awaitCopiedBuckets(context.Background(), logger, client.JS(), client.Conn,
+			startCopiedBuckets(webhookCfg.GitHub != nil), missing, os.Getenv(throwawayNATSEnv) == "1", cfg.NATSReplicas)
+	}
+	if err := awaitBuckets(); err != nil {
 		log.Fatalf("await the copied KV buckets: %v", err)
 	}
 	// CI-summary aggregation state. Its WatchAll cache warms asynchronously like the registries
@@ -1253,7 +1258,9 @@ func main() {
 	var renames ghrename.Renames
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
-		ciStore, err = cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(bus.CIStateBucketMaxAge), cistore.WithExistingBucket())
+		ciStore, err = openExisting(awaitBuckets, func() (*cistore.Store, error) {
+			return cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(bus.CIStateBucketMaxAge), cistore.WithExistingBucket())
+		})
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
 		}
@@ -1272,7 +1279,9 @@ func main() {
 	// The registry and its cache watcher log through the listener's own handler, so its role-restore
 	// count, its warm-up and its reaper cycles are JSON records with this machine's id. Never
 	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks.
-	registry, err := store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithExistingBuckets())
+	registry, err := openExisting(awaitBuckets, func() (*store.Registry, error) {
+		return store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithExistingBuckets())
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1344,15 +1353,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sessions, err := session.OpenSessionRegistry(
-		client.Conn,
-		session.WithSessionReplicas(cfg.NATSReplicas),
-		session.WithSessionLogger(logger.Slog()),
-		session.WithSessionMaxAge(cfg.SessionMaxAge),
-		session.WithSessionLiveWindow(sessionLiveWindow),
-		session.WithSessionGoneHorizon(sessionGoneHorizon),
-		session.WithExistingSessionBucket(),
-	)
+	sessions, err := openExisting(awaitBuckets, func() (*session.SessionRegistry, error) {
+		return session.OpenSessionRegistry(
+			client.Conn,
+			session.WithSessionReplicas(cfg.NATSReplicas),
+			session.WithSessionLogger(logger.Slog()),
+			session.WithSessionMaxAge(cfg.SessionMaxAge),
+			session.WithSessionLiveWindow(sessionLiveWindow),
+			session.WithSessionGoneHorizon(sessionGoneHorizon),
+			session.WithExistingSessionBucket(),
+		)
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
