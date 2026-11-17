@@ -51,9 +51,12 @@ export function row(skip: boolean) {
 /** One row that reaches the probes, as `row` with a timeout of its own. It only stops a run that
  *  hangs: no row reads how long a run took. A run takes about 29 s (five rounds 6 s apart, the last
  *  up to curl's 5 s), and the script's own timers allow it 49 s (two reads of the origin of up to
- *  10 s each, four sleeps of 6 s and a last probe of 5 s). The slowest such row took 144.9 s on two
- *  CPUs shared with eight busy loops and five other runs of the four files, so the timeout is three
- *  times that, rounded up to the second. */
+ *  10 s each, four sleeps of 6 s and a last probe of 5 s). A hang guard is at least twice the
+ *  longest correct run, read on the machines that run it. In CI's dispatch-ui job, 15 runs read on
+ *  2026-11-17 took 29.2 s to 29.7 s for the holding-targets row and at most 33.1 s for any such row
+ *  (a TMOUT=3 row), so twice that is 66.2 s, past the package's 60 s. The guard is 435 s, three
+ *  times the slowest such row in 12 runs on two CPUs shared with eight busy loops and five other
+ *  runs of the four files, 144.9 s, so a loaded dev box does not stop a correct run. */
 export function probingRow(skip: boolean) {
   return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, 435_000);
 }
