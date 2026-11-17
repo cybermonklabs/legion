@@ -249,6 +249,37 @@ start_process() {
   set +m
 }
 
+# proc_parent PID and proc_group PID print PID's parent pid and process group, and proc_children
+# PID prints each of PID's children, one a line. Each reads that one process (fields 4 and 5 of
+# /proc/PID/stat, read past the last `) ` because the command name between the parentheses may
+# hold both; /proc/PID/task/*/children), never every process on the machine as `ps -p` and
+# `pgrep -P` do: procps-ng's `ps -o ppid= -p PID` read /proc/<pid>/stat 43,778 times for one pid
+# at 21,742 processes, about a second each on a loaded devbox. Each prints nothing for a process
+# that is gone. A host with no /proc (macOS) asks ps and pgrep.
+proc_stat_field() {
+  local stat fields
+  if [ -d /proc/self ]; then
+    { stat=$(<"/proc/$1/stat"); } 2>/dev/null || return 0
+    read -r -a fields <<<"${stat##*) }"
+    printf '%s\n' "${fields[$2 - 3]}"
+  else
+    ps -o "$3=" -p "$1" 2>/dev/null | tr -d ' '
+  fi
+}
+proc_parent() { proc_stat_field "$1" 4 ppid; }
+proc_group() { proc_stat_field "$1" 5 pgid; }
+proc_children() {
+  local file
+  if [ -d /proc/self ]; then
+    for file in "/proc/$1/task/"*/children; do
+      [ -r "$file" ] || continue
+      tr ' ' '\n' <"$file" 2>/dev/null | grep -E '^[0-9]+$' || true
+    done
+  else
+    pgrep -P "$1" || true
+  fi
+}
+
 # signalable PID is whether PID can name one process the run started: a number without a leading
 # zero other than 1, this shell, and this shell's process group leader. 0, however many digits spell
 # it, and a negative number name a whole process group, so `kill -STOP 0` would stop the caller with
@@ -260,7 +291,7 @@ signalable() {
     '' | *[!0-9]* | 0* | 1) ;;
     *)
       [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] &&
-        [ "$pid" != "$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')" ] && return 0
+        [ "$pid" != "$(proc_group "$$")" ] && return 0
       ;;
   esac
   echo "refused to signal pid '$pid': it is not one process this run started" >&2
@@ -286,16 +317,16 @@ stop_pid() {
 # while its children go. PID is signalled only while its parent is PARENT (default this shell), so a
 # pid the watcher left and another process reused is never hit. An empty PID is a watcher that
 # never started: nothing to stop.
-# pgrep exits 1 for a process with no children, which is no error: under a driver's `set -E` it would
-# run the ERR trap inside the substitution, and a trap that prints there would hand its words over
-# as child pids (the `0` of an `exit 0` among them).
+# proc_children prints nothing for a process with no children, which is no error: under a driver's
+# `set -E` a failing command would run the ERR trap inside the substitution, and a trap that prints
+# there would hand its words over as child pids (the `0` of an `exit 0` among them).
 stop_tree() {
   local pid=${1:-} parent=${2:-$$} child
   [ -n "$pid" ] || return 0
   signalable "$pid" || return 0
-  [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$parent" ] || return 0
+  [ "$(proc_parent "$pid")" = "$parent" ] || return 0
   kill -STOP "$pid" 2>/dev/null || return 0
-  for child in $(pgrep -P "$pid" || true); do stop_tree "$child" "$pid"; done
+  for child in $(proc_children "$pid"); do stop_tree "$child" "$pid"; done
   kill -KILL "$pid" 2>/dev/null || true
 }
 

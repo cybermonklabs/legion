@@ -652,7 +652,7 @@ run_env_pids() {
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
   local pid
-  for pid in $(run_env_pids "$1"); do stop_tree "$pid" "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"; done
+  for pid in $(run_env_pids "$1"); do stop_tree "$pid" "$(proc_parent "$pid")"; done
 }
 
 # stop_panes SESSION stops, with stop_tree, each pane process of SESSION on the work directory's
