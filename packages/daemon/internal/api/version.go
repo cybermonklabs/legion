@@ -2110,7 +2110,7 @@ package api
 // main's own number and every open head again at the next forward merge rather than from this
 // line.)
 //
-// 157: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// 160: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire and one member of `GET /legion/v1/state`. The daemon's answer to a
 // launcher's hello carries the settings the trimmer runs by, as one optional member of
 // `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks, the minimum age and the interval,
@@ -2265,5 +2265,10 @@ package api
 // (#4106, INFRA-3729's entry above), above 148, and read at refs/pull/<n>/head for every open pull
 // request, a reading that ended at 2026-11-17T11:46:59Z, the open heads above main's declared 152
 // (#3730), 153 (#4115), 154 (#3659), 155 (#4273) and 156 (#3993 and #4065), so 157 is the lowest
-// number above main's 151 that no open head declares.)
-const DaemonAPIVersion = 157
+// number above main's 151 that no open head declares. Read again immediately before the push of
+// round 36, main still at 151, #2230 and #3993 had moved to 157, and the open heads above main's
+// declared 152 (#3730), 153 (#4115), 154 (#3659), 155 (#4273), 156 (#4065), 157 (#2230 and #3993),
+// 158 (#4017 and #4173) and 159 (#4049), a reading that ended at 2026-11-17T16:53:49Z, so 157 is
+// given up and 160 is the lowest number above main's 151 that no open head declares. It is held
+// under the same rule.)
+const DaemonAPIVersion = 160
