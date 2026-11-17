@@ -17,8 +17,8 @@ import (
 // movedTo enrols the session name again as the box it moved to does: a runtime id of its own, a
 // key of its own, and the same session name under the same principal, which is the whole of what
 // the carry follows. A session's credential is a second one of the same person, because a new box
-// is a new key and so a credential of its own; a pod's is the login its daemon already holds
-// (daemonLogin), since a daemon enrols the next pod of a session under its one live login.
+// is a new key and so a credential of its own; a pod's is its daemon's login (daemonLogin), which
+// answers the same credential at every call, since the broker keeps one live login per account.
 func movedTo(t *testing.T, svc *Service, issuer *oidctest.Issuer, key *oidctest.Key, kind, session, runtime string) (Credential, Enrollment) {
 	t.Helper()
 	in := Enrollment{Kind: kind, RuntimeID: runtime, Thumbprint: "tp-" + runtime, SessionID: str(session)}

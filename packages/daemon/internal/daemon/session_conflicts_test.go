@@ -111,7 +111,9 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 	first, second, busy := token("LEGION-901", claim.RoleImplementer), token("LEGION-902", claim.RoleImplementer), token("LEGION-903", claim.RoleImplementer)
 	// queued is its own tree's architect, so the operator's spawn opens the tree it launches in.
 	queued, own := token("LEGION-904", claim.RoleArchitect), token("LEGION-901", claim.RoleTester)
-	const twice = "ses_twice'; update claim_sessions set claim = 'x'; --"
+	// A name is an agent's own text; this one would end its literal and run a second statement,
+	// scoped to a project that does not exist, should the statement fail to quote it.
+	const twice = "ses_twice'; update claim_sessions set claim = 'x' where project = 'no-such-project'; --"
 
 	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
 		// first and second share two names, the session id and the file's base name.
@@ -169,7 +171,8 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 	line := byName[twice]
 	claims, _ := line["claims"].([]any)
 	settle := "update claim_sessions set claim = '<token>' where project = '" + project +
-		"' and kind = 'session' and name = 'ses_twice''; update claim_sessions set claim = ''x''; --' and claim = ''"
+		"' and kind = 'session' and name = '" + strings.ReplaceAll(twice, "'", "''") + "' and claim = ''" +
+		" and '<token>' in ('" + string(first) + "', '" + string(second) + "', '" + string(busy) + "', '" + string(queued) + "')"
 	if line["level"] != "ERROR" || line["kind"] != "session" || line["holder"] != "none" || len(claims) != 4 ||
 		claims[0] != string(first) || claims[1] != string(second) || claims[2] != string(busy) || claims[3] != string(queued) || line["settle"] != settle {
 		t.Errorf("the boot logged %v, want an error naming the session %q held for none, %s, %s, %s and %s, and the statement that settles it, %q",
@@ -201,8 +204,8 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 	for _, run := range []struct {
 		token claim.Token
 		moved int64
-	}{{first, 1}, {second, 0}} {
-		tag, err := st.Pool().Exec(context.Background(), strings.Replace(logged, "<token>", string(run.token), 1))
+	}{{own, 0}, {first, 1}, {second, 0}} {
+		tag, err := st.Pool().Exec(context.Background(), strings.ReplaceAll(logged, "<token>", string(run.token)))
 		if err != nil || tag.RowsAffected() != run.moved {
 			t.Errorf("the settle statement run for %s moved %d rows (%v), want %d", run.token, tag.RowsAffected(), err, run.moved)
 		}
@@ -262,6 +265,9 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every path out of the test lets the row go, so a failure reports rather than leaving the
+	// boot waiting on it until the package's timeout (a second rollback answers ErrTxClosed).
+	defer func() { _ = row.Rollback(ctx) }()
 	if _, err := row.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ($1, 'file-id', 'a-waiter', $2)`,
 		project, string(waiter)); err != nil {
 		t.Fatalf("hold the waiting claim's row uncommitted: %v", err)
@@ -278,20 +284,23 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 	deadline := cfg.WorkerBootTimeout * time.Duration(cfg.WorkerBootRegistrationDeadlineIntervals)
 	type waited struct {
 		blocked bool
+		probe   error
+		armed   int
 		fired   int
 	}
 	result := make(chan waited, 1)
 	go func() {
 		// Wait for a statement of the boot to wait on the row: the backfill has reached its first
-		// name. Then fire the registered claim's deadline, wait for what it launches to reach the
-		// runtime, and let the row go.
+		// name. Then count every registration deadline armed so far, fire the registered claim's,
+		// wait for what it launches to reach the runtime, and let the row go.
 		var w waited
 		for until := time.Now().Add(time.Minute); !w.blocked && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
 			var waiting int
-			err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`, holderPID).Scan(&waiting)
-			w.blocked = err == nil && waiting > 0
+			w.probe = st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`, holderPID).Scan(&waiting)
+			w.blocked = w.probe == nil && waiting > 0
 		}
 		if w.blocked {
+			_, w.armed = clock.armed(deadline)
 			w.fired = clock.fire(deadline)
 			for until := time.Now().Add(3 * time.Second); w.fired > 0 && len(rt.CallsOf("Resume")) == 0 && time.Now().Before(until); {
 				time.Sleep(10 * time.Millisecond)
@@ -303,13 +312,13 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 	d := startDaemon(t, cfg, o)
 	w := <-result
 	if !w.blocked {
-		t.Fatal("no statement of the boot waited on the held row within a minute, so the test could not see whether a restored timer runs before the backfill")
+		t.Fatalf("no statement of the boot waited on the held row within a minute (the last probe's error: %v), so the test could not see whether a restored timer runs before the backfill", w.probe)
 	}
 	whileWaiting := w.fired
-	t.Logf("deadlines fired while the backfill waited: %d; the runtime was asked Suspend %d, Resume %d and Spawn %d times; %s is %s",
-		whileWaiting, len(rt.CallsOf("Suspend")), len(rt.CallsOf("Resume")), len(rt.CallsOf("Spawn")), registered, d.claim(registered).State)
-	if whileWaiting != 0 {
-		t.Errorf("%d registration deadlines were armed while the backfill waited on its first name, want none: no machine may exist before the recorded names are held", whileWaiting)
+	t.Logf("deadlines armed while the backfill waited: %d, of which fired: %d; the runtime was asked Suspend %d, Resume %d and Spawn %d times; %s is %s",
+		w.armed, whileWaiting, len(rt.CallsOf("Suspend")), len(rt.CallsOf("Resume")), len(rt.CallsOf("Spawn")), registered, d.claim(registered).State)
+	if w.armed != 0 {
+		t.Errorf("%d registration deadlines were armed while the backfill waited on its first name, want none: no machine may exist before the recorded names are held", w.armed)
 	}
 	if _, total := clock.armed(deadline); total < 1 {
 		t.Errorf("restore armed no registration deadline for %s, so the control that fires it could not reach the order this test checks", registered)

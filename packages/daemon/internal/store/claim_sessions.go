@@ -204,12 +204,13 @@ func sortedHolds(recorders ...map[supervise.Hold][]claim.Token) []supervise.Hold
 // HoldRecordedSessions holds every name a claim of project records that the table holds for no
 // one yet, as the claim_sessions migration's backfill held every name recorded before the table
 // existed: for the one claim recording it, of its current session or the one it abandoned, or for
-// none where several do. It answers how many names it held. The daemon runs it at every boot
-// (internal/daemon's suspendSessionConflicts), because a claim records a name without holding it
-// whenever a daemon from before the hold runs on this database, as one rolled back to an earlier
-// release does: such a daemon applies only the migrations it has and never writes claim_sessions,
-// and the migration's own backfill has run by then. On a database only daemons with the hold have
-// run, every recorded name is held already and this holds nothing.
+// none where several do. It answers how many names it held. The daemon runs it at every boot,
+// before restore builds any machine (internal/daemon's holdRecordedSessions), because a claim
+// records a name without holding it whenever a daemon from before the hold runs on this database,
+// as one rolled back to an earlier release does: such a daemon applies only the migrations it has
+// and never writes claim_sessions, and the migration's own backfill has run by then. On a
+// database only daemons with the hold have run, every recorded name is held already and this
+// holds nothing.
 //
 // It is one read of the claims and one insert of every name, whatever the project's size, both
 // inside the boot's budget: a statement per name was one round trip per name, which at a project

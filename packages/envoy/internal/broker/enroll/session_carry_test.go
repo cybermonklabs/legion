@@ -25,7 +25,7 @@ const (
 
 // daemonLogin is the token login a Legion daemon enrols its pods under: carryDaemonAccount logged
 // in, whose pods (carryPodAccount) BROKER_SERVICES binds to its service. It logs in again at each
-// call, as a daemon does at a restart or its login's expiry, and the broker keeps one live
+// call, as a daemon does at a restart, and the broker keeps one live
 // credential per account bound to no pod, so each call moves that one row and answers the same
 // credential (IssueTokenLoginTx's upsert). A pod's grants follow the pair of its account and this
 // login's (carryPrincipal), so the carry of a pod is measured under it.
