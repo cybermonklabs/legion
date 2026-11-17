@@ -64,7 +64,7 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 	// bucket, and that answer is no answer about the record this test is about.
 	waitForSessions(t, sessions)
 	if _, err := registry.Upsert(store.Interest{SessionID: readable, MachineID: "test-machine", Dir: "/test/" + readable},
-		[]string{contracts.AgentSubject(readable), topic}); err != nil {
+		[]string{contracts.LegacyAgentSubject(readable), topic}); err != nil {
 		t.Fatalf("write %s's interest record: %v", readable, err)
 	}
 	interestBucket, err := client.JS().KeyValue(bus.InterestBucket)

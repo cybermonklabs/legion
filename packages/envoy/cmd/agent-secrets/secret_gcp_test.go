@@ -56,6 +56,7 @@ func gcpTestSettings() Settings {
 	return Settings{
 		Store: secrets.StoreGCP, SecretsPrefix: testGCPPrefix,
 		KMSKeyName: testKMSKeyName, GCPProject: testGCPProject,
+		SecretTypeTag: true,
 	}
 }
 
@@ -419,7 +420,7 @@ func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Rere
 		case len(entry.versions) == 0:
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Kind: entry.secret.GetAnnotations()[policy.TagKind]}
+		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(entry.secret.GetAnnotations())}
 	}
 }
 
@@ -1789,14 +1790,14 @@ func TestGCPSecretChosenConfigurationNamesAGcloudLogin(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGcloudConfigurations(t, "box", orderConfigurations)
-	t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem")
+	t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "person")
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 	_, stderr, code := runSecret("list")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 	}
 	if got, calls := fake.calledUnder(); got != "Bearer gcloud-not-a-secret-for-grace@example.com" || calls == 0 {
-		t.Fatalf("Secret Manager calls ran under %q (%d calls), want only the theorem configuration's grace@example.com", got, calls)
+		t.Fatalf("Secret Manager calls ran under %q (%d calls), want only the person configuration's grace@example.com", got, calls)
 	}
 }
 
@@ -1805,26 +1806,39 @@ func TestGCPSecretChosenConfigurationNamesAGcloudLogin(t *testing.T) {
 // call to learn it - and how to choose another, built from that source: a lent token outranks
 // every other source, so only unsetting it chooses another; a credentials file outranks the gcloud
 // variables, so they choose only once it is unset; under every later source the gcloud variables
-// and GOOGLE_APPLICATION_CREDENTIALS choose, with the gcloud configurations here. A create that
-// IAM lets make the secret but not add its value says the same.
+// and GOOGLE_APPLICATION_CREDENTIALS choose, with the gcloud configurations here. Where
+// CLOUDSDK_CORE_ACCOUNT is set, it outranks a configuration's account, so a configuration chooses
+// only once it is unset, and the advice says so. A create that IAM lets make the secret but not
+// add its value says the same.
 func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 	const (
-		later = "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: box, theorem)"
-		lent  = "choose another by unsetting CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks every other source, or by lending another token in it"
-		file  = "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME or an account in CLOUDSDK_CORE_ACCOUNT (gcloud configurations here: box, theorem)"
+		later       = "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: box, person)"
+		lent        = "choose another by unsetting CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks every other source, or by lending another token in it"
+		file        = "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME or an account in CLOUDSDK_CORE_ACCOUNT (gcloud configurations here: box, person)"
+		account     = "choose another with an account in CLOUDSDK_CORE_ACCOUNT, which outranks a configuration's account, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting CLOUDSDK_CORE_ACCOUNT to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME (gcloud configurations here: box, person)"
+		fileAccount = "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose an account in CLOUDSDK_CORE_ACCOUNT, which outranks a configuration's account, or, with CLOUDSDK_CORE_ACCOUNT unset too, a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME (gcloud configurations here: box, person)"
 	)
+	useCredentialsFile := func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "credentials.json")
+		writeServiceAccountFile(t, path, "gac@example.iam.gserviceaccount.com", startGoogleTokenServer(t))
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+	}
 	for _, row := range []struct {
 		name, refused, choice string
 		use                   func(t *testing.T)
 	}{
 		{"metadata alone", "the metadata server: machine@example.iam.gserviceaccount.com", later, func(t *testing.T) { t.Setenv("PATH", t.TempDir()) }},
 		{"active gcloud", "the active gcloud account (gcloud configuration box): box@example.iam.gserviceaccount.com", later, func(*testing.T) {}},
-		{"chosen configuration", "the gcloud configuration theorem (CLOUDSDK_ACTIVE_CONFIG_NAME): grace@example.com", later, func(t *testing.T) { t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem") }},
+		{"chosen configuration", "the gcloud configuration person (CLOUDSDK_ACTIVE_CONFIG_NAME): grace@example.com", later, func(t *testing.T) { t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "person") }},
+		{"chosen account, a configuration chosen too", "the gcloud account (CLOUDSDK_CORE_ACCOUNT): grace@example.com", account, func(t *testing.T) {
+			t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "box")
+			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
+		}},
 		{"lent token", "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN: principal unknown", lent, func(t *testing.T) { t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-token") }},
-		{"credentials file", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names (", file, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "credentials.json")
-			writeServiceAccountFile(t, path, "gac@example.iam.gserviceaccount.com", startGoogleTokenServer(t))
-			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+		{"credentials file", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names (", file, useCredentialsFile},
+		{"credentials file, an account exported", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names (", fileAccount, func(t *testing.T) {
+			useCredentialsFile(t)
+			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
 		}},
 	} {
 		for _, refusal := range []struct {
@@ -1864,8 +1878,10 @@ func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 						t.Fatalf("stderr %q does not say %q", stderr, said)
 					}
 				}
-				if row.choice != later && strings.Contains(stderr, later) {
-					t.Fatalf("stderr %q names variables that cannot choose another credential under %s", stderr, row.name)
+				for _, other := range []string{later, lent, file, account, fileAccount} {
+					if other != row.choice && strings.Contains(stderr, other) {
+						t.Fatalf("stderr %q gives advice for another source than %s: %q", stderr, row.name, other)
+					}
 				}
 				if userinfoCalls != 0 {
 					t.Fatalf("the refusal made %d userinfo calls, want none", userinfoCalls)

@@ -302,7 +302,7 @@ func TestAnOwnerLeftForTheBatchsEndLogsItsFailureOnce(t *testing.T) {
 
 	publisher := &answeringTopics{answers: map[string]error{
 		"notifications.dispatch.issue.T-1.message.created": fmt.Errorf("bus: %w", bus.ErrUnavailable),
-		contracts.AgentSubject("writer"):                   fmt.Errorf("bus: %w", bus.ErrPublishDenied),
+		contracts.LegacyAgentSubject("writer"):             fmt.Errorf("bus: %w", bus.ErrPublishDenied),
 	}}
 	deps := Deps{Store: database, Publisher: publisher}
 	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {

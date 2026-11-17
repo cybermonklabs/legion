@@ -32,7 +32,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 		TraceID:        "trace_stored_only",
 	}
 	const window = 2 * time.Second
-	subject := contracts.AgentSubject("ses_serving_port")
+	subject := contracts.LegacyAgentSubject("ses_serving_port")
 	for range 2 {
 		started := time.Now()
 		forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), window)
@@ -74,7 +74,7 @@ func TestStartRequestStoredToRefusesAForwardWithoutAMsgID(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	subject := contracts.AgentSubject("ses_unnamed_forward")
+	subject := contracts.LegacyAgentSubject("ses_unnamed_forward")
 
 	forward, err := client.StartRequestStoredTo(subject, contracts.Envelope{
 		EventID:        "evt_unnamed",
@@ -110,7 +110,7 @@ func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	subject := contracts.AgentSubject("ses_unnamed_request")
+	subject := contracts.LegacyAgentSubject("ses_unnamed_request")
 
 	item := contracts.Envelope{
 		EventID:        "evt_unnamed_request",
@@ -152,7 +152,7 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	}
 	defer client.Close()
 
-	subject := contracts.AgentSubject("ses_stalled")
+	subject := contracts.LegacyAgentSubject("ses_stalled")
 	item := contracts.Envelope{
 		EventID:        "evt_stalled",
 		Source:         "agent",

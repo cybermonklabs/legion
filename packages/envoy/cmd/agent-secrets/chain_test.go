@@ -746,8 +746,10 @@ func TestAnOldKeyDirMachineSessionMovesToTheMachineCacheOnce(t *testing.T) {
 // own error rather than falling through to the next source. A helper this machine expects (its
 // socket named, or its unit installed) that is not running is present but broken, and so is a
 // launcher still enrolling the key directory; a plain-http broker off loopback is refused before
-// its settings are read, since those choose the audience the machine mints its token for. Each
-// backend's rows that run the command read the injection line its own store names.
+// its settings are read, since those choose the audience the machine mints its token for. A
+// machine with no identity keeps no audience pin, so a later audience or broker still gets the
+// no-source refusal. Each backend's rows that run the command read the injection line its own
+// store names.
 func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 	binary := chainBinary(t)
 	// stoppedHelper is the check of a row whose helper is expected and not running: the command
@@ -762,6 +764,33 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 		}
 		if n, exchanges := metadata.totalRequests(), broker.exchanged(); n != 0 || len(exchanges) != 0 {
 			t.Fatalf("the metadata server saw %d requests and the broker the exchanges %v; a stopped helper stops before the machine source", n, exchanges)
+		}
+	}
+	// noSource is the check of a row where no source has an identity: exit 1 and the one refusal,
+	// each source with its reason, the machine's saying there is no metadata server.
+	noSource := func(t *testing.T, _ *chainRig, _ *chainBroker, _ *metadataServer, code int, stdout, stderr string) {
+		t.Helper()
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "no broker identity for this process") {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 and the one refusal", code, stdout, stderr)
+		}
+		for _, source := range []string{"key-dir: ", "sign-in: ", "helper: ", "machine: "} {
+			_, reason, found := strings.Cut(stderr, source)
+			if !found || strings.HasPrefix(reason, ";") || strings.TrimSpace(reason) == "" {
+				t.Fatalf("stderr %q; want %q with its reason", stderr, source)
+			}
+		}
+		if !strings.Contains(stderr, "no Google metadata server") {
+			t.Fatalf("stderr %q; want the machine's reason to say there is no metadata server", stderr)
+		}
+	}
+	// noSourceAndNoPin is noSource for a machine that has already run once with no identity: it
+	// minted nothing, so it kept no audience pin and is not stopped by one.
+	noSourceAndNoPin := func(t *testing.T, r *chainRig, broker *chainBroker, metadata *metadataServer, code int, stdout, stderr string) {
+		t.Helper()
+		noSource(t, r, broker, metadata, code, stdout, stderr)
+		pin := filepath.Join(r.machineCache(), "google-exchange-audience")
+		if _, err := os.Stat(pin); !os.IsNotExist(err) {
+			t.Fatalf("%s is there (%v); a machine that minted nothing keeps no audience", pin, err)
 		}
 	}
 	for _, store := range []string{"aws", "gcp"} {
@@ -879,24 +908,33 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 					},
 				},
 				{
-					name: "no source",
-					setup: func(*testing.T, *chainRig, *chainBroker) *metadataServer {
+					name:  "no source",
+					setup: func(*testing.T, *chainRig, *chainBroker) *metadataServer { return nil },
+					check: noSource,
+				},
+				{
+					// A laptop with no identity of its own ran a use command once, and then the
+					// broker's operator rotated its Google audience. The first run kept no pin,
+					// since nothing was minted, so this one gives the same refusal.
+					name: "a machine with no identity, after an audience rotation",
+					setup: func(t *testing.T, r *chainRig, broker *chainBroker) *metadataServer {
+						code, stdout, stderr := r.use()
+						noSource(t, r, broker, nil, code, stdout, stderr)
+						broker.setSettings(storeSettings(store, "rotated-audience"))
 						return nil
 					},
-					check: func(t *testing.T, _ *chainRig, _ *chainBroker, _ *metadataServer, code int, stdout, stderr string) {
-						if code != 1 || stdout != "" || !strings.Contains(stderr, "no broker identity for this process") {
-							t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 and the one refusal", code, stdout, stderr)
-						}
-						for _, source := range []string{"key-dir: ", "sign-in: ", "helper: ", "machine: "} {
-							_, reason, found := strings.Cut(stderr, source)
-							if !found || strings.HasPrefix(reason, ";") || strings.TrimSpace(reason) == "" {
-								t.Fatalf("stderr %q; want %q with its reason", stderr, source)
-							}
-						}
-						if !strings.Contains(stderr, "no Google metadata server") {
-							t.Fatalf("stderr %q; want the machine's reason to say there is no metadata server", stderr)
-						}
+					check: noSourceAndNoPin,
+				},
+				{
+					name: "a machine with no identity, after a switch to another broker",
+					setup: func(t *testing.T, r *chainRig, broker *chainBroker) *metadataServer {
+						code, stdout, stderr := r.use()
+						noSource(t, r, broker, nil, code, stdout, stderr)
+						other := newChainBroker(t, storeSettings(store, "another-brokers-audience"))
+						r.env["AGENT_SECRETS_URL"] = other.URL()
+						return nil
 					},
+					check: noSourceAndNoPin,
 				},
 				{
 					// A broker of #4143's first head still names the Kubernetes exchange audience

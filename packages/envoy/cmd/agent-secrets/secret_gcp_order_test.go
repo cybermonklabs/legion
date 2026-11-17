@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +28,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // startGoogleTokenServer answers Google's JWT-bearer grant, as oauth2.googleapis.com/token does
@@ -156,7 +157,7 @@ func (m *metadataServer) tokenRequests() int {
 // account, the effective account is the active configuration's, as real gcloud on a Compute
 // Engine VM answers one with the metadata server's service account (its core/account callback):
 // measured on a developer's Compute Engine VM on 2026-11-15, `gcloud config list
-// --configuration=theorem` for a configuration whose file is `[core]` alone named the VM's
+// --configuration=person` for a configuration whose file is `[core]` alone named the VM's
 // account. It answers the configuration directory.
 func useGcloudConfigurations(t *testing.T, active string, configs map[string]string) string {
 	t.Helper()
@@ -216,8 +217,8 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 }
 
 // orderConfigurations are the two gcloud configurations of a Google VM a person also works on:
-// the machine's own, box, active, and the person's, theorem.
-var orderConfigurations = map[string]string{"box": "box@example.iam.gserviceaccount.com", "theorem": "grace@example.com"}
+// the machine's own, box, active, and the person's, person.
+var orderConfigurations = map[string]string{"box": "box@example.iam.gserviceaccount.com", "person": "grace@example.com"}
 
 // orderSetup is one source of R1 made present, on top of the rows before it (useOrderSources).
 type orderSetup struct {
@@ -251,16 +252,16 @@ func useOrderSources(t *testing.T, dir, tokenURI string, setup orderSetup) {
 
 // TestGCPSecretCredentialOrder: each source of R1's order wins over every source after it, a
 // person's chosen gcloud login over the machine's, on a Google VM whose active gcloud
-// configuration is the machine's own (box) and whose person's login is in another (theorem).
+// configuration is the machine's own (box) and whose person's login is in another (person).
 // Each row adds one source to the row before it and reads the bearer token Secret Manager saw.
 func TestGCPSecretCredentialOrder(t *testing.T) {
 	const (
-		wk      = "wk@example.iam.gserviceaccount.com"
-		gac     = "gac@example.iam.gserviceaccount.com"
-		boxSA   = "box@example.iam.gserviceaccount.com"
-		person  = "grace@example.com"
-		lent    = "lent-token"
-		theorem = "theorem"
+		wk           = "wk@example.iam.gserviceaccount.com"
+		gac          = "gac@example.iam.gserviceaccount.com"
+		boxSA        = "box@example.iam.gserviceaccount.com"
+		person       = "grace@example.com"
+		lent         = "lent-token"
+		personConfig = "person"
 	)
 	for _, row := range []struct {
 		name   string
@@ -271,10 +272,10 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 		{"1 metadata alone", orderSetup{}, nil, "metadata-not-a-secret"},
 		{"2 active gcloud over metadata", orderSetup{}, nil, "gcloud-not-a-secret-for-" + boxSA},
 		{"3 well-known file over active gcloud", orderSetup{wellKnown: wk}, nil, "not-a-secret-for-" + wk},
-		{"4 chosen configuration over well-known file", orderSetup{wellKnown: wk, chosenConfig: theorem}, nil, "gcloud-not-a-secret-for-" + person},
+		{"4 chosen configuration over well-known file", orderSetup{wellKnown: wk, chosenConfig: personConfig}, nil, "gcloud-not-a-secret-for-" + person},
 		{"5 chosen account over well-known file", orderSetup{wellKnown: wk, chosenAccount: person}, nil, "gcloud-not-a-secret-for-" + person},
-		{"6 credentials file over chosen configuration", orderSetup{wellKnown: wk, chosenConfig: theorem, credentialsFile: gac}, nil, "not-a-secret-for-" + gac},
-		{"7 lent token over credentials file", orderSetup{wellKnown: wk, chosenConfig: theorem, credentialsFile: gac, lentToken: lent}, nil, lent},
+		{"6 credentials file over chosen configuration", orderSetup{wellKnown: wk, chosenConfig: personConfig, credentialsFile: gac}, nil, "not-a-secret-for-" + gac},
+		{"7 lent token over credentials file", orderSetup{wellKnown: wk, chosenConfig: personConfig, credentialsFile: gac, lentToken: lent}, nil, lent},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fake := newFakeSecretManager()
@@ -310,13 +311,9 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
 	t.Setenv("PATH", t.TempDir())
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := lis.Addr().String()
-	lis.Close()
-	t.Setenv("GCE_METADATA_HOST", closed)
+	// A port the test holds and nothing listens on, so no other process can take it and answer
+	// as a metadata server (testport.Refused).
+	t.Setenv("GCE_METADATA_HOST", testport.Refused(t))
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 	started := time.Now()
 	_, stderr, code := runSecret("show", "SCRATCH_TEST")
@@ -381,7 +378,7 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 		{
 			name: "refused under the first source",
 			use: func(t *testing.T, dir, tokenURI string, fake *fakeSecretManager) {
-				useOrderSources(t, dir, tokenURI, orderSetup{wellKnown: "wk@example.iam.gserviceaccount.com", chosenConfig: "theorem", credentialsFile: "gac@example.iam.gserviceaccount.com", lentToken: "lent-token"})
+				useOrderSources(t, dir, tokenURI, orderSetup{wellKnown: "wk@example.iam.gserviceaccount.com", chosenConfig: "person", credentialsFile: "gac@example.iam.gserviceaccount.com", lentToken: "lent-token"})
 				fake.mu.Lock()
 				fake.refuseMethods = map[string]codes.Code{"GetSecret": codes.PermissionDenied}
 				fake.mu.Unlock()
@@ -391,10 +388,10 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 		{
 			name: "chosen configuration names no account",
 			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
-				useGcloudConfigurations(t, "box", map[string]string{"box": "box@example.iam.gserviceaccount.com", "theorem": ""})
-				t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem")
+				useGcloudConfigurations(t, "box", map[string]string{"box": "box@example.iam.gserviceaccount.com", "person": ""})
+				t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "person")
 			},
-			code: 1, says: []string{"the gcloud configuration theorem", "names no account"},
+			code: 1, says: []string{"the gcloud configuration person", "names no account"},
 		},
 		{
 			name: "missing configuration",

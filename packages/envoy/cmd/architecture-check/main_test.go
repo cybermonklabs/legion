@@ -68,15 +68,21 @@ func TestTheBuiltBinary(t *testing.T) {
 			t.Errorf("stderr %q, want one line starting %q and naming the unknown key bogus", got.stderr, prefix)
 		}
 	})
-	t.Run("a missing path exits 2", func(t *testing.T) {
+	t.Run("a missing path exits 2 and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := filepath.Join(t.TempDir(), "missing")
-		expect(t, runBinary(t, binary, "", dir), result{code: 2, stderr: "architecture-check: " + dir + ": does not exist\n"})
+		expect(t, runBinary(t, binary, "", dir), result{
+			code:   2,
+			stderr: "architecture-check: " + dir + ": does not exist, and architecture-check reads it as the empty set only with --allow-empty\n",
+		})
 	})
-	t.Run("an empty directory exits 2", func(t *testing.T) {
+	t.Run("an empty directory exits 2 and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		expect(t, runBinary(t, binary, "", dir), result{code: 2, stderr: "architecture-check: " + dir + ": holds no note\n"})
+		expect(t, runBinary(t, binary, "", dir), result{
+			code:   2,
+			stderr: "architecture-check: " + dir + ": holds no note, and architecture-check reads it as the empty set only with --allow-empty\n",
+		})
 	})
 	t.Run("a file given as the directory exits 2", func(t *testing.T) {
 		t.Parallel()
@@ -84,26 +90,25 @@ func TestTheBuiltBinary(t *testing.T) {
 		path := filepath.Join(parent, "api\n::error::forged.md")
 		writeFile(t, path, []byte("A note.\n"))
 		got := runBinary(t, binary, "", path)
-		if prefix := "architecture-check: " + parent + `/api\n::error::forged.md: cannot be read: `; got.code != 2 || got.stdout != "" ||
-			!strings.HasPrefix(got.stderr, prefix) || strings.Count(got.stderr, "\n") != 1 {
-			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and one line starting %q", got.code, got.stdout, got.stderr, prefix)
-		}
+		escaped := parent + `/api\n::error::forged.md`
+		expect(t, got, result{code: 2, stderr: "architecture-check: " + escaped + ": cannot be read: open " + escaped + ": not a directory\n"})
 		expectNoCommand(t, "stderr", got.stderr)
 	})
+	usageText := "usage: architecture-check [--allow-empty] <directory>\n" +
+		"  -allow-empty\n" +
+		"    \tread a directory that does not exist or holds no note as the empty set, which is valid\n"
 	for _, row := range []struct {
-		name string
-		args []string
+		name  string
+		args  []string
+		first string
 	}{
-		{name: "no argument exits 2"},
-		{name: "two arguments exit 2", args: []string{filepath.Join(testdata, "valid"), filepath.Join(testdata, "mixed")}},
-		{name: "an unknown flag exits 2", args: []string{"--bogus", filepath.Join(testdata, "valid")}},
+		{name: "no argument exits 2", first: "want one directory argument, got 0"},
+		{name: "two arguments exit 2", args: []string{filepath.Join(testdata, "valid"), filepath.Join(testdata, "mixed")}, first: "want one directory argument, got 2"},
+		{name: "an unknown flag exits 2", args: []string{"--bogus", filepath.Join(testdata, "valid")}, first: "flag provided but not defined: -bogus"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			got := runBinary(t, binary, "", row.args...)
-			if got.code != 2 || got.stdout != "" || !strings.Contains(got.stderr, "usage: architecture-check [--allow-empty] <directory>\n") {
-				t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and the usage line", got.code, got.stdout, got.stderr)
-			}
+			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "architecture-check: " + row.first + "\n" + usageText})
 		})
 	}
 	t.Run("--allow-empty over an empty directory exits 0", func(t *testing.T) {

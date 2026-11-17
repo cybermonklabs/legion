@@ -265,8 +265,11 @@ standard output stays one row per login or grant for a script.
 
 `machine list` shows your own machines' logins alone; Dispatch's machine-login page also lists
 every service's. `agent-secrets grant revoke <grant id>` ends a grant there, and
-`agent-secrets machine revoke <credential id>` one of your logins. Run in the session's shell, they
-are refused `IN_SESSION`, so the session's own commands cannot act as you:
+`agent-secrets machine revoke <credential id>` one of your logins. `grant revoke` run in a
+session's shell is the session's own revoke, as `agent-secrets revoke` is: it ends only a grant
+given to the broker identity (enrollment) the session signs as. Run there, `machine list`,
+`machine revoke` and `grant list` are refused `IN_SESSION`, so the session's own commands cannot
+act as you:
 
 ```console
 $ agent-secrets machine list
@@ -316,7 +319,7 @@ demo-new-token-value
 Writing the file whole, as the `mv` does, keeps it readable throughout: while it does not parse,
 each of those calls fails, naming the file.
 
-The broker reads a kind secret's value at the first load that lists it, so a value its minter
+The broker reads a type secret's value at the first load that lists it, so a value its minter
 cannot mint from is refused before anyone asks for it. Here a copy of `DEMO_GITHUB_APP` whose value
 has no `app_id` is added, and then read twice:
 
@@ -365,10 +368,12 @@ A `POST /v1/oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:token
 `client_id=dispatch-token-exchange`, that pod's exchange token as `subject_token`,
 `subject_token_type=urn:envoy:params:oauth:token-type:kubernetes-service-account` and
 `session=example-worker-session`, signed with a DPoP proof of a key of the caller's own, mints a
-DPoP-bound access token. A `session` no registration names is refused, and the refusal names it:
+DPoP-bound access token. A `session` no registration names is refused, and the refusal names it.
+Its description begins `pod_session_not_registered:`, which both clients read as a refusal to
+trade again on, since a pod's trade can reach the broker before its registration does:
 
 ```console
-{"error":"invalid_grant","error_description":"The provided authorization grant (e.g., authorization code, resource owner credentials) or refresh token is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client. No registration says this pod may write under the session name 'other-session'. A pod writes under a session name its deployment registered for it.","answer_id":"ff2fd8523c22d74ed9dffcb333ea004a"}
+{"error":"invalid_grant","error_description":"pod_session_not_registered: No registration says this pod may write under the session name 'other-session'. A pod writes under a session name its deployment registered for it.","answer_id":"ff2fd8523c22d74ed9dffcb333ea004a"}
 ```
 
 Either listed caller reads a minted token back (`POST /v1/oauth/introspect` with the token in the
@@ -492,9 +497,9 @@ $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 6
 broker_policy_store_reads_total{read="list"} 6
 broker_policy_store_reads_total{read="value"} 3
-broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="1"} 1
-broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="2"} 1
-broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="1"} 1
+broker_mint_attempts_total{type="github-app",outcome="ok",attempt="1"} 1
+broker_mint_attempts_total{type="github-app",outcome="ok",attempt="2"} 1
+broker_mint_attempts_total{type="github-app",outcome="upstream",attempt="1"} 1
 broker_answers_total{outcome="refused",code="ACCOUNT_LACKS_POWER",caller_class="unauthenticated"} 1
 broker_answers_total{outcome="refused",code="SECRET_NAME_INVALID",caller_class="public"} 1
 broker_answers_total{outcome="refused",code="UNKNOWN_SECRET",caller_class="session"} 2

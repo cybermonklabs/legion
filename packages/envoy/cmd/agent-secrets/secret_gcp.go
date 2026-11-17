@@ -669,18 +669,27 @@ func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
 func (b *gcpBackend) identity() string { return b.sourcePhrase + ": " + b.principal }
 
 // chooseAnother is how a refusal of the store's says to sign in with another credential, built
-// from the source that signed in: a lent token outranks every other source, so only unsetting it
-// or lending another chooses another; a credentials file outranks the gcloud variables, so they
-// choose only once it is unset; under every later source the gcloud variables and a credentials
-// file choose. Where a gcloud variable can choose, it lists the gcloud configurations here.
+// from the source that signed in and from what outranks what: a lent token outranks every other
+// source, so only unsetting it or lending another chooses another; a credentials file outranks the
+// gcloud variables, so they choose only once it is unset; under every later source the gcloud
+// variables and a credentials file choose. CLOUDSDK_CORE_ACCOUNT, where it is set, outranks the
+// account of any configuration CLOUDSDK_ACTIVE_CONFIG_NAME names (chooseGcloudAccount), so a
+// configuration chooses only once that variable is unset too, and the advice says so. Where a
+// gcloud variable can choose, it lists the gcloud configurations here.
 func (b *gcpBackend) chooseAnother() string {
-	switch b.source {
-	case sourceLentToken:
+	configurations := " (gcloud configurations here: " + gcloudConfigurationList() + ")"
+	account := os.Getenv("CLOUDSDK_CORE_ACCOUNT") != ""
+	switch {
+	case b.source == sourceLentToken:
 		return "choose another by unsetting CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks every other source, or by lending another token in it"
-	case sourceCredentialsFile:
-		return "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME or an account in CLOUDSDK_CORE_ACCOUNT (gcloud configurations here: " + gcloudConfigurationList() + ")"
+	case b.source == sourceCredentialsFile && account:
+		return "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose an account in CLOUDSDK_CORE_ACCOUNT, which outranks a configuration's account, or, with CLOUDSDK_CORE_ACCOUNT unset too, a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME" + configurations
+	case b.source == sourceCredentialsFile:
+		return "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME or an account in CLOUDSDK_CORE_ACCOUNT" + configurations
+	case account:
+		return "choose another with an account in CLOUDSDK_CORE_ACCOUNT, which outranks a configuration's account, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting CLOUDSDK_CORE_ACCOUNT to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME" + configurations
 	}
-	return "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: " + gcloudConfigurationList() + ")"
+	return "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS" + configurations
 }
 
 // signInPrefix is the shell assignments a command line a form prints for running again
@@ -838,6 +847,13 @@ func (b *gcpBackend) readValue(ctx context.Context, slug string) (string, error)
 // read none.
 func (b *gcpBackend) valueReadPermission() string {
 	return "secretmanager.versions.access on the secret"
+}
+
+// tagReadPermission is what GetSecret needs of a person's sign-in: whoever stores a value reads
+// that secret's annotations first, so a write grant that does not carry this read fails `secret
+// set` before anything is written.
+func (b *gcpBackend) tagReadPermission() string {
+	return "secretmanager.secrets.get on the secret"
 }
 
 // setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each

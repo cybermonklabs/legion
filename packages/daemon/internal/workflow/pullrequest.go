@@ -473,7 +473,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return nil, nil
 	}
 	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status); err != nil {
+	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return nil, err
 	}
 	issue.Phase, issue.Hold = row.To, nil

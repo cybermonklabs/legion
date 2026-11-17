@@ -207,7 +207,7 @@ var cannedStatus = map[string]string{"req-approved": approvedStatusJSON, "req-de
 func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 	t.Helper()
 	counters := &brokerCounters{}
-	var audience string
+	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.createRequest, 1)
@@ -224,7 +224,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			counters.lastSessionID = *body.SessionID
 			counters.mu.Unlock()
 		}
-		obj, err := record.VerifyRequestObject(body.Request, audience, time.Minute, time.Now())
+		obj, err := record.VerifyRequestObject(body.Request, srv.URL, time.Minute, time.Now())
 		if err != nil || len(obj.Details) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -237,7 +237,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"grant_id": "grant-granted", "record_id": nil, "approver": nil,
 			})
 		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE":
-			writeJSON(w, pendingAnswer(name, audience, true))
+			writeJSON(w, pendingAnswer(name, srv.URL, true))
 		case "APPROVED_ME":
 			writeJSON(w, map[string]any{
 				"request_id": "req-approved", "state": "granted",
@@ -313,7 +313,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				return
 			}
 		}
-		writeJSON(w, pendingAnswer(name, audience, false))
+		writeJSON(w, pendingAnswer(name, srv.URL, false))
 	})
 	mux.HandleFunc("POST /v1/grants/grant-granted/values", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
@@ -368,11 +368,13 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 		}
 		writeJSON(w, settings)
 	})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The handlers read srv.URL, so srv is assigned before the server serves: Start, which sets
+	// the URL, runs after the assignment and before the goroutine that serves.
+	srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.calls, 1)
 		mux.ServeHTTP(w, r)
 	}))
-	audience = srv.URL
+	srv.Start()
 	return srv, counters
 }
 
@@ -524,8 +526,8 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 // binary gets the bytes the broker released, byte for byte — compared as a digest, so no value
 // is in this test's output — and standard error carries the one source line and then nothing of
 // this command's at all, not even where the released value ends in a line ending. Which bytes a
-// value has is the broker's decision now (policy.TrimForShape): a value that reaches the child
-// ending in a line feed ends that way because its owner's shape tag says it does, and the agent
+// value has is the broker's decision now (policy.TrimLineEnding): a value that reaches the child
+// ending in a line feed ends that way because the stored value holds a line ending inside it, and the agent
 // running the command could not store it differently in any case.
 func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
 	binary := buildAgentSecrets(t)
@@ -1019,6 +1021,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 			name: "one airlock name",
 			environ: append(append([]string{}, identity...),
 				"SSL_CERT_FILE=/inherited/roots.pem",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/inherited/grpc-roots.pem",
 				"HTTPS_PROXY=http://stale.example:3128",
 				"NO_PROXY=keep.example.com"),
 			release: &AirlockRelease{
@@ -1034,6 +1037,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 				"CURL_CA_BUNDLE="+testAirlockFiles.bundle,
 				"GIT_SSL_CAINFO="+testAirlockFiles.bundle,
 				"GRANT_ME=released",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="+testAirlockFiles.bundle,
 				"HTTPS_PROXY=http://agent-secrets:"+placeholder+"@proxy.broker.example:3128",
 				"NODE_EXTRA_CA_CERTS="+testAirlockFiles.bundle,
 				"NODE_USE_ENV_PROXY=1",
@@ -1059,7 +1063,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 }
 
 // TestReleasedValuesReachTheChildAsTheBrokerSentThem: which bytes a released value has is the
-// broker's decision, taken from the secret's shape (policy.TrimForShape), so the exec form hands
+// broker's decision, taken from the stored value itself (policy.TrimLineEnding), so the exec form hands
 // the child what the broker sent, byte for byte, line endings and all.
 func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 	for name, value := range map[string]string{

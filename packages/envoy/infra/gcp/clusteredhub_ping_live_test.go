@@ -80,16 +80,14 @@ func (d drained) closedBy(from time.Time, bound time.Duration) bool {
 // routeStaleBound and a second have passed since A queued it. B is its own only peer, so it
 // solicits a route to its own route port, which nats-server ignores (server/route.go
 // routesToSelf), since a JetStream cluster refuses to start with no configured route ("JetStream
-// cluster requires configured routes"); start builds that route from the port B binds, a re-drawn
-// one included.
+// cluster requires configured routes").
 func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject string) drained {
 	t.Helper()
-	ports := newLoopbackPorts()
-	b := r.newHubServer(t, r.release+"-1", binary, natsConf, ports, ports.draw(t, 3))
+	b := r.newHubServer(t, r.release+"-1", binary, natsConf, reservePorts(t, 3))
 	b.peers = []*hubServer{b}
 	b.start(t)
 	proxy := testnats.StartProxy(t, fmt.Sprintf("nats://127.0.0.1:%d", b.route), testnats.ProxyRate(routeRate))
-	a := r.newHubServer(t, r.release+"-0", binary, natsConf, ports, ports.draw(t, 3))
+	a := r.newHubServer(t, r.release+"-0", binary, natsConf, reservePorts(t, 3))
 	a.routeURLs = []string{proxy.URL()}
 	a.start(t)
 	within(t, 30*time.Second, "A routes to B", func() error {
