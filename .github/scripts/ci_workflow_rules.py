@@ -230,10 +230,10 @@ def restores_of(documents: dict) -> dict:
     """Every restore of the given workflows, as family -> [(where it is, its with:)]. Given the
     document set the engine loads - ci.yaml, and each local workflow one of its jobs calls:
     dispatch-browser.yaml's shard and alone jobs restore for ci.yaml's dispatch-browser job - it is
-    every restore of ci.yaml's run, so a save paired against ci.yaml alone would not read as a fill
-    nobody wants; given the rest of the directory, it is the restores of the release builds and
-    the other workflows. The set holds each file once however many of ci.yaml's jobs name it, so
-    each restore is taken once."""
+    every restore of ci.yaml's run; paired against ci.yaml alone, a save that only a called
+    workflow restores would read as a fill nobody wants. Given the rest of the directory, it is
+    the restores of the release builds and the other workflows. The set holds each file once
+    however many of ci.yaml's jobs name it, so each restore is taken once."""
     restores = defaultdict(list)
     for path, document in documents.items():
         for job_id, family, given in cache_steps(document, "restore"):
