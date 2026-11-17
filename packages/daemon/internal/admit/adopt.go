@@ -131,13 +131,15 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 // adoptQueuedRoots moves every todo root of this project, waiting in admission's queue or not yet
 // handed to Legion, into the live tree its recorded parent runs in, when that root never ran as a
 // tree of its own (workflow's AdoptionRefusal, Engine.Adopt): a person made it a child of that tree,
-// so it takes no slot and no architect of its own, and runs in the tree as any of its todo children
-// does. A candidate is a recorded root of this project in todo whose parent is recorded in a tree
-// other than its own. One that ran as a tree of its own, or carries a run handed over to it, keeps
-// queueing as its own root: taking it out of the line would strand its run with nobody told. So
-// does one handed over as a root of its own (record.Issue.HandedOverFrom), its old root's
-// re-admission included: the hand-over made it a tree of its own for good. A key Reconcile holds,
-// the candidate's or its target's, is left for release to apply first, when respectHolds is set.
+// so it takes no slot and no architect as a root of its own, and runs in the tree as any of its
+// todo children does: a slot and its own architect come with its first phase start (workflow's
+// Engine.StartFirstPhase). A candidate is a recorded root of this project in todo whose parent is
+// recorded in a tree other than its own. One that ran as a tree of its own, or carries a run
+// handed over to it, keeps queueing as its own root: taking it out of the line would strand its
+// run with nobody told. So does one handed over as a root of its own (record.Issue.HandedOverFrom),
+// its old root's re-admission included: the hand-over made it a tree of its own for good. A key
+// Reconcile holds, the candidate's or its target's, is left for release to apply first, when
+// respectHolds is set.
 //
 // Only a root is a candidate here, so no member of a closed tree is moved by a pass: C4 of
 // dispatch://INFRA-3107 adopts such a member on an architect's release alone (adoptChildren,
