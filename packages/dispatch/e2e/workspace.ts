@@ -97,14 +97,8 @@ export interface SeededWorkspace {
   >;
   readonly broadcast: { readonly id: string; readonly sessionIds: readonly string[] };
   readonly directMessage: string;
-  /** The rows the unfiltered Inbox read returns for alice once the seed has settled: the open
-   *  asks on open issues and documents, the snoozed one among them, under Later. The answered
-   *  ask and the retracted ask are absent. The Inbox page opens on the reader's own work - every
-   *  issue here is alice's, and the document's question waits on CORE's default assignee, alice
-   *  too - so her default list is these rows, and `seedWorkspace` returns only once one read of
-   *  the Inbox lists exactly these. */
-  readonly inbox: readonly SeededInboxRow[];
-  /** The pass line of that wait: `inbox rows: 5 of 5 declared rows matched in 1 read`. */
+  /** The pass line of the seed's wait for its Inbox rows:
+   *  `inbox rows: 5 of 5 declared rows matched in 1 read`. */
   readonly inboxLine: string;
 }
 
@@ -298,6 +292,9 @@ export async function seedWorkspace({
     actor(sessionIds.planner)
   );
 
+  // The rows the unfiltered Inbox read returns for alice once the seed has settled: the open asks
+  // on open issues and documents, the snoozed one among them. Every issue here is alice's, and the
+  // document's question waits on CORE's default assignee, alice too, so her default list is these.
   const inbox: readonly SeededInboxRow[] = [
     { askId: blocking.id, kind: "ask", made: `the blocking ask on ${folds.key}` },
     { askId: snoozed.id, kind: "ask", made: `the snoozed ask on ${snooze.key}` },
@@ -312,7 +309,8 @@ export async function seedWorkspace({
   ];
   // Every caller reads the Inbox next, and it can list other rows for a moment after the writes
   // above answered: a 25 ms sampler read five wrong rows here about 230 ms before these five
-  // stood (dispatch://INFRA-3148). So the seed is done only once these rows stand.
+  // stood (dispatch://INFRA-3052, comment 169c05c4-ab16-4a28-a470-e703dcee23ac). So the seed is
+  // done only once these rows stand.
   const matched = await awaitSeededInbox(inbox, () => getInbox({ login: "alice" }), {
     boundMs,
     signal,
@@ -332,7 +330,6 @@ export async function seedWorkspace({
       sessionIds: (broadcast.recipients ?? []).map((recipient) => recipient.session_id),
     },
     directMessage: directMessage.id,
-    inbox,
     inboxLine: matched.line,
     issues: {
       broadcastOrder: broadcastOrder.key,

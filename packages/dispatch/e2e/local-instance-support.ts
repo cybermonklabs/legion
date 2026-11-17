@@ -231,6 +231,9 @@ interface FactWait<T> {
   readonly holds: (value: T) => boolean;
   /** A value read, as a failure names it. */
   readonly show: (value: T) => string;
+  /** The lines a failure ends with, after what the reads answered: what a reader of the failure
+   *  needs beside the fact. None where the wait gives none. */
+  readonly closing?: readonly string[];
   /** How long the wait may take, in milliseconds. Its caller sets it: no wait here holds a bound
    *  of its own, so a caller's wait gives up at the bound that caller's own checks use. */
   readonly boundMs: number;
@@ -254,16 +257,14 @@ interface GaveUp {
   readonly lastShown: string | undefined;
   /** The error of the last read, where that read failed. */
   readonly lastFailure: string | undefined;
+  readonly closing: readonly string[];
 }
 
 /** What `awaitFact` throws once its deadline has passed with the fact not holding: the fact, the
- *  time waited, the reads, the last value read, and the last read's error where it failed. A
- *  caller that writes a failure block of its own reads those parts from `gaveUp`. */
+ *  time waited, the reads, the last value read, the last read's error where it failed, and the
+ *  wait's closing lines, which it writes as the whole message. */
 class FactGaveUp extends Error {
-  readonly gaveUp: GaveUp;
-
-  constructor(gaveUp: GaveUp) {
-    const { elapsedMs, fact, lastFailure, lastShown, reads } = gaveUp;
+  constructor({ closing, elapsedMs, fact, lastFailure, lastShown, reads }: GaveUp) {
     const seconds = (elapsedMs / 1_000).toFixed(1);
     const lines =
       lastShown === undefined
@@ -273,8 +274,7 @@ class FactGaveUp extends Error {
             `  the last read answered: ${lastShown}`,
           ];
     if (lastFailure !== undefined) lines.push(`  the last read failed: ${lastFailure}`);
-    super(lines.join("\n"));
-    this.gaveUp = gaveUp;
+    super([...lines, ...closing].join("\n"));
   }
 }
 
@@ -289,7 +289,7 @@ class FactGaveUp extends Error {
  * whether the wait is on a read or between reads.
  */
 async function awaitFact<T>(wait: FactWait<T>): Promise<FactHeld<T>> {
-  const { boundMs, fact, holds, intervalMs, read, show, signal } = wait;
+  const { boundMs, closing = [], fact, holds, intervalMs, read, show, signal } = wait;
   if (signal?.aborted) throw new Interrupted("interrupted");
   const started = Date.now();
   const deadline = started + boundMs;
@@ -321,6 +321,7 @@ async function awaitFact<T>(wait: FactWait<T>): Promise<FactHeld<T>> {
     }
     if (Date.now() >= deadline) {
       throw new FactGaveUp({
+        closing,
         elapsedMs: Date.now() - started,
         fact,
         lastFailure: failure,
@@ -511,7 +512,7 @@ export interface SeededInboxMatch {
   readonly line: string;
 }
 
-/** The last line of every failure block: whose rows these are. */
+/** The last line of every failure of `awaitSeededInbox`: whose rows these are. */
 const SEEDED_INBOX_OWNER =
   "  These rows are written by the seed (packages/dispatch/e2e/workspace.ts) and by Dispatch's " +
   "own document settlement, not by the change under test.";
@@ -551,10 +552,11 @@ function diffSeededInbox(
 const listed = (items: readonly string[]) =>
   (items.length === 0 ? ["none"] : items).map((item) => `    - ${item}`);
 
-/** One Inbox read against the rows `declared`, as the failure block's lines name it: every
- *  missing and every unexpected row, and the two counts. */
-function seededInboxLines(declared: readonly SeededInboxRow[], diff: SeededInboxDiff): string[] {
+/** One Inbox read as its failure shows it after "the last read answered": how many rows it
+ *  listed, then every missing and every unexpected row. */
+function shownInboxRead(diff: SeededInboxDiff): string {
   return [
+    plural(diff.rowCount, "row"),
     "  missing (the seed declares it, the Inbox did not list it):",
     ...listed(
       diff.missing.map((row) =>
@@ -570,8 +572,7 @@ function seededInboxLines(declared: readonly SeededInboxRow[], diff: SeededInbox
         return `ask ${row.id} on ${on} (block ${row.block_id ?? "none"})`;
       })
     ),
-    `  the Inbox answered ${plural(diff.rowCount, "row")}; the seed declares ${declared.length}.`,
-  ];
+  ].join("\n");
 }
 
 /**
@@ -592,46 +593,20 @@ export async function awaitSeededInbox(
   options: SeededInboxOptions
 ): Promise<SeededInboxMatch> {
   const { boundMs, intervalMs = 100, signal } = options;
-  try {
-    const { reads } = await awaitFact({
-      boundMs,
-      fact:
-        "inbox rows: the Inbox lists exactly the " +
-        `${plural(declared.length, "row")} the seed declares`,
-      holds: (diff) => diff.missing.length === 0 && diff.unexpected.length === 0,
-      intervalMs,
-      read: async () => diffSeededInbox(declared, await read()),
-      show: (diff) => seededInboxLines(declared, diff).join("\n"),
-      signal,
-    });
-    return {
-      line: `inbox rows: ${declared.length} of ${declared.length} declared rows matched in ${plural(reads, "read")}`,
-      reads,
-    };
-  } catch (error) {
-    if (error instanceof FactGaveUp) throw new Error(seededInboxFailure(declared, error.gaveUp));
-    throw error;
-  }
-}
-
-/** The failure block of `awaitSeededInbox`: the newest difference it read, and the error of the
- *  last read where that read threw. */
-function seededInboxFailure(declared: readonly SeededInboxRow[], gaveUp: GaveUp): string {
-  const seconds = (gaveUp.elapsedMs / 1_000).toFixed(1);
-  const reads = plural(gaveUp.reads, "read");
-  const lines =
-    gaveUp.lastShown === undefined
-      ? [
-          `inbox rows: no read of the Inbox answered in ${seconds} s over ${reads}.`,
-          `  the seed declares ${plural(declared.length, "row")}.`,
-        ]
-      : [
-          `inbox rows: the Inbox and the seed still disagree after ${seconds} s and ${reads}.`,
-          gaveUp.lastShown,
-        ];
-  if (gaveUp.lastFailure !== undefined) {
-    lines.push(`  the last read failed: ${gaveUp.lastFailure}`);
-  }
-  lines.push(SEEDED_INBOX_OWNER);
-  return lines.join("\n");
+  const { reads } = await awaitFact({
+    boundMs,
+    closing: [`  the seed declares ${plural(declared.length, "row")}.`, SEEDED_INBOX_OWNER],
+    fact:
+      "inbox rows: the Inbox lists exactly the " +
+      `${plural(declared.length, "row")} the seed declares`,
+    holds: (diff) => diff.missing.length === 0 && diff.unexpected.length === 0,
+    intervalMs,
+    read: async () => diffSeededInbox(declared, await read()),
+    show: shownInboxRead,
+    signal,
+  });
+  return {
+    line: `inbox rows: ${declared.length} of ${declared.length} declared rows matched in ${plural(reads, "read")}`,
+    reads,
+  };
 }

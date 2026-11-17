@@ -415,13 +415,14 @@ export function agentFilter(page: Page, filter: "group" | "machine" | "role"): L
   return page.getByRole("button", { name: `Filter by ${filter}` });
 }
 
-/** Whether a filter's panel is open, by its trigger's `aria-expanded`, read once the page has
- *  drawn the trigger rather than at the instant it attaches. */
-export function agentFilterState(
+/** Opens a filter's panel if it is shut. Its trigger's `aria-expanded` says which it is, and is
+ *  read once the page has drawn the trigger rather than at the instant it attaches. */
+export async function openAgentFilter(
   page: Page,
   filter: "group" | "machine" | "role"
-): Promise<"open" | "shut"> {
-  return expandedState(`the ${filter} filter`, agentFilter(page, filter));
+): Promise<void> {
+  const trigger = agentFilter(page, filter);
+  if ((await expandedState(`the ${filter} filter`, trigger)) === "shut") await trigger.click();
 }
 
 /** Ticks or unticks one option of a filter and closes its popover, so the portalled panel never
@@ -431,8 +432,7 @@ export async function pickAgentFilter(
   filter: "group" | "machine" | "role",
   option: string
 ): Promise<void> {
-  const trigger = agentFilter(page, filter);
-  if ((await agentFilterState(page, filter)) === "shut") await trigger.click();
+  await openAgentFilter(page, filter);
   await page.getByRole("option", { exact: true, name: option }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);

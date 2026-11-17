@@ -639,6 +639,10 @@ describe("awaitSeededInbox", () => {
   ];
   const wholeSet: readonly InboxRowRead[] = [...shortSet, decisionRow];
   const missingDecision = "    - the spec decision block on CORE-1 (block b-9f3c1a)";
+  /** The fact the wait reads, which its failure starts with. */
+  const fact = "inbox rows: the Inbox lists exactly the 5 rows the seed declares";
+  /** The closing line of every failure before the owner's: how many rows the seed declares. */
+  const declares = "  the seed declares 5 rows.";
   const owner =
     "  These rows are written by the seed (packages/dispatch/e2e/workspace.ts) and by Dispatch's " +
     "own document settlement, not by the change under test.";
@@ -719,11 +723,12 @@ describe("awaitSeededInbox", () => {
     const message = await failureOf(waiting);
     expect(message).toContain(
       [
+        "  the last read answered: 5 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         missingDecision,
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - ask ask-stray on CORE-7 (block b-9f3c1a)",
-        "  the Inbox answered 5 rows; the seed declares 5.",
+        declares,
       ].join("\n")
     );
   });
@@ -736,11 +741,12 @@ describe("awaitSeededInbox", () => {
     const message = await failureOf(waiting);
     expect(message).toContain(
       [
+        "  the last read answered: 6 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         "    - none",
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - ask ask-extra on CORE-9 (block none)",
-        "  the Inbox answered 6 rows; the seed declares 5.",
+        declares,
       ].join("\n")
     );
   });
@@ -751,19 +757,18 @@ describe("awaitSeededInbox", () => {
     await settlesAt(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     const waited = message.match(
-      new RegExp(
-        `^inbox rows: the Inbox and the seed still disagree after (\\d+\\.\\d) s and ${inbox.calls} reads\\.\\n`
-      )
+      new RegExp(`^${fact}: still not so after (\\d+\\.\\d) s and ${inbox.calls} reads\\.\\n`)
     );
     expect(waited).not.toBeNull();
     expect(Number(waited?.[1])).toBeGreaterThanOrEqual(0.3);
     expect(message).toContain(
       [
+        "  the last read answered: 4 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         missingDecision,
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - none",
-        "  the Inbox answered 4 rows; the seed declares 5.",
+        declares,
       ].join("\n")
     );
     expect(message).not.toContain("the last read failed");
@@ -777,7 +782,7 @@ describe("awaitSeededInbox", () => {
     await settlesAt(15_000, waiting);
     const message = await failureOf(waiting);
     expect(message.split("\n")[0]).toBe(
-      `inbox rows: the Inbox and the seed still disagree after 15.0 s and ${inbox.calls} reads.`
+      `${fact}: still not so after 15.0 s and ${inbox.calls} reads.`
     );
   });
 
@@ -829,13 +834,11 @@ describe("awaitSeededInbox", () => {
     const message = await failureOf(waiting);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(
-      new RegExp(
-        `^inbox rows: no read of the Inbox answered in \\d+\\.\\d s over ${inbox.calls} reads\\.$`
-      )
+      new RegExp(`^${fact}: no read answered in \\d+\\.\\d s over ${inbox.calls} reads\\.$`)
     );
     expect(lines.slice(1)).toEqual([
-      "  the seed declares 5 rows.",
       `  the last read failed: GET /api/v1/inbox failed: 500 attempt ${inbox.calls}`,
+      declares,
       owner,
     ]);
   });
@@ -847,11 +850,12 @@ describe("awaitSeededInbox", () => {
     const message = await failureOf(waiting);
     expect(message).toContain(
       [
+        "  the last read answered: 6 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         "    - none",
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - ask ask-snoozed on CORE-3 (block none)",
-        "  the Inbox answered 6 rows; the seed declares 5.",
+        declares,
       ].join("\n")
     );
   });
@@ -863,15 +867,16 @@ describe("awaitSeededInbox", () => {
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
     await settledAfter(quick.boundMs, waiting);
     const message = await failureOf(waiting);
-    expect(message).toStartWith("inbox rows: the Inbox and the seed still disagree after ");
+    expect(message).toStartWith(`${fact}: still not so after `);
     expect(message).toContain(
       [
+        "  the last read answered: 4 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         missingDecision,
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - none",
-        "  the Inbox answered 4 rows; the seed declares 5.",
         `  the last read failed: GET /api/v1/inbox failed: 500 attempt ${inbox.calls}`,
+        declares,
         owner,
       ].join("\n")
     );
@@ -882,8 +887,8 @@ describe("awaitSeededInbox", () => {
     await settlesAt(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     expect(message.split("\n").slice(1)).toEqual([
-      "  the seed declares 5 rows.",
       "  the last read failed: the read had not answered within 0.3 s",
+      declares,
       owner,
     ]);
   });
@@ -903,20 +908,19 @@ describe("awaitSeededInbox", () => {
     expect(calls).toBeGreaterThan(1);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(
-      new RegExp(
-        `^inbox rows: the Inbox and the seed still disagree after \\d+\\.\\d s and ${calls} reads\\.$`
-      )
+      new RegExp(`^${fact}: still not so after \\d+\\.\\d s and ${calls} reads\\.$`)
     );
-    expect(lines.slice(1, -2)).toEqual([
+    expect(lines.slice(1, -3)).toEqual([
+      "  the last read answered: 4 rows",
       "  missing (the seed declares it, the Inbox did not list it):",
       missingDecision,
       "  unexpected (the Inbox listed it, the seed declares no such row):",
       "    - none",
-      "  the Inbox answered 4 rows; the seed declares 5.",
     ]);
-    expect(lines.at(-2)).toMatch(
+    expect(lines.at(-3)).toMatch(
       /^ {2}the last read failed: the read had not answered within 0\.\d s$/
     );
+    expect(lines.at(-2)).toBe(declares);
     expect(lines.at(-1)).toBe(owner);
   });
 
@@ -976,12 +980,13 @@ describe("awaitSeededInbox", () => {
     expect(at).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
     expect(await failureOf(waiting)).toBe(
       [
-        `inbox rows: the Inbox and the seed still disagree after 2.0 s and ${inbox.calls} reads.`,
+        `${fact}: still not so after 2.0 s and ${inbox.calls} reads.`,
+        "  the last read answered: 4 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         missingDecision,
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - none",
-        "  the Inbox answered 4 rows; the seed declares 5.",
+        declares,
         owner,
       ].join("\n")
     );

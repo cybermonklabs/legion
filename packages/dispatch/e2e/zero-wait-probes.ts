@@ -21,10 +21,9 @@
  * this rule's. The reason is a comment that ends on the line directly above the probe's line and
  * runs to at least `minimumReasonWords` words, saying why one instant's answer is safe there.
  *
- * - The measure of a reason is `e2e/fixed-waits.ts`'s: `statementOf`, `reasonEndingAbove` and
- *   `shortReason` are imported from there, so the suite holds one measure of a reason and not two.
- *   What that measure is for, and what no scan can judge about a sentence, is THE RULE of that
- *   module.
+ * - The measure of a reason is `e2e/fixed-waits.ts`'s: `reasonAboveCall` and `shortReason` are
+ *   imported from there, so the suite holds one measure of a reason and not two. What that
+ *   measure is for, and what no scan can judge about a sentence, is THE RULE of that module.
  * - The line is the probe CALL's, the line its first token stands on, and the comments read are
  *   the ones above the call's statement. So a probe on a later line of its statement stands under
  *   no reason, and its refusal tells the writer to give it a line of its own.
@@ -45,7 +44,8 @@
  *
  * WHAT DECIDES A PATH. From the probe the scan climbs through `await`, parentheses, `!`, the
  * comparisons `===`, `!==`, `==`, `!=`, `<`, `>`, `<=` and `>=`, and the logical `&&`, `||` and
- * `??`. The probe decides a path when what the climb reaches is:
+ * `??`, and stops at the first condition of the kinds below that it reaches. The probe decides a
+ * path when what the climb reaches is:
  *
  * - the condition of an `if`, a `?:`, a `while`, a `do...while` or a `for`, so a loop bound such
  *   as `index < (await rows.count())` is reached by the same climb. An `if` whose only branch is a
@@ -54,12 +54,23 @@
  * - the iterable of a `for...of`, whose answer decides how many turns the loop runs: `for (const
  *   row of await rows.all())`, read before the page has drawn the rows, runs no turn, and a row
  *   whose assertions stand inside the loop passes without one of them run;
+ * - the discriminant of a `switch`, whose answer picks the case that runs;
+ * - the left operand of an `&&`, an `||` or a `??` whose own value is thrown away: the whole of
+ *   an expression statement, read through parentheses, `await` and `void`, or the right operand
+ *   of another such operator. A statement like that runs only for what it does, so its operator
+ *   is a branch: `(await menu.isVisible()) && (await menu.click())` clicks or not on one
+ *   instant's answer. In a chain `a && b && c` every operand but the last decides whether the
+ *   rest runs. The last operand decides nothing, and an operator whose value is kept, as in
+ *   `const label = (await menu.textContent()) ?? "none"`, is a value the climb hands on;
  * - the first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail`, which decides
  *   how the row runs, where that argument is no string, template or function;
- * - the initializer of a `const` or a `let` with a plain name that a later condition of any kind
- *   above refers to, in the same function as the declaration: `const shown = await
- *   menu.textContent()` read by `shown === "Menu" ? ... : ...` below it, or `const items = await
- *   rows.all()` walked by `for (const item of items)` below it.
+ * - the whole value bound to a plain name, by the initializer of a `const` or a `let` or by a
+ *   plain `=`, where a later condition of any kind above refers to the name, in the same function
+ *   as the binding: `const shown = await menu.textContent()` read by `shown === "Menu" ? ... :
+ *   ...` below it, `const items = await rows.all()` walked by `for (const item of items)` below
+ *   it, or `shown = await menu.isVisible()` read by `if (shown)` below it. The condition of a
+ *   `while` or a `for` whose body holds the assignment counts as later too, though it stands
+ *   above it, because the loop tests it again after the body has run.
  *
  * Anything else decides no path of this rule's: a probe returned, stored as data, or handed to
  * `expect(...)`, which asserts what the row reads rather than branching on it.
@@ -100,13 +111,21 @@
  * - an answer that leaves the climb: `Boolean(await menu.isVisible())`, `(await rows.count()) - 1`,
  *   `(await rows.all()).slice(1)` walked by a `for...of`, an answer passed to a function that
  *   branches on it, a name copied into another name, or a name tested in a condition of a
- *   function nested inside the declaration's own;
+ *   function nested inside the binding's own;
+ * - an answer stored anywhere but in a plain name, or by any operator but `=`: a property,
+ *   `state.shown = await menu.isVisible()`, a destructuring, or `shown ||= await
+ *   menu.isVisible()`;
+ * - a logical operator whose value is kept, though its left operand still decides whether its
+ *   right one runs: `return (await menu.isVisible()) && (await menu.click())`, an arrow whose
+ *   expression body is one, or an operand of a comma, each of which the scan reads as a value;
  * - shadowing of a name, and any other name read by its spelling rather than by its binding,
- *   since the scan models no scope: a function of one file named like a wrapper of another is
- *   read as that wrapper, a condition that refers to an inner binding named like a probe's
- *   `const` is read as referring to the `const`, and a function passed to `expect.poll` by its
- *   name rather than written there is read as any function is. These read too much rather than
- *   too little, and a reason or a rename answers each.
+ *   since the scan models no scope and reads the order things run in from the text alone: a
+ *   function of one file named like a wrapper of another is read as that wrapper, a condition
+ *   that refers to an inner binding named like a name a probe's answer is bound to is read as
+ *   referring to that name, a condition below an assignment is read as running after it even
+ *   where it cannot, as in the other branch of an `if`, and a function passed to `expect.poll`
+ *   by its name rather than written there is read as any function is. These read too much rather
+ *   than too little, and a reason or a rename answers each.
  *
  * A pass here is a claim about the shapes above and about nothing else.
  *
@@ -118,7 +137,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript";
 
-import { minimumReasonWords, reasonEndingAbove, shortReason, statementOf } from "./fixed-waits";
+import { minimumReasonWords, reasonAboveCall, shortReason } from "./fixed-waits";
 
 /** One probe of one file of the suite whose answer decides a path. */
 export type DecidingProbe = {
@@ -132,8 +151,10 @@ export type DecidingProbe = {
   /** What is called: the method, `isVisible`, or the name of a wrapper, `menuShows`. */
   name: string;
   /** What the answer decides, as WHAT DECIDES A PATH reads it: `if`, `ternary`, `while`,
-   *  `do-while`, `for`, `for-of`, `test.skip` and its kin, or `const shown -> ternary@42` for a
-   *  name bound to the answer, with the kind and the line of each condition that refers to it. */
+   *  `do-while`, `for`, `for-of`, `switch`, `&&`, `||` or `??` for the operator whose right
+   *  operand it decides, `test.skip` and its kin, or `const shown -> ternary@42` for a name bound
+   *  to the answer (`let` and `assign` for the other two bindings), with the kind and the line of
+   *  each condition that refers to it. */
   position: string;
   /** The reason comment that ends on the line directly above the call, its markers stripped and
    *  its lines joined by a space; the empty string when no comment ends there. */
@@ -141,7 +162,7 @@ export type DecidingProbe = {
 };
 
 /** A probe the rule refuses, with the sentence that names it and says what to do about it. */
-export type RefusedProbe = {
+type RefusedProbe = {
   probe: DecidingProbe;
   why: string;
 };
@@ -184,6 +205,14 @@ const pageSideCalls: ReadonlySet<string> = new Set([
 /** The members of `test` whose first argument decides how the row runs. */
 const testModifiers: ReadonlySet<string> = new Set(["skip", "fixme", "slow", "fail"]);
 
+/** The logical operators: each hands its left operand's answer on to whatever decides above it,
+ *  and decides by it whether its right operand runs. */
+const logicalOperators: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.AmpersandAmpersandToken,
+  ts.SyntaxKind.BarBarToken,
+  ts.SyntaxKind.QuestionQuestionToken,
+]);
+
 /** The operators the climb goes through: the comparisons and the logical operators, each of which
  *  hands the answer on to whatever decides above it. */
 const climbedOperators: ReadonlySet<ts.SyntaxKind> = new Set([
@@ -195,9 +224,7 @@ const climbedOperators: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.GreaterThanToken,
   ts.SyntaxKind.LessThanEqualsToken,
   ts.SyntaxKind.GreaterThanEqualsToken,
-  ts.SyntaxKind.AmpersandAmpersandToken,
-  ts.SyntaxKind.BarBarToken,
-  ts.SyntaxKind.QuestionQuestionToken,
+  ...logicalOperators,
 ]);
 
 /** One file of the scan, parsed. */
@@ -358,10 +385,12 @@ function probeName(call: ts.CallExpression, wrappers: ReadonlySet<string>): stri
   return ts.isIdentifier(callee) && wrappers.has(callee.text) ? callee.text : undefined;
 }
 
-/** The outermost expression the climb of WHAT DECIDES A PATH reaches from `probe`. */
+/** The expression the climb of WHAT DECIDES A PATH reaches from `probe`: the first condition it
+ *  meets on the way up, or else the outermost expression it reaches. */
 function climb(probe: ts.Expression): ts.Expression {
   let node = probe;
   for (;;) {
+    if (conditionKind(node) !== undefined) return node;
     const parent = node.parent;
     if (
       ts.isAwaitExpression(parent) ||
@@ -374,6 +403,29 @@ function climb(probe: ts.Expression): ts.Expression {
       return node;
     }
   }
+}
+
+/** Whether the value of `node` is thrown away: it is the whole of an expression statement, or the
+ *  right operand of a logical operator whose own value is thrown away, read through parentheses,
+ *  `await` and `void`. Such an expression runs only for what it does, so a logical operator in it
+ *  is a branch. */
+function isThrownAway(node: ts.Expression): boolean {
+  let current: ts.Node = node;
+  while (
+    ts.isParenthesizedExpression(current.parent) ||
+    ts.isAwaitExpression(current.parent) ||
+    ts.isVoidExpression(current.parent)
+  ) {
+    current = current.parent;
+  }
+  const parent = current.parent;
+  if (ts.isExpressionStatement(parent)) return true;
+  return (
+    ts.isBinaryExpression(parent) &&
+    logicalOperators.has(parent.operatorToken.kind) &&
+    parent.right === current &&
+    isThrownAway(parent)
+  );
 }
 
 /** `test.skip`, `test.fixme`, `test.slow` or `test.fail`, where `node` is a call of one. */
@@ -391,10 +443,11 @@ function testModifier(node: ts.Node): string | undefined {
   return undefined;
 }
 
-/** What `node` is the condition of, as the first two kinds of WHAT DECIDES A PATH read it: `if`,
- *  `ternary`, `while`, `do-while`, `for`, `for-of` for the iterable a `for...of` walks, or a
- *  `test` modifier. Nothing where it decides no path, an `if` whose only branch is a `throw` among
- *  them. */
+/** What `node` is the condition of, as the kinds of WHAT DECIDES A PATH before the last read it:
+ *  `if`, `ternary`, `while`, `do-while`, `for`, `for-of` for the iterable a `for...of` walks,
+ *  `switch` for its discriminant, `&&`, `||` or `??` for the left operand of a logical operator
+ *  whose value is thrown away, or a `test` modifier. Nothing where it decides no path, an `if`
+ *  whose only branch is a `throw` among them. */
 function conditionKind(node: ts.Expression): string | undefined {
   const parent = node.parent;
   if (ts.isIfStatement(parent) && parent.expression === node) {
@@ -409,6 +462,15 @@ function conditionKind(node: ts.Expression): string | undefined {
   if (ts.isDoStatement(parent) && parent.expression === node) return "do-while";
   if (ts.isForStatement(parent) && parent.condition === node) return "for";
   if (ts.isForOfStatement(parent) && parent.expression === node) return "for-of";
+  if (ts.isSwitchStatement(parent) && parent.expression === node) return "switch";
+  if (
+    ts.isBinaryExpression(parent) &&
+    logicalOperators.has(parent.operatorToken.kind) &&
+    parent.left === node &&
+    isThrownAway(parent)
+  ) {
+    return ts.tokenToString(parent.operatorToken.kind);
+  }
   const modifier = testModifier(parent);
   if (
     modifier !== undefined &&
@@ -484,6 +546,49 @@ function referenceAfter(
   return found;
 }
 
+/** A name a probe's answer is bound to: how it is bound (`const`, `let`, or `assign` for a plain
+ *  `=`), the name, and the declaration or the assignment that binds it. */
+type Binding = {
+  readonly keyword: "const" | "let" | "assign";
+  readonly name: string;
+  readonly node: ts.Node;
+};
+
+/** The binding `top` is the whole value of: the initializer of a `const` or a `let` with a plain
+ *  name, or the right side of a plain `=` whose left side is a plain name, parentheses read
+ *  through. Nothing where it is neither. */
+function bindingOf(top: ts.Expression): Binding | undefined {
+  const parent = top.parent;
+  if (ts.isVariableDeclaration(parent) && parent.initializer === top) {
+    if (!ts.isIdentifier(parent.name)) return undefined;
+    const flags = parent.parent.flags;
+    if ((flags & ts.NodeFlags.Const) !== 0) {
+      return { keyword: "const", name: parent.name.text, node: parent };
+    }
+    if ((flags & ts.NodeFlags.Let) !== 0) {
+      return { keyword: "let", name: parent.name.text, node: parent };
+    }
+    return undefined;
+  }
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    parent.right === top
+  ) {
+    const target = unparenthesized(parent.left);
+    if (ts.isIdentifier(target)) return { keyword: "assign", name: target.text, node: parent };
+  }
+  return undefined;
+}
+
+/** Whether `condition` is tested again after `assignment` runs, though it stands above it: the
+ *  condition of a `while` or a `for` loop whose body holds the assignment. */
+function testedAfterBody(condition: Condition, assignment: ts.Node): boolean {
+  const loop = condition.expression.parent;
+  if (!ts.isWhileStatement(loop) && !ts.isForStatement(loop)) return false;
+  return assignment.pos >= loop.statement.pos && assignment.end <= loop.statement.end;
+}
+
 /** What `probe` decides, as `DecidingProbe.position` spells it, or nothing where it decides no
  *  path. `conditions` are its file's. */
 function positionOf(
@@ -494,28 +599,25 @@ function positionOf(
   const top = climb(probe);
   const kind = conditionKind(top);
   if (kind !== undefined) return kind;
-  const declaration = top.parent;
-  if (
-    !ts.isVariableDeclaration(declaration) ||
-    declaration.initializer !== top ||
-    !ts.isIdentifier(declaration.name) ||
-    (declaration.parent.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) === 0
-  ) {
-    return undefined;
-  }
-  const name = declaration.name.text;
-  const scope = enclosingFunction(declaration);
+  const binding = bindingOf(top);
+  if (binding === undefined) return undefined;
+  const scope = enclosingFunction(binding.node);
   const uses: string[] = [];
   for (const condition of conditions) {
     if (condition.scope !== scope) continue;
-    const reference = referenceAfter(sourceFile, condition.expression, name, declaration.getEnd());
+    // A condition counts once it runs after the binding: written below it, or a loop's condition
+    // tested again after the body that assigns the name.
+    const after =
+      binding.keyword === "assign" && testedAfterBody(condition, binding.node)
+        ? 0
+        : binding.node.getEnd();
+    const reference = referenceAfter(sourceFile, condition.expression, binding.name, after);
     if (reference === undefined) continue;
     const line = sourceFile.getLineAndCharacterOfPosition(reference.getStart(sourceFile)).line;
     uses.push(`${condition.kind}@${line + 1}`);
   }
   if (uses.length === 0) return undefined;
-  const keyword = (declaration.parent.flags & ts.NodeFlags.Const) !== 0 ? "const" : "let";
-  return `${keyword} ${name} -> ${uses.join(",")}`;
+  return `${binding.keyword} ${binding.name} -> ${uses.join(",")}`;
 }
 
 /** Every probe the given files hold whose answer decides a path, each reported under the path it
@@ -535,7 +637,6 @@ export function probesOfFiles(directory: string, files: readonly string[]): Deci
   const wrappers = wrapperNames(parsed);
   const probes: DecidingProbe[] = [];
   for (const { file, sourceFile } of parsed) {
-    const text = sourceFile.getFullText();
     const conditions = conditionsOf(sourceFile);
     walkSkipped(sourceFile, (node, skipped) => {
       if (skipped || !ts.isCallExpression(node)) return;
@@ -544,15 +645,13 @@ export function probesOfFiles(directory: string, files: readonly string[]): Deci
       const position = positionOf(sourceFile, node, conditions);
       if (position === undefined) return;
       const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-      // The reason stands above the probe's statement, and is read against the probe's own line.
-      const ranges = ts.getLeadingCommentRanges(text, statementOf(node).getFullStart()) ?? [];
       probes.push({
         file,
         line: start.line + 1,
         column: start.character,
         name,
         position,
-        reason: reasonEndingAbove(sourceFile, ranges, start.line),
+        reason: reasonAboveCall(sourceFile, node, start.line),
       });
     });
   }

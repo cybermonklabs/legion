@@ -84,3 +84,47 @@ export async function plantedPromiseAll(page: Page, rows: Locator): Promise<void
   await rows.first().click();
   for (const request of await writes) expect(request.method()).toBe("POST");
 }
+
+/** One probe per shape of a branch that is no `if`, each refused, in this order: a `switch` on a
+ *  `getAttribute`, a `switch` on a `const` bound to `textContent`, a statement whose `&&` runs a
+ *  click on an `isVisible`, a chain of `&&` whose two operands before the last are probes, a name
+ *  assigned an `isVisible` that a later `if` reads, and a name assigned in a loop's body that the
+ *  loop's `while` above it reads. */
+export async function plantedBranchRefusals(menu: Locator, rows: Locator): Promise<string> {
+  switch (await menu.getAttribute("aria-expanded")) {
+    case "true":
+      return "open";
+    default:
+      break;
+  }
+
+  const label = await menu.textContent();
+  switch (label) {
+    case "Menu":
+      return "menu";
+    default:
+      break;
+  }
+
+  (await menu.isVisible()) && (await menu.click());
+
+  (await rows.count()) > 1 && (await menu.isChecked()) && (await menu.click());
+
+  let shown = false;
+  shown = await menu.isVisible();
+  if (shown) await menu.click();
+
+  let open = false;
+  while (!open) {
+    await menu.click();
+    open = await menu.isVisible();
+  }
+
+  return "closed";
+}
+
+/** A probe that is only the last operand of a statement's `&&`: its answer is thrown away, so it
+ *  decides nothing and is no instance. */
+export async function plantedLastOperand(menu: Locator, open: boolean): Promise<void> {
+  open && (await menu.isVisible());
+}

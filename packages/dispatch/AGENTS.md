@@ -2253,12 +2253,16 @@ A probe is a read that answers for the page as it stands and waits for no state:
 that returns one.
 A call on the plain identifier `Promise` is none: `Promise.all(...)` waits for
 the promises it is handed and reads no page.
-Its answer decides a path when it is the condition of a branch (an `if`, a `?:`
-or a loop), the list a `for...of` walks (`for (const row of await rows.all())`,
+Its answer decides a path when it is the condition of a branch (an `if`, a `?:`,
+a `switch` or a loop), the list a `for...of` walks (`for (const row of await rows.all())`,
 which runs no turn on a page that has not drawn the rows yet, so the assertions
-inside it never run), the first argument of `test.skip`, `test.fixme`,
-`test.slow` or `test.fail`, or a `const` or `let` that a later condition or
-`for...of` of the same function reads.
+inside it never run), the left operand of an `&&`, `||` or `??` whose value is
+thrown away (`(await menu.isVisible()) && (await menu.click());`, and in a chain
+every operand but the last), the first argument of `test.skip`, `test.fixme`,
+`test.slow` or `test.fail`, or a name bound to it by a `const`, a `let` or a
+plain `=` that a later condition of the same function reads (the condition of a
+loop whose body assigns the name counts, since the loop tests it again).
+A probe that is only the last operand of such a statement decides nothing.
 The reason is a comment of at least eight words that ends on the line directly
 above the probe, measured as `e2e/fixed-waits.ts` measures one, and says why one
 instant's answer is safe there.
@@ -2606,10 +2610,10 @@ recipient order is not alphabetical, from five sessions of which one has no Disp
 one is twenty minutes stale — and `e2e/workspace.e2e.ts` asserts every surface the `person` scope opens that it fills
 (the Inbox's default list with its Later band and the document ask, which reaches its project's
 default assignee, `/agents` with both folds, the broadcast page, an issue's Conversation).
-`seedWorkspace({ boundMs })` expects an empty database and returns the ids it made, the Inbox rows it declares and the pass line of its wait for them.
+`seedWorkspace({ boundMs, signal? })` expects an empty database and returns the ids it made and the pass line of its wait for the Inbox rows; an abort of `signal` (the smoke passes its Ctrl-C) stops the Inbox wait.
 It waits for the spec's decision block (`awaitDecisionBlock`), which gives back the block id, and then for the unfiltered Inbox to list exactly the rows it declares (`awaitSeededInbox`), both at the bound its caller passes.
 A Playwright row passes `expectTimeout` of `e2e/expect-timeout.ts`, so the seed gives up at the bound the row's own assertions use, before the row's clock ends the row and hides the wait's message.
-`bun run dispatch:local` and the visual review's host seed (`e2e/visual-seed.ts`) run outside Playwright and pass bounds of their own.
+`bun run dispatch:local`, the visual review's host seed (`e2e/visual-seed.ts`) and the docs' media harness (`docs/site/media/harness.ts`) run outside Playwright and pass bounds of their own.
 Each wait of `e2e/local-instance-support.ts` takes its bound from its caller and, when it gives up, names what it waited for and the last value it read.
 
 Every real-stack spec takes its `test` from `e2e/test.ts`: it is

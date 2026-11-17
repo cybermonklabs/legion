@@ -132,8 +132,8 @@ async function main(): Promise<void> {
   // assertion, and this instance has to start on a server without the fix so that spec can go
   // red against it. The reset runs only now, after the server's own loopback check let it boot.
   await untilInterrupted(resetDatabase());
-  // The Inbox was read settling in 230 ms; 15 s is far above that, so only a seed that does not
-  // settle fails it.
+  // The Inbox was read settling in 230 ms (the sampler e2e/workspace.ts cites); 15 s is far
+  // above that, so only a seed that does not settle fails it.
   const seedBoundMs = 15_000;
   const seeded = await untilInterrupted(
     seedWorkspace({ boundMs: seedBoundMs, signal: supervisor.signal })
