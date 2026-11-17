@@ -690,11 +690,13 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	// Roles that finished earlier phases of the run stay as they stood: for a child moved to todo
 	// from a running or held status each keeps its state (live, failed, retired or suspended); for
 	// one that had left the workflow, suspended, retired or failed (a leave's suspend passes over a
-	// failed claim). The new run's starts hand each its task, and bring one that had stopped back on
-	// its kept session, or on a new one where the provider refused that session out of the claim's
-	// launch budget (supervise's freshSession) or no session store holds it any more (supervise's
-	// startFresh); one an operator suspended waits for the operator's `legion claims resume`. These
-	// starts ask for no new session themselves.
+	// failed claim), or live for a merged child's checking role, which the leave does not close.
+	// The new run's starts hand each its task, and bring one that had stopped back on its kept
+	// session, or on a new one where the provider refused that session out of the claim's launch
+	// budget (supervise's freshSession) or no session store holds it any more (supervise's
+	// startFresh); one that still stands suspended by an operator (a park keeps that suspension, a
+	// close as done retires it) waits for the operator's `legion claims resume`. These starts ask
+	// for no new session themselves.
 	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
 	if err != nil {
 		return err
