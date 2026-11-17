@@ -170,7 +170,7 @@ That is two small modules, `gopkg.in/yaml.v3` and `github.com/pmezard/go-difflib
 
 ## Runners
 
-The action runs in a job without `container:`, on a runner such as `ubuntu-24.04`, which is what this repository tests.
+The action runs in a job without `container:`, on a runner such as `ubuntu-24.04` or `ubuntu-24.04-arm`; this repository runs it on `ubuntu-24.04-arm`.
 In a job with `container:`, `github.action_path` and `runner.temp` are paths on the host and not paths in the container.
 Two open issues of the runner record this: [actions/runner#2185](https://github.com/actions/runner/issues/2185) and [actions/runner#2498](https://github.com/actions/runner/issues/2498).
 The action gives both paths to `actions/setup-go` and to its cache steps, so do not use it in a job with `container:`.

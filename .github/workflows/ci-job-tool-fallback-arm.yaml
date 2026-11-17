@@ -70,7 +70,7 @@ jobs:
           persist-credentials: false
 
       # The same reading as the tool-fallback job's, over both halves of this one, and for the
-      # same reason: this is the only job of this repository that installs a tool on arm64, so
+      # same reason: no other arm64 job of this repository takes this reading of its runner, so
       # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
       # that job's own pair (.github/workflows/ci-job-tool-fallback.yaml) says what the series
       # shows and what it cannot.

@@ -13,32 +13,43 @@ name: CI caches
 # request lands in that run's own scope, which the next pull request's run cannot read, so it
 # would reach nobody.
 #
-# Five Go families, each one a restore step of ci.yaml's run names, keyed on the Go version the
-# family's own module installs: go-notices (lint's notices step), go-daemon (typecheck,
-# daemon-go and
-# pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers,
-# listener-server-change, envoy-e2e-local and envoy-session-stall), go-envoy-test (envoy-go, and
-# the binaries, multiprocess and visual jobs of .github/workflows/dispatch-browser.yaml, which
-# ci.yaml's dispatch-browser job calls: those three build the Dispatch server and the real
-# broker's commands, whose packages the go-envoy entry's build of the listener and natsd alone
-# does not hold) and go-envoy-infra (envoy-infra-go). One
-# Go setup, since the key carries the version that module's go.mod names: the daemon's go.mod for
-# go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for
-# go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is first looked up
-# (`lookup-only`, and no `restore-keys`: the question is whether that exact key exists, and the
-# answer downloads nothing), and only a miss runs the build the ci.yaml job runs and saves what
-# it left in the module cache and the build cache. A family whose key is already there builds
-# nothing, so a run that finds every key costs a checkout and a setup-go. Where a job fills two
-# families it fills the smaller one first, so the entry that carries the other's objects too is
-# the one that was large already.
+# Five Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
+# architecture and on the Go version the family's own module installs: go-notices (lint's notices
+# step), go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks,
+# envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
+# envoy-session-stall, and the embedder job of .github/workflows/dispatch-browser.yaml),
+# go-envoy-test (envoy-go, and the binaries, multiprocess and visual jobs of
+# .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those three
+# build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
+# build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go, and
+# the build job of release-envoy-infra.yaml).
+# The key carries `runner.arch` because Go's build cache holds the objects of the architecture
+# that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
+# its objects. So each family is filled on every architecture one of its readers runs on, one
+# matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
+# go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
+# each has a reader on each (typecheck and the envoy lanes on the first; daemon-go, plugin-pack,
+# pi-legion, the browser lane and the release builds on the second). One
+# Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
+# go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
+# module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is
+# first looked up (`lookup-only`, and no `restore-keys`: the question is whether that exact key
+# exists, and the answer downloads nothing), and only a miss runs the build the ci.yaml job runs
+# and saves what it left in the module cache and the build cache. A family whose key is already
+# there builds nothing, so a run that finds every key costs a checkout and a setup-go. Where a
+# job fills two families it fills the smaller one first, so the entry that carries the other's
+# objects too is the one that was large already. A leg of a matrix that fails leaves the other
+# running (`fail-fast: false`): a cancelled leg saves nothing, and one architecture's fill has no
+# reason to cost the other's.
 #
 # Beside those five, the architecture-check job fills
 # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
 # .github/actions/architecture-check, and the spec-check job fills
 # spec-check-<os>-<arch>-go<version>-<hash>, the family of .github/actions/spec-check; ci.yaml's
 # envoy-go-checks runs both actions. Neither is a lookup step of this workflow: each action
-# restores and saves its entry itself, keyed on the Go version its own setup-go installs from
-# packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum.
+# restores and saves its entry itself, keyed on the runner's architecture, on the Go version its
+# own setup-go installs from packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum,
+# so both jobs run on ubuntu-24.04-arm, the runner envoy-go-checks runs on.
 # On a miss it restores the newest entry of that Go version (restore-keys, which this workflow's
 # own lookups do not use). It saves only on a miss of the exact key in a push, schedule or
 # workflow_dispatch run: a run of any other event (pull_request, pull_request_target,
@@ -90,14 +101,18 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  # go-daemon and go-notices. Both key on packages/daemon/go.mod's Go: ci.yaml's typecheck,
-  # daemon-go
-  # and pi-legion set Go up from it, and so does lint, whose notices step the go-notices family
-  # belongs to, though that step also builds the envoy and infra modules' commands.
+  # go-daemon. It keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack
+  # and pi-legion set Go up from it. One leg per runner, because typecheck runs on
+  # ubuntu-24.04-arm and the other three on ubuntu-24.04, and the key carries the runner's
+  # architecture.
   daemon:
-    runs-on: ubuntu-24.04
-    # The notices build is the long one: it writes the notices of, and cross-compiles, every
-    # release target of three modules on a cold module cache.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # The limit this job carried while it filled go-notices too, whose build is the long one; no
+    # leg of the daemon build alone has been measured near it.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,7 +131,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
       # What typecheck and daemon-go build: the vet behind the e2e tag, the test binary of every
@@ -143,11 +158,27 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
 
-      # go-notices after go-daemon, and saved second: this entry is the large one (the notices
-      # build loads every release target of three modules), so it is the one that can carry the
-      # daemon build's objects without changing what a run pays for.
+  # go-notices, in a job of its own on ubuntu-24.04-arm, the runner of lint, whose notices step the
+  # family belongs to. It keys on packages/daemon/go.mod's Go, which lint installs, though that
+  # step also builds the envoy and infra modules' commands.
+  notices:
+    runs-on: ubuntu-24.04-arm
+    # The notices build is the long one: it writes the notices of, and cross-compiles, every
+    # release target of three modules on a cold module cache.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
       - id: go-notices
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -155,7 +186,7 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-notices-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
       # The very script lint's notices step runs, .github/scripts/go-release-notices.sh: the
@@ -176,13 +207,19 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-notices-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
 
   # go-envoy and go-envoy-test. Both key on packages/envoy/go.mod's Go, the module every job that
   # restores them sets Go up from, so one setup serves the two; their lookups and their builds are
-  # independent, and each build is gated on its own lookup.
+  # independent, and each build is gated on its own lookup. One leg per runner: the envoy lanes
+  # that restore them run on ubuntu-24.04-arm, and the browser lane's jobs that restore them on
+  # ubuntu-24.04.
   envoy:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     # Compiling the test binary of every package of the envoy module on a cold module cache is
     # the long step; the listener and natsd are minutes.
     timeout-minutes: 60
@@ -203,7 +240,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
       # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
@@ -221,7 +258,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
 
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -229,7 +266,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
@@ -250,7 +287,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
   # .github/actions/architecture-check, run as ci.yaml's envoy-go-checks runs it. The action sets
@@ -265,7 +302,7 @@ jobs:
   # the envoy job, would run the action first, before that job's setup-go, and a refused note set
   # on main would then stop the go-envoy fills, so it is a job of its own.
   architecture-check:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The action takes seconds: 13 s with its own Go download and a cache miss, in ci.yaml's
     # envoy-go-checks of run 43553309875.
     timeout-minutes: 15
@@ -283,7 +320,7 @@ jobs:
   # It is a job of its own, so a refused note set on main cannot stop this fill and a refused spec
   # tree on main cannot stop the note check.
   spec-check:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -297,9 +334,14 @@ jobs:
 
   # go-envoy-infra. The infra module is not in the root go.work - its own go.work binds it and
   # packages/envoy - so it keys on packages/envoy/infra/go.mod's Go and builds in a job of its own,
-  # as ci.yaml's envoy-infra-go does.
+  # as ci.yaml's envoy-infra-go does. One leg per runner: envoy-infra-go runs on ubuntu-24.04-arm,
+  # and release-envoy-infra.yaml's build, which restores the family too, on ubuntu-24.04.
   envoy-infra:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -318,7 +360,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
       # What envoy-infra-go builds: the vet with both live-test tags, the test binary of every
@@ -339,7 +381,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
 
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
   # needs. No setup-go and no Go family: the key is the content of the lean-toolchain the model

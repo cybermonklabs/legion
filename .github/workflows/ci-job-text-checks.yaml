@@ -71,7 +71,7 @@ env:
 
 jobs:
   text-checks:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # About three times the cold measurement in the header, which is what a runner that restores
     # no build cache does on every run - the supervise pins' call, a quarter more cold time on
     # the pod that measured the five against the four, left that nearly as it was.

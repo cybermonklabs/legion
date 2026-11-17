@@ -41,7 +41,7 @@ permissions: {}
 jobs:
   cancel-ci:
     if: ${{ false }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
       - name: Do nothing; joining the group is what cancels the CI run

@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-go-checks:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The builds below download the envoy module's dependencies and compile ./cmd/listener for
     # each release architecture, so the job restores go-envoy, the family whose entry holds that
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
@@ -102,8 +102,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Check Go formatting
         run: |
           unformatted=$(gofmt -l .)

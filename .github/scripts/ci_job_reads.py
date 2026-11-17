@@ -3173,8 +3173,8 @@ GATES = [
     )),
 
     # A second gate on tool_fallback: the tool-fallback-arm job proves the same two halves of
-    # the Bun install on an arm64 runner, the one architecture no other job of this repository
-    # installs a tool on. It drives the same action over the same manifest through the same
+    # the Bun install on an arm64 runner, where no other job of this repository drives the second
+    # half, the install from npm. It drives the same action over the same manifest through the same
     # helper, so one filter selects both jobs, and check-ci-filters.sh keys a claim by
     # (job, step), so the two gates claim different steps and do not collide.
     # It runs no go command either, and reads less than the job above: the action, the version

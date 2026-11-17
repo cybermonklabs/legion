@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-go-race-docs:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race binary,
     # then the step's own 60 minutes, which is 66 under this limit of 70.
@@ -71,8 +71,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Under the sampler, not bare: the race detector maps about four bytes of shadow memory per

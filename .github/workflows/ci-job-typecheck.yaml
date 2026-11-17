@@ -31,7 +31,7 @@ env:
 
 jobs:
   typecheck:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
 
     steps:
@@ -51,8 +51,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
       # With the e2e tag, vet also compiles the live proofs behind it (the Stage 4a harness,
       # sandbox/live*_test.go), which run on the devbox against a real cluster.

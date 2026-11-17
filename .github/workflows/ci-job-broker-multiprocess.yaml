@@ -31,7 +31,7 @@ env:
 
 jobs:
   broker-multiprocess:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     services:
       postgres:

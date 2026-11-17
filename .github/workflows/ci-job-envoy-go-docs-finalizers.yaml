@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-go-docs-finalizers:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The step's -timeout 34m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it. Both numbers come from this job's own green runs, the slowest of
     # them 128761197501: 1136.829 s in the package, against 1016.966 s in 128809181011,
@@ -84,8 +84,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # -v, because the package's leak check prints its line from TestMain after the tests have

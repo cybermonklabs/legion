@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-infra-go:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
@@ -50,8 +50,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-infra-{0}-', runner.os) }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
       - name: Pull the NATS and Postgres test container images
         uses: ./.github/actions/pull-test-images
         with:

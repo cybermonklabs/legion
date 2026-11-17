@@ -47,7 +47,7 @@ on:
 
 jobs:
   proof-sdk-offline:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     # The hosts of the old route, named once: the proxy is started with them, and the verdict
     # below quotes them. The proxy faults each of them and every subdomain of one, and refuses
