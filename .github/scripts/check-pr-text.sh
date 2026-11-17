@@ -241,6 +241,11 @@ else
     unknown "$base_ref's history does not hold the commit that added $cutoff_file"
   elif ! git -C "$history" ls-remote origin 'refs/tags/legion-v*' > "$work/tag-refs" 2> "$work/git-error"; then
     unknown "git could not list the legion-v tags ($(head -n 1 "$work/git-error"))"
+  elif [ ! -s "$work/tag-refs" ]; then
+    # The repository has hundreds of legion-v tags, and release-push.sh starts no release line
+    # without one, so an empty listing is a read that went wrong (a renamed prefix, an empty
+    # answer), never a repository with no release yet.
+    unknown "the remote lists no legion-v tag"
   elif ! awk '$2 !~ /\^\{\}$/ { print "create " $2 " " $1 }' "$work/tag-refs" |
       git -C "$history" update-ref --stdin 2> /dev/null &&
     ! git -C "$history" fetch -q --no-tags origin '+refs/tags/legion-v*:refs/tags/legion-v*' 2> "$work/git-error"; then

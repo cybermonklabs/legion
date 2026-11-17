@@ -625,6 +625,16 @@ key_run
 mv "$work/remote.held" "$work/remote"
 check "a history git cannot read exits 2" "$(is "$status" 2)"
 check "says git could not read it" "$(contains "$out" "^::error::UNKNOWN: git could not read main's history")"
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+git_fixture "$work/remote/example/repo" for-each-ref --format='create %(refname) %(objectname)' 'refs/tags/legion-v*' \
+  > "$work/legion-tags.held"
+awk '{ print "delete " $2 }' "$work/legion-tags.held" | git_fixture "$work/remote/example/repo" update-ref --stdin
+key_run
+git_fixture "$work/remote/example/repo" update-ref --stdin < "$work/legion-tags.held"
+check "a remote that lists no legion-v tag exits 2, not inactive" "$(is "$status" 2)"
+check "says the remote lists none" "$(contains "$out" '^::error::UNKNOWN: the remote lists no legion-v tag')"
+check "and does not call the rule inactive" "$(is "$(contains "$out" 'issue-key rule is inactive')" false)"
 
 echo "case: once a release carries the marker commit, a pull request opened before it is not read"
 write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
