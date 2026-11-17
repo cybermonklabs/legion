@@ -147,6 +147,9 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"an item's block whose opening line stands two spaces in, over an ordered item whose three-digit marker a tab follows and a second paragraph of that item", item,
 			"  :::callout{}\n  100.\tFirst.\n\n        Second.\n  :::",
 			"100.  First.\n\n      Second.\n"},
+		{"an item's block whose opening line stands two spaces in, over an ordered item whose nine-digit marker a tab follows and a second paragraph of that item", item,
+			"  :::callout{}\n  123456789.\tFirst.\n\n              Second.\n  :::",
+			"123456789.    First.\n\n            Second.\n"},
 		{"an item's block whose opening line stands one space in, over a list item whose marker a tab follows and a rule a space and a tab in", item,
 			" :::callout{}\n -\titem\n \t***\n   :::",
 			"-  item\n   ***\n"},
@@ -168,6 +171,9 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"an item's block whose opening line stands one space in, over code in a quote whose `>` two tabs follow, a line of that `>` and two tabs alone, and more of that code", item,
 			" :::callout{}\n >\t\tcode\n >\t\t\n >\t\tmore\n :::",
 			">      code\n>      \n>      more\n"},
+		{"an item's block whose opening line stands one space in, over code in a quote in a quote whose second `>` stands four columns past the first, a line of those `>` and two tabs alone, and more of that code", item,
+			" :::callout{}\n >    >\t\tcode\n >    >\t\t\n >    >\t\tmore\n :::",
+			">    >     code\n>    >     \n>    >     more\n"},
 		// A `>` that columnsOff cannot be sure opens or continues a quote can be a paragraph's
 		// text, so its run to the line's end is kept as it stands: written as spaces, it would end
 		// the paragraph's line in a hard break.
