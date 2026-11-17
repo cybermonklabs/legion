@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { callerMiseEnvironment } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
@@ -203,23 +204,19 @@ put(path.join(work, "services/dispatch-token"), "e2e-token\n");
 const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
 
 /** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
- * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
- * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
- * developer's own home decides nothing here. */
-const miseData =
-  process.env.MISE_DATA_DIR ??
-  (process.env.XDG_DATA_HOME === undefined
-    ? undefined
-    : path.join(process.env.XDG_DATA_HOME, "mise"));
+ * and config directories (and its global config file, when it names one), as mise resolves them
+ * (`callerMiseEnvironment`). bun and jq can be mise shims on a devbox, which find no version under
+ * a fresh HOME without them: where the caller's PATH reaches bun only through mise's shim, rig.sh's
+ * settings check fails with "No version is set for shim: bun". They are passed whatever the caller
+ * sets, since a caller that sets no XDG_CONFIG_HOME still has a config in its own ~/.config/mise.
+ * XDG_CONFIG_HOME itself is not passed, so no other tool's configuration of the caller's reaches
+ * the rig, whether the caller sets it or not. */
 const env = {
   PATH: `${bin}:${process.env.PATH ?? ""}`,
   HOME: path.join(scratch, "home"),
   USER: process.env.USER ?? "rig",
   TMPDIR: scratch,
-  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
-  ...(process.env.XDG_CONFIG_HOME === undefined
-    ? {}
-    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+  ...callerMiseEnvironment(),
   STUB_DIR: stub,
   SKILL_SCENARIOS_WORK: work,
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",
@@ -242,11 +239,12 @@ const setpgid = [
  * hook below reads before any row runs the rig, and which runs that parent by its own path.
  *
  * `python3` looked up on the rig's PATH can be a version manager's shim, and that shim rewrites
- * the environment of what it runs. On a devbox it is mise's: under this file's HOME mise has no
- * configuration, so the shim runs the system python3 with every mise install directory taken off
- * PATH, and the rig's `bun` was then mise's bun shim, which has no version under that HOME either
- * ("No version is set for shim: bun"): every run failed rig.sh's settings check. Run by its own
- * path, the interpreter passes the rig exactly the environment this file gives it.
+ * the environment of what it runs by the configuration it finds. On a devbox it is mise's: when
+ * this file's HOME held no mise configuration of the caller's, the shim ran the system python3 with
+ * every mise install directory taken off PATH, and the rig's `bun` was then mise's bun shim, which
+ * had no version under that HOME either ("No version is set for shim: bun"): every run failed
+ * rig.sh's settings check. Run by its own path, the interpreter passes the rig exactly the
+ * environment this file gives it, whatever configuration mise finds.
  */
 function pythonInterpreter(): string {
   const answer = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"], {

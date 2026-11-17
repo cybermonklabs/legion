@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { callerMiseEnvironment } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
@@ -40,24 +41,19 @@ beforeAll(() => {
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
 });
 /** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
- * own, and the caller's mise data and config directories when the caller names them. A tool on
- * PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME such a shim finds
- * neither its installs nor its global config, so it fails. make_omp_home keeps the operator's two
- * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
- * to every agent. A caller that names neither variable gets neither: the developer's own home
- * decides nothing here. */
-const miseData =
-  process.env.MISE_DATA_DIR ??
-  (process.env.XDG_DATA_HOME === undefined
-    ? undefined
-    : path.join(process.env.XDG_DATA_HOME, "mise"));
+ * own, and the caller's mise data and config directories (and its global config file, when it
+ * names one), as mise resolves them (`callerMiseEnvironment`). A tool on PATH can be a mise shim
+ * (bun, jq and jj are, on a devbox). Under a fresh HOME such a shim finds neither its installs nor
+ * its global config, so it fails. They are passed whatever the caller sets, since a caller that
+ * sets no XDG_CONFIG_HOME still has a config in its own ~/.config/mise. make_omp_home keeps the
+ * operator's mise data directory and XDG_CONFIG_HOME for the processes it starts for the same
+ * reason, and base_env passes MISE_DATA_DIR to every agent. XDG_CONFIG_HOME itself is not passed,
+ * so no other tool's configuration of the caller's reaches a child, whether the caller sets it or
+ * not. */
 const childEnv = {
   PATH: process.env.PATH ?? "",
   HOME: operatorHome,
-  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
-  ...(process.env.XDG_CONFIG_HOME === undefined
-    ? {}
-    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+  ...callerMiseEnvironment(),
 };
 
 let profiles = 0;

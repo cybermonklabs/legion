@@ -13,6 +13,10 @@
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
     },
+    "./mise-environment": {
+      "types": "./src/mise-environment.ts",
+      "bun": "./src/mise-environment.ts"
+    },
     "./refused-port": {
       "types": "./src/refused-port.ts",
       "bun": "./src/refused-port.ts"
