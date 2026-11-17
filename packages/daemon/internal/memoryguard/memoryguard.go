@@ -68,24 +68,29 @@
 // that has passed, and those it has not read keep their held sizes: at 9d6d24df,
 // `4g-latepool-lmnt5`'s six growers each had one band read, and reading all six again under the
 // pod's CPU throttle put the first kill 100.68 ms after the reading at the mark. Where those reads
-// show no growth either, it lists the processes once and reads those started since the band's last
-// reading, which no held read names, classifies them with the band's, reads the smaps of those it
-// may end within the same budget, the newest first, and ranks them with the held processes, so the
-// largest of them ends before the largest held one (startedSince): the six latepool growers above
-// started there. So the first kill comes within one interval of the reading reaching the mark,
-// also where the pod's CPU is throttled (INFRA-3531 R1 of spec version 25, T16): under gVisor, with
-// six growers faulting their pages in, the host throttles the whole pod by its CFS quota, so a band
-// reading that costs about 2 ms of work took 80 to 270 ms of wall time, and a read of a growing
-// process's /proc files at times waits on its memory locks. This issue's tester measured 194 ms
-// from the reading at the mark to the first kill, where R1 asks for one interval (100 ms), with a
-// mark reading that read every size again; deciding on the band's reads brought 9 of 9 runs in 19
-// builds Jobs to 1.3 to 71.8 ms. The guard assesses the reading at the mark and acts on it as on
-// any later reading where nothing is held (the reading crossed the whole band within one interval,
-// or the reading before was not an armed guard's in the band), where the held first has exited or
-// its pid names another process (its start time changed), or where the held sizes, or the sizes
-// once read again, are under the floor or name no process: it never gives a rise up on held sizes
-// alone. Below the band, while it is off and once it has given a rise up, it reads no size and
-// keeps none: a pod that sits below its band pays for nothing but its readings.
+// show no growth either, it looks for the processes started since the band's last reading, which
+// no held read names, and ranks those it may end with the held processes, so the largest of them
+// ends before the largest held one (startedSince): the six latepool growers above started there.
+// Its reads before the kill there are the listing of the processes, the identities of the newest
+// new ones (their stat, exe, ns/pid and arguments) and their smaps, these two within the same
+// budget, one of each at least; it takes the band's processes as the band read them, with no stat
+// read, and leaves out a new process whose parent it cannot place. At f949e5ad two of seven
+// latepool runs at 4 GiB put the first kill 196.3 and 128.2 ms after the reading at the mark while
+// it read a stat of every held process and the identity of every new one before the kill. So the
+// first kill comes within one interval of the reading reaching the mark, also where the pod's CPU
+// is throttled (INFRA-3531 R1 of spec version 25, T16): under gVisor, with six growers faulting
+// their pages in, the host throttles the whole pod by its CFS quota, so a band reading that costs
+// about 2 ms of work took 80 to 270 ms of wall time, and a read of a growing process's /proc files
+// at times waits on its memory locks. This issue's tester measured 194 ms from the reading at the
+// mark to the first kill, where R1 asks for one interval (100 ms), with a mark reading that read
+// every size again; deciding on the band's reads brought 9 of 9 runs in 19 builds Jobs to 1.3 to
+// 71.8 ms. The guard assesses the reading at the mark and acts on it as on any later reading where
+// nothing is held (the reading crossed the whole band within one interval, or the reading before
+// was not an armed guard's in the band), where the held first has exited or its pid names another
+// process (its start time changed), or where the held sizes, or the sizes once read again, are
+// under the floor or name no process: it never gives a rise up on held sizes alone. Below the band,
+// while it is off and once it has given a rise up, it reads no size and keeps none: a pod that sits
+// below its band pays for nothing but its readings.
 //
 // After a kill the guard reads the sizes at each interval too, and waits only while the killed
 // process has not exited (its Handle's Exited), and no longer than the wait (INFRA-3531 R1 of spec
@@ -437,6 +442,11 @@ type Guard struct {
 	// process reads (scanLargest), on that scan's goroutine, before it reads it. The tests set it
 	// to order those reads against a kill; production leaves it nil.
 	scanSmapsRead func(pid int)
+	// identityRead, when set, is called with the pid of each process started since the band's
+	// last reading whose stat, exe, ns/pid and arguments the reading at the mark reads
+	// (startedSince), before it reads them. The tests set it to count those reads and to move
+	// their clock on; production leaves it nil.
+	identityRead func(pid int)
 	// memfdLink is how the link of a descriptor that holds a memfd starts (heldMemfdBytes):
 	// memfdPrefix, as New sets it. The tests set their fake pod's own, since a fake descriptor's
 	// link must lead to a file the guard can stat.
@@ -900,16 +910,32 @@ func (g *Guard) orderHeld(now time.Time) (grew bool, heldBytes uint64) {
 
 // startedSince is the processes the guard may end that started since the band's last reading,
 // whose table the guard holds with the held processes (heldTable), each at its smaps size and
-// fresh, the newest first. It lists the processes once: a pid that table does not hold, or holds
-// with another start time (one that took the pid since), is a process started since, whose stat,
-// exe, ns/pid and arguments it reads as a scan does (readProcess); a pid it holds with the same
-// start time it reads nothing more of. It asks the classifier about the table of the band's
-// processes still listed and the ones started since, so a process started since is protected or
-// may be ended by the same rules as any, an Oh My Pi helper started under the agent among them.
-// It reads the smaps of those it may end alone, the newest first, the first however much of the
-// budget, to deadline by the guard's clock, has passed, and once deadline has passed it stops
-// after the read in hand; it reads no descriptor, and one whose smaps it cannot read is left out.
-// It answers none where none started, and asks the classifier nothing then.
+// fresh, the newest first. Its reads before the kill are the listing of the processes, the
+// identities of the newest new ones and their smaps, these two within deadline, half an interval
+// from the reading at the mark: at f949e5ad two of seven latepool runs at 4 GiB sent the first
+// kill 196.3 and 128.2 ms after the reading at the mark, past one interval, their growers with one
+// band read at most and so found here, while it read the stat of every held pid and the four
+// identity files of every new one before the kill, each a read that can wait out a stall of the
+// pod's CPU throttle.
+//
+// It lists the processes once, and takes the band's table as it is: a listed pid that table holds
+// is that process, and it reads nothing of it. A pid that another process took within one interval
+// is improbable, and sendKill reads its target's start time before the kill, so a reused pid is
+// never signalled: decide then assesses the reading. Every other listed pid is a process started
+// since, whose stat, exe, ns/pid and arguments it reads as a scan does (readProcess), the highest
+// pid first, the order gVisor and Linux allocate pids in, so the newest first; a pid space that has
+// wrapped changes only which are read first. It reads one at least, however much of the budget has
+// passed, and once deadline has passed it stops after the read in hand. A new process whose parent
+// is neither one of the band's processes still listed nor a new process it read and placed is left
+// out of this decision, neither one it may end nor one it protects, since the classifier cannot
+// place it in the tree; the assessment of the reading after the kill reads it.
+//
+// It asks the classifier once, about the table of the band's processes still listed and the new
+// ones it placed, so a process started since is protected or may be ended by the same rules as
+// any, an Oh My Pi helper started under the agent among them. It reads the smaps of those it may
+// end alone, the newest by start time first, one at least, and more while deadline has not passed;
+// it reads no descriptor, and one whose smaps it cannot read is left out. It answers none where
+// none started, and asks the classifier nothing then.
 func (g *Guard) startedSince(deadline time.Time) []candidate {
 	band := g.heldTable
 	if band == nil {
@@ -920,28 +946,37 @@ func (g *Guard) startedSince(deadline time.Time) []candidate {
 		return nil
 	}
 	t := &Table{proc: g.proc, byPID: make(map[int]*Process, len(band.byPID)), children: map[int][]*Process{}, unread: map[int]error{}}
-	var started []*Process
-	var cmdline []byte
+	var newPIDs []int
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
-		if p, held := band.byPID[pid]; held {
-			start, err := readStartTime(g.proc, pid)
-			if err != nil {
-				continue
-			}
-			if start == p.StartTime {
-				t.byPID[pid] = p
-				if reason, unread := band.unread[pid]; unread {
-					t.unread[pid] = reason
-				}
-				continue
-			}
+		p, held := band.byPID[pid]
+		reason, unread := band.unread[pid]
+		if !held && !unread {
+			newPIDs = append(newPIDs, pid)
+			continue
 		}
-		if cmdline == nil {
-			cmdline = make([]byte, classifierArgsBytes)
+		if held {
+			t.byPID[pid] = p
+		}
+		if unread {
+			t.unread[pid] = reason
+		}
+	}
+	if len(newPIDs) == 0 {
+		return nil
+	}
+	slices.SortFunc(newPIDs, func(x, y int) int { return cmp.Compare(y, x) })
+	cmdline := make([]byte, classifierArgsBytes)
+	started := map[int]*Process{}
+	for i, pid := range newPIDs {
+		if i > 0 && !g.clock.Now().Before(deadline) {
+			break
+		}
+		if g.identityRead != nil {
+			g.identityRead(pid)
 		}
 		p, err := readProcess(g.proc, pid, cmdline)
 		if err != nil {
@@ -951,23 +986,26 @@ func (g *Guard) startedSince(deadline time.Time) []candidate {
 			t.unread[pid] = err
 		}
 		if p != nil {
-			t.byPID[pid] = p
-			started = append(started, p)
+			started[pid] = p
 		}
 	}
-	if len(started) == 0 {
+	placed := placeStarted(t, started)
+	if len(placed) == 0 {
 		return nil
+	}
+	for _, p := range placed {
+		t.byPID[p.PID] = p
 	}
 	t.linkChildren()
 	g.applyKillFailures(t)
 	classes := g.classes(t)
-	slices.SortFunc(started, func(x, y *Process) int {
+	slices.SortFunc(placed, func(x, y *Process) int {
 		return cmp.Or(cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
 	})
 	defer g.releaseSmaps()
 	var fresh []candidate
 	read := false
-	for _, p := range started {
+	for _, p := range placed {
 		if _, unread := t.unread[p.PID]; unread || p.PID == g.self || classes[p.PID].Protected {
 			continue
 		}
@@ -982,6 +1020,32 @@ func (g *Guard) startedSince(deadline time.Time) []candidate {
 		fresh = append(fresh, candidate{Process: p, role: classes[p.PID].Role, size: size, fresh: true})
 	}
 	return fresh
+}
+
+// placeStarted is the processes of started, the new processes the reading at the mark read by pid,
+// that the classifier can place in the tree of t, which holds the band's processes still listed and
+// none of the new ones yet: one whose parent is one of those, or a new process placed itself. Every
+// other is taken out of t's unread as well, so the decision at the mark neither ends it nor counts
+// it.
+func placeStarted(t *Table, started map[int]*Process) []*Process {
+	placed := make(map[int]bool, len(started))
+	for again := true; again; {
+		again = false
+		for pid, p := range started {
+			if _, band := t.byPID[p.PPID]; !placed[pid] && (band || placed[p.PPID]) {
+				placed[pid], again = true, true
+			}
+		}
+	}
+	out := make([]*Process, 0, len(placed))
+	for pid, p := range started {
+		if placed[pid] {
+			out = append(out, p)
+		} else {
+			delete(t.unread, pid)
+		}
+	}
+	return out
 }
 
 // rereadHeld reads again, at the reading taken at now, the smaps of the held processes that grew

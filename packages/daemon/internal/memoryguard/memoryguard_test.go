@@ -2595,6 +2595,128 @@ func TestMemoryGuardReadsTheProcessesStartedSinceTheBandsLastReadingWithinTheBud
 	}
 }
 
+// slowIdentities has h's guard's clock move on by per at each identity it reads of a process
+// started since the band's last reading (identityRead), as on a pod whose CPU the host throttles,
+// and answers the pids it read, in order. It is set before the guard runs.
+func slowIdentities(h *harness, per time.Duration) func() []int {
+	var mu sync.Mutex
+	var read []int
+	h.g.identityRead = func(pid int) {
+		mu.Lock()
+		read = append(read, pid)
+		mu.Unlock()
+		h.clock.advance(per)
+	}
+	return func() []int {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(read)
+	}
+}
+
+// heldSleeper is a pod whose agent holds 2 GiB and whose pid 700 sleeps at 900 MiB through the
+// band's two readings, 3200 and 3300 MiB, the guard h on it run to the second: at the mark nothing
+// held grows and pid 700 is not read again. before has the harness set up before the guard runs.
+func heldSleeper(t *testing.T, classify Classifier, before func(h *harness)) (*fakePod, *harness) {
+	t.Helper()
+	pod := newFakePod(t)
+	pod.add(agent(2*gib), fakeProcess{pid: 700, ppid: 100, args: []string{"python3", "pool.py"}, anon: 900 * mib})
+	pod.setAnon(3200 * mib)
+	h := newHarness(t, pod, classify)
+	if before != nil {
+		before(h)
+	}
+	h.run()
+	pod.setAnon(3300 * mib)
+	h.tick()
+	return pod, h
+}
+
+// The reading at the mark reads the identities of the processes started since the band's last
+// reading the highest pid first, the newest, within half an interval of the reading by the
+// guard's clock, one at least, and stops after the read in hand once that has passed: at f949e5ad
+// two latepool runs put the first kill 196.3 and 128.2 ms after the reading at the mark while it read
+// every new process's identity (INFRA-3531). Pids 810, of 300 MiB, and 811, of 100 MiB, start as
+// the reading reaches the mark, and each identity read takes 60 ms: the guard reads pid 811's
+// alone and ends it, passing over the larger, older pid 810.
+func TestMemoryGuardReadsTheIdentityOfTheNewestProcessStartedSinceTheBandWithinTheBudget(t *testing.T) {
+	var identities func() []int
+	pod, h := heldSleeper(t, protect("tester", 100), func(h *harness) { identities = slowIdentities(h, 60*time.Millisecond) })
+	pod.add(
+		fakeProcess{pid: 810, ppid: 100, args: []string{"python3", "big.py"}, anon: 300 * mib},
+		fakeProcess{pid: 811, ppid: 100, args: []string{"python3", "small.py"}, anon: 100 * mib},
+	)
+	pod.setAnon(3500 * mib)
+	h.tick()
+	requireMarkKill(h, 811, 100*mib)
+	if got, want := identities(), []int{811}; !slices.Equal(got, want) {
+		t.Fatalf("at the mark the guard read the identities of %v, want %v", got, want)
+	}
+}
+
+// A process started since the band's last reading whose parent is neither one of the band's
+// processes nor a new process the reading at the mark read is left out of the decision there, since
+// the classifier cannot place it: neither ended nor read. Pid 820 starts under the agent and forks
+// pid 821, of 400 MiB, as the reading reaches the mark, and each identity read takes 60 ms: the
+// guard reads pid 821's alone, cannot place it, reads no smaps before the kill, and ends pid 700,
+// the largest held process. The assessment of that reading after the kill scans every process and
+// places pid 821. Pid 700 exits at its kill and frees nothing; at the next reading, which has not
+// fallen, pid 821 has grown 64 MiB since the kill, and with pid 820 holds more than the floor, so
+// the guard ends it there.
+func TestMemoryGuardLeavesOutAtTheMarkAProcessWhoseNewParentItDidNotRead(t *testing.T) {
+	var identities func() []int
+	var reads func() []smapsReadAt
+	pod, h := heldSleeper(t, protect("tester", 100), func(h *harness) {
+		reads = recordReads(h)
+		identities = slowIdentities(h, 60*time.Millisecond)
+	})
+	h.signal.onKill = exitFreeing(pod, 0)
+	inTheBand := len(reads())
+	child := fakeProcess{pid: 821, ppid: 820, args: []string{"python3", "work.py"}, anon: 400 * mib}
+	pod.add(fakeProcess{pid: 820, ppid: 100, args: []string{"bash", "-c", "work"}, anon: 50 * mib}, child)
+	pod.setAnon(3500 * mib)
+	h.tick()
+	requireMarkKill(h, 700, 900*mib)
+	if got, want := identities(), []int{821}; !slices.Equal(got, want) {
+		t.Fatalf("at the mark the guard read the identities of %v, want %v", got, want)
+	}
+	if got := readBeforeTheKill(reads()[inTheBand:]); len(got) != 0 {
+		t.Fatalf("before the kill the guard read the smaps of %v, want none", got)
+	}
+
+	pod.resize(&child, child.anon+64*mib)
+	h.tick()
+	h.requireKilled(700, 821)
+	ended := fmt.Sprintf("ended pid=821 role=tester size=%d reading=%d ", 464*mib, 3500*mib)
+	if got := h.log.with(ended); len(got) != 1 {
+		t.Fatalf("the ended lines are %q, want one starting %q", h.log.with("ended"), linePrefix+ended)
+	}
+	if stopped := h.log.with("stopped"); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up: %q", stopped)
+	}
+}
+
+// The reading at the mark takes the band's processes as the band read them and reads no stat of
+// them: a pid another process took within one interval is improbable, and the kill reads its
+// target's start time before it signals it. Pid 710, a held process of 100 MiB, reads another start
+// time at the mark, as a process that took its pid would; the guard does not take it for a process
+// started since, reads no identity, and ends pid 700, the largest held process.
+func TestMemoryGuardTakesTheBandsProcessesAsTheBandReadThemAtTheMark(t *testing.T) {
+	var identities func() []int
+	pod, h := heldSleeper(t, protect("tester", 100), func(h *harness) { identities = slowIdentities(h, 0) })
+	// Pid 710 is held too: it starts before a third reading in the band.
+	pod.add(fakeProcess{pid: 710, ppid: 100, args: []string{"python3", "idle.py"}, anon: 100 * mib})
+	pod.setAnon(3300 * mib)
+	h.tick()
+	pod.restart(710, 99999)
+	pod.setAnon(3500 * mib)
+	h.tick()
+	requireMarkKill(h, 700, 900*mib)
+	if got := identities(); len(got) != 0 {
+		t.Fatalf("at the mark the guard read the identities of %v, want none", got)
+	}
+}
+
 // Growth over the window comes before a process started since the reading before (INFRA-3531 R1
 // of spec version 27): where a held process grew by the band's reads, the guard ends it on the held
 // reads, with no smaps read and no process looked for before the kill, though a process larger than
