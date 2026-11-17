@@ -1,23 +1,27 @@
 // Package listenerwire holds the bodies of the Envoy listener's HTTP API that its Go clients send
-// and read: the requests of POST /v1/messages/send, POST /v1/messages/publish and POST
-// /v1/interests/unsubscribe, the answers of those and of GET /v1/sessions, GET
-// /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET routes of
-// /v1/legion/agents and DELETE /v1/sessions/<session_id>, and the envelope and the states they
-// carry. The listener (cmd/listener) writes and reads these types, and so do its Go clients in
-// production: the broker's wake (internal/broker/wake), Dispatch's client
-// (internal/dispatch/envoy), and the Legion daemon's publisher and controller probe, which is
-// another module and so needs this package public.
+// and read: the requests of POST /v1/interests/subscribe, POST /v1/messages/send, POST
+// /v1/messages/publish and POST /v1/interests/unsubscribe, the answers of those and of GET
+// /v1/sessions, GET /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET
+// routes of /v1/legion/agents and DELETE /v1/sessions/<session_id>, and the envelope and the
+// states they carry. The listener (cmd/listener) writes and reads these types, and so does each of
+// its Go clients: the broker's wake (internal/broker/wake), Dispatch's client
+// (internal/dispatch/envoy), the load-test harness's listener client (loadtest/listenerclient),
+// the refill rig (internal/testnats/cmd/refillrig), and the Legion daemon's publisher and
+// controller probe, which is another module and so needs this package public.
 //
 // It imports the standard library alone (deps_test.go), so a client links nothing of the server
-// by reading its bodies, and clients_test.go holds those four clients to these types: one that
-// encodes or decodes a body of its own, even one field of one, fails it. The load-test harness
-// (loadtest) and the refill rig (internal/testnats/cmd/refillrig) also call the listener, with
-// bodies of their own, including the subscribe body this package does not declare; the test
-// does not read them.
+// by reading its bodies, and clients_test.go holds each of those clients to these types: one that
+// encodes or decodes a body of its own, even one field of one, fails it. The load-test harness's
+// main package also calls Dispatch, NATS and Cloud SQL, so the test reads its listener client
+// instead, and holds the main package to naming no listener route of its own.
 //
-// A request's fields are all omitempty. The listener only decodes a request, and reads an absent
-// field as its zero value, so each client sends the fields it sets and no others. An answer's
-// fields carry the tags the listener has always written them with.
+// A request's fields are omitempty but where the listener reads an absent field differently from
+// an empty one: the listener only decodes a request, so each client sends the fields it sets. A
+// field whose absence the listener reads differently is a pointer, written whenever the client
+// sets it (MessageBody.Payload, PublishRequest.Keep, SubscribeDelivery.Resume and
+// SubscribeResume.Seq), or carries no omitempty, so an empty value arrives as the empty value it is
+// (SubscribeRequest.Topics and Capabilities). An answer's fields carry the tags the listener has
+// always written them with.
 package listenerwire
 
 import "encoding/json"
@@ -321,6 +325,103 @@ type Interest struct {
 type InterestRow struct {
 	Interest
 	LastSeen int64 `json:"last_seen,omitempty"`
+}
+
+// SubscribeRequest is the body of POST /v1/interests/subscribe: a session's registration, which
+// each agent session's envoy extension sends when it subscribes and at every heartbeat. The
+// listener builds the session's entry fresh from it, so a field a registration leaves out is
+// written empty, clearing what a previous registration stored.
+type SubscribeRequest struct {
+	SessionID string `json:"session_id,omitempty"`
+	Dir       string `json:"dir,omitempty"`
+	// Topics are the topics the session follows. Absent and empty decode to different values, nil
+	// and the empty list, so the field is written whatever it holds and the listener reads the
+	// value the client had.
+	Topics []string `json:"topics"`
+	// Port is the session's own HTTP serving port, which the listener parses only to refuse a
+	// registration that names one above 0: it delivers nothing to a port, and a session receives
+	// from its own consumer and nothing else.
+	Port  int    `json:"port,omitempty"`
+	Title string `json:"title,omitempty"`
+	// Capabilities are what the session advertises (the delivery modes it takes among them),
+	// written whatever they hold for the reason Topics are.
+	Capabilities   []string `json:"capabilities"`
+	SelfSubscribed bool     `json:"self_subscribed,omitempty"`
+	// Host is envoy-client's machineID() (ENVOY_MACHINE_ID, then an agent box's AGENTBOX_HOST,
+	// falling back to the kernel hostname): where the session process runs, as opposed to the
+	// machine id the listener records, which is its own. No delivery reads it. Empty for a
+	// session whose plugin predates this field.
+	Host string `json:"host,omitempty"`
+	// TmuxPlace is where the session's process sits in tmux, as its own client read it from the
+	// tmux server it is under (packages/envoy-client's readTmuxPlace). No delivery reads it.
+	// Absent for a session in no pane, and for one whose plugin predates the field.
+	TmuxPlace *TmuxPlace `json:"tmux_place,omitempty"`
+	// Plugin and PluginVersion name the plugin the session registers through (its npm package
+	// name) and that plugin's build. Empty for a session whose plugin predates the fields.
+	Plugin        string `json:"plugin,omitempty"`
+	PluginVersion string `json:"plugin_version,omitempty"`
+	// ClientInstanceID is the id the client instance mints at its own start (one Oh My Pi Envoy
+	// extension instance, one Claude Code channel-server process) and sends on every
+	// registration, so a soft claim naming a predecessor session can tell that predecessor's own
+	// instance from another instance's live session. Empty for a client whose plugin predates the
+	// field.
+	ClientInstanceID string `json:"client_instance_id,omitempty"`
+	// Delivery asks for consumer delivery. A registration that carries none, an older plugin's,
+	// is refused.
+	Delivery *SubscribeDelivery `json:"delivery,omitempty"`
+}
+
+// SubscribeDelivery is a registration's delivery object. Consumer asks the listener for the
+// session's consumer, relayed on the session's relay subject; Epoch is the plugin's random string
+// for its current NATS connection; and Resume, when the session's consumer is missing, seeds the
+// new one from the plugin's persisted resume point.
+type SubscribeDelivery struct {
+	Consumer bool             `json:"consumer,omitempty"`
+	Epoch    string           `json:"epoch,omitempty"`
+	Resume   *SubscribeResume `json:"resume,omitempty"`
+}
+
+// SubscribeResume is a session's resume point: the stream's identity and a sequence below which
+// the plugin holds nothing unwritten, so a consumer created from it starts at Seq+1 when StreamID
+// is still the stream's. A Seq of 0 is a position too: the plugin holds nothing of the stream, and
+// its consumer starts at sequence 1. Seq is nil when the body carries no seq, which names no
+// position, so the consumer starts at the first message the stream holds on the session's own
+// agent subject, and at the stream's end only when it holds none.
+type SubscribeResume struct {
+	StreamID string  `json:"stream_id,omitempty"`
+	Seq      *uint64 `json:"seq,omitempty"`
+}
+
+// SubscribeResponse is the answer to a registration the listener stored: the interest record it
+// wrote, the warnings naming each topic it left out, and the session's delivery.
+type SubscribeResponse struct {
+	Interest
+	Warnings []string `json:"warnings,omitempty"`
+	// Delivery is the session's delivery, present whenever the registration carried a delivery
+	// object.
+	Delivery *DeliveryAnswer `json:"delivery,omitempty"`
+}
+
+// DeliveryAnswer is the delivery field of a registration's answer. Every registration the
+// listener answers at all carries one: the session's consumer is held and relayed, which is the
+// only way a message reaches a session.
+type DeliveryAnswer struct {
+	// Mode is consumer, the one mode a registration is answered.
+	Mode string `json:"mode"`
+	// Subject is the session's relay subject.
+	Subject string `json:"subject,omitempty"`
+	// StreamID is the stream's identity: the one a relay frame carries and the plugin's resume
+	// point names.
+	StreamID string `json:"stream_id,omitempty"`
+	// Gap is true when this registration created the consumer at a start below the stream's first
+	// sequence: messages it would have delivered are gone.
+	Gap *bool `json:"gap,omitempty"`
+	// ConsumerStart is the stream sequence the session's consumer starts at, which the plugin
+	// keeps as the floor of its resume point: a session that has received nothing holds no point
+	// of its own, and with this floor it still asks to resume from where its consumer began
+	// rather than from the stream's end, where every message stored while it was away would be
+	// lost to it.
+	ConsumerStart uint64 `json:"consumer_start,omitempty"`
 }
 
 // UnsubscribeRequest is the body of POST /v1/interests/unsubscribe: topics a session hands back.

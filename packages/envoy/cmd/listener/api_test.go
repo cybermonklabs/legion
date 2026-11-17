@@ -2469,7 +2469,7 @@ func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *t
 // each body and written whole, so nothing carries the stale pane forward onto the layout.
 func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing.T) {
 	_, sessions := setupSessionsTest(t, nil, nil)
-	var placed subscribeBody
+	var placed listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{
 		"session_id":"ses_moved",
 		"tmux_place":{
@@ -2484,7 +2484,7 @@ func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing
 		t.Fatalf("store the registration that names a pane: %v", err)
 	}
 
-	var left subscribeBody
+	var left listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{"session_id":"ses_moved"}`), &left); err != nil {
 		t.Fatalf("decode the registration that names none: %v", err)
 	}
@@ -3722,8 +3722,8 @@ type interestSubscribeAnswer struct {
 // a 200, and returns the answer.
 func subscribeInterest(t *testing.T, mux *http.ServeMux, topics []string) interestSubscribeAnswer {
 	t.Helper()
-	body, err := json.Marshal(subscribeBody{SessionID: interestSession, Topics: topics, SelfSubscribed: true,
-		Delivery: &subscribeDelivery{Consumer: true, Epoch: "e"}})
+	body, err := json.Marshal(listenerwire.SubscribeRequest{SessionID: interestSession, Topics: topics, SelfSubscribed: true,
+		Delivery: &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"}})
 	if err != nil {
 		t.Fatalf("marshal subscribe: %v", err)
 	}

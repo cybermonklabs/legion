@@ -38,7 +38,7 @@ type SessionEntry struct {
 	// stored subscription names (store's mergeForUpsert). No delivery reads Host: a message
 	// reaches the session from its own consumer, relayed by the listener the entry names,
 	// wherever its process runs. Host is empty for a session whose plugin predates this field
-	// (subscribeBody had no "host"), and HostOrMachine falls back to MachineID so every display
+	// (its registration had no "host"), and HostOrMachine falls back to MachineID so every display
 	// caller sees a populated value.
 	Host string `json:"host,omitempty"`
 	// TmuxPlace is where the session's process sits in tmux, as its own client read it and sent

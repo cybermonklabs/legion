@@ -331,13 +331,13 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 		t.Fatalf("flush the stand-in's subscription: %v", err)
 	}
 
-	registration, err := json.Marshal(subscribeBody{
+	registration, err := json.Marshal(listenerwire.SubscribeRequest{
 		SessionID:      serverChangeSession,
 		Dir:            "/server-change",
 		Topics:         []string{agentSubject, serverChangeTeam, serverChangeCaptured},
 		Title:          "server-change stand-in",
 		SelfSubscribed: true,
-		Delivery:       &subscribeDelivery{Consumer: true, Epoch: "epoch-1"},
+		Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "epoch-1"},
 	})
 	if err != nil {
 		t.Fatalf("marshal the stand-in's registration: %v", err)

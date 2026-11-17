@@ -59,14 +59,6 @@ func lastSeenOf(sessions *session.SessionRegistry, sessionID string, entry sessi
 	return sessions.LastSeen(sessionID)
 }
 
-type subscribeResponse struct {
-	store.Interest
-	Warnings []string `json:"warnings,omitempty"`
-	// Delivery is the session's delivery (deliveryAnswer), present whenever the registration
-	// carried a delivery object.
-	Delivery *deliveryAnswer `json:"delivery,omitempty"`
-}
-
 const unwiredRepositoryWarningTimeout = 750 * time.Millisecond
 
 // hasCapability reports whether capabilities includes value. The Dispatch
@@ -2484,8 +2476,7 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 func (d *listenerDeps) registerSession(
 	ctx, registerCtx context.Context,
 	machineID string,
-	body subscribeBody,
-	planned []string,
+	body listenerwire.SubscribeRequest, planned []string,
 	logger *logging.Logger,
 ) (registeredSession, *deliveryRefusal, error) {
 	// The gap any pass of this registration found, which the answer below carries whichever pass
@@ -2627,8 +2618,7 @@ func (d *listenerDeps) registerSession(
 func (d *listenerDeps) registerPass(
 	ctx, registerCtx context.Context,
 	machineID string,
-	body subscribeBody,
-	plan store.InterestPlan,
+	body listenerwire.SubscribeRequest, plan store.InterestPlan,
 ) (registeredSession, bool, *deliveryRefusal, error) {
 	outcome, refusal, unlock := d.consumers.register(registerCtx, body, plan.Topics)
 	defer unlock()
@@ -2747,7 +2737,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		var body subscribeBody
+		var body listenerwire.SubscribeRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2973,7 +2963,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				warnings = append(warnings, warning)
 			}
 		}
-		writeJSON(w, http.StatusOK, subscribeResponse{Interest: item, Warnings: warnings, Delivery: delivery.answer})
+		writeJSON(w, http.StatusOK, listenerwire.SubscribeResponse{Interest: item, Warnings: warnings, Delivery: delivery.answer})
 	}
 }
 
