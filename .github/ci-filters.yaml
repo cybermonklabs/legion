@@ -133,6 +133,8 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/testnats/*'
   # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
   - 'packages/envoy/internal/testpg/testdb/*'
+  # testnats's Gate reserves its port with internal/testport.
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
   # The reasons the listener refuses a publish to a role no session holds, which the
@@ -448,6 +450,7 @@ plugin_pack:
   - 'packages/envoy/daemonpermissions/*'
   - 'packages/envoy/dispatchbody/*'
   - 'packages/envoy/internal/testnats/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
@@ -1649,6 +1652,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
   - 'packages/envoy/internal/testpg/testdb/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   # gcp/dispatch.go's outsideOrigin check calls weborigin.Parse, so every build of the
   # component compiles that package.
@@ -1783,6 +1787,7 @@ dispatch_memory:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   # The step takes the memory tag's test list from this script at run time.
   - '.github/scripts/go-tagged-tests.sh'
@@ -1816,6 +1821,7 @@ dispatch_multiprocess:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   # The step takes the multiprocess tag's test list from this script at run time.
   - '.github/scripts/go-tagged-tests.sh'
@@ -1825,6 +1831,7 @@ dispatch_multiprocess:
   - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
   - '!packages/envoy/cmd/dispatch/history_memory_test.go'
   - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
   - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
   - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
   - '!packages/envoy/cmd/dispatch/memory_test.go'
@@ -1849,6 +1856,7 @@ dispatch_two_builds_go:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -1914,6 +1922,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/cmd/dispatch/history_memory_test.go'
   - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
   - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
   - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
   - '!packages/envoy/cmd/dispatch/memory_test.go'
@@ -1935,6 +1944,7 @@ dispatch_two_builds:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -2003,6 +2013,7 @@ dispatch_two_builds:
   - '!packages/envoy/cmd/dispatch/history_memory_test.go'
   - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/memory_live_heap_test.go'
   - '!packages/envoy/cmd/dispatch/memory_profile_test.go'
   - '!packages/envoy/cmd/dispatch/memory_shapes_test.go'
   - '!packages/envoy/cmd/dispatch/memory_test.go'
@@ -2101,6 +2112,7 @@ listener_server_change:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
   - 'packages/envoy/internal/testpg/testdb/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/migrationid/*'
   # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
@@ -2185,6 +2197,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/serverwait/*'
   # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
   - 'packages/envoy/internal/testpg/testdb/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/migrationid/*'
   # The step takes the multiprocess tag's test list from this script at run time.
@@ -2325,6 +2338,7 @@ envoy_smoke:
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/store/**/*_test.go'
   - '!packages/envoy/internal/testnats/**/*_test.go'
+  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'
@@ -2634,6 +2648,7 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/files/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
   - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
   - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
   - '!packages/envoy/internal/dispatch/model/**/*_test.go'
@@ -2676,6 +2691,7 @@ envoy_go_race:
   - '!packages/envoy/internal/smoke/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/testnats/**/*_test.go'
+  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'
@@ -2760,6 +2776,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/files/filestest/*'
   - 'packages/envoy/internal/dispatch/githubapp/*'
   - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+  - 'packages/envoy/internal/dispatch/horizontest/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
   - 'packages/envoy/internal/dispatch/model/*'
@@ -2807,6 +2824,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/session/*'
   - 'packages/envoy/internal/store/*'
   - 'packages/envoy/internal/testpg/testdb/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
@@ -2852,6 +2870,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/dispatch/events/**/*_test.go'
   - '!packages/envoy/internal/dispatch/files/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
   - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
   - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
   - '!packages/envoy/internal/dispatch/model/**/*_test.go'
@@ -2880,6 +2899,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/serverwait/**/*_test.go'
   - '!packages/envoy/internal/session/**/*_test.go'
   - '!packages/envoy/internal/store/**/*_test.go'
+  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'

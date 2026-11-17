@@ -8,15 +8,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// seedUnownedIssueProject replaces project key's issues with issues, written directly: the P0
-// rule reads issues.priority, status, claimed_by and route and nothing else. deliveryTestPool's
-// database is the shared one the package's tests migrate, not a clone per test, so the test owns
-// only the projects it names and clears their issues first.
+// seedUnownedIssueProject writes project key and its issues, directly: the P0 rule reads
+// issues.priority, status, claimed_by and route and nothing else.
 func seedUnownedIssueProject(t *testing.T, ctx context.Context, pool *store.Pool, key string, issues []unownedSeed) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `delete from issues where project_key = $1`, key); err != nil {
-		t.Fatalf("clear %s issues: %v", key, err)
-	}
 	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict do nothing`, key); err != nil {
 		t.Fatalf("seed project %s: %v", key, err)
 	}
@@ -61,17 +56,14 @@ func TestListUnownedP0(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListUnownedP0: %v", err)
 	}
-	// Other packages' tests can leave issues in the shared database; the rule is checked on the
-	// projects this test owns, which the query returns in project-then-number order like any other.
-	ours := slices.DeleteFunc(slices.Clone(unowned), func(issue UnownedIssue) bool {
-		return !slices.Contains([]string{"ACME-2", "ACME-103", "ACME-104", "ACME-105", "ACME-106", "ACME-107", "ACMEB-1"}, issue.Key)
-	})
+	// The test's database is its own (deliveryTestPool), so every issue the rule answers is one
+	// this test wrote, in project-then-number order.
 	want := []UnownedIssue{
 		{Key: "ACME-2", Title: "an earlier unowned P0"},
 		{Key: "ACME-103", Title: "Production deploy gate flakes"},
 		{Key: "ACMEB-1", Title: "another project's unowned P0"},
 	}
-	if !slices.Equal(ours, want) {
-		t.Fatalf("ListUnownedP0 = %+v, want %+v (open, P0, neither claimed nor routed; project then number)", ours, want)
+	if !slices.Equal(unowned, want) {
+		t.Fatalf("ListUnownedP0 = %+v, want %+v (open, P0, neither claimed nor routed; project then number)", unowned, want)
 	}
 }

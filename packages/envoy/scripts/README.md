@@ -312,6 +312,73 @@ for the stack's start under a short one. The stack runs in a session of its own 
 is stopped as one process group, so a stop during the build — the script's exit, a
 wait that ran out, Ctrl-C — ends that build with the stack.
 
+## backend-count.sh
+
+Counts, for each test it names, the runs that passed on each store backend: the test's
+own `aws` and `gcp` subtests (`onEachStore`, `cmd/agent-secrets/secret_kind_test.go`),
+so a store or use change cannot pass on one backend alone.
+
+```bash
+packages/envoy/scripts/backend-count.sh TEST...
+```
+
+It runs only the named tests, `go test -json -count=1 -timeout 5m -run '^(TEST|…)$'
+./cmd/agent-secrets/`, and prints `TEST aws=N gcp=M` for each, then `go_test_exit=E`. It
+exits 1 when no test is named, when a name is not a Go test name, when a named test has no
+passing run on either backend, or when go test failed. It counts only the tests it names,
+so the `aws` and `gcp` subtests of other tests cannot stand in for a new test's.
+`GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
+`GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
+`GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
+in its time budget; the job runs it as "Count the store-form rows on each backend".
+
+## database-skips.sh
+
+Counts the tests of the broker's packages (`internal/broker/...`) that skipped, and fails on
+any: every database broker suite skips, which go test counts as a pass, when
+`BROKER_TEST_DATABASE_URL` is unset, and a `t.Skip` left in one skips it with the variable
+set.
+
+```bash
+BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
+packages/envoy/scripts/database-skips.sh --report REPORT.json
+```
+
+With no argument it runs `go test -json -count=1 -timeout 15m ./internal/broker/...` and
+reads that report; `--report` reads a `go test -json` report instead and runs nothing. It
+prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a run of its own,
+`go_test_exit=E`. A report that is missing, empty or holds no broker test prints
+`database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
+broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
+script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT`
+replaces the 15-minute `-timeout`, which bounds each package's test binary and not the run:
+the packages run several at a time, so one that starts late ends later. `ci.yaml`'s
+`envoy-go` job runs it as "Count the database broker suites' skips", with a step limit of
+its own (`timeout-minutes: 25`) that its time budget counts.
+
+## aws-moto-check.sh
+
+Runs the built `agent-secrets` against moto's AWS, with no AWS account:
+`cmd/agent-secrets/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
+`moto`), which creates IAM users `writer` and `nobody` in moto, writes them as profiles,
+turns moto's IAM checks on, and runs the secret forms under each source of the AWS SDK's
+own order: access keys in the environment, which outrank `AWS_PROFILE`; `AWS_PROFILE`;
+`AWS_DEFAULT_PROFILE`; and the rest of the default chain (a container credentials
+endpoint the test serves), reading each form's `using` line. A profile variable that names
+a profile the AWS config does not hold stops the command before that endpoint signs in.
+
+```bash
+packages/envoy/scripts/aws-moto-check.sh [BINARY]
+```
+
+It starts `moto[server]==5.2.5` through `uvx` on a free loopback port under the account
+the tests' key ARN names, runs the test with `AGENT_SECRETS_BINARY` set to BINARY (empty:
+the test builds the CLI from this tree), stops moto, and exits with go test's status; the
+test fails, and never skips, without `AGENT_SECRETS_MOTO_URL`. A release binary as BINARY
+is the negative control. moto ignores a policy's conditions and refuses with an XML
+`AccessDenied` rather than `AccessDeniedException`, so this proves no IAM policy, and
+the refusal's text is proved in process only. It needs uv, curl, python3 and go.
+
 ## airlock-lean-axioms.sh
 
 Holds the airlock model's theorems to the axioms Lean's own kernel admits, and is the

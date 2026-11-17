@@ -27,8 +27,9 @@ body: |-
   parameter or a limit refused) says nothing was stored; any other failure, and any create the SDK
   tried more than once, says the store may hold the secret, with its value, or not, and names
   `agent-secrets secret show NAME`. Every command the create prints for settling what it left signs
-  in as the create did: `--profile` on AWS, the Google sign-in's `GOOGLE_APPLICATION_CREDENTIALS` or
-  `CLOUDSDK_CORE_ACCOUNT`, and for gcloud the matching `CLOUDSDK_CORE_ACCOUNT` or
-  `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, followed by the identity's name. `secret create` and
-  `secret set` also print one line when the value starts or ends with a space, which they store as
-  given, never trimmed; the line names the secret and never the value.
+  in as the create did: the `AWS_PROFILE` or `AWS_DEFAULT_PROFILE` that chose the AWS sign-in,
+  the Google sign-in's `GOOGLE_APPLICATION_CREDENTIALS` or `CLOUDSDK_CORE_ACCOUNT`, and for gcloud
+  the matching `CLOUDSDK_CORE_ACCOUNT` or `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, followed by the
+  identity's name. `secret create` and `secret set` also print one line when the value starts or
+  ends with a space, which they store as given, never trimmed; the line names the secret and never
+  the value.

@@ -1631,9 +1631,9 @@ current is envoy-go-checks'. delivery's and the bus's NATS runs in the test proc
 (internal/testnats), so no job here needs a container runtime of its own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache and
-kvwatch share this runner. The Dispatch store's tests (store_test.go:28, storetest.go:44) and
-delivery's (internal/dispatch/delivery/intake_test.go:39-41) read DISPATCH_TEST_DATABASE_URL
-and skip without it, and cmd/listener/dispatch_resolution_test.go:158 gets its database
+kvwatch share this runner. The Dispatch store's tests (store_test.go:28) and delivery's take
+their databases from storetest.Open (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL
+and skips without it, and cmd/listener/dispatch_resolution_test.go:158 gets its database
 through internal/testpg, so the job carries the lane's Postgres service; the registry store
 itself is the NATS KV view and needs none.
 
