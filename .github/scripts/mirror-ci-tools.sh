@@ -172,23 +172,23 @@ origin="$origin_scheme://$origin_host"
 # `pull`. The empty first argument takes the helper's own per-attempt bound.
 # Every request below carries this token, because the same run writes to the package it reads,
 # and each reads it on standard input from printf, a shell builtin, so it is in no process's
-# command line.
+# command line. None follows a redirect, so neither the token nor the credential it is minted
+# with reaches an origin a redirect names.
 if ! token=$(ci_tools_ghcr_token "" pull,push "$GITHUB_ACTOR:$GITHUB_TOKEN"); then
   error "the registry would not answer a pull,push token request for $registry ($token), so this run reads nothing and fills nothing."
   exit 1
 fi
 
-# registry_head <url> [curl argument…]: the HTTP status of one HEAD of the package, with that
-# answer's headers left in $headers. A registry may answer a read of a blob with a redirect to
-# the store that holds it, so curl follows it and this reads the status of the last hop. A
-# request the service did not answer at all reads 000, which is no status this script admits, so
-# it is refused like any other.
+# registry_head <url> [curl argument…]: the HTTP status of one HEAD of the package with the push
+# token, its answer's headers left in $headers: the helper's ci_tools_registry_head. A registry
+# may answer a read of a blob with a redirect to the store that holds it, and the helper follows
+# it in a request handed no token, so this reads the status and the headers of the last hop and
+# the token reaches the package alone. A request the service did not answer at all reads 000,
+# which is no status this script admits, so it is refused like any other.
 registry_head() {
-  local url=$1 status
+  local url=$1
   shift
-  status=$(printf 'Authorization: Bearer %s' "$token" |
-    curl -sSL -o /dev/null -D "$headers" -w '%{http_code}' -I -H @- "$@" "$url") || status=000
-  printf '%s\n' "$status"
+  ci_tools_registry_head "$token" "$headers" "$url" "$@"
 }
 
 # header_value <name>: that header of the answer $headers holds, empty where it holds none.

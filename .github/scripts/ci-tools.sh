@@ -505,9 +505,11 @@ ci_tools__tempfile() {
   mktemp "$directory/ci-tools-${row//[^A-Za-z0-9._-]/-}.XXXXXX"
 }
 
-# ci_tools_curl <file> <max_time> <url> [curl argument…]: the one fetch this file makes, and the
-# one .github/scripts/mirror-ci-tools.sh makes for the asset it copies, so the bytes a copy is
-# filled with are fetched under the ladder an install reads them under.
+# ci_tools_curl <file> <max_time> <url> [curl argument…]: the one fetch this file makes of a
+# request that carries no credential, and the one .github/scripts/mirror-ci-tools.sh makes for
+# the asset it copies, so the bytes a copy is filled with are fetched under the ladder an install
+# reads them under. A request that carries one goes through ci_tools__curl_held below, this same
+# ladder less `-L`.
 # `--fail` is what keeps a 504's body out of <file>, `--retry 7 --retry-all-errors` rides out a
 # flap of the service, and `--max-time` bounds one attempt, so a hung attempt becomes the exit
 # code that sends the caller to the second source. Exit 23 is the one exit that sends it
@@ -545,6 +547,37 @@ ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
   curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
+}
+
+# ci_tools__curl_held <file> <max_time> <url> [curl argument…]: ci_tools_curl for a request that
+# carries a credential: the same ladder less `-L`, so curl follows no redirect and the credential
+# reaches the origin <url> names and no origin a `Location` names. curl's own rule drops an
+# `Authorization` header and a `-u` password on a redirect to another host, port or scheme, but a
+# fetch that leans on it still hands the other origin a request, takes that origin's answer as
+# the package's, and is only as safe as the curl a runner has.
+# It writes `<status> <redirect address>` on standard output, the address empty where the answer
+# is no redirect. `--fail` makes a 4xx or 5xx curl exit 22 as before, so exit 0 is a 2xx or a 3xx,
+# and a 3xx is one answer, which no `--retry` repeats. The caller reads that line: the token
+# request refuses a redirect, and the blob request follows it in a request handed no credential.
+ci_tools__curl_held() {
+  local file=$1 max_time=$2 url=$3
+  shift 3
+  curl -fsS --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" \
+    -w '%{http_code} %{redirect_url}' "$@" "$url"
+}
+
+# ci_tools__redirect_target <address>: what a line names of the address a redirect points at, its
+# scheme and its host and port alone, since the path and the query can carry a signed grant; and
+# `no address` where the redirect named none.
+ci_tools__redirect_target() {
+  local url=$1 authority
+  if [ -z "$url" ]; then
+    printf 'no address\n'
+    return 0
+  fi
+  authority=${url#*://}
+  authority=${authority%%[/?#]*}
+  printf '%s://%s\n' "${url%%://*}" "${authority##*@}"
 }
 
 # ci_tools__curl_report <curl's exit> <the file curl was given> <what every other exit says>:
@@ -656,13 +689,16 @@ ci_tools_ghcr_token() {
     return 1
   fi
   local max_time=${1:-60} scope=${2:-pull} credential=${3:-}
-  local base path url token_file token status=0 config=''
+  local base path url token_file token answer status=0 config=''
   # A credential reaches curl in a config on standard input (`-K -`): never as an argument, where
   # every process of the runner could read it, and never spliced into the URL, where it would reach
   # a log line and the process name of a redirect. Inside the config's double quotes a backslash
   # and a double quote are escaped. The config is a here-string the shell writes before curl
   # starts, not a pipe from printf: a curl that takes no `-K -` never reads it, and a printf that
   # wrote after such a curl had exited would end a pipeline under pipefail with 141.
+  # The request follows no redirect (ci_tools__curl_held): ghcr.io answers it itself (200,
+  # measured 2026-11-17), the credential is for the package alone, and the token it answers is the
+  # bearer of every request after it, so a token another origin answered is no token of this run.
   local -a authentication=()
   if [ -n "$credential" ]; then
     authentication=(-K -)
@@ -675,14 +711,22 @@ ci_tools_ghcr_token() {
     return 1
   }
   url="$base/token?service=ghcr.io&scope=repository:$path:$scope"
-  ci_tools_curl "$token_file" "$max_time" "$url" \
-    ${authentication[@]+"${authentication[@]}"} <<<"$config" || status=$?
+  answer=$(ci_tools__curl_held "$token_file" "$max_time" "$url" \
+    ${authentication[@]+"${authentication[@]}"} <<<"$config") || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$token_file"
     ci_tools__curl_report "$status" "$token_file" \
       "the $scope token request failed (curl exit $status)"
     return
   fi
+  case $answer in
+    3*)
+      rm -f -- "$token_file"
+      printf 'the %s token request answered %s, a redirect to %s, which this run does not follow\n' \
+        "$scope" "${answer%% *}" "$(ci_tools__redirect_target "${answer#* }")"
+      return 1
+      ;;
+  esac
   token=$(ci_tools_token_of "$token_file") || token=''
   rm -f -- "$token_file"
   if [ -z "$token" ]; then
@@ -761,6 +805,45 @@ ci_tools_blob_url() {
   printf '%s/blobs/sha256:%s\n' "$registry_url" "$digest"
 }
 
+# ci_tools_registry_head <token> <headers> <url> [curl argument…]: the HTTP status of one HEAD of
+# the package, with <token> as its bearer and the answer's headers in the file <headers>. It is
+# the HEAD .github/scripts/mirror-ci-tools.sh reads a blob and a tag with, and the one the
+# tool-fallback job (.github/workflows/ci-job-tool-fallback.yaml) reads each copy with. The curl
+# arguments, an `Accept` header for a manifest, carry no credential.
+# The bearer reaches curl on standard input from printf, a shell builtin, so it is in no
+# process's command line, and it goes with the first request alone, which follows no redirect.
+# ghcr.io answers a HEAD of a blob and of a manifest itself (200, measured 2026-11-17 for every
+# ghcr-mirror row), but a registry may answer a HEAD of a blob with a redirect to the store that
+# holds it, as ghcr.io answers a GET. Such a redirect is followed in a request of its own, handed
+# no bearer, and the status printed is that of its last answer, whose headers are the ones
+# <headers> then holds. A redirect that names no address is printed as its own status, which no
+# caller reads as a copy, beside a refusal that names it. A request the service did not answer at
+# all reads 000.
+ci_tools_registry_head() {
+  if [ "$#" -lt 3 ]; then
+    ci_tools__error "ci_tools_registry_head takes a token, a headers file and a URL, and this call gave $#"
+    return 1
+  fi
+  local token=$1 headers=$2 url=$3 answer status location
+  shift 3
+  answer=$(printf 'Authorization: Bearer %s' "$token" |
+    curl -sS -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
+    answer=000
+  status=${answer%% *}
+  case $status in
+    3*)
+      location=${answer#* }
+      if [ -z "$location" ]; then
+        ci_tools__error "a HEAD of $url answered $status, a redirect that names no address"
+      else
+        status=$(curl -sS -o /dev/null -D "$headers" -w '%{http_code}' -I -L "$@" "$location") ||
+          status=000
+      fi
+      ;;
+  esac
+  printf '%s\n' "$status"
+}
+
 # ci_tools__fetch_ghcr <row> <side> <max_time> <file>: the row's blob from the copy in the
 # package the manifest's `registry:` names, read with the anonymous pull token above. The blob
 # is already the bytes the digest names, so nothing is taken out of it.
@@ -770,7 +853,7 @@ ci_tools_blob_url() {
 # returns the write error itself where this run is what could not write the token or the blob.
 ci_tools__fetch_ghcr() {
   local row=$1 max_time=$3 file=$4
-  local url token status=0
+  local url token answer location status=0
   url=$(ci_tools_blob_url "$row") || return 1
   # The token helper prints what went wrong in place of a token, and this is the caller that
   # reports it: the sentence belongs in the refusal this row's fetch builds, and its status
@@ -781,13 +864,32 @@ ci_tools__fetch_ghcr() {
     return "$status"
   fi
   # The bearer reaches curl on standard input from printf, a shell builtin, so it is in no
-  # process's command line.
-  printf 'Authorization: Bearer %s' "$token" |
-    ci_tools_curl "$file" "$max_time" "$url" -H @- || status=$?
+  # process's command line, and it goes with this one request, which follows no redirect.
+  # ghcr.io answers a blob's GET with a 307 to pkg-containers.githubusercontent.com, the store
+  # that holds it (measured 2026-11-17 for the crane and changie rows), and the address it names
+  # carries a grant of its own. So the store is read in a request of its own, handed no header,
+  # and the bearer reaches the package and no other origin.
+  answer=$(printf 'Authorization: Bearer %s' "$token" |
+    ci_tools__curl_held "$file" "$max_time" "$url" -H @-) || status=$?
   if [ "$status" -ne 0 ]; then
     ci_tools__curl_report "$status" "$file" "the blob request failed (curl exit $status)"
     return
   fi
+  case $answer in
+    3*)
+      location=${answer#* }
+      if [ -z "$location" ]; then
+        printf 'the blob request answered %s, a redirect that names no address\n' "${answer%% *}"
+        return 1
+      fi
+      ci_tools_curl "$file" "$max_time" "$location" || status=$?
+      if [ "$status" -ne 0 ]; then
+        ci_tools__curl_report "$status" "$file" \
+          "the blob request answered ${answer%% *}, a redirect to $(ci_tools__redirect_target "$location"), and that store did not serve the blob (curl exit $status)"
+        return
+      fi
+      ;;
+  esac
   return 0
 }
 

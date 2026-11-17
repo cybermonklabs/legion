@@ -1491,11 +1491,17 @@ say "git=\$(cd $d/repo && env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CON
 # whose ca_certificate is the one way the proxy's certificate reaches wget
 # (cmd/agent-secrets/airlock.go, wgetrcFor), then the header. --config would read that file in
 # place of WGETRC and lose the certificate, so the file is named as WGETRC for this one call.
+# wget follows a redirect by default and sends a startup file's header on every request, to the
+# origin a Location names too (wget 1.21.4, measured 2026-11-17), so --max-redirect=0 holds it to
+# the one request to S. -S prints that answer's status, which is what this records, and a 3xx is
+# recorded as refused. wget still reads a refused redirect's body to its end, and a chunked body
+# that never ends held it past 50 s (measured 2026-11-17), so timeout 30 bounds the call and the
+# line says when it ran out.
 say "curl=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/curl)"
 wgetrc=\$(mktemp)
 trap 'rm -f "\$wgetrc"' EXIT
 { if [ -n "\${WGETRC:-}" ]; then cat "\$WGETRC"; echo; fi; printf 'header = Authorization: Bearer %s\n' "\$AIRLOCK_DEMO_TOKEN"; } >"\$wgetrc"
-say "wget=\$(WGETRC="\$wgetrc" wget -q -O /dev/null $AIRLOCK_S_URL/wget && echo 200 || echo failed)"
+say "wget=\$({ WGETRC="\$wgetrc" timeout 30 wget -q -S --max-redirect=0 -O /dev/null $AIRLOCK_S_URL/wget 2>&1; echo "wget-exit=\$?"; } | awk '/^  HTTP\\//{s=\$2} /^wget-exit=/{e=substr(\$0, 11)} END{if (s ~ /^3/) s = s " refused: a redirect, which a request that carries a credential does not follow"; if (s == "") s = "failed"; if (e == 124) s = s " (wget stopped after 30 s)"; print s}')"
 say "node=\$(node -e 'fetch("$AIRLOCK_S_URL/node", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}).then(r => console.log(r.status)).catch(e => console.log("error", e.message))')"
 say "bun=\$(bun -e 'const r = await fetch("$AIRLOCK_S_URL/bun", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}); console.log(r.status)' 2>&1 | tail -n 1)"
 say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.request

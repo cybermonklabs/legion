@@ -20,10 +20,14 @@
 # the path the seam carries, and the two readings differ nowhere else.
 # The origin's whole state is one directory: `blobs/sha256:<digest>` is what the package holds,
 # `manifests/<tag>` is what a tag resolves to, `assets/<path>` is what the release host serves,
-# and `flags/<name>` are the three answers a case asks the origin for — `blob-head-404` for a
-# package that keeps no blob, `absolute-location` for an upload location written as a whole URL,
-# and `no-query-location` for one written with no query. It appends one line per request to
-# `requests.log`, which is what a case reads to say what the run read and wrote.
+# and `flags/<name>` are the five answers a case asks the origin for — `blob-head-404` for a
+# package that keeps no blob, `blob-head-redirect` for one that answers a HEAD of a blob with a 302
+# to the address the flag's file holds, `store` for an origin that is the store such a redirect
+# points at, which answers a HEAD of a blob it holds with no bearer asked for, as a signed address
+# asks for none, `absolute-location` for an upload location written as a whole URL, and
+# `no-query-location` for one written with no query. It appends one line per request to
+# `requests.log`, which is what a case reads to say what the run read and wrote; the store's line
+# names the Authorization header the request carried, or `none`.
 #
 # Each case builds a miniature repository under $work/<case>/repo and symlinks the real script,
 # and the fetch helper it sources, into its .github/scripts/, so the script under test is the
@@ -69,12 +73,27 @@ mkdir -p "$runner_temp" "$work/payloads" "$work/bin"
 # arguments the helper wrote, which is the bound the header above explains. It first writes those
 # arguments down, one per line, appending, into $curl_arguments, which run_mirror empties: a case
 # reads there that no argument of any call held the push credential or the push token.
+# While the file $forwarding_curl exists, it is a curl whose redirects keep every header, as
+# .github/scripts/ci-tools.test.sh's stand-in is in that mode and for the reason that file gives:
+# a call with `-L` gets `--location-trusted` too.
 real_curl=$(command -v curl)
 curl_arguments="$work/curl-arguments"
+forwarding_curl="$work/forwarding-curl"
 cat > "$work/bin/curl" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$@" >> "$curl_arguments"
-exec "$real_curl" "\$@" --retry-max-time 1
+forward=()
+if [ -e "$forwarding_curl" ]; then
+  for argument in "\$@"; do
+    case \$argument in
+      --location | -[!-]*L*)
+        forward=(--location-trusted)
+        break
+        ;;
+    esac
+  done
+fi
+exec "$real_curl" "\$@" --retry-max-time 1 \${forward[@]+"\${forward[@]}"}
 SH
 chmod 0755 "$work/bin/curl"
 
@@ -214,6 +233,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self):
         path, _, _ = self.path.partition("?")
         _, path = registry_path(path)
+        if flag("store"):
+            self.record(f"HEAD store {path} {self.headers.get('Authorization') or 'none'}")
+            blob = BLOB.match(path)
+            file = os.path.join(state, "blobs", blob.group("digest")) if blob else ""
+            if not file or not os.path.isfile(file):
+                self.answer_head(404, 0)
+                return
+            self.answer_head(200, os.path.getsize(file))
+            return
         if not self.bearer("HEAD", path):
             self.answer_head(401, 0)
             return
@@ -221,6 +249,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if blob:
             digest = blob.group("digest")
             self.record(f"HEAD blob {digest}")
+            redirect = os.path.join(state, "flags", "blob-head-redirect")
+            if os.path.isfile(redirect):
+                with open(redirect) as handle:
+                    location = handle.read().strip()
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             file = os.path.join(state, "blobs", digest)
             if flag("blob-head-404") or not os.path.isfile(file):
                 self.answer_head(404, 0)
@@ -595,6 +632,31 @@ check "and both PUTs reached the package" \
 check "the package holds the blob the run pushed" \
   "$(is "$(wc -c < "$state/blobs/sha256:$WHOLE")" "$WHOLE_SIZE")"
 check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: a HEAD the package answers with a redirect to the store that holds the blob"
+# A registry may answer a HEAD of a blob with a redirect to the store that holds it. The run
+# follows it, and the push token goes with the first request alone: the store is read in a
+# request of its own, with no Authorization header, and its answer is the one the row is read by.
+# The run is under the forwarding curl, so a HEAD that left the follow to curl's `-L` hands the
+# store the push token here.
+fixture head-store whole
+cp "$work/payloads/whole.tar.gz" "$state/blobs/sha256:$WHOLE"
+: > "$state/flags/store"
+store_base=$base
+store_log=$log
+fixture head-redirect whole
+printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
+printf '%s\n' "$store_base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE" > "$state/flags/blob-head-redirect"
+: > "$forwarding_curl"
+run_mirror
+rm -f -- "$forwarding_curl"
+check "exits 0" "$(is "$status" 0)"
+check "holds the row, by the store's answer" "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)$")"
+check "the package was asked for the blob and the tag, each with the push token" \
+  "$(is "$(requests HEAD)" "HEAD blob sha256:$WHOLE HEAD manifest $WHOLE_TAG ")"
+check "the store was asked once, with no Authorization header" \
+  "$(is "$(cat "$store_log")" "HEAD store /v2/$REGISTRY_PATH/blobs/sha256:$WHOLE none")"
+check "and nothing is pushed" "$(is "$(requests PUT)$(requests POST)" "")"
 
 echo "case: an npm row"
 fixture npm-row packaged
