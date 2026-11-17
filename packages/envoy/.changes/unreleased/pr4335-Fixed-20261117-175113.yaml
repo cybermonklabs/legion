@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'Dispatch''s outbox keeps one issue''s events in order for a session that follows the issue''s topic family and is also sent the issue''s events on its own subject: an earlier event''s topic send that has not been published, because it backs off or is still in flight in the same batch, now holds back the owner''s later sends to every session subject. A failed send to a session''s own subject still holds back only that subject, and the topic family goes on.'
+time: 2026-11-17T17:51:13.389609578Z
+custom:
+    Issue: pr4335
