@@ -752,10 +752,10 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 }
 
 // TestSecretCreateAndRetagRefuseShape: `--shape` is a flag of no form of this CLI. A create that
-// names it is refused by the flag reader itself, exiting 2 with the reader's own words, before
-// the store is called and before standard input is read — the value is never asked for, so a
-// writer who typed the old flag loses nothing — and a retag that names it is refused the same
-// way, leaving the secret's tags as they were.
+// names it is refused by the flag reader itself, exiting 2 with the reader's refusal of an
+// argument that is no flag, before the store is called and before standard input is read — the
+// value is never asked for, so a writer who typed the old flag loses nothing — and a retag that
+// names it is refused the same way, leaving the secret's tags as they were.
 func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
@@ -767,7 +767,7 @@ func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
 			{"retag", "API_KEY", "--shape", "none"},
 		} {
 			_, stderr, code := runSecret(args...)
-			if code != exitUsageError || !strings.Contains(stderr, "flag provided but not defined: -shape") {
+			if code != exitUsageError || !strings.Contains(stderr, "an argument that is not a flag of this form (not printed)") {
 				t.Fatalf("%v: exit %d stderr %q; want %d naming the flag the reader does not define", args, code, stderr, exitUsageError)
 			}
 		}

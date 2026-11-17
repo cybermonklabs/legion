@@ -425,17 +425,21 @@ func newFlagSet(name string, stderr io.Writer) *flagSet {
 
 // flagSet is a form's flag set (newFlagSet): a flag.FlagSet whose Parse says a failure in words
 // of its own. Go's flag package quotes the value that did not parse ("invalid value %q for flag
-// -%s") and the argument whose syntax did not ("bad flag syntax: %s"), in the line it prints and
-// the error it answers, and a URL flag's value can carry a credential.
+// -%s"), the argument whose syntax did not ("bad flag syntax: %s") and the argument it took for a
+// flag it does not define ("flag provided but not defined: -%s"), in the line it prints and the
+// error it answers: a URL flag's value can carry a credential, and an argument that starts with
+// '-' can be a token pasted in the wrong place.
 type flagSet struct{ *flag.FlagSet }
 
 // Parse parses arguments as flag.FlagSet.Parse does, except that a failure prints and answers
 // fixed text: "invalid value for flag -<name>" (or "invalid boolean value for flag -<name>") for
 // a value the flag refused, "bad flag syntax: a flag that does not parse" for an argument whose
-// syntax does not, and Go's own words only for a flag not defined and a flag given no value,
-// which name the flag alone. The form's usage follows each on the flag set's output, and -h
-// prints the usage and answers flag.ErrHelp, as before. While Go's parse runs its output is
-// discarded, and each flag's value records whether it refused its text (parsingValue).
+// syntax does not, "an argument that is not a flag of this form (not printed)" for one that names
+// no flag the form defines, and Go's own words only for a flag given no value, which names a flag
+// the form defines. The form's usage, which lists the flags it takes, follows each on the flag
+// set's output, and -h prints the usage and answers flag.ErrHelp, as before. While Go's parse runs
+// its output is discarded, and each flag's value records whether it refused its text
+// (parsingValue).
 func (f *flagSet) Parse(arguments []string) error {
 	var refused *flag.Flag
 	f.VisitAll(func(named *flag.Flag) { named.Value = parsingValue{named.Value, named, &refused} })
@@ -454,7 +458,9 @@ func (f *flagSet) Parse(arguments []string) error {
 		err = fmt.Errorf("invalid boolean value for flag -%s", refused.Name)
 	case refused != nil:
 		err = fmt.Errorf("invalid value for flag -%s", refused.Name)
-	case !strings.HasPrefix(text, "flag provided but not defined: -") && !strings.HasPrefix(text, "flag needs an argument: -"):
+	case strings.HasPrefix(text, "flag provided but not defined: -"):
+		err = errors.New("an argument that is not a flag of this form (not printed)")
+	case !strings.HasPrefix(text, "flag needs an argument: -"):
 		err = errors.New("bad flag syntax: a flag that does not parse")
 	}
 	fmt.Fprintln(out, err)

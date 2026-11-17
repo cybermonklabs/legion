@@ -69,10 +69,11 @@ func requireSays(t *testing.T, what, text string, leaked, want []string) {
 }
 
 // TestAFlagValueThatDoesNotParseIsNotPrinted: a flag whose value does not parse is refused naming
-// the flag, and an argument whose flag syntax does not parse is refused as one, never quoting the
-// value or the argument, which Go's flag package does; both print the form's usage and exit 2, as
-// before. A flag not defined and a flag given no value are still named as Go names them, and
-// values that parse still parse (the controls).
+// the flag, and an argument whose flag syntax does not parse, or that is no flag of the form, is
+// refused as one, never quoting the value or the argument, which Go's flag package does: an
+// argument that starts with '-' can be a token pasted in the wrong place. Each prints the form's
+// usage and exits 2, as before. A flag given no value is still named as Go names it, and values
+// that parse still parse (the controls).
 func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
 	const secret = "hunter2pw-flagvalue-5e0b32"
 	for _, row := range []struct {
@@ -83,9 +84,11 @@ func TestAFlagValueThatDoesNotParseIsNotPrinted(t *testing.T) {
 		{"a duration given as the next argument", []string{"request", "GRANT_ME", "--ttl", secret}, []string{"invalid value for flag -ttl", "usage: agent-secrets request"}},
 		{"a duration given after =", []string{"request", "GRANT_ME", "--ttl=" + secret}, []string{"invalid value for flag -ttl", "usage: agent-secrets request"}},
 		{"a boolean", []string{"request", "GRANT_ME", "--json=" + secret}, []string{"invalid boolean value for flag -json", "usage: agent-secrets request"}},
+		{"a boolean of machine list", []string{"machine", "list", "--json=" + secret}, []string{"invalid boolean value for flag -json", "usage: agent-secrets machine list"}},
 		{"a number", []string{"register", "--wait=" + secret}, []string{"invalid value for flag -wait", "usage: agent-secrets register"}},
 		{"a URL flag of three dashes", []string{"sign", "---url=https://tokuser9f3:" + secret + "@broker.example/v1/x"}, []string{"bad flag syntax: a flag that does not parse", "usage: agent-secrets sign"}},
-		{"control: a flag not defined", []string{"request", "GRANT_ME", "--no-such-flag"}, []string{"flag provided but not defined: -no-such-flag"}},
+		{"an argument that is no flag", []string{"request", "GRANT_ME", "--" + secret}, []string{"an argument that is not a flag of this form (not printed)", "usage: agent-secrets request"}},
+		{"an argument that is no flag, with a value", []string{"secret", "list", "-" + secret + "=x"}, []string{"an argument that is not a flag of this form (not printed)", "usage: agent-secrets secret list"}},
 		{"control: a flag given no value", []string{"request", "GRANT_ME", "--ttl"}, []string{"flag needs an argument: -ttl"}},
 		{"control: values that parse", []string{"request", "GRANT_ME", "--ttl", "1h", "--json=true"}, []string{"AGENT_SECRETS_URL is required"}},
 	} {
@@ -133,7 +136,7 @@ func TestHelpNamesTheKeyDirVariableNotItsValue(t *testing.T) {
 		want []string
 	}{
 		{[]string{"keygen", "-h"}, 0, []string{`-out string`, `(default "$AGENT_SECRETS_KEY_DIR")`}},
-		{[]string{"keygen", "--no-such-flag"}, exitUsageError, []string{"flag provided but not defined: -no-such-flag", `(default "$AGENT_SECRETS_KEY_DIR")`}},
+		{[]string{"keygen", "--no-such-flag"}, exitUsageError, []string{"an argument that is not a flag of this form (not printed)", `(default "$AGENT_SECRETS_KEY_DIR")`}},
 		{[]string{"enroll", "-h"}, 0, []string{`(default "` + defaultPodTokenFile + `")`}},
 	} {
 		t.Run(strings.Join(row.args, " "), func(t *testing.T) {
