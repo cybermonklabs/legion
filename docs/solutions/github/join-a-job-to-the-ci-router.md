@@ -405,14 +405,18 @@ the fills live in workflows that run there.
 A new job runs on `ubuntu-24.04-arm`. The two hosted pools queue apart, and both queue. On
 2026-11-16 a job waited 456 s for an `ubuntu-24.04` runner at the median and 678 s at the 90th
 percentile. On the run that first moved this repository's jobs to arm64 (run 44069656523,
-2026-11-17), the 24 `ubuntu-24.04-arm` jobs waited 239 s at the median and 542 s at most, against
+2026-11-17), the 24 `ubuntu-24.04-arm` jobs waited 217 s at the median and 542 s at most, against
 890 s and 1428 s for the 19 `ubuntu-24.04` ones: an arm64 job created with twenty others waits its
 turn too, and the gating jobs (`lint`, `ci-ok`, `changes`, `pr-title`) started in 7 to 23 s. So
 the gain is a second pool, and gating jobs that no longer wait behind the x86_64 queue; it is not
 zero wait. A job goes on `ubuntu-24.04` only for a reason of the machine,
 and ci.yaml's "Runners" paragraph lists each one: a tool whose `.github/ci-tools.yaml` row is an
-x86_64 build alone, the pinned Oh My Pi build (linux-x64 alone), a browser, or an image built for
-linux/amd64. A job that installs a tool on arm64 needs that tool's arm64 row, and a Go cache
+x86_64 build alone, the pinned Oh My Pi build (linux-x64 alone), a browser, an image built for
+linux/amd64, or a build that must match a release built on `ubuntu-24.04`. A Go build that sets
+no `CGO_ENABLED` is that last kind: Go turns cgo on for a native build where gcc is present and
+off for a cross build, so the same command links a different pair of binaries on each runner.
+That is why envoy-go-checks, which packs the release's listener archives that way, stays on
+`ubuntu-24.04`. A job that installs a tool on arm64 needs that tool's arm64 row, and a Go cache
 family it restores needs a fill on that runner (the section above).
 
 ## The merge queue runs the router too

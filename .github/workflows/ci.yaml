@@ -112,7 +112,7 @@ name: CI
 # queue. On 2026-11-16 a job of this repository waited 456 s for an ubuntu-24.04 runner at the
 # median and 678 s at the 90th percentile, and the jobs every run waits on twice (`changes` at
 # the start, and `ci-ok` after the last job ends) paid that x86_64 wait both times. On the run
-# that first moved jobs here (run 44069656523, 2026-11-17), the 24 arm64 jobs waited 239 s at the
+# that first moved jobs here (run 44069656523, 2026-11-17), the 24 arm64 jobs waited 217 s at the
 # median and 542 s at most, the 19 x86_64 ones 890 s and 1428 s: an arm64 job that starts with
 # twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s,
 # `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s). What keeps a job on
@@ -125,6 +125,10 @@ name: CI
 #     dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
 #   * an image of this repository built for linux/amd64: worker-image, browser-image, and
 #     envoy-smoke, which also installs the x86_64 rows of the Pulumi CLI and its docker plugin;
+#   * envoy-go-checks, whose pack step builds the release's listener archives with no
+#     CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04: Go's default turns cgo on
+#     for a native build and off for a cross build, so only an x86_64 runner builds the release's
+#     own pair (ci-job-envoy-go-checks.yaml says what the arm64 runner built instead);
 #   * tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64
 #     half.
 # Every Go cache family carries the runner's architecture in its key, as the paragraph above

@@ -29,7 +29,9 @@ name: CI caches
 # matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
 # go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
 # each has a reader on each (typecheck and the envoy lanes on the first; daemon-go, plugin-pack,
-# pi-legion, the browser lane and the release builds on the second). One
+# pi-legion, envoy-go-checks, the browser lane and the release builds on the second). A leg builds
+# what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
+# arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg. One
 # Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
 # go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
 # module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is
@@ -49,7 +51,7 @@ name: CI caches
 # envoy-go-checks runs both actions. Neither is a lookup step of this workflow: each action
 # restores and saves its entry itself, keyed on the runner's architecture, on the Go version its
 # own setup-go installs from packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum,
-# so both jobs run on ubuntu-24.04-arm, the runner envoy-go-checks runs on.
+# so both jobs run on ubuntu-24.04, the runner envoy-go-checks runs on.
 # On a miss it restores the newest entry of that Go version (restore-keys, which this workflow's
 # own lookups do not use). It saves only on a miss of the exact key in a push, schedule or
 # workflow_dispatch run: a run of any other event (pull_request, pull_request_target,
@@ -104,7 +106,9 @@ jobs:
   # go-daemon. It keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack
   # and pi-legion set Go up from it. One leg per runner, because typecheck runs on
   # ubuntu-24.04-arm and the other three on ubuntu-24.04, and the key carries the runner's
-  # architecture.
+  # architecture. Each leg builds what its runner's readers build: typecheck's vet on both, and
+  # the test and race builds on the x86_64 leg alone, since no job that reads the arm64 entry
+  # runs them.
   daemon:
     strategy:
       fail-fast: false
@@ -134,20 +138,26 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
-      # What typecheck and daemon-go build: the vet behind the e2e tag, the test binary of every
-      # package, and the race build of the three packages daemon-go runs under the detector,
-      # whose
+      # What typecheck builds: the vet behind the e2e tag. It is the one build of this family an
+      # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
+      - name: Build what typecheck builds of the daemon module
+        if: steps.go-daemon.outputs.cache-hit != 'true'
+        run: go vet -tags e2e ./...
+        working-directory: packages/daemon
+
+      # What daemon-go builds: the test binary of every package, and the race build of the three
+      # packages daemon-go runs under the detector, whose
       # objects are cache entries of their own. Those three are the list
       # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES holds, which check-ci-filters.sh
       # holds ci.yaml's two steps to, so a package that joins or leaves the detector there is the
       # side this command follows. The test binaries are compiled and never run (`go test -c -o
       # /dev/null` links each one and writes nothing): running them would want tmux, jj, Oh My Pi,
       # uv, container images and a Postgres service, and the build cache this entry holds is what
-      # a compile leaves.
-      - name: Build what typecheck and daemon-go build of the daemon module
-        if: steps.go-daemon.outputs.cache-hit != 'true'
+      # a compile leaves. The x86_64 leg alone: daemon-go, plugin-pack and pi-legion, which read
+      # these objects, run on ubuntu-24.04.
+      - name: Build what daemon-go builds of the daemon module
+        if: steps.go-daemon.outputs.cache-hit != 'true' && runner.arch == 'X64'
         run: |
-          go vet -tags e2e ./...
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
@@ -302,7 +312,7 @@ jobs:
   # the envoy job, would run the action first, before that job's setup-go, and a refused note set
   # on main would then stop the go-envoy fills, so it is a job of its own.
   architecture-check:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     # The action takes seconds: 13 s with its own Go download and a cache miss, in ci.yaml's
     # envoy-go-checks of run 43553309875.
     timeout-minutes: 15
@@ -320,7 +330,7 @@ jobs:
   # It is a job of its own, so a refused note set on main cannot stop this fill and a refused spec
   # tree on main cannot stop the note check.
   spec-check:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
