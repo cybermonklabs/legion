@@ -348,7 +348,7 @@ func TestIdleRigRoleProcess(t *testing.T) {
 
 // The subjects, headers and replies of a session's own delivery, which the role process reads
 // and answers as a plugin in consumer mode does. They are packages/envoy's: bus.DeliverSubject
-// and contracts.AgentSubject build the two subjects, cmd/listener/session_relay.go names the
+// and contracts.LegacyAgentSubject build the two subjects, cmd/listener/session_relay.go names the
 // frame header and the replies, internal/bus/stream.go the probe header
 // (bus.ConnectionProbeHeader), and cmd/listener/session_delivery.go the mode the registration
 // answers. The rig writes them out because they are another module's, and an Envoy that renamed

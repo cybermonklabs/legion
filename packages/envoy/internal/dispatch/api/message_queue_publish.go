@@ -44,10 +44,11 @@ func (s *server) mayQueueForUnknownSession(
 }
 
 // queueForUnknownSession queues a targeted message for a session no store of the listener's holds:
-// it publishes onto the session's own subject (contracts.AgentSubject) the envelope the listener's
-// send route would have stored for this attempt, under the same dedupe key, and answers as a send
-// to a stopped session does - queued, with the envelope it stored, or with none and duplicate when
-// the stream already held it.
+// it publishes onto the session's own subject, in the form every reader takes
+// (contracts.LegacyAgentSubject, through contracts.AgentSendEnvelope), the envelope the
+// listener's send route would have stored for this attempt, under the same dedupe key, and
+// answers as a send to a stopped session does - queued, with the envelope it stored, or with
+// none and duplicate when the stream already held it.
 //
 // The listener's delivery of that copy finds no record of the session and gives it up after its
 // retry window with the agent wake, which brings a released Legion pod back. The session reads the
