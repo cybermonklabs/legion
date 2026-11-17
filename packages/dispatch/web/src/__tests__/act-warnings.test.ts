@@ -2,11 +2,16 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** `packages/dispatch`, where the suite's own command runs and reads its `bunfig.toml`. */
+/** `packages/dispatch`, where the suite's own command runs, so the child reads whatever
+ *  `bunfig.toml` that directory holds. */
 const PACKAGE_DIR = join(import.meta.dir, "..", "..", "..");
 
 /** Bun runs a file whose name matches no test pattern only when its path starts with `./`. */
 const FIXTURE = "./web/src/__tests__/act-rule.fixture.tsx";
+
+// Kept away from the assertion, so the source excerpt Bun prints when it fails holds no React text.
+const NOT_CONFIGURED = "not configured to support act(";
+const NOT_WRAPPED = "not wrapped in act(";
 
 /** The `test:web` script's words after its leading `bun`: the preloads and flags of every run. */
 function suiteArguments(): string[] {
@@ -53,14 +58,11 @@ test("the act rule fails each row React printed an act message in, and the file 
     cwd: PACKAGE_DIR,
     env: { ...inherited, NO_COLOR: "1" },
     stderr: "pipe",
-    stdout: "pipe",
+    stdout: "ignore",
   });
-  // Bun writes the rows, their errors and the summary to stderr; stdout holds its banner alone.
-  const [output, exitCode] = await Promise.all([
-    new Response(child.stderr).text(),
-    child.exited,
-    new Response(child.stdout).text(),
-  ]);
+  // Bun writes the rows, their errors and the summary to stderr; stdout holds only its banner, so
+  // it is not read.
+  const [output, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
 
   // The summary counts the late update as a row of its own.
   const ran = {
@@ -86,6 +88,13 @@ test("the act rule fails each row React printed an act message in, and the file 
     "error: React printed 1 act message(s) after this file's last row:"
   );
   expect(afterLastRow).toContain("update outside act in LateTimerCount");
-  // The rule's message never repeats React's words, so a count of React's lines counts each once.
-  for (const report of failed.values()) expect(report).not.toContain("not wrapped in act");
+  // React's own lines, counted over the whole output so the count holds in any row order:
+  // CountSetOutsideAct's and LateTimerCount's "not wrapped" lines, and the waitFor row's "not
+  // configured" line. Neither the rule's message nor the source excerpt Bun prints above it
+  // repeats React's words, so a count of React's lines counts each message once; and the recorder
+  // still prints every act message, so a recorder that swallowed them would read 0 here.
+  expect({
+    notConfigured: output.split(NOT_CONFIGURED).length - 1,
+    notWrapped: output.split(NOT_WRAPPED).length - 1,
+  }).toEqual({ notConfigured: 1, notWrapped: 2 });
 });

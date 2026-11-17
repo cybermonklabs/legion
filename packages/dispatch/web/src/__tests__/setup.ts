@@ -196,11 +196,15 @@ afterEach(() => {
 // an `afterEach` that throws skips every `afterEach` after it for that row. So this one is the
 // preload's last, and its failure skips no other hook. A message printed by a file's `afterEach`
 // is charged to its row, since those run first; one printed between two rows, to the next row;
-// and one printed after a file's last row fails the file through the `afterAll`. Bun runs a
-// file's own `afterAll` before the preload's, and reports a preload `afterAll` that throws as
-// `(fail) (unnamed)` under the file. That `afterAll` runs once per file under `--parallel`, which
-// `test:web` passes; a plain `bun test` over several files runs it once, at the end of the run.
-// Keep this block the last of the file: a hook added later goes above it.
+// and one printed after a file's last row fails the file through the `afterAll`. The same skip
+// works against this check: an `afterEach` that throws before it - a file's own, or this
+// preload's `reportReachedNetwork` - skips it for that row, so the row's messages are charged to
+// the next row, or after the last row to the file; the failure's test frames still point at the
+// row that printed them. Bun runs a file's own `afterAll` before the preload's, and reports a
+// preload `afterAll` that throws as `(fail) (unnamed)` under the file. That `afterAll` runs once
+// per file under `--parallel`, which `test:web` passes; a plain `bun test` over several files runs
+// it once, at the end of the run. Keep this block the last of the file: a hook added later goes
+// above it.
 installActMessageRecorder();
 afterEach(() => failOnActMessages("in this row"));
 afterAll(() => failOnActMessages("after this file's last row"));

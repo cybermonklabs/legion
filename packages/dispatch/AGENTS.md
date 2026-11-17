@@ -1715,6 +1715,10 @@ and still prints it; the hooks at the end of `setup.ts` then fail with what was 
 `afterEach` charges a message to the row it was printed in, or to the next row when it was printed
 between two, and the `afterAll` charges one printed after a file's last row to that file, which
 Bun reports as `(fail) (unnamed)` under the file.
+An `afterEach` that runs before the rule's and throws (a file's own, or the preload's
+`reportReachedNetwork`) skips the rule's check for that row, so that row's messages are charged
+to the next row, or after a file's last row to the file; the failure's test frames still point at
+the row that printed them.
 `__tests__/act-warnings.test.ts` holds the rule in place: it runs `__tests__/act-rule.fixture.tsx`
 through the `test:web` command and reads each failure by its row.
 An update outside `act` lands at a moment the row did not choose, so what the row asserts may be
@@ -1727,8 +1731,8 @@ A call whose update React sees at once goes inside `act(() => { ... })`, whose c
 nothing, as `indicatorWrite` in `features/writes/PendingWritesIndicator.test.tsx` does; a call
 whose update lands a few microtasks later, in a promise it returns or one it starts, goes inside
 `await act(async () => { ... })`, as `refetchAgents` in `features/agents/AgentsPage.test.tsx` and
-`sync()` in `__tests__/proof-document.tsx` do; and never `act(() => promiseCall())`, which React
-takes for an async `act` that nobody awaits.
+`sync()` in `__tests__/proof-document.tsx` do; and never an unawaited `act(() => promiseCall())`,
+which React takes for an async `act` that nobody awaits.
 A press whose answer lands outside `act` holds that answer on a `Promise.withResolvers()` and
 gives it inside `await act(async () => { ... })` after the press, as `mintLostWith` in
 `features/settings/AgentTokensSection.test.tsx` does.

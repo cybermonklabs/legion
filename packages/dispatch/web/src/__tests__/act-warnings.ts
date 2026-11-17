@@ -12,8 +12,8 @@ const ACT_MESSAGES = [
   { kind: "overlapping act", text: "overlapping act() calls" },
   // "A component suspended inside an `act` scope, but the `act` call was not awaited."
   { kind: "unawaited suspense", text: "suspended inside an `act` scope" },
-  // An update inside act while `IS_REACT_ACT_ENVIRONMENT` is off, as Testing Library leaves it
-  // inside a `waitFor` (`react-dom-client.development.js`, `isConcurrentActEnvironment`).
+  // An update inside act while the act environment is off, as Testing Library leaves it inside a
+  // `waitFor` (`react-dom-client.development.js`, `isConcurrentActEnvironment`).
   { kind: "act environment off", text: "not configured to support act(" },
 ] as const;
 
