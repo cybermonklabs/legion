@@ -419,8 +419,9 @@ earlier version does not count: the spec changed since. The gate holds the tree'
 merger's start. `gatedSteps` carries one entry for each step that holds the tree, each with its own
 `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
 `approved` or `changes_requested`): one per step `gates.design` lists, then `criteria` where the
-deployment gates `spec` alone and the root registered its Verification document. The tree waits
-until every entry reads `approved`, and `designGate` beside it is the `spec` step's record alone.
+deployment's list names `spec` and not `criteria` and the root registered its Verification
+document. The tree waits until every entry reads `approved`, and `designGate` beside it is the
+`spec` step's record alone.
 
 ## A parked tree did not come back after a decision
 

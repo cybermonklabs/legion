@@ -723,10 +723,11 @@ const legionIssue = z.object({
   designGate: legionGateView.optional(),
   /** The design gate as this issue stands in it, one entry for each step that holds its tree: the
    * steps the deployment gates, in the order it gates them (contract 55), then `criteria` where
-   * the deployment gates `spec` alone and the root registered its Verification document. This
-   * daemon always writes it, and it is empty for an issue that is not its tree's root, for a
-   * deployment that gates no step and for an issue the workflow does not record; a daemon before
-   * contract 55 writes none, which is why a reader takes it as absent rather than as an empty list.
+   * the deployment's list names `spec` and not `criteria` and the root registered its
+   * Verification document. This daemon always writes it, and it is empty for an issue that is not
+   * its tree's root, for a deployment that gates no step and for an issue the workflow does not
+   * record; a daemon before contract 55 writes none, which is why a reader takes it as absent
+   * rather than as an empty list.
    * `designGate` above is unchanged beside it, the `spec` step's row, which a reader that asks one
    * question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),

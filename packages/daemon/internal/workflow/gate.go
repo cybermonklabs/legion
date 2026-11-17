@@ -40,17 +40,18 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // gateRegistered records the gate an architect registered for its root, and logs it. The row it
 // writes is the one of the step the registration names, which register_gate bound to the document
 // it carries. On a step no person approves (gatesStep) it is approved at once, whatever the gate
-// held before; a criteria row a deployment of spec alone takes is written closed, like a gated
-// step's, and holds the tree from then on. Once every step the tree is gated on is open the
-// registration advances the admitted tree. What register_gate read of Dispatch's approval
-// travels with the registration, so a person's review given before the architect registered is
-// applied here: an approval of the latest version (ApprovedVersion) records the gate open, and
-// the root starts planning, keeping its slot unless it waits on another issue (blockers.waitsOf),
-// since the gate has now opened; a changes request on it (ChangesRequestedVersion) records it
-// closed with the architect told, unless the gate already records that same review as told, and
-// the root keeps its slot at admitted to revise. The architect is told the version the gate
-// opened at, which an approval carried to a later version makes the later one, and is not told it
-// again when the gate of that document was already open at that version.
+// held before; a criteria row a deployment that gates spec and not criteria takes is written
+// closed, like a gated step's, and holds the tree from then on. Once every step the tree is gated
+// on is open the registration advances the admitted tree. What register_gate read of Dispatch's
+// approval travels with the registration, so a person's review given before the architect
+// registered is applied here: an approval of the latest version (ApprovedVersion) records the gate
+// open, and the root starts planning, keeping its slot unless it waits on another issue
+// (blockers.waitsOf), since the gate has now opened; a changes request on it
+// (ChangesRequestedVersion) records it closed with the architect told, unless the gate already
+// records that same review as told, and the root keeps its slot at admitted to revise. The
+// architect is told the version the gate opened at, which an approval carried to a later version
+// makes the later one, and is not told it again when the gate of that document was already open at
+// that version.
 //
 // The approval request the registration's read found open is mirrored as the read found it
 // (mirrorRegisteredRequest), before anything decides whether the registration changes the gate:
@@ -97,8 +98,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	// A step no person approves (gatesStep) asks no person: its registration opens it at once, as
 	// every registration did under `gates.design: off`, and no artifact event moves it
-	// (artifactIgnored). A criteria row a deployment of spec alone takes is gated from this,
-	// its first write.
+	// (artifactIgnored). A criteria row a deployment that gates spec and not criteria takes is
+	// gated from this, its first write.
 	ungated := !e.gatesStep(step)
 	sameDocument := stored != nil
 	// The version the gate is registered at is the newest either side knows of: the caller's, or
@@ -542,8 +543,8 @@ func (e *Engine) mirrorRegisteredRequest(ctx context.Context, tx pgx.Tx, root re
 // caller's version unchecked recorded it. Left there, every review of the document's real latest
 // version would be dropped as a review of an older one. The row it resets is the one the read's
 // document names. A step no person approves (gatesStep) has its reset row approved, as its
-// registration would leave it; a criteria row under a deployment of spec alone is reset closed,
-// as a gated step's is.
+// registration would leave it; a criteria row under a deployment that gates spec and not criteria
+// is reset closed, as a gated step's is.
 func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.GateAboveDispatch) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Read.Key)
 	if err != nil || issue == nil || issue.Generation != fact.Generation {
@@ -1239,15 +1240,15 @@ func raisesApproval(before record.DesignGate, held bool, after record.DesignGate
 
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue
 // holds by step: no step the tree is gated on (record.TreeSteps: the deployment's, and a
-// criteria row its architect registered beside a deployment of spec alone) is closed with a row
-// of its own (classify.StandingGate). So a new version of a registered Verification document
-// closes it as a new spec version does. It is the one predicate the message and the merger's
-// start hold both read — the hold asks it as the outbox's designGateClosed — so a member is
-// never told the gate opened while the hold still holds its merger, nor left untold when the
-// hold lets it go. A step the deployment gates that nothing has registered holds the tree's
-// work (FirstClosedStep) but names no document, so nobody can be asked about it and nothing can
-// be said of it: it is why the message reads StandingGate rather than DesignGatesOpen, and the
-// one difference between them.
+// criteria row its architect registered beside a deployment that gates spec and not criteria) is
+// closed with a row of its own (classify.StandingGate). So a new version of a registered
+// Verification document closes it as a new spec version does. It is the one predicate the message
+// and the merger's start hold both read — the hold asks it as the outbox's designGateClosed — so a
+// member is never told the gate opened while the hold still holds its merger, nor left untold when
+// the hold lets it go. A step the deployment gates that nothing has registered holds the tree's
+// work (FirstClosedStep) but names no document, so nobody can be asked about it and nothing can be
+// said of it: it is why the message reads StandingGate rather than DesignGatesOpen, and the one
+// difference between them.
 func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
 	_, held := classify.StandingGate(e.cfg.Steps, gates)
 	return !held

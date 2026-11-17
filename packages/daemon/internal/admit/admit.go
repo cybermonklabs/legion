@@ -1483,8 +1483,8 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
 // task names the document the person reviewed rather than the spec of every deployment. The
 // required steps are the ones the root's tree is gated on (record.TreeSteps), so a Verification
-// document its architect registered as criteria beside a deployment of spec alone is read after
-// the spec, as every other rule of the gate reads it.
+// document its architect registered as criteria beside a deployment that gates spec and not
+// criteria is read after the spec, as every other rule of the gate reads it.
 //
 // Where the deployment gates no step, which asks no person, nothing is kept and any pair an
 // earlier re-admission kept is dropped: no start names one there, so no delivery would forget

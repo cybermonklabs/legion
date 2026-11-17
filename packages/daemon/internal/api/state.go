@@ -561,11 +561,11 @@ type Issue struct {
 	DesignGate  *GateView                `json:"designGate,omitempty"`
 	// GatedSteps is the tree's design gate as this issue stands in it: one entry for each step
 	// the tree is gated on (record.TreeSteps), in the order the deployment gates them with a
-	// criteria row the root's architect registered beside a deployment of spec alone after them
-	// (contract 55). It is absent, as the gate itself is, for an issue that is not its tree's
-	// root, for a deployment that gates no step and for an issue the workflow does not record, so
-	// the wire never carries an empty list. DesignGate is unchanged beside it: it is the spec
-	// step's row, which every reader that asks one question of one gate still takes.
+	// criteria row the root's architect registered beside a deployment that gates spec and not
+	// criteria after them (contract 55). It is absent, as the gate itself is, for an issue that
+	// is not its tree's root, for a deployment that gates no step and for an issue the workflow
+	// does not record, so the wire never carries an empty list. DesignGate is unchanged beside it:
+	// it is the spec step's row, which every reader that asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
 	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present

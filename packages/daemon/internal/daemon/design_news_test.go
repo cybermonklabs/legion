@@ -414,9 +414,8 @@ func TestAPairADispatchWithoutTheChangesRouteRefusesIsRetriedWithinTheRowsAttemp
 
 // A document Dispatch no longer holds answers the changes route 404 ARTIFACT_NOT_FOUND
 // (dispatch.ErrDocumentNotFound): a deleted document does not come back with a wait, so its pair is
-// recorded unavailable at once, as for a Dispatch without the route, with a reason that says the
-// document is gone and not that the route is missing. The row finishes without a retry, and the
-// news goes.
+// recorded unavailable at once, with a reason that says the document is gone and not that the route
+// is missing. The row finishes without a retry, and the news goes.
 func TestAPairOfADocumentDispatchNoLongerHoldsIsRecordedUnavailableWithNoRetry(t *testing.T) {
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
