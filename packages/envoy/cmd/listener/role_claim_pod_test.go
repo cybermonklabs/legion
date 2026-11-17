@@ -50,7 +50,7 @@ func (r *roleClaimHandBackRig) handBackAs(body string) []string {
 // back beside the role's lane when the role ends (its closeSubjects).
 const podNoticeTopic = "notifications.team.pod-notice"
 
-// The pod path: POST /v1/roles/set with no client_instance_id, the body claim-role sends, is
+// The pod path: POST /v1/roles/set with no client_instance_id, the body the role claimer sends, is
 // granted and stores a claim that names no process; the session's next registration that states
 // a client instance writes that instance into the claim; a later registration of the same
 // session that states another instance changes nothing, and a hand-back from that other instance
@@ -68,10 +68,10 @@ func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 	)
 	lane := contracts.RoleTopicPrefix + role
 
-	t.Run("claim-role's claim goes to the pod's first registration", func(t *testing.T) {
+	t.Run("the role claimer's claim goes to the pod's first registration", func(t *testing.T) {
 		rig := newRoleClaimHandBackRig(t, sessionID, role)
-		// The pod's agent registers before claim-role claims: claim-role claims only for a
-		// session the listener lists, and the route refuses a session it does not hold.
+		// The pod's agent registers before the role claimer claims: the claimer claims only for
+		// a session the listener lists, and the route refuses a session it does not hold.
 		rig.register(holdingProcess, rig.ownTopics())
 
 		var claimed store.RoleClaim

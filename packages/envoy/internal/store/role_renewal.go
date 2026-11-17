@@ -75,10 +75,10 @@ type RoleRenewal struct {
 // a process that states its instance under the same session id may be a second process that
 // resumed that id. A claim nothing has renewed so is adopted by the first registration of its
 // session that states a process: a claim standing at a deploy, whose holder's next heartbeat
-// adopts it, and a session pod's claim of its launch role, which claim-role writes naming no
-// process for the session the pod's agent registered. That is the one heartbeat in which such a
-// claim is open to any process of its session. The renewal that states no process is what
-// keeps a claim of an older client renewed while that client runs: without it that renewal
+// adopts it, and a session pod's claim of its launch role, which the pod's role claimer writes
+// naming no process for the session the pod's agent registered. That is the one heartbeat in
+// which such a claim is open to any process of its session. The renewal that states no process
+// is what keeps a claim of an older client renewed while that client runs: without it that renewal
 // would age out while the holder is still registering, and POST /v1/roles/set would hand the
 // role to a second process claiming it under the same session id, since that route decides a
 // claim held under the claimant's own session id on the renewal alone and reads no session

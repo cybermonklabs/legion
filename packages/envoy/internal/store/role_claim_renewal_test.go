@@ -611,6 +611,18 @@ func TestARegistrationThatStatesNoProcessRenewsTheClaimsThatNameNone(t *testing.
 	if stood := storedRoleClaim(t, reg, role); stood != renewed {
 		t.Fatalf("the claim after a registration stating a process is %+v, want it exactly as the renewal that stated none left it, %+v: a claim its holder renews stating no process is adopted by no registration", stood, renewed)
 	}
+
+	// The holder's next registration, stating no process again, renews the claim that already
+	// carries the note: a client that cannot say which process it is keeps its claim renewed for
+	// as long as it runs, not only at its first heartbeat.
+	advance(3 * beat)
+	if _, err := renewRoleClaims(t, reg, holder, ""); err != nil {
+		t.Fatalf("the holder's second registration stating no process: %v", err)
+	}
+	again := storedRoleClaim(t, reg, role)
+	if want := claimed.ClaimedAt + (3 * beat).Milliseconds(); again.RenewedAt != want || again.ClientInstanceID != "" || !again.RenewedWithoutProcess || again.Revision == renewed.Revision {
+		t.Fatalf("the claim after the holder's second registration is %+v (revision %d), want it renewed at %d past revision %d, still naming no process and noting the renewal", again, again.Revision, want, renewed.Revision)
+	}
 	assertNoRenewalFailure(t, reg, role, holder)
 }
 
