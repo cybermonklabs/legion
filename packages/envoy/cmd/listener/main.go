@@ -1254,7 +1254,7 @@ func main() {
 	// No configuration makes the listener create one: a test or a dev rig provisions its own
 	// server before it starts the listener (internal/bustest, the fixturebuckets command).
 	awaitBuckets := func() error {
-		return awaitCopiedBuckets(context.Background(), logger, client.JS(), startCopiedBuckets(webhookCfg.GitHub != nil), missing)
+		return awaitCopiedBuckets(context.Background(), logger, client.JS(), listenerCopiedBuckets(webhookCfg.GitHub != nil), missing)
 	}
 	if err := awaitBuckets(); err != nil {
 		log.Fatalf("await the copied KV buckets: %v", err)

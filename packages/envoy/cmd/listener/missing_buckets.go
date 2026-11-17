@@ -40,6 +40,11 @@ const (
 	bucketWaitInterval       = 2 * time.Second
 	missingBucketLogInterval = 30 * time.Second
 	bucketCheckTimeout       = 10 * time.Second
+	// knownBucketCheckTimeout is the read of the known-session bucket's stream: a user whose grant
+	// predates that bucket gets no answer at all, only the server's refusal, which nats.go does not
+	// hand the request, and a start must not wait bucketCheckTimeout on it (awaitCopiedBuckets lets
+	// that bucket's failed read through).
+	knownBucketCheckTimeout = time.Second
 )
 
 // missingBuckets is the copied buckets this listener holds missing: the start's wait and the
@@ -122,15 +127,6 @@ func listenerCopiedBuckets(ci bool) []string {
 	return slices.DeleteFunc(bus.CopiedBuckets(), func(bucket string) bool { return bucket == bus.CIStateBucket && !ci })
 }
 
-// startCopiedBuckets are the copied buckets a start waits for (awaitCopiedBuckets): all of
-// listenerCopiedBuckets but the known-session bucket, whose store opens it in the background and
-// answers as an empty store until it does (session.OpenKnownSessions), as it always has for a
-// listener whose grant does not carry it yet. That store creates the bucket no more than the start
-// does (session.WithExistingKnownSessionBucket), and the self-health monitor names it when missing.
-func startCopiedBuckets(ci bool) []string {
-	return slices.DeleteFunc(listenerCopiedBuckets(ci), func(bucket string) bool { return bucket == bus.KnownSessionBucket })
-}
-
 // openExisting opens a store with open, which opens its buckets only if they exist, and when one
 // went missing after the start's wait found it (bus.ErrBucketMissing) waits for it again with
 // wait (awaitCopiedBuckets) and opens it again, so a bucket deleted between the wait and the open
@@ -167,11 +163,16 @@ func (r bucketReads) err() error {
 	return errors.Join(errs...)
 }
 
-// readBuckets asks the server for each bucket's stream, within bucketCheckTimeout each.
+// readBuckets asks the server for each bucket's stream, within bucketCheckTimeout each
+// (knownBucketCheckTimeout for the known-session bucket).
 func readBuckets(js nats.JetStreamContext, buckets []string) bucketReads {
 	reads := bucketReads{unread: map[string]error{}}
 	for _, bucket := range buckets {
-		ctx, cancel := context.WithTimeout(context.Background(), bucketCheckTimeout)
+		timeout := bucketCheckTimeout
+		if bucket == bus.KnownSessionBucket {
+			timeout = knownBucketCheckTimeout
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		_, err := js.StreamInfo("KV_"+bucket, nats.Context(ctx))
 		cancel()
 		switch {
@@ -213,11 +214,20 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 // answer every route 503, while /healthz names the bucket (missing) and the log carries
 // missingBucketLine every missingBucketLogInterval. It creates nothing: only the operator's
 // `envoy-infra buckets` does.
+//
+// The known-session bucket alone does not hold the start when its read fails rather than finding
+// it missing: a hub whose users were rendered before that bucket's grant (#2643), and not applied
+// since, lets the listener read no part of it, and its store then opens it once the grant arrives
+// (session.OpenKnownSessions). A known-session bucket the server says it does not hold holds the
+// start as every other does.
 func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
 	var logged time.Time
 	for {
 		reads := readBuckets(js, buckets)
 		missing.observe(reads)
+		if _, ungranted := reads.unread[bus.KnownSessionBucket]; ungranted {
+			delete(reads.unread, bus.KnownSessionBucket)
+		}
 		if len(reads.missing) == 0 && len(reads.unread) == 0 {
 			return nil
 		}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -165,6 +166,10 @@ type KnownSessions struct {
 	retryFirst   time.Duration
 	retryMax     time.Duration
 	watchOptions []kvwatch.Option
+	// bucketMissing is whether the last attempt to open the bucket found it missing - the server
+	// says it holds none (bus.ErrBucketMissing) - rather than unreadable to this user: a write is
+	// then owed and refused (writeWithin).
+	bucketMissing atomic.Bool
 
 	// mu guards records and topics, which are kept in step: every record the copy stores or
 	// removes for the bucket's sake is indexed or unindexed through its rows (newKnownSessions),
@@ -276,6 +281,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 	}
 	s := newKnownSessions(conn, opts)
 	kv, err := openKnownBucket(conn, opts.replicas)
+	s.bucketMissing.Store(errors.Is(err, bus.ErrBucketMissing))
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
@@ -487,6 +493,7 @@ func (s *KnownSessions) attemptRepair() (repairResult, error) {
 	switch {
 	case watcher == nil:
 		kv, err := openKnownBucket(conn, s.replicas)
+		s.bucketMissing.Store(errors.Is(err, bus.ErrBucketMissing))
 		if err != nil {
 			return repairNothing, err
 		}
@@ -700,8 +707,12 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // has delivered the others' writes, and a write made before that compares an older copy, which
 // costs at most one write of a record the bucket already holds.
 //
-// A store whose bucket is not open writes nothing and answers nil, as a nil store does: its
-// reads answer no record either, so nothing it could write would be read.
+// A store whose bucket is not open because its user may not read it yet - a hub whose users were
+// rendered before that bucket's grant (#2643) - writes nothing and answers nil, as a nil store
+// does: its reads answer no record either, so nothing it could write would be read. One whose last
+// attempt found the bucket missing answers bus.ErrBucketMissing instead: the record is owed and
+// cannot be written, so the registration that asks for it is refused rather than answered as if
+// it had been.
 func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) error {
 	return s.writeWithin(ctx, record, true)
 }
@@ -710,12 +721,17 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
 // clean stop is one write per session lifetime and the whole point of it is to move last_seen.
 //
-// No caller fails its request over what this answers: a registration and a subscription change
-// (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the error
-// is for the call site's WARN.
+// A registration (RecordWithin) is refused when this answers an error, as every other write the
+// registration needs is; a subscription change and a clean stop (TouchWithin) log it.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
 	watcher := s.watch()
-	if watcher == nil || record.SessionID == "" {
+	if record.SessionID == "" {
+		return nil
+	}
+	if watcher == nil {
+		if s != nil && s.bucketMissing.Load() {
+			return fmt.Errorf("write %s's 30-day record: %w", record.SessionID, bus.ErrBucketMissing)
+		}
 		return nil
 	}
 	now := s.now()
