@@ -591,6 +591,65 @@ test("an older pick refused while a newer one is live reports the refusal with n
   }
 });
 
+// "Until the person picks again" holds whatever picker they pick in: a pick of the field in
+// another picker of it - the Inbox drawer's row over the issue page - ends the report too.
+test("an older pick refused while a newer one is live reports the refusal with no Retry until the person picks again in another picker of the field", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise)
+    .mockImplementation(stores);
+  const client = signedIn();
+  const reads = dispatchReads();
+  const view = renderIn(
+    client,
+    <>
+      <section aria-label="Issue page">
+        <CachedPriority reads={reads} />
+      </section>
+      <section aria-label="Inbox drawer">
+        <CachedPriority reads={reads} />
+      </section>
+    </>
+  );
+  const user = userEvent.setup();
+  try {
+    const page = () => prioritySelects()[0] as HTMLSelectElement;
+    const drawer = () => prioritySelects()[1] as HTMLSelectElement;
+    await user.selectOptions(page(), "0");
+    await user.selectOptions(page(), "2");
+    await act(async () => {
+      first.reject(closed());
+      await first.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }]));
+    const alert = await within(screen.getByRole("region", { name: "Issue page" })).findByRole(
+      "alert"
+    );
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+
+    // P2 is still out when the person picks P3 in the drawer's row: the issue page's report ends.
+    await user.selectOptions(drawer(), "3");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(prioritySelects().map((select) => select.value)).toEqual(["3", "3"]);
+    expect(cachedPriorities(client)).toEqual({ detail: 3, inbox: 3, list: 3 });
+
+    reads.store(3);
+    await act(async () => {
+      second.resolve({ ...issue, priority: 2 });
+      await second.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    expect(bodies(patchIssue)).toEqual([{ priority: 0 }, { priority: 2 }, { priority: 3 }]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 /** Has the page's store make a save of CORE-1's status, from the issue page's header. */
 function saveStatus(client: DispatchQueryClient): void {
   act(() => {
@@ -3069,9 +3128,11 @@ const neighbour: IssueSummary = { ...summary, key: "CORE-2", rank: "V", title: "
 test("a pick refused while a later drag of its card still waits behind another card's move reports no Retry and keeps the card in the drag's lane", async () => {
   const pick = Promise.withResolvers<Issue>();
   const other = Promise.withResolvers<Issue>();
+  const drag = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches()
     .mockImplementationOnce(() => pick.promise)
     .mockImplementationOnce(() => other.promise)
+    .mockImplementationOnce(() => drag.promise)
     .mockImplementation(stores);
   const client = signedIn();
   const board = renderBoard(client, () => 1, { others: [neighbour] });
@@ -3104,10 +3165,25 @@ test("a pick refused while a later drag of its card still waits behind another c
     expect(board.shown()).toBe("P3");
     expect(cachedPriorities(client)).toMatchObject({ detail: 3, inbox: 3 });
 
-    // The other card's move lands, and the drag goes out and lands: the report ends with it.
+    // The other card's move lands, and the drag joins the line and goes out: a drag is no pick,
+    // so the report stands while it is out.
     await act(async () => {
       other.resolve({ ...issue, key: neighbour.key });
       await other.promise;
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(3));
+    expect(
+      writesOf(client)
+        .rows()
+        .map((row) => row.label)
+    ).toEqual(["CORE-1 moved on the board"]);
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(board.shown()).toBe("P3");
+
+    // The drag lands: the report ends with it.
+    await act(async () => {
+      drag.resolve({ ...issue, priority: 3 });
+      await drag.promise;
     });
     await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());

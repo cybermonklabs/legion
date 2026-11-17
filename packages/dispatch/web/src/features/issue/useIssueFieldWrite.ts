@@ -19,10 +19,11 @@ import {
 
 export interface IssueFieldWrite<Value> {
   /** The server's reason after a refused save, until the next pick here; a refusal reported with
-   *  no Retry also ends once a newer write of the field lands. */
+   *  no Retry also ends once a newer write of the field lands or the field is picked again in
+   *  another picker. */
   error: string | undefined;
   /** True after a save failed, until the next pick here; a refusal reported with no Retry also
-   *  ends once a newer write of the field lands. */
+   *  ends once a newer write of the field lands or the field is picked again in another picker. */
   failed: boolean;
   /** True while a pick made here is in the store, not yet landed, refused or taken out. */
   pending: boolean;
@@ -74,10 +75,11 @@ function picksOf(writes: Writes, of: Pick<IssueFieldPick, "field" | "issueKey">)
  * another lane, out or still waiting its turn on its board (`newerWriteOf`) - shows the server's
  * reason with Retry; one with a newer live write shows the reason with no Retry, since the screen
  * shows that newer write and a Retry would join behind it and be stored last. That report ends
- * once a newer write of the field lands or the reader picks again, and offers Retry once every
- * newer write of the field has ended without landing - refused or discarded - since the refused
- * pick then has no newer live write of its field. A pick of the value the reader stopped is that
- * press made again under its key, so Dispatch answers it with what it did.
+ * once a newer write of the field lands or the reader picks the field again, in this picker or
+ * any other, and offers Retry once every newer write of the field has ended without landing -
+ * refused or discarded - since the refused pick then has no newer live write of its field. A pick
+ * of the value the reader stopped is that press made again under its key, so Dispatch answers it
+ * with what it did.
  */
 export function useIssueFieldWrite<F extends IssueField>(
   issueKey: string,
@@ -157,26 +159,46 @@ export function useIssueFieldWrite<F extends IssueField>(
     // the pick moves out of the Unassigned filter) has said so by then.
     queueMicrotask(() => join(pick, key, value));
   };
-  // A refusal reported with no Retry stands for the newer writes of its field the screen shows.
-  // At each outcome of one: landed, Dispatch holds a newer value and the report has nothing left
-  // to say; refused or discarded with none left live, the refused pick is one with no newer live
-  // write of its field, which Retry may pick again. While such a report stands, each write of the
-  // field is noted, with its place in the person's order, while the store holds it, since an
-  // outcome names a write the store has let go of, whose request it no longer tells: those the
-  // store holds as the report is made, and each after; a board move still waiting its turn is
-  // noted once it joins the line, before its outcome. A write's place is noted afresh at each
-  // change of the store: a Retry from the Pending changes list puts a refused write at the back
-  // of the line, and it is from there that its landing is newer than the refused pick or not.
-  // The listener lives with the picker, so no outcome falls between a refusal and it.
+  // A refusal reported with no Retry stands for the newer writes of its field the screen shows,
+  // until one of them lands or the person picks the field again, here or in any other picker of
+  // it (a pick here ends it at its press, `submit`). At each outcome of one: landed, Dispatch
+  // holds a newer value and the report has nothing left to say; refused or discarded with none
+  // left live, the refused pick is one with no newer live write of its field, which Retry may
+  // pick again. While such a report stands, each write of the field is noted, with its place in
+  // the person's order, while the store holds it, since an outcome names a write the store has
+  // let go of, whose request it no longer tells: those the store holds as the report is made
+  // (`standing`), and each after; a pick the store holds that is none of those is the person
+  // picking again, and ends the report. A board move still waiting its turn is noted once it
+  // joins the line, before its outcome. A write's place is noted afresh at each change of the
+  // store: a Retry from the Pending changes list puts a refused write at the back of the line,
+  // and it is from there that its landing is newer than the refused pick or not. The listener
+  // lives with the picker, so no outcome falls between a refusal and it.
   useEffect(() => {
     const of = { field, issueKey };
     const ofField = new Map<number, number>();
+    /** The writes of the field the store held as the report was made; undefined while none
+     *  stands. */
+    let standing: Set<number> | undefined;
+    const end = (next: Refused<Value> | undefined): void => {
+      reported.current = next;
+      setRefused(next);
+      ofField.clear();
+      standing = undefined;
+    };
     const note = () => {
       if (reported.current?.retryable !== false) {
         ofField.clear();
+        standing = undefined;
         return;
       }
-      for (const { id, rank } of fieldWritesOf(client, of)) {
+      const ofIt = fieldWritesOf(client, of);
+      if (standing === undefined) {
+        standing = new Set(ofIt.flatMap(({ id }) => (id === undefined ? [] : [id])));
+      } else if (ofIt.some(({ id, ofPick }) => ofPick && id !== undefined && !standing?.has(id))) {
+        end(undefined);
+        return;
+      }
+      for (const { id, rank } of ofIt) {
         if (id !== undefined) ofField.set(id, rank);
       }
     };
@@ -196,10 +218,7 @@ export function useIssueFieldWrite<F extends IssueField>(
         return;
       }
       if (outcome.kind !== "landed" && newerWriteOf(client, current.write)) return;
-      const next = outcome.kind === "landed" ? undefined : { ...current, retryable: true };
-      reported.current = next;
-      setRefused(next);
-      ofField.clear();
+      end(outcome.kind === "landed" ? undefined : { ...current, retryable: true });
     });
     return () => {
       noting.current = undefined;
