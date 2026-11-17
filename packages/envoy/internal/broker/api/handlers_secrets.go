@@ -52,6 +52,11 @@ type settingsResponse struct {
 	// exchange audience is named beside it: a pod's trade mints no launcher credential, so no
 	// machine could register a session under it.
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
+	// Always true: this broker reads a secret's type from the type tag (policy.TagType), and the
+	// old kind tag only where type is absent. A broker from before the type tag sends no such
+	// field and reads no type tag, so it serves a secret that carries type alone as a stored
+	// secret, and `agent-secrets` writes no typed secret through a broker that does not say this.
+	SecretTypeTag bool `json:"secret_type_tag"`
 }
 
 // judgeKey is one key in settingsResponse.JudgeKeys.
@@ -67,7 +72,7 @@ type judgeKey struct {
 // value.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
-		GoogleExchangeAudience: s.deps.GoogleExchangeAudience}
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true}
 	switch s.deps.SecretsStore {
 	case secrets.StoreGCP:
 		resp.KMSKeyName = s.deps.SecretsKMSKey
@@ -100,11 +105,11 @@ type rereadResponse struct {
 	// refused the secret, the one its policy-refused log line names (such as owner-tag-missing or
 	// no-current-value).
 	Reason string `json:"reason,omitempty"`
-	// The kind the broker serves the secret as, while it serves it: github-app or google-login, or
+	// The type the broker serves the secret as, while it serves it: github-app or google-login, or
 	// absent for a stored secret, whose grants release its stored value. A person who retags a
-	// secret to a kind reads it here before storing the key the kind mints from: a stale store read
+	// secret to a type reads it here before storing the key the type mints from: a stale store read
 	// can still serve the secret as stored.
-	Kind string `json:"kind,omitempty"`
+	Type string `json:"type,omitempty"`
 }
 
 // rereadSecret is POST /v1/secrets/{name}/reread: public and rate-limited per source address and
@@ -143,7 +148,7 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 	s.notifyPeers(r, name)
 	resp := rereadResponse{Name: name, Served: lk.Served, Reason: lk.Reason}
 	if lk.Served {
-		resp.Kind = lk.Secret.Kind()
+		resp.Type = lk.Secret.Type()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

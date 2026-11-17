@@ -849,6 +849,13 @@ func (b *gcpBackend) valueReadPermission() string {
 	return "secretmanager.versions.access on the secret"
 }
 
+// tagReadPermission is what GetSecret needs of a person's sign-in: whoever stores a value reads
+// that secret's annotations first, so a write grant that does not carry this read fails `secret
+// set` before anything is written.
+func (b *gcpBackend) tagReadPermission() string {
+	return "secretmanager.secrets.get on the secret"
+}
+
 // setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each
 // in one UpdateSecret that keeps every annotation it does not name. An UpdateSecret whose mask names
 // "annotations" replaces the whole map, so each sends held's annotations, changed, with held's
