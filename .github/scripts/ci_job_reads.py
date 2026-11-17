@@ -3085,8 +3085,8 @@ GATES = [
         (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to every workflow's restores"),
         (".github/workflows/**", "ci_workflow_rules.py reads every workflow of the directory: "
                                  "check_one_merge_group_workflow, which refuses a new one and so has to run on the change "
-                                 "that adds it, and check_cache_round_trip, which holds every restore of a filled family to "
-                                 "the fill's key"),
+                                 "that adds it, check_cache_round_trip, which holds every restore of a filled family to "
+                                 "the fill's key, and ci_only_documents, which finds the files only ci.yaml calls"),
         # Rule 17 computes each gate filter's generated block from two sets: the repository's Go
         # test files and the ones each gate reads. A test file added or deleted anywhere changes
         # what that rule writes, so the change that adds one has to start this job - otherwise

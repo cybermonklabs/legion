@@ -1988,10 +1988,10 @@ check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
-# real dispatch-browser job restores the browser and apt archive families in the shard and alone
-# jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it reads ci.yaml's
-# own, and names the file that holds them. Read over ci.yaml alone, the fill below would be a
-# family nothing restores.
+# real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,
+# embedder and visual jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
+# reads ci.yaml's own, and names the file that holds them. Read over ci.yaml alone, the fill below
+# would be a family nothing restores.
 #
 # suite_cache <root>: a second family, go-suite, that ci-caches.yaml's fill job saves and only
 # the called workflow's `rows` job restores. Call it after cache_workflow and calls_workflow.
