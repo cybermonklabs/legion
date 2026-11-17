@@ -256,32 +256,6 @@ func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 	return s
 }
 
-// knownRecord names the known-session record in the lines internal/kvchunk logs.
-const knownRecord = "known-session record"
-
-// knownRow is a record as the bucket stores it: the record, and the layout it is stored in
-// (internal/kvchunk), so the write that replaces it deletes the chunks it leaves unnamed.
-type knownRow struct {
-	KnownSession
-	layout kvchunk.Layout
-}
-
-// decodeKnownLocked is the record a put of the bucket leaves in the copy, called under s.mu: a
-// record stored whole is decoded as it is, and a manifest is joined from the chunks the watcher
-// delivered before it (kvchunk.Chunks.Join). A manifest the copy cannot join is a record this
-// build cannot decode, which the copy stores no row for.
-func (s *KnownSessions) decodeKnownLocked(entry kvwatch.Entry) (knownRow, bool, error) {
-	value, layout, err := s.chunks.Join(entry.Value)
-	if err != nil {
-		return knownRow{}, false, err
-	}
-	var record KnownSession
-	if err := json.Unmarshal(value, &record); err != nil {
-		return knownRow{}, false, err
-	}
-	return knownRow{KnownSession: record, layout: layout}, true, nil
-}
-
 // OpenKnownSessions opens the envoy_known_sessions bucket, creating it with a 30-day TTL
 // (KnownSessionRetention) on file storage, and starts the watcher that keeps its records in
 // memory and the sweep that gives back the memory of the records that aged out.
@@ -717,26 +691,6 @@ func (s *KnownSessions) cached(sessionID string) (knownRow, bool) {
 	return row, true
 }
 
-// ownLayout is layout when no record the copy holds for another session names its generation,
-// and the zero layout otherwise. A generation is new for each write, so only a manifest copied under
-// another key - which any writer of the bucket can store - shares one, and the chunks it names are
-// then not this record's alone: the write that replaces this record leaves them to the sweep's
-// collection, which takes only chunks no record names. It reads every record only for a chunked
-// layout. Callers hold no lock.
-func (s *KnownSessions) ownLayout(sessionID string, layout kvchunk.Layout) kvchunk.Layout {
-	if !layout.Chunked() {
-		return layout
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for key, row := range s.records.All() {
-		if key != sessionID && row.layout.Generation == layout.Generation {
-			return kvchunk.Layout{}
-		}
-	}
-	return layout
-}
-
 // MatchEach calls visit with each record whose topics match topic (routing.Match's rules), once
 // per record and in no order, looked up in the store's subject index, while the store answers at
 // all (Opened). A record past the retention is left out, as Get leaves it out. visit runs under
@@ -981,47 +935,6 @@ func (s *KnownSessions) cutoff() int64 {
 	return s.now().Add(-KnownSessionRetention).UnixMilli()
 }
 
-// knownCache is the store as the cache its watcher feeds (kvwatch.Cache). The hooks are its own
-// type's, not the store's methods, so nothing but the watcher calls them.
-type knownCache struct{ s *KnownSessions }
-
-// BeginRead starts a read of the bucket (kvwatch.Copy.BeginRead), in the copy of its records and
-// the copy of its chunks alike. Every record and chunk stays through it.
-func (c knownCache) BeginRead(read kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	c.s.records.BeginRead(read)
-	c.s.chunks.BeginRead(read)
-}
-
-// Apply takes one record the read delivered (kvwatch.Copy.Delivered): a chunk into the copy of the
-// chunks, and its marker, when the record is one, into the markers the marker pass purges
-// (purgeChunkMarkers); anything else into the copy of the records, which joins a manifest from the
-// chunks delivered before it (decodeKnownLocked). It logs a value it could not decode, which
-// removed the session's record.
-func (c knownCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	if kvchunk.IsChunkKey(entry.Key) {
-		_ = c.s.chunks.Delivered(entry)
-		c.s.markers.Delivered(entry, c.s.now())
-		return
-	}
-	if err := c.s.records.Delivered(entry); err != nil {
-		c.s.logger().Warn("known session store evicted a malformed record",
-			slog.String("key", entry.Key), slog.Uint64("revision", entry.Revision), slog.String("error", err.Error()))
-	}
-}
-
-// CompleteRead removes every record and chunk the read found no evidence of, and each record's
-// topics from the index: the bucket no longer holds that key.
-func (c knownCache) CompleteRead(kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	c.s.records.CompleteRead()
-	c.s.chunks.CompleteRead()
-}
-
 // sweepUntilStopped runs the store's two periodic passes until the store is stopped. Every hour:
 // the sweep of the records that aged out, then the collection of the chunks no record names
 // (collectChunks). Every kvchunk.MarkerGrace: the purge of the chunk markers past that grace
@@ -1051,49 +964,6 @@ func (s *KnownSessions) sweepUntilStopped() {
 	}
 }
 
-// purgeChunkMarkers purges from the bucket each chunk key's marker that the watcher was first
-// delivered more than kvchunk.MarkerGrace ago (kvchunk.Markers.Due, kvchunk.PurgeMarkers), and
-// reports how many it purged. Every replaced chunk leaves one marker on a key nothing writes
-// again, and the bucket keeps a marker for its 30-day MaxAge, so without this pass a session whose
-// record is two chunks, rewritten every KnownSessionRefreshAge, leaves 8,640 marker subjects in
-// the bucket in 30 days; with it, the chunks of one rewrite and their markers for one grace or two.
-// A record's own key is never purged: its marker says the session's record was deleted.
-//
-// A pass that failed - a NATS user without STREAM.PURGE on the bucket's stream refuses every
-// purge - is logged at WARN once until a pass purges again, and keeps every marker it did not
-// purge for the next pass, except one delivered before KnownSessionRetention, which the bucket's
-// MaxAge has removed. It does nothing while the store's bucket is not open. Each purge waits no
-// longer than ctx.
-func (s *KnownSessions) purgeChunkMarkers(ctx context.Context) (int, error) {
-	watcher := s.watch()
-	if watcher == nil {
-		return 0, nil
-	}
-	now := s.now()
-	s.mu.RLock()
-	due := s.markers.Due(now.Add(-kvchunk.MarkerGrace))
-	s.mu.RUnlock()
-	kv, _ := watcher.Handle()
-	purged, err := kvchunk.PurgeMarkers(ctx, kv, due)
-	s.mu.Lock()
-	s.markers.Forget(due[:purged])
-	if err != nil {
-		s.markers.Forget(s.markers.Due(now.Add(-KnownSessionRetention)))
-	}
-	s.mu.Unlock()
-	if err != nil {
-		if !s.markerPurgeFailed.Swap(true) {
-			s.logger().Warn("the known-session store could not purge the markers of its replaced chunks",
-				slog.Int("markers_purged", purged), slog.Int("markers_due", len(due)), slog.String("error", err.Error()))
-		}
-		return purged, err
-	}
-	if purged > 0 {
-		s.markerPurgeFailed.Store(false)
-	}
-	return purged, nil
-}
-
 // sweep drops every record that has aged out of KnownSessionRetention, giving back the strings and
 // topic lists it held and the index nodes its topics alone kept. The bucket's TTL removes such a
 // record with no record of the removal a watcher delivers, so nothing else would ever drop it. The
@@ -1109,29 +979,4 @@ func (s *KnownSessions) sweep() {
 			s.topics.Remove(key)
 		}
 	}
-}
-
-// collectChunks deletes every chunk of the bucket that no record of the copy names and that the
-// chunk copy took longer ago than kvchunk.Grace (kvchunk.Chunks.Unnamed), and reports how many it
-// deleted: the chunks a write that stopped part way left behind, which no write deletes. It judges
-// nothing while the store's bucket is not open or its cache does not follow the bucket
-// (kvwatch.Watcher.Following), since a copy behind the bucket could lack the manifest that names
-// a chunk. Each delete waits no longer than ctx.
-func (s *KnownSessions) collectChunks(ctx context.Context) (int, error) {
-	watcher := s.watch()
-	if watcher == nil || !watcher.Following() {
-		return 0, nil
-	}
-	cutoff := s.now().Add(-kvchunk.Grace)
-	s.mu.RLock()
-	named := map[string]bool{}
-	for _, row := range s.records.All() {
-		if row.layout.Chunked() {
-			named[row.layout.Generation] = true
-		}
-	}
-	unnamed := s.chunks.Unnamed(func(generation string) bool { return named[generation] }, cutoff)
-	s.mu.RUnlock()
-	kv, _ := watcher.Handle()
-	return kvchunk.Collect(ctx, kv, unnamed)
 }
