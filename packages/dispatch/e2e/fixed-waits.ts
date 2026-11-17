@@ -183,8 +183,9 @@ function isFixedWait(call: ts.CallExpression, names: WaitNames): boolean {
 
 /** The statement a call stands in: the ancestor whose own parent holds a list of statements. A
  *  reason is written above that statement's first line, which is the call's own line whenever the
- *  wait is a statement of its own and some earlier line otherwise. */
-function statementOf(call: ts.CallExpression): ts.Node {
+ *  wait is a statement of its own and some earlier line otherwise. It is exported because
+ *  `e2e/zero-wait-probes.ts` reads a probe's reason above the same statement. */
+export function statementOf(call: ts.CallExpression): ts.Node {
   let node: ts.Node = call;
   while (
     node.parent !== undefined &&
