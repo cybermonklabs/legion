@@ -1098,7 +1098,7 @@ jobs:
               - '!packages/envoy/**/*_test.go'
               # END generated
 
-            # `go vet -tags e2e ./...` in packages/daemon.
+            # `go vet -tags e2e ./...` in packages/daemon, as linux and as darwin compile it.
             typecheck:
               - *ci_router
               - '.github/workflows/ci-job-typecheck.yaml'
@@ -2664,7 +2664,8 @@ jobs:
               - '!packages/envoy/infra/**/*_test.go'
               # END generated
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-            # checks, the seven shell-script tests, and the build and pack of the envoy commands,
+            # checks, the seven shell-script tests, the vet of the module as darwin compiles it,
+            # and the build and pack of the envoy commands,
             # with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
             # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
             # run this is (envoy-go's unit step leaves them out), the architecture-note check over
@@ -2672,8 +2673,8 @@ jobs:
             # .github/actions/architecture-check, and the spec-file check over its .dispatch/spec
             # through the composite action .github/actions/spec-check. gofmt -l . walks every .go
             # file under packages/envoy, those tests and the scripts they drive live there, and
-            # `go build ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as
-            # the two actions' builds of their commands do.
+            # `go build ./cmd/dispatch ./cmd/listener` and the darwin vet compile packages of that
+            # module alone, as the two actions' builds of their commands do.
             envoy_go_checks:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-checks.yaml'
@@ -4945,9 +4946,10 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
-  # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
-  # internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
-  # cmd/architecture-check and cmd/spec-check, whose one run this is (envoy-go's unit step leaves
+  # shell-script tests, the vet of the module as darwin compiles it, and the build and pack of
+  # the envoy commands. It also runs the tests of internal/dispatch/architecture/notes,
+  # internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check,
+  # whose one run this is (envoy-go's unit step leaves
   # them out), the architecture-note check over this repository's own .dispatch/architecture
   # through the composite action .github/actions/architecture-check, and the spec-file check over
   # its .dispatch/spec through the composite action .github/actions/spec-check, both of which
@@ -4985,8 +4987,9 @@ jobs:
   # The envoy-infra Pulumi plugin's module (packages/envoy/infra). It is not in the root go.work:
   # its own go.work binds it and packages/envoy, so Pulumi's requirements never move the versions
   # the Envoy binaries and the daemon build with, and every go command below runs in that
-  # workspace. Vet compiles the files behind the live-test tags (pulumilive, natslive) too. The unit
-  # tests start no container; the natslive files run in a step of their own against real
+  # workspace. Vet compiles the files behind the live-test tags (pulumilive, natslive) too, as
+  # linux and as darwin compile them. The unit tests start no container; the natslive files run
+  # in a step of their own against real
   # nats-server and Postgres, on testnats.Image, testnats.HubImage and testpg.Image, pulled first
   # for the reason .github/actions/pull-test-images gives. That step runs only the tests the tag
   # adds, one call per package: the unit step above already ran every untagged test of core, seed

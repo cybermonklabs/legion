@@ -126,6 +126,18 @@ def pinned_step(job, step, workdir, script, runs, workflow=""):
                                          for where, pkgs, what, options in runs])
 
 
+def darwin_vet(job, step, workdir, tags):
+    """A step that vets every package of a module, its tests and the tagged files under `tags`
+    included, as darwin/arm64 compiles them: the vet each Go module's job runs so that a file
+    compiling on linux alone fails the pull request, not a Mac. GOOS and GOARCH in front of the
+    go command are outside the simple form, so the step is pinned whole and its one Run carries
+    them, which makes the closure the one darwin compiles."""
+    script = f"GOOS=darwin GOARCH=arm64 go vet -tags {tags} ./..."
+    return pinned_step(job, step, workdir, script, [
+        (workdir, ["./..."], script, {"tags": tags, "mode": "vet", "env": {"GOOS": "darwin", "GOARCH": "arm64"}}),
+    ])
+
+
 def reads(*entries):
     return [Read(glob, why) for glob, why in entries]
 
@@ -2070,6 +2082,8 @@ GATES = [
     gate("typecheck", "typecheck", runs=[
         step_run("typecheck", "Vet the Go daemon, its e2e-tagged live proofs included", "go vet -tags e2e ./...", DAEMON, ["./..."],
                  tags="e2e", mode="vet"),
+    ], exact=[
+        darwin_vet("typecheck", "Vet the Go daemon for darwin, its e2e-tagged live proofs included", DAEMON, "e2e"),
     ], reads=setup_go("typecheck", f"{DAEMON}/go.mod")),
 
     # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
@@ -2670,6 +2684,8 @@ GATES = [
         pinned_step("envoy-go-checks", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
             (ENVOY, ["./internal/dispatch/pmdoc/"], "go test ./internal/dispatch/pmdoc/", {}),
         ]),
+        darwin_vet("envoy-go-checks", "Vet envoy for darwin, its tagged tests included", ENVOY,
+                   "gcplive,memory,modellive,multiprocess,natslive,serverchange,smoke,twobuild"),
     ], reads=reads(
         (f"{ENVOY}/**", f"{at('envoy-go-checks', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included; the script tests below live here too"),
         ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-checks', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
@@ -2750,6 +2766,7 @@ GATES = [
             (INFRA, [pkg], f"go test -tags natslive {pkg}", {"tags": "natslive"})
             for pkg in INFRA_NATSLIVE_PACKAGES
         ]),
+        darwin_vet("envoy-infra-go", "Vet envoy-infra for darwin, its live-test tags included", INFRA, "pulumilive,natslive"),
     ], reads=reads(
         (f"{INFRA}/**", f"{at('envoy-infra-go', 'Check Go formatting')}: gofmt -l . in packages/envoy/infra reads every .go file under it"),
         (".github/actions/pull-test-images/**", at("envoy-infra-go", "Pull the NATS and Postgres test container images")),
