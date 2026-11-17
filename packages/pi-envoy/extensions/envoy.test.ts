@@ -94,6 +94,7 @@ import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 import {
+  type BranchEntry,
   type CommandContext,
   createStandInHost,
   type SessionContext,
@@ -1490,20 +1491,24 @@ interface SessionPodListener {
   readonly registrations: (session: string) => number;
   /** The bodies of the claims `seen` holds: of `session` when it is named, else of every one. */
   readonly claims: (session?: string) => unknown[];
+  /** Gives `session` interest rows the listener answers an interest read with. */
+  readonly seedInterest: (session: string, topics: readonly string[]) => void;
 }
 
 /**
  * The listener a session pod's sessions register with, standing in `globalThis.fetch` for every
  * instance a row boots against it. Every registration and every role claim any of them sends
  * lands in `seen`, in the order sent, and every role lane a session takes out of its interests in
- * `released`; a role lookup names the session whose claim of that role landed last, and none
- * before one has.
+ * `released`. A role lookup names the session whose claim of that role landed last, until that
+ * session hands the role back or is deregistered, and none before one has or after. An interest
+ * read answers the rows `seedInterest` gave the session, and nothing for any other.
  */
 function sessionPodListener(): SessionPodListener {
   const seen: SessionPodRequest[] = [];
   const released: string[] = [];
   const registrations = new Map<string, number>();
   const holders = new Map<string, string>();
+  const interests = new Map<string, readonly string[]>();
   globalThis.fetch = async (input, init) => {
     const { pathname } = new URL(input.toString());
     const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
@@ -1513,11 +1518,24 @@ function sessionPodListener(): SessionPodListener {
     }
     if (pathname === "/v1/interests/unsubscribe") {
       for (const topic of body.topics as string[]) {
-        if (topic.startsWith("notifications.role.")) {
-          released.push(`${topic.slice("notifications.role.".length)}@${body.session_id}`);
-        }
+        if (!topic.startsWith("notifications.role.")) continue;
+        const role = topic.slice("notifications.role.".length);
+        released.push(`${role}@${body.session_id}`);
+        if (holders.get(role) === body.session_id) holders.delete(role);
       }
       return response({});
+    }
+    if (init?.method === "DELETE" && pathname.startsWith("/v1/sessions/")) {
+      const session = decodeURIComponent(pathname.slice("/v1/sessions/".length));
+      for (const [role, holder] of holders) if (holder === session) holders.delete(role);
+      return response({});
+    }
+    if (pathname.startsWith("/v1/interests/")) {
+      const session = pathname.slice("/v1/interests/".length);
+      const topics = interests.get(session);
+      if (topics !== undefined) {
+        return response({ session_id: session, machine_id: "test", dir: "/tmp", topics });
+      }
     }
     if (pathname === "/v1/roles/set") {
       seen.push({ claimed: body });
@@ -1549,24 +1567,29 @@ function sessionPodListener(): SessionPodListener {
           ? [request.claimed]
           : []
       ),
+    seedInterest: (session, topics) => {
+      interests.set(session, topics);
+    },
   };
 }
 
 /**
- * A fresh session `sessionID` in a session pod, registering with `listener`. A `launch` names the
- * role the pod's launch names in `ENVOY_SESSION_ROLE` and, when it names one, the session it names
- * for it in `ENVOY_SESSION_ROLE_SESSION` (agent-infra's sessions workload); with no `launch` the
- * environment is left as it is. The host has one session manager, as Oh My Pi's has: `move` takes
- * it to session `id` the way `reason` does (a `/fork` or a tree branch carries the branch on, a
- * `/new` starts an empty one, a resume opens the branch `resumed` gives). `heartbeat` runs one
- * heartbeat pass and lets it settle, `records` reads the role claim records the session's
- * transcript holds, and `notices` is every notice the extension showed on screen.
+ * A session `sessionID` in a session pod, registering with `listener`, its transcript starting with
+ * `transcript` (a fresh session has none). A `launch` names the role the pod's launch names in
+ * `ENVOY_SESSION_ROLE` and, when it names one, the session it names for it in
+ * `ENVOY_SESSION_ROLE_SESSION` (agent-infra's sessions workload); with no `launch` the environment
+ * is left as it is. The host has one session manager, as Oh My Pi's has: `move` takes it to session
+ * `id` the way `reason` does (a `/fork` or a tree branch carries the branch on, a `/new` starts an
+ * empty one, a resume opens the branch `resumed` gives). `heartbeat` runs one heartbeat pass and
+ * lets it settle, `records` reads the role claim records the session's transcript holds, and
+ * `notices` is every notice the extension showed on screen.
  */
 async function bootSessionPod(
   query: string,
   sessionID: string,
   listener: SessionPodListener,
-  launch?: { readonly role: string; readonly session?: string }
+  launch?: { readonly role: string; readonly session?: string },
+  transcript: readonly BranchEntry[] = []
 ) {
   if (launch !== undefined) {
     process.env.ENVOY_SESSION_ROLE = launch.role;
@@ -1578,6 +1601,7 @@ async function bootSessionPod(
   const intervals: (() => void)[] = [];
   const notices: string[] = [];
   const manager = { id: sessionID, branch: (): readonly unknown[] => fixture.entries };
+  fixture.entries.push(...transcript);
   const base = sessionContext(sessionID);
   const context: SessionContext = {
     ...base,
@@ -11610,6 +11634,41 @@ console.log(JSON.stringify(args));
     });
   }
 
+  // A session continued from the named one at a point before the claim (a `/fork` taken from
+  // earlier in the transcript) carries no record of it, but this process still holds the role
+  // under the session it continues. That hold is no way round the rule either: the new session
+  // claims nothing and the process hands the hold back.
+  test("a session continued from the named one before its claim takes no role from this process's hold", async () => {
+    const listener = sessionPodListener();
+    const pod = await bootSessionPod("session-role-early-fork", "ses_pod_parent", listener, {
+      role: "fan-cloud",
+      session: "ses_pod_parent",
+    });
+    await pod.move("fork", "ses_pod_early", () => []);
+    await pod.heartbeat();
+    await pod.shutdown();
+    expect(listener.claims()).toEqual([roleClaimBody("ses_pod_parent", "fan-cloud")]);
+    expect(listener.released).toEqual(["fan-cloud@ses_pod_parent"]);
+  });
+
+  // A session whose transcript holds no record of a claim, but whose listener rows name the
+  // launch's role (it held the role in a process that has ended), reads those rows when a pass
+  // establishes it. They are no way round the rule: it claims nothing for that role.
+  test("a session whose listener rows name the role claims nothing when ENVOY_SESSION_ROLE_SESSION names another", async () => {
+    const listener = sessionPodListener();
+    listener.seedInterest("ses_pod_rows", ["notifications.role.fan-cloud"]);
+    const pod = await bootSessionPod(
+      "session-role-rows",
+      "ses_pod_rows",
+      listener,
+      { role: "fan-cloud", session: "ses_pod_named" },
+      [{ type: "custom", customType: "session-note", data: {} }]
+    );
+    await pod.heartbeat();
+    await pod.shutdown();
+    expect(listener.claims()).toEqual([]);
+  });
+
   // The comparison is made at every pass, with the session open then, not once for the instance:
   // within one process the named session claims, a `/new` it moves to claims nothing and hands
   // the role back, and a resume of the named session claims it again. The person is told on
@@ -11652,12 +11711,22 @@ console.log(JSON.stringify(args));
       () => undefined,
       (error: unknown) => (error instanceof Error ? error.message : String(error))
     );
+    // The listener trims a role's name before it decides, so a name padded with spaces is the
+    // same role there, and the gate reads it the same way.
+    const padded = await roleTool.execute("", { role: " fan-cloud" });
+    const paddedBridge = await claimEnvoyRole("ses_pod_asked", "fan-cloud ", review.context).then(
+      () => undefined,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
     expect(listener.claims()).toEqual([]);
     const refusal =
       "envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_named; this session ses_pod_asked claims nothing";
     expect(refused.isError).toBe(true);
     expect(refused.content[0]?.text).toContain(refusal);
     expect(bridged).toBe(refusal);
+    expect(padded.isError).toBe(true);
+    expect(padded.content[0]?.text).toContain(refusal);
+    expect(paddedBridge).toBe(refusal);
 
     const moved = await roleTool.execute("", { role: "librarian" });
     expect(moved.isError).not.toBe(true);
@@ -11667,17 +11736,18 @@ console.log(JSON.stringify(args));
 
   // A launch that names the role and no session names no holder: no session claims the role. The
   // process says so once in its log, however many of its sessions it decides for and however
-  // often, and each of those sessions is told once on screen. An empty session counts as none.
+  // often, and each of those sessions is told once on screen. The variable unset and the variable
+  // set to blank both name no session.
   test("ENVOY_SESSION_ROLE with no ENVOY_SESSION_ROLE_SESSION claims nothing and says so once", async () => {
     const { lines, stop } = sessionRoleLines();
     try {
       const listener = sessionPodListener();
       const first = await bootSessionPod("session-role-unnamed", "ses_pod_unnamed", listener, {
         role: "fan-cloud",
-        session: " ",
       });
       await first.heartbeat();
       await first.heartbeat();
+      process.env.ENVOY_SESSION_ROLE_SESSION = " ";
       const second = await bootSessionPod(
         "session-role-unnamed-second",
         "ses_pod_unnamed_second",

@@ -98,12 +98,17 @@ role. The first time a session the process decides for is refused the role, the 
 line, once for the process: `envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">;
 this session <id> claims nothing`. Each refused session also shows the person one notice on
 screen: `envoy: role <role> stays with the pod's session <id>; messages to the role are not
-delivered here. /resume <id> takes it back`.
+delivered here. /resume <id> takes it back`, or, when the launch names no session, `envoy: role
+<role> is the pod's, but the pod names no session for it, so no session claims it; messages to
+the role are not delivered here`. A role name given to `envoy_role_set` or the Legion claim is read
+trimmed, as the listener reads it, so a padded name is the same role.
 
-So a `/new`, a `/fork` or a tree branch in a pod costs the person the role's messages: they are
+So a `/new`, a `/fork` or a tree branch in a pod moves the person off the role: its messages are
 not delivered to the new session. The process hands the role back when it leaves the named
-session, so nobody holds it until the named session runs again. `/resume <id>` of the named
-session claims it again, since that session's own record of the claim is acted on.
+session, so nobody holds it until the named session runs again. The listener keeps a message sent
+to a role nobody holds for an hour, unless its sender set `keep: false`, and hands it to the next
+session that claims the role, so `/resume <id>` of the named session within that hour still gets
+them: that session's own record of the claim is acted on, and it claims the role again.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so

@@ -2958,12 +2958,13 @@ export default function envoyExtension(pi: PiApi): void {
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
   // named session's alone, so every other session is refused it, and with no session named every
-  // session is. The process logs the refusal once (`SESSION_ROLE_NOTICE`), whichever session and
+  // session is. The name is read trimmed, as the listener reads a claim's, so a padded name is the
+  // same role. The process logs the refusal once (`SESSION_ROLE_NOTICE`), whichever session and
   // path meets it first, and the person is told once for each session refused, on screen, where
   // the role stays and how to take it back.
   const sessionRoleNoticed = new Set<string>();
   const sessionRoleRefusal = (id: string, role: string): string | undefined => {
-    if (sessionRole === undefined || role !== sessionRole || id === sessionRoleSession) {
+    if (sessionRole === undefined || role.trim() !== sessionRole || id === sessionRoleSession) {
       return undefined;
     }
     const refusal = `envoy: ENVOY_SESSION_ROLE ${sessionRole} belongs to session ${sessionRoleSession ?? "none"}; this session ${id} claims nothing`;
