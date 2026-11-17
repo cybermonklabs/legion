@@ -108,7 +108,8 @@ const dequeueRetry = 20 * time.Millisecond
 // any of them. Each case then holds the count to the read executor's own lines (one per read), so
 // a read anything else made would fail it.
 //
-// Each case has an issue of its own, each issue its own tree root, so the nine share one daemon:
+// Each case has an issue of its own, and each issue but the tenth's is its own tree root, so the
+// eleven share one daemon:
 //
 //  1. The removal R1 is about: the issue in merging, the event at the head the record holds,
 //     GitHub answering open, the merger's pod released. GitHub is read once; the merger's claim is
@@ -143,6 +144,14 @@ const dequeueRetry = 20 * time.Millisecond
 //     the gate closed, and woken by the message it could enqueue the pull request again against
 //     the gate. The row neither wakes it nor publishes while the gate is closed, and once the test
 //     opens the gate, the merger is woken and told once.
+//  10. The issue's tree lingers: its root has closed, and a linger leaves every member where it
+//     stood, so the issue still stands in merging, but the close suspended the tree's merger, and
+//     the workflow no longer works the phase. An issue that is its own root leaves merging when that
+//     root closes, so this case's issue is a member of a second root that is done and lingers. The
+//     removal reads nothing, owes nothing, publishes nothing and wakes nobody.
+//  11. The record does not show the pull request open: the same holds. The record shows it closed
+//     only after the boot, since the boot's start read reads every issue whose pull request the
+//     record shows open, and the boot waits for that read.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	rig := newDequeueRig(t)
 	woken := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
@@ -154,6 +163,8 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	retired := rig.seed(t, phase.Merging, supervise.StateRetired, false)
 	failed := rig.seed(t, phase.Merging, supervise.StateFailed, true)
 	gated := rig.seed(t, phase.Merging, supervise.StateSuspended, true)
+	lingering := rig.seedUnderLingeringRoot(t)
+	closed := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	rig.boot(t)
 
 	t.Run("a released merger is woken and told once its session holds the role", func(t *testing.T) {
@@ -309,6 +320,15 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.readsWere(t, issue, reads, 1)
 		rig.wokenOnce(t, issue)
 	})
+
+	t.Run("an issue whose tree lingers reads nothing", func(t *testing.T) {
+		rig.dropped(t, lingering, lingering.head, "lingers")
+	})
+
+	t.Run("a pull request the record does not show open reads nothing", func(t *testing.T) {
+		rig.closePullRequest(t, closed)
+		rig.dropped(t, closed, closed.head, "the pull request is closed")
+	})
 }
 
 // dequeueRig is the daemon this test drives and the stand-ins it reads back from: GitHub, Envoy's
@@ -393,9 +413,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, startedAgainIssue(r.cfg, key, key, stands), claims...)
 	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
 		ctx := context.Background()
-		if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: startedAgainRepo,
-			Number: issue.number, Branch: claim.IssueBranch(key), Base: "main", HeadSHA: issue.head, Failing: []string{},
-			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}); err != nil {
+		if err := r.records.PutPullRequest(ctx, tx, openPullRequest(issue)); err != nil {
 			return err
 		}
 		if !gateClosed {
@@ -407,10 +425,74 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
 	}
+	return r.track(issue)
+}
+
+// seedUnderLingeringRoot records, before the boot, one case's issue in merging as a member of a
+// tree whose root has closed and lingers: the root done, its linger deadline an hour away, and the
+// member left where it stood, as a linger leaves every member (record.TreeLingers). The member
+// carries what seed gives an issue: its released merger, bound to the root's lifecycle, and the
+// open pull request seed records.
+func (r *dequeueRig) seedUnderLingeringRoot(t *testing.T) dequeueIssue {
+	t.Helper()
+	index := len(r.issues) + 1
+	key := r.cfg.Project + "-" + strconv.Itoa(index)
+	rootKey := r.cfg.Project + "-" + strconv.Itoa(100+index)
+	issue := dequeueIssue{key: key, number: 300 + index, head: dequeueHead(300 + index)}
+	merger := r.claim(t, key, claim.RoleMerger, supervise.StateSuspended)
+	merger.Tree = rootKey
+	issue.merger = merger.Token
+	issue.topic = notify.RoleTopicPrefix + string(issue.merger)
+
+	root := startedAgainIssue(r.cfg, rootKey, rootKey, phase.Done)
+	until := time.Now().Add(time.Hour)
+	root.Status, root.DispatchStatus, root.LingerUntil = "done", "done", &until
+	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, root, merger)
+	putOutboxIssue(t, r.pool, r.records, startedAgainIssue(r.cfg, key, rootKey, phase.Merging))
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		return r.records.PutPullRequest(context.Background(), tx, openPullRequest(issue))
+	}); err != nil {
+		t.Fatalf("record the pull request of %s: %v", key, err)
+	}
+	return r.track(issue)
+}
+
+// openPullRequest is issue's pull request open at the issue's head on main, as GitHub last read
+// it mergeable and clean, so the boot's start read applies nothing.
+func openPullRequest(issue dequeueIssue) record.PullRequest {
+	return record.PullRequest{State: record.PullRequestOpen, Issue: issue.key, Repo: startedAgainRepo,
+		Number: issue.number, Branch: claim.IssueBranch(issue.key), Base: "main", HeadSHA: issue.head, Failing: []string{},
+		Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}
+}
+
+// track makes issue one of the cases: GitHub serves its pull request open, the listener answers
+// that no session holds its merger's topic, and the boot waits for its start read.
+func (r *dequeueRig) track(issue dequeueIssue) dequeueIssue {
 	r.github.serve(issue)
 	r.listener.unheld(issue.topic)
 	r.issues = append(r.issues, issue)
 	return issue
+}
+
+// closePullRequest records issue's pull request closed at its head, as the record holds it once
+// GitHub's closed is applied. A case calls it after the boot, since the boot waits for its start
+// read of every issue whose pull request the record shows open.
+func (r *dequeueRig) closePullRequest(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		pr, err := r.records.PullRequest(ctx, tx, issue.key)
+		if err != nil {
+			return err
+		}
+		if pr == nil {
+			return fmt.Errorf("the record holds no pull request for %s", issue.key)
+		}
+		pr.State = record.PullRequestClosed
+		return r.records.PutPullRequest(ctx, tx, *pr)
+	}); err != nil {
+		t.Fatalf("record the pull request of %s closed: %v", issue.key, err)
+	}
 }
 
 // claim is role's claim on key standing in state, which for a suspended claim is the idle

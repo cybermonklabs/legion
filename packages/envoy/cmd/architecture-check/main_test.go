@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"unicode"
 
@@ -205,6 +206,24 @@ func TestTheBuiltBinary(t *testing.T) {
 			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and stderr starting %q", got.code, got.stdout, got.stderr, prefix)
 		}
 		expectNoCommand(t, "stderr", got.stderr)
+	})
+}
+
+// An entry that is no file, no directory and no symbolic link is not a note, though its name is a
+// note's: the built binary warns of the named pipe queue.md once, as an other entry, and the valid
+// note beside it keeps the exit status at 0.
+func TestANamedPipeIsAWarningThatKeepsTheExitStatus(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "architecture-check")
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "api.md"), []byte("---\ntitle: API\n---\nThe one note.\n"))
+	pipe := filepath.Join(dir, "queue.md")
+	if err := syscall.Mkfifo(pipe, 0o644); err != nil {
+		t.Fatalf("make the named pipe %s: %v", pipe, err)
+	}
+	expect(t, runBinary(t, binary, "", dir), result{
+		stdout: "architecture-check: " + dir + ": 1 note, the set is valid\n",
+		stderr: "architecture-check: warning: " + pipe + ": not a note (other entry); the importer passes over it\n",
 	})
 }
 

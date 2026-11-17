@@ -158,6 +158,33 @@ func TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheClaimsRenewalIsOlderThan
 	}
 }
 
+// A claim without soft is last-claim-wins: it reads no holder, so the refusal that holds a second
+// process of one session id off the role (roleOwnSessionVerdict) does not reach it. A second
+// process under the holder's session id takes the role with a 200 inside the live window, and the
+// stored claim then names that second process. The soft claim refused first, at the same moment,
+// is what shows the claim was made inside the window.
+func TestAClaimWithoutSoftFromASecondProcessOfOneSessionIdTakesTheRole(t *testing.T) {
+	const (
+		sessionID = "ses_shared_id"
+		role      = "legion-controller"
+	)
+	rig := newRoleClaimProcessRig(t, sessionID)
+	rig.seed(t, sessionID, role, holdingProcess)
+	if refused := rig.claim(sessionID, role, secondProcess); refused.Code != http.StatusConflict {
+		t.Fatalf("a soft claim from the second process: status %d %s, want 409", refused.Code, refused.Body.String())
+	}
+
+	body := fmt.Sprintf(`{"session_id":%q,"role":%q,"client_instance_id":%q}`, sessionID, role, secondProcess)
+	recorder := httptest.NewRecorder()
+	rig.set.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("a claim without soft from the second process: status %d %s, want 200", recorder.Code, recorder.Body.String())
+	}
+	if got := rig.holdingProcessOf(t, role); got != secondProcess {
+		t.Fatalf("the stored claim names the process %q, want %q", got, secondProcess)
+	}
+}
+
 // The refill this guards: a listener restart leaves the role claim view unable to answer, and
 // while it cannot, a registration renews only the roles its interest row names, so a claim only the
 // view would have named goes unrenewed (store.Registry.RenewRoleClaims). A renewal older than the
@@ -363,5 +390,39 @@ func TestTheRoleLookupAnswersALapsedHoldersProcess(t *testing.T) {
 	}
 	if answer.Holder != sessionID || answer.ClientInstanceID != holdingProcess {
 		t.Fatalf("the lapsed answer names holder %q of process %q, want %q of %q", answer.Holder, answer.ClientInstanceID, sessionID, holdingProcess)
+	}
+}
+
+// The 404 of a lapsed holder whose claim names no process leaves client_instance_id out, as the
+// 200 of such a claim does (TestTheRoleLookupAnswersTheProcessTheHoldersClaimNames says why an
+// empty field would mislead the client). The body is decoded into a map, because
+// roleHolderError's string member cannot tell an empty field from no field.
+func TestTheRoleLookupOfALapsedClaimThatNamesNoProcessLeavesTheFieldOut(t *testing.T) {
+	const (
+		sessionID = "ses_shared_id"
+		role      = "legion-controller"
+	)
+	rig := newRoleClaimProcessRig(t, sessionID)
+	rig.seed(t, sessionID, role, "")
+	if got := rig.holdingProcessOf(t, role); got != "" {
+		t.Fatalf("the seeded claim names the process %q, want none", got)
+	}
+	if err := rig.deps.sessions.Delete(context.Background(), sessionID); err != nil {
+		t.Fatalf("end %s's session: %v", sessionID, err)
+	}
+
+	recorder := rig.lookup(role)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1/roles/%s once its holder's record has gone: status %d %s, want 404", role, recorder.Code, recorder.Body.String())
+	}
+	var answer map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode %s: %v", recorder.Body.String(), err)
+	}
+	if holder := string(answer["holder"]); holder != `"`+sessionID+`"` {
+		t.Fatalf("the lapsed answer names holder %s, want %q: %s", holder, sessionID, recorder.Body.String())
+	}
+	if value, present := answer["client_instance_id"]; present {
+		t.Fatalf("the lapsed answer of a claim that names no process holds client_instance_id %s, want the field left out: %s", value, recorder.Body.String())
 	}
 }
