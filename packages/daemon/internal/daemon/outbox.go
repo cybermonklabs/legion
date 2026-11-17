@@ -1418,9 +1418,10 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		// suspended or retired with its launch and its generation kept, so nothing supersedes the
 		// row. It finishes here, before any publish, since no ready queues a catch-up while the
 		// child is out of the workflow (workflow's claimReady, the same rule) and its next launch
-		// writes a fresh one. A root's catch-up is not judged by this check: the rest of
-		// deliverNotice and noticeAnswered end it by its architect's claim and its own record, as
-		// on main.
+		// writes a fresh one. A root's catch-up is not judged by this check: besides the endings
+		// every notice has, it ends when a newer one supersedes it (catchUpSuperseded, above), when
+		// its architect stopped with its finished tree (stoppedWithTree, below), or when no session
+		// holds its role and its claim will not hold it again (noticeAnswered's architectEnded).
 		if !claim.IsTreeRoot(issue.Key, issue.Tree) && !record.InWorkflow(issue) {
 			r.log.Info("outbox catch-up finished undelivered: its issue is out of the workflow", "row", row.ID, "issue", row.Issue,
 				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
