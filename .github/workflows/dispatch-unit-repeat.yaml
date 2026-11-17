@@ -7,20 +7,25 @@ name: Dispatch unit suite repeated
 # whose head says what it reads and writes). Each leg draws its own seed. Three legs a lane make
 # six legs a run.
 #
-# What a leg publishes. Its report goes to the step summary. Each failing row gets one `::error`
-# annotation, which the check-runs API returns too, and so does each failure that belongs to no
-# row. The artifact holds report.md, report.json, junit.xml and bun.log, which is Bun's whole
-# output. The leg fails when a row failed, when Bun exited non-zero, when it read no testcase, or
-# when a failure belongs to no row.
+# What a leg publishes. Its report goes to the step summary. The leg prints one `::error`
+# annotation for each failure that belongs to no row, then one for each failing row. GitHub keeps
+# at most 10 error annotations a step: its REST "Check runs" page says "GitHub Actions are limited
+# to 10 warning annotations and 10 error annotations per step". So the leg prints at most 10
+# errors. When there are more failures, the tenth error says how many more report.md lists. The
+# artifact holds report.md, report.json, junit.xml and bun.log, which is Bun's whole output. The
+# leg fails when a row failed, when Bun exited non-zero, when it read no testcase, or when a
+# failure belongs to no row.
 #
-# Why a workflow of its own. GitHub starts a `schedule` and a `workflow_dispatch` only from the
-# default branch, as dispatch-browser-nightly.yaml's head says. So the `pull_request` trigger,
-# filtered to this file and the tool, is what proves this job, and any later change to it, before
-# the merge. It runs on no other pull request. Main's ruleset does not require its check, so it
-# gates nothing. The other route was a job in dispatch-browser-nightly.yaml. That would need a
-# third cron there and an `if:` on that file's two jobs, since both of its crons start every job.
-# And a dispatch of that file to prove this job would start the eight-runner full browser lane
-# beside it.
+# Why a workflow of its own. GitHub starts a `schedule` from the default branch alone. It offers
+# `workflow_dispatch` only once the default branch holds the file. After that,
+# `gh workflow run dispatch-unit-repeat.yaml --ref <branch>` runs a branch's copy, as
+# dispatch-browser-nightly.yaml says of its own. Until this file is on the default branch, the
+# `pull_request` trigger is the only way to run it. That trigger is filtered to this file and the
+# tool, so it also runs the job on a later change to either before the merge, and on no other
+# pull request. Main's ruleset does not require its check, so it gates nothing. The other route
+# was a job in dispatch-browser-nightly.yaml. That would need a third cron there and an `if:` on
+# that file's two jobs, since both of its crons start every job. And a dispatch of that file to
+# prove this job would start the eight-runner full browser lane beside it.
 #
 # Why 20 reruns a leg and three legs a lane. Under one seed every rerun repeats one order (Bun
 # 1.4.4, measured for dispatch://INFRA-1511). So the reruns find a row that fails one run in
@@ -28,14 +33,18 @@ name: Dispatch unit suite repeated
 # with probability 1 - 0.95^60, about 95 per cent, against about 64 per cent for 20 runs. More
 # reruns under one seed buy no new order. More legs buy both.
 #
-# MEASURED LEGS, filled in by a later commit from this workflow's first run on its pull request:
-# the wall time and the peak memory of one leg of each lane.
-# The peak is the "in use at the most" figure on the report's "Machine memory" line.
-#   web:     <minutes> min, <MiB> MiB peak
-#   harness: <minutes> min, <MiB> MiB peak
+# The measured legs. The first run of this workflow, on its pull request (run 44023917835, at
+# head 1df8e22c, 2026-11-17), ran six legs, each with 20 reruns and 0 failing rows. The time is
+# the test step's, and the peak is the "in use at the most" figure of the report's "Machine
+# memory" line, of the runner's 15,984 MiB:
+#   web:     502, 563 and 632 s; 5,138 to 6,120 MiB at the most (280 files, 4,885 rows a run)
+#   harness: 1,070, 1,233 and 1,334 s; 3,383 to 3,642 MiB at the most (41 files, 661 rows a run,
+#            1 skipped)
+# So 20 reruns a leg fit one standard runner with room in memory, and a run takes about 23 min.
 #
 # What a red run does, and what it does not. The leg fails, and its report and its artifact stay
-# on the run. GitHub mails the default branch's last committer that a scheduled workflow failed.
+# on the run. GitHub's "Events that trigger workflows" page says: "Notifications for scheduled
+# workflows are sent to the user who last modified the cron syntax in the workflow file."
 # Nothing else is told: no check on any pull request, no issue, no message. dispatch://INFRA-1066's
 # R22 owns a reader of scheduled results, as dispatch-browser-nightly.yaml's head says of its own,
 # and this workflow builds no second one.
@@ -52,8 +61,9 @@ name: Dispatch unit suite repeated
 # (https://docs.github.com/en/actions/concepts/billing-and-usage, which the runner pricing
 # reference, https://docs.github.com/en/billing/reference/actions-runner-pricing, links) says:
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
-# runner minutes a run is six legs times the leg time: 6 x <leg minutes> min, a placeholder until
-# the first run measures it.
+# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the first run
+# was 9, 10 and 11 minutes for the web legs and 19, 22 and 24 for the harness legs: 95 minutes a
+# run, and $0, since those minutes are free here.
 
 on:
   schedule:
@@ -70,8 +80,11 @@ on:
       - packages/dispatch/e2e/tools/unit-repeat.ts
 
 # A newer push to a pull request cancels the older run, waiting or running: its report answers
-# for a head the pull request no longer has. A scheduled or dispatched run is never cancelled. A
-# second one on the same ref waits for the first, so no week's report is lost.
+# for a head the pull request no longer has. A running scheduled or dispatched run is never
+# cancelled. At most one more run of the group waits behind it, and a newer run replaces a waiting
+# one. GitHub's "Control the concurrency of workflows and jobs" page says: "When a new job or
+# workflow run is queued, any existing pending job or workflow run in the same group is canceled
+# and replaced".
 concurrency:
   group: dispatch-unit-repeat-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -86,9 +99,10 @@ jobs:
     runs-on: ubuntu-24.04
     # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a job's
     # budget is the sum of its step budgets plus the measured maximum of the steps without one.
-    # 75 is a placeholder until the first run measures it: the test step's 60, and 15 for the
-    # install and setup steps.
-    timeout-minutes: 75
+    # The test step's budget is below. The steps without one measured at most 52 s together on
+    # run 44023917835 (19 s of it the harness legs' zsh install), so 1 minute: 13 + 1 = 14
+    # minutes for a web leg and 26 + 1 = 27 for a harness leg.
+    timeout-minutes: ${{ matrix.lane == 'web' && 14 || 27 }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
       fail-fast: false
@@ -146,15 +160,17 @@ jobs:
           LEGION_TEST_PG_DSN='postgres://legion_test:ci@127.0.0.1:5432/legion_test?sslmode=disable'
           echo "LEGION_TEST_PG_DSN=$LEGION_TEST_PG_DSN" >> "$GITHUB_ENV"
           psql "$LEGION_TEST_PG_DSN" -c 'select 1'
-      # 60 is a placeholder. The first run, on this file's pull request, measures the step, and a
-      # later commit sets its budget by dispatch-browser.yaml's rule: the measured maximum plus
-      # 15 per cent, rounded up to the next whole minute, with a floor of two minutes.
+      # The budget, by dispatch-browser.yaml's rule: the measured maximum plus 15 per cent,
+      # rounded up to the next whole minute, with a floor of two minutes. Run 44023917835
+      # measured this step at 502, 563 and 632 s for the web legs, so 632 x 1.15 = 727 s, 13
+      # minutes; and at 1,070, 1,233 and 1,334 s for the harness legs, so 1,334 x 1.15 = 1,534 s,
+      # 26 minutes.
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
       # new snapshot (Bun's snapshot documentation).
       - name: Run the lane with every row 20 times under one seed
-        timeout-minutes: 60
+        timeout-minutes: ${{ matrix.lane == 'web' && 13 || 26 }}
         run: bun run test:repeat --lane ${{ matrix.lane }} --reruns 20 --out "$RUNNER_TEMP/unit-repeat"
         working-directory: packages/dispatch
         env:
