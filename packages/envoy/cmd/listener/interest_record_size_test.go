@@ -20,6 +20,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -192,4 +193,55 @@ func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t
 		t.Fatalf("the refusal says %q, want it to name the server's max payload of 1048576 bytes", refusal.Error)
 	}
 	t.Logf("the refusal: %+v", refusal)
+}
+
+// requireStoppedSessionKnown registers sessionID's wide topics of tokenBytes letters each, stops
+// it cleanly and removes its interest row, as the reaper does for a session gone that long, so the
+// known-session record is the one store left that knows it. It then sends to the session and
+// publishes on a topic its wildcard covers, and requires the send to be stored for it (200,
+// stopped) rather than refused 404, the publish to count it as a recipient that is not connected,
+// and the record to hold every topic registered. Every one of the three is read and logged before
+// any is judged, so a run that fails names all three answers.
+func requireStoppedSessionKnown(t *testing.T, sessionID string, tokenBytes int) {
+	t.Helper()
+	const topic = "notifications.dispatch.issue.K-0.counted"
+	rig := newRecipientRig(t)
+	topics := wideTopics(300, tokenBytes, "legion-controller")
+	topics = topics[:len(topics)-1] // no role lane: the session holds no role
+	rig.register(t, recipientSender, []string{topic})
+	rig.knownSessionRig.register(t, sessionID, map[string]any{"topics": topics})
+	rig.stop(t, sessionID)
+	rig.reapInterest(t, sessionID)
+
+	sent := rig.send(t, sessionID, nil)
+	t.Logf("a send to the stopped %s: status %d, state %q, recipient_state %q, error %q", sessionID, sent.status, sent.State, sent.RecipientState, sent.Error)
+	published := rig.publish(t, topic, "stopped-"+sessionID)
+	t.Logf("a publish on %s: %s", topic, strings.TrimSpace(published.Body.String()))
+	record, known := rig.known.Get(sessionID)
+	t.Logf("%s's known-session record: known %v, %d topics, %d bytes of them as JSON", sessionID, known, len(record.Topics), len(mustJSON(t, record.Topics)))
+
+	sent.requireAnswer(t, "a send to the stopped "+sessionID, sessionStateStopped, session.Gone)
+	assertCounts(t, published, 1, 0)
+	if !known {
+		t.Fatalf("the known-session store holds no record of %s", sessionID)
+	}
+	for _, registered := range topics {
+		if !slices.Contains(record.Topics, registered) {
+			t.Fatalf("%s's known-session record lacks %s, one of the %d topics registered", sessionID, registered, len(topics))
+		}
+	}
+}
+
+// The case: a session whose topics take about 1.18 MB as JSON, past the server's 1 MiB max payload.
+// Its known-session record is stored in chunks, so once it stops a send to it is stored for it and
+// a publish on its topics counts it. Before the record was stored in chunks its write was refused
+// for its size, the registration answered 200 with a WARN, and the session had no record: the send
+// answered 404 and the publish counted nobody.
+func TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted(t *testing.T) {
+	requireStoppedSessionKnown(t, "ses_known_wide_long", 3900)
+}
+
+// The control: the same 300 topics, each of about 50 bytes, under the max payload.
+func TestAStoppedSessionUnderTheMaxPayloadIsSentToAndCounted(t *testing.T) {
+	requireStoppedSessionKnown(t, "ses_known_wide_short", 10)
 }

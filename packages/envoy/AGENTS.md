@@ -3783,6 +3783,19 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   adding it keeps a paused session's grace at least `InterestReapGrace` after its last heartbeat.
   Release order follows from it: no build that skips unchanged interest writes may run while any listener on the shared `envoy_interests` bucket still reaps at 10 minutes, and this build is one that skips them (`Registry.UpsertWithin`).
 
+- An interest record or a known-session record too large for one NATS message is stored in chunks (`internal/kvchunk`), in the record's own bucket, and every other record stays one value as before, so a record an earlier build wrote reads with no migration.
+  A record fits one message while its JSON is no larger than the connection's max payload less 1 KiB for the write's headers (`kvchunk.HeaderBytes`), read at each write (`bus.KeyValue.MaxPayload`), so a hub that raises or lowers its max payload changes the layout with no new build.
+  A larger record is written as chunks under `=chunk.<generation>.<index>`, a new random generation per write, and then as a manifest under the record's own key (`chunked {"generation":…,"chunks":…,"bytes":…,"sha256":…}`), with the write a whole record uses: the interest record's compare-and-swap, the known-session record's put.
+  No session id under `=chunk.` is stored: an interest write for one is a `400`.
+  A reader joins the chunks and checks their length and SHA-256 before it decodes them, so it gets the old record whole or the new record whole, never a mix:
+  a cache's watcher is delivered a manifest's chunks before the manifest, in stream order, and joins from those;
+  a read from the bucket reads each chunk from the stream's leader (`bus.KeyValue.GetFromLeader`), and one that finds a chunk gone reads the manifest again, which a rewrite has moved, up to five times.
+  A manifest whose chunks are not all there at the same revision, or do not join, is a record this build cannot decode (`store.ErrMalformedInterest` for the interest record), which the session's next registration replaces.
+  A write deletes the chunks of the record it replaced once its manifest lands, and its own once the bucket refused the manifest or the write took more than a minute before sending it (`kvchunk.WriteBound`), so a write that stops at any step leaves the old record served.
+  What a crash or a call that did not answer leaves, no record names, and it is collected once the cache took it more than 10 minutes ago (`kvchunk.Grace`) and while the cache follows its bucket: by every interest reaper pass (`store.Registry.StartReaper`, which logs `chunks_collected`) and by the known-session store's hourly sweep.
+  A listener of an earlier build reads a manifest as a record it cannot decode and logs each chunk as a value it cannot decode; it could store no such record either, since the bus refused the write.
+  A KV write the bus still refuses for its size, past the server's max payload or the bucket's largest value, is `bus.ErrTooLarge` naming the size and the bound (`bus.KeyValue.tooLarge`), which the registration route answers `413` with no `Retry-After`.
+
 - The known-session store (`envoy_known_sessions`, `internal/session/known.go`) holds one record per session that registered through any listener within `session.KnownSessionRetention` (30 days), keyed by session id:
   its title, its capabilities, the topics its registration stored, and its last seen time (`session.KnownSession`).
   A record says the session was known in the last 30 days, never that it is registered now.
@@ -3798,6 +3811,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   so a record another listener wrote is compared as this listener's watcher last delivered it, the throttle holds across every listener once each one's watcher has delivered the others' writes, and a write made before that compares an older copy and costs at most one write of a record the bucket already holds.
   A clean stop is written whatever the throttle would say (`session.KnownSessions.TouchWithin`):
   a running session rewrites its record at least once per refresh age, so an unchanged-content write at its stop would be skipped and leave `last_seen` up to a refresh age before the stop, which a send to the stopped session answers and both tools print.
+  A record too large for one message is written in chunks, as an interest record is (the item above), so a session whose topics are past the max payload is still known and counted.
   A failed write is a WARN and nothing else: the route answers whatever the write did.
   The bucket is in `bus.ListenerBuckets()`, so envoy-infra grants it to the listener, to the host user a host's sessions share and to Dispatch (`packages/envoy/infra/core/permissions.go`, and `packages/envoy/infra/README.md` for what that widens).
 
@@ -4950,7 +4964,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   `consumer_start` is the stream sequence the consumer starts at (`deliveryAnswer.ConsumerStart`, from `bus.SessionConsumers.Ensure`; left out when it is 0, as a listener of an earlier release leaves it out), and the plugin keeps it as the floor of its resume point, so a session that has received nothing still comes back at its consumer's start rather than at the stream's end (`packages/envoy-client/src/consumer-delivery.ts`).
   For a consumer the call created, `consumer_start` is never past the stream's last sequence + 1 as that create read the stream: it is the start the consumer was created at, after the create lowered it to the session's resume record or clamped a start past the stream's end to the stream's first sequence, where it did either ("Session consumers", "Settings").
   A registration this listener can give no consumer is refused by name before anything is written, so it leaves no interest row and no session entry:
-  `503 {"error":…,"reason":"no_grant"}`, `"consumer_limit"` or `"consumer_error"`, and `409 {"error":…,"reason":"not_requested"}` or `"invalid_session_id"` ("Session consumers", "No consumer").
+  `503 {"error":…,"reason":"no_grant"}`, `"consumer_limit"` or `"consumer_error"`, `413 {"error":…,"reason":"too_large"}` for a consumer filter whose request is past the server's max payload, which no retry changes, and `409 {"error":…,"reason":"not_requested"}` or `"invalid_session_id"` ("Session consumers", "No consumer").
+  An interest record the bus refuses for its size is `413` naming the size and the bound, with no `Retry-After`; a record past one message is stored in chunks first ("chunks" in the store list above), so this is a bucket whose own largest value is smaller.
 
 - `/v1/interests/unsubscribe` (POST)
 
@@ -5430,6 +5445,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 - **No consumer:** the registration is refused and nothing is written -- no interest row, no session entry -- since a session nothing delivers to is not registered (`subscribeHandler`, which runs the decision before both writes).
   The refusal names its reason: `503 no_grant` for a listener whose consumer call the server refused for want of a grant (`bus.ErrConsumerNotGranted`), which logs one WARN for the episode and is then answered without a server call for 10 minutes (`noGrantBackoff`);
   `503 consumer_limit` for a registration whose consumer the server refuses to create because the `ENVOY_NOTIFICATIONS` stream already holds as many consumers as its `max_consumers` allows (`bus.ErrConsumerLimitReached`, `consumerLimitRefusal`), so this listener can give that session no consumer and the session receives nothing until the cap is raised, which the refusal tells the operator to do;
+  `413 too_large` for a registration whose consumer filter makes a create or update request past the server's max payload (`bus.ErrTooLarge`), which is refused the same way at every retry, so the refusal names the size and suggests a wildcard topic that covers many of the topics;
   `503 consumer_error` for any other failed call and for a listener holding no session-consumer connection;
   `409 not_requested` for a registration that asks for no consumer;
   and `409 invalid_session_id` for an id that names no consumer.
