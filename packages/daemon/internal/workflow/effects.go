@@ -199,22 +199,34 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 // moveReason is what a move's status write posts on the issue, for the one move the daemon makes on
 // its own: a head that conflicts with its base (TriggerConflict). Every other move is a worker's
 // act — a tester's verdict, a review, a hand-off, a backward move a worker asked for — and Dispatch
-// already holds that act, so it posts nothing. A conflict's reason reached the architect, the role
-// whose phase ended and the implementer's task over Envoy only, and the issue itself showed a bare
-// status change that no person or census could read a cause from (dispatch://BET-685, 2026-11-17).
-func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest, reason string) string {
-	if trigger != TriggerConflict || reason == "" {
+// already holds that act, so it posts nothing: transition also carries a review's whole body and a
+// backward move's own reason, and neither goes on the issue a second time. A conflict's reason
+// reached the architect, the role whose phase ended and the implementer's task over Envoy only, and
+// the issue itself showed a bare status change that no person or census could read a cause from.
+// A person reads this text on the issue, so it is built from the pull request, not from the
+// conflict handler's sentence to the implementer.
+func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest) string {
+	if trigger != TriggerConflict {
 		return ""
 	}
-	text := fmt.Sprintf("Legion moved this issue from %s back to %s: %s", from, to, reason)
-	if pr != nil && pr.HeadSHA != "" {
-		head := pr.HeadSHA
-		if len(head) > 12 {
-			head = head[:12]
+	what, base := "its pull request", "its base"
+	if pr != nil {
+		if pr.Number != 0 {
+			what = fmt.Sprintf("pull request #%d", pr.Number)
+			if head := pr.HeadSHA; head != "" {
+				if len(head) > 12 {
+					head = head[:12]
+				}
+				what += " at head " + head
+			}
 		}
-		text += fmt.Sprintf(" (pull request #%d at head %s)", pr.Number, head)
+		if pr.Base != "" {
+			base = pr.Base
+		}
 	}
-	return text + "."
+	return fmt.Sprintf("Legion moved this issue from %s back to %s, because %s conflicts with %s. "+
+		"GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
+		from, to, what, base, base)
 }
 
 // notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move

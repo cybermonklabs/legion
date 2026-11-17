@@ -360,9 +360,10 @@ func TestAConflictingHeadSendsTheIssueBackToImplementingFromEveryLaterPhase(t *t
 				t.Fatalf("task %q, notice %q from %q, status %q; want both to say %q, from %s, and the issue in_progress", task, reason, from, status, want, tc.from)
 			}
 			// The move is the daemon's own, so no worker's act on Dispatch says why the issue went
-			// back: the status write posts the reason on the issue first, naming the phase it left
-			// and the head that conflicts.
-			wantPosted := fmt.Sprintf("Legion moved this issue from %s back to implementing: %s (pull request #42 at head head).", tc.from, want)
+			// back: the status write posts the reason on the issue first, naming the phase it left,
+			// the pull request and head that conflict, and the base.
+			wantPosted := fmt.Sprintf("Legion moved this issue from %s back to implementing, because pull request #42 at head head conflicts with main. "+
+				"GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward.", tc.from)
 			if posted != wantPosted {
 				t.Fatalf("the status write posts %q on the issue, want %q", posted, wantPosted)
 			}
