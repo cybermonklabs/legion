@@ -278,9 +278,12 @@ func machineChainSource() signerSource {
 //
 // Those settings are unauthenticated and choose the audience of the identity token this machine
 // mints and hands over, so they are read only from an https broker, or a loopback one
-// (requireTrustedBrokerURL), and a Google audience other than the first this machine read is
-// refused (holdGoogleAudience). keep records the audience read where none is recorded yet;
-// `identity --source` passes false and records nothing.
+// (requireTrustedBrokerURL), and a Google audience other than the one this machine kept is refused
+// before anything is detected or minted (checkGoogleAudience). keep keeps the audience only once
+// detection has found an identity to mint a token for it, and before any is minted
+// (keepGoogleAudience): a machine with no identity mints nothing and keeps nothing, so a later
+// audience or broker still gets the chain's no-source refusal. `identity --source` passes false
+// and keeps nothing.
 func machineSource(ctx context.Context, keep bool) (brokerclient.Source, []brokerclient.Skipped, error) {
 	if kind := strings.TrimSpace(clientGetenv(brokerclient.IdentityVar)); kind != "" {
 		if kind == brokerclient.IdentityKubernetes {
@@ -311,10 +314,17 @@ func machineSource(ctx context.Context, keep bool) (brokerclient.Source, []broke
 			"the broker at %s names no exchange audience in GET /v1/settings (a broker from before it published one, or one that accepts no machine identity)",
 			redact.URL(base))}}, nil
 	}
-	if err := holdGoogleAudience(base, settings.GoogleExchangeAudience, keep); err != nil {
+	if err := checkGoogleAudience(base, settings.GoogleExchangeAudience); err != nil {
 		return nil, nil, err
 	}
-	return brokerclient.DetectMachineIdentity(ctx, settings.GoogleExchangeAudience)
+	identity, skipped, err := brokerclient.DetectMachineIdentity(ctx, settings.GoogleExchangeAudience)
+	if err != nil || identity == nil || !keep {
+		return identity, skipped, err
+	}
+	if err := keepGoogleAudience(base, settings.GoogleExchangeAudience); err != nil {
+		return nil, nil, err
+	}
+	return identity, skipped, nil
 }
 
 // joinSkipped is each skipped place's reason, in the order they were looked at.
