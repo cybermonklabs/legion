@@ -917,6 +917,8 @@ It ends with the count of issues and documents it read.
 `dispatch spec-form --issue <KEY> [--artifact <document>] --terms` prints the list of terms of the document's root in place of the findings.
 Each term has one line, `<term>: <definition> (<document> version <N> of <KEY>)`, which names the approved document that defines it.
 The lines keep the server's order, sorted by term.
+Before the list comes the line of each approved version under the root that Dispatch cannot read (the answer's `unread`).
+The list can lack the terms of such a version, also when the document read is that document, and the details carry `terms` and `unread` both.
 With no `--artifact`, it reads the list from the spec of the issue, or from its Verification document while the spec has no version.
 It reads them from the issue's own read too, so for a key that names no issue it prints what `dispatch read` prints and exits 1.
 A document that no root holds has no list, and `--terms` goes with no `--root`.

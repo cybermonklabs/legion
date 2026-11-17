@@ -127,6 +127,18 @@ function noVersionLine(name: string): string {
 }
 
 /**
+ * The list of terms of `form`'s root with each approved version that Dispatch could not read as it
+ * made the list (`specFormList` in packages/envoy/internal/dispatch/api/spec_form.go): one value,
+ * so the text and the details of `--terms` each carry the whole record beside the list.
+ */
+function termsList(form: SpecFormRead): {
+  readonly terms: NonNullable<SpecFormRead["terms"]>;
+  readonly unread: NonNullable<SpecFormRead["unread"]>;
+} {
+  return { terms: form.terms ?? [], unread: form.unread ?? [] };
+}
+
+/**
  * The list of terms of the root that holds `form`'s document, as `--terms` prints it: one line per
  * term with its definition and the document, the version and the issue that define it, in the
  * server's order (sorted by term). Each approved version that Dispatch could not read gets its
@@ -140,11 +152,11 @@ function termLines(form: SpecFormRead): string[] {
         : `${form.name} is not under a root of The Spec, so it has no list of terms.`,
     ];
   }
-  const unread = unreadLines(form.unread);
-  const terms = form.terms ?? [];
-  if (terms.length === 0) return [...unread, `The list of terms of ${form.root} holds no term.`];
+  const { terms, unread } = termsList(form);
+  const lines = unreadLines(unread);
+  if (terms.length === 0) return [...lines, `The list of terms of ${form.root} holds no term.`];
   return [
-    ...unread,
+    ...lines,
     `The list of terms of ${form.root} holds ${counted(terms.length, "term")}:`,
     ...terms.map(
       (term) =>
@@ -252,7 +264,7 @@ async function issueTerms(client: DispatchClient, issue: string): Promise<Dispat
     }
     return {
       text: [...lines, ...termLines(form)].join("\n"),
-      details: { issue, artifact: form.artifact_id, root: form.root, terms: form.terms ?? [] },
+      details: { issue, artifact: form.artifact_id, root: form.root, ...termsList(form) },
     };
   }
   return {
@@ -260,7 +272,7 @@ async function issueTerms(client: DispatchClient, issue: string): Promise<Dispat
       artifacts.length === 0
         ? `${issue} has no spec and no Verification document, so Dispatch read no list of terms.`
         : lines.join("\n"),
-    details: { issue, terms: [] },
+    details: { issue, terms: [], unread: [] },
   };
 }
 
@@ -362,7 +374,7 @@ export async function specFormCommand(context: CommandContext): Promise<Dispatch
         artifact: form.artifact_id,
         version: form.version,
         root: form.root,
-        terms: form.terms ?? [],
+        ...termsList(form),
       },
     };
   }

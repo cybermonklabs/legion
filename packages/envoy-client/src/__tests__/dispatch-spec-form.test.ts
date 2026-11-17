@@ -738,6 +738,36 @@ describe("dispatch spec-form --terms", () => {
     ]);
   });
 
+  test("the details of --terms carry the list with each approved version that Dispatch could not read, as the server answers them", async () => {
+    forms["ACME-5-spec"] = {
+      ...formRead("ACME-5-spec", "spec.md", 3, "covered", { statement: 2 }),
+      terms: [session],
+      unread: [UNREAD, UNREAD_OLDER],
+    };
+    const config = {
+      url: `http://127.0.0.1:${server.port}`,
+      credential: bearerCredential("test-token"),
+    };
+    const terms = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_spec_form",
+        args,
+        cwd: stateDir,
+        host: "omp",
+        sessionId: "ses-1",
+        config,
+        env: {},
+      });
+
+    for (const args of [
+      { issue: "ACME-5", terms: true },
+      { issue: "ACME-5", artifact: "spec.md", terms: true },
+    ]) {
+      const result = await terms(args);
+      expect(result.details).toMatchObject({ terms: [session], unread: [UNREAD, UNREAD_OLDER] });
+    }
+  });
+
   test("with no --artifact, names a document with no version yet and reads the list from the next one", async () => {
     forms["ACME-6-verification"] = {
       ...formRead("ACME-6-verification", "verification.md", 1, "covered", { claim: 1 }),
