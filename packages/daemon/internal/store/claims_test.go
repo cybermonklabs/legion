@@ -818,10 +818,7 @@ func TestIssueRunsElsewhereNamesOnlyAClaimOfAnotherTreeThatHoldsAProcess(t *test
 			t.Fatalf("put %s %s: %v", implementer.Token, state, err)
 		}
 	}
-	all := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected,
-		supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended,
-		supervise.StateFailed, supervise.StateRetired}
-	for _, state := range all {
+	for _, state := range supervise.States() {
 		put(state, false)
 		named := elsewhere("LEGION-209") == "legion-LEGION-209-implementer:"+string(state)
 		if runs := !(supervise.Claim{State: state}).RunsNothing(); named != runs {
@@ -875,9 +872,7 @@ func TestClaimUnretiredIsEveryStoredStateButRetired(t *testing.T) {
 	if unretired() {
 		t.Fatalf("ClaimUnretired(%s) with no claim stored = true, want false", controller.Token)
 	}
-	for _, state := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
-		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle,
-		supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired} {
+	for _, state := range supervise.States() {
 		controller.State = state
 		if err := store.PutClaim(ctx, controller); err != nil {
 			t.Fatalf("put %s %s: %v", controller.Token, state, err)
