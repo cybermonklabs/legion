@@ -259,7 +259,7 @@ type sessionDelivery struct {
 	// read and written in session_consumer_delete.go alone, where the delete lifecycle is; a
 	// field of this type is declared with the type.
 	deleteMu   sync.Mutex
-	deletes    sync.WaitGroup
+	deletes    inflight
 	deletesOff bool
 	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex

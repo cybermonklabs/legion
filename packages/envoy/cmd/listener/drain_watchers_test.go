@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -47,41 +47,51 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 		// replaced deletes the interest and session watchers' consumers, then waits, still before
 		// the SIGTERM, until nats.go has put a consumer of its own in each one's place.
 		replaced bool
+		// frozen stops the server answering, then waits, still before the SIGTERM, until the
+		// listener's connection has gone stale, so the drain finds it reconnecting.
+		frozen bool
 	}{
 		{name: "consumers present"},
 		{name: "consumers replaced by nats.go", replaced: true},
+		{name: "connection reconnecting at the drain", frozen: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, uri := testnats.Start(t)
+			srv, uri := testnats.Start(t)
 			testnats.Connect(t, uri).Close()
 			listener := startListenerProcess(t, binary, uri, "drain-watchers")
 			listener.waitHealthy(t)
 
 			admin := testnats.Connect(t, uri)
 			t.Cleanup(admin.Close)
-			js, err := admin.JetStream()
+			js, err := jetstream.New(admin)
 			if err != nil {
 				t.Fatalf("admin JetStream: %v", err)
 			}
 			buckets := []string{bus.InterestBucket, bus.SessionBucket}
-			for _, bucket := range buckets {
-				// The listener turns healthy before the interest marker collector's first pass
-				// (main.go starts it after the bind), and that pass's scan holds a consumer of its
-				// own on the interest bucket until the scan ends, so the cache watcher's is the
-				// bucket's only one only once that scan has.
-				stream := "KV_" + bucket
-				watcher := onlyConsumer(t, js, stream)
-				if !test.replaced {
-					continue
-				}
-				if err := js.DeleteConsumer(stream, watcher); err != nil {
-					t.Fatalf("delete %s's watcher consumer %s: %v", bucket, watcher, err)
-				}
-			}
-			// Each bucket's replacement is waited for once both are lost, so the waits overlap.
 			if test.replaced {
 				for _, bucket := range buckets {
+					stream := "KV_" + bucket
+					watcher := cacheWatcherConsumer(t, js, stream)
+					if err := js.DeleteConsumer(t.Context(), stream, watcher); err != nil {
+						t.Fatalf("delete %s's watcher consumer %s: %v", bucket, watcher, err)
+					}
+				}
+				// Each bucket's replacement is waited for once both are lost, so the waits overlap.
+				for _, bucket := range buckets {
 					awaitReplacedConsumer(t, js, "KV_"+bucket)
+				}
+			}
+			if test.frozen {
+				thaw := srv.Freeze(t)
+				t.Cleanup(thaw)
+				// The client pings every second and calls the connection stale at the second
+				// ping unanswered (bus/connect.go), and then reconnects, which a frozen server
+				// never completes.
+				stale := func() bool {
+					return strings.Contains(listener.Output.String(), "envoy nats disconnected name=envoy error=")
+				}
+				if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, stale) {
+					t.Fatalf("the listener's connection never read as lost under a frozen server:\n%s", listener.Output.String())
 				}
 			}
 
@@ -96,77 +106,117 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 					t.Fatalf("the shutdown logged an error: %s", line)
 				}
 			}
+			if test.frozen {
+				// The row reads the drain of a reconnecting connection only if the drain met one.
+				if !strings.Contains(output, "drain NATS: nats: connection reconnecting") {
+					t.Fatalf("the drain did not find the connection reconnecting:\n%s", output)
+				}
+				// Nothing reaches the server, so each watcher's end says that its consumer was
+				// left to the server, and says it ended once its stops have returned.
+				for _, watcher := range listenerKVWatchers {
+					if !strings.Contains(output, watcher+" watcher's consumer was left to the server") {
+						t.Fatalf("the shutdown did not end the %s watcher itself (no line from its end):\n%s", watcher, output)
+					}
+				}
+				return
+			}
 			for _, watcher := range listenerKVWatchers {
 				if !strings.Contains(output, watcher+" watcher ended") {
 					t.Fatalf("the shutdown did not end the %s watcher itself (no line from its end):\n%s", watcher, output)
 				}
 			}
-			// The second row reads End against nats.go's replacements only if End met them, and so
-			// found no consumer gone.
-			if test.replaced && strings.Contains(output, "watcher's consumer was already gone at its end") {
-				t.Fatalf("a watcher's consumer was still gone at its end, so nats.go had not replaced it:\n%s", output)
+			if test.replaced {
+				// The row reads End against nats.go's replacements only if End met them, and so
+				// found no consumer gone.
+				if strings.Contains(output, "watcher's consumer was already gone at its end") {
+					t.Fatalf("a watcher's consumer was still gone at its end, so nats.go had not replaced it:\n%s", output)
+				}
+				return
 			}
-			if !test.replaced {
-				for _, bucket := range buckets {
-					if consumers := consumerCount(t, js, "KV_"+bucket); consumers != 0 {
-						t.Fatalf("%s carries %d consumers after the shutdown, want none", bucket, consumers)
-					}
+			for _, bucket := range buckets {
+				if left := consumersLeft(t, js, "KV_"+bucket); len(left) != 0 {
+					t.Fatalf("%s carries consumers %v after the shutdown, want none", bucket, left)
 				}
 			}
 		})
 	}
 }
 
-// awaitReplacedConsumer waits until nats.go has put a consumer of its own on stream in the place of
-// the watcher consumer the test deleted from it. That one starts at the lost one's next sequence
+// streamConsumerInfos is every consumer stream carries, as the server reports them. A listing that
+// fails fails the test (jetstream's lister reports its error, where nats.go's older one closes its
+// channel and says nothing), so a listing that read nothing is never taken for an empty stream.
+func streamConsumerInfos(t *testing.T, js jetstream.JetStream, name string) []*jetstream.ConsumerInfo {
+	t.Helper()
+	stream, err := js.Stream(t.Context(), name)
+	if err != nil {
+		t.Fatalf("read stream %s: %v", name, err)
+	}
+	lister := stream.ListConsumers(t.Context())
+	var infos []*jetstream.ConsumerInfo
+	for info := range lister.Info() {
+		infos = append(infos, info)
+	}
+	if err := lister.Err(); err != nil {
+		t.Fatalf("list %s's consumers: %v", name, err)
+	}
+	return infos
+}
+
+// replacedByNATS says whether consumer is one nats.go's ordered consumer made in the place of one
+// the server lost: such a one starts at the lost one's next sequence
 // (DeliverByStartSequencePolicy), where a watcher's own consumer, and a scan's, start at each
 // key's last record.
-func awaitReplacedConsumer(t *testing.T, js natsgo.JetStreamContext, stream string) {
+func replacedByNATS(consumer *jetstream.ConsumerInfo) bool {
+	return consumer.Config.DeliverPolicy == jetstream.DeliverByStartSequencePolicy
+}
+
+// cacheWatcherConsumer is the name of the consumer of the cache's own watcher on stream, read from
+// the consumers' configurations rather than by waiting for the others to end: the watcher reads
+// values, from each key's last record, where the interest marker collector's scan, which holds a
+// consumer of its own on the interest bucket while it runs, reads metadata only
+// (store/interest_markers.go, MetaOnly). It fails unless exactly one consumer reads that way.
+func cacheWatcherConsumer(t *testing.T, js jetstream.JetStream, stream string) string {
+	t.Helper()
+	var watchers []string
+	for _, consumer := range streamConsumerInfos(t, js, stream) {
+		if !consumer.Config.HeadersOnly && consumer.Config.DeliverPolicy == jetstream.DeliverLastPerSubjectPolicy {
+			watchers = append(watchers, consumer.Name)
+		}
+	}
+	if len(watchers) != 1 {
+		t.Fatalf("%s carries %d consumers that read values from each key's last record (%v), want its cache watcher's one", stream, len(watchers), watchers)
+	}
+	return watchers[0]
+}
+
+// awaitReplacedConsumer waits until nats.go has put a consumer of its own on stream in the place of
+// the watcher consumer the test deleted from it (replacedByNATS).
+func awaitReplacedConsumer(t *testing.T, js jetstream.JetStream, stream string) {
 	t.Helper()
 	replaced := func() bool {
-		for info := range js.Consumers(stream) {
-			if info.Config.DeliverPolicy == natsgo.DeliverByStartSequencePolicy {
+		for _, consumer := range streamConsumerInfos(t, js, stream) {
+			if replacedByNATS(consumer) {
 				return true
 			}
 		}
 		return false
 	}
 	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, replaced) {
-		t.Fatalf("nats.go did not replace the watcher consumer deleted from %s; it carries %v", stream, streamConsumers(js, stream))
+		t.Fatalf("nats.go did not replace the watcher consumer deleted from %s", stream)
 	}
 }
 
-// consumerCount is how many consumers stream carries, as the server's answer to a stream info
-// request says; a request that fails fails the test, so a listing that read nothing is never taken
-// for a stream that carries nothing.
-func consumerCount(t *testing.T, js natsgo.JetStreamContext, stream string) int {
+// consumersLeft names the consumers stream carries other than those nats.go made itself in the
+// place of a lost one (replacedByNATS). Such a replacement can be in flight when the shutdown
+// ends its watcher, which then deletes nothing, and the server removes it once its interest is
+// gone; any other consumer left is one the shutdown did not end.
+func consumersLeft(t *testing.T, js jetstream.JetStream, stream string) []string {
 	t.Helper()
-	info, err := js.StreamInfo(stream)
-	if err != nil {
-		t.Fatalf("read %s's consumers: %v", stream, err)
-	}
-	return info.State.Consumers
-}
-
-// streamConsumers lists the stream's consumers.
-func streamConsumers(js natsgo.JetStreamContext, stream string) []string {
-	var names []string
-	for name := range js.ConsumerNames(stream) {
-		names = append(names, name)
-	}
-	return names
-}
-
-// onlyConsumer waits, up to 30 s, until the stream carries exactly one consumer, its cache
-// watcher's, and returns its name; it fails naming the consumers it last saw.
-func onlyConsumer(t *testing.T, js natsgo.JetStreamContext, stream string) string {
-	t.Helper()
-	var consumers []string
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		if consumers = streamConsumers(js, stream); len(consumers) == 1 {
-			return consumers[0]
+	var left []string
+	for _, consumer := range streamConsumerInfos(t, js, stream) {
+		if !replacedByNATS(consumer) {
+			left = append(left, consumer.Name)
 		}
 	}
-	t.Fatalf("%s carried consumers %v for 30 s after the listener turned healthy, want its cache watcher's one", stream, consumers)
-	return ""
+	return left
 }

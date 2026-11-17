@@ -4382,7 +4382,7 @@ A read-only broker token carries no project either, but none of the three checks
   Any other failed delete, and one still unanswered at the drain's deadline on a connection still up, is an ERROR, `<cache> watcher end failed`.
   Only then does it drain the connection.
   It does not wait for a bind in flight: a subscription such a bind makes after the stop is drained with the rest, so the messages the server already routed to it reach its handler rather than being discarded, and the close ends a bind still in flight.
-  It is bounded to thirteen seconds, and a connection that is reconnecting is closed at once, ending no watcher, since nothing it sends reaches the server.
+  It is bounded to thirteen seconds; a connection that is reconnecting is closed at once, after the hooks run on an already-ended context, so each end says its consumer was left to the server.
   It logs completion and exits non-zero so Docker's restart policy can restore it.
   A runtime must therefore allow about twenty-eight seconds after SIGTERM (ten for HTTP, five for the role lane, thirteen for NATS):
   the compose files set `stop_grace_period: 30s` (`deploy/compose/listener.compose.yml`, `single-node.compose.yml`), the on-prem fleet's Pulumi a 30 s `stopTimeout` (`infra/host/listener.go`), the GCP hub's unit `docker stop -t 30` (`infra/gcp/cloudconfig.go`), and ECS's default `stopTimeout`, which the Fargate listener's task definition leaves unset, is 30 seconds.

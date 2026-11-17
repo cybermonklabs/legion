@@ -2,7 +2,9 @@ kind: Added
 body: |-
     The listener's shutdown logs `<cache> watcher ended` at INFO for each KV watcher it ends (`kvwatch.Watcher.End`) once every stop that end made has returned, whatever the deletes found, so the log says that each watcher ended even when nats.go had put a new consumer in the place of one the server lost. An end whose deadline, or the connection's loss, cut a wait short logs its ERROR or WARN and no such line.
 
-    A shutdown that spent its HTTP window before the session-consumer connection's drain logs `session consumer connection closed without a drain: the shutdown's HTTP window was spent` at WARN, where it closed that connection with nothing said.
+    A drain of a NATS connection that is reconnecting (`bus.Client.Drain`) still closes it at once, and now runs the drain hooks first, on a context already ended with `bus.ErrConnectionLost`: the listener's shutdown then ends its KV watchers and says, for each, that its consumer was left to the server, where before it ended none and said nothing.
+
+    A shutdown that spent its HTTP window before the session-consumer connection's drain logs `session consumer connection closed without a drain: the shutdown's HTTP window was spent` at WARN, where it closed that connection with nothing said. The shutdown's waits for the relays, the consumer deletes, the self-health monitor and the KV bucket passes no longer say `still running at shutdown` of work that had already ended when the HTTP window ran out.
 time: 2026-11-17T19:47:08.051511241Z
 custom:
     Issue: listener-watcher-end-line

@@ -248,6 +248,45 @@ func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
 	}
 }
 
+// A drain that starts while the connection is reconnecting still runs its hooks, before it closes
+// the connection, on a context that has already ended with ErrConnectionLost: each hook then ends
+// what it holds and says what it left to the server (kvwatch.Watcher.End), where a drain that ran
+// none left the listener's KV watchers unended and said nothing of them.
+func TestADrainWhileReconnectingRunsItsHooksOnAnEndedContext(t *testing.T) {
+	srv, uri := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	ran := make(chan error, 1)
+	client.AddDrainHook(func(ctx context.Context) {
+		select {
+		case <-ctx.Done():
+			ran <- context.Cause(ctx)
+		default:
+			ran <- errors.New("the hook's context was still live")
+		}
+	})
+	srv.Stop(t)
+	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+
+	if err := client.Drain(5 * time.Second); !errors.Is(err, natsgo.ErrConnectionReconnecting) {
+		t.Fatalf("Drain while reconnecting = %v, want %v", err, natsgo.ErrConnectionReconnecting)
+	}
+	select {
+	case cause := <-ran:
+		if !errors.Is(cause, bus.ErrConnectionLost) {
+			t.Fatalf("the hook ran with %v, want a context ended with %v", cause, bus.ErrConnectionLost)
+		}
+	default:
+		t.Fatal("Drain ran no hook on a connection that was reconnecting")
+	}
+	if !client.Conn.IsClosed() {
+		t.Fatal("Drain returned with the reconnecting connection still open")
+	}
+}
+
 // Drain does not wait for a bind in flight. A reconnect can lose a bind's request, which JetStream
 // then waits out for 10 s, so a shutdown that lands meanwhile, with the listener's 10 s drain
 // budget, would spend it on a subscription that delivers nothing yet. Drain returns once the

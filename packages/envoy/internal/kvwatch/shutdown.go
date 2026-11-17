@@ -65,9 +65,10 @@ func (w *Watcher) Stop() {
 // nats.go has not yet named it to the subscription (js.go deleteConsumer), and leaves it for the
 // server to remove once its interest is gone.
 //
-// End stops each watcher at once, whether or not its scan has ended: the consumers must be gone
-// before the drain. That is safe with the jetstream watcher, which sends nothing once its
-// subscription has ended, and its consume reads it until it closes.
+// End stops each watcher at once, whether or not its scan has ended: each watcher's subscription
+// must end, and the consumer it names be deleted, before the connection drains (a consumer nats.go
+// has not yet named, above, is the server's to remove). That is safe with the jetstream watcher,
+// which sends nothing once its subscription has ended, and its consume reads it until it closes.
 func (w *Watcher) End(ctx context.Context) {
 	w.endOnce.Do(func() { w.end(ctx) })
 }
