@@ -5311,7 +5311,9 @@ jobs:
   # two-process mode with Dispatch B run from the previous build's envoy-dispatch and web dist, then
   # from the first-rollout build's, and each direction's page served by one build against the other
   # build's server. Playwright installs as it does for dispatch-browser-multiprocess, and the rows
-  # get a database of their own, since they truncate it.
+  # get a database of their own, since they truncate it. In a merge-group run the called file's
+  # dispatch-two-builds-same job also runs the Go suite with this tree's own build as the previous
+  # build, beside this job and not after it (that job's comment says why).
   dispatch-two-builds:
     needs: changes
     if: needs.changes.outputs.dispatch_two_builds == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
