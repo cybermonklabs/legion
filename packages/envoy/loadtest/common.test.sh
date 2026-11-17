@@ -515,7 +515,9 @@ case_holder_names_escaped() {
   bash -c 'exec 9>>"$1"; exec -a "$2" sleep 300' holder "$dir/lock" "$weird" >/dev/null 2>&1 &
   holder=$!
   pids+=("$holder")
-  for ((i = 0; i < 100; i++)); do [ "$(readlink "/proc/$holder/fd/9" 2>/dev/null)" = "$dir/lock" ] && break; sleep 0.1; done
+  # -ef compares the files, as lock_holders does: readlink gives the resolved path, which is not
+  # $dir/lock as written where TMPDIR has a symlink in it.
+  for ((i = 0; i < 100; i++)); do [ "/proc/$holder/fd/9" -ef "$dir/lock" ] && break; sleep 0.1; done
   out=$(bash -c 'source "$1"; lock_holders "$2"' check "$helper" "$dir/lock")
   [[ $out == *"pid $holder ($want 300)"* ]] ||
     { fail "lock_holders did not print the holder's command line escaped"; return; }
