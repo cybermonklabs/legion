@@ -237,10 +237,11 @@ EXCEPTIONS = (
             ".github/actions/install-elan/** and packages/envoy/scripts/airlock-lean-axioms.sh - "
             "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
             "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
-            "that same corpus, so both name the function. envoy-go runs the corpus as part of "
-            "./internal/broker/... in its step \"Count the database broker suites' skips\", "
-            "through packages/envoy/scripts/database-skips.sh, a script this tool does not read, "
-            "so no step of envoy-go appears here."
+            "that same corpus, so both name the function. envoy-go compiles it in "
+            "./internal/broker/... (its step \"Count the database broker suites' skips\", through "
+            "packages/envoy/scripts/database-skips.sh, which this tool does not read) and skips it "
+            "there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so the corpus "
+            "runs only in airlock-lean."
         ),
     ),
 )
