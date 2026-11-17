@@ -1,68 +1,127 @@
 package daemon
 
-// An update round's ask that reached no session is lost, not given (dispatch://INFRA-4109 R4,
-// dispatch://INFRA-4131 R4, verification's c-undelivered-ask-asked-again). The ask row that finds
-// no live holder on the role's topic (notify.ErrNoHolder) takes the claim's ask mark back
-// (updateAsk, supervise's Machine.PodUpdateAskLost), so a later sweep asks the claim again, and
-// the round ends once it answers, long before its bound. An ask that reached a session keeps its
-// mark, and that claim is asked once.
+// An update round's ask counts once it reached a session (dispatch://INFRA-4109 R4,
+// dispatch://INFRA-4131 R4, verification's c-undelivered-ask-asked-again). The sweep enqueues the
+// ask and marks nothing; the outbox's row publishes it under the claim's own lock and marks the
+// claim asked only when the publish reached a session (updateAsk, supervise's
+// Machine.PublishUpdateAsk). So an ask that finds no live holder on the role's topic
+// (notify.ErrNoHolder) leaves the claim unasked, a later sweep asks it again, and the round ends
+// once it answers, long before its bound; an ask that reached a session is the only one its role
+// gets, whatever other row of the round runs before or after it.
 //
-// These cases drive the pod-update rig of podupdate_test.go and run each ask row the sweep wrote
-// through the outbox's own executor, against a listener that refuses a topic no live session
-// holds as the real one does (holderPublisher, notice_routing_test.go).
+// These cases drive the pod-update rig of podupdate_test.go, whose role-message lane runs each ask
+// row the sweep wrote through the outbox's own executor, against a listener that refuses a topic
+// no live session holds as the real one does (holderPublisher, notice_routing_test.go).
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// roleTopic is the Envoy topic of role's claim, which the round's ask to that role goes to.
-func (r *podUpdateRig) roleTopic(role claim.Role) string {
-	return notify.RoleTopicPrefix + string(r.tokens[role])
-}
+// updateAskCutover is the migration that clears the ask mark an earlier release wrote when it
+// queued an ask still queued at the deploy (store's 20261117200337).
+const updateAskCutover = 20261117200337
 
-// askRunner is the outbox's executor of the rig's ask rows: the rig's project and supervisor, the
-// listener given, and the sweep's own logger, so the rig's log holds the executor's lines too.
-func (r *podUpdateRig) askRunner(listener notify.Publisher) *outbox {
-	return &outbox{project: podUpdateProject, notices: listener, supervisor: r.sup, log: r.log}
-}
-
-// runAsks runs every update-ask row the sweep has written and ran does not hold yet, oldest
-// first, through runner, as the role-message lane runs them, and records each in ran. Each run
-// starts with every machine settled, as the lane's rows meet them between sweeps; a row that
-// still meets a machine deciding (a post of the sweep's landing) answers a wait and is run again,
-// as the lane runs a waiting row again. Every row here is delivered or finds no holder, which both
-// finish the row, so any other error fails the test.
-func (r *podUpdateRig) runAsks(runner *outbox, ran map[int64]bool) {
+// migrate runs the embedded migration of version over the rig's database again, as the deploy's
+// Migrate runs it once over a database the earlier release left. The rig's database was built
+// from every embedded migration before any claim was seeded, so this is the one run that finds
+// the state the migration is for.
+func (r *podUpdateRig) migrate(version int) {
 	r.t.Helper()
-	for _, row := range r.rows(record.OutboxKindUpdateAsk) {
-		if ran[row.ID] {
-			continue
-		}
-		ran[row.ID] = true
-		testwait.Eventually(r.t, fmt.Sprintf("update ask %d to finish", row.ID), func() bool {
-			r.settleAll()
-			err := runner.execute(r.ctx, row)
-			if errors.Is(err, wait.ErrWaiting) {
-				return false
-			}
-			if err != nil {
-				r.t.Fatalf("run update ask %d: %v", row.ID, err)
-			}
-			return true
-		})
+	all, err := migrations.All()
+	if err != nil {
+		r.t.Fatalf("read the embedded migrations: %v", err)
 	}
+	for _, migration := range all {
+		if migration.Version == version {
+			if _, err := r.pool.Exec(r.ctx, migration.SQL); err != nil {
+				r.t.Fatalf("run %s: %v", migration.Name, err)
+			}
+			return
+		}
+	}
+	r.t.Fatalf("no embedded migration has version %d", version)
+}
+
+// A deploy stops the earlier release with an ask it queued, and marked asked at the enqueue, still
+// in the outbox. This release reads the mark as an ask that reached a session, so its row would
+// publish nothing. The cutover migration clears that mark, so after the deploy the row publishes
+// the ask, which reaches the session and marks the claim, and no sweep asks again: the role reads
+// the ask once.
+//
+// The negative control is the same deploy without the migration: the row finds the earlier
+// release's mark and publishes nothing, so the role is never asked and the round waits for its
+// bound. It is run by leaving the migrate call out.
+func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCutover(t *testing.T) {
+	earlier := readyWorker(claim.RoleImplementer)
+	earlier.round, earlier.reasons = podUpdateRound, podUpdateDrift
+	rig := newPodUpdateRig(t, earlier)
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
+		t.Fatalf("the implementer holds no ask mark, want the earlier release's mark written at the enqueue")
+	}
+	if err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
+		Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound),
+	}); err != nil {
+		t.Fatalf("queue the earlier release's ask: %v", err)
+	}
+
+	rig.migrate(updateAskCutover)
+	next := rig.restart()
+	next.drifts(podUpdateDrift)
+	next.runLane()
+	if n := next.deliveredTo(claim.RoleImplementer); n != 1 {
+		t.Fatalf("the implementer's topic was delivered %d asks after the deploy, want the queued one", n)
+	}
+	if c := next.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
+		t.Fatalf("the implementer records no ask after its queued ask was delivered, want it marked")
+	}
+	for range 3 {
+		next.clock.advance(time.Minute)
+		next.tick()
+		next.runLane()
+	}
+	if n := next.deliveredTo(claim.RoleImplementer); n != 1 {
+		t.Errorf("the implementer's topic was delivered %d asks, want one in all", n)
+	}
+	if n := next.askedOf(claim.RoleImplementer); n != 1 {
+		t.Errorf("the implementer was asked %d times, want the one the earlier release queued", n)
+	}
+}
+
+// deliveredTo is how many asks the rig's listener delivered to role's topic.
+func (r *podUpdateRig) deliveredTo(role claim.Role) int {
+	r.listener.mu.Lock()
+	defer r.listener.mu.Unlock()
+	n := 0
+	for _, publish := range r.listener.delivered {
+		if publish.topic == r.roleTopic(role) {
+			n++
+		}
+	}
+	return n
+}
+
+// askedOf is how many update-ask rows the sweep has written for role, finished or not.
+func (r *podUpdateRig) askedOf(role claim.Role) int {
+	r.t.Helper()
+	n := 0
+	for _, ask := range r.asks() {
+		if ask.Role == role {
+			n++
+		}
+	}
+	return n
 }
 
 // A round opens over two ready roles. The implementer's fresh session has not claimed its topic
@@ -72,26 +131,23 @@ func (r *podUpdateRig) runAsks(runner *outbox, ran map[int64]bool) {
 // pod is replaced minutes after the round opened, long before its thirty-minute bound and with no
 // bound named on the replacement's line.
 //
-// The control is the tester: its first ask reached a session, so it keeps its mark and is asked
-// once over every sweep of the round. The implementer is asked twice, and no more once its second
-// ask was delivered.
+// The control is the tester: its first ask reached a session, so it is marked and asked once over
+// every sweep of the round. The implementer is asked twice, and no more once its second ask was
+// delivered.
 //
-// The negative control is the rule before this one, BET-1291's planner and BET-690's reviewer on
-// 2026-11-17: the row that found no holder finished and left the claim marked asked, so no sweep
-// asked it again and the round waited for its bound.
+// The negative control is the rule of main before this change, BET-1291's planner and BET-690's
+// reviewer on 2026-11-17: the sweep marked the claim asked when it enqueued the ask, the row that
+// found no holder finished, and no sweep asked again, so the round waited for its bound.
 func TestPodUpdateAskThatFoundNoHolderIsAskedAgainAndTheRoundEndsLongBeforeItsBound(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	clocks := rig.replacementClocks()
-	listener := &holderPublisher{}
-	listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
-	runner := rig.askRunner(listener)
-	ran := map[int64]bool{}
+	rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
 
 	rig.tick()
-	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
-	rig.awaitAsked(claim.RoleTester, podUpdateRound)
-	rig.runAsks(runner, ran)
+	rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+	rig.awaitAskQueued(claim.RoleTester, podUpdateRound)
+	rig.runLane()
 
 	lost := loggedLines(t, rig.logs.String(), `"msg":"`+askNoHolderLine+`"`)
 	if len(lost) == 0 {
@@ -106,37 +162,28 @@ func TestPodUpdateAskThatFoundNoHolderIsAskedAgainAndTheRoundEndsLongBeforeItsBo
 		t.Fatalf("the implementer's ask reached no session, and its claim records it asked at %v; want it unasked, so a later sweep asks it again", c.UpdateTaskedAt)
 	}
 	if c := rig.claimOf(claim.RoleTester); c.UpdateTaskedAt == nil {
-		t.Fatalf("the tester's ask was delivered, and its claim records no ask; want the mark kept")
+		t.Fatalf("the tester's ask was delivered, and its claim records no ask; want it marked")
 	}
 
 	// The implementer's session now holds its topic, as a ready session does inside its first
 	// turn or at the first-turn bound (supervise.SaidReady).
-	listener.setAbsent()
+	rig.listener.setAbsent()
 	rig.clock.advance(time.Minute)
 	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
-	rig.runAsks(runner, ran)
 	for range 3 {
 		rig.clock.advance(time.Minute)
 		rig.tick()
-		rig.runAsks(runner, ran)
+		rig.runLane()
 	}
 
-	asked := map[claim.Role]int{}
-	for _, ask := range rig.asks() {
-		asked[ask.Role]++
+	if n := rig.askedOf(claim.RoleImplementer); n != 2 {
+		t.Errorf("the implementer was asked %d times, want twice: once lost, once delivered", n)
 	}
-	if asked[claim.RoleImplementer] != 2 {
-		t.Errorf("the implementer was asked %d times, want twice: once lost, once delivered", asked[claim.RoleImplementer])
-	}
-	if asked[claim.RoleTester] != 1 {
-		t.Errorf("the tester was asked %d times, want once: its first ask was delivered", asked[claim.RoleTester])
-	}
-	delivered := map[string]int{}
-	for _, publish := range listener.delivered {
-		delivered[publish.topic]++
+	if n := rig.askedOf(claim.RoleTester); n != 1 {
+		t.Errorf("the tester was asked %d times, want once: its first ask was delivered", n)
 	}
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
-		if n := delivered[rig.roleTopic(role)]; n != 1 {
+		if n := rig.deliveredTo(role); n != 1 {
 			t.Errorf("the %s's topic was delivered %d asks, want one", role, n)
 		}
 	}
@@ -154,30 +201,142 @@ func TestPodUpdateAskThatFoundNoHolderIsAskedAgainAndTheRoundEndsLongBeforeItsBo
 	}
 }
 
-// The executor reads the claim it takes the mark back from through the machine's view, and it
-// takes the machine's lock only where no decision holds it (supervise's Machine.Deciding). The
-// role-message lane runs one row at a time, and a Sandbox relaunch holds a claim's machine for
-// minutes while the runtime waits out its pod, so a take-back that waited for that lock would
-// hold every phase-ended message, hook prompt and ask of every issue behind one relaunch. So an
-// ask that finds no holder on the topic of a claim whose machine is deciding is a wait: the row
-// is kept, the mark stands, and the row's next attempt publishes the ask again, which takes the
-// mark back once the decision is over.
+// The row can run as soon as the enqueue commits, before the sweep takes its next step. Here the
+// lane runs it inside the enqueue itself, and the role's topic has no holder: the ask is lost,
+// and nothing the sweep does after the enqueue may count it as given. The next sweep asks the
+// claim again, and that ask, once the session holds the topic, is delivered and marks the claim.
 //
-// The negative control is a take-back that waits for the lock: the run below does not return
-// while the relaunch is held inside its Resume.
-func TestPodUpdateAskThatFoundNoHolderWaitsWhileItsClaimsMachineDecides(t *testing.T) {
+// The negative control is a mark made after the enqueue, which is where the sweep made it: on
+// main the lost row finished and the sweep's mark stood, and with the take-back of 74ab1cd3 the
+// row found no mark to take back, the sweep's mark landed after it, and no sweep asked again.
+func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
-	listener := &holderPublisher{}
-	listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
-	runner := rig.askRunner(listener)
+	rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
+	enqueue := rig.s.enqueue
+	rig.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error {
+		if err := enqueue(ctx, issue, payloads...); err != nil {
+			return err
+		}
+		for _, payload := range payloads {
+			if _, ask := payload.(record.UpdateAsk); ask {
+				rig.runLane()
+				break
+			}
+		}
+		return nil
+	}
 
 	rig.tick()
-	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
-	rows := rig.rows(record.OutboxKindUpdateAsk)
-	if len(rows) != 1 {
-		t.Fatalf("the sweep wrote %d asks, want one", len(rows))
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.tick()
+	if n := rig.askedOf(claim.RoleImplementer); n != 1 {
+		t.Fatalf("the sweep after the round recorded itself asked the implementer %d times, want once", n)
 	}
+	if n := rig.deliveredTo(claim.RoleImplementer); n != 0 {
+		t.Fatalf("the implementer's topic was delivered %d asks while no session held it, want none", n)
+	}
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt != nil {
+		t.Fatalf("the implementer's ask was lost before the sweep moved on, and its claim records it asked at %v; want it unasked", c.UpdateTaskedAt)
+	}
+
+	rig.listener.setAbsent()
+	rig.clock.advance(time.Minute)
+	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	for range 3 {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+	}
+	if n := rig.askedOf(claim.RoleImplementer); n != 2 {
+		t.Errorf("the implementer was asked %d times, want twice: once lost, once delivered", n)
+	}
+	if n := rig.deliveredTo(claim.RoleImplementer); n != 1 {
+		t.Errorf("the implementer's topic was delivered %d asks, want one", n)
+	}
+}
+
+// Two rows of one round for one claim: an older row and a newer one, both queued before the
+// sweep asks — what a daemon before this change could leave, a row whose mark the store refused
+// beside the row the next sweep wrote for the same claim. Whichever order they meet a holder in,
+// the role is delivered one ask: the row that reaches the session marks the claim under its lock,
+// the other finds the mark and publishes nothing, and an older row that found no holder takes
+// nothing from the newer one. The sweep asks no claim while an ask of it waits in the outbox, and
+// none once an ask reached it.
+//
+// The negative control is 74ab1cd3's take-back: the older row that found no holder cleared the
+// mark the sweep had made for the newer row, the newer row's delivery left the claim unmarked,
+// and the next sweep asked the session again. On main, with no take-back, every queued row
+// publishes, and a session the first row reached is asked by the second as well.
+func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// unheld is whether the older row runs while the role's topic has no holder.
+		unheld bool
+	}{
+		{name: "the older row finds no holder, and the newer row the session", unheld: true},
+		{name: "both rows find the session", unheld: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound)
+			for range 2 {
+				if err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
+				}); err != nil {
+					t.Fatalf("queue a row of the round: %v", err)
+				}
+			}
+			rig.tick()
+			rows := rig.rows(record.OutboxKindUpdateAsk)
+			if len(rows) < 2 {
+				t.Fatalf("the outbox holds %d asks, want the two queued rows", len(rows))
+			}
+
+			if tc.unheld {
+				rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
+			}
+			rig.runAsk(rows[0])
+			rig.listener.setAbsent()
+			rig.runLane()
+			rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+			for range 3 {
+				rig.clock.advance(time.Minute)
+				rig.tick()
+				rig.runLane()
+			}
+
+			if n := rig.deliveredTo(claim.RoleImplementer); n != 1 {
+				t.Fatalf("the implementer's topic was delivered %d asks of the round, want one", n)
+			}
+			if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
+				t.Fatalf("the implementer records no ask, want the delivered ask marked")
+			}
+			if n := rig.askedOf(claim.RoleImplementer); n != 2 {
+				t.Errorf("the implementer was asked %d times, want the two queued rows alone: the sweep asks no claim an ask of the round reached or waits for", n)
+			}
+		})
+	}
+}
+
+// The ask is published and marked under the claim's own lock, and that lock is taken without
+// waiting (supervise's Machine.PublishUpdateAsk). The role-message lane runs one row at a time,
+// and a Sandbox relaunch holds a claim's lock for minutes while the runtime waits out its pod, so
+// a row that waited for that lock would hold every phase-ended message, hook prompt and ask of
+// every issue behind one relaunch. Here the claim's machine is held inside a Resume: the row
+// returns a wait at once, having published nothing and marked nothing, and the row's next attempt
+// once the relaunch is over publishes the ask, which is delivered once in all.
+//
+// The negative control is a row that takes the lock with waiting: the run below does not return
+// while the relaunch is held inside its Resume. On 74ab1cd3, which published with no lock held,
+// the row publishes while the relaunch holds the claim.
+func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
 	rig.settleAll()
 
 	// The implementer's machine is held inside a Resume: it holds its own lock for the whole
@@ -202,34 +361,39 @@ func TestPodUpdateAskThatFoundNoHolderWaitsWhileItsClaimsMachineDecides(t *testi
 	}
 
 	ran := make(chan error, 1)
-	go func() { ran <- runner.execute(rig.ctx, rows[0]) }()
+	go func() { ran <- rig.lane.execute(rig.ctx, row) }()
 	select {
 	case err := <-ran:
 		if !errors.Is(err, wait.ErrWaiting) {
-			t.Fatalf("the ask that found no holder over a deciding machine = %v, want a wait that keeps the row", err)
+			t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)
 		}
 		t.Logf("the row waits: %v", err)
 	case <-time.After(10 * time.Second):
 		release()
 		<-ran
-		t.Fatal("the ask that found no holder did not return while its claim's machine was inside a Resume; it waited on the decision")
+		t.Fatal("the ask did not return while its claim's machine was inside a Resume; it waited on the lock")
 	}
-	if v := m.View(); v.UpdateTaskedAt == nil {
-		t.Fatalf("the claim's mark was taken back while its machine decided; want it standing until the row's next attempt")
+	if n := rig.deliveredTo(claim.RoleImplementer); n != 0 {
+		t.Fatalf("the ask was delivered %d times while the claim's lock was held, want none: the publish and its mark are one step under that lock", n)
+	}
+	if v := m.View(); v.UpdateTaskedAt != nil {
+		t.Fatalf("the claim records an ask at %v while its lock was held, want none", v.UpdateTaskedAt)
 	}
 
 	release()
-	rig.settleAll()
-	if err := runner.execute(rig.ctx, rows[0]); err != nil {
-		t.Fatalf("the row's next attempt = %v, want the row finished", err)
+	rig.runAsk(row)
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
+		t.Fatalf("the claim records no ask after the row's next attempt, want the delivered ask marked")
 	}
-	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt != nil {
-		t.Fatalf("the claim records its lost ask at %v after the row's next attempt; want it unasked", c.UpdateTaskedAt)
+	for range 3 {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+		rig.runLane()
 	}
-	listener.mu.Lock()
-	attempts := listener.attempts
-	listener.mu.Unlock()
-	if attempts != 2 {
-		t.Errorf("the listener was asked %d times, want twice: the first attempt and the one after the decision", attempts)
+	if n := rig.deliveredTo(claim.RoleImplementer); n != 1 {
+		t.Errorf("the implementer's topic was delivered %d asks, want one in all", n)
+	}
+	if n := rig.askedOf(claim.RoleImplementer); n != 1 {
+		t.Errorf("the implementer was asked %d times, want once", n)
 	}
 }

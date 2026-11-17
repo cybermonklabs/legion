@@ -6,6 +6,11 @@ body: |-
   role` and left that mark. So the role was never asked again, and the round waited for its answer
   until `pod_update_grace_minutes`, with every role that had answered held from its next task. A
   fresh session that has not claimed its topic yet is the usual case: on 2026-11-17 one planner
-  and one reviewer on BET held their rounds this way for about 12 and 6 hours. Now such an ask
-  takes the mark back, and the next sweep that finds the role ready asks it again. An ask that
-  reached a session is still the only ask the role gets in that round.
+  and one reviewer on BET held their rounds this way for about 12 and 6 hours. Now the daemon
+  marks a role asked only when the publish of its ask reached a session, and it asks no role
+  again while an ask of the round still waits in the outbox. So an ask that found no live session
+  is asked again at the next sweep that finds the role ready, and an ask that reached a session is
+  the only ask the role gets in that round. The publish and the mark wait for no claim that is
+  busy, such as one being relaunched: such an ask waits and is sent when the claim is free. The
+  migration `20261117200337_update_ask_marks_at_delivery` clears the mark that the earlier release
+  wrote for an ask that is still queued at the upgrade, so that this release sends that ask.
