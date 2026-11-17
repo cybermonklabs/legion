@@ -45,8 +45,10 @@ function readLine(texts: TextCounts, terms: number, name: string, version: numbe
 }
 
 /**
- * The line of each approved document under the root that Dispatch could not read, which the
- * server writes (`specform.UnreadLine`): no rule compared its texts, and the line says the way out.
+ * The line of each approved version under the root that Dispatch could not read, which the
+ * server writes (`specform.UnreadLine`, `specform.UnreadOlderLine`): for the latest approved version
+ * of a document, no rule compared its texts, the list of terms can lack its terms, and the line
+ * says the way out; an older approved version only orders the list.
  */
 function unreadLines(unread: readonly { readonly line: string }[] | null | undefined): string[] {
   return (unread ?? []).map(({ line }) => line);
@@ -127,7 +129,8 @@ function noVersionLine(name: string): string {
 /**
  * The list of terms of the root that holds `form`'s document, as `--terms` prints it: one line per
  * term with its definition and the document, the version and the issue that define it, in the
- * server's order (sorted by term). A document that no root holds has no list.
+ * server's order (sorted by term). Each approved version that Dispatch could not read gets its
+ * line first, since the list can lack its terms. A document that no root holds has no list.
  */
 function termLines(form: SpecFormRead): string[] {
   if (form.root === null) {
@@ -137,9 +140,11 @@ function termLines(form: SpecFormRead): string[] {
         : `${form.name} is not under a root of The Spec, so it has no list of terms.`,
     ];
   }
+  const unread = unreadLines(form.unread);
   const terms = form.terms ?? [];
-  if (terms.length === 0) return [`The list of terms of ${form.root} holds no term.`];
+  if (terms.length === 0) return [...unread, `The list of terms of ${form.root} holds no term.`];
   return [
+    ...unread,
     `The list of terms of ${form.root} holds ${counted(terms.length, "term")}:`,
     ...terms.map(
       (term) =>
