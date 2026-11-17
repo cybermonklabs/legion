@@ -1,5 +1,4 @@
 // packages/envoy/internal/broker/helper/machinefile_test.go
-//go:build linux
 
 package helper
 
