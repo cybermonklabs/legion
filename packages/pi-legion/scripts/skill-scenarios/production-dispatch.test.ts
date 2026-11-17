@@ -233,3 +233,22 @@ test("mapLimit keeps the order and runs at most the limit at once", async () => 
   expect(started.toSorted((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   expect(most).toBe(3);
 });
+
+test("a read hands the credential the deadline its request runs on", async () => {
+  // A broker credential waiting on a pod's missing registration stops at the deadline it is
+  // given, naming the session; one given none waits until the registration lands.
+  const given: (AbortSignal | undefined)[] = [];
+  const bearer = bearerCredential("dispatch-token");
+  const credential = {
+    ...bearer,
+    headers: (method: string, url: string, session?: string, signal?: AbortSignal) => {
+      given.push(signal);
+      return bearer.headers(method, url, session, signal);
+    },
+  };
+  const { fetch, sent } = fakeFetch(() => json([{ id: "c1" }]));
+  const dispatch = new ProductionDispatch({ ...credentials, credential }, fetch, noSleep);
+  await dispatch.comments("ACME-1");
+  expect(given[0], "the read handed its credential no deadline").toBeInstanceOf(AbortSignal);
+  expect(sent[0]?.init.signal).toBe(given[0]);
+});

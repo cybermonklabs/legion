@@ -1,0 +1,9 @@
+{
+  "name": "Inter",
+  "version": "4.1",
+  "private": true,
+  "description": "rsms/inter's InterVariable.woff2 of release 4.1, cut to the weights and characters Dispatch's web app draws by subset.sh beside this file. The manifest is what scripts/third-party-notices.ts reads to list the typeface, under LICENSE.txt, in the build's THIRD_PARTY_NOTICES.txt.",
+  "license": "OFL-1.1",
+  "homepage": "https://rsms.me/inter/",
+  "repository": "https://github.com/rsms/inter"
+}

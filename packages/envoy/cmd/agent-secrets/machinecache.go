@@ -15,9 +15,10 @@
 // write, so processes that find the cache empty at once register one session between them, and a
 // read holds it shared, so no process signs with one registration's key and another's enrollment.
 //
-// The directory also keeps the first Google exchange audience the broker named
-// (googleAudienceFile, holdGoogleAudience), since the broker's settings, which are
-// unauthenticated, choose the audience of the identity token this machine mints and hands over.
+// The directory also keeps the first Google exchange audience the broker named for which this
+// machine found an identity to mint a token (googleAudienceFile, checkGoogleAudience,
+// keepGoogleAudience), since the broker's settings, which are unauthenticated, choose the audience
+// of the identity token this machine mints and hands over.
 //
 // A client before #4143 kept that session in the launcher's key directory, marked with a
 // machine-session file, where the chain's first source would read it as a launcher's.
@@ -42,7 +43,7 @@ const (
 	// (lockMachineCache).
 	machineCacheLock = "lock"
 	// googleAudienceFile is the file in the machine cache that keeps the first Google exchange
-	// audience this machine read from its broker (holdGoogleAudience).
+	// audience this machine found an identity for (keepGoogleAudience).
 	googleAudienceFile = "google-exchange-audience"
 )
 
@@ -197,6 +198,12 @@ func ensureMachineCacheDir(dir string) error {
 	return nil
 }
 
+// lockMachineCache takes the flock of the machine cache dir's lock file (lockFile), exclusive to
+// register a session and shared to read one.
+func lockMachineCache(dir string, exclusive bool) (func(), error) {
+	return lockFile(filepath.Join(dir, machineCacheLock), exclusive)
+}
+
 // registerMachineSession trades identity, this machine's own, for a launcher credential,
 // registers key under it as this machine's session, and keeps the two in the machine cache dir,
 // whose exclusive lock the caller holds.
@@ -233,15 +240,15 @@ func registerMachineSession(ctx context.Context, dir string, identity brokerclie
 	return enrollmentID, nil
 }
 
-// holdGoogleAudience refuses a Google exchange audience other than the first this machine read
-// from its broker at base, which the machine cache keeps (googleAudienceFile). The broker's GET
-// /v1/settings is unauthenticated, and its answer chooses the audience of the identity token this
-// machine mints and hands over, so a broker that later names another audience — a wrong
-// AGENT_SECRETS_URL, a broker someone else now answers for — is refused before any token is minted
-// for someone else's service. keep writes the audience where none is kept yet; `identity
-// --source` reads and keeps nothing. With no machine cache directory there is nothing to compare
-// against and nowhere to keep it.
-func holdGoogleAudience(base, audience string, keep bool) error {
+// checkGoogleAudience refuses a Google exchange audience other than the one this machine kept from
+// its broker at base (googleAudienceFile, keepGoogleAudience), and passes any audience where none
+// is kept or there is no machine cache directory. The broker's GET /v1/settings is
+// unauthenticated, and its answer chooses the audience of the identity token this machine mints
+// and hands over, so a broker that later names another audience — a wrong AGENT_SECRETS_URL, a
+// broker someone else now answers for — is refused before any token is minted for someone else's
+// service. It writes nothing: a machine with no identity of its own mints nothing, so it keeps no
+// audience, and a later audience or broker still gets the chain's no-source refusal.
+func checkGoogleAudience(base, audience string) error {
 	dir := machineCacheDir()
 	if dir == "" {
 		return nil
@@ -249,18 +256,36 @@ func holdGoogleAudience(base, audience string, keep bool) error {
 	path := filepath.Join(dir, googleAudienceFile)
 	kept, err := readTrimmed(path)
 	switch {
-	case errors.Is(err, os.ErrNotExist) && !keep:
-		return nil
 	case errors.Is(err, os.ErrNotExist):
-		if err := ensureMachineCacheDir(dir); err != nil {
-			return err
-		}
-		if kept, err = keepFirst(path, audience); err != nil {
-			return fmt.Errorf("keep the broker's Google exchange audience in %s: %w", path, err)
-		}
+		return nil
 	case err != nil:
 		return err
 	}
+	return sameGoogleAudience(base, audience, kept, path)
+}
+
+// keepGoogleAudience keeps audience as the one this machine's identity tokens are minted for,
+// once machineSource has found an identity to mint one and before anything is minted, unless an
+// audience is kept already, and refuses it where another writer kept a different one first.
+func keepGoogleAudience(base, audience string) error {
+	dir := machineCacheDir()
+	if dir == "" {
+		return nil
+	}
+	if err := ensureMachineCacheDir(dir); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, googleAudienceFile)
+	kept, err := keepFirst(path, audience)
+	if err != nil {
+		return fmt.Errorf("keep the broker's Google exchange audience in %s: %w", path, err)
+	}
+	return sameGoogleAudience(base, audience, kept, path)
+}
+
+// sameGoogleAudience is the refusal of audience, which the broker at base names, where this
+// machine kept another one in path.
+func sameGoogleAudience(base, audience, kept, path string) error {
 	if kept != audience {
 		return fmt.Errorf("the broker at %s names %q as its Google exchange audience, and this machine first read %q there (kept in %s): a broker's audience does not change, so this machine mints no identity token for another one. If the broker's audience did change, remove %s and run the command again",
 			redact.URL(base), audience, kept, path, path)
@@ -268,32 +293,28 @@ func holdGoogleAudience(base, audience string, keep bool) error {
 	return nil
 }
 
-// keepFirst writes value to path unless a file is already there, and answers what path holds. It
-// links a finished temporary file into place, which fails rather than replace a file another
-// process kept first, so the first of two at once is the one both compare against.
+// keepFirst writes value to path unless a file is already there, and answers what path holds.
+// Writers take the exclusive flock of path's own lock file (path + ".lock") in turn, so the first
+// of two at once writes and the second reads what it wrote; the write renames a finished file into
+// place, so a reader that holds no lock sees the whole value or none. It takes no hard link, so a
+// file system without them keeps a value as well.
 func keepFirst(path, value string) (string, error) {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	unlock, err := lockFile(path+".lock", true)
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(value + "\n"); err != nil {
-		tmp.Close()
+	defer unlock()
+	kept, err := readTrimmed(path)
+	if err == nil {
+		return kept, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+	if err := writeFileAtomic(path, []byte(value+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Link(tmp.Name(), path); err == nil {
-		return value, nil
-	} else if !errors.Is(err, os.ErrExist) {
-		return "", err
-	}
-	return readTrimmed(path)
+	return value, nil
 }
 
 // migrateKeyDirMachineSession moves a machine session a client before #4143 kept in the key

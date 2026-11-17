@@ -41,9 +41,15 @@ import (
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 )
 
-// Image is the NATS server image the daemon's existing NATS tests use:
-// ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml).
-const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f"
+// Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
+// copy of nats:2.15.1-alpine (.github/ci-images.yaml), the server the hub runs. The daemon refuses
+// a server that can skip a message on a consumer filtering on a wildcard and a literal at the same
+// token (envoy's natsversion.Refusal, intake.OpenConsumers), which nats:2.10 is.
+const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
+
+// SkippingImage is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml),
+// whose v2.10.29 is such a server: the one test that shows the daemon refusing it starts it.
+const SkippingImage = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f"
 
 // readinessTimeout bounds the wait for the JetStream API once the container runs. The container
 // start is not bounded by it: how long Docker takes to create a container is the daemon's load.
@@ -174,14 +180,15 @@ func URL(t testing.TB) string {
 		// by another door.
 		//
 		// Measured in an issue pod on 2026-11-10 (dispatch://INFRA-2583), against nats-server
-		// 2.10.22, the line this package's image is, one round being create, publish 12, delete,
-		// create again, read. Under a load of four busy loops on its two CPUs, 9 of 10,000 rounds
-		// of delete-then-create came back holding all 12 messages, and 0 of 10,000 rounds that
-		// purged first did. A run that also read the store directory immediately before each
-		// delete found the rename collision itself: of 6,000 rounds, 28 met a .<name> the
-		// previous delete had not finished removing, and all 19 of the rounds that recovered
-		// anything were among those 28. The purge is a lookup of the stream and one purge
-		// request per stream, and the server answers the purge when the store is empty.
+		// 2.10.22, of the 2.10 line this package's image is (the image reports v2.10.29 now), one
+		// round being create, publish 12, delete, create again, read. Under a load of four busy
+		// loops on its two CPUs, 9 of 10,000 rounds of delete-then-create came back holding all 12
+		// messages, and 0 of 10,000 rounds that purged first did. A run that also read the store
+		// directory immediately before each delete found the rename collision itself: of 6,000
+		// rounds, 28 met a .<name> the previous delete had not finished removing, and all 19 of the
+		// rounds that recovered anything were among those 28. The purge is a lookup of the stream
+		// and one purge request per stream, and the server answers the purge when the store is
+		// empty.
 		stream, err := js.Stream(t.Context(), name)
 		if err != nil {
 			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
@@ -551,6 +558,37 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 	}
 	answering(t, url)
 	return container, url
+}
+
+// StartImage runs a NATS container of image of its own, with JetStream and no users (the NATS
+// module's own -js), removed when t ends, and returns its client URL once its JetStream API
+// answers. It is for a test of the server itself, such as one the daemon refuses (SkippingImage);
+// every other test shares the package's server through URL.
+func StartImage(t testing.TB, image string) string {
+	t.Helper()
+	container, err := start(image)
+	if err != nil {
+		t.Fatalf("start NATS of %s: %v", image, err)
+	}
+	testcontainers.CleanupContainer(t, container)
+	url, err := container.ConnectionString(context.Background())
+	if err != nil {
+		t.Fatalf("NATS connection string: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), readinessTimeout)
+	defer cancel()
+	for {
+		conn, _, err := ready(ctx, url, t.Name())
+		if err == nil {
+			conn.Close()
+			return url
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for NATS at %s to answer within %s: %v", url, readinessTimeout, err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // answering returns once the server at url refuses a connection with no credential with its own

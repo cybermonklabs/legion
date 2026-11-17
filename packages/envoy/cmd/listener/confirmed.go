@@ -435,7 +435,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				return
 			}
 			send.attempts++
-			subject := contracts.AgentSubject(send.holder)
+			subject := contracts.LegacyAgentSubject(send.holder)
 			// The forward carries the same Nats-Msg-Id on every attempt, so the stream, which
 			// captures agent subjects, keeps one copy of it per message and recipient however
 			// many attempts this send makes.

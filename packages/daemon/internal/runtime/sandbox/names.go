@@ -146,10 +146,16 @@ const feedSubPath = "feed"
 // AgentSecretsKeyDir is the memory-backed directory a role's agent-secrets key and enrollment id
 // live in, and AgentSecretsTokenDir where the pod's projected token for the broker's audience is
 // mounted, as AgentSecretsTokenFile. The key directory is each role's own; the token is shared.
+// AgentSecretsExchangeDir is where an enrolled pod's projected token for the exchange's audience
+// (AgentSecrets.ExchangeAudience) is mounted, as AgentSecretsExchangeFile, beside the broker's
+// token: the identity every role of the pod is told of as AGENT_SECRETS_MACHINE_TOKEN_FILE, shared
+// as the broker's token is.
 const (
-	AgentSecretsKeyDir    = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
-	AgentSecretsTokenDir  = launcher.FixedRoot + "/agent-secrets-token"
-	AgentSecretsTokenFile = "token"
+	AgentSecretsKeyDir       = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
+	AgentSecretsTokenDir     = launcher.FixedRoot + "/agent-secrets-token"
+	AgentSecretsTokenFile    = "token"
+	AgentSecretsExchangeDir  = launcher.FixedRoot + "/agent-secrets-exchange"
+	AgentSecretsExchangeFile = "token"
 )
 
 // The image's own paths (packages/daemon/docker/worker.Dockerfile: ENV and the COPY lines).

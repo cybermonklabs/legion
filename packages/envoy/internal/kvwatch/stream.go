@@ -1,6 +1,7 @@
 package kvwatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -60,7 +61,7 @@ const streamConfirmMaxAge = 4 * time.Second
 // self-health rebuild does the same. Either way the cost is one read, and Check is quiet from then
 // on.
 func (w *Watcher) Check() error {
-	stream, err := w.KV().ReadStreamState()
+	stream, err := w.KV().ReadStreamState(context.Background())
 	if err != nil {
 		return err
 	}
@@ -124,7 +125,7 @@ func (w *Watcher) confirmStream(generation uint64) streamCheck {
 	w.confirming++
 	w.mu.Unlock()
 	sent := w.now()
-	state, err := kv.ReadStreamState()
+	state, err := kv.ReadStreamState(context.Background())
 	gone := errors.Is(err, nats.ErrStreamNotFound)
 	w.mu.Lock()
 	// The read ends under the lock its finding is recorded under: a record that waited for it reads

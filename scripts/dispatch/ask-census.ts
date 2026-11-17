@@ -8,7 +8,10 @@ import type {
   Issue,
 } from "../../packages/contracts/src/dispatch-api";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
-import { DispatchClient } from "../../packages/envoy-client/src/dispatch-http";
+import {
+  DISPATCH_TOOL_DEADLINE_MS,
+  DispatchClient,
+} from "../../packages/envoy-client/src/dispatch-http";
 import {
   sessionConfigFile,
   sessionDispatchSettings,
@@ -387,12 +390,16 @@ function parseArguments(argv: readonly string[]): RunOptions {
   };
 }
 
-async function get<T>(config: DispatchConfig, path: string): Promise<T> {
+/** One read of Dispatch that goes around DispatchClient (`run`'s issue lists), as JSON. */
+export async function get<T>(config: DispatchConfig, path: string): Promise<T> {
   const url = `${config.url}${path}`;
   // The bearer, or the access token this machine traded its own identity for, with the proof
-  // that goes with it: this read goes around DispatchClient, so it presents the credential itself.
+  // that goes with it: this read goes around DispatchClient, so it presents the credential itself,
+  // under the bound DispatchClient puts on each of its own requests.
+  const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
   const response = await fetch(url, {
-    headers: await config.credential.headers("GET", url),
+    headers: await config.credential.headers("GET", url, undefined, deadline),
+    signal: deadline,
   });
   if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
   return (await response.json()) as T;

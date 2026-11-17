@@ -69,7 +69,7 @@ func benchmarkReap(b *testing.B, n int) {
 					SessionID: id,
 					MachineID: "bench-machine",
 					Dir:       "/bench/" + id,
-				}, []string{contracts.AgentSubject(id), "notifications.team.bench"}); err != nil {
+				}, []string{contracts.LegacyAgentSubject(id), "notifications.team.bench"}); err != nil {
 					failed = fmt.Errorf("upsert interest %s: %w", id, err)
 					continue
 				}
