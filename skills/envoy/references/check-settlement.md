@@ -32,7 +32,8 @@ Ignore names that only the stored set has: a check can vanish from GitHub's view
 
 A status has no id, and a record recreated after the KV TTL numbers its settlements afresh, so a generation does not order two statuses of one context. Each entry's `created_at` orders them:
 
-- A settlement that names a context you keep no status of for that commit, or an entry with a later `created_at` than the one you keep for its context, is newer, whatever its attempt set and its generation say.
+- A settlement whose attempt set is the same, newer or mixed, and that names a context you keep no status of for that commit or an entry with a later `created_at` than the one you keep for its context, is newer, whatever its generation says.
+- A settlement with an older attempt set that names such an entry changes those statuses alone. Keep your check runs, failing and cancelled names, generation and snapshot as they are, so the newer settlement delivered again is still a duplicate.
 - A settlement with an older attempt set that names no such entry is older for every check run and every status. It is stale.
 - At the same set, a settlement that names no such entry is ordered by its generation, as the next section says.
 

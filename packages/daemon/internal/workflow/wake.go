@@ -169,8 +169,9 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	// settlement did not wake is told as any live role is (tellChecks).
 	//
 	// A list of commit statuses the decoder could not read names none, and the pull request keeps
-	// the statuses it holds for the head when the settlement is applied (checks), so the task
-	// names the failed ones of those, as the CI message does.
+	// the statuses it holds for the head when the settlement is applied, since a context a
+	// settlement leaves out stays as it is kept (classify.ApplySettlement), so the task names the
+	// failed ones of those, as the CI message does.
 	if fact.StatusesUnread {
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}

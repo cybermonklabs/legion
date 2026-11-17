@@ -477,8 +477,7 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 		// GitHub refused is the only way an operator tells a Commit statuses grant taken away
 		// while a token lives, and a head read over REST for its checks asks for none of them
 		// again.
-		r.Logger.Warn("ci reconcile read no commit status of a head",
-			"repository", pull.repository(), "pr", pull.number, "sha", pull.sha, "error", errorText(head.statusesRefused))
+		r.statusesUnread(pull, errorText(head.statusesRefused))
 		pull.statuses = false
 	}
 	if head.overflow != "" {

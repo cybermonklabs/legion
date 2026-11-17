@@ -5,7 +5,8 @@ body: |-
     GitHub's `created_at`. They say how a consumer keeps them. For each context it keeps the entry
     with the later `created_at`, and a context that a settlement leaves out stays as it was. A
     settlement that names a new context, or a later `created_at` for a context, is newer whatever
-    its check runs and its generation say.
+    its generation says, and where its check runs are older than the kept ones it changes those
+    statuses alone.
 time: 2026-11-17T18:23:30Z
 custom:
     Issue: pr4299

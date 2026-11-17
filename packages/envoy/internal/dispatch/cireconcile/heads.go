@@ -241,8 +241,7 @@ func (r *Reconciler) readStatuses(ctx context.Context, writer Writer, head pullH
 			// next pass reads the head again, on the ETags the pass holds.
 			return false, true, nil
 		}
-		r.Logger.Warn("ci reconcile read no commit status of a head",
-			"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", err)
+		r.statusesUnread(head, err)
 		r.holdStatuses(head, nil, 0)
 		return false, false, nil
 	}
@@ -270,6 +269,16 @@ func (r *Reconciler) holdStatuses(head pullHead, pages []pageOf[object], wanted 
 	state.statuses = pages
 	state.observed = state.observed || wanted > 0
 	r.heads[head.key()] = state
+}
+
+// statusesUnread names at WARN a head whose commit statuses the pass read none of, with cause,
+// what GitHub answered: the error of a REST read of the listing (readStatuses) or the errors
+// entries a query answered against the head commit's status field (walk.visitHead). Both
+// refusals are this one line, which packages/envoy/cmd/dispatch/README.md ("CI reconcile") gives
+// operators with these four fields.
+func (r *Reconciler) statusesUnread(head pullHead, cause any) {
+	r.Logger.Warn("ci reconcile read no commit status of a head",
+		"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", cause)
 }
 
 // kept is what the pass remembers of one head -- the ETags of a head read over REST, the

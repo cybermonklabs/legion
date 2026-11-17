@@ -328,11 +328,7 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 			return page, fmt.Errorf("GitHub answered no readable pull request at node %d of the page for %s/%s: %s",
 				index, repository.owner, repository.repo, errorText(answer.Errors))
 		}
-		// The entries against the head's status field are what the pass names at WARN
-		// (walk.visitHead).
-		head := headOf(pull, pullRefused, statusesRefused[index] != nil)
-		head.statusesRefused = statusesRefused[index]
-		page.heads = append(page.heads, head)
+		page.heads = append(page.heads, headOf(pull, pullRefused, statusesRefused[index]))
 	}
 	return page, nil
 }
@@ -349,16 +345,17 @@ func headCommit(pull *graphQLPull) *graphQLCommit {
 // headOf is one answered pull request as the pass takes it: its head commit, the check objects
 // and commit statuses of that commit, the fingerprint of those objects, and, where the query
 // could not answer the head whole, why. refused says GitHub answered an errors entry against
-// this pull request's own path, which is its Checks fields refused; statusesRefused says it
-// answered one against the head commit's status field or a field under it, which costs the head
-// its statuses alone. The entries themselves are the caller's to keep (queryHead.statusesRefused).
+// this pull request's own path, which is its Checks fields refused; statusesRefused is the
+// entries it answered against the head commit's status field or a field under it, which cost
+// the head its statuses alone, and the head keeps them for the pass to name at WARN
+// (queryHead.statusesRefused, walk.visitHead).
 //
 // A pull request GitHub listed with no head commit is no head to read, exactly as one the REST
 // listing answered with no head.sha is: it is answered with an empty sha and the caller passes
 // over it. A refused pull request with no head commit never reaches here: the query cannot
 // answer that head at all, so its whole page is read over REST.
-func headOf(pull *graphQLPull, refused, statusesRefused bool) queryHead {
-	head := queryHead{number: pull.Number}
+func headOf(pull *graphQLPull, refused bool, statusesRefused []graphQLError) queryHead {
+	head := queryHead{number: pull.Number, statusesRefused: statusesRefused}
 	commit := headCommit(pull)
 	if commit == nil {
 		return head
@@ -392,7 +389,7 @@ func headOf(pull *graphQLPull, refused, statusesRefused bool) queryHead {
 	// this answer, whatever the field holds; a commit no status was posted to answers the field
 	// null and has none to record either.
 	var contexts []graphQLStatusContext
-	if commit.Status != nil && !statusesRefused {
+	if commit.Status != nil && len(statusesRefused) == 0 {
 		contexts = commit.Status.Contexts
 	}
 	// The loop above walks every suite and every run of the head to validate it, so each of

@@ -176,13 +176,17 @@ func TestAStatusChangeAfterTheRecordWasRecreatedIsApplied(t *testing.T) {
 	})
 }
 
-// A settlement the daemon does not apply leaves the commit statuses the pull request keeps as they
-// are, whatever list it names so long as no status in it is newer than the kept one of its
-// context: one older than the recorded one by its generation or by its runs, the same settlement
-// delivered again, one that conflicts with it, and one of a head that is not the pull request's.
-// Each is judged with no head run open and with one open, where the settlement is a step of the
-// run and the replay with it changes nothing.
-func TestAStaleSettlementLeavesTheStatusesAsTheyAre(t *testing.T) {
+// A commit status created before the one the pull request keeps for its context changes nothing
+// of the kept statuses, whatever the settlement naming it does with the rest: one newer by its
+// generation or by its check runs is applied, and the kept status of the context stays as it is.
+// A settlement older for every check run it reports and every status it names changes nothing at
+// all - one that names the kept status itself again among them, since a status created in the
+// same second is no newer - and nor does any other settlement that names no newer status and is
+// not applied: one older by its generation, the same settlement delivered again, one that
+// conflicts with it, and one of a head that is not the pull request's. Each is judged with no
+// head run open and with one open, where the settlement is a step of the run and the replay with
+// it changes the same and no more.
+func TestAnOlderStatusOfAContextChangesNothing(t *testing.T) {
 	kept := []record.CommitStatus{keptStatus("deploy", record.CommitStatusFailure, 2, "h1")}
 	// green is deploy's success created before the kept failure, so it is no news of deploy.
 	green := []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 1)}
@@ -205,17 +209,25 @@ func TestAStaleSettlementLeavesTheStatusesAsTheyAre(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		candidate SettlementCandidate
+		// applied is whether the settlement is applied for what it says of its check runs.
+		applied bool
 	}{
-		{"an older generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 4,
-			Snapshot: "h1-4", Failing: []string{}, Statuses: green}},
+		{"a newer generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 6,
+			Snapshot: "h1-6", Failing: []string{}, Statuses: green}, true},
+		{"a newer run", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 11}}, Generation: 6,
+			Snapshot: "h1-6", Failing: []string{}, Statuses: green}, true},
 		{"an older run", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 8}}, Generation: 6,
-			Snapshot: "h1-6", Failing: []string{}, Statuses: green}},
+			Snapshot: "h1-6", Failing: []string{}, Statuses: green}, false},
+		{"an older run naming the kept status again", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 8}},
+			Generation: 6, Snapshot: "h1-6", Failing: []string{}, Statuses: []record.CommitStatus{statusOf("deploy", record.CommitStatusFailure, 2)}}, false},
+		{"an older generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 4,
+			Snapshot: "h1-4", Failing: []string{}, Statuses: green}, false},
 		{"the same settlement again", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 5,
-			Snapshot: "h1-5", Failing: []string{}, Statuses: green}},
+			Snapshot: "h1-5", Failing: []string{}, Statuses: green}, false},
 		{"a conflicting settlement", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 5,
-			Snapshot: "h1-5-recreated", Failing: []string{}, Statuses: green}},
+			Snapshot: "h1-5-recreated", Failing: []string{}, Statuses: green}, false},
 		{"another head's settlement", SettlementCandidate{Head: "h0", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 11}}, Generation: 7,
-			Snapshot: "h0-7", Failing: []string{}, Statuses: green}},
+			Snapshot: "h0-7", Failing: []string{}, Statuses: green}, false},
 	} {
 		for _, underRun := range []bool{false, true} {
 			name := tc.name
@@ -226,9 +238,19 @@ func TestAStaleSettlementLeavesTheStatusesAsTheyAre(t *testing.T) {
 				pr := settledAtH1(t, underRun)
 				got, changed := ApplyCheckSettlement(pr, tc.candidate)
 				got = stored(t, got)
-				if changed || got.Generation != 5 || got.Snapshot != "h1-5" || !reflect.DeepEqual(got.Statuses, kept) {
-					t.Fatalf("changed %t, generation %d, snapshot %q, statuses %+v; want nothing changed and %+v kept",
-						changed, got.Generation, got.Snapshot, got.Statuses, kept)
+				if !reflect.DeepEqual(got.Statuses, kept) {
+					t.Fatalf("statuses %+v; want %+v kept: no status the settlement names is newer than deploy's kept failure", got.Statuses, kept)
+				}
+				if tc.applied {
+					if !changed || got.Generation != tc.candidate.Generation || got.Snapshot != tc.candidate.Snapshot {
+						t.Fatalf("changed %t, generation %d, snapshot %q; want the settlement applied at %d, %q",
+							changed, got.Generation, got.Snapshot, tc.candidate.Generation, tc.candidate.Snapshot)
+					}
+					return
+				}
+				if changed || got.Generation != 5 || got.Snapshot != "h1-5" || !reflect.DeepEqual(got.CheckRuns, pr.CheckRuns) {
+					t.Fatalf("changed %t, generation %d, snapshot %q, check runs %+v; want nothing changed from 5, h1-5, %+v",
+						changed, got.Generation, got.Snapshot, got.CheckRuns, pr.CheckRuns)
 				}
 			})
 		}

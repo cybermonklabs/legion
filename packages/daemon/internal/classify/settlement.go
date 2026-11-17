@@ -1,8 +1,7 @@
 package classify
 
 import (
-	"slices"
-	"strings"
+	"sort"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -16,6 +15,10 @@ const (
 	SettlementDuplicate SettlementClassification = "duplicate"
 	SettlementConflict  SettlementClassification = "conflict"
 	SettlementNewer     SettlementClassification = "newer"
+	// SettlementStatusesOnly is a settlement whose check runs are older than the ones kept and
+	// that names a commit status the pull request does not hold yet (statusNews): its statuses
+	// alone apply, and nothing else of it (ApplySettlement).
+	SettlementStatusesOnly SettlementClassification = "statuses-only"
 )
 
 // SettlementCandidate is the listener's proposed CI outcome for one commit and its ordering
@@ -50,7 +53,8 @@ type SettlementCandidate struct {
 	// GitHub's created_at and with no stamp (record.CommitStatus): the whole list the head's CI
 	// record holds, which can be fewer than GitHub holds (record.PullRequest.Statuses says why).
 	// A status newer than the one the pull request keeps for its context, or of a context it keeps
-	// none of, makes the settlement newer (ClassifySettlement), and the list is merged into the
+	// none of, makes a settlement of the same or a newer attempt set newer, and one of an older
+	// attempt set newer for its statuses alone (ClassifySettlement). The list is merged into the
 	// kept one per context wherever the settlement applies to the checked head (ApplySettlement).
 	// They are no check runs and decide nothing of the fence or what fails in it.
 	Statuses []record.CommitStatus `json:"statuses,omitempty"`
@@ -72,31 +76,38 @@ type CiOutcome struct {
 // name is then decided on its own by the newest run of it (mergeAttemptSets, and the conclusion
 // that run came to), so no report's facts are lost whichever arrived last.
 //
-// Commit statuses are decided the same way, by their own order: a settlement that names a status
-// newer than the pull request keeps for its context, or a context it keeps none of
-// (statusNews), is newer whatever its generation and its attempt set say. A status has no id,
-// and the listener numbers the settlements of a record the bucket's TTL removed and the
-// reconcile wrote again afresh, so after such a recreation the generation is no order of a
-// status, and a change of a status's state would otherwise be stale or a conflict until the new
-// record's generation passed the old one's. A settlement older for every check run it reports
-// and every status it names is stale, and one of the same generation and snapshot that names no
-// newer status is the same observation delivered again.
+// Commit statuses are decided by their own order, created_at per context (statusNews): a
+// settlement can name a status newer than the pull request keeps for its context, or one of a
+// context it keeps none of, whatever its generation says. A status has no id, and the listener
+// numbers the settlements of a record the bucket's TTL removed and the reconcile wrote again
+// afresh, so after such a recreation the generation is no order of a status, and a change of a
+// status's state would otherwise be stale or a conflict until the new record's generation passed
+// the old one's. So at the same attempt set such a settlement is newer. One whose attempt set is
+// older is newer for its statuses alone (SettlementStatusesOnly): its check runs, the names it
+// reports failing and cancelled, its generation and its snapshot are an older view than the
+// kept ones, and taking them would put the fence's numbering, and what a check name with no run
+// comes to, back to that view, after which the newer settlement delivered again would be newer
+// once more and move the issue for nothing. A settlement older for every check run it reports
+// and every status it names is stale, and one of the same attempt set, generation and snapshot
+// that names no newer status is the same observation delivered again.
+//
+// The order of the statuses is read only where the attempt set leaves the answer open, so a
+// settlement the attempt set already makes newer builds no map of the kept statuses.
 func ClassifySettlement(pr record.PullRequest, in SettlementCandidate) SettlementClassification {
 	if pr.CheckRuns == nil {
 		return SettlementNewer
 	}
 
-	news := statusNews(pr, in)
 	switch CompareAttemptSets(pr.CheckRuns, in.CheckRuns) {
 	case AttemptSetNewer, AttemptSetMixed:
 		return SettlementNewer
 	case AttemptSetOlder:
-		if news {
-			return SettlementNewer
+		if statusNews(pr, in) {
+			return SettlementStatusesOnly
 		}
 		return SettlementStale
 	}
-	if news {
+	if statusNews(pr, in) {
 		return SettlementNewer
 	}
 
@@ -115,11 +126,16 @@ func ClassifySettlement(pr record.PullRequest, in SettlementCandidate) Settlemen
 // statusNews says whether in names a commit status the pull request does not hold yet for
 // in.Head: one of a context it keeps no status of for that head, or one created after the status
 // it keeps of that context. The kept statuses are those stamped with in.Head
-// (record.PullRequest.Statuses), so another head's say nothing of it.
+// (record.CommitStatus.StampedWith), so another head's say nothing of it.
+//
+// Created after is a strictly later created_at, which GitHub gives to the second. So on a record
+// the bucket's TTL recreated, a status whose state changed within the same second as the kept
+// status of its context is no news, and the settlement naming it waits for the generation rule
+// as any settlement that names no newer status does.
 func statusNews(pr record.PullRequest, in SettlementCandidate) bool {
 	kept := make(map[string]time.Time, len(pr.Statuses))
 	for _, status := range pr.Statuses {
-		if status.Head != "" && status.Head == in.Head {
+		if status.StampedWith(in.Head) {
 			kept[status.Context] = status.CreatedAt
 		}
 	}
@@ -205,7 +221,7 @@ func stampedRuns(in SettlementCandidate) []record.AttemptRun {
 func mergedStatuses(pr record.PullRequest, in SettlementCandidate) []record.CommitStatus {
 	byContext := make(map[string]record.CommitStatus, len(pr.Statuses)+len(in.Statuses))
 	for _, status := range pr.Statuses {
-		if status.Head != "" && status.Head == in.Head {
+		if status.StampedWith(in.Head) {
 			byContext[status.Context] = status
 		}
 	}
@@ -220,7 +236,7 @@ func mergedStatuses(pr record.PullRequest, in SettlementCandidate) []record.Comm
 	for _, status := range byContext {
 		statuses = append(statuses, status)
 	}
-	slices.SortFunc(statuses, func(a, b record.CommitStatus) int { return strings.Compare(a.Context, b.Context) })
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Context < statuses[j].Context })
 	return statuses
 }
 

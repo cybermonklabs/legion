@@ -988,8 +988,8 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 }
 
 // ApplySettlement applies a listener CI settlement whenever ClassifySettlement says it is newer,
-// merging its check runs into the fence per check name. It returns false for stale, duplicate
-// and conflicting observations.
+// merging its check runs into the fence per check name, and its commit statuses alone where it is
+// newer for those alone. It returns false for stale, duplicate and conflicting observations.
 //
 // Each run is stamped with the head it was reported on and the conclusion the candidate gives it
 // (stampedRuns) before it is merged, since the fence keeps the newest run of each name over
@@ -1011,8 +1011,19 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 // can be fewer than GitHub holds, as record.PullRequest.Statuses says - leaves each context it
 // leaves out as it is, and an older settlement never puts back a status a newer one replaced. A
 // settlement this does not apply leaves the kept list as it is.
+//
+// A settlement whose check runs are older than the fence's and that names a newer status
+// (SettlementStatusesOnly) changes the kept statuses alone, merged as above, where it is of the
+// checked head: the fence, the failing and cancelled names, the generation and the snapshot stay
+// as the newer settlements left them, so the newer settlement delivered again is the duplicate it
+// was before (ClassifySettlement says why).
 func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
-	if ClassifySettlement(pr, candidate) != SettlementNewer {
+	classified := ClassifySettlement(pr, candidate)
+	if classified == SettlementStatusesOnly && candidate.Head == pr.CheckedHead {
+		pr.Statuses = mergedStatuses(pr, candidate)
+		return pr, true
+	}
+	if classified != SettlementNewer {
 		return pr, false
 	}
 	fence := mergeAttemptSets(pr.CheckRuns, stampedRuns(candidate))

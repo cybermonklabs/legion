@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -86,7 +87,7 @@ func capturedPull(t *testing.T) *graphQLPull {
 // and the check objects it holds, through the code the pass runs.
 func capturedHead(t *testing.T) queryHead {
 	t.Helper()
-	head := headOf(capturedPull(t), false, false)
+	head := headOf(capturedPull(t), false, nil)
 	if head.overflow != "" {
 		t.Fatalf("the captured answer's head is one the pass would read over REST: %s", head.overflow)
 	}
@@ -194,7 +195,7 @@ func statusObservationsOf(items []object) map[string]contracts.StatusObservation
 // failure or error: a pending status, and GraphQL's EXPECTED, map to none either way. A status
 // field GitHub refused costs the head its statuses alone: its check objects map as before.
 func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t *testing.T) {
-	head := headOf(statusPagePull(t), false, false)
+	head := headOf(statusPagePull(t), false, nil)
 	if head.overflow != "" || head.sha != headSHA {
 		t.Fatalf("the answer's head is %q, read over REST for %q; want %s answered whole", head.sha, head.overflow, headSHA)
 	}
@@ -223,9 +224,14 @@ func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t 
 		t.Errorf("a status with no link and no description maps to %+v, want both empty and its time kept", license)
 	}
 
-	refused := headOf(statusPagePull(t), false, true)
+	entries := []graphQLError{{Type: "FORBIDDEN", Message: "Resource not accessible by integration",
+		Path: []any{"repository", "pullRequests", "nodes", float64(0), "commits", "nodes", float64(0), "commit", "status"}}}
+	refused := headOf(statusPagePull(t), false, entries)
 	if refused.overflow != "" || len(refused.statuses) != 0 {
 		t.Fatalf("a head whose status field GitHub refused is read over REST for %q with statuses %v; want it answered whole with none", refused.overflow, refused.statuses)
+	}
+	if !reflect.DeepEqual(refused.statusesRefused, entries) {
+		t.Fatalf("a head whose status field GitHub refused keeps the entries %+v, want %+v for the pass to name at WARN", refused.statusesRefused, entries)
 	}
 	if len(refused.runs) != len(head.runs) || len(refused.suites) != len(head.suites) {
 		t.Fatalf("a refused status field left %d runs and %d suites, want the head's %d and %d", len(refused.runs), len(refused.suites), len(head.runs), len(head.suites))

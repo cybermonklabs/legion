@@ -508,7 +508,7 @@ func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
 			runs[j].Conclusion = strings.ToLower(runs[j].Conclusion)
 		}
 	}
-	same := headOf(lowered, false, false)
+	same := headOf(lowered, false, nil)
 	if !sameObjects(t, same, head) {
 		t.Fatalf("the lower-cased answer maps to other objects than the one GitHub sent, so it says nothing about the fingerprint:\n%v\n%v",
 			same.runs, head.runs)
@@ -553,7 +553,7 @@ func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
 		t.Run(change.what, func(t *testing.T) {
 			pull := capturedPull(t)
 			change.apply(pull)
-			changed := headOf(pull, false, false)
+			changed := headOf(pull, false, nil)
 			if changed.overflow != "" {
 				t.Fatalf("the changed answer is one the pass would read over REST: %s", changed.overflow)
 			}
@@ -574,7 +574,7 @@ func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
 // link or its time is not. A new time, link or description of a recorded status is news, since
 // the record keeps each of them. It is read from the answer with statuses in testdata.
 func TestTheFingerprintTakesEveryFieldOfARecordedStatusAndNoPendingOne(t *testing.T) {
-	head := headOf(statusPagePull(t), false, false)
+	head := headOf(statusPagePull(t), false, nil)
 	for _, change := range []struct {
 		what  string
 		apply func([]graphQLStatusContext) []graphQLStatusContext
@@ -607,7 +607,7 @@ func TestTheFingerprintTakesEveryFieldOfARecordedStatusAndNoPendingOne(t *testin
 			pull := statusPagePull(t)
 			commit := pull.Commits.Nodes[0].Commit
 			commit.Status.Contexts = change.apply(commit.Status.Contexts)
-			changed := headOf(pull, false, false)
+			changed := headOf(pull, false, nil)
 			if changed.overflow != "" {
 				t.Fatalf("the changed answer is one the pass would read over REST: %s", changed.overflow)
 			}

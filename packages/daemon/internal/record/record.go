@@ -91,6 +91,15 @@ func (s CommitStatus) Failed() bool {
 	return s.State == CommitStatusFailure || s.State == CommitStatusError
 }
 
+// StampedWith is whether the status is one the pull request keeps for head: it carries head's
+// stamp (PullRequest.Statuses). A status with no stamp, as a settlement names it, is kept for no
+// head. It is the one place that test is written, and the classification of a settlement
+// (classify's statusNews), the merge of its statuses (mergedStatuses) and each text that names
+// them (workflow's keptStatuses) read it, so none of them can drift from another.
+func (s CommitStatus) StampedWith(head string) bool {
+	return s.Head != "" && s.Head == head
+}
+
 // ClassifiedPush is one branch push as the daemon records it: a fact about two commits, the head it
 // replaced (Before) and the head it left (SHA), true whenever it is learned, and whose push it was.
 type ClassifiedPush struct {
@@ -792,11 +801,13 @@ type PullRequest struct {
 	// release names none. So each applied settlement of the checked head is merged into it per
 	// context, the entry with the later created_at kept (classify.ApplySettlement): a context the
 	// settlement leaves out stays as it is kept, and an older status never puts back a state a
-	// newer one replaced. A settlement the daemon does not apply leaves it as it is. A settlement
-	// of a new checked head, a reopen and a new generation clear it with the check runs
-	// (classify.SettlementFor, the reopen step of a head run, Store.ClearGeneration). A move of the
-	// head leaves it stamped with the head it was of, so no text names it for the new head
-	// (workflow's headChecks).
+	// newer one replaced. A settlement whose check runs are older than the kept ones and that
+	// names a newer status is applied to this list alone, and leaves the check runs, Failing,
+	// Cancelled, Generation and Snapshot as they are (classify.SettlementStatusesOnly). A
+	// settlement the daemon does not apply leaves it as it is. A settlement of a new checked head,
+	// a reopen and a new generation clear it with the check runs (classify.SettlementFor, the
+	// reopen step of a head run, Store.ClearGeneration). A move of the head leaves it stamped with
+	// the head it was of, so no text names it for the new head (workflow's headChecks).
 	Statuses []CommitStatus
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a

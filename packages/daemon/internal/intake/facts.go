@@ -715,8 +715,10 @@ type CheckRun = record.AttemptRun
 // list. The pull request keeps the newest status of each context the settlements of the head
 // named (classify.ApplySettlement), so a context a settlement leaves out stays as it is kept.
 // StatusesUnread is a list the decoder could not read (decodeChecks): the rest of the settlement
-// stands, it names no status, and the pull request keeps the statuses it holds for the head
-// (workflow's checks).
+// stands, it names no status, and the pull request keeps the statuses it holds for the head, since
+// the merge keeps a context a settlement leaves out (classify.ApplySettlement). The flag's one
+// reader is the task of a role the settlement wakes, which names the failed ones of those kept
+// statuses (workflow's wakeOnSettlement).
 type PullRequestChecks struct {
 	Repo           string
 	Number         int

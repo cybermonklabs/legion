@@ -270,15 +270,13 @@ func namedConclusions(conclusions map[string]record.RunConclusion) string {
 }
 
 // keptStatuses is every commit status pr keeps for head (record.PullRequest.Statuses), in context
-// order and as a settlement names them, with no stamp; none when what pr keeps is another head's.
-// That stamp is what keeps a list out of a text about another head: a daemon of an earlier release
-// moves checked_head after a rollback and leaves the list as this one left it
-// (record.CommitStatus.Head).
+// order; none when what pr keeps is another head's. The stamp is what keeps a list out of a text
+// about another head (record.CommitStatus.StampedWith): a daemon of an earlier release moves
+// checked_head after a rollback and leaves the list as this one left it (record.CommitStatus.Head).
 func keptStatuses(pr record.PullRequest, head string) []record.CommitStatus {
 	var kept []record.CommitStatus
 	for _, status := range pr.Statuses {
-		if status.Head != "" && status.Head == head {
-			status.Head = ""
+		if status.StampedWith(head) {
 			kept = append(kept, status)
 		}
 	}
