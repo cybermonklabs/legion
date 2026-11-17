@@ -7813,7 +7813,7 @@ The facade forwards `NewDPoPTransport` too, so a foreign module presents a `Clie
 Each process makes its own key and sends only its public half; the grant issues no refresh token, so a renewal is a fresh subject token traded again, which is why every identity is read afresh at every trade.
 `Client.Token` answers the token in hand while it is live and the broker is merely unreachable or answers a refusal a later trade may cure, and answers the error once the broker has refused the identity or nothing live is left, so a caller that writes only with what it was given never writes with no identity;
 `Client.Run` keeps one token live, retrying from 15 s doubling to 5 minutes and stopping with a plain error on a refusal no retry cures (`RefusedError.Permanent`).
-Four refusals are not that: the broker's 429, its two DPoP refusals, and a pod session it holds no registration for yet (`RefusedError.PodSessionUnregistered`, `invalid_grant` whose description begins `pod_session_not_registered:`).
+Five refusals are not that: the broker's 429, its two DPoP refusals, a person Dispatch holds until they sign in again (`membership_held`, `oauthwire.MembershipHeld`), and a pod session it holds no registration for yet (`RefusedError.PodSessionUnregistered`, `invalid_grant` whose description begins `pod_session_not_registered:`).
 `Run` trades again on the last for as long as its context lives, since a pod's trade can reach the broker before its registration does, and logs it once, naming the session, and again every 30 minutes while it lasts.
 
 The wire contract both this client and the TypeScript client (`packages/broker-client`) are held to is the corpus at `internal/brokerclient/testdata/wire.json`.

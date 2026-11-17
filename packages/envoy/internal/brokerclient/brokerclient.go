@@ -87,8 +87,8 @@ type Token struct {
 // RefusedError is a trade the broker refused: a plain error naming what it said. Almost every
 // one is a refusal no retry can cure — an identity no entry lists, a sign-in a person revoked,
 // a token of the wrong audience — and the renewal loop stops on those rather than asking again
-// every quarter minute. The exceptions are the broker's 429, its two DPoP refusals, and a pod
-// session it holds no registration for yet (Permanent).
+// every quarter minute. The exceptions are the broker's 429, its two DPoP refusals, a pod
+// session it holds no registration for yet, and a person Dispatch holds (Permanent).
 type RefusedError struct {
 	// Status is the HTTP status of the refusal.
 	Status int
@@ -130,7 +130,7 @@ func (e *RefusedError) Error() string {
 func (e *RefusedError) Unwrap() error { return &e.answer }
 
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but
-// four.
+// five.
 //
 // The broker's 429: its token endpoint spends a bucket per source address, and a bucket
 // refills. A client that stopped trading on a 429 would stop for good over a burst — its own,
@@ -149,9 +149,16 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 // A pod session the broker holds no registration for yet (PodSessionUnregistered): a pod's
 // trade can reach the broker before its daemon's or its session watch's registration does, and
 // a registrar can be down for minutes, so the trade that follows the registration succeeds.
+//
+// `membership_held` (oauthwire.MembershipHeld): Dispatch holds the person this credential
+// names, because Google refused their Dispatch sign-in or could not be reached for 24 hours. A
+// hold revokes nothing, and the person's next Dispatch sign-in, or Google answering again, ends
+// it, so the identity this client trades is served again then with no new login. A client that
+// stopped on it would need a restart after every hold.
 func (e *RefusedError) Permanent() bool {
 	switch {
-	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered():
+	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered(),
+		e.Code == oauthwire.MembershipHeld:
 		return false
 	}
 	return true
@@ -300,12 +307,12 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
 // Token is a live access token: the held one while it is good for longer than RenewBefore, and
 // otherwise a fresh trade. A trade the broker did not answer, or answered with a refusal a later
-// trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet), while the
-// held token is still live answers that token, since a client that already holds an identity
-// need not stop for a broker that is merely down or busy; a refusal no retry can cure
-// (RefusedError.Permanent), and a failure with nothing live left, answer the error, so no
-// caller writes with no identity. Token trades once; a caller that waits for a registration to
-// land runs Run, which trades again.
+// trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet, a person
+// Dispatch holds), while the held token is still live answers that token, since a client that
+// already holds an identity need not stop for a broker that is merely down or busy; a refusal no
+// retry can cure (RefusedError.Permanent), and a failure with nothing live left, answer the
+// error, so no caller writes with no identity. Token trades once; a caller that waits for a
+// registration to land runs Run, which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -333,14 +340,16 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 //
 // It stops with a plain error when the broker refuses the identity in a way no retry can cure
 // (RefusedError.Permanent), and when onToken fails. A broker that does not answer, or answers
-// 429, either of its DPoP refusals, or that it holds no registration for this pod's session yet,
-// is retried, from defaultRetryWait doubling to maxRetryWait, for as long as ctx lives: an outage
-// past the token's own life is the same event as a short one, since this grant has no rotation
-// window to miss, a host whose clock NTP corrects after boot trades again on the next pass rather
-// than holding no credential until somebody restarts it, and a pod whose trade reached the broker
-// before its registration did trades once that registration lands, however long it takes. A
-// missing registration is logged once, naming the session, and again every unregisteredLogEvery
-// while it lasts, rather than at every trade. A cancelled ctx is no error.
+// 429, either of its DPoP refusals, that it holds no registration for this pod's session yet, or
+// that Dispatch holds the person the identity names, is retried, from defaultRetryWait doubling
+// to maxRetryWait, for as long as ctx lives: an outage past the token's own life is the same
+// event as a short one, since this grant has no rotation window to miss, a host whose clock NTP
+// corrects after boot trades again on the next pass rather than holding no credential until
+// somebody restarts it, a pod whose trade reached the broker before its registration did trades
+// once that registration lands, however long it takes, and a person whom Dispatch held is
+// traded again after their next Dispatch sign-in with nothing restarted. A missing registration
+// is logged once, naming the session, and again every unregisteredLogEvery while it lasts,
+// rather than at every trade. A cancelled ctx is no error.
 func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) error) error {
 	wait := defaultRetryWait
 	// since is when the broker first refused this pod's session as unregistered, and logged when

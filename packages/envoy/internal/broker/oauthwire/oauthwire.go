@@ -108,6 +108,9 @@ const (
 	// RefusedError.Permanent and the TypeScript client's BrokerRefusedError.permanent read it
 	// off these words, and both clients trade again on it for as long as their caller runs.
 	PodSessionNotRegistered = "pod_session_not_registered"
+	// MembershipHeld is the token endpoint's refusal of a credential whose person Dispatch holds
+	// until they sign in again. It is not permanent.
+	MembershipHeld = "membership_held"
 )
 
 // The wire names of a token's project scope, which an introspection answer's ProjectScope carries
