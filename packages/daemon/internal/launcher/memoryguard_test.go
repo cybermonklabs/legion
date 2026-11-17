@@ -1649,7 +1649,8 @@ func TestControllerPodMemoryGuardEndsNothingForARiseThatIsOhMyPisOwn(t *testing.
 // each reporting the block as its own, as a forked process does under gVisor; beside them the
 // Python kernel grows, and stays smaller than the block. By size the newest worker would end
 // first, and its end would free nothing; the guard ends the kernel, the one process that grew, at
-// the first reading at the mark after its reads in the band.
+// the first reading at the mark on its reads in the band, at the 500 MiB the band's last reading
+// read of it.
 func TestControllerPodMemoryGuardEndsTheGrowerBeforeForksThatReportTheirParentsSharedBlock(t *testing.T) {
 	const pool, block = 1700, 800 * guardMiB
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
@@ -1676,9 +1677,58 @@ func TestControllerPodMemoryGuardEndsTheGrowerBeforeForksThatReportTheirParentsS
 	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
 		t.Fatalf("the guard killed %v, want the growing Python kernel %d before the pool's workers; its log:\n%s", kills, ctlKernel, rig.log())
 	}
-	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d ", ctlKernel, 640*guardMiB)
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", ctlKernel, 500*guardMiB, 3488*guardMiB)
 	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
 		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+}
+
+// The first kill comes at the first reading at the mark on the reads the band holds, before the
+// guard reads any smaps at that reading (INFRA-3531 T16). In the band the Python kernel grows 100
+// MiB at each reading beside the shell command, which holds at 400 MiB. As the reading reaches the
+// mark the rig rewrites both smaps so that a read there would name the command: the kernel back at
+// 300 MiB, no growth over the window, and the command 900 MiB larger, the most grown and the
+// largest. The guard still ends the kernel, which the band's reads name, and reports it at its size
+// at the band's last reading and at the reading at the mark. It reads the command's 1300 MiB only
+// after the kill, as the command's size as of the kill, so at the next reading, which has not
+// fallen, the command has not grown since the kill and nothing more ends.
+func TestControllerPodMemoryGuardEndsAtTheMarkTheProcessTheBandsReadsNameThoughAReadThereWouldNameAnother(t *testing.T) {
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlCommand: 400 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	kernel := guardProcess{pid: ctlKernel, ppid: ctlOmp, exe: "/usr/bin/python3.13", args: []string{"python3", "-u", "/tmp/omp-python-kernel.py"}}
+	for i, reading := range []uint64{3100, 3200, 3300} {
+		kernel.anon = (300 + 100*uint64(i)) * guardMiB
+		pod.add(kernel)
+		pod.setAnon(reading * guardMiB)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+
+	kernel.anon = 300 * guardMiB
+	pod.add(kernel, guardProcess{pid: ctlCommand, ppid: ctlOmp, exe: "/usr/bin/bash", args: []string{"bash", "-c", "make -j8"}, anon: 1300 * guardMiB})
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
+		t.Fatalf("at the mark the guard killed %v, want the Python kernel %d the band's reads name, and not the command %d a read at the mark names; its log:\n%s",
+			kills, ctlKernel, ctlCommand, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", ctlKernel, 500*guardMiB, guardHigh)
+	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+	if reports := waitingReports(m); len(reports) != 1 || reports[0].PID != ctlKernel || reports[0].SizeBytes != 500*guardMiB || reports[0].ReadingBytes != guardHigh {
+		t.Fatalf("the controller's manager holds the reports %+v, want the kernel's alone, at 500 MiB and the reading at the mark", reports)
+	}
+
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
+		t.Fatalf("at the reading after the kill, not fallen and with the command at its size as of the kill, the guard killed %v, want the kernel alone; its log:\n%s",
+			kills, rig.log())
 	}
 }
 

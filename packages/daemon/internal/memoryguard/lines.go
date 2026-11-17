@@ -23,7 +23,9 @@ import (
 // The sizes the guard reads at each reading in the band below the mark and after a kill write no
 // line: they decide the order of the next kill (rank), whose endedLine names the process it ended,
 // the one that grew the most over growthWindow, or the largest where none grew, with the size it
-// read of it at that reading.
+// read of it at the reading it decided on: for a first kill of a rise that the band's held reads
+// decided at the reading at the mark (endHeld), the band's last reading, and for every other kill
+// the reading it is sent at. The line's reading is always the one the kill is sent at.
 const (
 	linePrefix     = "launcher: memory guard: "
 	startedLine    = linePrefix + "started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d"

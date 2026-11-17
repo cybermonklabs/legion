@@ -9,11 +9,12 @@
 // memory.usage_in_bytes, is not the reading: it counts the pages of mapped files, so a database's
 // map raises it past any mark while AnonPages stays low, and one read of it costs about 18 ms
 // under gVisor where a read of meminfo costs a fraction of one. The counter is read every few
-// seconds for the hourly line and at each kill, and never at each interval.
+// seconds for the hourly line, once the guard has decided on the reading (tick), and at each kill,
+// and never at each interval.
 //
-// At or above the act share of the limit (the mark), the guard lists the processes it may end,
-// reads the sizes of those alone, and acts where their sizes sum to at least the floor share of
-// the limit: it sends SIGKILL through a pidfd to the first of them in its order of ends, then takes
+// At or above the act share of the limit (the mark), the guard acts on the processes it may end,
+// by the sizes it reads of those alone, where their sizes sum to at least the floor share of the
+// limit: it sends SIGKILL through a pidfd to the first of them in its order of ends, then takes
 // a reading at each interval. The order (rank, INFRA-3531 R1) is the most grown first: a process's
 // growth is its size at this read less its size at its oldest read within the last growthWindow
 // (300 ms), and growth under growthNoise (1 MiB) is none. Those that did not grow follow, largest
@@ -24,12 +25,30 @@
 // grown.
 //
 // So that it knows what grew when the reading reaches the mark, an armed guard reads those sizes
-// at each interval already in the band, the bandPercent (10%) of the limit below the mark, and
-// keeps each process's reads by its pid and start time for the window (keepSizes). At the first
-// reading at or above the mark it acts on that reading's sizes and the ones it kept, with no wait
-// for another reading, so the first kill comes within one interval of the reading reaching the
-// mark. Below the band, while it is off and once it has given a rise up, it reads no size and
-// keeps none: a pod that sits below its band pays for nothing but its readings.
+// at each interval already in the band, the bandPercent (10%) of the limit below the mark, keeps
+// each process's reads by its pid and start time for the window (keepSizes), and holds the
+// processes each band reading's assessment found, at the sizes it read, for the next reading
+// (held). At the first reading at or above the mark it decides on what the band holds, and sends
+// the kill before it scans the process table, reads any smaps, descriptor or the counter, or starts
+// the hour's scan for the largest process (tick): it orders the held processes at that reading's
+// own time, each by its newest held read less its oldest held read within the window of that time,
+// so a step older than the window is no growth there; it checks the held sizes against the floor;
+// it opens the first by its pidfd, checks its start time and its exit, and kills it; and only then
+// does it assess that reading, whose sizes are the sizes as of the kill (endHeld). The kill's line
+// and report carry the held size and that reading. So the first kill comes within one interval of
+// the reading reaching the mark, also where the pod's CPU is throttled (INFRA-3531 R1 of spec
+// version 25, T16): under gVisor, with six growers faulting their pages in, the host throttles the
+// whole pod by its CFS quota, so a band reading that costs about 2 ms of work took 80 to 270 ms of
+// wall time, and a read of a growing process's /proc files at times waits on its memory locks. This
+// issue's tester measured 194 ms from the reading at the mark to the first kill, where R1 asks for
+// one interval (100 ms), with a mark reading that read every size again; deciding on the band's
+// reads brought 9 of 9 runs in 19 builds Jobs to 1.3 to 71.8 ms. The guard assesses the reading at
+// the mark and acts on it as on any later reading where nothing is held (the reading crossed the
+// whole band within one interval, or the reading before was not an armed guard's in the band),
+// where the held first has exited or its pid names another process (its start time changed), or
+// where the held sizes are under the floor or name no process: it never gives a rise up on held
+// sizes alone. Below the band, while it is off and once it has given a rise up, it reads no size
+// and keeps none: a pod that sits below its band pays for nothing but its readings.
 //
 // After a kill the guard reads the sizes at each interval too, and waits only while the killed
 // process has not exited (its Handle's Exited), and no longer than the wait (INFRA-3531 R1 of spec
@@ -218,7 +237,7 @@ type phase int
 
 const (
 	// armed acts on the next reading at or above the mark, and reads the sizes of what it may end
-	// at each reading in the band below the mark.
+	// at each reading in the band below the mark, which it holds for the next reading (held).
 	armed phase = iota
 	// waiting has sent a kill and reads, and reads those sizes, while the killed process has not
 	// exited and the wait has not passed, and from then on decides at each reading whether to end
@@ -346,6 +365,10 @@ type Guard struct {
 	// before it reads it. The tests set it to count which processes the guard reads at which
 	// reading, in the band, after a kill and at a stop; production leaves it nil.
 	smapsRead func(pid int)
+	// scanSmapsRead, when set, is called with the pid of each smaps the scan for the largest
+	// process reads (scanLargest), on that scan's goroutine, before it reads it. The tests set it
+	// to order those reads against a kill; production leaves it nil.
+	scanSmapsRead func(pid int)
 	// memfdLink is how the link of a descriptor that holds a memfd starts (heldMemfdBytes):
 	// memfdPrefix, as New sets it. The tests set their fake pod's own, since a fake descriptor's
 	// link must lead to a file the guard can stat.
@@ -385,11 +408,18 @@ type Guard struct {
 	// first, none older than growthWindow before it (keepSizes): the reads a process's growth is
 	// measured by. They are emptied wherever the guard reads no size (forgetSizes).
 	sizes map[procKey][]sizeRead
+	// held are the processes an armed guard's assessment at the reading before found it may end,
+	// in the band below the mark, each at the size that assessment read, its newest read in
+	// sizes: what the next reading, where it is at or above the mark, decides on (endHeld). A
+	// reading in the band holds its own, and every other drops them, the one at the mark once it
+	// has decided on them, so they are never of a reading older than the one before and never
+	// held across a kill; forgetSizes drops them with the reads.
+	held []candidate
 	// atKill are the sizes, by process, as of the previous kill of the rise, from which growth
-	// since that kill is measured (grownSinceKill): the sizes of the assessment the kill was made
-	// on (act), and for a process first read after the kill, its first read after it. They are
-	// emptied when the wait after the kill ends (endWait), and their storage is kept from one kill
-	// to the next.
+	// since that kill is measured (grownSinceKill): the sizes of the assessment of the reading the
+	// kill was sent at (act; for a kill on held sizes, the assessment that follows it, endHeld),
+	// and for a process first read after the kill, its first read after it. They are emptied when
+	// the wait after the kill ends (endWait), and their storage is kept from one kill to the next.
 	atKill map[procKey]killSize
 
 	scans    sync.WaitGroup
@@ -521,7 +551,13 @@ func (g *Guard) begin() bool {
 }
 
 // tick is one reading and what follows from it, and false once the guard has turned off for
-// good.
+// good. Of the hourly line, only the window's rollover runs before the guard decides on the
+// reading (rollWindow), so that a kill's counter read counts for the window of its own hour; the
+// rest of the hour's work, the reading's high and low, the counter read every counterEvery and the
+// start of a scan for the largest process, runs after the decision (hour). Nothing of it so runs
+// between a reading at the mark and its kill: under gVisor a read of the counter costs about 18 ms,
+// and a scan started before the kill would read every process's smaps on its own goroutine while
+// the guard reads toward the kill, on a pod whose CPU the host throttles (decide).
 func (g *Guard) tick(first bool) bool {
 	now := g.clock.Now()
 	reading, limit, reason := g.sample()
@@ -537,9 +573,13 @@ func (g *Guard) tick(first bool) bool {
 		g.logf(startedLine, s.ActPercent, s.FloorPercent, s.Wait, s.Interval, limit, reading)
 		g.window = window{start: now, end: now.Add(time.Hour)}
 	}
-	g.hour(now, reading, limit)
+	g.rollWindow(now)
 	g.decide(now, s, on, reading, limit)
-	return !g.isDead()
+	if g.isDead() {
+		return false
+	}
+	g.hour(now, reading, limit)
+	return true
 }
 
 // sample is one reading: the pod's AnonPages and the container's limit, in bytes, or why the guard
@@ -569,12 +609,23 @@ func (g *Guard) sample() (reading, limit uint64, reason string) {
 }
 
 // decide acts on one reading by the guard's phase in the rise. An armed guard whose reading is in
-// the band below the mark (bandStart) or at or above the mark reads the sizes of what it may end
-// (assessAt), and at or above the mark acts on them (act) at once: the first kill of a rise comes
-// at its first reading at or above the mark, on that reading's sizes and the ones kept from the
-// readings before it. A reading that ends a rise, below the mark after a kill or after the rise
-// was given up, is an armed guard's, and reads the sizes where it is in the band. Below the band,
-// while off and while the rise is given up, the guard reads no size and keeps none (forgetSizes).
+// the band below the mark (bandStart) reads the sizes of what it may end (assessAt) and holds them
+// for the next reading (held). At its first reading at or above the mark it decides on those held
+// sizes and the reads kept with them (endHeld): it sends the kill before it scans the process
+// table or reads any smaps, and only then assesses the reading, whose sizes are the sizes as of
+// the kill; tick runs nothing of the hourly line but its rollover before decide returns. That is
+// the cut of INFRA-3531 T16, so the first kill comes within one interval of the reading reaching
+// the mark: with six growers on the pod's CPU the host throttles the whole pod, a band reading of
+// about 2 ms of work took 80 to 270 ms of wall time, and a mark reading that read every size again
+// put its kill 194 ms after the reading, where one that decided on the band's reads put it 1.3 to
+// 71.8 ms after it in 9 of 9 runs. Where nothing is held (the reading crossed the whole band within
+// one interval, or the reading before was not an armed guard's in the band), where the held first
+// has exited or its pid names another process (its start time changed), or where the held sizes
+// are under the floor or name no process, the guard assesses the reading at the mark and acts on
+// it (act), as on any reading of a rise. A reading that ends a rise, below the mark after a kill or
+// after the rise was given up, is an armed guard's, and reads and holds the sizes where it is in
+// the band. Below the band, while off and while the rise is given up, the guard reads no size and
+// keeps none (forgetSizes).
 func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64) {
 	mark := share(limit, s.ActPercent)
 	if !on {
@@ -603,9 +654,55 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 		g.forgetSizes()
 		return
 	}
-	if a, ok := g.assessAt(now); ok && reading >= mark {
+	if reading >= mark && g.held != nil {
+		sent := g.endHeld(now, s, reading, limit)
+		g.held = nil
+		if sent {
+			// The kill is sent: this reading's sizes are the sizes as of it, and the window's
+			// newest reads.
+			if a, ok := g.assessAt(now); ok {
+				g.keepKillSizes(now, a.endable)
+			}
+			return
+		}
+		if g.isDead() {
+			return
+		}
+	}
+	a, ok := g.assessAt(now)
+	switch {
+	case !ok:
+	case reading < mark:
+		g.held = a.endable
+	default:
 		g.act(now, s, reading, limit, &a)
 	}
+}
+
+// endHeld ends the first of the held processes, the ones the assessment at the reading before,
+// in the band, found the guard may end, at the reading taken at now, the first at or above the
+// mark, and answers whether it sent the kill. It reads no file of a process but the target's
+// stat, and before the kill nothing else of the pod (sendKill). The order is the order of ends
+// (rank) at now: each process's growth is its newest held read, the size it is held at, less its
+// oldest held read within growthWindow before now, growthNoise or more, so a read the window held
+// at the band's reading and no longer holds at now counts for nothing, and a step older than the
+// window is no growth; a process with no earlier read in the window has not grown. The floor is
+// read on the held sizes. It sends no kill where they are under the floor or name no process, or
+// where the first has exited, its pid names another process or its kill fails, and decide then
+// assesses the reading and acts on it: what the band held never gives a rise up.
+func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
+	var heldBytes uint64
+	for i := range g.held {
+		c := &g.held[i]
+		reads := g.sizes[procKey{pid: c.PID, start: c.StartTime}]
+		c.growth = growthOver(reads[windowStart(reads, now):], c.size)
+		heldBytes += c.size
+	}
+	if len(g.held) == 0 || heldBytes < share(limit, s.FloorPercent) {
+		return false
+	}
+	rank(g.held)
+	return g.sendKill(now, s, reading, limit, g.held[0])
 }
 
 // watch decides on a reading at or above the mark while the guard waits after a kill, by the rule
@@ -686,39 +783,59 @@ func fell(atKill, reading, mark uint64) bool { return reading < atKill || readin
 
 // act ends the first process of a, the assessment of this reading, in the guard's order of ends
 // (rank), or gives the rise up when the processes it may end hold less than the floor between
-// them: ending one of them would free too little to matter. A process that ended (exited, whether
-// its parent has reaped it yet or not), or whose pid another process took, between the scan and
-// the kill is not killed and not reported, and the next reading decides again: the scan leaves out
-// a zombie. One that exits in the instant between the handle's Exited and its Kill is still
-// reported, since no read can close that window. A process the kill fails on for any other reason
-// is logged once and counted unread from then on (noteKillFailure), and the next reading ends the
-// next in the order.
+// them: ending one of them would free too little to matter. The first kill of a rise is not act's
+// where the band holds what to decide on: at the first reading at or above the mark the guard
+// decides on the band's held reads before it scans the process table or reads any smaps (endHeld),
+// since with six growers on the pod's CPU the host throttles the whole pod, and a mark reading that
+// read every size again, as act's assessment does, put the first kill 194 ms after the reading,
+// where R1 asks for one interval (100 ms); deciding on the band's reads put it 1.3 to 71.8 ms after
+// it in 9 of 9 runs (INFRA-3531 T16). act decides that first kill where the band's reads cannot:
+// nothing is held (the reading crossed the whole band within one interval, or the reading before
+// was not an armed guard's in the band), the held first has exited or its pid names another process
+// (its start time changed), or the held sizes are under the floor or name no process. It decides
+// every kill after a kill of the rise too (watch), on each reading's own sizes. The kill, and what
+// keeps it from a process that ended or whose pid another process took, is sendKill's.
 func (g *Guard) act(now time.Time, s Settings, reading, limit uint64, a *assessment) {
 	if len(a.endable) == 0 || a.endableBytes < share(limit, s.FloorPercent) {
 		g.stopRise(now, reasonNothingToEnd, reading, limit, a)
 		return
 	}
-	target := a.endable[0]
+	if g.sendKill(now, s, reading, limit, a.endable[0]) {
+		g.keepKillSizes(now, a.endable)
+	}
+}
+
+// sendKill sends SIGKILL to target through a pidfd, logs the kill's ended line and reports it, with
+// target's size as the guard read it and reading, the reading taken at now that the kill is sent
+// at, and starts the wait after it; it answers whether it sent the kill. Before the kill it reads
+// nothing of the pod but target's stat, for its start time. A process that ended (exited, whether
+// its parent has reaped it yet or not), or whose pid another process took, since it was read is
+// not killed and not reported, and the guard decides again: at this reading where the band's held
+// reads named it (endHeld), and otherwise at the next reading, whose scan leaves out a zombie. One
+// that exits in the instant between the handle's Exited and its Kill is still reported, since no
+// read can close that window. A process the kill fails on for any other reason is logged once and
+// counted unread from then on (noteKillFailure), so the next decision ends the next in the order.
+func (g *Guard) sendKill(now time.Time, s Settings, reading, limit uint64, target candidate) bool {
 	h, err := g.signal.Open(target.PID)
 	if err != nil {
 		g.killFailed(target.Process, err)
-		return
+		return false
 	}
 	if start, err := readStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
 		_ = h.Close()
-		return
+		return false
 	}
 	// An exited process its parent has not reaped yet keeps its pid and its start time, so the
 	// check above passes it, and the kill of it answers no error. The handle is asked because it
 	// holds the very process the kill goes to, so its answer is of that process and of no other.
 	if h.Exited() {
 		_ = h.Close()
-		return
+		return false
 	}
 	if err := h.Kill(); err != nil {
 		_ = h.Close()
 		g.killFailed(target.Process, err)
-		return
+		return false
 	}
 	at := g.clock.Now()
 	counter := g.readCounter(at)
@@ -739,12 +856,12 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64, a *assessm
 	g.phase = waiting
 	killed := procKey{pid: target.PID, start: target.StartTime}
 	g.wait = afterKill{handle: h, killed: killed, reading: reading, deadline: now.Add(s.Wait)}
-	g.keepKillSizes(now, a.endable)
+	return true
 }
 
 // killFailed acts on a kill that failed: a system with no way to hold or signal a process turns
-// the guard off, a process that has ended (ESRCH) leaves the next reading to decide again, and any
-// other failure is noted against the process (noteKillFailure).
+// the guard off, a process that has ended (ESRCH) leaves the guard to decide again (sendKill), and
+// any other failure is noted against the process (noteKillFailure).
 func (g *Guard) killFailed(p *Process, err error) {
 	switch {
 	case errors.Is(err, errors.ErrUnsupported):
@@ -780,9 +897,10 @@ func (g *Guard) applyKillFailures(t *Table) {
 }
 
 // candidate is a process with its size as the guard ranks it, and its role: in an assessment, a
-// process the guard may end. growth is how much its size grew over the window (keepSizes), 0 for
-// one that grew by less than growthNoise or has no earlier read in the window, and for every
-// process a scan for the hourly line reads.
+// process the guard may end. growth is how much its size grew over the window (keepSizes, and for
+// a held process at the reading at the mark, endHeld), 0 for one that grew by less than
+// growthNoise or has no earlier read in the window, and for every process a scan for the hourly
+// line reads.
 type candidate struct {
 	*Process
 	role   string
@@ -878,13 +996,9 @@ func (g *Guard) keepSizes(now time.Time, cs []candidate) bool {
 		c := &cs[i]
 		key := procKey{pid: c.PID, start: c.StartTime}
 		reads := g.sizes[key]
-		old := 0
-		for old < len(reads) && now.Sub(reads[old].at) > growthWindow {
-			old++
-		}
-		reads = reads[:copy(reads, reads[old:])]
-		if len(reads) > 0 && c.size >= reads[0].size+growthNoise {
-			c.growth, grew = c.size-reads[0].size, true
+		reads = reads[:copy(reads, reads[windowStart(reads, now):])]
+		if c.growth = growthOver(reads, c.size); c.growth > 0 {
+			grew = true
 		}
 		g.sizes[key] = append(reads, sizeRead{at: now, size: c.size})
 	}
@@ -896,14 +1010,38 @@ func (g *Guard) keepSizes(now time.Time, cs []candidate) bool {
 	return grew
 }
 
-// forgetSizes drops every size read the guard keeps, wherever it reads none: below the band, while
-// off and while a rise is given up (decide, stopRise). The reads it keeps are so those of readings
-// in a row in the band, at the mark and after a kill.
-func (g *Guard) forgetSizes() { clear(g.sizes) }
+// windowStart is the index of the oldest of reads, oldest first, within growthWindow before now,
+// len(reads) where none is.
+func windowStart(reads []sizeRead, now time.Time) int {
+	i := 0
+	for i < len(reads) && now.Sub(reads[i].at) > growthWindow {
+		i++
+	}
+	return i
+}
 
-// keepKillSizes keeps the size of each of cs, the processes of the assessment a kill was made on,
-// read at now, as its size as of that kill (atKill), from which grownSinceKill measures its growth
-// until the next kill. The sizes of the kill before were emptied when its wait ended (endWait), so
+// growthOver is how much size grew from the oldest of reads, a process's reads within the window,
+// where that is growthNoise or more, and 0 otherwise or where reads holds none.
+func growthOver(reads []sizeRead, size uint64) uint64 {
+	if len(reads) > 0 && size >= reads[0].size+growthNoise {
+		return size - reads[0].size
+	}
+	return 0
+}
+
+// forgetSizes drops every size read the guard keeps, and the processes it holds for the next
+// reading (held), wherever it reads none: below the band, while off and while a rise is given up
+// (decide, stopRise). The reads it keeps are so those of readings in a row in the band, at the
+// mark and after a kill.
+func (g *Guard) forgetSizes() {
+	clear(g.sizes)
+	g.held = nil
+}
+
+// keepKillSizes keeps the size of each of cs, the processes of the assessment of the reading a
+// kill was sent at (act's, or for a kill on held sizes the one that follows it, decide), read at
+// now, as its size as of that kill (atKill), from which grownSinceKill measures its growth until
+// the next kill. The sizes of the kill before were emptied when its wait ended (endWait), so
 // those of one kill alone are kept, in the storage of the kills before.
 func (g *Guard) keepKillSizes(now time.Time, cs []candidate) {
 	for _, c := range cs {
@@ -1061,12 +1199,11 @@ func (g *Guard) endWait() {
 	g.phase = armed
 }
 
-// hour keeps the hourly window: it closes the window whose hour has passed with its line, takes
-// this reading into the window it falls in, reads the counter every counterEvery and at each
-// window's start, and starts a scan for the largest process when the reading is a new high of the
-// hour at least 1% of the limit above the high the last scan started at. The scan runs on its own
-// goroutine and the reading never waits for it.
-func (g *Guard) hour(now time.Time, reading, limit uint64) {
+// rollWindow credits a finished scan for the largest process to the window it was started in
+// (takeScan), and closes the window whose hour has passed, with its line, for the one the reading
+// taken at now falls in. It is the one part of the hour's work that runs before the guard decides
+// on the reading (tick), so that a kill's counter read counts for the window of its own hour.
+func (g *Guard) rollWindow(now time.Time) {
 	g.takeScan()
 	if !now.Before(g.window.end) {
 		g.closeWindow()
@@ -1074,6 +1211,15 @@ func (g *Guard) hour(now time.Time, reading, limit uint64) {
 		start = start.Add(now.Sub(start).Truncate(time.Hour))
 		g.window = window{start: start, end: start.Add(time.Hour)}
 	}
+}
+
+// hour takes the reading taken at now into the hour's window, once the guard has decided on it
+// (tick), so that none of it runs between a reading at the mark and its kill. It reads the counter
+// every counterEvery and at the window's first reading, unless a kill at this reading has read it
+// already (readCounter sets counterAt), and starts a scan for the largest process when the reading
+// is a new high of the hour at least 1% of the limit above the high the last scan started at. The
+// scan runs on its own goroutine and the reading never waits for it.
+func (g *Guard) hour(now time.Time, reading, limit uint64) {
 	w := &g.window
 	first := !w.readings
 	if first || reading > w.readingHigh {
@@ -1083,7 +1229,7 @@ func (g *Guard) hour(now time.Time, reading, limit uint64) {
 		w.readingLow = reading
 	}
 	w.readings = true
-	if first || now.Sub(g.counterAt) >= counterEvery {
+	if (first && g.counterAt.Before(now)) || now.Sub(g.counterAt) >= counterEvery {
 		g.readCounter(now)
 	}
 	if reading == w.readingHigh && (!w.scanned || reading >= w.scannedHigh+limit/100) && g.startScan(w.start) {
@@ -1101,8 +1247,8 @@ func (g *Guard) closeWindow() {
 		w.counterHigh, w.counterLow, w.largest.pid, roleName(w.largest.role), w.largest.size, w.largest.executable)
 }
 
-// readCounter reads the cgroup's counter into the window, and answers it: 0 when it cannot be
-// read, which it is not the guard's to act on.
+// readCounter reads the cgroup's counter into the window, keeps now as when it last read it
+// (counterAt), and answers it: 0 when it cannot be read, which it is not the guard's to act on.
 func (g *Guard) readCounter(now time.Time) uint64 {
 	g.counterAt = now
 	data, err := g.counterFile.read()
@@ -1165,6 +1311,9 @@ func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 		clear(g.scanMemfds)
 		read := make([]candidate, 0, len(t.byPID))
 		for _, p := range t.Processes() {
+			if g.scanSmapsRead != nil {
+				g.scanSmapsRead(p.PID)
+			}
 			data, err := readAll(g.smapsPath(p.PID), g.scanSmaps)
 			g.scanSmaps = data
 			if err != nil {

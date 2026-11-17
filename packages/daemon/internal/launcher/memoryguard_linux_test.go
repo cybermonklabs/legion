@@ -138,12 +138,15 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 		Proc: proc, Cgroup: cgroup, Clock: newGuardClock(),
 		Classify: func(table *memoryguard.Table) map[int]memoryguard.Class {
 			answer := classifier.classify(table)
-			// The hour's scan for the largest process runs beside the kill, and may read the
-			// pod once the holder is gone; the scan the kill was decided on reads it.
+			// The hour's scan for the largest process starts after the guard's decision at a
+			// reading, so it reads the pod once the kill is sent and may read the holder as a
+			// zombie; the first scan that reads the holder is the one the kill was decided on.
 			if p, ok := table.Get(holder); ok {
 				mu.Lock()
 				defer mu.Unlock()
-				read, classes = p, answer
+				if read == nil {
+					read, classes = p, answer
+				}
 			}
 			return answer
 		},
