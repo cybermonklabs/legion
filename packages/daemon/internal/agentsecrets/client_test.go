@@ -769,7 +769,7 @@ func TestEnrollWithoutASessionSendsNull(t *testing.T) {
 }
 
 // plannerClaim is a role claim token as the daemon spells it (claim.NewToken).
-const plannerClaim = "legion-infra-infra-2653-planner"
+const plannerClaim = "legion-acme-acme-12-planner"
 
 // TestEnrollSendsTheClaim: the claim the process runs for goes to the broker as `claim`, beside
 // every field the contract already carried, so the broker files the pod's requests under it.

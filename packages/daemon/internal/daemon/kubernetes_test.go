@@ -1039,7 +1039,7 @@ func TestTheBrokerEnrollerSendsTheClaim(t *testing.T) {
 	if !testwait.Holds(5*time.Second, time.Millisecond, func() bool { return client.LoginStatus().State == "issued" }) {
 		t.Fatalf("login state %q, want issued", client.LoginStatus().State)
 	}
-	const claim = "legion-infra-infra-2653-planner"
+	const claim = "legion-acme-acme-12-planner"
 	id, err := enroller.Enroll(context.Background(), supervise.PodEnrollment{
 		PodUID: "pod-uid-1", Slot: "planner-g1", Thumbprint: "tp", PodToken: "a.b.c", Session: "ses_planner", Claim: claim,
 	})
