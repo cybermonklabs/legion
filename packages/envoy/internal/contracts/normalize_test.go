@@ -659,8 +659,8 @@ func TestGithubSubjectsWriteADottedOwnerOrNameAsOneSegment(t *testing.T) {
 
 // The listener reads GithubTopicKinds as where a repository name ends in a topic, so every token
 // Envoy publishes right after a repository's owner and name is one: the kind and parent kind of
-// every event the two tables name and of one they don't, the mention, push, workflow, job and
-// checks topics, and every golden envelope's topic.
+// every event the two tables name (an event they do not name is published nowhere), the mention,
+// push, workflow, job and checks topics, and every golden envelope's topic.
 func TestGithubTopicKindsHoldEveryTokenAfterTheRepository(t *testing.T) {
 	const prefix = "notifications.github.example-org.example-repo."
 	topics := []string{
@@ -670,7 +670,7 @@ func TestGithubTopicKindsHoldEveryTokenAfterTheRepository(t *testing.T) {
 		GithubJobSubject("example-org", "example-repo", "500", "completed"),
 		GithubSubject("example-org", "example-repo", "pr.7.checks"),
 	}
-	events := []string{"merge_group"}
+	var events []string
 	for event := range githubEventKinds {
 		events = append(events, event)
 	}
@@ -1928,6 +1928,161 @@ func TestGithubPayloadAllEventTypes(t *testing.T) {
 				t.Fatalf("expected empty Payload for %s, got %s", tt.event, env.Payload)
 			}
 		})
+	}
+}
+
+// githubEventsNotNormalized are webhook events GitHub delivers that the two tables do not name, a
+// sample of GitHub's own list: a repository's or an App's webhook subscribed to them sends each.
+var githubEventsNotNormalized = []string{
+	"branch_protection_rule", "code_scanning_alert", "commit_comment", "create", "delete",
+	"dependabot_alert", "deployment", "deployment_status", "discussion", "discussion_comment",
+	"fork", "gollum", "installation", "installation_repositories", "issue_dependencies", "label",
+	"member", "merge_group", "meta", "milestone", "package", "page_build", "ping", "project_card",
+	"projects_v2_item", "public", "pull_request_review_thread", "registry_package", "release",
+	"repository", "repository_ruleset", "secret_scanning_alert", "security_advisory", "star",
+	"status", "team_add", "watch", "workflow_dispatch", "workflow_job",
+}
+
+// The listener publishes a GitHub event only when it normalizes it. Any other event a webhook
+// delivers - a commit status, a branch or tag created or deleted, a label, a review thread
+// resolved, the ping a new webhook is sent - is published nowhere, whatever its body names. Each
+// was published on the repository's own `comment` topic with no payload, which every Legion daemon
+// that hears the repository terminated as poison, one ERROR line per delivery.
+func TestGithubEnvelopesPublishNoEventTheListenerDoesNotNormalize(t *testing.T) {
+	for _, event := range githubEventsNotNormalized {
+		t.Run(event, func(t *testing.T) {
+			if _, named := githubEventKinds[event]; named {
+				t.Fatalf("%s is named in githubEventKinds, so it is normalized and does not belong in this list", event)
+			}
+			body := map[string]any{
+				"action":       "created",
+				"number":       float64(5),
+				"pull_request": map[string]any{"number": float64(5)},
+				"issue":        map[string]any{"number": float64(5), "pull_request": map[string]any{}},
+				"comment":      map[string]any{"body": "hey @legion"},
+				"sender":       map[string]any{"login": "octocat", "type": "User"},
+				"repository": map[string]any{
+					"name": "example-repo", "full_name": "example-org/example-repo",
+					"owner": map[string]any{"login": "example-org"},
+				},
+			}
+			items := GithubEnvelopes(GithubEnvelopeInput{Event: event, Delivery: "d", EventID: "e", TraceID: "t", Body: body}, "@legion")
+			if len(items) != 0 {
+				t.Fatalf("%s published %d envelopes, the first on %s with payload %q; want none", event, len(items), items[0].Topic, items[0].Payload)
+			}
+		})
+	}
+}
+
+// Every envelope the listener publishes for a GitHub event carries a JSON object as its payload:
+// a Legion daemon terminates as poison an envelope whose payload is not JSON, and an envelope
+// with an empty payload goes on the bus with none at all (Envelope's payload is omitempty). Each
+// event the two tables name is published here from a body of its own, so an event added to them
+// without a normalizer fails here rather than in a daemon's log. The comment and review events are
+// published again with a body past every cap, with bytes that are not UTF-8, edited and deleted.
+func TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload(t *testing.T) {
+	fixture := func(name string) map[string]any {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fixtures", "github", name+".json"))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		body := map[string]any{}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode fixture %s: %v", name, err)
+		}
+		return body
+	}
+	withBody := func(name, object, text string) map[string]any {
+		body := fixture(name)
+		mapValue(body[object])["body"] = text
+		return body
+	}
+	withAction := func(name, action string) map[string]any {
+		body := fixture(name)
+		body["action"] = action
+		return body
+	}
+	// GitHub allows a comment 65,536 characters; a mention after all of them still fans out.
+	long := strings.Repeat("🔥", 70_000) + " @legion"
+	notUTF8 := "a \xff\xfe b \xed\xa0\x80 c @legion"
+	issue := map[string]any{
+		"action": "opened",
+		"issue": map[string]any{
+			"number": float64(3), "title": "An issue", "body": "its body",
+			"user": map[string]any{"login": "octocat"}, "html_url": "https://example.invalid/example-org/example-repo/issues/3",
+		},
+		"sender": map[string]any{"login": "octocat", "type": "User"},
+		"repository": map[string]any{
+			"name": "example-repo", "full_name": "example-org/example-repo",
+			"owner": map[string]any{"login": "example-org"},
+		},
+	}
+	cases := []struct {
+		name  string
+		event string
+		body  map[string]any
+		// none is an event the two tables name that is published nowhere: a pull request's CI
+		// folds into the CI store, which publishes the settlement.
+		none bool
+	}{
+		{name: "pull_request", event: "pull_request", body: fixture("pull-request-opened")},
+		{name: "issues", event: "issues", body: issue},
+		{name: "sub_issues", event: "sub_issues", body: fixture("sub-issues-added")},
+		{name: "push", event: "push", body: fixture("push")},
+		{name: "check_run of a finished Actions job", event: "check_run", body: fixture("check-run-actions-job-without-pr")},
+		{name: "check_suite", event: "check_suite", body: fixture("check-suite-first"), none: true},
+		{name: "workflow_run", event: "workflow_run", body: fixture("workflow-run-without-pr")},
+		{name: "issue_comment", event: "issue_comment", body: fixture("issue-comment-created")},
+		{name: "issue_comment edited", event: "issue_comment", body: fixture("issue-comment-edited")},
+		{name: "issue_comment deleted", event: "issue_comment", body: withAction("issue-comment-created", "deleted")},
+		{name: "issue_comment past every cap", event: "issue_comment", body: withBody("issue-comment-pr-created", "comment", long)},
+		{name: "issue_comment not UTF-8", event: "issue_comment", body: withBody("issue-comment-pr-created", "comment", notUTF8)},
+		{name: "pull_request_review", event: "pull_request_review", body: fixture("pull-request-review-submitted")},
+		{name: "pull_request_review past every cap", event: "pull_request_review", body: withBody("pull-request-review-submitted", "review", long)},
+		{name: "pull_request_review_comment", event: "pull_request_review_comment", body: fixture("pull-request-review-comment-created")},
+		{name: "pull_request_review_comment edited", event: "pull_request_review_comment", body: withAction("pull-request-review-comment-created", "edited")},
+		{name: "pull_request_review_comment not UTF-8", event: "pull_request_review_comment", body: withBody("pull-request-review-comment-created", "comment", notUTF8)},
+	}
+	published := map[string]bool{}
+	for _, tc := range cases {
+		published[tc.event] = true
+		t.Run(tc.name, func(t *testing.T) {
+			items := GithubEnvelopes(GithubEnvelopeInput{Event: tc.event, Delivery: "d", EventID: "e", TraceID: "t", Body: tc.body}, "@legion")
+			if tc.none {
+				if len(items) != 0 {
+					t.Fatalf("published %d envelopes, want none", len(items))
+				}
+				return
+			}
+			if len(items) == 0 {
+				t.Fatal("published nothing")
+			}
+			for _, item := range items {
+				wire, err := json.Marshal(item)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var stored struct {
+					Payload *string `json:"payload"`
+				}
+				if err := json.Unmarshal(wire, &stored); err != nil {
+					t.Fatal(err)
+				}
+				if stored.Payload == nil {
+					t.Fatalf("the envelope on %s carries no payload: %s", item.Topic, wire)
+				}
+				var object map[string]any
+				if err := json.Unmarshal([]byte(*stored.Payload), &object); err != nil || object == nil {
+					t.Fatalf("the envelope on %s carries payload %q, which is no JSON object (%v)", item.Topic, *stored.Payload, err)
+				}
+			}
+		})
+	}
+	for event := range githubEventKinds {
+		if !published[event] {
+			t.Errorf("no case publishes %s, which githubEventKinds names", event)
+		}
 	}
 }
 
