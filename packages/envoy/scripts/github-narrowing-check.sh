@@ -54,7 +54,7 @@
 #
 # The curl calls the child makes carry no --cacert and no --resolve, which the check's own text
 # would have them carry for a stand-in behind TLS. The GitHub stand of cmd/dev-airlock-stands is
-# served over plain http on 127.0.0.1 (its plainStands): the broker mints a kind's value with an
+# served over plain http on 127.0.0.1 (its plainStands): the broker mints a type's value with an
 # HTTP client that trusts this host's own roots and nothing else, so a minter endpoint behind TLS
 # would want a root in the pod's trust store. There is therefore no certificate to carry a name
 # and nothing for a child to verify, and each call names the stand's own address.

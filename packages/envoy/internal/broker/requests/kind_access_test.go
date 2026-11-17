@@ -13,15 +13,15 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
-// TestAKindSecretIsNeverReleasedToAnotherOperator: an agent-tier kind secret its owner's sessions
+// TestATypeSecretIsNeverReleasedToAnotherOperator: an agent-tier type secret its owner's sessions
 // get at once is, for another operator's session, a request its owner must approve, which that
 // operator cannot approve; and that session cannot read the owner's live grant.
-func TestAKindSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
+func TestATypeSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	retag(t, machine, requestKindSecret("OWNERS_APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
+	retag(t, machine, requestTypeSecret("OWNERS_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			calls.Add(1)
 			return secrets.Minted{Value: "minted-token"}, nil
 		},
@@ -53,10 +53,10 @@ func TestAKindSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
 // its github-owners tag lists.
 func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 	machine, enrollmentID, key, approver := newFixture(t)
-	retag(t, machine, requestKindSecret("HUMAN_APP_KEY", policy.KindGitHubApp, policy.TierHuman, ""))
+	retag(t, machine, requestTypeSecret("HUMAN_APP_KEY", policy.TypeGitHubApp, policy.TierHuman, ""))
 	var owners []string
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			owners = req.GitHubOwners
 			return secrets.Minted{Value: "minted-token"}, nil
 		},
@@ -78,14 +78,14 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 	}
 }
 
-// TestConcurrentReleasesOfOneKindSecretAllMint: many releases of one grant at once each mint and
+// TestConcurrentReleasesOfOneTypeSecretAllMint: many releases of one grant at once each mint and
 // each succeeds, and none sees another's token.
-func TestConcurrentReleasesOfOneKindSecretAllMint(t *testing.T) {
+func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	retag(t, machine, requestKindSecret("BUSY_APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
+	retag(t, machine, requestTypeSecret("BUSY_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			return secrets.Minted{Value: fmt.Sprintf("minted-token-%d", calls.Add(1))}, nil
 		},
 	}

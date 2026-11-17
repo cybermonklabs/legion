@@ -50,9 +50,9 @@ func (f failingSecretRead) Read(ctx context.Context, source string) (string, err
 // exactly the read the check and the release both make.
 func storeSourceOf(t *testing.T, f *narrowingFixture, name string) string {
 	t.Helper()
-	_, source, minted, err := policy.ParseKindSource(f.Policy.Get().Secrets[name].Source)
+	_, source, minted, err := policy.ParseTypeSource(f.Policy.Get().Secrets[name].Source)
 	if err != nil || !minted {
-		t.Fatalf("%s's source is %q, %v; want a minted kind's", name, source, err)
+		t.Fatalf("%s's source is %q, %v; want a minted type's", name, source, err)
 	}
 	return source
 }

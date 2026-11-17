@@ -65,7 +65,7 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 	} {
 		t.Run("ended during "+row.name, func(t *testing.T) {
 			driven++
-			local := secrets.NewLocal(policytest.KindSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+			local := secrets.NewLocal(policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 			store := &abandoningCall{Local: local}
 			loader := policytest.Loader(local)
 			loader.Store = policytest.StoreThrough(local, store)
@@ -75,7 +75,7 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 			}
 			// A retag to human tier, with a new version of the value (a trailing space, which the
 			// decoder still reads), so the reread both merges new tags and reads the value.
-			local.Put(policytest.KindSecret("APP_KEY", "ada@example.com", policy.TierHuman, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)+" "))
+			local.Put(policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)+" "))
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			store.cut, store.cancel = row.cut, cancel
