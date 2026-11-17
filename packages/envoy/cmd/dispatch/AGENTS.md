@@ -588,9 +588,11 @@ write identity errors with `identity.WriteError`.
   owner (`409 PRIVATE_PROJECT_NOT_PROVISIONED`; with no list, `409 PRIVATE_PROJECTS_OFF` before
   any read). Nothing about it refuses the boot: `reportPrivateProjects`, right after
   `store.EnsureProjectOwners`, logs an ERROR line for each private project off the list and an
-  INFO line for listed keys not private yet; the maintenance sweep repeats the first every pass,
-  and, with a list, logs an ERROR line for a store that cannot hold a private project yet once as
-  its loop starts in each process and then hourly, off the boot path; and `/healthz` answers
+  INFO line for listed keys not private yet, and reads nothing of the store; the maintenance sweep
+  (`api.RunMaintenanceSweep`) repeats the first every pass, and, with a list, logs an ERROR line
+  for a store that cannot hold a private project yet (a row without its node, the sessions'
+  projects unfilled, or `access_events_scrubbed` empty) once as its loop starts in each process,
+  on no lease and beside the serving process, and then hourly; and `/healthz` answers
   `degraded: ["private_project_unprovisioned"]` for the first, naming
   no key and counting none, without touching `ok`. Every response carries `Dispatch-Private-Projects` (`access.PrivateProjectsHeader`): `1`
   with a list, else `1` while the database holds a private project or the read failed, else `0`.
@@ -600,7 +602,7 @@ write identity errors with `identity.WriteError`.
   boot report reads its first answer. `serveHandler` wraps the one handler `newHTTPServer` serves, and
   `TestTheServerServesOnlyTheWrappedHandler` names any server built around another. A 101 reads no
   header of the writer's, so `/ws/live` passes `access.UpgradeHeader(w)` to its upgrader and the
-  document socket writes the value on its hijacked connection (`docs.processHeaderWriter`).
+  document socket writes the value on its hijacked connection (`docs.upgradeHeadersWriter`).
 - An access token the secrets broker issued is the fifth credential and the one
   that is not a bearer: it is presented under RFC 9449's DPoP scheme
   (`Authorization: DPoP <token>` with a `DPoP:` proof header), because that RFC
