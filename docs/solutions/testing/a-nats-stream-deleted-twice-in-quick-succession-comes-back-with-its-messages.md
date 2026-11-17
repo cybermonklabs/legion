@@ -88,7 +88,7 @@ setting), and, on mise before 2026.9.0, in any shell `mise activate` set up: tho
 the shell's original environment from `__MISE_DIFF` without checking whether the caller changed
 `GOBIN` since, so mise's own value comes back. From 2026.9.0 the caller's `GOBIN` holds unless the
 setting is on; `mise --version` says which case a machine is in. When it is replaced,
-`GOBIN=/tmp/x go install github.com/nats-io/nats-server/v2@v2.10.29` puts the binary where every
+`GOBIN=/tmp/x go install github.com/nats-io/nats-server/v2@v2.15.1` puts the binary where every
 session using that toolchain finds it. Call a real binary instead, which honours `GOBIN` either
 way: the toolchain the checkout selects, under its own `GOROOT`, as the repository's scripts do
 (`goroot=$(go env GOROOT); GOBIN=/tmp/x GOROOT=$goroot "$goroot/bin/go" install …`), or mise's own

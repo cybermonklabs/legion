@@ -8,7 +8,7 @@
  */
 import { expect, spyOn, test } from "bun:test"
 import { mkdir, open, readdir, readFile, stat } from "node:fs/promises"
-import { agentSubject } from "@legion/contracts"
+import { legacyAgentSubject } from "@legion/contracts"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
 import { type ChannelNotification, startChannelSession } from "../src/envoy-channel-server"
 import { type ReplayStateFile, replayStateFile, writeReplayState } from "../src/replay-state"
@@ -29,7 +29,7 @@ isolatePaneEnvironment()
 const scratchState = useScratchState()
 
 const SESSION = "ses_replay"
-const DIRECT = agentSubject(SESSION)
+const DIRECT = legacyAgentSubject(SESSION)
 const ISSUE = "DSP-7"
 const ISSUE_TOPIC = `notifications.dispatch.issue.${ISSUE}.>`
 const ISSUE_BASE = `notifications.dispatch.issue.${ISSUE}`
@@ -71,7 +71,7 @@ function peerMessage(sessionID: string, label: string): { raw: string; eventId: 
       event_id: eventId,
       source: "agent",
       source_session: "ses_peer",
-      topic: agentSubject(sessionID),
+      topic: legacyAgentSubject(sessionID),
       dedupe_key: `agent.ses_peer.${label}`,
       issued_at: 1,
       payload_summary: `peer message ${label}`,
@@ -85,7 +85,7 @@ function removalFrame(sessionID: string, topic: string): string {
     event_id: "dispatch-remove-1",
     source: "dispatch",
     source_event_id: "remove-1",
-    topic: agentSubject(sessionID),
+    topic: legacyAgentSubject(sessionID),
     dedupe_key: "dispatch-remove-1",
     issued_at: 1,
     payload_summary: `${ISSUE} subscription removed`,
@@ -300,7 +300,7 @@ test("a followed topic reaching a private stream subject is followed and never r
   const refused = [
     "notifications.*.x",
     "notifications.agent.*",
-    agentSubject("ses_other"),
+    legacyAgentSubject("ses_other"),
     `notifications.envoy.exceptions.${DIRECT}`,
     "notifications.legion.ACME.controller",
   ]
@@ -423,7 +423,7 @@ test("a /clear handoff to a new session id starts a fresh delivery state in a fi
     await session.follow([ISSUE_TOPIC])
     const before = peerMessage("ses_old", "before")
     nats.emitRelay("ses_old", {
-      subject: agentSubject("ses_old"),
+      subject: legacyAgentSubject("ses_old"),
       seq: 1,
       raw: before.raw,
       reply: "_INBOX.old",
@@ -453,12 +453,12 @@ test("a /clear handoff to a new session id starts a fresh delivery state in a fi
     const old = await stateOf(directory, "ses_old")
     expect(old.ledger.map((entry) => entry.event_id)).toEqual([before.eventId])
     expect(old.state?.topics).toEqual(
-      expect.arrayContaining([agentSubject("ses_old"), ISSUE_TOPIC]),
+      expect.arrayContaining([legacyAgentSubject("ses_old"), ISSUE_TOPIC]),
     )
 
     const taken = peerMessage("ses_new", "taken")
     nats.emitRelay("ses_new", {
-      subject: agentSubject("ses_new"),
+      subject: legacyAgentSubject("ses_new"),
       seq: 2,
       raw: taken.raw,
       reply: "_INBOX.new",
@@ -511,7 +511,7 @@ test("shows the id a /clear moved to nothing of a frame whose notice was in flig
       }
       if (entry.eventId === old.eventId && ++refusedOfOld === 3) {
         session?.delivery
-          .enqueue({ subject: agentSubject("ses_old"), raw: blocker.raw })
+          .enqueue({ subject: legacyAgentSubject("ses_old"), raw: blocker.raw })
           .catch(() => undefined)
       }
       // Every card of a frame fails, so each of its deliveries fails; the notice is taken.
@@ -535,7 +535,7 @@ test("shows the id a /clear moved to nothing of a frame whose notice was in flig
     const deliver = (sessionID: string, frame: { raw: string }, seq: number, delivered: number) => {
       const reply = `_INBOX.${seq}-${delivered}`
       nats.emitRelay(sessionID, {
-        subject: agentSubject(sessionID),
+        subject: legacyAgentSubject(sessionID),
         seq,
         raw: frame.raw,
         reply,

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -33,9 +34,9 @@ const (
 	concurrentMemoryBound = 512 << 20
 	documentCap           = 1 << 20
 	// documentReadBudgetForTest mirrors docs.documentReadBudget, the cold reads' cache budget of a
-	// process with no Go memory limit, which the server this test starts runs under. The cache's
-	// test hook supplies each entry's real accounting weight, so this process can build two
-	// complete cache fills.
+	// process with no Go memory limit, which the server this test starts runs under and reports
+	// (TestColdReadCacheEvictionPlateaus reads it back). The cache's test hook supplies each
+	// entry's real accounting weight, so this process can build two complete cache fills.
 	documentReadBudgetForTest = 256 << 20
 	// marginEditAllowance is the most a margin filled to its bounds may add to what a cold edit of
 	// its document holds: two cold edits of one heaviest document, with a full margin and without,
@@ -216,6 +217,19 @@ func cloneColdReadArtifact(t *testing.T, memory *memoryHarness, sourceID string,
 	return artifactID
 }
 
+// The cold reads' cache stops growing at its budget. A first fill reads documents weighing twice
+// the budget into a fresh server, and a second fill reads as many others, which the cache takes in
+// place of the first. After each fill the cache's own figures (dispatch_rooms, on the server's
+// loopback profiler) hold it within two entries of its budget, so a cache that stores nothing
+// fails, and never past it, so a cache that never evicts fails; and the second fill's resident
+// peak is at most one request (requestMemoryBound) above the first's.
+//
+// What the first fill leaves resident above idle is not what the cache holds: the fill reuses the
+// free heap the server held at idle, which is what its boot left uncollected or not yet given back.
+// Read at once after /healthz, that was 240 to 256 MiB of heap not yet collected, or 125 to 185 MiB
+// of free pages, over six runs, so a cache holding the same 252 MiB left 148 to 312 MiB above idle
+// over eleven runs on one 4-CPU machine, and 127 MiB on CI (run 43990897490), under the floor of
+// half the budget this test held it to before (INFRA-3904).
 func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 	memory := newMemoryHarness(t)
 	markdown := heaviestAdmitted(t, func(units int) string { return strings.Repeat("# a\n", units) })
@@ -239,18 +253,69 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 	for index := range artifactIDs {
 		artifactIDs[index] = cloneColdReadArtifact(t, memory, upload.artifactID, index)
 	}
+	// The reader's profiler takes a port the kernel chooses, which the line it logs names
+	// (pprofListening). The server logs it before it serves, but its output reaches this test
+	// through a pipe the test copies on its own goroutine, so the line is waited for, until the
+	// server exits.
+	memory.env = []string{"DISPATCH_PPROF_PORT=0"}
 	reader := memory.start(t)
+	memory.env = nil
+	var listening []string
+	testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
+		listening = pprofListening.FindStringSubmatch(reader.output.String())
+		select {
+		case <-reader.exited:
+			return true
+		default:
+			return listening != nil
+		}
+	})
+	if listening == nil {
+		t.Fatalf("the reader logged no line naming its profiler's address:\n%s", reader.outputTail())
+	}
+	cache := func() docs.ReadCacheFigures {
+		t.Helper()
+		response, err := http.Get("http://" + listening[1] + "/debug/vars")
+		if err != nil {
+			t.Fatalf("GET /debug/vars on the reader's profiler: %v", err)
+		}
+		defer response.Body.Close()
+		var vars struct {
+			Rooms *docs.RoomFigures `json:"dispatch_rooms"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&vars); err != nil || response.StatusCode != http.StatusOK || vars.Rooms == nil {
+			t.Fatalf("GET /debug/vars on the reader's profiler = %d (%v), want the process's expvar variables with dispatch_rooms", response.StatusCode, err)
+		}
+		return vars.Rooms.ReadCache
+	}
 	read := func(ids []string) {
 		for _, artifactID := range ids {
 			reader.get(t, "/api/v1/artifacts/"+artifactID+"/text")
 		}
 	}
 	firstPeak := reader.peakAboveIdle(t, func() { read(artifactIDs[:perFill]) })
-	retained := reader.resident(t, "VmRSS") - reader.idle
+	first := cache()
 	secondPeak := reader.peakAboveIdle(t, func() { read(artifactIDs[perFill:]) })
-	t.Logf("cache eviction: weight %d MiB, %d documents/fill, first peak %d MiB, second peak %d MiB, retained %d MiB", weight>>20, perFill, firstPeak>>20, secondPeak>>20, retained>>20)
-	if retained < documentReadBudgetForTest/2 {
-		t.Errorf("first cache fill retained %d MiB above idle, want at least %d MiB so a no-store cache cannot pass", retained>>20, (documentReadBudgetForTest/2)>>20)
+	second := cache()
+	t.Logf("cache eviction: weight %d MiB, %d documents/fill, budget %d MiB, idle %d MiB; first fill: %d entries of %d MiB, peak %d MiB above idle; second fill: %d entries of %d MiB, peak %d MiB above idle",
+		weight>>20, perFill, documentReadBudgetForTest>>20, reader.idle>>20, first.Entries, first.Bytes>>20, firstPeak>>20, second.Entries, second.Bytes>>20, secondPeak>>20)
+	for _, fill := range []struct {
+		name  string
+		cache docs.ReadCacheFigures
+	}{{"first", first}, {"second", second}} {
+		held := fill.cache
+		if held.Budget != documentReadBudgetForTest {
+			t.Fatalf("the server's cache budget is %d MiB, want documentReadBudget's %d MiB (documentReadBudgetForTest)", held.Budget>>20, documentReadBudgetForTest>>20)
+		}
+		// put drops the least recently read entries only until the cache is within its budget, so
+		// a fill of twice the budget leaves it within one entry of the budget. Two entries are
+		// allowed, since the clones' weights differ by their stamps' digits.
+		if held.Entries == 0 || held.Bytes <= held.Budget-2*(held.Bytes/int64(held.Entries)) {
+			t.Errorf("after the %s fill the cache holds %d entries of %d MiB, want within two entries of its %d MiB budget, so a cache that stores nothing cannot pass", fill.name, held.Entries, held.Bytes>>20, held.Budget>>20)
+		}
+		if held.Bytes > held.Budget {
+			t.Errorf("after the %s fill the cache holds %d entries of %d MiB, past its %d MiB budget", fill.name, held.Entries, held.Bytes>>20, held.Budget>>20)
+		}
 	}
 	if secondPeak > firstPeak+requestMemoryBound {
 		t.Errorf("second cache fill peaked %d MiB above idle after first peak %d MiB, want at most one request (%d MiB) more", secondPeak>>20, firstPeak>>20, requestMemoryBound>>20)

@@ -18,6 +18,13 @@ refused, with the commands that move its data onto the right one). Without Docke
 yourself and set `DEV_BROKER_POSTGRES_URL` to `postgres://<user>@<host>:<port>/<database>`, for a
 role that may create databases; the script then creates and drops its database there with `psql`.
 
+Set `DEV_BROKER_GCP_PREFIX` (`projects/<project number>/secrets/<id prefix>`) and
+`DEV_BROKER_GCP_KMS_KEY_NAME` (a global Cloud KMS key) together to give the broker Google Cloud
+Secret Manager as its store under them, with an empty fake secrets file: `GET /v1/settings` then
+describes that store, so `agent-secrets secret` writes the real Secret Manager under the
+credential you choose for it ([Manage a secret](/legion/broker/guides/manage-a-secret/#before-you-start)),
+while the broker serves none of the demo secrets below. One of the two alone is refused (exit 2).
+
 ## Start the stack
 
 With Docker the command is the script alone; this run used a Postgres server of its own:
@@ -358,10 +365,12 @@ A `POST /v1/oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:token
 `client_id=dispatch-token-exchange`, that pod's exchange token as `subject_token`,
 `subject_token_type=urn:envoy:params:oauth:token-type:kubernetes-service-account` and
 `session=example-worker-session`, signed with a DPoP proof of a key of the caller's own, mints a
-DPoP-bound access token. A `session` no registration names is refused, and the refusal names it:
+DPoP-bound access token. A `session` no registration names is refused, and the refusal names it.
+Its description begins `pod_session_not_registered:`, which both clients read as a refusal to
+trade again on, since a pod's trade can reach the broker before its registration does:
 
 ```console
-{"error":"invalid_grant","error_description":"The provided authorization grant (e.g., authorization code, resource owner credentials) or refresh token is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client. No registration says this pod may write under the session name 'other-session'. A pod writes under a session name its deployment registered for it.","answer_id":"ff2fd8523c22d74ed9dffcb333ea004a"}
+{"error":"invalid_grant","error_description":"pod_session_not_registered: No registration says this pod may write under the session name 'other-session'. A pod writes under a session name its deployment registered for it.","answer_id":"ff2fd8523c22d74ed9dffcb333ea004a"}
 ```
 
 Either listed caller reads a minted token back (`POST /v1/oauth/introspect` with the token in the

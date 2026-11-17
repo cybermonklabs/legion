@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # packages/envoy/loadtest/cluster/cluster.test.sh
 #
-# Proves cluster.sh's behaviour without a cluster and without a network: fakes `kubectl`, `gh`,
-# `curl`, `go`, `git`, `uv`, `dispatch`, `hostname` and `sleep` on PATH. The fake kubectl records
+# Proves cluster.sh's behaviour without a cluster and without a network (but for (h)'s fresh render,
+# below, whose go fetches helm): fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv`, `dispatch`,
+# `hostname` and `sleep` on PATH. The fake kubectl records
 # every call and answers from files the test writes (the run's pods, the lock ConfigMap, cpu.max,
 # the errors an apply fails with), and runs the stored-order check's runner script on the fake
 # runner's /work, where the fake go's envoy-dispatch prints a summary line; the fake curl answers
@@ -68,9 +69,14 @@
 # stops after five races in a row; (e) every manifest renders with no placeholder left and every
 # image by digest, and a value of the wrong shape is refused; (f) a container restart between the
 # before and after reads writes step-failed.json with kind restart; (g) the sampler writes an
-# error line with no number when its exec fails, and a numeric line when it reads; (h) when go and
-# the network reach helm, render-nats.sh re-renders nats.yaml equal to the committed file (else it
-# says it skipped that); (i) the run's residual notes are replay-residual.md's lines, then the seed
+# error line with no number when its exec fails, and a numeric line when it reads; (h)
+# render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
+# sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
+# the unchanged archive with no curl call, equal to the committed file (else it says it skipped
+# that). That render runs helm through `go run`, so it needs go's module proxy, or offline
+# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it fails rather
+# than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's residual
+# notes are replay-residual.md's lines, then the seed
 # check's anchors by placement rule (with the share on the nearest surviving block) and its
 # sign-flipped versions, a count the check lacks written as "not recorded"; (j) stored-order.json
 # holds the checker's fields and a clean run's and a mismatching run's counts, and nulls (never 0)
@@ -2013,19 +2019,61 @@ pass "a restart between the before and after container reads writes step-failed.
 )
 pass "the sampler writes an error line with no number when its exec fails, and a numeric line when it reads"
 
-# ---- (h) nats.yaml against a fresh render ------------------------------------------------------------
+# ---- (h) nats.yaml against a fresh render of the vendored chart ---------------------------------
 
-if PATH=$real_path command -v go >/dev/null &&
-  PATH=$real_path curl -fsS --max-time 20 -o /dev/null https://nats-io.github.io/k8s/helm/charts/index.yaml 2>/dev/null; then
-  # shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
-  PATH=$real_path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
-    fail "render-nats.sh failed"
-  # shellcheck disable=SC2031 # as above
+# A copy of render-nats.sh's tree whose vendored chart has its last byte changed. render-nats.sh
+# refuses that archive before it runs go, so this half needs neither go nor the network: it runs on
+# the fakes' PATH, where the fake go records any call.
+# shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
+(
+  version=$(sed -n 's/^CHART_VERSION=//p' "$here/render-nats.sh")
+  want=$(sed -n 's/^CHART_SHA256=//p' "$here/render-nats.sh")
+  tree=$tmp/render-tree
+  mkdir -p "$tree/loadtest/cluster"
+  tree=$(cd -- "$tree" && pwd -P) # Match the directory spelling in render-nats.sh's refusal.
+  chart=$tree/loadtest/cluster/nats-$version.tgz
+  cp -- "$here/../common.sh" "$tree/loadtest/"
+  cp -- "$here/cluster.sh" "$here/render-nats.sh" "$here/nats-values.yaml" "$here/nats-$version.tgz" "$tree/loadtest/cluster/"
+  vendored=$(sha256sum -- "$chart" | cut -d' ' -f1)
+  [ "$vendored" = "$want" ] || fail "nats-$version.tgz has sha256 $vendored, not render-nats.sh's CHART_SHA256 '$want'"
+  size=$(wc -c <"$chart")
+  byte='\000'
+  [ "$(tail -c1 "$chart" | od -An -tu1 | tr -d ' ')" != 0 ] || byte='\001'
+  printf '%b' "$byte" | dd of="$chart" bs=1 seek=$((size - 1)) conv=notrunc status=none
+  got=$(sha256sum -- "$chart" | cut -d' ' -f1)
+  [ "$got" != "$want" ] || fail "the chart with its last byte changed still has sha256 $want"
+  [ -f "$fake/go.log" ] || : >"$fake/go.log"
+  go_calls=$(wc -l <"$fake/go.log")
+  ! bash "$tree/loadtest/cluster/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/refused.yaml" 2>"$tmp/out" ||
+    fail "render-nats.sh rendered a chart whose sha256 is $got"
+  grep -qxF "render-nats.sh: $chart has sha256 $got, not $want; refusing it" "$tmp/out" ||
+    fail "render-nats.sh's refusal of the changed chart does not name it and both sums"
+  [ ! -e "$tmp/refused.yaml" ] && [ ! -e "$tmp/refused.yaml.tmp" ] || fail "render-nats.sh wrote a render of the refused chart"
+  [ "$(wc -l <"$fake/go.log")" = "$go_calls" ] || fail "render-nats.sh ran go on the refused chart: $(tail -n1 "$fake/go.log")"
+)
+pass "render-nats.sh refuses its vendored chart with one byte changed, naming it and both sums, before it runs go or writes a render"
+
+# The render runs on the real PATH for go, behind a curl that records each call and fails it: with
+# --pin-from it fetches nothing but helm, which go fetches itself through its module proxy.
+# shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
+if PATH=$real_path command -v go >/dev/null; then
+  mkdir -p "$tmp/no-curl"
+  cat >"$tmp/no-curl/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_DIR/no-curl.log"
+exit 1
+EOF
+  chmod +x "$tmp/no-curl/curl"
+  status=0
+  PATH=$tmp/no-curl:$real_path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
+    status=$?
+  [ ! -s "$fake/no-curl.log" ] || fail "render-nats.sh --pin-from ran curl, which reads the network: $(cat "$fake/no-curl.log")"
+  [ "$status" = 0 ] || fail "render-nats.sh failed; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
   diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
     fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
-  pass "manifests/nats.yaml equals a fresh render of chart nats/nats 2.15.1 with nats-values.yaml"
+  pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, which ran no curl"
 else
-  printf 'SKIP: go or the network does not reach helm and the chart, so manifests/nats.yaml was not compared with a fresh render\n'
+  printf 'SKIP: go is not on PATH, so manifests/nats.yaml was not compared with a fresh render\n'
 fi
 
 # ---- (i) the replay residual's seed-check lines -------------------------------------------------

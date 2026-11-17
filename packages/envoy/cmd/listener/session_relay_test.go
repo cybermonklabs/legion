@@ -252,7 +252,7 @@ func requireFrames(t *testing.T, frames []relayedFrame, want ...contracts.Envelo
 func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_away"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	first := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, beforeSeq := rig.storeEvent(t, agent)
@@ -282,12 +282,12 @@ func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
 	const sessionID = "ses_ack_on_done"
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
 	frame := standIn.collect(t, 1, 5*time.Second)[0]
 	requireFrames(t, []relayedFrame{frame}, stored)
 	header := frame.msg.Header
-	if got := header.Get(relayHeaderSubject); got != contracts.AgentSubject(sessionID) {
+	if got := header.Get(relayHeaderSubject); got != contracts.LegacyAgentSubject(sessionID) {
 		t.Errorf("%s = %q, want the stored subject", relayHeaderSubject, got)
 	}
 	if got := header.Get(relayHeaderStreamID); got != rig.streamID(t) {
@@ -353,7 +353,7 @@ func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID stri
 func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_held"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	var ledgerMu sync.Mutex
 	var shown []string
 	ledger := map[string]bool{}
@@ -422,7 +422,7 @@ func TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart(t 
 func TestSessionConsumerNewEpochHeardAfterTheRunRestartedRestartsNothing(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_epoch_heard_late"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, func(relayedFrame) []string { return []string{relayReplyReceived} })
 	// A mark taken before the session's relay starts, as a registration takes its own before its
 	// entry write starts the relay.
@@ -451,7 +451,7 @@ func TestSessionConsumerRestartWritesTheTopicsStoredWhenItHoldsTheLock(t *testin
 	rig := newRelayRig(t)
 	const sessionID = "ses_restart_stale"
 	const followed = "notifications.dispatch.issue.RESTARTSTALE.>"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, beforeSeq := rig.storeEvent(t, agent)
@@ -528,7 +528,7 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 	const pauseFirst, pauseMax = 2 * time.Second, 4 * time.Second
 	rig := newRelayRigReceipt(t, pauseFirst, pauseMax, receipt)
 	const sessionID = "ses_unreachable"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	e0, _ := rig.storeEvent(t, agent)
@@ -559,7 +559,7 @@ func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testin
 	const receipt = 500 * time.Millisecond
 	rig := newRelayRigReceipt(t, time.Minute, time.Minute, receipt)
 	const sessionID = "ses_unreachable_registers"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	e0, _ := rig.storeEvent(t, agent)
@@ -590,7 +590,7 @@ func TestSessionConsumerEventPublishedJustAfterAFollowIsRelayed(t *testing.T) {
 	const topic = "notifications.dispatch.issue.FOLLOW.>"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	before, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	before, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), before)
 
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", topic))
@@ -606,8 +606,8 @@ func TestSessionConsumerRelaySubjectIsNotStored(t *testing.T) {
 	const sessionID = "ses_not_stored"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	first, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
-	second, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	second, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 2, 5*time.Second), first, second)
 
 	info, err := rig.harness.client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: bus.DeliverSubjectPrefix + ">"})
@@ -631,7 +631,7 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 	listener := startListenerProcess(t, binary, uri, machineID)
 	listener.waitHealthy(t)
 	sessionID := "ses_owner_killed_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	midFlight := newEnvelope("agent", agent, "in flight when the listener died")
 	var midFlightSeen atomic.Bool
 	standIn := startSessionStandIn(t, uri, sessionID, func(frame relayedFrame) []string {
@@ -693,7 +693,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	// stays delivered and unacked.
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
@@ -733,7 +733,7 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 	// stays delivered and unacked.
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
@@ -803,7 +803,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 	// held is under the consumer's MaxAckPending (bus.SessionConsumerMaxAckPending, 1024), so the
 	// server delivers every one of them and the relay holds every one as a frame.
 	const held = 200
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	items := make([]contracts.Envelope, 0, held)
 	stored := make([]uint64, 0, held)
 	for range held {
@@ -882,7 +882,7 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 	first.waitHealthy(t)
 	second.waitHealthy(t)
 	sessionID := "ses_moved_relay_" + id.New()
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, uri, sessionID, answerDone)
 	consumers := observeConsumers(t, uri)
 	publisher := connectPublisher(t, uri)
@@ -1268,7 +1268,7 @@ func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 		return []string{relayReplyReceived, relayReplyNak}
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
 	frames := standIn.collect(t, 3, 20*time.Second)
 	for i, frame := range frames {
