@@ -326,10 +326,13 @@ type PodResources struct {
 // AgentSecrets is the secrets broker the runtime enrolls every pod with: the URL the
 // pod's `agent-secrets` client calls, and the audience and lifetime of the projected token each
 // pod carries for it. Nil enrolls none, and no pod carries the token, the key volume, the
-// variables, or the shim flags.
+// variables, or the shim flags. ExchangeAudience, when set, is the audience of a second projected
+// token every enrolled pod carries, the identity the broker's exchange trades for a broker token
+// (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one.
 type AgentSecrets struct {
-	URL, Audience string
-	TokenExpiry   time.Duration
+	URL, Audience    string
+	TokenExpiry      time.Duration
+	ExchangeAudience string
 }
 
 // InstallRef names the pieces of Agent Sandbox a cluster must have: the Sandbox CRD, and the

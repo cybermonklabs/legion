@@ -599,7 +599,7 @@ func TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy(t *testing.T)
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the mention delivered it",
 			got.destinations)
 	}
@@ -621,7 +621,7 @@ func TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention(t *tes
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the attempt row names s1 though the payload's mention names nobody, and the mention delivered the comment",
 			got.destinations)
 	}
@@ -637,7 +637,7 @@ func TestAnUnansweredSessionMentionOfTheRootAuthorSuppressesTheAuthorCopy(t *tes
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the mention delivered it",
 			got.destinations)
 	}
@@ -654,7 +654,7 @@ func TestAnUnansweredRoleMentionHeldByTheRootAuthorIsLeftToThatMention(t *testin
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the attempt row names s1 though the payload's mention names nobody, and the mention delivered the reply",
 			got.destinations)
 	}
@@ -675,7 +675,7 @@ func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *t
 	if len(got.sends) != 1 || got.sends[0].session != "s1" {
 		t.Fatalf("the listener took sends %#v, want the one mention's, to s1", got.sends)
 	}
-	if slices.Contains(got.destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(got.destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published comment.created to %v, want s1's topic left out: the mention delivered it",
 			got.destinations)
 	}

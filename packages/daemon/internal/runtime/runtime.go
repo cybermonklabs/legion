@@ -203,6 +203,19 @@ type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
 }
 
+// LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
+// runtime chose it before the agent started rather than leaving it to the agent to mint: a
+// Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
+// prepares the launch (claudeInputs). It answers for the incarnation loc records, and false for
+// any other — an Oh My Pi role, whose id its agent mints and reports at its registration, a
+// launch the runtime does not remember (a daemon restarted since), or an earlier incarnation. It
+// is what lets the daemon register a Claude role's session for its pod at the shim's hello, before
+// the agent registers (supervise's ensureRegistered). A runtime that names no session implements
+// nothing here.
+type LaunchSessionNamer interface {
+	LaunchSession(loc Locator) (session string, named bool)
+}
+
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted

@@ -356,7 +356,7 @@ stamps it, for its `--version` (`cmd/envoy-infra/main_test.go`). The seed packag
 through `SSL_CERT_FILE`; setup any other seed test needs goes into it. The tests that start
 nats-server containers on this machine's Docker through `testnats` carry the `natslive` build
 tag, so a plain `go test ./...`, as that `build` job runs it, starts none. Each runs on
-`testnats.Image` and `testnats.HubImage`: `core/nats_auth_live_test.go` (the rendered authorization
+`testnats.Images`, which is `testnats.HubImage` alone (the listener refuses nats:2.10, `natsversion`): `core/nats_auth_live_test.go` (the rendered authorization
 on a real server: its users connect, a client with no credential is refused, the grants hold),
 `seed/seed_live_test.go` (a generated seed connects, and a client without it is refused) and
 `core/permissions_live_test.go` (the listener, built from `packages/envoy/cmd/listener` under the

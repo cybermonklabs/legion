@@ -260,11 +260,13 @@ type RepositoryCacheSettings struct {
 }
 
 // AgentSecretsSettings is `runtime.kubernetes.agent_secrets` without `token_file`, the path of the
-// daemon's own login token.
+// daemon's own login token. ExchangeAudience is absent where the block names none, so a deployment
+// that never set it reads exactly as before the key existed.
 type AgentSecretsSettings struct {
 	URL                string `json:"url"`
 	Audience           string `json:"audience"`
 	TokenExpirySeconds int    `json:"token_expiry_seconds"`
+	ExchangeAudience   string `json:"exchange_audience,omitempty"`
 }
 
 // PluginsSettings is `runtime.kubernetes.plugins`.
@@ -633,7 +635,7 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 		settings.Scheduling.Tolerations[i] = TolerationSettings{Key: toleration.Key, Operator: toleration.Operator, Value: toleration.Value, Effect: toleration.Effect}
 	}
 	if broker := block.AgentSecrets; broker != nil {
-		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds}
+		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds, ExchangeAudience: broker.ExchangeAudience}
 	}
 	if plugins := block.Plugins; plugins != nil {
 		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}

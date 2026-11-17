@@ -74,15 +74,23 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []strin
 // keepPass is one pass of the keeper, through the client's current JetStream context. A bucket of
 // buckets that does not exist yet, one the program opens only for a feature it has not configured,
 // is skipped without a line: the program creates it at the deployment's copies when it opens it.
-// Each pass reads the live connection's server version for itself (serverDefaultsAnUnsetCap), so
-// a stream with no consumer cap, which an older server leaves unlimited and this binary
-// therefore leaves alone, is raised at the first pass after the server it is connected to has
-// been upgraded to one that caps such a stream at a default of its own. A pass with no live
-// connection reads an empty version, which is no such server, and a pass runs only while the
-// client is connected (keep).
+// Each pass reads the live connection's server version for itself, once the connection reports
+// one (connectedDefaultsAnUnsetCap), so a stream with no consumer cap, which an older server
+// leaves unlimited and this binary therefore leaves alone, is raised at the first pass after the
+// server it is connected to has been upgraded to one that caps such a stream at a default of its
+// own. A pass whose connection reports no version until the client stops or
+// natsversion.VersionWait passes keeps nothing of the stream that pass and logs why, since an
+// empty version is no reading of the server; a pass runs only while the client is connected
+// (keep).
 func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
+	ctx, cancel := c.untilStopped()
+	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, c.Connection())
+	cancel()
 	js := c.JS()
-	restored, err := keepStream(js, cfg, serverDefaultsAnUnsetCap(c.Connection().ConnectedServerVersion()))
+	var restored []string
+	if err == nil {
+		restored, err = keepStream(js, cfg, defaultsAnUnsetCap)
+	}
 	switch {
 	case err != nil && c.stopped():
 		return

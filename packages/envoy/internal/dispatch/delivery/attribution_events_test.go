@@ -70,19 +70,6 @@ func attributedHeadRow(number int, issue *string, source attributionSource) Pull
 	}
 }
 
-// seedAttributionIssue is seedHeadIssue with the issue's events cleared: this database is the
-// server's own and outlives the run, and nothing truncates `events` between runs, so a count of
-// one issue's events would otherwise carry every earlier run's with it (seedDeployedIssues
-// clears them for the same reason).
-func seedAttributionIssue(t *testing.T, ctx context.Context, pool *store.Pool, number int) string {
-	t.Helper()
-	key := seedHeadIssue(t, ctx, pool, number)
-	if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, key); err != nil {
-		t.Fatalf("clear the events of %s: %v", key, err)
-	}
-	return key
-}
-
 // TestAnAttributionThatMovesIsRecordedOnBothIssues: a write that moves a pull request from one
 // issue to another appends one event on the issue it left and one on the issue it reached, each
 // naming both sides and the source that decided the new one. The issue's results are measured
@@ -90,8 +77,8 @@ func seedAttributionIssue(t *testing.T, ctx context.Context, pool *store.Pool, n
 // measured against, and R8 of INFRA-1522 asks that neither change without a record of it.
 func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	left := seedAttributionIssue(t, ctx, pool, 70)
-	reached := seedAttributionIssue(t, ctx, pool, 71)
+	left := seedHeadIssue(t, ctx, pool, 70)
+	reached := seedHeadIssue(t, ctx, pool, 71)
 	broker := events.NewBroker()
 
 	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(170, &left, sourceTitleBody)); err != nil {
@@ -149,7 +136,7 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 // timeline under the pass's own heartbeat.
 func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	issue := seedAttributionIssue(t, ctx, pool, 72)
+	issue := seedHeadIssue(t, ctx, pool, 72)
 	broker := events.NewBroker()
 
 	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(172, &issue, sourceBranch)); err != nil {
