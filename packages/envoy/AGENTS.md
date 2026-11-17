@@ -4242,7 +4242,7 @@ A read-only broker token carries no project either, but none of the three checks
   A watcher that ends on its own records the terminal error `/healthz` and self-health read.
   A stopped watcher arms nothing, and one armed while the stop ran is read and dropped until the shutdown ends it (the shutdown bullet below).
   A watcher reporting `consumer not active` during the gap is logged at WARN.
-  A server that closes a connection during a reconnect's handshake (one restarting) makes nats.go report the read's `EOF` as an async error with no subscription and nothing else, so the bus logs that report, while the connection is still connecting or reconnecting, as the failed reconnect attempt it is, at WARN on the reconnect throttle (`envoy nats reconnect attempt failed`).
+  A reconnect's handshake whose reply the client cannot read (a server restarting closes or resets the connection, or answers too late) makes nats.go report the read's error (`EOF`, `connection reset by peer`, `i/o timeout`) as an async error with no subscription and nothing else, so the bus logs that report, while the connection is still connecting or reconnecting, as the failed reconnect attempt it is, at WARN on the reconnect throttle (`envoy nats reconnect attempt failed`).
   Every other async error is an ERROR, an `EOF` on a connected connection and `consumer not found` among them:
   the shutdown deletes each watcher's consumer itself before the connection drains, so a delete nats.go's drain reports belongs to a watcher nothing ended, and an ordered consumer nats.go failed to recreate wraps the error.
 

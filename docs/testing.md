@@ -372,10 +372,12 @@ A check that reads "the consumer is gone" some time after the delete therefore p
 While the replacement's create is in flight, after the server made it and before the client read the answer, nats.go has not yet named it to the subscription, so a stop in that moment deletes nothing and leaves the new consumer for the server to remove once its interest is gone (`js.go` `deleteConsumer`).
 A replacement the server lists may still be in that moment in the client.
 
-So such a test decides which state the code meets, and reads only what holds in that state.
-Ended right after the delete, with no wait between, as `TestADrainEndsTheKVWatchersBeforeTheConnection` does, the consumer is still gone, unless the process stalls for 5 s between two statements.
-Across a process's shutdown or any other wait, wait instead until the server lists nats.go's replacement (it starts at the lost one's next sequence, `DeliverByStartSequencePolicy`; `awaitReplacedConsumer` in `packages/envoy/cmd/listener/drain_watchers_test.go`), read what the code says it did (`kvwatch.Watcher.End` logs `<name> watcher ended` once every stop it made has returned, whatever it found), and do not require the bucket empty afterwards, since the replacement may have been in flight.
-A count of what is left reads the server's answer (`StreamInfo`'s `State.Consumers`, failing on its error), never a listing that reads nothing when its request fails.
+So such a test holds the state it means to test, rather than racing nats.go to it.
+To test code that meets the consumer gone, delete it with `testnats.HoldConsumerLost` (`packages/envoy/internal/testnats/ordered_loss.go`): it sends the client, until the test ends, the idle heartbeat the server would, carrying the consumer's own sequences, so nats.go reads the subscription as alive and replaces nothing, however long the code under test takes; the bucket must take no write meanwhile.
+`TestADrainEndsTheKVWatchersBeforeTheConnection` and the `consumers already gone` row of `TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain` do; with a plain delete and a 25 s stall before the end, the first failed 2 of 2, and with the hold it passed 2 of 2.
+To test code that meets nats.go's replacement, wait until the server lists it (it starts at the lost one's next sequence, `DeliverByStartSequencePolicy`; `awaitReplacedConsumer` in `packages/envoy/cmd/listener/drain_watchers_test.go`), and do not require the bucket empty afterwards, since the replacement may have been in flight.
+Either way, read what the code says it did (`kvwatch.Watcher.End` logs `<name> watcher ended` once every stop it made has returned, whatever it found).
+A count of what is left reads a listing that reports its own failure (jetstream's `ListConsumers` or `ConsumerNames` and their `Err`), never nats.go's older listing, whose channel closes on a failed request as on an empty stream.
 
 ## A test that reads `GET /api/v1/references?since=` reads again
 

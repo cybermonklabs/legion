@@ -85,14 +85,16 @@ func (w *Watcher) end(ctx context.Context) {
 	w.mu.Unlock()
 	var gaveUp error
 	if idle != nil {
-		// A watch that has finished is read before ctx, which can already be done: a hook's
-		// context ends the moment the connection is lost.
+		// A watch that has finished is read before ctx, and again once ctx has ended, since a
+		// select on both picks either when both are ready, and ctx can already be done: a hook's
+		// context ends the moment the connection is lost, and a drain of a connection already
+		// reconnecting runs the hooks on one that has.
 		select {
 		case <-idle:
-		default:
+		case <-ctx.Done():
 			select {
 			case <-idle:
-			case <-ctx.Done():
+			default:
 				gaveUp = context.Cause(ctx)
 				w.logUnfinished(w.name+" watcher end found a watch still starting", gaveUp)
 			}
@@ -110,19 +112,19 @@ func (w *Watcher) end(ctx context.Context) {
 	}
 	stopped := 0
 	for range retired {
-		select {
-		case err := <-results:
-			w.logEnd(err)
-			stopped++
-			continue
-		default:
-		}
+		// As above: a stop that has returned is taken before ctx, and again once ctx has ended.
 		select {
 		case err := <-results:
 			w.logEnd(err)
 			stopped++
 		case <-ctx.Done():
-			w.logEnd(fmt.Errorf("delete its consumer: %w", context.Cause(ctx)))
+			select {
+			case err := <-results:
+				w.logEnd(err)
+				stopped++
+			default:
+				w.logEnd(fmt.Errorf("delete its consumer: %w", context.Cause(ctx)))
+			}
 		}
 	}
 	if gaveUp == nil && stopped == len(retired) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -23,10 +24,10 @@ import (
 // consumer still there is deleted with no WARN or ERROR; one already gone (a NATS restart loses an
 // ordered consumer, which nats.go keeps in memory) is a warning, since the delete was for that
 // state. Either way nats.go reports nothing asynchronously and nothing is an ERROR, which
-// TestListenerFollowsTheInterestRegistryAcrossNATSRestarts refuses (LEGION-278). The drain follows
-// the delete at once: while the client reads its heartbeats, nats.go puts a new consumer in the
-// place of a lost one no sooner than 5 s after the loss (docs/testing.md, "A test that deletes a KV
-// watcher's consumer").
+// TestListenerFollowsTheInterestRegistryAcrossNATSRestarts refuses (LEGION-278). The lost consumer
+// is held lost (testnats.HoldConsumerLost) until the drain is over: left alone, nats.go puts a new
+// one in its place once a heartbeat check passes in silence, and the end would delete that one and
+// warn of nothing (docs/testing.md, "A test that deletes a KV watcher's consumer").
 func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -60,21 +61,12 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			client.AddDrainHook(watcher.End)
 
 			admin := testnats.Connect(t, uri)
-			adminJS, err := admin.JetStream()
-			if err != nil {
-				t.Fatalf("admin JetStream: %v", err)
-			}
-			if consumers := consumerNames(adminJS, "KV_drain_kv_watcher"); len(consumers) != 1 {
+			if consumers := consumerNames(t, admin, "KV_drain_kv_watcher"); len(consumers) != 1 {
 				t.Fatalf("consumers before the drain = %v, want the watcher's one", consumers)
-			}
-			if test.consumerGone {
+			} else if test.consumerGone {
 				// Delete the watcher's consumer from a second connection, as the server does when it
-				// loses it.
-				for _, name := range consumerNames(adminJS, "KV_drain_kv_watcher") {
-					if err := adminJS.DeleteConsumer("KV_drain_kv_watcher", name); err != nil {
-						t.Fatalf("delete the watcher's consumer %s: %v", name, err)
-					}
-				}
+				// loses it, and keep nats.go from replacing it until the test ends.
+				testnats.HoldConsumerLost(t, admin, "KV_drain_kv_watcher", consumers[0])
 			}
 
 			watcher.Stop()
@@ -87,7 +79,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			if got := strings.Join(warnOrErrorRecords(t, logs, name), ", "); got != test.want {
 				t.Fatalf("the drain logged %q, want %q", got, test.want)
 			}
-			if consumers := consumerNames(adminJS, "KV_drain_kv_watcher"); len(consumers) != 0 {
+			if consumers := consumerNames(t, admin, "KV_drain_kv_watcher"); len(consumers) != 0 {
 				t.Fatalf("consumers after the drain = %v, want none", consumers)
 			}
 		})
@@ -176,11 +168,26 @@ func TestWarnOrErrorRecordsTakesAClientThatHasLoggedNothing(t *testing.T) {
 	}
 }
 
-// consumerNames lists the stream's consumers.
-func consumerNames(js natsgo.JetStreamContext, stream string) []string {
+// consumerNames lists the stream's consumers through admin. A listing that fails fails the test
+// (jetstream's lister reports its error, where nats.go's older one closes its channel and says
+// nothing), so a listing that read nothing is never taken for a stream that carries nothing.
+func consumerNames(t *testing.T, admin *natsgo.Conn, stream string) []string {
+	t.Helper()
+	js, err := jetstream.New(admin)
+	if err != nil {
+		t.Fatalf("admin JetStream: %v", err)
+	}
+	found, err := js.Stream(t.Context(), stream)
+	if err != nil {
+		t.Fatalf("read stream %s: %v", stream, err)
+	}
+	lister := found.ConsumerNames(t.Context())
 	var names []string
-	for name := range js.ConsumerNames(stream) {
+	for name := range lister.Name() {
 		names = append(names, name)
+	}
+	if err := lister.Err(); err != nil {
+		t.Fatalf("list %s's consumers: %v", stream, err)
 	}
 	return names
 }
