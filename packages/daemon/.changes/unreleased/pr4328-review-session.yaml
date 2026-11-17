@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  A review of the review App decides a review round only when it comes from the session the
+  reviewer's claim records, in every round, the first included: the daemon reads that session by
+  the token it starts the reviewer under. Before, in an issue's first round, an approval or a
+  request for changes from any session that held the review App's token decided the round, so the
+  controller, an architect or a role of a sibling tree could decide it. A review of another session
+  is set aside. While the reviewer's claim records no session, a review App review waits, and the
+  next read of the pull request's reviews judges it. A person's review decides as before.

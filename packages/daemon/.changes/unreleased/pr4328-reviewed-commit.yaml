@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  A later review round's task names the commit that the newest of the reviewer's own deciding
+  reviews read, as ` Last reviewed commit: <sha>.`, so the reviewer reads the difference from that
+  commit to the head instead of the whole change. Each task of the reviewer in reviewing, a resume
+  and a wake included, ends with ` Review entry: <n>.`, the round it is for. The reviewer writes
+  that number into its review's Legion footer (`"entry":"<n>"`), and only an approval or a request
+  for changes of the reviewer's own session whose footer names the entry that stands moves the
+  stored commit; any other review decides its round as before and leaves the commit, so the next
+  round reads more. A new generation of an issue clears the commit, and no entry into a phase does.
+  A compaction the daemon asks for keeps the entry's sentence word for word. The migration
+  `20261116234034_phase_reviewed_head` adds `phases.reviewed_head` with an empty default, so the
+  first round after the upgrade names no commit; a rollback runs the way back in
+  `docs/kubernetes.md`, "Rolling back the release that keeps the commit a reviewer last read".
