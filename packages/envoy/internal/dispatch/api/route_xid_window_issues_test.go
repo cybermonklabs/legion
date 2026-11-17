@@ -14,10 +14,10 @@ import (
 )
 
 // issueRouteXidWindows is the rows of the route window table (route_xid_window_test.go) for the
-// routes that write an issue or a project: the reopen, the design gates, the project's settings,
-// the handoff, the claim's release, the creates and patches that name a repository, an advances
-// relation or a blocker in another project, and the create of a near copy the gate's refusal of
-// which could not be recorded.
+// routes that write an issue or a project: the reopen, the design gates, the role holders, the
+// project's settings, the handoff, the claim's release, the creates and patches that name a
+// repository, an advances relation or a blocker in another project, and the create of a near copy
+// the gate's refusal of which could not be recorded.
 var issueRouteXidWindows = []routeXidWindowCase{
 	// The reopen's document work - the withdrawn asks read back, their blocks and copies written
 	// open into the spec (prepareRestoration, docs.WriteIssueAskStates), the mark of the documents
@@ -41,6 +41,16 @@ var issueRouteXidWindows = []routeXidWindowCase{
 		name: "the design gates route", route: "PUT /api/v1/issues/{key}/design-gates (putIssueDesignGates)",
 		ready: readyDesignGates, window: storetest.XidWindowOf(3,
 			"the delete of the gates the publish no longer names, the upsert of the ones it names and the COMMIT ending them"),
+	},
+	// The issue holds the tester ses-a and the publication moves it to ses-b (readyRoleHolders),
+	// so the window opens at the delete of the pair the publication no longer names. The read of
+	// the stored set the route answers with runs after the insert, in the same transaction, so it
+	// is inside the window too.
+	{
+		name: "the role holders route", route: "PUT /api/v1/issues/{key}/role-holders (putIssueRoleHolders)",
+		ready: readyRoleHolders, window: storetest.XidWindowOf(4,
+			"the delete of the pairs the publication no longer names, the insert of the ones not stored yet, "+
+				"the read of the stored set it answers with and the COMMIT ending them"),
 	},
 	{
 		name: "the project default assignee route", route: "PUT /api/v1/projects/{key}/default-assignee (putProjectDefaultAssignee)",

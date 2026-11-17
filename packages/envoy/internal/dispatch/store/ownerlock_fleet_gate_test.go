@@ -135,9 +135,11 @@ const (
 //
 // The login need not be a superuser: one with CREATEROLE creates the role and grants it to itself
 // with SET, which Postgres 16 and later give such a creator only on a grant of its own (the create
-// gives it ADMIN alone), and with INHERIT, which the cleanup's `drop owned by` needs. A login that
-// cannot create a role skips the test. A role spans the cluster, so its cleanup is registered as
-// soon as it exists and drops it whatever failed first.
+// gives it ADMIN alone), and with INHERIT, which `drop owned by` of the role needs when the
+// cleanup makes one. A login that cannot create a role skips the test. A role spans the cluster,
+// so its cleanup is registered as soon as it exists (dropRoleAfterTestDatabase): it drops the test
+// database first, which takes the role's grants and everything it owns there with it, and then the
+// role, whatever failed first.
 func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pause pgx.Tx) {
 	t.Helper()
 	ctx := context.Background()
@@ -149,15 +151,7 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 		}
 		t.Fatalf("create the fleet read's pause role: %v", err)
 	}
-	t.Cleanup(func() {
-		// The grants in this database first, then the role, each a statement of its own, so the
-		// role's drop runs even when the first fails.
-		for _, statement := range []string{"drop owned by " + role, "drop role " + role} {
-			if _, err := s.Pool.Exec(context.Background(), statement); err != nil {
-				t.Errorf("%s: %v", statement, err)
-			}
-		}
-	})
+	t.Cleanup(func() { dropRoleAfterTestDatabase(t, s, role) })
 	if _, err := s.Pool.Exec(ctx, fmt.Sprintf(`
 		grant %s to current_user with set true, inherit true;
 		create function public.fleet_read_pause(instance uuid) returns boolean language plpgsql as $$
@@ -185,6 +179,51 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 		t.Fatalf("hold the fleet read's pause: %v", err)
 	}
 	return role, pause
+}
+
+// dropRoleAfterTestDatabase is the cleanup of a role a test creates in s, a database of the
+// test's own (openEmptyTestStore), and is registered as soon as the role exists
+// (pauseFleetReadsAt, and the census's roles in census_test.go). It drops that database and then
+// the role, each a statement of its own on a connection of its own to the server's postgres
+// database, and runs the role's drop whatever the database's did. A role spans the cluster, and
+// what a test grants it or lets it own is in the test database, so once that database is gone
+// nothing depends on the role and its drop takes it, whatever the test left there: a table the
+// role owns that a view of the login depends on refuses `drop owned by` of the role (2BP01) and a
+// drop of the role, and not the database's drop. The test database's own drop (testdb.DatabaseOn)
+// was registered before the role existed, so it runs after this cleanup and finds the database
+// gone. A database whose drop fails is still there, and so are the role's grants in it, which
+// refuse the role's drop: the cleanup then drops them first (`drop owned by`, in that database).
+func dropRoleAfterTestDatabase(t *testing.T, s *Store, role string) {
+	t.Helper()
+	ctx := context.Background()
+	database := s.Pool.Config().ConnConfig.Database
+	// The role's drop runs on the connection the database's drop ran on, or through the test
+	// database's own pool when no connection to the postgres database could be made.
+	exec := s.Pool.Exec
+	dropped := false
+	config := s.Pool.Config().ConnConfig.Copy()
+	config.Database = "postgres"
+	if admin, err := pgx.ConnectConfig(ctx, config); err != nil {
+		t.Errorf("connect to the test server's postgres database to drop the database %s and then the role %s: %v", database, role, err)
+	} else {
+		defer admin.Close(ctx)
+		exec = admin.Exec
+		statement := "drop database if exists " + database + " with (force)"
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Errorf("%s: %v", statement, err)
+		} else {
+			dropped = true
+		}
+	}
+	if !dropped {
+		if _, err := s.Pool.Exec(ctx, "drop owned by "+role); err != nil {
+			t.Errorf("drop owned by %s: %v", role, err)
+		}
+	}
+	statement := "drop role if exists " + role
+	if _, err := exec(ctx, statement); err != nil {
+		t.Errorf("%s: %v", statement, err)
+	}
 }
 
 // awaitFleetReadPause waits up to ten seconds for backend pid to stop at the fleet read's pause

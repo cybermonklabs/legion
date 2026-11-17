@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	neturl "net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -722,7 +724,9 @@ func TestCensusNeverPrintsARowValueAnInputFunctionQuotes(t *testing.T) {
 // (no pg_read_all_stats) refuses: the census cannot rule out the long transaction it exists to
 // catch, and it lists the holder with the long transactions, which it cannot rule it out of either.
 // Granting that role pg_read_all_stats lets it read the age, and a young holder passes and is not
-// listed.
+// listed. Only a login that holds pg_read_all_stats with ADMIN, as a superuser does, can make that
+// grant: the server is asked by making it in a transaction that is rolled back, and a login that
+// cannot skips the test, except on GitHub Actions, where it fails (skipOutsideCI).
 func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 	ctx := context.Background()
 	store, base := migratedToOne(t)
@@ -732,24 +736,36 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 		if _, err := store.Pool.Exec(ctx, "create role "+role+" login password 'census-test'"); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			// The grants in this database first, then the role itself, which spans the cluster.
-			for _, statement := range []string{"drop owned by " + role, "drop role " + role} {
-				if _, err := store.Pool.Exec(context.Background(), statement); err != nil {
-					t.Errorf("%s: %v", statement, err)
-				}
-			}
-		})
+		// The role spans the cluster: its cleanup drops the test database first, which takes
+		// the role's grants there with it, and then the role (dropRoleAfterTestDatabase).
+		t.Cleanup(func() { dropRoleAfterTestDatabase(t, store, role) })
 		// `drop owned by` needs the privileges of the role, which a login that is no superuser
 		// does not have of a role it creates (Postgres 16 and later give such a creator ADMIN
-		// alone): it grants the role to itself with INHERIT, so the cleanup drops the role's
-		// grants and then the role.
+		// alone): it grants the role to itself with INHERIT, so the cleanup can drop the role's
+		// grants before the role when the test database's drop fails and leaves them standing.
 		if _, err := store.Pool.Exec(ctx, "grant "+role+" to current_user with inherit true"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Pool.Exec(ctx, "grant select on all tables in schema public to "+role); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The grant the second census needs, made now in a transaction that is rolled back, so a
+	// login that cannot make it is told so before anything is read.
+	probe, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = probe.Exec(ctx, "grant pg_read_all_stats to "+censusRole)
+	if rollbackErr := probe.Rollback(ctx); rollbackErr != nil {
+		t.Fatalf("roll back the grant of pg_read_all_stats the server was asked about: %v", rollbackErr)
+	}
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == "42501":
+		skipOutsideCI(t, "the test server's login cannot grant pg_read_all_stats, which the census's role needs to read the age of another role's transaction (the login must be a superuser or hold pg_read_all_stats with ADMIN): %v", err)
+	case err != nil:
+		t.Fatalf("grant pg_read_all_stats to the census's role, in a transaction rolled back: %v", err)
 	}
 	holderConfig := store.Pool.Config().ConnConfig.Copy()
 	holderConfig.User, holderConfig.Password = otherRole, "census-test"
@@ -802,6 +818,18 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 	if slices.ContainsFunc(report.LongTransactions, isHolder) {
 		t.Errorf("a young holder listed with the long transactions once the census could read its age: %v", report.LongTransactions)
 	}
+}
+
+// skipOutsideCI skips a test whose test server lacks what the test needs, saying what is missing,
+// and fails it with the same words on GitHub Actions, where GITHUB_ACTIONS is "true" in each step
+// of each job: the job there is given a server with what the test needs, so a skip would hide the
+// one run that counts. CI is not read, since an agent's shell sets CI=true too.
+func skipOutsideCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
 }
 
 // A WAL sender holding a lock on a touched table in a transaction older than the bound refuses,

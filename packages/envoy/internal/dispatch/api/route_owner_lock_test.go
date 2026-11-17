@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,7 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 	{name: "the result record route held on the recording issue", route: "POST /api/v1/issues/{key}/results (recordResultUnderOwnerLocks)", ready: readyResultHeldOnTheRecordingIssue},
 	{name: "the result record route held on the check's issue", route: "POST /api/v1/issues/{key}/results (recordResultUnderOwnerLocks)", ready: readyResultHeldOnTheChecksIssue},
 	{name: "the design gates route", route: "PUT /api/v1/issues/{key}/design-gates (putIssueDesignGates)", ready: readyDesignGates},
+	{name: "the role holders route", route: "PUT /api/v1/issues/{key}/role-holders (putIssueRoleHolders)", ready: readyRoleHolders},
 	{name: "the project default assignee route", route: "PUT /api/v1/projects/{key}/default-assignee (putProjectDefaultAssignee)", ready: readyProjectDefaultAssignee},
 	{name: "the project gated steps route", route: "PUT /api/v1/projects/{key}/gated-steps (putProjectGatedSteps)", ready: readyProjectGatedSteps},
 	{name: "the project file upload route", route: "POST /api/v1/projects/{key}/artifacts on a file it has (storeArtifact)", ready: readyProjectFileUpload},
@@ -462,6 +464,37 @@ func readyDesignGates(t *testing.T, base routeFixture) lockedItemWrite {
 			if gates := fixture.rowCount(t, `select count(*) from design_gates where issue = $1`, fixture.issueKey); gates != 1 {
 				t.Fatalf("the issue holds %d design gates, want the one the route published", gates)
 			}
+		})
+}
+
+// readyRoleHolders drives PUT /api/v1/issues/{key}/role-holders, which replaces the issue's
+// issue_role_holders rows under the issue's owner lock (putIssueRoleHolders,
+// store.LockOwnerAndRead). The issue holds the tester ses-a, which the request moves to ses-b, so
+// the request deletes the stored pair and inserts the new one. It appends no event, so that lock
+// is the only one it takes: a publication without it would not wait at all.
+func readyRoleHolders(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Role holders")
+	project, _, _ := strings.Cut(fixture.issueKey, "-")
+	publish := func(handler http.Handler, session string) *httptest.ResponseRecorder {
+		return putRoleHoldersAs(t, handler, fixture.issueKey, map[string]any{
+			"holders": []issueRoleHolder{{Role: "tester", Session: session}}, "actor": daemonSessionOf(project),
+		})
+	}
+	if seeded := publish(fixture.handler, "ses-a"); seeded.Code != http.StatusOK {
+		t.Fatalf("seed the issue's tester: status=%d body=%s", seeded.Code, seeded.Body.String())
+	}
+	return fixture.routeWrite(t, "the issue's role holders",
+		func(handler http.Handler) *httptest.ResponseRecorder { return publish(handler, "ses-b") },
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("publish the role holders once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if holders := fixture.rowCount(t, `select count(*) from issue_role_holders where issue_key = $1`, fixture.issueKey); holders != 1 {
+				t.Fatalf("the issue holds %d role holders, want the one the route published", holders)
+			}
+			requireHeldRole(t, fixture.database, fixture.issueKey, "ses-b", "tester")
 		})
 }
 

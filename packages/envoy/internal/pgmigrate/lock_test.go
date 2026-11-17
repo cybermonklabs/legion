@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -443,7 +444,10 @@ func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
 // session_user it runs under into public.seen, and seen must hold the values that the connection
 // read when it was new, before the row's SETs: the values that RESET gives. The connection must
 // still carry the row's settings after the commit, since Exec's settings end with its
-// transaction.
+// transaction. Postgres lets only a session whose login is a superuser set session
+// authorization, so the server is asked whether the test database's login is one (rolsuper), and
+// the two rows that set it skip when it is not, except on GitHub Actions, where they fail
+// (skipOutsideCI).
 func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 	ctx := context.Background()
 	url := testpg.URL(t)
@@ -452,6 +456,10 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 		t.Fatalf("parse the test database's URL: %v", err)
 	}
 	admin := connect(t, ctx, url)
+	var superuser bool
+	if err := admin.QueryRow(ctx, "select rolsuper from pg_roles where rolname = session_user").Scan(&superuser); err != nil {
+		t.Fatalf("ask the server whether the test database's login is a superuser: %v", err)
+	}
 	// A role spans the cluster that every test shares, so each role takes the name of the test's
 	// own database, which is random. other and login are members of group. login signs in with a
 	// password, as a deployment's login does. The test database's own login is granted group with
@@ -484,14 +492,19 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 		// user is the login the runner's connection signs in as, "" for the test database's own.
 		user string
 		set  string
+		// superuser is whether set needs the runner's login to be a superuser.
+		superuser bool
 	}{
-		{"a session set of search_path", "", "set search_path = x"},
-		{"a set role", "", "set role " + group},
-		{"a set session authorization", "", "set session authorization " + other},
-		{"all three", "", "set session authorization " + other + "; set role " + group + "; set search_path = x"},
-		{"a set role and a set of search_path on a login that is no superuser", login, "set role " + group + "; set search_path = x"},
+		{"a session set of search_path", "", "set search_path = x", false},
+		{"a set role", "", "set role " + group, false},
+		{"a set session authorization", "", "set session authorization " + other, true},
+		{"all three", "", "set session authorization " + other + "; set role " + group + "; set search_path = x", true},
+		{"a set role and a set of search_path on a login that is no superuser", login, "set role " + group + "; set search_path = x", false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			if row.superuser && !superuser {
+				skipOutsideCI(t, "%q needs the test database's login, %s, to be a superuser, which the server says it is not (rolsuper): Postgres lets only a superuser's session set session authorization", row.set, config.User)
+			}
 			runnerConfig := config.Copy()
 			if row.user != "" {
 				runnerConfig.User, runnerConfig.Password = row.user, "exec-test"
@@ -531,6 +544,18 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 			}
 		})
 	}
+}
+
+// skipOutsideCI skips a test whose test server lacks what the test needs, saying what is missing,
+// and fails it with the same words on GitHub Actions, where GITHUB_ACTIONS is "true" in each step
+// of each job: the job there is given a server with what the test needs, so a skip would hide the
+// one run that counts. CI is not read, since an agent's shell sets CI=true too.
+func skipOutsideCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
 }
 
 // stringConstants appends to found every string constant of a parse tree, read from libpg_query's

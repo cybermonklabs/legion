@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,16 +49,20 @@ func (m *fakeMinter) minted() []mintCall {
 }
 
 // passwordRole creates a login role on the BROKER_TEST_DATABASE_URL server whose password is
-// password, dropped when t ends, and returns its name and a URL that signs in as it with no
-// password, as an IAM-form URL does. Postgres asks the role for a password over TCP (the test
-// server's pg_hba), so only a connection that brings one signs in.
+// password, dropped when t ends, and returns its name, the name of the schema a test may create
+// for it, which the cleanup drops too, and a URL that signs in as it with no password, as an
+// IAM-form URL does. Postgres asks the role for a password over TCP (the test server's pg_hba),
+// so only a connection that brings one signs in.
 //
 // The server's login need not be a superuser. One with CREATEROLE is given ADMIN alone on a role
 // it creates (Postgres 16 and later), so it grants the role to itself with SET, which `create
 // schema ... authorization` of the role needs, and INHERIT, which the cleanup's `drop owned by`
-// needs. A role spans the server, so the cleanup is registered as soon as the role exists and
-// drops the role whatever failed first.
-func passwordRole(t *testing.T, password string) (role, databaseURL string) {
+// needs. A role spans the server, and these tests share the database BROKER_TEST_DATABASE_URL
+// names, so no database of the test's own goes and takes what the role owns with it. The cleanup
+// is registered as soon as the role exists, and drops the schema with everything in it first,
+// then what else the role owns and the grants it holds, then the role, each a statement of its
+// own, each run whatever the ones before it did.
+func passwordRole(t *testing.T, password string) (role, schema, databaseURL string) {
 	t.Helper()
 	raw := testDatabaseURL(t)
 	var suffix [8]byte
@@ -65,18 +70,21 @@ func passwordRole(t *testing.T, password string) (role, databaseURL string) {
 		t.Fatalf("random role name: %v", err)
 	}
 	role = "broker_iam_test_" + hex.EncodeToString(suffix[:])
+	schema = "broker_iam_schema_" + hex.EncodeToString(suffix[:])
 	adminExec(t, raw, "create role "+role+" login password '"+password+"'")
 	t.Cleanup(func() {
 		ctx := context.Background()
 		conn, err := pgx.Connect(ctx, raw)
 		if err != nil {
-			t.Errorf("connect to BROKER_TEST_DATABASE_URL to drop the role %s: %v", role, err)
+			t.Errorf("connect to BROKER_TEST_DATABASE_URL to drop the schema %s and the role %s: %v", schema, role, err)
 			return
 		}
 		defer conn.Close(ctx)
-		// What the role owns and the grants it holds first, then the role, each a statement of
-		// its own, so the role's drop runs even when the first fails.
-		for _, statement := range []string{"drop owned by " + role + " cascade", "drop role " + role} {
+		for _, statement := range []string{
+			"drop schema if exists " + schema + " cascade",
+			"drop owned by " + role + " cascade",
+			"drop role if exists " + role,
+		} {
 			if _, err := conn.Exec(ctx, statement); err != nil {
 				t.Errorf("%s: %v", statement, err)
 			}
@@ -88,7 +96,7 @@ func passwordRole(t *testing.T, password string) (role, databaseURL string) {
 		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
 	}
 	parsed.User = url.User(role)
-	return role, parsed.String()
+	return role, schema, parsed.String()
 }
 
 // endpointOf is the host:port pgx dials for databaseURL, which RDS signs a token for.
@@ -101,15 +109,36 @@ func endpointOf(t *testing.T, databaseURL string) string {
 	return net.JoinHostPort(parsed.Hostname(), cmp.Or(parsed.Port(), "5432"))
 }
 
+// skipOutsideCI skips a test whose test server lacks what the test needs, saying what is missing,
+// and fails it with the same words on GitHub Actions, where GITHUB_ACTIONS is "true" in each step
+// of each job: the job there is given a server with what the test needs, so a skip would hide the
+// one run that counts. CI is not read, since an agent's shell sets CI=true too.
+func skipOutsideCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 // TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken pins the IAM sign-in: with a token
 // minter, every new pooled connection signs in with a token minted for it, for the URL's
 // host:port and user, rather than one minted at startup, since an RDS token is good for 15
 // minutes and a pool opens connections for as long as the broker runs. The role's password is
 // the fake token, so a connection that brought anything else would be refused; and the same URL
-// opened without the minter is refused, so the token is what signed in.
+// opened without the minter is refused, so the token is what signed in. That refusal is asked
+// for first: a server that signs the role in without its password, as one whose pg_hba trusts
+// the connection does, cannot tell the token from no password, and the test skips there, except
+// on GitHub Actions, where it fails (skipOutsideCI).
 func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 	ctx := context.Background()
-	role, databaseURL := passwordRole(t, "fake-iam-token-1")
+	role, _, databaseURL := passwordRole(t, "fake-iam-token-1")
+	if s, err := Open(ctx, databaseURL); err == nil {
+		s.Pool.Close()
+		skipOutsideCI(t, "the test server signed the role %s in with no password (its pg_hba trusts the connection), so it cannot tell a minted token from no password: the test needs a server that asks the role for its password", role)
+	} else if !strings.Contains(err.Error(), "authentication failed") {
+		t.Fatalf("Open without the token minter = %v, want Postgres to refuse the password", err)
+	}
 	minter := &fakeMinter{token: "fake-iam-token-1"}
 
 	s, err := Open(ctx, databaseURL, WithTokenMinter(minter.mint))
@@ -142,13 +171,6 @@ func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 	if got := minter.minted(); len(got) != 2 || got[1] != want {
 		t.Fatalf("after a second connection the minter was asked for %+v, want a second token for %+v", got, want)
 	}
-
-	if s, err := Open(ctx, databaseURL); err == nil {
-		s.Pool.Close()
-		t.Fatal("Open without the token minter signed in to a role that has a password; the test proves nothing")
-	} else if !strings.Contains(err.Error(), "authentication failed") {
-		t.Fatalf("Open without the token minter = %v, want Postgres to refuse the password", err)
-	}
 }
 
 // TestMigrateLockWatchSignsInWithAFreshToken pins the lock watch's own connection to the pool's
@@ -161,12 +183,7 @@ func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
 	ctx := context.Background()
 	raw := testDatabaseURL(t)
-	role, databaseURL := passwordRole(t, "fake-iam-token-1")
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random schema name: %v", err)
-	}
-	schema := "broker_iam_watch_" + hex.EncodeToString(suffix[:])
+	role, schema, databaseURL := passwordRole(t, "fake-iam-token-1")
 	adminExec(t, raw, "create schema "+schema+" authorization "+role)
 	withSchema := func(databaseURL string) string {
 		parsed, err := url.Parse(databaseURL)
