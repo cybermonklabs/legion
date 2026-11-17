@@ -66,7 +66,7 @@ export interface SentRequest {
     | {
         /** The comment's body the edit was written over, as the editor last saw it at the press:
          *  a refused edit is put back in its editor only while the comment still holds this body,
-         *  or reads as the edit would save it (`MentionComposer`'s `changedUnder`). Undefined in a
+         *  or reads as the edit would save it (`useKeptDrafts`'s `changedUnder`). Undefined in a
          *  send kept by a build that kept none, which is offered beside the comment as one
          *  written over another body is. */
         readonly base?: string;

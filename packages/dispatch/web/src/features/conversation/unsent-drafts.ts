@@ -18,7 +18,7 @@ export interface AwayDraft {
   readonly ask?: SentRequest["ask"];
   /** For an edit, the comment's body it was written over, as the editor last saw it: the edit is
    *  put back in the field only while the comment still holds that body, or reads as the edit
-   *  would save it, and is offered beside the newer body otherwise (`MentionComposer`'s
+   *  would save it, and is offered beside the newer body otherwise (`useKeptDrafts`'s
    *  `changedUnder`). */
   readonly base?: string;
   readonly draft: SentDraft;

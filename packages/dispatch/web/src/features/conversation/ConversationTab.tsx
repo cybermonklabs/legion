@@ -91,7 +91,8 @@ import {
   useHeldSends,
   useHeldSendsUnder,
 } from "./held-sends";
-import { KeptReply, MentionComposer } from "./MentionComposer";
+import { KeptReply } from "./KeptReply";
+import { MentionComposer } from "./MentionComposer";
 import { ReplyButton } from "./ReplyButton";
 import { ReplyTurn, ThreadReplies, TurnActions } from "./ReplyTurn";
 import type { CarriedBlockIds } from "./send-request";
@@ -1013,7 +1014,7 @@ export function ConversationTab({
   // The comment whose editor is open in each thread, by the thread's root: the tab's rather than
   // a card's, since a phone's thread view draws its comment's card afresh each time it opens.
   // Back, then that comment's thread again, finds the editor open where the reader left it, with
-  // what they wrote in it (`MentionComposer`'s `awayName`).
+  // what they wrote in it (`useKeptDrafts`'s `awayName`).
   const [editingIn, setEditingIn] = useState<ReadonlyMap<string, string>>(() => new Map());
   const setEditing = useCallback((rootId: string, id: string | undefined) => {
     setEditingIn((current) => {

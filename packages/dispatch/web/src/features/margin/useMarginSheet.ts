@@ -369,7 +369,7 @@ export function useMarginSheet(): MarginSheetModel {
   // so only a compose on that document is judged by it. Leaving the compose's document is the
   // host's move, which carries nothing and drops nothing: the compose stays open for its document
   // while the reader is on another, and its composer keeps what the reader wrote for it under its
-  // send name (`MentionComposer`'s `awayName`), so the compose shown when they come back holds it.
+  // send name (`useKeptDrafts`'s `awayName`), so the compose shown when they come back holds it.
   // One that was sent is the held-send store's (`MarginProvider` hands it over at Send) and stays.
   useEffect(() => {
     if (pendingCompose === undefined || pendingCompose.anchor.artifact !== visibleArtifactId) {

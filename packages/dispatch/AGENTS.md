@@ -100,8 +100,8 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   An upload carries its target as its own mutation variable, taken by the paste or drop that
   starts it, so a pick in that task moves the next message, never the file.
   Its reference belongs to the draft it was pasted into, which the press carries as well (as
-  `useDraftUpload`'s `draft`, which an ask card fills with its ask, and `MentionComposer` with a
-  number of its own naming the owner that draft lives at, `draftHomes`).
+  `useDraftUpload`'s `draft`, which an ask card fills with its ask, and `MentionComposer`'s
+  `useDraftHomes` with a number of its own naming the owner that draft lives at, `draftHomes`).
   Who moved the composer's address decides where a draft goes, and what it holds with it: a
   refused or stopped send, and the files pasted into it.
   The reader's own controls move the draft with the address: Cancel reply (and Escape, which ends
@@ -118,7 +118,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   address it was written for, and is there when the reader comes back to it.
   A composer its host moves from reply to reply - the docked composer, a phone thread's, an Agents
   row's - keeps what the field holds for the reply it was written for, or for none (`AwayDraft` in
-  `features/conversation/unsent-drafts.ts`, under the send name, `MentionComposer`'s `awayName`),
+  `features/conversation/unsent-drafts.ts`, under the send name, `useKeptDrafts`'s `awayName`),
   and the reply it arrives at shows what it keeps in place of a new reply's prefill. While the
   composer shows another address it says the text is kept, whose message it answers and the way
   back (`keptAwayLine`: `Your reply to the message by <author> is kept. Press Reply on that message
@@ -133,7 +133,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   editor drawn for that comment next puts the edit back only while the comment still holds that
   body, or reads as the edit would save it (`changedUnder`). Over a body another writer has
   changed since, the field shows the newer body, read only, and the edit waits beside it
-  (`changed` in `MentionComposer`: `This comment changed since you wrote your edit. The field
+  (`changed` in `useKeptDrafts`: `This comment changed since you wrote your edit. The field
   shows the comment as it reads now. Your edit is kept here:`), with Save refused until the reader
   presses Use my edit, which puts it back in the field for their own Save, or Discard my edit:
   nothing is saved over a version of the comment the reader has not seen. A change under an open
@@ -165,12 +165,12 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   `HeldSends.send` refuses a request whose owner, anchor, reply or edited comment is not where the
   refusal's draft lives (`sameAddress` in `features/conversation/send-request.ts`), and
   `MentionComposer` turns Send and Retry off, offers Discard, and says where the draft was
-  written for (`writtenElsewhere`); back on that address its Retry goes there, and while it is
-  elsewhere nothing typed is written into that refusal's draft. What the reader types there is
-  that address's: kept for it when the host moves the composer on or takes it off the page (for a
-  standing box, under the send name), while the field shows the refusal's own draft again at the
-  refusal's address, and a Reply's prefill leaves the field to the refusal's draft, or to the
-  draft kept for that reply.
+  written for (`writtenElsewhere` in `useKeptDrafts`); back on that address its Retry goes there,
+  and while it is elsewhere nothing typed is written into that refusal's draft. What the reader
+  types there is that address's: kept for it when the host moves the composer on or takes it off
+  the page (for a standing box, under the send name), while the field shows the refusal's own
+  draft again at the refusal's address, and a Reply's prefill leaves the field to the refusal's
+  draft, or to the draft kept for that reply.
   A file that lands, or is refused, while the host has the composer elsewhere waits for the
   composer to be back where its draft lives, and the composer says so (`landedFor`,
   `pastedElsewhere`).

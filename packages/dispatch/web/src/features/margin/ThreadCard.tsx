@@ -30,7 +30,8 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useHeldSend, useHeldSendsUnder } from "../conversation/held-sends";
-import { KeptReply, MentionComposer } from "../conversation/MentionComposer";
+import { KeptReply } from "../conversation/KeptReply";
+import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
@@ -142,7 +143,7 @@ export interface ThreadCardProps {
   /** The comment whose inline editor is open; owned by the host - the margin, the Conversation by
    *  thread - so a card drawn again keeps an edit in progress: one that moves between the anchored
    *  and discussion lists, or a phone thread view opened again. The editor keeps what the reader
-   *  wrote while the card is closed or gone (`MentionComposer`'s `awayName`). */
+   *  wrote while the card is closed or gone (`useKeptDrafts`'s `awayName`). */
   editingCommentId: string | undefined;
   /** The comment whose edit save is in flight; owned with the shared editor state. */
   savingCommentEditId: string | undefined;
