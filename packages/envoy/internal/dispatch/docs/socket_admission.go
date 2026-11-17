@@ -211,6 +211,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	// Last of all, once the socket has let go of everything it held on the room's record: the
+	// settlement its browser's departure ran (settleLastPeer) may have loaded a room of its own,
+	// which is retired if nothing has taken it up (retireSettlementRoom).
+	defer s.retireSettlementRoom(room)
 	// The socket's admission lives on a request context of its own: the answer to the Hocuspocus
 	// token this socket sends is that admission and no other's (authorizeSchemaVersion), since two
 	// sockets of one room can present one token, and cancelling that context with errSchemaRevoked

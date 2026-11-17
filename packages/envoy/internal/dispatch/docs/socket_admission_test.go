@@ -637,16 +637,81 @@ func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.
 		t.Errorf("the resident bytes after the first room's late unload = %d, want the %d the second room counted with its write: that unload takes back the bytes of the load that ended", got, r.second)
 	}
 
-	// The second room's unload takes back what that load counted, and nothing is left. Its browser
-	// leaves first, so the settlement that departure owes the write runs on the resident room and
-	// loads no room after the close (awaitDeparture).
+	// The second room's unload takes back what that load counted. Its browser's departure runs
+	// late, after the room's close has returned, as ygo may run it (holdDeparture): the settlement
+	// it owes the write loads the document into a room of its own (settlement.take), which the
+	// service retires as the departing browser's socket ends (retireSettlementRoom), so nothing is
+	// left counted, with no wait for ygo's idle sweep.
+	held, letDeparture := r.holdDeparture()
 	_ = r.socket.Close()
-	r.awaitDeparture("the second room's browser")
+	r.awaitHeld(held, "the second room's browser")
 	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
 		t.Fatalf("close the second room: %v", err)
 	}
 	r.awaitUnload("the second room")
-	r.requireNothingCounted("once every room of the document has unloaded")
+	letDeparture()
+	r.awaitSocketEnd("the second room's browser")
+	r.requireLateSettlementLoadedARoom()
+	r.requireNothingCounted("once the late departure's settlement has ended")
+}
+
+// The room a late departure's settlement loads for itself is retired as the departing browser's
+// socket ends only while no one has taken it up. A browser that opens the document while the
+// settlement runs joins that room, and the room stays, with the browser in it and its load counted,
+// once the departing socket has ended.
+func TestARoomALateSettlementLoadedStaysForABrowserThatJoinedIt(t *testing.T) {
+	r := unloadAcrossAReload(t)
+	r.letFirstUnload()
+	r.awaitFirstClose()
+	r.awaitUnload("the first room")
+
+	// The late departure's settlement holds once its warm-up has loaded the room
+	// (afterSettleWarm), and a browser opens the document then.
+	warmed, goOn := make(chan struct{}), make(chan struct{})
+	var goOnce sync.Once
+	letSettle := func() { goOnce.Do(func() { close(goOn) }) }
+	t.Cleanup(letSettle)
+	var settling atomic.Bool
+	r.service.afterSettleWarm = func(room string) {
+		if room != r.room || settling.Swap(true) {
+			return
+		}
+		close(warmed)
+		<-goOn
+	}
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+	letDeparture()
+	select {
+	case <-warmed:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the late departure's settlement never reached its room, so nothing here is tested")
+	}
+	settlementRoom := r.service.srv.GetDoc(r.room)
+	if loads := r.loads.Load(); settlementRoom == nil || loads != 3 {
+		t.Fatalf("the late departure's settlement holds room %p after %d loads of the document, want a room it loaded itself, the third; nothing here is tested", settlementRoom, loads)
+	}
+	admitSocket(t, r.url, r.room, "the browser that opens the document while the settlement runs")
+	letSettle()
+	r.awaitSocketEnd("the second room's browser")
+
+	if got := r.service.srv.GetDoc(r.room); got != settlementRoom {
+		t.Errorf("the room the late settlement loaded is %p once that settlement has ended, want it resident (%p): a browser joined it", got, settlementRoom)
+	}
+	r.service.roomSlots.mu.Lock()
+	loads := len(r.service.roomSlots.rooms[r.room].loads)
+	r.service.roomSlots.mu.Unlock()
+	if bytes := r.service.residentBytes.Load(); loads != 1 || bytes <= 0 {
+		t.Errorf("the document counts %d loads and %d resident bytes with the browser in the room, want that room's one load and its bytes", loads, bytes)
+	}
+	if browsers := registeredConnections(r.service); browsers != 1 {
+		t.Errorf("the room records %d browsers once the settlement has ended, want the one that joined it", browsers)
+	}
 }
 
 // Two rooms of one document that have both left ygo's map can report their unloads in either
@@ -683,7 +748,7 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 	// second room is closed by ygo's own CloseRoom, as ygo's idle sweep and a last browser's
 	// departure retire a room, taking no gate.
 	_ = r.socket.Close()
-	r.awaitDeparture("the second room's browser")
+	r.awaitSocketEnd("the second room's browser")
 	if err := r.service.srv.Server.CloseRoom(r.room, true); err != nil {
 		t.Fatalf("close the second room: %v", err)
 	}
@@ -697,44 +762,101 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 // reloadedRoom is a document whose first room has left ygo's map with its unload held, and whose
 // second room has loaded and taken a write meanwhile (unloadAcrossAReload). first and second are
 // the resident bytes each load counted, and second is larger, so an unload that took back the
-// wrong load's bytes shows.
+// wrong load's bytes shows. loads counts the loads of the document (Service.bootstrapping).
 //
-// departed reports each departure of a room's last browser once it has run. ygo calls OnLastPeer
-// (Service.settleLastPeer) on the browser's disconnect goroutine, and can do so after a close of
-// the room has returned (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:483-485). That
-// departure runs the settlement the document owes, and when no room of the document is resident,
-// the settlement's warm-up loads one (settlement.take): a load counted under the name as any load
-// is, and ended only by that room's own unload. So a test that requires nothing counted closes a
-// room only once its browser's departure has run; otherwise the settlement a departure runs after
-// the close counts a load the test never ends (INFRA-3904).
+// ended reports each end of a document socket of the room, once the service's handler has
+// returned. ygo calls OnLastPeer (Service.settleLastPeer) as the socket's browser leaves, before the
+// socket ends, and can do so after a close of the room has returned (sjawhar/ygo v1.55.1-sami.2,
+// provider/websocket/inject.go:483-485). That departure runs the settlement the document owes, and
+// when no room of the document is resident, the settlement's warm-up loads one (settlement.take),
+// counted under the name as any load is, which the socket's end retires unless someone took it up
+// (retireSettlementRoom). So the count is final once the socket has ended. hold, when set, holds
+// the next departure before it runs, so a test can run it after the room's close (holdDeparture).
+//
+// The fixture's service keeps a room idle for lateUnloadRoomIdleTimeout rather than ygo's minute,
+// so ygo's idle sweep retires none of the rooms a test closes itself, however slowly the machine
+// runs, and its Shutdown is bounded by lateUnloadShutdownWait, so a test whose hook never returns
+// fails in its cleanup rather than at the binary's deadline.
 type reloadedRoom struct {
 	t              *testing.T
 	service        *Service
+	url            string
 	room           string
 	socket         *gws.Conn
 	first, second  int64
 	letFirstUnload func()
 	closed         chan error
 	unloaded       chan struct{}
-	departed       chan struct{}
+	ended          chan struct{}
+	hold           atomic.Pointer[departureHold]
+	loads          atomic.Int32
 }
+
+// departureHold holds a departure of the room's last browser (reloadedRoom.holdDeparture): held is
+// closed once it has reached the hold, and it runs once release is closed.
+type departureHold struct {
+	held, release chan struct{}
+}
+
+const (
+	// lateUnloadRoomIdleTimeout is how long the fixture's rooms stay resident once idle. Far
+	// above any test's run, so ygo's idle sweep (roomIdleTimeout in production) retires no room
+	// before the test's own close of it, however long a settlement on it takes.
+	lateUnloadRoomIdleTimeout = time.Hour
+	// lateUnloadShutdownWait bounds the fixture's Shutdown: the drain budget Shutdown spends inside
+	// its caller's deadline (ShutdownDrainBudget), and ten seconds for what follows it, and less
+	// than roomWaitMargin, which roomWait leaves of the binary's deadline for a failed test's
+	// cleanups.
+	lateUnloadShutdownWait = ShutdownDrainBudget + 10*time.Second
+)
 
 // unloadAcrossAReload loads a document's room, closes it, holds ygo's call of the room's unload,
 // and loads and writes to the room again while that unload is held.
 func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	t.Helper()
 	database := storetest.Open(t)
-	service, server := newTestServiceInstance(t, database)
-	r := &reloadedRoom{t: t, service: service, room: createDocuments(t, database, 1)[0], closed: make(chan error, 1), unloaded: make(chan struct{}, 2), departed: make(chan struct{}, 2)}
-	settleLastPeer := service.srv.OnLastPeer
-	service.srv.OnLastPeer = func(ctx context.Context, room string) {
-		settleLastPeer(ctx, room)
+	service := New(Deps{
+		Store:     database,
+		Events:    events.NewBroker(),
+		Identity:  headerIdentity(database),
+		ServerURL: "https://dispatch.example",
+		Settle:    time.Hour,
+	})
+	service.srv.RoomIdleTimeout = lateUnloadRoomIdleTimeout
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), lateUnloadShutdownWait)
+		defer cancel()
+		if err := service.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	room := createDocuments(t, database, 1)[0]
+	ended := make(chan struct{}, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		service.ServeHTTP(w, req)
+		if socketRoom(req) == room {
+			ended <- struct{}{}
+		}
+	}))
+	t.Cleanup(server.Close)
+	r := &reloadedRoom{t: t, service: service, url: server.URL, room: room, closed: make(chan error, 1), unloaded: make(chan struct{}, 3), ended: ended}
+	service.bootstrapping = func(room string, _ []byte) {
 		if room == r.room {
-			r.departed <- struct{}{}
+			r.loads.Add(1)
 		}
 	}
+	settleLastPeer := service.srv.OnLastPeer
+	service.srv.OnLastPeer = func(ctx context.Context, room string) {
+		if room == r.room {
+			if hold := r.hold.Swap(nil); hold != nil {
+				close(hold.held)
+				<-hold.release
+			}
+		}
+		settleLastPeer(ctx, room)
+	}
 	admitSocket(t, server.URL, r.room, "the socket that loads the first room").Close()
-	r.awaitDeparture("the first room's browser")
+	r.awaitSocketEnd("the first room's browser")
 	// The service holds this room alone, so the figure is the first room's load.
 	if r.first = service.residentBytes.Load(); r.first <= 0 {
 		t.Fatalf("the first room's load counted %d resident bytes, want the history it decoded; nothing here is tested", r.first)
@@ -778,6 +900,38 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	return r
 }
 
+// holdDeparture holds the next departure of the room's last browser before it runs, until letGo:
+// held is closed once the departure has reached the hold (awaitHeld).
+func (r *reloadedRoom) holdDeparture() (held <-chan struct{}, letGo func()) {
+	hold := &departureHold{held: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	letGo = func() { once.Do(func() { close(hold.release) }) }
+	r.t.Cleanup(letGo)
+	r.hold.Store(hold)
+	return hold.held, letGo
+}
+
+// awaitHeld waits for who's departure to reach its hold (holdDeparture).
+func (r *reloadedRoom) awaitHeld(held <-chan struct{}, who string) {
+	r.t.Helper()
+	select {
+	case <-held:
+	case <-time.After(roomWait(r.t)):
+		r.t.Fatalf("%s never began to leave the room, so nothing here is tested", who)
+	}
+}
+
+// requireLateSettlementLoadedARoom requires that the settlement a late departure ran loaded the
+// document into a room of its own, the third load, and committed: otherwise no room was left for
+// the service to retire, and nothing is tested.
+func (r *reloadedRoom) requireLateSettlementLoadedARoom() {
+	r.t.Helper()
+	owed, err := settlementPending(context.Background(), r.service.store.Pool, r.room)
+	if loads := r.loads.Load(); err != nil || owed || loads != 3 {
+		r.t.Fatalf("after the late departure the document was loaded %d times and still owes a settlement: %v (%v); want the settlement to have loaded a room of its own, the third, and committed; nothing here is tested", loads, owed, err)
+	}
+}
+
 // awaitUnload waits for the next unload of the room to have run.
 func (r *reloadedRoom) awaitUnload(what string) {
 	r.t.Helper()
@@ -788,14 +942,15 @@ func (r *reloadedRoom) awaitUnload(what string) {
 	}
 }
 
-// awaitDeparture waits for the next departure of the room's last browser to have run, the
-// settlement it owes with it (reloadedRoom).
-func (r *reloadedRoom) awaitDeparture(who string) {
+// awaitSocketEnd waits for the next end of a document socket of the room: who's browser has left,
+// the settlement its departure owed has run, and the socket has let go of the room's record
+// (reloadedRoom).
+func (r *reloadedRoom) awaitSocketEnd(who string) {
 	r.t.Helper()
 	select {
-	case <-r.departed:
+	case <-r.ended:
 	case <-time.After(roomWait(r.t)):
-		r.t.Fatalf("%s never left the room", who)
+		r.t.Fatalf("%s's socket never ended", who)
 	}
 }
 

@@ -934,6 +934,8 @@ func New(deps Deps) *Service {
 	srv.OnInject = service.allowInject
 	srv.OnPeerUpdate = service.onPeerUpdate
 	srv.OnLoadDocument = service.onLoadDocument
+	// ygo calls it as a room's first browser joins it, after the browser is in the room.
+	srv.OnFirstPeer = service.takeUpSettlementRoom
 	srv.OnLastPeer = service.settleLastPeer
 	// ygo calls it once for every room it retires, whichever way: the idle sweep, CloseRoom.
 	srv.OnUnloadDocument = service.releaseUnloadedRoom
@@ -1378,10 +1380,12 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	timer := time.AfterFunc(delay, func() {
 		defer s.settleWG.Done()
 		// An armed timer holds its state (unusedLocked), so the state can go only once the timer
-		// has left the register.
+		// has left the register, and so can a room a late departure's settlement loaded, which
+		// this settlement may be a retry of (retireSettlementRoom).
 		defer func() {
 			s.unregisterSettleTimer(timerID)
 			s.releaseIfUnused(room)
+			s.retireSettlementRoom(room)
 		}()
 		if current, _ := s.rooms.Load(room); current != state {
 			s.scheduleSettle(room)

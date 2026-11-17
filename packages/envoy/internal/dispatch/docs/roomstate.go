@@ -117,7 +117,14 @@ type roomState struct {
 	settleDeferred bool
 	// settleWarming is set while a settlement loads the room it is about to settle, so that load
 	// arms no second settlement for the document's pending-settlement row (onLoadDocument).
-	settleWarming  bool
+	settleWarming bool
+	// warmed is the room instance a late departure's settlement loaded (withSettlementLoad): its
+	// warm-up's load, or the load the retire of that room made. It is retired once nothing holds
+	// the record (retireSettlementRoom). It is forgotten when a browser joins the room or a writer
+	// takes the record's writer slot, which take the room up (takeUpSettlementRoom, openLiveWrite),
+	// when it is retired, and when an unload leaves the name holding another instance or none
+	// (releaseUnloadedRoom), so it keeps no retired room alive.
+	warmed         *crdt.Doc
 	settleFailures int
 	// settling counts the settlements running on this state (settleRoomWithin), which hold it
 	// across their database work.
@@ -267,9 +274,10 @@ func (s *Service) releaseIfUnused(room string) {
 // the resident rooms, nor holds a place under the room cap unless a socket still holds a
 // reservation on it, the bytes of one load of the name no longer count as resident (roomUnloaded,
 // which ends the name's oldest load: the one ending, save in the out-of-order case below), and its
-// state goes too unless something still holds it, whose end releases it instead. ygo calls it
-// exactly once for each room whose load succeeded, and only for a room that has left its map,
-// whichever way the room goes: the idle sweep, the last peer leaving, CloseRoom.
+// state goes too unless something still holds it, whose end releases it instead. A room a
+// settlement loaded for itself (roomState.warmed) is forgotten once the name no longer holds it.
+// ygo calls it exactly once for each room whose load succeeded, and only for a room that has left
+// its map, whichever way the room goes: the idle sweep, the last peer leaving, CloseRoom.
 //
 // The unload ends the oldest load counted under the name (roomUnloaded). That load is always one
 // that has left ygo's map: ygo holds one room of a name at a time, takes a room out of its map
@@ -285,7 +293,12 @@ func (s *Service) releaseUnloadedRoom(_ context.Context, room string) {
 		s.beforeUnloadEndsLoad(room)
 	}
 	s.roomUnloaded(room, nil)
-	s.releaseIfUnused(room)
+	if state := s.lockExistingState(room); state != nil {
+		if state.warmed != nil && s.srv.GetDoc(room) != state.warmed {
+			state.warmed = nil
+		}
+		s.unlockState(room, state)
+	}
 }
 
 // releaseIfUnusedLocked forgets state, room's, once ygo holds no room for it - none loaded or

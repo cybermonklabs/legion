@@ -264,7 +264,8 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 		// The warm-up carries the service's own mark (withOwnerVerified), so allowInject does not
 		// read the issue for it: it applies nothing, and a closed issue's document settles as an
 		// open one's does, so the refusal a closed issue makes of a caller's injection is not
-		// this load's to meet.
+		// this load's to meet. A late departure's settlement hands it the settlement's mark too,
+		// through parent (settleLastPeer, withSettlementLoad).
 		warmCtx := withOwnerVerified(parent)
 		if shuttingDown {
 			warmCtx = withShutdownLoad(warmCtx)
@@ -304,6 +305,87 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 	st.generation = state.roomGeneration
 	s.unlockState(room, state)
 	return settleOn, settleOutcome{}
+}
+
+// retireSettlementRoom retires the room a late departure's settlement loaded (roomState.warmed)
+// once nothing holds the room's record, unless a browser or a writer has taken the room up since
+// (takeUpSettlementRoom, openLiveWrite). That settlement loads a room only after a close took the
+// document's room out of ygo's map from under the departing browser (settleLastPeer,
+// withSettlementLoad); ygo would otherwise keep the room it puts back resident, and holding a place
+// under the room cap, for its idle minute (roomIdleTimeout), though no one asked for it. A room a
+// timer's settlement loads - a cold write's (publishLiveWrite) - is no such room: it idles out as
+// any room does, and the writes after it publish into it. Its callers are the ends of what can run
+// that settlement or a retry of it, each once it has let go of every hold it had on the room's
+// record: a document socket, whose browser's departure ran the settlement before the socket ends
+// and whose registration and admission hold the record until then (ServeHTTP), a timer's
+// settlement (scheduleSettleAfterLocked) and an issue's synchronous one (settleOwedNow). Shutdown's
+// closes every room itself.
+//
+// Whether the room was the settlement's own is what its load recorded, not a look at the name: a
+// settlement that found no room may still find one another caller's load published, which is that
+// caller's (withSettlementLoad). What holds the record is read under its lock (unusedLocked) - a
+// browser registered, a socket being admitted, an open writer, a settlement running or armed, an
+// update not yet stored - first here and again with the room's close gate held, from inside an
+// Apply on the room. A room something holds stays the settlement's: another settlement, or a
+// retry armed for this one, retires it as it ends. The close is ygo's CloseRoomWithin without
+// force, which checks again, under its own locks and where it takes the room out of its map, that
+// no peer is on the room and no other caller inside it (roomServer.retireInstance). A room that
+// retired between the first look and the Apply is loaded again by the Apply, carrying the same
+// mark, and retired the same way.
+func (s *Service) retireSettlementRoom(room string) {
+	if s.stopping.Load() {
+		return
+	}
+	state := s.lockExistingState(room)
+	if state == nil {
+		return
+	}
+	warmed := state.warmed
+	if warmed != nil && s.srv.GetDoc(room) != warmed {
+		state.warmed, warmed = nil, nil
+	}
+	unused := s.unusedLocked(state)
+	s.unlockState(room, state)
+	if warmed == nil || !unused {
+		return
+	}
+	var retireErr error
+	ctx := withSettlementLoad(withOwnerVerified(WithoutRecoveryWait(context.Background())))
+	err := s.srv.Apply(ctx, room, func(held *crdt.Doc, _ func(func(*crdt.Transaction))) {
+		_, retireErr = s.srv.retireInstance(room, held, func() bool { return s.takeUnusedWarmed(room, held) })
+	})
+	if err == nil || errors.Is(err, websocket.ErrNoChanges) {
+		err = retireErr
+	}
+	if err != nil {
+		slog.Warn("dispatch: retire the room a settlement loaded; it stays until its idle minute runs out", "room", room, "error", err)
+	}
+}
+
+// takeUnusedWarmed is whether held is still the room a settlement loaded for itself and nothing
+// holds room's record (unusedLocked), forgetting the room as the settlement's when it is
+// (retireSettlementRoom).
+func (s *Service) takeUnusedWarmed(room string, held *crdt.Doc) bool {
+	state := s.lockExistingState(room)
+	if state == nil {
+		return false
+	}
+	defer s.unlockState(room, state)
+	if state.warmed != held || !s.unusedLocked(state) {
+		return false
+	}
+	state.warmed = nil
+	return true
+}
+
+// takeUpSettlementRoom is ygo's OnFirstPeer: a browser has joined the room, which is no longer a
+// room a settlement loaded for itself, and idles out as any room a browser left
+// (retireSettlementRoom).
+func (s *Service) takeUpSettlementRoom(_ context.Context, room string) {
+	if state := s.lockExistingState(room); state != nil {
+		state.warmed = nil
+		s.unlockState(room, state)
+	}
 }
 
 // readLocked is what the settlement reads once its transaction holds the document's owner row: the

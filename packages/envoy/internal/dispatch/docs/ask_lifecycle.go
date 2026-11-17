@@ -780,6 +780,7 @@ func (s *Service) settleOwedNow(ctx context.Context, room string, deadline time.
 	state.mu.Lock()
 	state.settling--
 	s.unlockState(room, state)
+	s.retireSettlementRoom(room)
 	s.settleWG.Done()
 	if outcome.err != nil {
 		return outcome.err
