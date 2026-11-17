@@ -1973,8 +1973,8 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 #### Rolling back the release that tells a holder of an approved new version
 
-This release's migration `20261114082752_design_news` adds the tables `design_news_told` (with its column `opening_seq`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news` and `news_only`, the functions `design_news_raised` and `design_news_opening_settled`, and the outbox kind `design_changes`.
-No statement of the release before this one names the three tables, the three new columns or the two functions, and the kind list it set is a subset of this one, so the schema needs no restore.
+This release's migration `20261114082752_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told` and `design_news_told_in`, and the outbox kind `design_changes`.
+No statement of the release before this one names the three tables, the four new columns or the five functions, and the kind list it set is a subset of this one, so the schema needs no restore.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -1983,8 +1983,8 @@ It refuses on every attempt a `supervise` row that carries `news`, which is a ne
 Such a start waits while its claim works a turn, and a merger's start waits while its design gate is closed.
 It also refuses on every attempt a `design_gates_publish` row that carries `holds`, which is every such row this release queued with at least one entry (an emptied set carries none).
 Its `RoleRuns` decodes each queued supervise row of the role and generation it reads, so each admission pass that reads that role's run fails too.
-Its `pending_task_deliveries` upsert names only its own columns, and its `on conflict ... do update` leaves `design_news`, `carried_news` and `news_only` as this release wrote them.
-So a delivery that it writes over keeps the news of the task it replaced and the copy of that news a prompt carried (`carried_news`), and after a roll forward this release would raise that copy in `design_news_told` at that delivery's confirmation.
+Its `pending_task_deliveries` upsert names only its own columns, and its `on conflict ... do update` leaves `design_news`, `carried_news`, `carried_ran` and `news_only` as this release wrote them.
+So a delivery that it writes over keeps the news of the task it replaced and the copy of that news a prompt carried (`carried_news`), and after a roll forward this release would count that copy in `design_news_told_in` as the credit of whatever delivery the earlier release confirmed in that row.
 This release marks a pending task that it queued for news alone in its own column, `news_only`, and the earlier release reads no such mark.
 So the earlier release reads such a task as its claim's phase task, and a task it writes over such a row keeps the mark, which this release would read after the roll forward as a task of news alone.
 It also reads a root architect's untaken news-only task as a start of that architect's work on its way (`workflow.ArchitectStartPending`), so its sweep would send that architect no entry its row is owed until a turn took the news.
@@ -2007,13 +2007,17 @@ The second statement takes `holds` out of each entry of a design-gates publish, 
 The third statement deletes each pending task that was queued for news alone, so no row holds the `news_only` mark, and each row the earlier release inserts takes the column's default, `false`.
 Such a task has no entry and no kept decisions, and its claim refers to it by no column, so the claim then holds no pending task, as it does once a task it worked is retired.
 The earlier release then gives that claim its phase task where one is owed, and never takes the news task for it.
-A turn that took the task already raised its news in `design_news_told`, and an untaken task's news stays owed there, since only a confirmation raises it, so this release sends that news again after the roll forward.
+A confirmed news-only task's credit is its own row until its turn's result made it final (`carried_ran`), so the third statement ends that credit with the row, and this release tells that news again after the roll forward.
+A credit made final was folded into `design_news_told` and stands.
+An untaken task's news stays owed there, since no credit holds it, so this release sends that news again after the roll forward too.
 The fourth statement takes the news, and the copy of it a prompt carried, off each task delivery that is still pending, which is now a phase task.
-The task's text still holds that news, and the confirmation of a delivery that carries no copy raises nothing, so this release tells that news again after the roll forward.
-A confirmed delivery's copy goes too, so the raise its confirmation made stands, as it does under the earlier release, which gives nothing back.
-The earlier release writes neither column, so after the fourth statement no row holds a copy for a roll forward to raise.
+The task's text still holds that news, and a delivery that carries no copy holds no credit, so this release tells that news again after the roll forward.
+A confirmed delivery's copy goes too.
+Where its turn's result had not yet said the turn ran, that copy was the delivery's credit, the only record that the holder took that news, so the fourth statement gives that credit back, and this release tells that news again after the roll forward: told twice, never lost.
+Where the result had come (`carried_ran`), the write that recorded it folded the copy into `design_news_told`, and that stands.
+The earlier release writes neither `carried_news` nor `carried_ran`, so after the fourth statement no row holds a copy for a roll forward to count, and a `carried_ran` it leaves standing on a row with no copy counts for nothing.
 
-**Two costs of a rollback that no statement undoes.**
+**Three costs of a rollback that no statement undoes.**
 The first cost exists only where `gates.design` gates `spec` and not `criteria`: the key is unset, `root-issues`, or a list such as `[spec]`.
 Under such a setting, this release holds a tree on a `criteria` row too, once its root registered its Verification document as `criteria` (`record.JoinsByRegistration`).
 The earlier release reads only the steps the deployment gates: its `TreeGate.Open` reads the rows of `RequiredSteps` alone, and it ignores a row of a step it does not gate.
@@ -2029,9 +2033,14 @@ A tree that may merge on its approved spec alone needs no park.
 Under a `gates.design` list that names `criteria`, the earlier release holds such a tree on its `criteria` row too.
 Under `off`, neither release holds a tree on a `criteria` row.
 So under either of those two settings, a tree that the read names needs no park.
-This release also deletes the `design_news_told` rows of an issue when it clears the issue's generation, and the earlier release does not know that table.
+The second cost is the told rows of a cleared generation: this release deletes the `design_news_told` rows of an issue when it clears the issue's generation, and the earlier release does not know that table.
 So an issue that re-enters the workflow during the rollback keeps its old generation's rows, and after the roll forward `BaselineTold` leaves an existing row as it is.
 The new generation's holders are then owed news of versions their work never stood on, and each gets one news task for them, which it reads against its work.
+The third cost is work that first starts while the earlier release runs.
+An issue can enter its first working phase, and a tree's gate can open for the first time, during the rollback, and the earlier release writes no told row for either.
+This release writes those rows only where the work starts (`BaselineTold`, from `Engine.enter` in `workflow/effects.go`, the first opening in `workflow/gate.go` and a re-admission in `admit/admit.go`), and the migration's seed does not run again at the roll forward.
+So after the roll forward each such holder's row does not know the version its work started from, and `OwedNews` owes it that version (`owedItems` in `record/design_news.go`).
+The reconcile fills the row from the version a person approved before it (`ApprovedVersionBefore`), and the holder gets one news task about the version its work started from, which it reads against its work.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `outbox` and `pending_task_deliveries` are one table each for all of them, so the statements act on the rows of every project.
@@ -2478,6 +2487,8 @@ every row it finds takes the default, false, which the sweep derives again.
 The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
 
 To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
+cybermonklabs/legion#3995, the release that tells a holder of an approved new version, also declares contract 146, and a rollback that crosses it runs its four statements before both blocks ("Rolling back the release that tells a holder of an approved new version" above).
+Those statements and the two blocks touch no row, column or version row in common.
 A rollback below contract 144 also takes the steps of the releases it crosses, which "Each issue's experiment assignments in the state (daemon API contract 141)" below and "Rolling back below the release that guards an issue pod's memory", "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
 Contract 144, cybermonklabs/legion#4021, is the release just before this one, and its own section above, "Rolling back below the release that guards an issue pod's memory", gives its way back: take `runtime.kubernetes.memory_guard` out of `legion.yaml` before the earlier image is pinned, since a release before it refuses the key by name, and run no SQL.
 It adds no store migration, so the block below has nothing of it to reverse, and the note its guard sends is a `role_message` outbox row, a kind a release before it already decodes.
@@ -2490,7 +2501,7 @@ Contract 133, cybermonklabs/legion#3937, has no section of its own here either: 
 Neither has cybermonklabs/legion#3983, which landed after it at the same contract: its one migration, `20261113082415_claim_ended_work.up.sql`, adds the nullable column `claims.ended_work`, which a release before it names in no statement, and its header gives no step.
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
-To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
+To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone, after cybermonklabs/legion#3995's four statements where the store carries that release: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2552,11 +2563,14 @@ Neither `architect_stalled_notices` nor the wake stood, the claims table held no
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
+cybermonklabs/legion#3995's 20261114082752_design_news is such a migration: on a store that release migrated the two blocks leave it standing, every count from the step that applies it is one higher, and the store reports 20261114082752 after the two blocks (`leftStandingVersion` in that same test derives it from the migrations this tree embeds).
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
-On a store that a release at contract 146 migrated, run the contract 146 block above first.
+On a store that a release at contract 146 migrated, run the contract 146 block above first, and on one that cybermonklabs/legion#3995 migrated, its four statements before that block.
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for the columns of later migrations that the list after the block leaves standing, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
-20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and 20261114031356, the highest row neither block deletes, on a store a release at contract 146 migrated.
+20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552;
+20261114031356, the highest row neither block deletes, on a store #3711's release at contract 146 migrated;
+and 20261114082752, cybermonklabs/legion#3995's design news, on a store that release migrated.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
