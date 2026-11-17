@@ -1647,8 +1647,9 @@ export const LegionIssueStatusRequest = z.strictObject({
   status: z.enum(["todo", "backlog", "icebox"]),
 });
 
-/** `api.GateRegisterRequest`, the architect's current Dispatch document approval target, for one
- * step of the deployment's design gate. `step` is the step the document is for; a deployment
+/** `api.GateRegisterRequest`, the tree root's architect's current Dispatch document approval
+ * target, for one step of the deployment's design gate; the daemon refuses it from a child's own
+ * architect (`GATE_ROOT_ONLY`). `step` is the step the document is for; a deployment
  * that gates one step alone takes a request that leaves it out, and one that gates several
  * refuses it (`GATE_STEP_REQUIRED`). */
 export const LegionGateRegisterRequest = z.strictObject({
@@ -1715,7 +1716,9 @@ export const LegionRootCloseRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.ChildRequest`, the architect's park_child or rerun_child of one child of its tree. */
+/** `api.ChildRequest`, an architect's park_child or rerun_child of one issue it owns: any child of
+ * its tree for the tree root's architect, and only an issue under its own issue for a child's own
+ * architect (`ISSUE_NOT_OWNED` otherwise). */
 export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
