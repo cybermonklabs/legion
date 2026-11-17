@@ -102,7 +102,7 @@ func interestRecord(set recordSet, index int, now int64, role string) store.Inte
 		SessionID: id,
 		MachineID: machineID,
 		Dir:       "/refill/" + set.name,
-		Topics:    append(topics(set, index, role), contracts.AgentSubject(id)),
+		Topics:    append(topics(set, index, role), contracts.LegacyAgentSubject(id)),
 		UpdatedAt: now,
 	}
 }

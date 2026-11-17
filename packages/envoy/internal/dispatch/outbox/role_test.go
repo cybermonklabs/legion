@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleHolder is the session heldRoles names as every role's holder.
@@ -288,17 +289,23 @@ func (r *roleRig) silent(t *testing.T, subject string) {
 
 // receiver is a role holder's own subscription to its agent subject: it records every forward it
 // receives and answers nothing, as a session does now that the stream's acknowledgement is a
-// forward's whole answer.
+// forward's whole answer. A scan or pass that has returned can have sent a copy this
+// subscription has not taken yet, so a test reads it after one through receivedNow or handedNow.
 type receiver struct {
+	subject  string
 	mu       sync.Mutex
 	forwards []contracts.Envelope
 	arrived  chan contracts.Envelope
+	marks    markers
 }
 
 func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 	t.Helper()
-	recv := &receiver{arrived: make(chan contracts.Envelope, 64)}
-	sub, err := r.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
+	recv := &receiver{subject: contracts.LegacyAgentSubject(holder), arrived: make(chan contracts.Envelope, 64)}
+	sub, err := r.conn.Subscribe(recv.subject, func(msg *natsgo.Msg) {
+		if recv.marks.took(msg) {
+			return
+		}
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
 			return
@@ -316,6 +323,69 @@ func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	return recv
+}
+
+// markers is what a test's subscription keeps of the markers sent to it (markers.await). Its zero
+// value is ready to use.
+type markers struct {
+	mu    sync.Mutex
+	sent  int
+	taken map[string]bool
+}
+
+// markerHeader carries a marker's id. A subscription's callback hands every message to took
+// first and drops the ones it reports as markers.
+const markerHeader = "Envoy-Test-Marker"
+
+// took records msg as taken when it is a marker, and reports whether it was one.
+func (m *markers) took(msg *natsgo.Msg) bool {
+	id := msg.Header.Get(markerHeader)
+	if id == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.taken == nil {
+		m.taken = map[string]bool{}
+	}
+	m.taken[id] = true
+	return true
+}
+
+// await returns once the subscription has taken every message client sent to subject before the
+// call. A scan or fallback pass returns once the stream has acknowledged each copy it sent to a
+// session's agent subject: a role forward's request and a session copy's publish both answer
+// with the stream's PubAck (roleForward.forward, bus's window.PublishAsync). The subscription is
+// handed the same message on its own connection, which can arrive just after that
+// acknowledgement on a busy machine (handedNow), so a read made the moment the outbox returns can
+// miss a copy it sent.
+//
+// await publishes a marker on client's connection, the one the outbox's sends went out on, and
+// waits under the shared bound for the subscription to take it. NATS hands one connection's
+// messages to a subscription in the order they were published, and the subscription takes them
+// one at a time, so once it has taken the marker it has taken every copy sent before it, a copy
+// the outbox sent twice or out of order included. The marker names a stream that does not exist
+// (Nats-Expected-Stream), so the stream, which captures the agent subjects, refuses to store it
+// and a read of the stream does not see it; the subscription is handed it all the same.
+func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
+	t.Helper()
+	m.mu.Lock()
+	m.sent++
+	id := fmt.Sprint(m.sent)
+	m.mu.Unlock()
+	msg := natsgo.NewMsg(subject)
+	msg.Header.Set(markerHeader, id)
+	msg.Header.Set(natsgo.ExpectedStreamHdr, "no-stream-stores-a-test-marker")
+	if err := client.Connection().PublishMsg(msg); err != nil {
+		t.Fatalf("publish a marker to %s: %v", subject, err)
+	}
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.taken[id]
+	}) {
+		t.Fatalf("the subscription to %s never took the marker published behind the outbox's sends", subject)
+	}
 }
 
 // narrowAgentCapture has the stream capture the agent subjects of holders alone, in place of every
@@ -339,7 +409,7 @@ func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
 	for _, holder := range holders {
-		narrowed.Subjects = append(narrowed.Subjects, contracts.AgentSubject(holder))
+		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
 	}
 	update := func(config *natsgo.StreamConfig, what string) {
 		if _, err := js.UpdateStream(config); err != nil {
@@ -356,6 +426,14 @@ func (recv *receiver) received() []contracts.Envelope {
 	recv.mu.Lock()
 	defer recv.mu.Unlock()
 	return append([]contracts.Envelope(nil), recv.forwards...)
+}
+
+// receivedNow is every copy recv has taken of what client sent its holder before the call
+// (markers.await).
+func (recv *receiver) receivedNow(t *testing.T, client *bus.Client) []contracts.Envelope {
+	t.Helper()
+	recv.marks.await(t, client, recv.subject)
+	return recv.received()
 }
 
 // storedCopies is how many messages the stream holds on the subjects filter matches.
@@ -451,8 +529,8 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 	if got := len(recv.received()); got != 1 {
 		t.Fatalf("the holder received %d forwards, want the one", got)
 	}
-	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 1 {
-		t.Fatalf("the stream holds %d copies of the forward on %s, want one", copies, contracts.AgentSubject(holder))
+	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(holder)); copies != 1 {
+		t.Fatalf("the stream holds %d copies of the forward on %s, want one", copies, contracts.LegacyAgentSubject(holder))
 	}
 }
 
@@ -472,7 +550,7 @@ func TestARoleRouteToAHolderWithAServingPortIsPublishedOnTheStreamsAcknowledgeme
 		attempts, failure, _ := eventState(t, rig.database, event.ID)
 		t.Fatalf("the event was not published on the stream's acknowledgement: attempt_count %d, publish_error %v", attempts, failure)
 	}
-	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 1 {
+	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(holder)); copies != 1 {
 		t.Fatalf("the stream holds %d copies of the forward, want one", copies)
 	}
 }
@@ -504,8 +582,8 @@ func TestARoleRouteToAHolderWithNoServingPortIsPublishedOnTheStreamsAcknowledgem
 				event.ID, attempts, failure, destinations)
 		}
 	}
-	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 2 {
-		t.Fatalf("the stream holds %d forwards on %s, want the owner's two", copies, contracts.AgentSubject(holder))
+	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(holder)); copies != 2 {
+		t.Fatalf("the stream holds %d forwards on %s, want the owner's two", copies, contracts.LegacyAgentSubject(holder))
 	}
 }
 
@@ -582,7 +660,7 @@ func TestARoleRouteWhoseHolderIsGoneKeepsTheClaimAndIsPublished(t *testing.T) {
 	rig.claimRegisteredAt(t, role, holder, session.GoneHorizon+time.Minute)
 	claimedAt := rig.roleClaim(t, role).ClaimedAt
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	rig.silent(t, contracts.AgentSubject(holder))
+	rig.silent(t, contracts.LegacyAgentSubject(holder))
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
@@ -603,7 +681,7 @@ func TestARoleRouteWhoseHolderIsGoneKeepsTheClaimAndIsPublished(t *testing.T) {
 		t.Fatalf("the kept copy is topic %q dedupe key %q event id %q, want the envelope as its sender sent it under %q",
 			kept[0].Topic, kept[0].DedupeKey, kept[0].EventID, key)
 	}
-	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 0 {
+	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(holder)); copies != 0 {
 		t.Fatalf("the stream holds %d messages on the gone holder's subject, want none: the copy was kept, not sent", copies)
 	}
 }
@@ -616,7 +694,7 @@ func TestARoleRouteToAnUnresponsiveHolderStaysPending(t *testing.T) {
 	const role, holder = "reviewer", "ses_stale"
 	rig.claimRegisteredAt(t, role, holder, session.LiveWindow+time.Minute)
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	rig.silent(t, contracts.AgentSubject(holder))
+	rig.silent(t, contracts.LegacyAgentSubject(holder))
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
@@ -668,7 +746,7 @@ func TestARoleRouteIsJudgedOnTheWindowsDispatchWasGiven(t *testing.T) {
 			rig.claimRegisteredAt(t, tc.role, tc.holder, silence)
 			claimedAt := rig.roleClaim(t, tc.role).ClaimedAt
 			rig.silent(t, contracts.RoleTopicPrefix+tc.role)
-			rig.silent(t, contracts.AgentSubject(tc.holder))
+			rig.silent(t, contracts.LegacyAgentSubject(tc.holder))
 			event := rig.routedEvent(t, "T-"+tc.role, tc.role, model.Actor{Kind: "user", ID: "alice"})
 
 			holding(t, rig.depsJudgedBy(tc.windows)).scan(context.Background(), unfenced{})
@@ -707,7 +785,7 @@ func TestARoleRouteWhoseHolderSessionKeyExpiredKeepsTheClaimAndStaysPending(t *t
 	rig.claimRegisteredAt(t, role, holder, session.LiveWindow+time.Minute)
 	claimedAt := rig.roleClaim(t, role).ClaimedAt
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	rig.silent(t, contracts.AgentSubject(holder))
+	rig.silent(t, contracts.LegacyAgentSubject(holder))
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	rig.waitForExpiredSessionKey(t, holder)
 
@@ -737,7 +815,7 @@ func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T)
 	const role, holder = "reviewer", "ses_actor"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	rig.silent(t, contracts.AgentSubject(holder))
+	rig.silent(t, contracts.LegacyAgentSubject(holder))
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "session", ID: holder})
 	if _, err := rig.database.Pool.Exec(context.Background(), `update events set notify = true where id = $1`, event.ID); err != nil {
 		t.Fatalf("mark the event to notify: %v", err)
@@ -751,7 +829,7 @@ func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T)
 	if _, _, destinations := eventState(t, rig.database, event.ID); !strings.Contains(strings.Join(destinations, ","), contracts.RoleTopicPrefix+role) {
 		t.Fatalf("published_destinations %v, want the role route counted as reached", destinations)
 	}
-	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 0 {
+	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(holder)); copies != 0 {
 		t.Fatalf("the stream holds %d forwards to the actor, want none", copies)
 	}
 }
@@ -765,7 +843,7 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	holderOf := func(index int) string { return fmt.Sprintf("ses_holder_%02d", index) }
 	seed, public := testnats.User(t)
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [\">\"], deny: [%q] } } } ]\n}\n",
-		public, contracts.AgentSubject(holderOf(denied)))
+		public, contracts.LegacyAgentSubject(holderOf(denied)))
 	_, url := testnats.StartConfig(t, config, []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
 	client, err := bus.ConnectOwningStream([]string{url})
@@ -820,7 +898,7 @@ func TestAForwardHeldByItsHoldersResolutionIsAWaitNotAFailure(t *testing.T) {
 	const role, holder = "reviewer", "ses_stale_counted"
 	rig.claimRegisteredAt(t, role, holder, session.LiveWindow+time.Minute)
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	rig.silent(t, contracts.AgentSubject(holder))
+	rig.silent(t, contracts.LegacyAgentSubject(holder))
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	deps, registry := rig.countingDeps(t)
 	logs := &storetest.LockedLog{}
@@ -931,9 +1009,9 @@ func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
 	if publishedAt(t, rig.database, event.ID) == nil {
 		t.Fatal("the event was not published by the retry that ran once the stream had room")
 	}
-	if copies := storedCopies(t, client, contracts.AgentSubject(holder)); copies != 1 {
+	if copies := storedCopies(t, client, contracts.LegacyAgentSubject(holder)); copies != 1 {
 		t.Errorf("the stream holds %d copies on %s, want the one copy the holder's consumer delivers",
-			copies, contracts.AgentSubject(holder))
+			copies, contracts.LegacyAgentSubject(holder))
 	}
 }
 
@@ -1116,7 +1194,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 		t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by the one pass",
 			held.attempts, held.settled, held.published, holder)
 	}
-	forwards := recv.received()
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %d copies, want the held one: %+v", holder, len(forwards), forwards)
 	}
@@ -1180,7 +1258,7 @@ func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *
 		t.Fatalf("the copy handed to the session its own mention names carries %q, want no role forward's prefix",
 			handed.DedupeKey)
 	}
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	if len(stored) != 1 || stored[0] != bus.ForwardMsgID(want, subject) {
 		t.Fatalf("the stream holds %v on %s, want the handover's one copy under %q, the id a drain's forward of it would carry too",
@@ -1222,7 +1300,7 @@ func TestARoleCopyToTheHolderWhoseOwnMentionFailedCarriesTheMentionsKey(t *testi
 
 	holding(t, deps).scan(ctx, unfenced{})
 
-	forwards := recv.received()
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %d copies, want the route's one copy: %+v", holder, len(forwards), forwards)
 	}
@@ -1361,7 +1439,7 @@ func TestAKeptCopyHandedToTheSecondMentionedHolderCarriesItsOwnMentionsKey(t *te
 		t.Fatalf("the copy handed to the session whose own mention it repeats carries %q, want no role forward's prefix: a key no host has claimed shows the comment a second time",
 			handed.DedupeKey)
 	}
-	subject := contracts.AgentSubject(second)
+	subject := contracts.LegacyAgentSubject(second)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	if len(stored) != 1 || stored[0] != bus.ForwardMsgID(want, subject) {
 		t.Fatalf("the stream holds %v on %s, want the handover's one copy under %q, the id a drain's forward of it would carry too",
@@ -1439,7 +1517,7 @@ func TestAKeptCopyHandedToAHolderWhoseMentionLandedCarriesItsOwnMentionsKey(t *t
 		t.Fatalf("the copy handed to the session whose own mention delivered the comment carries %q, want no role forward's prefix: a key no host has claimed shows the comment a second time",
 			handed.DedupeKey)
 	}
-	subject := contracts.AgentSubject(second)
+	subject := contracts.LegacyAgentSubject(second)
 	stored := storedMsgIDs(t, rig.conn, subject)
 	if len(stored) != 1 || stored[0] != bus.ForwardMsgID(want, subject) {
 		t.Fatalf("the stream holds %v on %s, want the handover's one copy under %q, the id a drain's forward of it would carry too",
@@ -1520,7 +1598,9 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 	t.Run("a live mention holds the keep until it settles", func(t *testing.T) {
 		database, publisher, commentID, event, deps := keptFor(t, "pending")
 
+		before := time.Now()
 		holding(t, deps).scan(ctx, unfenced{})
+		after := time.Now()
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the outbox kept %d copies while the comment's mentions were still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming no mentioned session shows the comment a second time to whichever of them claims the role",
@@ -1533,8 +1613,8 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 		if attempts != 0 {
 			t.Fatalf("attempt_count = %d while the keep waits on a mention, want 0: a wait is no failure", attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+		if !waitsFromScan(due, before, after) {
+			t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 		}
 
 		// Both sends land and their senders settle the attempts, as they do within the lease.
@@ -1619,7 +1699,9 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 		t.Fatalf("the later event does not notify, so it takes no role route and proves nothing: %#v", update)
 	}
 
+	before := time.Now()
 	holding(t, deps).scan(ctx, unfenced{})
+	after := time.Now()
 
 	if kept := publisher.keeps(); len(kept) > 0 {
 		t.Fatalf("the outbox kept %d copies while the comment's copy waited on its mention, the first of event %s under %q, want none: the role's next holder would be handed the issue's later event first",
@@ -1634,8 +1716,8 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 			t.Fatalf("event %d (%s) counts attempt_count = %d while a copy waits on a mention, want 0: a wait is no failure",
 				event.ID, event.Type, attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("event %d (%s) is due at %v, want about %v from now, the wait a blocked event takes",
+		if !waitsFromScan(due, before, after) {
+			t.Fatalf("event %d (%s) is due at %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes",
 				event.ID, event.Type, due, mentionPendingDelay)
 		}
 	}
@@ -1712,7 +1794,9 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID, event := heldBy(t, "pending")
 
+		before := time.Now()
 		holding(t, deps).scan(ctx, unfenced{})
+		after := time.Now()
 
 		if forwards := recv.received(); len(forwards) > 0 {
 			t.Fatalf("the batch sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
@@ -1725,8 +1809,8 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		if attempts != 0 {
 			t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 		}
-		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-			t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+		if !waitsFromScan(due, before, after) {
+			t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 		}
 
 		// The holder's send lands and its sender settles the attempt, as one does within the
@@ -1745,7 +1829,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 			t.Fatalf("the comment was not published once the holder's mention settled: attempt_count %d, publish_error %v",
 				attempts, failure)
 		}
-		forwards := recv.received()
+		forwards := recv.receivedNow(t, rig.client)
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the role route's once its own mention settled: %+v", holder, len(forwards), forwards)
 		}
@@ -1761,7 +1845,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 
 		holding(t, deps).scan(ctx, unfenced{})
 
-		forwards := recv.received()
+		forwards := recv.receivedNow(t, rig.client)
 		if len(forwards) != 1 {
 			attempts, failure, _ := eventState(t, rig.database, event.ID)
 			t.Fatalf("%s was sent %d copies though its own mention is pending past model.DeliveryClaimLapse = %v, want the role route's: attempt_count %d, publish_error %v",
@@ -1816,7 +1900,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	const bystander = "ses_mentioned_by_name"
 	const unanswered = "role:unanswered-when-the-comment-was-written"
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.AgentSubject(holder)
+	holderSubject := contracts.LegacyAgentSubject(holder)
 
 	rig := newRoleRig(t)
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -1850,7 +1934,9 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 			comment.Notify, edit.Notify)
 	}
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.
@@ -1877,8 +1963,8 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while the role forward waits on the holder's own mention", at)
@@ -1902,8 +1988,8 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("the edit counts attempt_count = %d while it waits behind the comment's forward, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("the edit is due at %v, want about %v from now, the wait its blocker takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("the edit is due at %v, want mentionPendingDelay = %v from the scan, the wait its blocker takes", due, mentionPendingDelay)
 	}
 
 	// The holder's own mention lands and its sender settles the attempt, as one does within the
@@ -1926,7 +2012,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 		}
 	}
 	var order []string
-	for _, item := range recv.received() {
+	for _, item := range recv.receivedNow(t, rig.client) {
 		order = append(order, item.EventID)
 	}
 	editID := fmt.Sprintf("dispatch-%d", edit.ID)
@@ -1975,7 +2061,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 	const elsewhere = "ses_mentioned_on_the_other_issue"
 	target := "role:" + role
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.AgentSubject(holder)
+	holderSubject := contracts.LegacyAgentSubject(holder)
 	mentionKey := func(commentID string) string {
 		return contracts.AgentSendDedupeKey(holder,
 			model.CommentMentionIdempotencyKey(commentID, target, "steer"))
@@ -2042,9 +2128,9 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 				attempts, publishFailure(failure), reached)
 		}
 		_, _, reached := eventState(t, rig.database, apart.ID)
-		if !slices.Contains(reached, contracts.AgentSubject(bystander)) {
+		if !slices.Contains(reached, contracts.LegacyAgentSubject(bystander)) {
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
-				reached, contracts.AgentSubject(bystander))
+				reached, contracts.LegacyAgentSubject(bystander))
 		}
 		waitFor(t, 10*time.Second, "the other owner's claimant copy", func() bool {
 			return len(other.received()) > 0
@@ -2155,7 +2241,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 			t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by the one pass",
 				held.attempts, held.settled, held.published, second)
 		}
-		forwards := recv.received()
+		forwards := recv.receivedNow(t, rig.client)
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the held one: %+v", second, len(forwards), forwards)
 		}
@@ -2204,7 +2290,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 			t.Fatalf("the copy handed to the session whose own mention it repeats carries %q, want no role forward's prefix: a key no host has claimed shows the comment a second time",
 				handed.DedupeKey)
 		}
-		subject := contracts.AgentSubject(second)
+		subject := contracts.LegacyAgentSubject(second)
 		stored := storedMsgIDs(t, rig.conn, subject)
 		if len(stored) != 1 || stored[0] != bus.ForwardMsgID(want, subject) {
 			t.Fatalf("the stream holds %v on %s, want the handover's one copy under %q, the id a drain's forward of it would carry too",
@@ -2417,7 +2503,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 			t.Fatalf("once the holder's mention had settled the held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by that pass",
 				settled.attempts, settled.settled, settled.published, second)
 		}
-		forwards := recv.received()
+		forwards := recv.receivedNow(t, rig.client)
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the held one once its own mention settled: %+v", second, len(forwards), forwards)
 		}
@@ -2435,7 +2521,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		row := readHeldCopy(t, rig.database, commentID, roleTopic)
-		forwards := recv.received()
+		forwards := recv.receivedNow(t, rig.client)
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies though its own mention is pending past model.DeliveryClaimLapse = %v, want the held one: the held copy is attempts=%d settled=%v published=%v",
 				second, len(forwards), model.DeliveryClaimLapse, row.attempts, row.settled, row.published)

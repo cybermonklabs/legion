@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // capturedRequest snapshots what the client actually put on the wire, so a subtest can assert
@@ -211,16 +212,14 @@ func TestNonTwoXXResponseWithUnparsableBodyPreservesBodyWithEmptyCode(t *testing
 	}
 }
 
-// A transport failure (here: nothing listening) must never surface as *Error — Task 2 treats
-// anything that is not *agentsecrets.Error as 503 AGENT_SECRETS_UNAVAILABLE, and a transport
-// failure wrongly typed as *Error would forward a fabricated status/code to the browser.
+// A transport failure (here: nothing listening, at a port the test holds) must never surface as
+// *Error — Task 2 treats anything that is not *agentsecrets.Error as 503 AGENT_SECRETS_UNAVAILABLE,
+// and a transport failure wrongly typed as *Error would forward a fabricated status/code to the
+// browser.
 func TestTransportFailureIsNotATypedError(t *testing.T) {
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
-
-	_, err := New(closed.URL, tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
+	_, err := New("http://"+testport.Refused(t), tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
 	if err == nil {
-		t.Fatal("Pending against a closed listener: got nil error")
+		t.Fatal("Pending against a port nothing listens on: got nil error")
 	}
 	var brokerErr *Error
 	if errors.As(err, &brokerErr) {
@@ -386,11 +385,7 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 	})
 
 	t.Run("a broker never read at all keeps the page", func(t *testing.T) {
-		dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-		url := dead.URL
-		dead.Close()
-
-		if !New(url, tokenFile(t, "account-token")).ServesDeviceGrant(context.Background()) {
+		if !New("http://"+testport.Refused(t), tokenFile(t, "account-token")).ServesDeviceGrant(context.Background()) {
 			t.Fatalf("an unreadable broker answered false; a page that vanishes on one failed read is worse than one that lingers")
 		}
 	})

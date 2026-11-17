@@ -126,9 +126,9 @@ type Deps struct {
 	// TokenHooks are the broker's steps around each token the provider issues.
 	TokenHooks oauth.TokenHooks
 	// Approval is the broker's own approval page and its sign-in (internal/broker/approval),
-	// which cmd/broker always builds, since config.Load requires BROKER_SIGNIN_*. Its routes,
-	// every one under /approve and /signin/, are mounted only when it is set, which leaves them
-	// off the mux of a test rig that wires no page.
+	// which cmd/broker builds from BROKER_SIGNIN_* unless BROKER_SIGNIN=off, when it builds none.
+	// Its routes, every one under /approve and /signin/, are mounted only when it is set, so a
+	// broker that signs nobody in, and a test rig that wires no page, answer each of them 404.
 	Approval *approval.Page
 	// Draining reports whether this process has begun stopping, which GET /healthz answers 503
 	// SHUTTING_DOWN for while every other route goes on being served; nil means it never does.
@@ -239,7 +239,8 @@ func Register(mux *http.ServeMux, deps Deps) {
 const oauthRoutes = "/v1/oauth/"
 
 // approvalRoutes and signInRoutes prefix the approval page's routes, which Register mounts only
-// with the page: every broker has one, and a rig that wires none serves those paths not at all.
+// with the page: a broker with BROKER_SIGNIN=off has none, nor does a rig that wires none, and
+// either serves those paths not at all.
 const (
 	approvalRoutes = "/approve"
 	signInRoutes   = "/signin/"
@@ -600,26 +601,35 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 }
 
 // pageRefusal is the body of a refusal that names the approval page where a person decides the
-// record instead, beside the code and error every refusal carries.
+// record instead, beside the code and error every refusal carries. On a broker with
+// BROKER_SIGNIN=off, which serves no page, it names none and says why.
 type pageRefusal struct {
 	// The refusal's code.
 	Code string `json:"code"`
-	// What was refused, naming the page.
+	// What was refused, naming the page, or, on a broker with BROKER_SIGNIN=off, saying that it
+	// serves none.
 	Error string `json:"error"`
-	// The record's page on the broker's own approval page, <BROKER_PUBLIC_URL>/approve/<record>.
-	ApproveURL string `json:"approve_url"`
+	// The record's page on the broker's own approval page, <BROKER_PUBLIC_URL>/approve/<record>;
+	// absent on a broker with BROKER_SIGNIN=off, where that page is a 404.
+	ApproveURL string `json:"approve_url,omitempty"`
 }
 
 // writePageRefusal is writeError for a refusal naming the record's approval page, approveURL,
-// which its body carries as approve_url (pageRefusal) for a caller to link.
+// which its body carries as approve_url (pageRefusal) for a caller to link; an empty approveURL,
+// a broker that serves no page, leaves approve_url out.
 func writePageRefusal(w http.ResponseWriter, status int, code, msg, approveURL string) {
 	writeJSON(w, status, pageRefusal{Code: code, Error: msg, ApproveURL: approveURL})
 }
 
 // approveURL is recordID's page on the broker's own approval page (GET /approve/{record}), on the
 // public URL the broker resolved at boot: the one place a person signed in to the broker decides
-// a secret request, which every answer naming a pending one links.
+// a secret request, which every answer naming a pending one links. A broker with
+// BROKER_SIGNIN=off builds no page (Deps.Approval nil), where that path is a 404, so it answers
+// "" and every answer leaves approve_url out.
 func (s *server) approveURL(recordID string) string {
+	if s.deps.Approval == nil {
+		return ""
+	}
 	return s.deps.PublicURL + "/approve/" + recordID
 }
 

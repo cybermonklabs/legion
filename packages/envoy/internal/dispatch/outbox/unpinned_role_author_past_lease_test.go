@@ -68,7 +68,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 
 	eventKey := fmt.Sprintf("dispatch-%d", comment.ID)
 	mentionKey := contracts.AgentSendDedupeKey(author, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	authorSubject := contracts.AgentSubject(author)
+	authorSubject := contracts.LegacyAgentSubject(author)
 	attempts, failure, reached := eventState(t, rig.database, comment.ID)
 	if publishedAt(t, rig.database, comment.ID) == nil {
 		t.Fatalf("the comment was not published in the pass that read it: attempt_count %d, publish_error %s, reached %v. Nothing of it waits for the owed resend: the author's copy is the row's, and the event publishes at the lease as it always has",

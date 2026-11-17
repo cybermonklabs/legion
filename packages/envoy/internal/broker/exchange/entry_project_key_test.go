@@ -32,7 +32,7 @@ func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 				{setting: "BROKER_VM_EXCHANGE_ACCOUNTS",
 					machines: []exchange.GoogleEntry{{Account: pinnedAccount, Service: pinnedService, Project: bad, Person: person}}, names: pinnedAccount},
 			} {
-				set, err := exchange.NewSet(c.accounts, c.workflows, c.machines, signInDomain)
+				set, err := exchange.NewSet(c.accounts, nil, c.workflows, c.machines, signInDomain)
 				if err == nil {
 					t.Errorf("NewSet with a %s entry naming the project %q = %v, want a refusal: every token it minted would name a project no list holds, and every trade would fail", c.setting, bad, set)
 					continue

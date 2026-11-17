@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { bearerCredential } from "../packages/envoy-client/src/bearer";
+import { holdDeadlines } from "./dispatch/__tests__/held-deadlines";
 import { priorityDescription, rowMarker, seedPriorities } from "./priorities-seed";
 
 /** One priority as the fake Dispatch below holds it. */
@@ -399,5 +400,15 @@ test("run as a command with the shared bearer, the seed names its session on eve
   expect(writes().length).toBeGreaterThan(7);
   for (const write of writes()) {
     expect(write.body).toMatchObject({ actor: { kind: "session", id: session } });
+  }
+});
+
+test("every request of the seed hands its credential a deadline", async () => {
+  const held = holdDeadlines();
+  try {
+    await seedPriorities({ ...config, credential: held.credential }, DOCUMENT);
+    held.expectEachRequestBoundByItsDeadline("the seed");
+  } finally {
+    held.restore();
   }
 });

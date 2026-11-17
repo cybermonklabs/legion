@@ -216,7 +216,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		}
 	}
 	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.AgentSubject("S")
+	session := contracts.LegacyAgentSubject("S")
 	order := map[string][]int64{}
 	sequence := map[string]uint64{}
 	stream, err := js.StreamInfo(bus.Stream)
@@ -260,8 +260,12 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	var (
 		mu       sync.Mutex
 		arrivals []int64
+		marks    markers
 	)
-	sub, err := rig.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
+	sub, err := rig.conn.Subscribe(contracts.LegacyAgentSubject(holder), func(msg *natsgo.Msg) {
+		if marks.took(msg) {
+			return
+		}
 		id := envelopeEventID(t, msg.Data)
 		mu.Lock()
 		arrivals = append(arrivals, id)
@@ -320,6 +324,11 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
+	// Each event is marked published once the stream acknowledged its forward to S, and S is
+	// handed the same message on its own connection, which can arrive just after that
+	// acknowledgement on a busy machine: S is read once it has taken every forward sent to it
+	// (markers.await).
+	marks.await(t, rig.client, contracts.LegacyAgentSubject(holder))
 	var order []int64
 	for _, got := range taken() {
 		if !slices.Contains(order, got) {
@@ -560,7 +569,7 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 		if strings.HasPrefix(item.Topic, contracts.AgentTopicPrefix) {
 			agents++
 		}
-		if item.Topic == contracts.AgentSubject("claimant") {
+		if item.Topic == contracts.LegacyAgentSubject("claimant") {
 			claimant++
 		}
 	}
@@ -632,7 +641,7 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 			}
 			continue
 		}
-		want := []string{contracts.AgentSubject(fmt.Sprintf("author-%d", index))}
+		want := []string{contracts.LegacyAgentSubject(fmt.Sprintf("author-%d", index))}
 		if row.publishedAt == nil || row.attempts != 0 || !slices.Equal(agentTopics(row.destinations), want) {
 			t.Fatalf("edit %d has published_at %v, attempt_count %d and published_destinations %v, want it published to %v",
 				index, row.publishedAt, row.attempts, row.destinations, want)
@@ -738,41 +747,6 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 	}
 }
 
-// An event the scan published is in no later batch: the scan's record writes published_at, and
-// the statement that chooses a batch reads only events without one. This row reads a batch once
-// the real scan has published, which TestTheClaimSkipsPendingCommandsAndBackedOffRows no longer
-// does: it inserts its sent events as sent. A scan whose batches also read published events did
-// not return in ten minutes (2026-11-15), so the scan runs under a deadline that turns that into
-// a named failure.
-func TestABatchReadAfterAScanHoldsNoneOfTheEventsItPublished(t *testing.T) {
-	ctx := context.Background()
-	database := storetest.Open(t)
-	broker := events.NewBroker()
-	seedIssue(t, database, "T-1", nil)
-	published := seedUnpublishedEvents(t, database, broker, 3)
-	scanning, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	holding(t, Deps{Store: database, Publisher: &recordingPublisher{}}).scan(scanning, unfenced{})
-	if scanning.Err() != nil {
-		t.Fatal("the scan did not return within 30s: its later batches kept reading the events it had published")
-	}
-	for _, id := range published {
-		if publishedAt(t, database, id) == nil {
-			t.Fatalf("the scan did not publish event %d", id)
-		}
-	}
-	later := seedUnpublishedEvents(t, database, broker, 1)
-
-	pending, stopped, _, err := readBatch(ctx, Deps{Store: database})
-	if err != nil || stopped {
-		t.Fatalf("read a batch after the scan: stopped=%v err=%v", stopped, err)
-	}
-	if ids := pendingIDs(pending); !slices.Equal(ids, later) {
-		t.Fatalf("the batch read after the scan holds %v, want only %v, the event appended since: the scan published %v",
-			ids, later, published)
-	}
-}
-
 // planNode is one node of EXPLAIN (FORMAT JSON)'s plan.
 type planNode struct {
 	NodeType         string     `json:"Node Type"`
@@ -864,8 +838,6 @@ func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRe
 // commands, ten events the publisher has sent and ten it has not, and reports what the statement
 // choosing a batch costs there. Each size needs its own database: events.id is a sequence, so rows
 // added to a seeded database after the fresh events carry higher ids, which the plan never walks.
-// The ten sent events are inserted as the publisher leaves them, so no update of events leaves a
-// dead index entry behind (the comment at the check of the blocks says why that matters).
 func measureClaim(t *testing.T, backlog int) claimCost {
 	t.Helper()
 	ctx := context.Background()
@@ -886,18 +858,24 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		select 'T-1', 100000 + n, 'subscription.remove_requested', '{"kind":"user","id":"alice"}',
 		       '{"session_id":"gone","pending":true}', true
 		from generate_series(1, $1) as n;
-		insert into events (issue_key, seq, type, actor, payload, notify, published_at, published_destinations)
-		select 'T-1', n, 'message.created', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('id', gen_random_uuid()::text, 'issue_key', 'T-1', 'body', 'sent ' || n), true,
-		       now(), array['notifications.dispatch.issue.T-1.message.created']
-		from generate_series(1, 10) as n;
-		update issues set last_seq = 10 where key = 'T-1';
 	`, pgx.QueryExecModeSimpleProtocol, backlog); err != nil {
-		t.Fatalf("seed the backed-off events, the pending commands and the sent events: %v", err)
+		t.Fatalf("seed the backed-off events and the pending commands: %v", err)
+	}
+	fresh := func() []int64 {
+		ids := make([]int64, 0, 10)
+		for index := range 10 {
+			ids = append(ids, appendEvent(t, database, broker, model.Event{
+				IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
+				Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: fmt.Sprintf("fresh %d", index)},
+			}).ID)
+		}
+		return ids
+	}
+	fresh()
+	if _, err := database.Pool.Exec(ctx, `analyze events`); err != nil {
+		t.Fatalf("analyze events: %v", err)
 	}
 
-	// Nothing is due yet, so the scan runs the statement choosing a batch, which chooses nothing,
-	// and publishes nothing.
 	tracer := &statementTracer{}
 	holding(t, Deps{Store: tracedStore(t, database, tracer), Publisher: &recordingPublisher{}}).scan(ctx, unfenced{})
 	claims := tracer.matching("published_at is null", "limit")
@@ -905,16 +883,19 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Fatal("the scan ran no statement choosing a batch")
 	}
 	claim := claims[0]
-	// Ten due events, so the statement measured and explained has a batch to choose.
-	unpublished := make([]int64, 0, 10)
-	for index := range 10 {
-		unpublished = append(unpublished, appendEvent(t, database, broker, model.Event{
-			IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
-			Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: fmt.Sprintf("fresh %d", index)},
-		}).ID)
-	}
-	if _, err := database.Pool.Exec(ctx, `analyze events`); err != nil {
-		t.Fatalf("analyze events: %v", err)
+	// Ten more due events, so the statement measured and explained has a batch to choose.
+	unpublished := fresh()
+	// The scan's publish left the old versions of the events it published dead, with their
+	// entries in the indexes of events. The first claim to step over such an entry once no
+	// snapshot can see its row marks it dead and reads its page again to do it, and whether a
+	// snapshot can still see the row is judged from the oldest transaction on the whole server,
+	// not on this database alone. On a Postgres other packages' tests share, a transaction open
+	// in another database keeps the explains below from marking those entries, and the first
+	// measured run pays for the marking instead: 38 blocks and then 37, or 39 and 37 at the larger
+	// size. A vacuum removes the dead rows and their index entries outright, judging by this
+	// database's own transactions, so the runs below measure the claim and none of that cleanup.
+	if _, err := database.Pool.Exec(ctx, `vacuum (index_cleanup on) events`); err != nil {
+		t.Fatalf("vacuum events: %v", err)
 	}
 
 	// The fastest of several runs: the box is small and shared, and a run another test's work
@@ -951,41 +932,17 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Fatalf("acquire the connection the counters are read on: %v", err)
 	}
 	defer conn.Release()
-	// One run before the pair warms this connection (the comment at the check of the blocks says
-	// why), so the pair is the second and third runs of the claim on it.
-	claimReads(t, conn, claim)
 	rowsRead, seqRead, indexBlocks, kept := claimReads(t, conn, claim)
 	secondRowsRead, _, secondIndexBlocks, _ := claimReads(t, conn, claim)
 	if rowsRead != secondRowsRead {
-		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run a larger figure than the first",
+		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run as twice the first",
 			rowsRead, secondRowsRead)
 	}
-	// The blocks are as steady as the rows: 37 on both runs of each size, in all 12 readings of 3
-	// runs of the healthy claim on 2026-11-09, and 56 and 113 on both runs of the mutated one. A
-	// run fetches more blocks only when it reads a page a second time. The claim does that to mark
-	// dead index entries, the entries of row versions an update left behind: it reads each page
-	// that holds one again to mark it. An entry can be marked only once no snapshot in the
-	// database can still see its row, so a snapshot another session holds can stop the explains
-	// above from marking the entries, and a later run marks them once that snapshot has ended.
-	// That failed this check while the scan here published the ten sent events, an update of
-	// each. On 2026-11-15 a snapshot held from before that publish until after the explains gave
-	// 38 and 37 at 5,000 and 39 and 37 at 20,000 when it ended before the first run, and 37 and
-	// 38, and 37 and 39, when it ended between the runs: one block more in events_outbox_fresh,
-	// and at 20,000 one more in events_outbox_owner. CI read 39 and 37 (run 43691997570,
-	// 2026-11-15) and the merge queue 37 and 38 (2026-11-11). The seed now inserts the sent events
-	// as sent, which leaves no dead entry: the same held snapshot reads 37 and 37 at both sizes.
-	//
-	// Three other causes measured that day move the figure. A backend's first run of the claim
-	// reads one block more in each index of events that holds rows, 45 against 37, so the run
-	// before the pair warms this connection. From the sixth run of the statement on one
-	// connection Postgres may try a generic plan, which read 38 at 5,000, so the pair stays among
-	// the first five. An analyze of events between the runs reads one block more in each index
-	// whose pg_class row it rewrites, 42 against 37 at 5,000. The test's own analyze runs after
-	// the last write to events, so an autoanalyze due later finds the counts that analyze wrote
-	// and rewrites no index's row: on 2026-11-15, 6 pairs with a vacuum between the runs and 2
-	// with an autovacuum and an autoanalyze between them all read 37 and 37.
+	// The blocks are as steady as the rows once the dead entries the scan's publish left are
+	// vacuumed away (above): 37 on both runs of each size, in all 12 readings of 3 runs of the
+	// healthy claim on 2026-11-09, and 56 and 113 on both runs of the mutated one.
 	if indexBlocks != secondIndexBlocks {
-		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and a second run on the same connection fetches the same blocks; the comment at this check lists what moves the figure",
+		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and with no dead index entry left for the first run to mark, a second run on the same connection fetches the same blocks",
 			indexBlocks, secondIndexBlocks)
 	}
 	if rowsRead == 0 && secondRowsRead == 0 {
@@ -1025,11 +982,7 @@ func someIDs(ids []int64) string {
 // of its plan that reads events removes a row by filter or recheck, none scans events in full,
 // and with 20,000 of each it reads the same number of rows and fetches about as many blocks from
 // the indexes of events. Three a row is what it reads today, and the row allows up to eight, so a
-// plan that reads one more of each event still passes. The ten events the publisher has sent are
-// inserted as sent, not published by a scan: a publish updates each row and leaves dead entries
-// in the outbox indexes, and the run of the claim that marks them reads more blocks than the run
-// after it, which failed this row in CI (the comment at the check of the blocks in measureClaim
-// gives the figures).
+// plan that reads one more of each event still passes.
 //
 // The row counts two things, because each is blind to work the other sees.
 //
@@ -1087,14 +1040,10 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 	// The blocks the claim fetches in the indexes of events must not grow with the backlog: work
 	// that grows with the rows it skips is the regression this figure is here for. Measured on
 	// 2026-11-09 on an idle pod: 37 blocks at both sizes in all 12 readings of 3 runs of the
-	// healthy claim, against 56 and 113 for a claim whose retry index leads on id. On 2026-11-15,
-	// with the sent events inserted as sent, the healthy claim read the same 37 at both sizes, and
-	// the claim over that index the same 56 and 113, which this check fails at a bound of 84. Of
-	// the 37, 20 are in events_pkey, two for each returned event's lookup by id, 5 are in the three
-	// outbox indexes, and 12 are read while the claim is planned, four in each of the three indexes
-	// of events that hold no row. The half is for a btree that gains a level as the table grows,
-	// which costs one more block for each descent the claim makes, around ten of them; half of 37
-	// is 18, and the mutated claim is 29 blocks past its own bound.
+	// healthy claim, against 56 and 113 for a claim whose retry index leads on id. The half is
+	// for a btree that gains a level as the table grows, which costs one more block for each
+	// descent the claim makes, around ten of them; half of 37 is 18, and the mutated claim is 29
+	// blocks past its own bound.
 	if bound := small.indexBlocks + small.indexBlocks/2; big.indexBlocks > bound {
 		t.Errorf("the claim fetched %d blocks from the indexes of events with a backlog of %d and %d with a backlog of %d, want at most %d at the larger size: what the claim does inside an index must not grow with the rows it skips",
 			big.indexBlocks, big.backlog, small.indexBlocks, small.backlog, bound)

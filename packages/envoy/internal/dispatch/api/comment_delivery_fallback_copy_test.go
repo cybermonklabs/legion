@@ -63,7 +63,7 @@ func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T
 			}
 			if publishedToSession(t, deps, issue.Key, created.ID, "s1") {
 				t.Fatalf("an event of comment %s was published to %s as well as the mention's send: s1 got two copies",
-					created.ID, contracts.AgentSubject("s1"))
+					created.ID, contracts.LegacyAgentSubject("s1"))
 			}
 		})
 	}
@@ -87,7 +87,7 @@ func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone
 	}
 	// The send is still held, so its attempt is pending while comment.created is published.
 	published := eventDeliveries(t, database, "comment.created", created.ID)
-	if len(published) != 1 || slices.Contains(published[0].Destinations, contracts.AgentSubject("s2")) {
+	if len(published) != 1 || slices.Contains(published[0].Destinations, contracts.LegacyAgentSubject("s2")) {
 		t.Fatalf("comment.created deliveries = %#v, want the one event's, none of it to s2", published)
 	}
 	before := commentCreatedRow(t, database, created.ID)
@@ -100,7 +100,7 @@ func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone
 		t.Fatalf("the mention whose send never answered = %#v, want its one attempt failed", settled)
 	}
 	again := eventDeliveries(t, database, "comment.created", created.ID)
-	if len(again) != 1 || slices.Contains(again[0].Destinations, contracts.AgentSubject("s2")) {
+	if len(again) != 1 || slices.Contains(again[0].Destinations, contracts.LegacyAgentSubject("s2")) {
 		t.Fatalf("comment.created deliveries after the mention failed = %#v, want none of them to s2", again)
 	}
 	if after := commentCreatedRow(t, database, created.ID); after.payload != before.payload || after.publishedAt == nil {
@@ -159,7 +159,7 @@ func TestAClaimantWhoseResentMentionFailsStillHearsTheComment(t *testing.T) {
 	_ = state.holdLookups("/v1/registry/s1")
 
 	published := eventDeliveries(t, database, "comment.created", claimed.ID)
-	if len(published) != 1 || slices.Contains(published[0].Destinations, contracts.AgentSubject("s1")) {
+	if len(published) != 1 || slices.Contains(published[0].Destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("comment.created deliveries = %#v, want the one event's, its claimant copy left to the resend", published)
 	}
 
@@ -173,7 +173,7 @@ func TestAClaimantWhoseResentMentionFailsStillHearsTheComment(t *testing.T) {
 		t.Fatalf("the resend to a listener that answers nothing = %#v, want it failed", settled)
 	}
 
-	if copies := publishedFallbackCopies(t, deps, issue.Key, claimed.ID); !slices.Contains(copies, contracts.AgentSubject("s1")) {
+	if copies := publishedFallbackCopies(t, deps, issue.Key, claimed.ID); !slices.Contains(copies, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("fallback copies published after the resend failed = %#v, want s1's topic among them", copies)
 	}
 	if sends := state.sent(); len(sends) != 0 {
@@ -561,24 +561,24 @@ func aMentionQueuedPastALease(t *testing.T) heldLaneComment {
 func TestAMentionQueuedPastALeaseHoldsItsCopyAndSettlesItWhenTheSendLands(t *testing.T) {
 	held := aMentionQueuedPastALease(t)
 	destinations := awaitPublishedCommentCreated(t, held.database, held.comment)
-	if slices.Contains(destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("comment.created reached %v, want s1's own topic left to the mention", destinations)
 	}
 	if !slices.Contains(destinations, "notifications.dispatch.issue."+held.issue+".comment.created") {
 		t.Fatalf("comment.created reached %v, want the issue's own topic among them: only s1's copy waits",
 			destinations)
 	}
-	awaitFallbackCopies(t, held.database, held.comment, []string{contracts.AgentSubject("s1")}, false)
+	awaitFallbackCopies(t, held.database, held.comment, []string{contracts.LegacyAgentSubject("s1")}, false)
 
 	held.release()
 	if settled := settledCommentDeliveries(t, held.database, held.comment); !allSent(settled) {
 		t.Fatalf("the queued mention = %#v, want it sent once its lane came to it", settled)
 	}
-	copies := awaitFallbackCopies(t, held.database, held.comment, []string{contracts.AgentSubject("s1")}, true)
+	copies := awaitFallbackCopies(t, held.database, held.comment, []string{contracts.LegacyAgentSubject("s1")}, true)
 	if copies[0].published {
 		t.Fatalf("the fallback copy = %#v, want it settled with nothing published: the mention delivered the comment", copies[0])
 	}
-	if topics := held.published.topicsAbout(t, held.comment); slices.Contains(topics, contracts.AgentSubject("s1")) {
+	if topics := held.published.topicsAbout(t, held.comment); slices.Contains(topics, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("the outbox published %v about the comment, want nothing to s1's own topic", topics)
 	}
 }
@@ -588,7 +588,7 @@ func TestAMentionQueuedPastALeaseHoldsItsCopyAndSettlesItWhenTheSendLands(t *tes
 func TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails(t *testing.T) {
 	held := aMentionQueuedPastALease(t)
 	awaitPublishedCommentCreated(t, held.database, held.comment)
-	awaitFallbackCopies(t, held.database, held.comment, []string{contracts.AgentSubject("s1")}, false)
+	awaitFallbackCopies(t, held.database, held.comment, []string{contracts.LegacyAgentSubject("s1")}, false)
 
 	held.listener.refuseSends("s1")
 	held.release()
@@ -599,14 +599,14 @@ func TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails(t *testing.T) 
 	if settled[0].Error == nil {
 		t.Fatalf("the refused send = %#v, want its cause recorded", settled[0])
 	}
-	copies := awaitFallbackCopies(t, held.database, held.comment, []string{contracts.AgentSubject("s1")}, true)
+	copies := awaitFallbackCopies(t, held.database, held.comment, []string{contracts.LegacyAgentSubject("s1")}, true)
 	if !copies[0].published {
 		t.Fatalf("the fallback copy = %#v, want it published: the mention's send failed", copies[0])
 	}
 	topics := held.published.topicsAbout(t, held.comment)
 	var copiesToS1 int
 	for _, topic := range topics {
-		if topic == contracts.AgentSubject("s1") {
+		if topic == contracts.LegacyAgentSubject("s1") {
 			copiesToS1++
 		}
 	}
@@ -642,14 +642,14 @@ func TestARetryThatFailsDoesNotHoldTheCommentOfTheAttemptItOvertook(t *testing.T
 	runOutboxBeside(t, lane.deps, published)
 
 	destinations := awaitPublishedCommentCreated(t, lane.database, lane.queued)
-	if slices.Contains(destinations, contracts.AgentSubject("s1")) {
+	if slices.Contains(destinations, contracts.LegacyAgentSubject("s1")) {
 		t.Fatalf("comment.created reached %v, want s1's own topic held as a fallback row", destinations)
 	}
 	if !slices.Contains(destinations, "notifications.dispatch.issue."+lane.issue+".comment.created") {
 		t.Fatalf("comment.created reached %v, want the issue's own topic among them: the overtaken attempt "+
 			"holds the event no longer", destinations)
 	}
-	awaitFallbackCopies(t, lane.database, lane.queued, []string{contracts.AgentSubject("s1")}, false)
+	awaitFallbackCopies(t, lane.database, lane.queued, []string{contracts.LegacyAgentSubject("s1")}, false)
 
 	// The lane reaches the attempt the Retry overtook and sends it; the host refuses it too.
 	lane.release()
@@ -661,14 +661,14 @@ func TestARetryThatFailsDoesNotHoldTheCommentOfTheAttemptItOvertook(t *testing.T
 		t.Fatalf("the overtaken attempt = %#v, want the lane to have sent it and recorded the host's refusal: "+
 			"the Retry that overtook it delivered nothing", settled[0])
 	}
-	copies := awaitFallbackCopies(t, lane.database, lane.queued, []string{contracts.AgentSubject("s1")}, true)
+	copies := awaitFallbackCopies(t, lane.database, lane.queued, []string{contracts.LegacyAgentSubject("s1")}, true)
 	if !copies[0].published {
 		t.Fatalf("the fallback copy = %#v, want it published: no attempt of the mention was sent", copies[0])
 	}
 	topics := published.topicsAbout(t, lane.queued)
 	var copiesToS1 int
 	for _, topic := range topics {
-		if topic == contracts.AgentSubject("s1") {
+		if topic == contracts.LegacyAgentSubject("s1") {
 			copiesToS1++
 		}
 	}

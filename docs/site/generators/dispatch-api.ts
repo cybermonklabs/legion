@@ -84,6 +84,8 @@ function render(routes: Route[]): string {
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
     "",
+    "A read-only token the secrets broker issued holds neither scope. Dispatch serves it only on the routes `readScopeRoutes` in the source lists, and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. The route index does not carry that list, so this page does not mark those routes.",
+    "",
     "Path parameters are the `{name}` segments of a path.",
     "",
   ];

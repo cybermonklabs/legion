@@ -1,0 +1,23 @@
+{"Time":"2026-11-16T16:19:27.185506278Z","Action":"start","Package":"example.com/acme/gotest/silent"}
+{"Time":"2026-11-16T16:19:27.202067474Z","Action":"run","Package":"example.com/acme/gotest/silent","Test":"TestSilent"}
+{"Time":"2026-11-16T16:19:27.202133045Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestSilent","Output":"=== RUN   TestSilent\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.20217858Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestSilent","Output":"=== PAUSE TestSilent\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.202185219Z","Action":"pause","Package":"example.com/acme/gotest/silent","Test":"TestSilent"}
+{"Time":"2026-11-16T16:19:27.202188064Z","Action":"run","Package":"example.com/acme/gotest/silent","Test":"TestLoud"}
+{"Time":"2026-11-16T16:19:27.202190496Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestLoud","Output":"=== RUN   TestLoud\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.202193357Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestLoud","Output":"=== PAUSE TestLoud\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.202195289Z","Action":"pause","Package":"example.com/acme/gotest/silent","Test":"TestLoud"}
+{"Time":"2026-11-16T16:19:27.202200627Z","Action":"cont","Package":"example.com/acme/gotest/silent","Test":"TestSilent"}
+{"Time":"2026-11-16T16:19:27.202202894Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestSilent","Output":"=== CONT  TestSilent\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.202205243Z","Action":"cont","Package":"example.com/acme/gotest/silent","Test":"TestLoud"}
+{"Time":"2026-11-16T16:19:27.202206925Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestLoud","Output":"=== CONT  TestLoud\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.202209683Z","Action":"attr","Package":"example.com/acme/gotest/silent","Test":"TestSilent","Key":"waits-for","Value":"TestLoud"}
+{"Time":"2026-11-16T16:19:27.202212559Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestSilent","Output":"=== ATTR  TestSilent waits-for TestLoud\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.202215768Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestSilent","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:27.202220022Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestLoud","Output":"--- PASS: TestLoud (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.202223591Z","Action":"pass","Package":"example.com/acme/gotest/silent","Test":"TestLoud","Elapsed":0}
+{"Time":"2026-11-16T16:19:27.202229914Z","Action":"output","Package":"example.com/acme/gotest/silent","Test":"TestSilent","Output":"--- PASS: TestSilent (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.202232163Z","Action":"pass","Package":"example.com/acme/gotest/silent","Test":"TestSilent","Elapsed":0}
+{"Time":"2026-11-16T16:19:27.202234399Z","Action":"output","Package":"example.com/acme/gotest/silent","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.205347789Z","Action":"output","Package":"example.com/acme/gotest/silent","Output":"ok  \texample.com/acme/gotest/silent\t0.019s\n"}
+{"Time":"2026-11-16T16:19:27.205385619Z","Action":"pass","Package":"example.com/acme/gotest/silent","Elapsed":0.02}

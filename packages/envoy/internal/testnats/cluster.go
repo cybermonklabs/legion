@@ -64,7 +64,7 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 				return "", errors.New("the NATS server has not started")
 			}
 			return server.clusterAddress()
-		})
+		}, false)
 		t.Cleanup(routeRelay.Close)
 	}
 	cluster := &Cluster{Servers: make([]*Server, n)}

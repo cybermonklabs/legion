@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const (
@@ -35,6 +36,9 @@ const (
 	// brokerTestService is the service a token that names no person names instead: the fleet
 	// the machine presenting it belongs to, as the broker's own configuration names it.
 	brokerTestService = "example-fleet"
+	// brokerTestReader is the service a read-only token names: the one a read entry of the
+	// broker's configuration names for the account its token is exchanged from.
+	brokerTestReader = "example-reader"
 	// brokerTestProject is the one project a named-scope token may write.
 	brokerTestProject = "BRK"
 	// brokerTestAddress is the source address the verifier's per-address bucket is keyed on.
@@ -70,6 +74,24 @@ func serviceOnlyToken(jkt string) brokertoken.Introspection {
 		Service:      brokerTestService,
 		ProjectScope: brokertoken.ProjectScopePerson,
 		Scope:        "dispatch.write",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ClientID:     brokertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
+// readOnlyToken is the broker's answer for a read-only token: live, bound to jkt, naming a session
+// and the service of the read entry it was exchanged under, and no person and no project. The
+// project scope is none and the scope is the one word read, the shape the broker mints from a
+// read entry and nothing else (BROKER_EXCHANGE_READ_ACCOUNTS), and the one a verifier built with
+// Options.ServesReadOnly marks read-only.
+func readOnlyToken(jkt string) brokertoken.Introspection {
+	return brokertoken.Introspection{
+		Active:       true,
+		Session:      brokerTestSession,
+		Service:      brokerTestReader,
+		ProjectScope: brokertoken.ProjectScopeNone,
+		Scope:        brokertoken.ScopeRead,
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		ClientID:     brokertoken.ExchangeClientID,
 		Thumbprint:   jkt,
@@ -163,6 +185,9 @@ type brokerTokenRig struct {
 	deps     Deps
 	database *store.Store
 	broker   *brokertokentest.StubBroker
+	// served is the server Register mounted, whose own chains a test builds again around a
+	// stand-in for a route's handler (routeHandler, liveSocketHandler).
+	served *server
 }
 
 // newBrokerTokenRig is the package's own test server (newTestServer) with the broker-token check
@@ -171,29 +196,39 @@ type brokerTokenRig struct {
 // for a test that needs a bucket it can reach.
 func newBrokerTokenRig(t *testing.T, options ...func(*brokertoken.Options)) *brokerTokenRig {
 	t.Helper()
+	return newBrokerTokenRigOn(t, testServerOptions{}, options...)
+}
+
+// newBrokerTokenRigOn is newBrokerTokenRig on a server built from serving, whose brokerTokens is
+// the rig's own verifier: a test that needs the test hooks' rows mounted, or a GitHub and a
+// traced store of its own, sets them there, and the server is still the one newTestServer call.
+func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...func(*brokertoken.Options)) *brokerTokenRig {
+	t.Helper()
 	broker := brokertokentest.NewStubBroker(t)
-	handler, database, deps := newTestServer(t, testServerOptions{
-		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
-			opts := brokertoken.Options{
-				BrokerURL: broker.Server.URL,
-				Account:   brokertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
-				Origin:    testServerURL,
-				Replay:    store.NewDPoPProofs(database.Pool),
-				// What Dispatch itself passes: the check keys its bucket on the address
-				// Dispatch's own proxy-trust rule reads, never one of its own.
-				Address: auth.ForwardedAddress,
-			}
-			for _, option := range options {
-				option(&opts)
-			}
-			verifier, err := brokertoken.New(opts)
-			if err != nil {
-				t.Fatalf("build the broker token verifier: %v", err)
-			}
-			return verifier
-		},
-	})
-	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker}
+	serving.brokerTokens = func(database *store.Store) *brokertoken.Verifier {
+		opts := brokertoken.Options{
+			BrokerURL: broker.Server.URL,
+			Account:   brokertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
+			Origin:    testServerURL,
+			Replay:    store.NewDPoPProofs(database.Pool),
+			// What Dispatch itself passes: the check keys its bucket on the address
+			// Dispatch's own proxy-trust rule reads, never one of its own, and serves a
+			// read-only token on the routes its read list names (cmd/dispatch,
+			// brokerTokenVerifier).
+			Address:        auth.ForwardedAddress,
+			ServesReadOnly: true,
+		}
+		for _, option := range options {
+			option(&opts)
+		}
+		verifier, err := brokertoken.New(opts)
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return verifier
+	}
+	handler, database, deps, served := newRegisteredTestServer(t, serving)
+	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker, served: served}
 }
 
 // serve carries one request through the server under test.
@@ -530,10 +565,11 @@ func TestBrokerTokenRefusalsEachHaveTheirOwnCode(t *testing.T) {
 		}
 	})
 	t.Run("the broker unreachable", func(t *testing.T) {
-		rig := newBrokerTokenRig(t)
+		// The verifier asks a broker at a port the test holds and nothing listens on.
+		refused := "http://" + testport.Refused(t)
+		rig := newBrokerTokenRig(t, func(o *brokertoken.Options) { o.BrokerURL = refused })
 		caller := newBrokerCaller(t)
 		const token = "a-token-nobody-can-be-asked-about"
-		rig.broker.Server.Close()
 
 		response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
 		refusal := decodeBody[refusalAnswer](t, response)

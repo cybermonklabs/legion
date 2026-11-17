@@ -3,6 +3,7 @@ package experiment
 import (
 	"slices"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -86,11 +87,20 @@ func (l Launch) Keys(tree, issue string) []string {
 // its instructions with it, and the unit runs as one in no experiment does. Its row stays, so a
 // file that names the arm again gives the unit the arm it was drawn into.
 //
+// A launch of a role the experiment's `roles` leaves out runs in no arm of it, whatever its unit
+// drew (config.Experiment.Reaches): the unit keeps its row and the arm it was drawn into, and only
+// the roles the experiment names load that arm's overlays and instructions, so the roles it leaves
+// out judge every unit with none of this experiment's files, while each other experiment that
+// reaches them gives them its own arm as before.
+//
 // No mode is read: the mode decides which new units are drawn, and a unit already drawn into an
 // arm keeps that arm's files whatever the mode is now.
-func (l Launch) Arms(recorded map[string][]record.Assignment, tree, issue string) Arms {
+func (l Launch) Arms(recorded map[string][]record.Assignment, tree, issue string, role claim.Role) Arms {
 	var arms Arms
 	for _, experiment := range l.declared {
+		if !experiment.Reaches(role) {
+			continue
+		}
 		unit := tree
 		if experiment.Unit == config.ExperimentIssue {
 			unit = issue
@@ -142,8 +152,8 @@ func DeclaredVariants(declared []config.Experiment) []runtime.Variant {
 }
 
 // arm is one declared arm as a runtime reads it: the experiment's name and the arm's, as a draw
-// records them, the overlays the arm names, the key the operator wrote them under and whether the
-// `memory` block declares the arm. It is the
+// records them, the overlays the arm names, the key the operator wrote them under, whether the
+// `memory` block declares the arm, and the roles its experiment reaches. It is the
 // one place a config.Variant becomes a runtime.Variant, so the arms a launch runs in and the arms
 // a runtime is built with carry the same fields.
 func arm(experiment config.Experiment, variant config.Variant) runtime.Variant {
@@ -153,5 +163,6 @@ func arm(experiment config.Experiment, variant config.Variant) runtime.Variant {
 		ConfigFiles:      variant.ConfigFiles,
 		ConfigFilesField: variant.ConfigFilesField,
 		MemoryBlock:      variant.MemoryBlock,
+		Roles:            experiment.Roles,
 	}
 }

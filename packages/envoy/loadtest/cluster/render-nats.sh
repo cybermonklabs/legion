@@ -4,12 +4,14 @@
 #
 #   render-nats.sh [--out FILE] [--pin-from FILE]
 #
-# It downloads chart nats/nats 2.15.1 from https://nats-io.github.io/k8s/helm/charts/, refuses an
-# archive whose sha256 is not the chart index's b209c627…58cc1 (the value INFRA-549 records),
-# renders it with `helm template --skip-tests` (helm v3.20.2 through go run) and nats-values.yaml,
-# with each image pinned to the digest a registry manifest read gives its tag, and refuses a render
-# that holds a kind the load-test Role cannot write or an image not pinned by digest. The output
-# keeps the placeholders __NAMESPACE__, __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
+# It renders chart nats/nats 2.15.1 from nats-2.15.1.tgz, the chart's archive vendored beside it,
+# and refuses that archive, naming it, before helm reads it when its sha256 is not b209c627…58cc1,
+# the digest the chart index at https://nats-io.github.io/k8s/helm/charts/ and the GitHub release
+# both publish (the value INFRA-549 records). It renders it with `helm template --skip-tests` (helm
+# v3.20.2 through go run) and nats-values.yaml, with each image pinned to the digest a registry
+# manifest read gives its tag, and refuses a render that holds a kind the load-test Role cannot
+# write or an image not pinned by digest. The output keeps the placeholders __NAMESPACE__,
+# __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
 #
 # --out FILE writes FILE instead of manifests/nats.yaml. --pin-from FILE takes each image's digest
 # from FILE (an earlier render) instead of the registry: cluster.test.sh re-renders that way and
@@ -20,9 +22,22 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
 source "$here/cluster.sh"
 
+# The vendored archive, nats-$CHART_VERSION.tgz, is the release asset
+#   https://github.com/nats-io/k8s/releases/download/nats-$CHART_VERSION/nats-$CHART_VERSION.tgz
+# and CHART_SHA256 is the digest the chart index ($CHART_REPO/index.yaml) and that release both
+# publish for it.
+# To bump to version V: download nats-V.tgz beside this script from that URL with V for
+# $CHART_VERSION, and git rm the old archive; set CHART_VERSION to V; set CHART_SHA256 to the sum
+# this command writes, once it equals the `digest:` the index lists for V:
+#   sha256sum nats-V.tgz
+# Set each tag in IMAGES below to the default the new chart's values.yaml gives that image. Then
+# change the version and sum this file's header names, and the chart version nats-values.yaml and
+# ../README.md name; run render-nats.sh; and commit the archive, those files and
+# manifests/nats.yaml together.
 CHART_REPO=https://nats-io.github.io/k8s/helm/charts
 CHART_VERSION=2.15.1
 CHART_SHA256=b209c62784b1b24c714d5ff6503b4c7dd948ec187d4222beee16b579f1258cc1
+CHART=$here/nats-$CHART_VERSION.tgz
 HELM=helm.sh/helm/v3/cmd/helm@v3.20.2
 # Each image: the chart value that names it, and the tag render-nats.sh pins (the chart's own
 # defaults, on mirror.gcr.io).
@@ -54,12 +69,12 @@ done
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/render-nats.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
 
-curl -fsSL --max-time 60 -o "$tmp/index.yaml" "$CHART_REPO/index.yaml" || die "could not read $CHART_REPO/index.yaml"
-url=$(grep -oE "https://[^[:space:]\"']+/nats-$CHART_VERSION\.tgz" "$tmp/index.yaml" | head -n1)
-[ -n "$url" ] || die "$CHART_REPO/index.yaml lists no nats-$CHART_VERSION.tgz"
-curl -fsSL --max-time 120 -o "$tmp/nats.tgz" "$url" || die "could not download $url"
+# helm reads the copy whose sha256 was checked, so no change to the vendored file after the check
+# reaches the render.
+[ -f "$CHART" ] || die "$CHART, the vendored chart archive, is missing"
+cp -- "$CHART" "$tmp/nats.tgz"
 sha=$(sha256_of "$tmp/nats.tgz")
-[ "$sha" = "$CHART_SHA256" ] || die "$url has sha256 $sha, not $CHART_SHA256; refusing it"
+[ "$sha" = "$CHART_SHA256" ] || die "$CHART has sha256 $sha, not $CHART_SHA256; refusing it"
 
 sets=()
 pins=()
