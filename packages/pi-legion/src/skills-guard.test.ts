@@ -575,21 +575,31 @@ test("a later review round reads from the commit its task names, and the pair re
   expect(scopedToTheRange).toEqual([]);
 });
 
-// The daemon's two sentences are always the last two of a reviewer's task in reviewing, the
-// commit's and then the entry's, each naming `none` where the row holds no value for it (the
-// daemon's namingTheReviewRound), and the task's own text, a retry's reason or a title, can hold
-// the same words earlier. So each text that tells the reviewer which commit its task names says
-// which sentence is the daemon's and what `none` means, once: the daemon part, the role part and
-// the core part of the reviewer's prompt, and the merge gate as the plugin ships it.
+// The daemon's two sentences are always the last two of a reviewer's task in reviewing that the
+// daemon gives its round, the commit's and then the entry's, each naming `none` where the row holds
+// no value for it (the daemon's namingTheReviewRound), and the task's own text, a retry's reason or
+// a title, can hold the same words earlier. A task that ends with neither was given no round by
+// this daemon: a release before it queued the task, an operator wrote it, or the issue was not in
+// reviewing when it was queued, as a wake of a released reviewer can be. So each text that
+// tells the reviewer which commit its task names says which sentence is the daemon's, what `none`
+// means and what a task with neither names, once: the daemon part, the role part and the core part
+// of the reviewer's prompt, and the merge gate as the plugin ships it.
+const reviewerTexts = [
+  "packages/daemon/internal/prompts/go/reviewer.md",
+  "packages/daemon/internal/prompts/roles/reviewer.md",
+  "packages/daemon/internal/prompts/roles/core/reviewer.md",
+  "skills/legion-worker/references/merge-gate.md",
+];
 test("each reviewer text says the daemon's commit sentence stands just before the task's last sentence", () => {
   countedOncePerFile(
     "The daemon's own `Last reviewed commit:` sentence always stands just before the task's last sentence, its `Review entry:` sentence, and names a commit or `none`: `none` means no deciding review of yours is recorded for the round, and you read the whole change. A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's. The last sentence names `none` too where the daemon gives the task no entry, and no review of that task moves the commit.",
-    [
-      "packages/daemon/internal/prompts/go/reviewer.md",
-      "packages/daemon/internal/prompts/roles/reviewer.md",
-      "packages/daemon/internal/prompts/roles/core/reviewer.md",
-      "skills/legion-worker/references/merge-gate.md",
-    ]
+    reviewerTexts
+  );
+});
+test("each reviewer text says what a task that ends with neither of the daemon's sentences names", () => {
+  countedOncePerFile(
+    "A task that ends with neither of those two sentences was not given its round by this daemon. A release before this one queued it, an operator wrote it, or your issue was not in reviewing when it was queued. It names no commit, so read the whole change. It names no entry, so it does not change the entry of your round.",
+    reviewerTexts
   );
 });
 

@@ -193,6 +193,10 @@ as the fingerprint decides (*The reviewer*, below, and
   The daemon's own `Last reviewed commit:` sentence always stands just before the task's last sentence, its `Review entry:` sentence, and names a commit or `none`: `none` means no deciding review of yours is recorded for the round, and you read the whole change.
   A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's.
   The last sentence names `none` too where the daemon gives the task no entry, and no review of that task moves the commit.
+  A task that ends with neither of those two sentences was not given its round by this daemon.
+  A release before this one queued it, an operator wrote it, or your issue was not in reviewing when it was queued.
+  It names no commit, so read the whole change.
+  It names no entry, so it does not change the entry of your round.
   Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit.
   Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review.
   The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other, and *No deferrals* in `skill://legion-worker` holds for it.

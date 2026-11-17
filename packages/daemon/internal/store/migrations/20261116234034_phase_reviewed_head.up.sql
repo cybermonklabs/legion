@@ -52,9 +52,10 @@
 -- file run again at all, since an add of a column that stands fails. What the drop costs is the
 -- commit each reviewer's row held, so the next round of each issue then in review reads the whole
 -- change. The way back leaves the sentences in the stored tasks: the release before sends a stored
--- task as text and reads nothing in it. The roll-forward appends them again, so a task stored
--- before the first upgrade and still owed then ends with them twice, and still ends with the
--- daemon's two sentences.
+-- task as text and reads nothing in it. The roll-forward appends them again to each reviewer's
+-- task stored at the rollback that the release before did not write again, a task this release
+-- stored with a commit among them, so each such task ends with them twice, and still ends with
+-- the daemon's two sentences.
 alter table phases add column reviewed_head text not null default '';
 
 update phases set entry_task = entry_task || ' Last reviewed commit: none. Review entry: ' || entry || '.'

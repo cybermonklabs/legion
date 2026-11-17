@@ -1945,7 +1945,8 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 #### Rolling back the release that keeps the commit a reviewer last read
 
 The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit read by the newest deciding review of the reviewer's own whose Legion footer named the entry its row held (`phases.entry`, while `phases.entry_task` held that entry's task), which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
-Each task of the reviewer now ends with two sentences of the daemon's, ` Last reviewed commit: <sha>.` or ` Last reviewed commit: none.` and then ` Review entry: <n>.`, and a stored task is sent as it stands, so the same migration appends ` Last reviewed commit: none. Review entry: <the row's entry>.` to each task a reviewer's row stores, which the earlier release stored with neither sentence.
+Each task of the reviewer that this release composes ends with two sentences of the daemon's, ` Last reviewed commit: <sha>.` or ` Last reviewed commit: none.` and then ` Review entry: <n>.`, and a stored task is sent as it stands, so the same migration appends ` Last reviewed commit: none. Review entry: <the row's entry>.` to each task a reviewer's row stores, which the earlier release stored with neither sentence.
+A task the earlier release had already queued in the outbox, or handed a claim as its pending delivery, is sent after the upgrade as it was, with neither sentence; the reviewer's texts say that such a task names no commit and no entry, so its reviewer reads the whole change.
 Both statements run in the migration's one transaction: the add takes a short lock on `phases` and rewrites no row, and the update writes the reviewer's rows that store a task.
 An earlier release boots with the column in place: its phases read and its phases write name each column they touch, so it never reads the column, and every row it inserts takes the default, the empty string.
 At the rollback, with the daemon stopped, run the way back that the migration's header gives: it drops the column and deletes the migration's version row, so the roll-forward's `Migrate` adds the column again at its default (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
@@ -1953,7 +1954,7 @@ That way back is owed to the roll-forward, not to the earlier release.
 An earlier release does not clear the column when it opens a new generation of an issue, so a column left in place could tell the first reviewer of that generation after the roll-forward a commit that a review of the generation before read, where this release names none.
 What the drop costs is the commit each reviewer's row held: the next round of each issue then in review reads the whole change.
 The way back leaves the two sentences in the stored tasks, since the earlier release sends a stored task as text and reads nothing in it.
-The roll-forward appends them again, so a task stored before the first upgrade and still owed then ends with them twice, and still ends with the daemon's two sentences.
+The roll-forward appends them again to each reviewer's task stored at the rollback that the earlier release did not write again, a task this release stored with a commit among them, so each such task ends with them twice, and still ends with the daemon's two sentences.
 
 #### Rolling back the release that tells the merger of a merge-queue removal
 
