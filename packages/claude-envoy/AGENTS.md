@@ -88,9 +88,10 @@ connection dropped on the tick that finds two pings unanswered, so a path that f
 closing (packets stop, neither side closes) is left within 30 s and redialed at once, 52 s when
 that redial also hangs on nats.js's 20 s dial timeout and the 2 s reconnect wait; it reconnects
 forever, 2 s apart, and each `reconnect` status renews the relay's epoch. A session that presents
-its broker token (`natsAuth: broker`) redials instead on `brokerRedialDelays`: at once, then after
-waits drawn between half and all of 4 s, 8 s, 16 s and then 20 s for good, so it is back within
-20 s of a refusing hub admitting again. nats.js's default 120 s
+its broker token (`natsAuth: broker`) redials instead on `brokerRedialDelays`: at once, and at once
+again for a new token to present (a renewal, a session switch), then after waits drawn between half
+and all of 4 s, 8 s, 16 s and then 20 s for good, so its next redial comes within 20 s of a
+refusing hub admitting again. nats.js's default 120 s
 ping interval left a frozen path for up to 6 minutes. Every registration names the plugin:
 `plugin` `@sjawhar/claude-envoy` and `plugin_version` the version segment of the plugin-cache
 directory the bundle runs from (`…/plugins/cache/<marketplace>/<plugin>/<version>/`, the npm

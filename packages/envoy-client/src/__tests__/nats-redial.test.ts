@@ -1,11 +1,12 @@
 // packages/envoy-client/src/__tests__/nats-redial.test.ts
 //
 // How a session that presents its broker token redials a hub that refuses it (`brokerRedialDelays`,
-// `natsConnectionOptions`): at once when an outage starts, then after waits that double from 2-4 s
-// to 10-20 s, each drawn anew, and never giving up; and, on real nats.js against a hub that refuses
-// it twice and more, that it comes back by itself once the hub admits it again, where the options
-// without `ignoreAuthErrorAbort` close at the second refusal and the flat 2 s redials several times
-// as often.
+// `natsConnectionOptions`): at once when an outage starts or when it has a token to present, then
+// after waits that double from 2-4 s to 10-20 s, each drawn anew, and never giving up; and, on real
+// nats.js against a hub that refuses it twice and more, that it comes back by itself once the hub
+// admits it again, where the options without `ignoreAuthErrorAbort` close at the second refusal and
+// the flat 2 s redials several times as often, and that a session switch right after it is back
+// does not wait out the backoff.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
@@ -24,21 +25,37 @@ import {
   brokerRedialWaitBounds,
   natsConnectionOptions,
 } from "../nats-connection";
-import { type BrokerNatsCredential, brokerNatsCredential } from "../nats-credential";
+import {
+  type BrokerNatsCredential,
+  brokerNatsCredential,
+  followNatsCredential,
+} from "../nats-credential";
 
 afterEach(forgetBrokerClients);
 
 const tempDir = temporaryDirectories("nats-redial");
 
-/** A clock and a draw a test sets by hand. */
+/** A clock, a draw and the token the connection has yet to present, each set by hand. */
 function handled(draw: () => number) {
   let at = 1_000_000;
-  const handler = brokerRedialDelays(draw, () => at);
+  let unpresented: number | undefined;
+  const handler = brokerRedialDelays(
+    {
+      needsReconnect: () => unpresented !== undefined,
+      expiresAt: () => new Date(unpresented ?? 0),
+    },
+    draw,
+    () => at
+  );
   return {
     /** Moves the clock to `ms` past its start and asks the handler, as nats.js's loop does. */
     ask(ms: number) {
       at = 1_000_000 + ms;
       return handler();
+    },
+    /** Holds a token, known by its expiry, that the connection has not presented; or none. */
+    hold(expiry: number | undefined) {
+      unpresented = expiry;
     },
   };
 }
@@ -135,17 +152,37 @@ describe("brokerRedialDelays", () => {
     expect(clock.ask(past + 30)).toBe(2_000);
   });
 
-  test("the gap outlasts the longest wait and two hung dials, so no outage ends inside one", () => {
-    expect(BROKER_REDIAL_OUTAGE_GAP_MS).toBeGreaterThanOrEqual(
-      Math.max(BROKER_REDIAL_CAP_MS, 2 * 20_000) + 10_000
-    );
+  test("a token the connection has yet to present is dialed at once, and starts the waits over, once per token", () => {
+    const clock = handled(() => 0);
+    for (const at of [0, 30, 2_000, 2_030, 6_000, 6_030]) clock.ask(at);
+    // Waiting 8 s for the dial due at 14,000: a renewal or a session switch lands a token the
+    // connection has not presented, and the reconnect it asks for is not held to that wait.
+    clock.hold(900_000);
+    expect(clock.ask(7_000)).toBe(0);
+    // That dial did not get as far as presenting it (the hub was away): the same token is no
+    // reason to dial at once again, and the waits run from the first.
+    expect(clock.ask(7_030)).toBe(2_000);
+    expect(clock.ask(8_000)).toBe(2_000);
+    expect(clock.ask(9_000)).toBe(0);
+    expect(clock.ask(9_030)).toBe(4_000);
+    // The next token is a new one.
+    clock.hold(1_800_000);
+    expect(clock.ask(10_000)).toBe(0);
+    // Presented, it is no reason at all.
+    clock.hold(undefined);
+    expect(clock.ask(10_030)).toBe(2_000);
   });
 });
 
-/** A broker credential that is never traded: these rows read only its options. */
+/** A broker credential that is never traded and never holds a token the connection has not
+ *  presented: these rows read only its options. */
 const untraded = {
   kind: "broker",
-  broker: { authenticator: () => undefined } as unknown as BrokerNatsCredential,
+  broker: {
+    authenticator: () => undefined,
+    needsReconnect: () => false,
+    expiresAt: () => new Date(0),
+  } as unknown as BrokerNatsCredential,
 } as const;
 
 describe("natsConnectionOptions' redials", () => {
@@ -325,8 +362,18 @@ function without(options: ConnectionOptions, key: keyof ConnectionOptions): Conn
   return copy;
 }
 
+/** One client of the row below: its connection, its credential and the session name that
+ *  credential reads at each trade, when nats.js reported it back, and how its connection closed. */
+interface Dialed {
+  readonly connection: NatsConnection;
+  readonly credential: BrokerNatsCredential;
+  readonly session: { name: string };
+  readonly reconnected: number[];
+  readonly closed: Promise<{ at: number; error: unknown }>;
+}
+
 describe("a broker-token session refused by its hub", () => {
-  test("is refused twice and more on the backoff's schedule, then comes back by itself once admitted", async () => {
+  test("is refused twice and more on the backoff's schedule, comes back by itself once admitted, and moves to a switch's token at once", async () => {
     const hub = stubHub();
     const broker = stubBroker();
     const env = podEnvironment(broker.url);
@@ -335,15 +382,20 @@ describe("a broker-token session refused by its hub", () => {
     // as one does after a connection that lived a while, without the row waiting a minute.
     let shift = 0;
     const clock = () => Date.now() + shift;
-    const dial = async (name: string, shape: (options: ConnectionOptions) => ConnectionOptions) => {
-      const credential = brokerNatsCredential(env, `ses_${name}`);
+    const dial = async (
+      name: string,
+      shape: (options: ConnectionOptions, credential: BrokerNatsCredential) => ConnectionOptions
+    ): Promise<Dialed> => {
+      // The name is read at each trade, as a host's session switch changes it.
+      const session = { name: `ses_${name}` };
+      const credential = brokerNatsCredential(env, () => session.name);
       await credential.ready();
       const options = natsConnectionOptions({
         servers: [hub.url],
         name,
         credential: { kind: "broker", broker: credential },
       });
-      const connection = await connect(shape(options));
+      const connection = await connect(shape(options, credential));
       connections.push(connection);
       const reconnected: number[] = [];
       void (async () => {
@@ -352,22 +404,42 @@ describe("a broker-token session refused by its hub", () => {
         }
       })();
       const closed = connection.closed().then((error) => ({ at: Date.now(), error }));
-      return { connection, reconnected, closed };
+      return { connection, credential, session, reconnected, closed };
+    };
+    /** How long a session switch takes: the host switches `client` to a session of its own, and
+     *  `followNatsCredential` moves the connection to that session's token. */
+    const follow = async (client: Dialed) => {
+      const started = Date.now();
+      client.session.name = `${client.session.name}_next`;
+      await followNatsCredential(client.connection, client.credential);
+      return Date.now() - started;
     };
     try {
       // This change's options, its handler on the test's clock.
-      const backoff = await dial("redial-backoff", (options) => ({
+      const backoff = await dial("redial-backoff", (options, credential) => ({
         ...options,
-        reconnectDelayHandler: brokerRedialDelays(Math.random, clock),
+        reconnectDelayHandler: brokerRedialDelays(credential, Math.random, clock),
       }));
       // Control: the same options with nats.js's flat 2 s, as before this change.
       const flat = await dial("redial-flat", (options) =>
         without(options, "reconnectDelayHandler")
       );
       // Control: the same options without ignoreAuthErrorAbort, as main dials every session.
-      const abort = await dial("redial-abort", (options) => ({
+      const abort = await dial("redial-abort", (options, credential) => ({
         ...without(options, "ignoreAuthErrorAbort"),
-        reconnectDelayHandler: brokerRedialDelays(Math.random, clock),
+        reconnectDelayHandler: brokerRedialDelays(credential, Math.random, clock),
+      }));
+      // A session switch right after the hub admits again, and its control, a handler that never
+      // sees the switch's token: both draw the lowest waits, so both redial at once, at 2 s, 6 s
+      // and 14 s, and the next redial each has due is 10 s after the one that is admitted.
+      const switching = await dial("redial-switch", (options, credential) => ({
+        ...options,
+        reconnectDelayHandler: brokerRedialDelays(credential, () => 0, clock),
+      }));
+      const blind = { needsReconnect: () => false, expiresAt: () => new Date(0) };
+      const switchingBlind = await dial("redial-switch-blind", (options) => ({
+        ...options,
+        reconnectDelayHandler: brokerRedialDelays(blind, () => 0, clock),
       }));
 
       shift = BROKER_REDIAL_OUTAGE_GAP_MS + 1;
@@ -380,7 +452,15 @@ describe("a broker-token session refused by its hub", () => {
       const admitted = Date.now();
       hub.admit();
       const deadline = admitted + BROKER_REDIAL_CAP_MS + 2_000;
-      while (backoff.reconnected.length === 0 && Date.now() < deadline) await Bun.sleep(100);
+      const back = (client: { reconnected: number[] }) => client.reconnected.length > 0;
+      while (!(back(switching) && back(switchingBlind)) && Date.now() < deadline) {
+        await Bun.sleep(50);
+      }
+      const [switched, switchedBlind] = await Promise.all([
+        follow(switching),
+        follow(switchingBlind),
+      ]);
+      while (!back(backoff) && Date.now() < deadline) await Bun.sleep(100);
 
       const refused = (name: string) =>
         hub.answered.filter((one) => one.name === name && !one.admitted && one.at >= dropped);
@@ -424,10 +504,15 @@ describe("a broker-token session refused by its hub", () => {
       expect(String(ended.error)).toContain("Authorization Violation");
       expect(abort.reconnected).toEqual([]);
       expect(flat.connection.isClosed()).toBe(false);
+
+      // A session switch right after the hub admitted it again: the switch's new token is
+      // presented at once, where the handler that never sees it waits out the 10 s it has due.
+      expect(switched, trace).toBeLessThan(2_000);
+      expect(switchedBlind, trace).toBeGreaterThan(5_000);
     } finally {
       for (const connection of connections) await connection.close().catch(() => {});
       hub.stop();
       broker.stop();
     }
-  }, 60_000);
+  }, 90_000);
 });
