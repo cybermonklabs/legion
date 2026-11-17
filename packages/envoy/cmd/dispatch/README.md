@@ -2345,7 +2345,7 @@ The read walks `events_outbox_owner`.
 The column is a catalog change that rewrites no row, and the `ALTER` holds `events` `ACCESS EXCLUSIVE` for that alone; its census answers `0`.
 The previous release neither reads nor writes it, so the two roll side by side.
 An event that release records keeps the value this release wrote last, or null: a send the previous release reached since is still listed, which holds copies longer, not shorter, and a role route is listed as its role topic, whose holder the copy's road reads when it asks.
-What neither release writes is a destination the event gains between two of this release's records; such an event is read again at the outbox's next batch of its owner.
+This release also writes it again for every unpublished event a batch reads not due, when it changed; an event the previous release holds the publisher hold over is not read by this release's batches, so a destination it gains then is written at this release's next batch of its owner.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
