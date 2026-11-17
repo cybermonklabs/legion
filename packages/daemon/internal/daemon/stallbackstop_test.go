@@ -478,6 +478,88 @@ func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 	}
 }
 
+// A notice the sweep tells again and the store refuses once more is kept for the next sweep,
+// unless a newer stall of the same claim was owed while the sweep had the older one in its hand:
+// one claim owes one notice, and the newer record is the one its owner wants (oweStallNotice,
+// oweStallNoticeAgain). The newer notice here is owed from inside the refused write, which is
+// the moment the machine's own report can owe it (stallBackstopped). The other two cases are the
+// controls: a newer notice owed after the sweep's write replaces the older one in every order,
+// and a refused retry with nothing newer owed is still kept and told at the next sweep.
+//
+// It drives a bare supervision, with no machine, because what it reads is the owed set's own
+// rule: the two notices are told apart by the call each record names.
+func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *testing.T) {
+	stopAt := func(call string, at time.Time) supervise.StallBackstopStop {
+		step := supervise.StepRecord{TurnStartedAt: at.Add(-time.Hour), At: at, StartedAt: at, Tool: "bash", CallID: call}
+		return supervise.StallBackstopStop{Step: step, LastStep: step.LastStep(), Bound: backstopBound, End: supervise.EndRelaunched}
+	}
+	older := stopAt("toolu_older", time.Now().Add(-3*backstopBound))
+	newer := stopAt("toolu_newer", time.Now().Add(-backstopBound-time.Hour))
+	for _, tc := range []struct {
+		name      string
+		newerOwed string // "during" the refused retry, "after" it, or "never"
+		told      supervise.StallBackstopStop
+		untold    supervise.StallBackstopStop
+	}{
+		{name: "a newer notice owed during the refused retry", newerOwed: "during", told: newer, untold: older},
+		{name: "a newer notice owed after the refused retry", newerOwed: "after", told: newer, untold: older},
+		{name: "no newer notice owed", newerOwed: "never", told: older, untold: newer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := rigClaim()
+			var (
+				mu      sync.Mutex
+				refused = true
+				during  func()
+				notices []record.Notice
+			)
+			s := &supervision{log: quietLogger(), plan: plan{clock: stillClock{}}}
+			s.enqueue = func(_ context.Context, _ string, payloads ...record.OutboxPayload) error {
+				mu.Lock()
+				refusing, inside := refused, during
+				during = nil
+				if !refusing {
+					for _, payload := range payloads {
+						if notice, ok := payload.(record.Notice); ok {
+							notices = append(notices, notice)
+						}
+					}
+				}
+				mu.Unlock()
+				if !refusing {
+					return nil
+				}
+				if inside != nil {
+					inside()
+				}
+				return errors.New("the store is down")
+			}
+			s.oweStallNotice(c, older)
+			if tc.newerOwed == "during" {
+				during = func() { s.oweStallNotice(c, newer) }
+			}
+
+			s.backstopStalledTurns(context.Background(), nil)
+			if tc.newerOwed == "after" {
+				s.oweStallNotice(c, newer)
+			}
+			mu.Lock()
+			refused = false
+			mu.Unlock()
+			s.backstopStalledTurns(context.Background(), nil)
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(notices) != 1 {
+				t.Fatalf("notices after the refusal cleared = %+v, want one", notices)
+			}
+			if reason := notices[0].Reason; !strings.Contains(reason, tc.told.Step.CallID) || strings.Contains(reason, tc.untold.Step.CallID) {
+				t.Fatalf("the owner was told %q, want the record that names %s and not %s", reason, tc.told.Step.CallID, tc.untold.Step.CallID)
+			}
+		})
+	}
+}
+
 // A tree architect's own stall is told to the controller as well, in a row of its own: every
 // other notice of the tree reaches that architect, so nobody outside it would hear of the turn
 // the daemon ended. A worker's stall is its architect's alone.
