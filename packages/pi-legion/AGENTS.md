@@ -95,7 +95,14 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 155 (the completion that
+number is the one `DaemonAPIVersion` declares, last bumped by contract 156 (the owner's plan: the
+architect's `register_plan` (`POST /legion/v1/plans/register`, `LegionPlanRegisterRequest`,
+answered `LegionPlanRegisterResponse`) and `stop_task` (`POST /legion/v1/tasks/stop`,
+`LegionTaskStopRequest`), a tester's fail naming the step its task returns to,
+`LegionHandoffCompleteRequest`'s `returnTo`, which a daemon before 156 refuses as a field it does
+not know, and
+the state's `holdReason` taking `task-stopped` and `children` beside `escalated`, which a caller
+below 156 is served without), after contract 155 (the completion that
 ends the retro rates the plan the issue ran: `LegionHandoffCompleteRequest` takes `planRating`, a
 whole number from 1 to 5, and `planReason`, why, the two together; the daemon refuses them on every
 other completion, `PLAN_RATING_UNEXPECTED`, and refuses the retro's completion without them from a

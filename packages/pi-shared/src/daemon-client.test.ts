@@ -342,6 +342,8 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly signOff: (body: object) => Promise<unknown>;
     readonly childPark: (body: object) => Promise<unknown>;
     readonly childRerun: (body: object) => Promise<unknown>;
+    readonly planRegister: (body: object) => Promise<unknown>;
+    readonly taskStop: (body: object) => Promise<unknown>;
   };
   const calls: ReadonlyArray<readonly [keyof WorkflowClient, string, object, string]> = [
     [
@@ -362,6 +364,21 @@ test("posts every Stage 3 workflow request through its matching route", async ()
         commit: "abc123",
         handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
         handoffVersion: 2,
+      },
+      "handoff-complete.json",
+    ],
+    // A tester's fail names the step its task returns to (contract 156).
+    [
+      "handoffComplete",
+      "/legion/v1/handoff/complete",
+      {
+        grantId: "grant-209",
+        summary: "the proof is thin",
+        verdict: "fail",
+        commit: "abc123",
+        handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
+        handoffVersion: 3,
+        returnTo: 1,
       },
       "handoff-complete.json",
     ],
@@ -432,6 +449,24 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209" },
       "child-rerun.json",
     ],
+    // The owner's plan (contract 156): register_plan answers the plan it took, stop_task nothing.
+    [
+      "planRegister",
+      "/legion/v1/plans/register",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-209",
+        artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+        version: 4,
+      },
+      "plan-register.json",
+    ],
+    [
+      "taskStop",
+      "/legion/v1/tasks/stop",
+      { grantId: "grant-208", issue: "LEGION-209", task: "a" },
+      "task-stop.json",
+    ],
   ];
   const { fetch, requests } = daemon((url) => {
     const call = calls.find(([, route]) => route === url.pathname);
@@ -479,6 +514,54 @@ test("a workflow refusal surfaces its stable code and message", async () => {
     message:
       "POST /legion/v1/gates/register failed with 409 GATE_UNAPPROVED: the current spec version needs approval",
   });
+});
+
+// A refused plan is answered 409 PLAN_REFUSED with every reason in its sentence, beside `reasons`
+// by task, which the refusal's schema strips: the agent reads each cause in the error.
+test("a refused plan surfaces its code and every reason in its sentence", async () => {
+  const error =
+    "Legion refused this plan and recorded nothing: the plan has 2 tasks, and this release runs a plan of one task. This release of Legion does not carry it out yet.";
+  const { fetch, requests } = daemon(() =>
+    Response.json(
+      {
+        code: "PLAN_REFUSED",
+        error,
+        reasons: [
+          {
+            task: "",
+            reason:
+              "the plan has 2 tasks, and this release runs a plan of one task. This release of Legion does not carry it out yet.",
+          },
+        ],
+      },
+      { status: 409 }
+    )
+  );
+  const refused = await createLegionDaemonClient("http://daemon.test", fetch)
+    .planRegister({
+      grantId: "grant-208",
+      issue: "LEGION-209",
+      artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+      version: 5,
+    })
+    .catch((caught: unknown) => caught);
+  expect(refused).toMatchObject({ status: 409, code: "PLAN_REFUSED", detail: error });
+  expect(requests).toHaveLength(1);
+});
+
+// The daemon refuses a returnTo on a completion that fails no step (RETURN_TO_NEEDS_FAIL); the
+// request's schema refuses it the same, so it never leaves the pane.
+test("a completion naming returnTo without the verdict fail is refused before it goes", async () => {
+  const { fetch, requests } = daemon(() => Response.json({}));
+  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  for (const verdict of ["pass", ""]) {
+    const refused = await (async () =>
+      client.handoffComplete({ grantId: "grant-209", summary: "done", verdict, returnTo: 1 }))()
+      .then(() => undefined)
+      .catch((caught: unknown) => caught);
+    expect(refused, `verdict ${JSON.stringify(verdict)} with returnTo`).toBeInstanceOf(Error);
+  }
+  expect(requests).toEqual([]);
 });
 
 test("a controller registers on the claim route with its capability and reads the controller's answer", async () => {

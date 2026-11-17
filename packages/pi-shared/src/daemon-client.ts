@@ -17,6 +17,8 @@ import {
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPlanRegisterRequest,
+  LegionPlanRegisterResponse,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -27,6 +29,7 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  LegionTaskStopRequest,
   LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
@@ -170,6 +173,17 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The owner's `register_plan` (contract 156): the plan in one version of a document of the
+   * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
+   * a plan it does not take is refused `PLAN_REFUSED`, every reason in the sentence. */
+  readonly planRegister: (
+    input: z.input<typeof LegionPlanRegisterRequest>
+  ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
+  /** The owner's `stop_task` (contract 156): one task of the plan Legion runs for the issue stops,
+   * and the issue is held `task-stopped` until a later version of the plan changes that task. */
+  readonly taskStop: (
+    input: z.input<typeof LegionTaskStopRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
 }
 
@@ -539,5 +553,14 @@ export function createLegionDaemonClient(
       post("/legion/v1/children/park", LegionChildRequest, LegionEmptyResponse, input),
     childRerun: (input) =>
       post("/legion/v1/children/rerun", LegionChildRequest, LegionEmptyResponse, input),
+    planRegister: (input) =>
+      post(
+        "/legion/v1/plans/register",
+        LegionPlanRegisterRequest,
+        LegionPlanRegisterResponse,
+        input
+      ),
+    taskStop: (input) =>
+      post("/legion/v1/tasks/stop", LegionTaskStopRequest, LegionEmptyResponse, input),
   };
 }

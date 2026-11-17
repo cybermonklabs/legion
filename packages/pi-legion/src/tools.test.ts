@@ -98,6 +98,8 @@ function recordingDaemon(options: {
     "rootClose",
     "childPark",
     "childRerun",
+    "planRegister",
+    "taskStop",
     "issueStatus",
     "freshSession",
     "compact",
@@ -132,7 +134,7 @@ function recordingDaemon(options: {
  * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
 const OMP_LEGION_TOOL_DESCRIPTION =
   "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
-  "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. " +
+  "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of, and in `holdReason` why it is held when its hold has a reason: `escalated` (its architect sent it to the controller), `task-stopped` (its owner stopped its task with stop_task) or `children` (it waits, before its retro, for the issues beneath it). A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does, but a root held `task-stopped` starts its task again at its first step, and a root held `children` stays held until the issues beneath it close. " +
   "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
   "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
   "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
@@ -144,6 +146,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
   "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow). " +
+  "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
+  "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
+  "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
+  "(RETURN_REFUSED). " +
   "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
   "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -184,6 +190,21 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
   "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
+  "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
+  "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
+  "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
+  "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
+  "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
+  "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
+  "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first), a version Dispatch does " +
+  "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
+  "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
+  "(ISSUE_OUTSIDE_TREE), and an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
+  "(ISSUE_ALREADY_RELEASED). " +
+  "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
+  "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
+  "which then starts at its first step; retry_or_escalate does not start it again (TASK_STOPPED). The daemon refuses a task the plan " +
+  "does not hold (TASK_NOT_FOUND) and one that is done (TASK_DONE). " +
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
@@ -285,6 +306,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       type: "string",
       enum: [
         "register_gate",
+        "register_plan",
+        "stop_task",
         "release_children",
         "request_backward_move",
         "retry_or_escalate",
@@ -307,7 +330,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     artifactId: {
       type: "string",
       description:
-        "register_gate's document for the step it registers: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
+        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it",
     },
     version: { type: "number" },
     step: {
@@ -317,6 +340,11 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
     },
     issues: { type: "array", items: { type: "string" } },
+    task: {
+      type: "string",
+      description:
+        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps",
+    },
     to: {
       type: "string",
       enum: [
@@ -343,6 +371,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     wake_at: { type: "string" },
     plan_rating: { type: "integer", minimum: 1, maximum: 5 },
     plan_reason: { type: "string" },
+    // Zod renders a whole number with no stated bound above as the largest safe integer.
+    return_to: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
     round: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
@@ -396,7 +426,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -686,6 +716,14 @@ test("park_child refuses a reason before any grant, naming issue and the dispatc
       { op: "register_gate", issue: "LEGION-208", artifactId: "spec", version: 1, steps: "spec" },
       'register_gate does not accept field "steps"; it takes issue, artifactId, version, step',
     ],
+    [
+      { op: "register_plan", issue: "LEGION-209", artifactId: "plan", version: 1, step: "spec" },
+      'register_plan does not accept field "step"; it takes issue, artifactId, version',
+    ],
+    [
+      { op: "stop_task", issue: "LEGION-209", task: "a", reason: "the plan changed" },
+      'stop_task does not accept field "reason"; it takes issue, task',
+    ],
   ] as const;
   for (const [parameters, text] of refusals) {
     await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
@@ -915,6 +953,156 @@ test("register_gate takes the document reference the Dispatch tools take, and re
     ["LEGION-208", "spec"],
     ["LEGION-208", "notes"],
   ]);
+});
+
+// The owner's plan (contract 156): register_plan names its document as register_gate does, for any
+// issue of the architect's tree, and answers the plan Legion took; each refusal of the call itself
+// comes before any lookup, grant or request, and the daemon's refusal reaches the agent with its
+// code. stop_task names the task to stop by its block's id.
+test("register_plan takes the document reference the Dispatch tools take and answers the plan Legion took", async () => {
+  const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
+  const taken = { plan: { version: 3, tasks: [{ id: "a", steps: ["implementer", "reviewer"] }] } };
+  const resolved: Array<readonly [string, string]> = [];
+  const { calls, daemon } = recordingDaemon({ answers: { planRegister: taken } });
+  const run = (parameters: Record<string, unknown>, sessionIssue = "LEGION-208") =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: async (issue: string, reference: string) => {
+        resolved.push([issue, reference]);
+        return plan;
+      },
+      session: () => claimSession("architect", sessionIssue),
+    }).execute("", { op: "register_plan", ...parameters }, undefined, undefined, context());
+
+  // A child of the root architect's tree, by the plan's filename; then the sub-architect's own
+  // issue, by the document's id, which goes to the daemon as it is.
+  await expect(run({ issue: "LEGION-209", artifactId: "plan.md", version: 3 })).resolves.toEqual({
+    content: [{ type: "text", text: JSON.stringify(taken) }],
+    details: taken,
+  });
+  await expect(
+    run({ issue: "LEGION-209", artifactId: plan, version: 3 }, "LEGION-209")
+  ).resolves.toMatchObject({ details: taken });
+  expect(resolved).toEqual([["LEGION-209", "plan.md"]]);
+  const registration = { grantId: "grant-208", issue: "LEGION-209", artifactId: plan, version: 3 };
+  expect(calls.filter(([route]) => route === "planRegister")).toEqual([
+    ["planRegister", registration],
+    ["planRegister", registration],
+  ]);
+
+  const before = calls.length;
+  for (const [parameters, text] of [
+    [{ artifactId: "plan", version: 1 }, "register_plan requires issue"],
+    [{ issue: "LEGION-209", version: 1 }, "register_plan requires artifactId"],
+    [
+      { issue: "LEGION-209", artifactId: "plan" },
+      "register_plan requires a positive integer version",
+    ],
+    [
+      { issue: "LEGION-209", artifactId: "plan", version: 0 },
+      "register_plan requires a positive integer version",
+    ],
+    [
+      { issue: "LEGION-209", artifactId: "plan", version: 1.5 },
+      "register_plan requires a positive integer version",
+    ],
+  ] as const) {
+    await expect(run(parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(calls).toHaveLength(before);
+  expect(resolved).toHaveLength(1);
+});
+
+test("register_plan passes on the daemon's refusal of a plan with its code and every reason", async () => {
+  const refusal = Object.assign(
+    new Error(
+      "POST /legion/v1/plans/register failed with 409 PLAN_REFUSED: Legion refused this plan and recorded nothing: task a names the step prober, and the deployment defines no role prober."
+    ),
+    { code: "PLAN_REFUSED" }
+  );
+  const { daemon } = recordingDaemon({ answers: { planRegister: refusal } });
+  const result = await createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("architect"),
+  }).execute(
+    "",
+    {
+      op: "register_plan",
+      issue: "LEGION-208",
+      artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+      version: 2,
+    },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toContain("409 PLAN_REFUSED");
+  expect(JSON.stringify(result.content)).toContain("task a names the step prober");
+});
+
+test("stop_task stops the task its block names, and is the architect's alone", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const run = (session: LegionToolSession, parameters: Record<string, unknown>) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    }).execute("", { op: "stop_task", ...parameters }, undefined, undefined, context());
+  const architect = claimSession("architect");
+
+  await expect(run(architect, { issue: "LEGION-209", task: "default" })).resolves.toEqual({
+    content: [{ type: "text", text: "{}" }],
+    details: {},
+  });
+  expect(calls).toEqual([
+    [
+      "grant",
+      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+    ],
+    ["taskStop", { grantId: "grant-208", issue: "LEGION-209", task: "default" }],
+  ]);
+
+  for (const [session, parameters, text] of [
+    [architect, { issue: "LEGION-209" }, "stop_task requires task"],
+    [architect, { issue: "LEGION-209", task: " " }, "stop_task requires task"],
+    [architect, { task: "a" }, "stop_task requires issue"],
+    [
+      claimSession("implementer"),
+      { issue: "LEGION-208", task: "a" },
+      "stop_task is not available to a phase-worker session",
+    ],
+  ] as const) {
+    await expect(run(session, parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(calls).toHaveLength(2);
 });
 
 /** The pane a completion runs in: its workspace and issue. */

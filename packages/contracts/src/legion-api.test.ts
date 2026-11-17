@@ -32,6 +32,8 @@ import {
   LegionOperatorClaimsResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPlanRegisterRequest,
+  LegionPlanRegisterResponse,
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
@@ -41,6 +43,7 @@ import {
   LegionSessionActivity,
   LegionSignOffRequest,
   LegionStateResponse,
+  LegionTaskStopRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
@@ -91,6 +94,9 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
+  // The owner's plan (contract 156): what register_plan took, and stop_task's empty answer.
+  "plan-register.json": LegionPlanRegisterResponse,
+  "task-stop.json": LegionEmptyResponse,
   // No route answers this one: it is the contract number the daemon's boot gate requires of the
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
@@ -925,6 +931,64 @@ test("the retro's completion rates the plan from 1 to 5 with a reason", () => {
   ).toBeFalse();
 });
 
+// Contract 156: a step that failed names the step its task returns to, `returnTo`, by its place in
+// the task, 1 for its first. Only a completion with the verdict fail names one
+// (RETURN_TO_NEEDS_FAIL), and a place below 1 is none (INVALID_RETURN_TO). A completion that
+// names none stays what it was.
+test("a failed step's completion names the step its task returns to", () => {
+  const failed = { grantId: "g", summary: "s", verdict: "fail", returnTo: 2 };
+  expect(LegionHandoffCompleteRequest.parse(failed)).toEqual(failed);
+  expect(LegionHandoffCompleteRequest.safeParse({ ...failed, returnTo: 1 }).success).toBeTrue();
+  for (const returnTo of [0, -1, 1.5]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...failed, returnTo }).success).toBeFalse();
+  }
+  for (const verdict of ["pass", "pending", ""]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...failed, verdict }).success).toBeFalse();
+    const { returnTo: _, ...without } = { ...failed, verdict };
+    expect(LegionHandoffCompleteRequest.safeParse(without).success).toBeTrue();
+  }
+});
+
+// Contract 156: register_plan answers the plan it took, its version and each task with the steps
+// its block names as the plan writes them (`role` or `role:key`). A task whose block names none
+// runs the project's default steps and is answered with no step, an empty list and never null.
+test("register_plan answers each task of the plan it took with its steps", () => {
+  expect(LegionPlanRegisterResponse.parse(fixture("plan-register.json"))).toEqual({
+    plan: { version: 4, tasks: [{ id: "a", steps: ["implementer", "reviewer"] }] },
+  });
+  const none = { plan: { version: 1, tasks: [{ id: "a", steps: [] }] } };
+  expect(LegionPlanRegisterResponse.parse(none)).toEqual(none);
+  for (const task of [{ id: "a", steps: null }, { id: "a" }, { id: "", steps: [] }]) {
+    expect(
+      LegionPlanRegisterResponse.safeParse({ plan: { version: 1, tasks: [task] } }).success
+    ).toBeFalse();
+  }
+  expect(
+    LegionPlanRegisterResponse.safeParse({ plan: { version: 0, tasks: none.plan.tasks } }).success
+  ).toBeFalse();
+});
+
+// Contract 156 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
+// (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
+// acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
+// task and a held parent parses, each reason kept; a reason outside the three is refused.
+test("a state with a stopped task and a parent held for its children parses", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { phase: string; holdReason?: string; heldFrom?: string }>;
+  };
+  const stopped = state.issues["LEGION-210"];
+  if (stopped === undefined) throw new Error("state fixture lacks LEGION-210");
+  const parent = { ...stopped, key: "LEGION-230", holdReason: "children", heldFrom: "retro" };
+  state.issues["LEGION-230"] = parent;
+  stopped.holdReason = "task-stopped";
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues["LEGION-210"]?.holdReason).toBe("task-stopped");
+  expect(parsed.issues["LEGION-230"]?.holdReason).toBe("children");
+  expect(parsed.issues["LEGION-230"]?.heldFrom).toBe("retro");
+  stopped.holdReason = "stopped";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 // The state shows the record a worker's completion of its current file-backed phase named, its id
 // and positive version; a worker that named none shows no field.
 test("the state golden carries a worker's handoff record", () => {
@@ -1386,6 +1450,17 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
     ],
     ["child", LegionChildRequest, { grantId: "grant-208", issue: "LEGION-209" }],
+    [
+      "register plan",
+      LegionPlanRegisterRequest,
+      {
+        grantId: "grant-208",
+        issue: "LEGION-209",
+        artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+        version: 4,
+      },
+    ],
+    ["stop task", LegionTaskStopRequest, { grantId: "grant-208", issue: "LEGION-209", task: "a" }],
     // The claim wire's own bodies (contracts 21 and 46), read from the goldens the Go side
     // writes rather than invented here.
     ["ready", LegionReadyRequest, ready],
