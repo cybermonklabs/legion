@@ -1446,9 +1446,10 @@ jobs:
     needs: [binaries, shard, alone, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
     # arm64, for the reason the comment on ci.yaml's `changes` job gives (INFRA-4222). This job
-    # runs JavaScript actions, `bunx playwright merge-reports` and two scripts over gh and jq. Its
-    # one binary is Bun, which .github/actions/setup-bun installs from the aarch64 row that
-    # ci.yaml's tool-fallback-arm job proves. Playwright's report merge starts no browser. At busy
+    # runs JavaScript actions, `bunx playwright merge-reports` and two scripts over gh and jq, with
+    # the runner image's own node, python3, gh and jq. The one toolchain it installs is Bun, from
+    # the aarch64 row of .github/actions/setup-bun that ci.yaml's tool-fallback-arm job proves.
+    # Playwright's report merge starts no browser. At busy
     # hours the x64 pool held this 35-second job for about 35 minutes (run 44126172228 on
     # 2026-11-17), and it holds every browser run's verdict, after the legs and before ci-ok.
     runs-on: ubuntu-24.04-arm
