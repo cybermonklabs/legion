@@ -395,7 +395,8 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 // consumer holds it or the session is another listener's (agentSubjectNeedsDelivery). Any other
 // subject does when it matches a topic of an interest of this machine (the registry's subject
 // index) whose session's consumer does not hold it; with none, the fan-out would deliver it to
-// nobody and report nothing.
+// nobody and report nothing. A subject a stopped row follows needs it too, on every listener,
+// since the fan-out reports that row's released session as a wake (reportFollowedWakes).
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0
@@ -409,6 +410,9 @@ func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, sto
 			return true, 0
 		}
 		skipped++
+	}
+	if len(cfg.registry.MatchStopped(subject)) > 0 {
+		return true, 0
 	}
 	return false, skipped
 }

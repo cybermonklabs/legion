@@ -1013,9 +1013,12 @@ func fanoutRefusalOutcome(sessionID string, item contracts.Envelope, verdict fol
 
 // fanoutDelivery delivers a general-topic envelope to every session that
 // registered interest in it (registry.Match), aggregating per-recipient
-// failures into a single NAK/ACK decision for the underlying message.
+// failures into a single NAK/ACK decision for the underlying message. Each session that follows
+// the topic and is gone, released from its pod, is reported to the Legion daemon as a wake first
+// (reportFollowedWakes), whatever the delivery below comes to.
 func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	items := cfg.registry.Match(cfg.machineID, item.Topic)
+	reportFollowedWakes(cfg, item, items)
 	if len(items) == 0 {
 		// No interests is no failure: listenerDeliveryHandler routes every role and agent topic
 		// elsewhere, so a fanout topic is never a control topic and owes no delivery exception,

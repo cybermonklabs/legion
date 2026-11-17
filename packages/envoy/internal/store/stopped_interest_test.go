@@ -91,17 +91,31 @@ func TestAStoppedRowKeepsTheSessionsSubscriptionsAndNothingElse(t *testing.T) {
 
 // A stopped row routes nothing: no listener's Match fans a topic out to it, since it names no
 // listener and every listener has a machine id of its own (ENVOY_MACHINE_ID is required). The
-// publish count still finds it (MatchAllMachines), as it finds the session's known-session record.
+// publish count still finds it (MatchAllMachines), as it finds the session's known-session record,
+// and so does the listener's followed-topic wake (MatchStopped), which finds no live row.
 func TestAStoppedRowIsRoutedByNoListener(t *testing.T) {
 	start := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
 	clock := &manualClock{at: start}
-	reg, _ := clockedRegistry(t, clock)
+	reg, kv := clockedRegistry(t, clock)
 	const widgets = "notifications.github.acme.widgets.pr.3370.>"
 	const review = "notifications.github.acme.widgets.pr.3370.review"
 	upsertOrFail(t, reg, "ses_follower", "notifications.agent.ses_follower", widgets)
 	if got := reg.Match("m1", review); len(got) != 1 {
 		t.Fatalf("precondition: Match(m1) of the live row = %+v, want it", got)
 	}
+	if got := reg.MatchStopped(review); len(got) != 0 {
+		t.Fatalf("MatchStopped of the live row = %+v, want nothing", got)
+	}
+	// A row naming no listener that is not stopped, as no listener writes one, is no stopped row.
+	putInterest(t, kv, Interest{SessionID: "ses_unowned", Topics: []string{widgets}, UpdatedAt: start.UnixMilli()})
+	waitFor(t, 5*time.Second, func() bool { _, cached := reg.Cached("ses_unowned"); return cached })
+	if got := reg.MatchStopped(review); len(got) != 0 {
+		t.Fatalf("MatchStopped with a row naming no listener that is not stopped = %+v, want nothing", got)
+	}
+	if err := kv.Delete("ses_unowned"); err != nil {
+		t.Fatalf("delete ses_unowned's row: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool { _, cached := reg.Cached("ses_unowned"); return !cached })
 
 	clock.Set(start.Add(InterestReapAllowance(InterestReapGrace) + time.Millisecond))
 	reapGone(t, reg, InterestSweep{Stopped: 1})
@@ -113,6 +127,12 @@ func TestAStoppedRowIsRoutedByNoListener(t *testing.T) {
 	}
 	if got := reg.MatchAllMachines(review); len(got) != 1 || got[0].SessionID != "ses_follower" {
 		t.Fatalf("MatchAllMachines of the stopped row = %+v, want ses_follower's", got)
+	}
+	if got := reg.MatchStopped(review); len(got) != 1 || got[0].SessionID != "ses_follower" {
+		t.Fatalf("MatchStopped of the stopped row = %+v, want ses_follower's", got)
+	}
+	if got := reg.MatchStopped("notifications.github.acme.other.pr.9.review"); len(got) != 0 {
+		t.Fatalf("MatchStopped of a topic the stopped row does not keep = %+v, want nothing", got)
 	}
 }
 
