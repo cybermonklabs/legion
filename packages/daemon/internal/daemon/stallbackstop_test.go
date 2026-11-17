@@ -43,12 +43,12 @@ type backstopRig struct {
 	rt  *fake.Runtime
 	mu  sync.Mutex
 	// rows are the outbox payloads supervision wrote, by issue; attempts how many writes it
-	// tried, refused ones included, which is what a case waits on before it reads that none was
-	// taken; refuse the error the store answers while it is set. reports is how many ends the
-	// machines told supervision of, counted inside the decision that made each: the row is
-	// written on a goroutine of supervision's own (stallBackstopped), so a case that read rows
-	// alone would read "nobody was told" of a machine that told and whose goroutine has not run
-	// yet, and that assertion could never fail.
+	// tried, refused ones included, which a case reads to see that none was tried; refuse the
+	// error the store answers while it is set. reports is how many ends the machines told
+	// supervision of, counted inside the decision that made each: the row is written on a
+	// goroutine of supervision's own (stallBackstopped), so a case that read rows alone would
+	// read "nobody was told" of a machine that told and whose goroutine has not run yet, and
+	// that assertion could never fail.
 	rows     map[string][]record.OutboxPayload
 	attempts int
 	reports  int
@@ -126,14 +126,18 @@ func (r *backstopRig) refusing(err error) {
 	r.refuse = err
 }
 
-// awaitAttempts waits for supervision to have tried want writes, taken or refused: what a case
-// that must see no row taken waits on, since the write is made off the sweep.
-func (r *backstopRig) awaitAttempts(want int) {
+// awaitOwed waits for supervision to keep token's refused notice for the next sweep
+// (oweStallNotice). That is what a case that sweeps again to see the notice told waits on, and
+// not the refused write itself: the write is counted inside the store's call, and the notice is
+// kept only after that call has returned, on the machine's goroutine (stallBackstopped), so a
+// sweep made between the two finds nothing owed and the owner is told at the sweep after it.
+func (r *backstopRig) awaitOwed(token claim.Token) {
 	r.t.Helper()
-	testwait.Eventually(r.t, fmt.Sprintf("supervision to have tried %d notice writes", want), func() bool {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		return r.attempts >= want
+	testwait.Eventually(r.t, "supervision to keep the refused notice for the next sweep", func() bool {
+		r.s.backstopMu.Lock()
+		defer r.s.backstopMu.Unlock()
+		_, owed := r.s.backstopOwed[token]
+		return owed
 	})
 }
 
@@ -447,7 +451,8 @@ func TestTheStallBackstopWritesNothingForAClaimOnNoIssue(t *testing.T) {
 
 // A notice the store refuses is told again at the next sweep, as a stalled update round's is:
 // the row is kept until one is taken, and the machine's end is reported once however often it
-// is written.
+// is written. The case sweeps again only once the refused notice is kept (awaitOwed): a sweep
+// made before then finds nothing owed to tell.
 func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 	rig := newBackstopRig(t)
 	rig.refusing(errors.New("the store is down"))
@@ -456,7 +461,7 @@ func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 
 	rig.sweep(claims)
 	rig.awaitResumed(stalled.Token, 1)
-	rig.awaitAttempts(1)
+	rig.awaitOwed(stalled.Token)
 	if notices := rig.notices("LEGION-219"); len(notices) != 0 {
 		t.Fatalf("notices = %+v, want none taken", notices)
 	}
