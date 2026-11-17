@@ -118,7 +118,11 @@ func TestAReleaseSaveIsCancelledWhileTheProjectIsPaused(t *testing.T) {
 
 // otherIssue is an issue of another project whose pod this project's daemon runs: the operator's
 // spawn (`legion claims spawn`) makes a claim of any issue key under the daemon's own project
-// token, and such a claim is part of this project's pause as every other claim is.
+// token, and such a claim is part of this project's pause as every other claim is. No production
+// row reaches a release's save or its cancel for such an issue (IssueReleaseSave,
+// CancelIssueRelease): a release's rows are keyed by its issue, and the daemon's outbox runs only
+// the rows of its own project's keys. The tests below hold only the reading of the pause by the
+// project's token that the two make, which is the right reading and costs nothing.
 const otherIssue = "OTHER-5"
 
 // Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: the save of its
@@ -240,76 +244,55 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 
 // Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: a cancel of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
-// project. While LEGION is paused it records the roles the release stopped as stopped by
-// LEGION's pause and queues no resume; while only OTHER is paused it resumes them, as LEGION runs.
-// The cancel reads the issue's record by its key (resumeStanding), so the test seeds the record
-// that OTHER's daemon keeps of the issue on the same database.
+// project, so while LEGION is paused it records the roles the release stopped as stopped by
+// LEGION's pause and queues no resume. The cancel reads the issue's record by its key
+// (resumeStanding), so the test seeds the record that OTHER's daemon keeps of the issue on the
+// same database.
 func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		paused string
-	}{
-		{name: "this project is paused", paused: "LEGION"},
-		{name: "only the issue key's project is paused", paused: "OTHER"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			st := migratedStore(t)
-			if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-				values ($1, $1, 'OTHER', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, otherIssue); err != nil {
-				t.Fatalf("record %s as OTHER's issue: %v", otherIssue, err)
-			}
-			_, boundary, _ := releaseThroughTheStore(t, st, otherIssue)
-			roles := []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
-			for _, role := range roles {
-				token, err := claim.NewToken("legion", otherIssue, role)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: otherIssue, Issue: otherIssue,
-					Role: role, Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended,
-					SuspendedBy: supervise.SuspendedByReleased}); err != nil {
-					t.Fatalf("seed the released %s of %s: %v", role, otherIssue, err)
-				}
-				if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, role, boundary); err != nil {
-					t.Fatalf("record the %s's suspension: %v", role, err)
-				}
-			}
-			pause, _ := pauseProject(t, st, tc.paused, pausedAt)
-			resume := func(role claim.Role, generation uint64) (IdleReleaseRow, error) {
-				return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
-					`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, generation))}, nil
-			}
+	ctx := context.Background()
+	st := migratedStore(t)
+	if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $1, 'OTHER', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, otherIssue); err != nil {
+		t.Fatalf("record %s as OTHER's issue: %v", otherIssue, err)
+	}
+	_, boundary, _ := releaseThroughTheStore(t, st, otherIssue)
+	roles := []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
+	for _, role := range roles {
+		token, err := claim.NewToken("legion", otherIssue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: otherIssue, Issue: otherIssue,
+			Role: role, Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended,
+			SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+			t.Fatalf("seed the released %s of %s: %v", role, otherIssue, err)
+		}
+		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, role, boundary); err != nil {
+			t.Fatalf("record the %s's suspension: %v", role, err)
+		}
+	}
+	pause, _ := pauseLegion(t, st, pausedAt)
+	resume := func(role claim.Role, generation uint64) (IdleReleaseRow, error) {
+		return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
+			`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, generation))}, nil
+	}
 
-			cancelled, err := st.CancelIssueRelease(ctx, "legion", otherIssue, resume, record.OutOfWorkflow,
-				ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenPhaseRole: implementingWorker})
-			if err != nil {
-				t.Fatalf("cancel the release of %s while %s is paused: %v", otherIssue, tc.paused, err)
-			}
-			starts := pauseCount(t, st, `select count(*) from outbox where issue = $1 and kind = 'supervise'
-				and payload->>'op' = 'start'`, otherIssue)
-			stops := pauseCount(t, st, `select count(*) from project_pause_stops where pause_id = $1 and issue = $2
-				and ended_as = 'stopped'`, pause.ID, otherIssue)
-			if tc.paused == "LEGION" {
-				if cancelled.Pause != pause.ID || len(cancelled.Resumed) != 0 || !slices.Equal(cancelled.Stopped, roles) {
-					t.Fatalf("the cancel of %s's release while LEGION is paused = %+v; want LEGION's pause %d, no role resumed and %v stopped",
-						otherIssue, cancelled, pause.ID, roles)
-				}
-				if starts != 0 || stops != len(roles) {
-					t.Fatalf("after the cancel %d starts are queued and pause %d records %d stops of %s; want none queued and %d stopped",
-						starts, pause.ID, stops, otherIssue, len(roles))
-				}
-				return
-			}
-			if cancelled.Pause != 0 || len(cancelled.Stopped) != 0 || !slices.Equal(cancelled.Resumed, roles) {
-				t.Fatalf("the cancel of %s's release while only OTHER is paused = %+v; want no pause, no role stopped and %v resumed: LEGION runs",
-					otherIssue, cancelled, roles)
-			}
-			if starts != len(roles) || stops != 0 {
-				t.Fatalf("after the cancel %d starts are queued and OTHER's pause %d records %d stops of %s; want %d queued and none stopped",
-					starts, pause.ID, stops, otherIssue, len(roles))
-			}
-		})
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", otherIssue, resume, record.OutOfWorkflow,
+		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenPhaseRole: implementingWorker})
+	if err != nil {
+		t.Fatalf("cancel the release of %s while LEGION is paused: %v", otherIssue, err)
+	}
+	if cancelled.Pause != pause.ID || len(cancelled.Resumed) != 0 || !slices.Equal(cancelled.Stopped, roles) {
+		t.Fatalf("the cancel of %s's release while LEGION is paused = %+v; want LEGION's pause %d, no role resumed and %v stopped",
+			otherIssue, cancelled, pause.ID, roles)
+	}
+	starts := pauseCount(t, st, `select count(*) from outbox where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start'`, otherIssue)
+	stops := pauseCount(t, st, `select count(*) from project_pause_stops where pause_id = $1 and issue = $2
+		and ended_as = 'stopped'`, pause.ID, otherIssue)
+	if starts != 0 || stops != len(roles) {
+		t.Fatalf("after the cancel %d starts are queued and pause %d records %d stops of %s; want none queued and %d stopped",
+			starts, pause.ID, stops, otherIssue, len(roles))
 	}
 }
 

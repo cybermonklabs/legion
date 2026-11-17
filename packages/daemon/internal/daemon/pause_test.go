@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -100,7 +102,10 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 // daemon's record of the issue (the issues table holds every project's issues, under its
 // project). That record is not this daemon's (projectPause.pauseIssue): a start row built from it
 // would be keyed by an issue whose rows the other project's daemon runs, so the stop queues none,
-// and the resume finds the spawn as one with no record of its own and launches it.
+// and the resume finds the spawn as one with no record of its own and launches it. A message to
+// the spawn the resume left stopped wakes it no more than a message to any operator's spawn does
+// (workflow's wakeReleased): it takes no resume of the role, which would refuse every later wake
+// of it, and queues no start keyed by the other project's issue.
 func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -199,6 +204,27 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 			}
 			if got := startsOf(owedIssue); got != 0 {
 				t.Fatalf("start rows keyed %s after the resume = %d, want none", owedIssue, got)
+			}
+
+			// A message to the stopped spawn's session, and one to its role token, each reach the
+			// listener's wake, which finds the claim released under this daemon's token.
+			idleRows := r.count(`select count(*) from outbox where issue = $1`, idleIssue)
+			for n, wake := range []intake.ListenerWake{
+				{Kind: intake.ListenerWakeAgent, Session: "ses-other-idle"},
+				{Kind: intake.ListenerWakeRole, Role: string(idle)},
+			} {
+				wake.At, wake.Report = r.clock.Now(), fmt.Sprintf("report-idle-%d", n)
+				r.applyFact("listener", fmt.Sprintf("wake-idle-%d", n), wake)
+			}
+			if got := r.count(`select count(*) from outbox where issue = $1`, idleIssue) - idleRows; got != 0 {
+				t.Errorf("the message wakes of the stopped spawn wrote %d outbox rows keyed %s, want none: this daemon's outbox runs no row of another project's issue",
+					got, idleIssue)
+			}
+			if got := r.count(`select count(*) from pod_resumes where project = $1 and issue = $2`, r.project, idleIssue); got != 0 {
+				t.Errorf("the message wakes of the stopped spawn recorded %d resumes of it, want none", got)
+			}
+			if c := r.claim(idle); c.State != supervise.StateSuspended {
+				t.Errorf("after its message wakes the spawn owed nothing is %s, want it still stopped", c.State)
 			}
 		})
 	}

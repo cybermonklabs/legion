@@ -5566,6 +5566,7 @@ So a resume launches each session that the pause held something for once, and ne
 `wakesWaiting` on `GET /legion/v1/state` lists the launches that still wait in the pacing.
 `legion state` prints them as its `wakes waiting:` line, and the summary of the controller's `read_state` counts them in its `wakes waiting <n>` line, with the moment the next one is due.
 Every other session that the pause stopped stays stopped until its next wake, which launches it in its own pod.
+No wake launches an operator's spawn that the pause stopped owing nothing, whether its issue has no record or a record that another project's daemon keeps on the same database (`wakeReleased`, `internal/workflow/wake.go`): such a session stays stopped until the operator resumes it or gives it a task (`legion claims resume`, `legion claims deliver`).
 The admission pass promotes issues again, and each launch that it causes takes the same pacing.
 
 A long queue at the resume is not reported as stuck.

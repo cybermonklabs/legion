@@ -334,11 +334,12 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // pause instead (stopReleasedForPause), with the pod held and the backstop the stop transaction
 // arms, and answers the pause and those roles (ReleaseCancelled.Pause, Stopped). paused is what
 // that needs of the workflow and the clock. The pause is project's, read by its token
-// (LockOpenPauseByTokenTx), and never the pause of the issue key's prefix: the pod of a claim of
-// another project's issue, which the operator's spawn makes under this project's token, is this
-// project's to pause. It is read after the issue's lock (LockIssueForPause), which this
-// transaction takes after the serializer, the one order every writer of a pod hold keeps
-// (decision 13).
+// (LockOpenPauseByTokenTx), as every read of a pause for a claim is, and never by the issue key's
+// prefix. No production row reaches a cancel for another project's issue: a cancel runs from a
+// row of the release, which is keyed by its issue, and the daemon's outbox runs only the rows of
+// its own project's keys (record's DueRows). It is read after the issue's lock
+// (LockIssueForPause), which this transaction takes after the serializer, the one order every
+// writer of a pod hold keeps (decision 13).
 //
 // An issue the record no longer holds, one that has left the workflow, and one whose tree
 // lingers are given no resume at all, and the mark goes all the same: those claims are a close's

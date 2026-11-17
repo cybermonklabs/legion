@@ -56,9 +56,9 @@ type Pods interface {
 	// project pause that holds the wake, 0 for none: a held wake records its pause and pairs with
 	// no release (decision 15 of dispatch://INFRA-3759).
 	TakeHeldPodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error)
-	// OpenPauseID is the id of the daemon's project's open pause, whatever project the woken
-	// issue's key names, 0 while it runs, read with the pause's row locked for share, so the
-	// resume's end of it waits for the wake's fact.
+	// OpenPauseID is the id of the daemon's project's open pause, read by the project's token
+	// and 0 while it runs, read with the pause's row locked for share, so the resume's end of it
+	// waits for the wake's fact.
 	OpenPauseID(ctx context.Context, tx pgx.Tx) (int64, error)
 	// StoppedByPause is whether the claim's newest stop is a pause's, newer than issue's newest
 	// pod release: the session the wake brings back is one a pause stopped in a pod it kept
@@ -264,9 +264,24 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 }
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are
-// read: the claim is still released, and its tree is live — neither the issue nor its root has
-// left the workflow and neither lingers (pods.InWorkflowNotLingering). A pod in any other state
-// is a close's to stop or an operator's to resume, never a wake's.
+// read: the claim is still released, its issue is one this daemon records, and its tree is live —
+// neither the issue nor its root has left the workflow and neither lingers
+// (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
+// resume, never a wake's.
+//
+// The issue is this daemon's only where its record is of the engine's project (Config.Project).
+// The issues table holds the issues of every project on the database, each under its project, and
+// the record is read by key alone, so a claim of another project's issue, which the operator's
+// spawn makes under this daemon's token and a project's pause stops as released, can find the
+// record that project's daemon keeps of the issue. That record is no record of this daemon's, as
+// it is not for the pause's stop (internal/daemon's projectPause.pauseIssue): a start row built
+// from it would be keyed by an issue whose rows the other project's daemon runs, against its own
+// claim, and this daemon's outbox never does (record's DueRows), and the resume it took would
+// refuse every later wake of the role. So such a wake is refused as the wake of every operator's
+// spawn of an issue with no record is: it takes nothing and queues nothing. What brings such a
+// claim back is what brings back every operator's spawn: the resume of the pause that stopped it
+// owing a launch (internal/daemon's resumeOwedSpawns), or the operator's own resume or delivery
+// (`legion claims resume`, `legion claims deliver`).
 //
 // A wake of a role whose resume is already open wakes nothing a second time: that pod is coming
 // back, and the start row of the wake that took it carries the task. A wake that takes it records
@@ -278,12 +293,11 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // (wakeForDelivery).
 //
 // A wake taken while the daemon's project is paused is a held wake (decision 15 of
-// dispatch://INFRA-3759), a wake of a claim of another project's issue included, since the
-// operator's spawn makes such a claim under the daemon's project: the open pause, read on this
-// fact's own transaction (Pods.OpenPauseID), is recorded on the resume, which pairs with no release,
-// and on the start row, which the outbox holds until the resume. The task says what stopped the
-// session (WakeTask): the pause, where the role's newest stop is a pause's and newer than the
-// issue's newest release (Pods.StoppedByPause, decision 16), and the release otherwise.
+// dispatch://INFRA-3759): the open pause, read on this fact's own transaction
+// (Pods.OpenPauseID), is recorded on the resume, which pairs with no release, and on the start
+// row, which the outbox holds until the resume. The task says what stopped the session
+// (WakeTask): the pause, where the role's newest stop is a pause's and newer than the issue's
+// newest release (Pods.StoppedByPause, decision 16), and the release otherwise.
 //
 // One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
 // refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
@@ -295,7 +309,7 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // resume was itself written after every release there is.
 func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (bool, error) {
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
-	if err != nil || issue == nil {
+	if err != nil || issue == nil || issue.Project != e.cfg.Project {
 		return false, err
 	}
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
