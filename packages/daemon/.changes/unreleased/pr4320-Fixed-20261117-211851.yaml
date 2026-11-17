@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'Under gVisor, a role''s launch that the launcher''s reaper failed by taking the exit of the leak-check install''s run of the check could also read `the served check could not be run: wait: no child processes`, beside `waitid: no child processes` and `waitid: no such process`. All three are the one failure, and the guard that now holds that run out of the reaper ends each of them.'
+time: 2026-11-17T21:18:51.670541038Z
+custom:
+    Issue: pr4320
