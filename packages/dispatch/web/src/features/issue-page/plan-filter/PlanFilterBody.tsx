@@ -46,6 +46,7 @@ import {
   PLAN_WORDS,
   PRESET_NAMES,
 } from "../page-words";
+import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { moveToRow, treeEnterKey } from "../useTreeKeymap";
 import {
   needsChip,
@@ -225,12 +226,12 @@ export function PlanFilterBody({
   const emptyLineId = useId();
   // A refused read leaves the view nothing to act on but its Retry: the empty tree holds no row,
   // and Tab from it never reaches the lines above it. So the first Retry drawn takes the focus
-  // where nothing holds it, by the outline's rule (`focusIsLoose`): where the focus is on the
-  // view's empty tree, which `t p` focuses before the read is refused; on the app's main
-  // element, which the app focuses when a page is opened at the view's address from another
-  // issue (`app.tsx`); and on the page itself after the stage's one try, which gives the focus
-  // once, to the first row or Retry the view draws while the page itself holds the focus
-  // (`slots/stage.tsx`). A reader whose focus is anywhere else keeps it.
+  // where nothing holds it (`tree-focus.ts`'s `focusIsLoose`): where the focus is on the view's
+  // empty tree, which `t p` focuses before the read is refused; on the app's main element, which
+  // the app focuses when a page is opened at the view's address from another issue (`app.tsx`);
+  // and on the page itself. The stage gives a loose focus to a Retry only where the line is its
+  // `FailedReadLine` (`slots/stage.tsx`), which these lines are not, so this view gives its own.
+  // A reader whose focus is anywhere else keeps it.
   useEffect(() => {
     if (firstUnreadable === undefined || !focusIsLoose(emptyTree.current)) return;
     const retry = onward(box.current);
@@ -386,11 +387,6 @@ const UNREADABLE_LINES: Readonly<Record<PlanRead, string>> = {
 /** The Retry of a failed read's line; the first in the page is the first failed read's. */
 const UNREADABLE_RETRY = "[data-plan-unreadable] button";
 
-/** The row of the view's tree that holds its one tab stop, under the chart the first bar's row:
- *  the stage's own selector (`slots/stage.tsx`'s `TAB_STOP_ROW`), which this file cannot import,
- *  since the stage imports the Plan view's slot, which imports this file. */
-const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
-
 /** Where the focus goes on in `body`, the view's box, from its empty tree or from a line that
  *  left: to the first failed read's Retry, else, where the rows are drawn, to the row that holds
  *  the tree's tab stop (under the chart the first bar's row), else nowhere. */
@@ -400,14 +396,6 @@ function onward(body: HTMLElement | null): HTMLElement | null {
     body?.querySelector<HTMLElement>(TAB_STOP_ROW) ??
     null
   );
-}
-
-/** Whether nothing holds the focus that the view is to keep from it, by the outline's rule
- *  (`IssueTree.tsx`'s `focusIsLoose`): it is on nothing, on the page itself, or on an element
- *  that holds `tree`, such as the app's main element, which the app focuses at each page change
- *  but the first (`app.tsx`). */
-function focusIsLoose(tree: HTMLElement | null): boolean {
-  return focusOnDocument() || (tree !== null && document.activeElement?.contains(tree) === true);
 }
 
 /** Puts the focus on `to` without scrolling to it, then brings it on screen in the next frame
