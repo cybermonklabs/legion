@@ -259,7 +259,9 @@ export function renderProofDocument({
     // has resolved.
     async sync() {
       await waitFor(() => expect(fake.connections).toHaveLength(1));
-      fake.sync();
+      await act(async () => {
+        fake.sync();
+      });
     },
     toolbar,
     toolbarChanges,
