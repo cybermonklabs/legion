@@ -759,10 +759,17 @@ The proxy reads the grant behind the password on every connection, and the entry
 request (`packages/envoy/internal/broker/airlockproxy`). A host no entry of that grant binds is
 tunnelled unread, to a public address alone. A bound host is read with a certificate of the
 proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
-header; then the entry's hosts, headers, methods and paths decide whether the swap happens. A
-refusal is an HTTP error from the proxy naming the rule that refused it, such as `host not bound`
-or `not allowed by rule`, and ending with its answer id. The broker logs one line for each call to
-a bound host, never with a value. A call it carried, or could not carry, writes
+header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
+else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
+request, with its `:authority` as its `Host`, so one connection carries no request for another
+host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
+(`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.
+How a stream becomes the request the entry decides is tested, not proved: the Lean model of the
+decision has no wire format. A refusal is an HTTP error from the proxy naming the rule that
+refused it, such as `host not bound` or `not allowed by rule`, and ending with its answer id. The
+broker logs one line for each call to a bound host, never with a value. A call it carried, or
+could not carry, writes
 `airlock proxy: a call to a bound host` with the enrollment, the grant, the secret, the host, the
 method, the path and the answer's status. A call it refused writes its refusal record,
 `broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
@@ -788,10 +795,11 @@ What the airlock does not stop is as much of the design as what it does:
 - The placeholder works as the proxy password for its grant's bound hosts until the grant ends,
   from wherever the proxy port is reachable.
 
-- Once the grant ends, every call through the proxy gets `407`, to any host, and a WebSocket the
-  proxy had joined to a bound host is closed with the grant rather than running to the idle
-  limit. A tunnel to a host no entry binds carries no value, so the idle limit is the whole of
-  what bounds one.
+- Once the grant ends, every call through the proxy gets `407`, to any host. A call still running
+  at that moment, such as a WebSocket the proxy joined to a bound host, a gRPC call whose answers
+  stream or a long poll, is ended with the grant within 15 seconds rather than running to the
+  idle limit. A call whose service has not answered yet gets the `407` itself. A tunnel to a host
+  no entry binds carries no value, so the idle limit is the whole of what bounds one.
 
 - A `407` is the grant's own answer. A read of the grant that failed — the broker's store did
   not answer — is `503` with a fixed sentence that names nothing of that failure, and the call

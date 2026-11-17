@@ -304,7 +304,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(conn, kv, created, startSendsAgain)
+	return wrapKeyValue(context.Background(), conn, kv, created, startSendsAgain)
 }
 
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
@@ -440,13 +440,18 @@ func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Dura
 
 // OpenKeyValue opens the existing KV bucket named bucket on conn, through js, and creates nothing,
 // as a rebuild does. It raises nothing either: the start that opened the bucket with EnsureKeyValue
-// did that.
-func OpenKeyValue(conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
-	kv, err := js.KeyValue(bucket)
+// did that. Both of its requests end when ctx does: the jetstream handle's open is made under ctx,
+// and the legacy lookup (js.KeyValue, whose STREAM.INFO nats.go gives no context: the call takes
+// none and reads js's MaxWait alone) is waited for only until ctx ends, its answer then dropped
+// (Bounded; the lookup changes nothing, so a dropped one leaves nothing behind). A reconnect hook
+// gives it the run's context, so a lookup sent on a connection that then drops ends the hook at
+// the drop.
+func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
+	kv, _, err := Bounded(ctx, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return WrapKeyValue(conn, kv)
+	return wrapKeyValue(ctx, conn, kv, false, oneSend)
 }
 
 // WrapKeyValue pairs kv, a legacy handle opened on conn, with the jetstream handle of the same
@@ -455,7 +460,7 @@ func OpenKeyValue(conn *nats.Conn, js nats.JetStreamContext, bucket string) (Key
 // on it has had an answer for it already. A start opens its handles through EnsureKeyValue
 // instead, which sends its handle open again (wrapKeyValue).
 func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
-	return wrapKeyValue(conn, kv, false, oneSend)
+	return wrapKeyValue(context.Background(), conn, kv, false, oneSend)
 }
 
 // startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
@@ -466,7 +471,8 @@ const (
 	oneSend         = false
 )
 
-// wrapKeyValue is WrapKeyValue, with two things its callers choose.
+// wrapKeyValue is WrapKeyValue, with two things its callers choose, under ctx, which bounds the
+// handle's open as well as RequestTimeout does.
 //
 // created says this start has just created the bucket, so the STREAM.INFO that opens the
 // jetstream handle is taken again until the member answering has applied that create
@@ -489,14 +495,14 @@ const (
 // caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again under
 // its own lock, on a request whose budget is two seconds, and a read that kept it waiting three
 // times as long would stop every role and session read of the process rather than save a start.
-func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
+func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return KeyValue{}, err
 	}
 	request := "KV_" + kv.Bucket() + " handle open"
 	open := func() (jetstream.KeyValue, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+		ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 		defer cancel()
 		return js.KeyValue(ctx, kv.Bucket())
 	}
@@ -852,14 +858,14 @@ type StreamState struct {
 }
 
 // ReadStreamState reads the stream behind kv (one STREAM.INFO) through its jetstream context,
-// within RequestTimeout, fetching the stream afresh so no read shares state with another
+// within RequestTimeout and ctx, fetching the stream afresh so no read shares state with another
 // (KeyValue.streams): the read before every watcher a kvwatch.Watcher installs, its stream probe,
 // gate, completion check and Check, and each read of the interest marker collector. The legacy
 // handle's Status would wait out that handle's JetStream MaxWait, which its opener chose for its
 // own reads, however short, so this read bounds itself. A stream that is gone is
 // nats.ErrStreamNotFound, however the jetstream package names it.
-func (kv KeyValue) ReadStreamState() (StreamState, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+func (kv KeyValue) ReadStreamState(ctx context.Context) (StreamState, error) {
+	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 	stream, err := kv.streams.Stream(ctx, "KV_"+kv.Bucket())
 	if errors.Is(err, jetstream.ErrStreamNotFound) {

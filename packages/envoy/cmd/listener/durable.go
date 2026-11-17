@@ -231,9 +231,10 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 			return bind, err
 		}
 		// A reconnect during the wait re-subscribes the subscription the failed attempt registered
-		// (bus.Client.onReconnect), which binds it once the durable is free. Another attempt would
-		// replace that handle with a bind racing the server's release of it, which can be refused
-		// with "consumer is already bound to a subscription".
+		// (bus.Client.afterReconnect, off nats.go's callback goroutine and never under a hook run's
+		// context), which binds it once the durable is free. Another attempt would replace that
+		// handle with a bind racing the server's release of it, which can be refused with "consumer
+		// is already bound to a subscription".
 		if client.SubOK() {
 			bind.waited = time.Since(start)
 			return bound(true)
@@ -384,8 +385,8 @@ func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, sto
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0
 	}
-	if sessionID, ok := strings.CutPrefix(subject, contracts.AgentTopicPrefix); ok {
-		return agentSubjectNeedsDelivery(cfg, sessionID, storedSeq)
+	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
+		return agentSubjectNeedsDelivery(cfg, agentSubjectSession(subject), storedSeq)
 	}
 	for _, interest := range cfg.registry.Match(cfg.machineID, subject) {
 		entry, err := cfg.sessions.Get(interest.SessionID)
@@ -410,4 +411,15 @@ func agentSubjectNeedsDelivery(cfg listenerDeliveryHandlerConfig, sessionID stri
 	}
 	interest, cached := cfg.registry.CachedInterest(sessionID)
 	return !cached || interest.MachineID == "" || interest.MachineID == cfg.machineID, 0
+}
+
+// agentSubjectSession is the session an agent subject names, in either form: the session alone
+// (notifications.agent.<session>) or under a project (notifications.agent.<PROJECT or _>.<session>),
+// read through the new form's old twin (contracts.LegacyTwin). A reader that cut the prefix off the
+// new form would look up a session named <PROJECT>.<session>, which none is.
+func agentSubjectSession(subject string) string {
+	if twin, ok := contracts.LegacyTwin(subject); ok {
+		subject = twin
+	}
+	return strings.TrimPrefix(subject, contracts.AgentTopicPrefix)
 }

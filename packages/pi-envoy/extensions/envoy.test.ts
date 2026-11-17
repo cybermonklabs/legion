@@ -29,7 +29,8 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
-  dispatchIssueSubject,
+  canonicalTopic,
+  legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
@@ -4269,6 +4270,74 @@ describe("envoy OMP extension", () => {
     expect(natsState.controls.has("notifications.role.legion-controller")).toBe(false);
     expect(roleClaims).toEqual([{ session_id: "ses_omp", role: "legion-controller" }]);
   });
+
+  // The listener's record keeps a claimed role's lane in the form it writes it,
+  // `notifications.role.<role>`, whichever form the claim named (packages/envoy/cmd/listener,
+  // `roleSetHandler`), and a resumed session reads the role it should hold off its record by
+  // cutting that lane's prefix (`desiredRole`). So the role it claims again is the role itself. The
+  // second row is the control the first leans on: a record rewritten to the new form,
+  // `notifications.role.INFRA.<role>`, reads to this very comparison as a role named
+  // `INFRA.<role>`, so a store that rewrote it would show here.
+  for (const { name, rewrite, claimed } of [
+    {
+      name: "as the listener wrote it",
+      rewrite: false,
+      claimed: "legion-infra-controller",
+    },
+    {
+      name: "rewritten to the new form",
+      rewrite: true,
+      claimed: "INFRA.legion-infra-controller",
+    },
+  ]) {
+    test(`a resumed session reads its role off a record that keeps the lane ${name}`, async () => {
+      const lane = "notifications.role.legion-infra-controller";
+      expect(canonicalTopic(lane).canonical).toBe(
+        "notifications.role.INFRA.legion-infra-controller"
+      );
+      const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
+      globalThis.fetch = async (input, init) => {
+        const url = new URL(input.toString());
+        if (url.pathname === "/v1/interests/ses_omp") {
+          return response({
+            session_id: "ses_omp",
+            machine_id: "test",
+            dir: "/tmp",
+            topics: [
+              "notifications.agent.ses_omp",
+              rewrite ? canonicalTopic(lane).canonical : lane,
+            ],
+          });
+        }
+        if (url.pathname === "/v1/roles/set") {
+          const body = JSON.parse(init?.body?.toString() ?? "{}");
+          roleClaims.push({ session_id: body.session_id, role: body.role });
+          return response({
+            session_id: body.session_id,
+            machine_id: "test",
+            dir: "/tmp",
+            topics: [`notifications.role.${body.role}`],
+          });
+        }
+        return responseWithRegistration(input, init, {});
+      };
+      // A fresh module per row, as every test here loads one: the extension keeps its state in
+      // module scope, so a static import would carry one row's hold into the next.
+      const { default: envoyExtension } = await import(
+        `./envoy.ts?old-form-role-record-${rewrite ? "rewritten" : "kept"}`
+      );
+      const fixture = createPi();
+
+      envoyExtension(fixture.pi);
+      const resumed = {
+        ...sessionContext(),
+        sessionManager: { ...sessionContext().sessionManager, getBranch: () => [{}] },
+      };
+      await fixture.handlers.get("session_start")?.({}, resumed);
+
+      expect(roleClaims).toEqual([{ session_id: "ses_omp", role: claimed }]);
+    });
+  }
 
   test("a session rebind moves a held role from the dead id to the new one", async () => {
     const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
@@ -19643,7 +19712,7 @@ console.log(JSON.stringify(args));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("subscription tool was not registered");
 
-    const topic = dispatchIssueSubject("LEGION-1", ">");
+    const topic = legacyDispatchIssueSubject("LEGION-1", ">");
     await subscribeTool.execute("", { topics: [topic] });
     expect(await followedTopics(fixture.tools, context)).toContain(topic);
 
@@ -19689,7 +19758,7 @@ console.log(JSON.stringify(args));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("subscription tool was not registered");
 
-    const topic = dispatchIssueSubject("LEGION-1", ">");
+    const topic = legacyDispatchIssueSubject("LEGION-1", ">");
     await subscribeTool.execute("", { topics: [topic] });
     expect(await followedTopics(fixture.tools, context)).toContain(topic);
 
@@ -21065,7 +21134,7 @@ describe("consumer delivery", () => {
   });
 
   test("the session file carries the follows map only when it changes, and either shape restores", async () => {
-    const issueTopic = dispatchIssueSubject("INFRA-7", ">");
+    const issueTopic = legacyDispatchIssueSubject("INFRA-7", ">");
 
     const first = await bootConsumer("consumer-follows-a");
     await first.follow(issueTopic);
@@ -21114,7 +21183,7 @@ describe("consumer delivery", () => {
   // is the control: it shows the ledger does write its state here when the host is on this
   // session (dispatch://INFRA-812).
   test("appends no ledger state of this session to the conversation the host moved to", async () => {
-    const kept = dispatchIssueSubject("INFRA-812", ">");
+    const kept = legacyDispatchIssueSubject("INFRA-812", ">");
     let live = SESSION;
     const session = await bootConsumer("consumer-state-not-carried", {
       hostSessionID: () => live,
@@ -21147,7 +21216,7 @@ describe("consumer delivery", () => {
   // subscription added back on any followed topic fails here.
   test("holds exactly its relay subject and its agent-stream control subject, and no other", async () => {
     const session = await bootConsumer("consumer-subscription-set");
-    await session.follow(dispatchIssueSubject("INFRA-771", ">"));
+    await session.follow(legacyDispatchIssueSubject("INFRA-771", ">"));
     await session.follow("notifications.team.alpha");
     await settle();
     await session.tick();
@@ -21505,8 +21574,8 @@ describe("consumer delivery", () => {
   });
 
   test("a relayed subscription removal registers the session again without the topic, and stops taking its frames", async () => {
-    const issueTopic = dispatchIssueSubject("INFRA-9", ">");
-    const issueSubject = dispatchIssueSubject("INFRA-9", "issue.updated");
+    const issueTopic = legacyDispatchIssueSubject("INFRA-9", ">");
+    const issueSubject = legacyDispatchIssueSubject("INFRA-9", "issue.updated");
     const session = await bootConsumer("consumer-removal");
     await session.follow(issueTopic);
     await settle();
@@ -21707,8 +21776,8 @@ describe("consumer delivery", () => {
     const WHOLE = `${CARRIED}\n\nThe second paragraph, past where the event stopped.`;
     /** The topic the session follows, and the subject the comment event is published on: the
      *  frame reaches the session as its own consumer's relay of that subject. */
-    const CUT_TOPIC = dispatchIssueSubject("INFRA-370", ">");
-    const CUT_SUBJECT = dispatchIssueSubject("INFRA-370", "comment.created");
+    const CUT_TOPIC = legacyDispatchIssueSubject("INFRA-370", ">");
+    const CUT_SUBJECT = legacyDispatchIssueSubject("INFRA-370", "comment.created");
 
     /** The payload the event carries: the comment row with its body cut (`body_truncated`), or,
      *  for `omitted`, the stand-in a bus refusal leaves behind - the row's short top-level fields
