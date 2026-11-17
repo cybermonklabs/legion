@@ -374,14 +374,9 @@ the fills live in workflows that run there.
   so the entry it saves after a Go bump holds nothing the older Go built; docs-site.yaml's build,
   which docs-pages.yaml calls on main, is the one such job. Each family keeps one
   entry, refreshed only when Go is bumped. Do not
-  key on go.sum without deleting the entry the new key replaces: every go.sum change would leave a
-  whole entry, up to a gigabyte, for seven days. A go.sum change downloads only the changed
-  modules, and Go's build cache is content-addressed, so a stale entry costs a run only what
-  changed; where that is most of the build, as for `go-envoy-infra`, whose linux vet took 83 to 85%
-  of what the same vet for darwin took with nothing cached, from an eleven-day-old entry, key on the
-  hash of the module files too and delete
-  the replaced entry, as ci-caches.yaml's `envoy-infra` and `envoy-infra-superseded` jobs do. Share
-  a family only with the jobs that build the same
+  key on go.sum: every go.sum change would leave a whole entry, up to a gigabyte, for seven days. A
+  go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a
+  stale entry costs a run only what changed. Share a family only with the jobs that build the same
   packages, or whichever job saves first owns the entry the others then miss.
 - Add no `actions/cache/save` step here, and no `if:` that tests `github.event_name == 'push'` or
   compares `github.ref` with a branch ref: the workflow runs on no push, so such a condition gates
@@ -394,10 +389,7 @@ the fills live in workflows that run there.
   job.
 - The release workflows' Go builds (release.yaml's `legion_build`, release-envoy-infra.yaml's
   `build`) restore `go-daemon` and `go-envoy-infra` and save nothing, so they keep the prefix as
-  `restore-keys` on main too: an entry they never save cannot grow. `check-ci-filters.sh` holds
-  their keys and paths to ci-caches.yaml's save as it holds ci.yaml's, and so it does any other
-  workflow job's `actions/cache/restore` step of a family ci-caches.yaml fills (it reads no
-  `actions/cache` step and no composite action's restore).
+  `restore-keys` on main too: an entry they never save cannot grow.
 - `.github/actions/setup-bun` reads and writes its cache only on main; use it as it is.
 
 ## The merge queue runs the router too
