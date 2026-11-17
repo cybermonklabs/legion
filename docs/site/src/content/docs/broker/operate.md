@@ -1167,12 +1167,31 @@ shows both). A `429` that the Azure token endpoint answers and the proxy forward
 it keeps its call line at INFO, which names its answer id and its status, and writes no refusal
 line.
 
+Beside those, the proxy writes one line for each tunnel it opens and one for each dial it does
+not make, which is the whole of what the broker records about where a command went: a tunnel
+carries bytes the proxy never reads, so no call line is written for one.
+
+- `airlock proxy: a tunnel`, at INFO, once a tunnel is open. It names the caller — `enrollment`,
+  `grant`, and `session` and `runtime`, the session the grant belongs to and the runtime it runs
+  as — the `issue` the grant's reason named, the `host` and `port` the `CONNECT` asked for, and
+  the `address` the broker opened the socket to, which is the address its own check read rather
+  than a second lookup's.
+- `airlock proxy: a dial that did not happen`, at WARNING, for a dial the proxy refused or could
+  not make, on a `CONNECT`, a bound host's request and a plain-HTTP request alike. It names the
+  same fields and two more: `failure`, which is `refused` (an address this proxy never dials,
+  a private one or one inside `BROKER_AIRLOCK_CLUSTER_RANGES`), `unresolved` (a host that
+  resolves to no address) or `unreachable` (every address was dialled and none answered); and
+  `reason`, the broker's own words. A refused address writes this line beside the refusal's own,
+  the first saying where the command asked to go and the second how it was answered.
+
 Each field whose text the caller chose is cut to its first 256 bytes, so whatever a caller sends,
 each line stays within one Cloud Logging entry. On the refusal line those are the method, the
 host, a reason that names the host, the path and the correlation id; on the call line, the
-method, the host and the path, which is all of the caller's text it names.
+method, the host and the path, which is all of the caller's text it names; on a tunnel's line and
+a failed dial's, the host and that dial's reason, which names it.
 
-No refusal line holds a secret's value or a placeholder, and the API port's line holds no message
+No refusal line holds a secret's value or a placeholder, and no tunnel's or failed dial's line
+does either: neither reads a byte of what a command sent. The API port's line holds no message
 text either: it names the code. Each answer, a refusal or not, also counts in
 `broker_answers_total` ([Metrics](#metrics)), which is the one record of the API port's `429` and
 of a device grant's poll answers.
