@@ -54,15 +54,20 @@ func TestPullRequestNamedTakesEveryNameGitHubCanHaveAndNoOther(t *testing.T) {
 }
 
 // The evidence that ends an owed refusal is one answer of GitHub, to the absence query asked with
-// the token of the read GitHub refused, that shows the repository readable and the pull request
-// absent (pullRequestAbsent; the second reader of cybermonklabs/legion#4209 at ceeec40f46, D1).
-// The first case is GitHub's own answer to a number its repository does not have, read with `gh
-// api graphql`; every other answer, and every refusal the App holds no token for or that is no
-// 404, is no evidence, and the last two make no request at all.
+// the token of the read GitHub refused, that shows the repository readable, its pull requests
+// readable, and the pull request absent (pullRequestAbsent; the second reader of
+// cybermonklabs/legion#4209 at ceeec40f46, D1, and the review at ef5112db43, H1). The first case
+// is GitHub's own answer to a number its repository does not have, read with `gh api graphql`;
+// every other answer, and every refusal the App holds no token for or that is no 404, is no
+// evidence, and the last two make no request at all. The two after the first are what a token
+// that reads the repository and not its pull requests may be answered: the same answer with no
+// count of the pull requests, and a null count beside GitHub's FORBIDDEN for it. At ef5112db43 the
+// query asked no count, so the first of those ended a read.
 func TestOneAnswerOfGitHubIsTheEvidenceThatEndsARefusal(t *testing.T) {
 	const (
 		token    = "ghs_the_refused_reads_token"
 		notFound = `{"type":"NOT_FOUND","path":["repository","pullRequest"],"locations":[{"line":1,"column":98}],"message":"Could not resolve to a PullRequest with the number of 7."}`
+		counted  = `"pullRequests":{"totalCount":3856},`
 	)
 	notFoundRead := fmt.Errorf("fetch acme/widgets PR #7: %w (status 404)", ErrPullRequestNotFound)
 	for _, kase := range []struct {
@@ -75,19 +80,23 @@ func TestOneAnswerOfGitHubIsTheEvidenceThatEndsARefusal(t *testing.T) {
 		requests int32
 	}{
 		{"githubs_answer_of_a_number_the_repository_does_not_have", notFoundRead, token, http.StatusOK,
-			`{"data":{"repository":{"pullRequest":null}},"errors":[` + notFound + `]}`, true, 1},
+			`{"data":{"repository":{` + counted + `"pullRequest":null}},"errors":[` + notFound + `]}`, true, 1},
+		{"no_count_of_the_pull_requests", notFoundRead, token, http.StatusOK,
+			`{"data":{"repository":{"pullRequest":null}},"errors":[` + notFound + `]}`, false, 1},
+		{"a_null_count_and_forbidden_on_it", notFoundRead, token, http.StatusOK,
+			`{"data":{"repository":{"pullRequests":null,"pullRequest":null}},"errors":[` + notFound + `,{"type":"FORBIDDEN","path":["repository","pullRequests"],"message":"Resource not accessible by integration"}]}`, false, 1},
 		{"a_null_repository", notFoundRead, token, http.StatusOK,
 			`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve to a Repository with the name 'acme/widgets'."}]}`, false, 1},
 		{"forbidden_on_the_pull_request", notFoundRead, token, http.StatusOK,
-			`{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"FORBIDDEN","path":["repository","pullRequest"],"message":"Resource not accessible by integration"}]}`, false, 1},
+			`{"data":{"repository":{` + counted + `"pullRequest":null}},"errors":[{"type":"FORBIDDEN","path":["repository","pullRequest"],"message":"Resource not accessible by integration"}]}`, false, 1},
 		{"not_found_beside_another_error", notFoundRead, token, http.StatusOK,
-			`{"data":{"repository":{"pullRequest":null}},"errors":[` + notFound + `,{"type":"FORBIDDEN","path":["repository"],"message":"Resource not accessible by integration"}]}`, false, 1},
+			`{"data":{"repository":{` + counted + `"pullRequest":null}},"errors":[` + notFound + `,{"type":"FORBIDDEN","path":["repository"],"message":"Resource not accessible by integration"}]}`, false, 1},
 		{"not_found_on_another_path", notFoundRead, token, http.StatusOK,
-			`{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","path":["repository","issue"],"message":"Could not resolve to an Issue with the number of 7."}]}`, false, 1},
+			`{"data":{"repository":{` + counted + `"pullRequest":null}},"errors":[{"type":"NOT_FOUND","path":["repository","issue"],"message":"Could not resolve to an Issue with the number of 7."}]}`, false, 1},
 		{"a_null_pull_request_and_no_error", notFoundRead, token, http.StatusOK,
-			`{"data":{"repository":{"pullRequest":null}}}`, false, 1},
+			`{"data":{"repository":{` + counted + `"pullRequest":null}}}`, false, 1},
 		{"the_pull_request_github_now_answers", notFoundRead, token, http.StatusOK,
-			`{"data":{"repository":{"pullRequest":{"number":7}}}}`, false, 1},
+			`{"data":{"repository":{` + counted + `"pullRequest":{"number":7}}}}`, false, 1},
 		{"a_null_data", notFoundRead, token, http.StatusOK,
 			`{"data":null,"errors":[{"type":"INTERNAL","message":"Something went wrong while executing your query."}]}`, false, 1},
 		{"status_502", notFoundRead, token, http.StatusBadGateway, `{"message":"Server Error"}`, false, 1},
@@ -104,8 +113,11 @@ func TestOneAnswerOfGitHubIsTheEvidenceThatEndsARefusal(t *testing.T) {
 				if got := r.Header.Get("Authorization"); got != "Bearer "+token {
 					t.Errorf("the question was asked with %q, want the refused read's own token", got)
 				}
-				if query != absenceQuery || variables["owner"] != "acme" || variables["name"] != "widgets" || variables["number"] != float64(7) {
-					t.Errorf("the question asked %q with %v, want the absence query of acme/widgets#7", query, variables)
+				if !strings.Contains(query, "pullRequests { totalCount }") || !strings.Contains(query, "pullRequest(number: $number) { number }") {
+					t.Errorf("the question asked %q, want the count of the repository's pull requests and the pull request in one query", query)
+				}
+				if variables["owner"] != "acme" || variables["name"] != "widgets" || variables["number"] != float64(7) {
+					t.Errorf("the question asked about %v, want acme/widgets#7", variables)
 				}
 				w.WriteHeader(kase.status)
 				fmt.Fprint(w, kase.answer)

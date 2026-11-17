@@ -24,10 +24,12 @@ package delivery
 // row a read of GitHub wrote. An insert of the release before, and its update of a row no read
 // marked, owe nothing: the reconcile's open arm reads such an open row, its merged arm a merged
 // one once, and a closed one stays closed, which is no basis. An envelope leaves the intake with
-// no record of its pull request only where it names no pull request GitHub can have or Postgres
-// refuses its values (Intake.deliver); an envelope whose record the database cannot take now is
-// handed back, and so stays with NATS for as long as the stream keeps it, 72 hours, as one a stop
-// hands back and one a lapsed hold leaves outstanding for the next holder do.
+// no record of its pull request only where it, or its repository's canonical name, names no pull
+// request GitHub can have, or GitHub answers it with a value no head row holds (Intake.deliver):
+// each is checked where its row is built, before any statement. Every failure of a statement of
+// the record is the database not taking it now, so the envelope is handed back, and stays with
+// NATS for as long as the stream keeps it, 72 hours, as one a stop hands back and one a lapsed
+// hold leaves outstanding for the next holder do.
 //
 // No time decides which owed read a read answers. Each owe gives the row a new revision, a value
 // of the table's own sequence, and a read deletes the row only at the revision it read before it
@@ -99,13 +101,14 @@ const (
 // every failure it reads. Outside a GitHub outage it bounds what forged envelopes cost: at most 50
 // reads of a pull request a pass and, for each of them that GitHub answers 404, one question of
 // GitHub's GraphQL API, one point of its budget, whether the repository holds it
-// (pullRequestAbsent), and none of them taken from a failure. A repository the App is not
-// installed on costs one installation lookup a pass however many of its refusals the pass reads
-// (passInstallations). During an outage the refusals a pass reads fail and become failures, so
-// they take failure reads after it. A refusal of a number a repository the App reads does not have
-// ends at its first read, so N such forged envelopes are gone after about N/50 passes; a refusal
-// in a repository the App cannot read stays, and is read at most once a pass, the fewest reads
-// first.
+// (pullRequestAbsent), and none of them taken from a failure. The failures a pass reads ask the
+// same question for each that GitHub now answers 404, up to PullRequestHeadBatch more, so a pass
+// asks up to 250 in all. A repository the App is not installed on costs one installation lookup a
+// pass however many of its refusals the pass reads (passInstallations). During an outage the
+// refusals a pass reads fail and become failures, so they take failure reads after it. A refusal
+// of a number a repository the App reads does not have ends at its first read, so N such forged
+// envelopes are gone after about N/50 passes; a refusal in a repository the App cannot read stays,
+// and is read at most once a pass, the fewest reads first.
 const RefusedReadsPerPass = 50
 
 // owedReadWriteTimeout bounds the write of an owed read the intake makes at each delivery whose
@@ -149,13 +152,27 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 // is the one a later read must answer for, and a read that read the row's revision before this
 // owe settles nothing (settleOwedRead). It keeps the count of the reconcile's reads, so publishing
 // the same envelope again moves no row ahead of the rows that have been read as often.
+//
+// The row is built here, and its values are checked here, before any statement: the name given,
+// which the read of its canonical name is a statement of, and then the canonical name, with the
+// number, must be a pull request GitHub can have (checkPullRequestKey), else the answer is
+// errNoPullRequestNamed and nothing is written. The canonical name is the one value of the row no
+// envelope gives: it is a repo_projects row's renamed_to, which the settings route holds to
+// `owner/name` alone (api's parseRepoRename, externalRef) and direct SQL to nothing, so a rename to
+// a name of 3,500 characters would otherwise fail the insert at the btree of the table (SQLSTATE
+// 54000) at every delivery. The reason is one of this package's two constants. So no value this
+// writes is one the table refuses, and a failure of a statement is the database's alone, which
+// the intake hands back (recordRefused).
 func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason) error {
+	if err := checkPullRequestKey(given, number); err != nil {
+		return fmt.Errorf("the read %.140q#%d is owed: %w", given, number, err)
+	}
 	repoFull, err := refs.CanonicalRepo(ctx, pool, given)
 	if err != nil {
 		return err
 	}
-	if _, _, err := splitRepo(repoFull); err != nil {
-		return err
+	if err := checkPullRequestKey(repoFull, number); err != nil {
+		return fmt.Errorf("the read %s#%d is owed under its canonical name: %w", given, number, err)
 	}
 	if _, err := pool.Exec(ctx, `
 		insert into pull_request_reads_owed (repo, number, reason) values ($1, $2, $3)

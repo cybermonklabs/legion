@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -107,9 +108,9 @@ func PullRequestHeadState(state string, merged bool) string {
 // envelope: the reconcile's passes read the rows that exist, so a row no write ever made is
 // offered to nothing else. Where that record cannot be written either, the envelope is handed
 // back for redelivery instead, since both of the statements behind the write are `on conflict …
-// do update` and a redelivery writes the same pair. A failure Postgres gives for the values
-// themselves (valuesRefused) is marked as well, and deliver acknowledges it at once instead,
-// since no redelivery hands Postgres other values.
+// do update` and a redelivery writes the same pair. A failure no attempt can get past is no
+// failure of a statement: the values of the row are checked where the row is built, before any
+// statement (checkHeadRow), and a value no row holds is errNoRowHolds, not this.
 //
 // It marks every failure on the way to that write that a later attempt may get past, because
 // they all end the same way: a read of Postgres (the repository's canonical name, the stored row
@@ -123,6 +124,63 @@ var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
 // markHeadNotStored marks err as ErrHeadNotStored, keeping err itself inside the mark.
 func markHeadNotStored(err error) error {
 	return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+}
+
+// errNoRowHolds marks a pull request's head row that holds a value no row of pull_request_heads,
+// or of what the same write makes, holds (checkHeadRow). The values are GitHub's answer, so the
+// same read gives the same values, and no attempt of the write gets past them.
+var errNoRowHolds = errors.New("a value no row holds")
+
+// headRefBound is the most bytes a value of a head row that an index holds may have, other than
+// the repository: the head commit (pull_request_heads_issue_head, pull_request_heads_repo_head)
+// and the base branch and the merge commit, which a merge writes into branch_commits' primary key
+// (repo, branch, sha). It is so much that no commit GitHub names (40 or 64 hexadecimal digits) and
+// no branch GitHub keeps comes near it, and so little that the widest of those entries, with a
+// repository of 140 bytes and a branch and a commit of 1,024 each, stays under the btree's 2,704
+// bytes (SQLSTATE 54000 past it). No index holds the head branch, the title or the URL, so none of
+// them is bounded.
+const headRefBound = 1024
+
+// checkHeadRow is nil where every value of head is one the write of the row takes, and names the
+// first that is not otherwise: the one check of a head row, made where every writer's row is
+// written (UpsertPullRequestHead), so that no caller writes a row of a value it did not check and
+// no failure of a statement is read as the values' own. The repository and the number key the row
+// and the read its triggers owe (pull_request_heads_older_read, pull_request_heads_unread_write),
+// so they must be a pull request GitHub can have (checkPullRequestKey, errNoPullRequestNamed): the
+// repository is a canonical name, which repo_projects gives and no envelope does. Every text value
+// must be UTF-8 holding no NUL, which no text or jsonb value of Postgres holds (SQLSTATE 22021 and
+// 22P05; the attribution's event carries the URL in jsonb), the state one the column's check takes,
+// and each value an index holds at most headRefBound bytes. Each of those is errNoRowHolds.
+func checkHeadRow(head PullRequestHead) error {
+	if err := checkPullRequestKey(head.Repo, head.Number); err != nil {
+		return err
+	}
+	switch head.State {
+	case "open", "closed", "merged":
+	default:
+		return fmt.Errorf("%w: the state of %s#%d is %.40q, not open, closed or merged", errNoRowHolds, head.Repo, head.Number, head.State)
+	}
+	issue := ""
+	if head.IssueKey != nil {
+		issue = *head.IssueKey
+	}
+	for _, value := range []struct {
+		name, text string
+		bounded    bool
+	}{
+		{"head commit", head.HeadSHA, true}, {"head branch", head.HeadRef, false},
+		{"base branch", head.BaseRef, true}, {"merge commit", head.MergeCommitSHA, true},
+		{"title", head.Title, false}, {"URL", head.URL, false},
+		{"issue", issue, false}, {"attribution source", head.AttributionSource, false},
+	} {
+		switch {
+		case !utf8.ValidString(value.text) || strings.ContainsRune(value.text, 0):
+			return fmt.Errorf("%w: the %s of %s#%d is not UTF-8 without NUL bytes", errNoRowHolds, value.name, head.Repo, head.Number)
+		case value.bounded && len(value.text) > headRefBound:
+			return fmt.Errorf("%w: the %s of %s#%d is %d bytes, over %d", errNoRowHolds, value.name, head.Repo, head.Number, len(value.text), headRefBound)
+		}
+	}
+	return nil
 }
 
 // UpsertPullRequestHead writes one pull request's head row. An event older than the one the row
@@ -216,8 +274,13 @@ func markHeadNotStored(err error) error {
 // held moved nothing — none of the three appends anything.
 //
 // Every error this function answers is ErrHeadNotStored: nothing of the row, the seed and the
-// events was written, and the caller may write all three again.
+// events was written, and the caller may write all three again. The two exceptions are the
+// refusals of checkHeadRow, made before any statement, errNoPullRequestNamed and errNoRowHolds:
+// nothing was written either, and no attempt with the same values gets past them.
 func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
+	if err := checkHeadRow(head); err != nil {
+		return err
+	}
 	seedsBranch := head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
 	records := broker != nil && head.AttributionComplete
 	if !seedsBranch && !records {
@@ -1140,11 +1203,13 @@ func ReadThroughCommitPulls(
 // answers for it, or once one answer of GitHub shows the repository readable and the pull request
 // absent (pullRequestAbsent). A record that could not be written is marked ErrHeadNotStored, as
 // every other failure is (markHeadNotStored): Intake.deliver then owes the read as a failure and
-// acknowledges the envelope, or hands it back where the database cannot take that record now,
-// and a failure Postgres gives for the values themselves is acknowledged at once (valuesRefused,
-// recordRefused). The name and the number were checked before this runs (pullRequestNamed); a
-// canonical name that is not `owner/repo` is returned bare, since the same envelope delivered
-// again fails on it again.
+// acknowledges the envelope, or hands it back where the database cannot take that record now.
+// The name and the number were checked before this runs (pullRequestNamed). The canonical name is
+// checked the same way before anything is read of GitHub (checkPullRequestKey), since it comes
+// from repo_projects and not from the envelope, and one that names no pull request GitHub can
+// have is returned bare (errNoPullRequestNamed), since the same envelope delivered again fails on
+// it again; so is a GitHub answer that holds a value no head row holds (errNoRowHolds,
+// checkHeadRow).
 //
 // The read is spared where GitHub has already answered for the event (headReadCovers): the
 // stored row is GitHub's answer to a read whose updated_at is a later second than the envelope's.
@@ -1162,10 +1227,10 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	if err != nil {
 		return headRead{}, markHeadNotStored(err)
 	}
-	owner, repo, err := splitRepo(repoFull)
-	if err != nil {
-		return headRead{}, err
+	if err := checkPullRequestKey(repoFull, number); err != nil {
+		return headRead{}, fmt.Errorf("the canonical name of %s: %w", given, err)
 	}
+	owner, repo, _ := strings.Cut(repoFull, "/")
 	covered, err := headReadCovers(ctx, in.pool, repoFull, number, envelopeTime(payload["updated_at"]))
 	if err != nil {
 		return headRead{}, markHeadNotStored(err)

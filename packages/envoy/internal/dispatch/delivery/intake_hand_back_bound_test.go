@@ -8,12 +8,17 @@ package delivery
 // publish route can send an envelope (dispatch://INFRA-3911).
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 )
 
@@ -27,19 +32,30 @@ import (
 // columns, so at ac1460389fcc the first read of Postgres failed, the envelope was handed back to
 // the cap, the owed record failed the same way, and it was handed back for ever. The next two
 // name no pull request GitHub can have either. The fourth is the class past a check of the name:
-// a pull request GitHub answers with a title holding a NUL byte, which Postgres refuses as a value
-// (SQLSTATE 22021), so the head write fails at every delivery for the values alone; before the
-// fix that cost each envelope the cap's deliveries and an owed read that fails the same way at
-// every pass. The last four are names GitHub cannot have (review of cybermonklabs/legion#4209 at
-// ceeec40f46, B4): the reviewer's probe, a repository name of 3,500 random characters, which the
-// btree of pull_request_reads_owed refused (SQLSTATE 54000; a name Postgres compresses below the
-// btree's limit, 3,500 of one letter, is not refused there), so at ceeec40f46 each was handed back
-// for ever and #7 had no head (TestReview7AnOwedRecordTheIndexRefusesHoldsASlot:
-// `head_7_after=0s deliveries=25 num_ack_pending=4`); an owner of 40 characters and a name of
-// 101, which the table holds, so at ceeec40f46 each read GitHub and owed a refusal for a
-// repository GitHub cannot have; and a character no repository name holds.
+// a pull request GitHub answers with a title holding a NUL byte, which no text column holds
+// (Postgres refuses it with SQLSTATE 22021), so the head write would fail at every delivery for
+// the values alone; before the fix that cost each envelope the cap's deliveries and an owed read
+// that fails the same way at every pass, and since the review of cybermonklabs/legion#4209 at
+// ef5112db43 (B5) the head row's own check refuses it before any statement, where until then a
+// sort of Postgres's SQLSTATE took it for the values (valuesRefused). The next four are names
+// GitHub cannot have (review of cybermonklabs/legion#4209 at ceeec40f46, B4): the reviewer's
+// probe, a repository name of 3,500 random characters, which the btree of pull_request_reads_owed
+// refused (SQLSTATE 54000; a name Postgres compresses below the btree's limit, 3,500 of one
+// letter, is not refused there), so at ceeec40f46 each was handed back for ever and #7 had no head
+// (TestReview7AnOwedRecordTheIndexRefusesHoldsASlot: `head_7_after=0s deliveries=25
+// num_ack_pending=4`); an owner of 40 characters and a name of 101, which the table holds, so at
+// ceeec40f46 each read GitHub and owed a refusal for a repository GitHub cannot have; and a
+// character no repository name holds. The last two are such names reached through a rename: the
+// envelope names a repository GitHub can have, and repo_projects maps it to a canonical name the
+// settings route bounded only to `owner/name` (api's externalRef), of 3,500 random characters and
+// of 101. With no failure of the owed record ending an envelope, the first of them was handed back
+// for ever and the second owed a refusal for a repository GitHub cannot have, until the rows'
+// values were checked where the rows are built.
 func TestAnEnvelopeNoDeliveryCanGetPastIsFinalAtItsFirstDelivery(t *testing.T) {
-	const namesNoPullRequest = "names no pull request"
+	const (
+		namesNoPullRequest = "names no pull request"
+		noRowHolds         = "a value no row holds"
+	)
 	for _, poison := range []struct {
 		name   string
 		repo   string
@@ -47,21 +63,28 @@ func TestAnEnvelopeNoDeliveryCanGetPastIsFinalAtItsFirstDelivery(t *testing.T) {
 		title  string
 		// line is what the line each of these envelopes logs says, and level its level.
 		line, level string
+		// renamedTo, where set, is the canonical name repo_projects maps repo to.
+		renamedTo string
 	}{
-		{"number_3000000000_and_up", "acme/widgets", func(i int) int { return 3_000_000_000 + i }, "", namesNoPullRequest, "WARN"},
-		{"number_zero_and_below", "acme/widgets", func(i int) int { return -i }, "", namesNoPullRequest, "WARN"},
-		{"repository_not_owner_name", "acmewidgets", func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN"},
-		{"an_answer_the_database_refuses", "acme/widgets", func(i int) int { return 900 + i }, "Change\x00", "Postgres refused the values", "ERROR"},
-		{"repository_name_of_3500_random_characters", "acme/" + randomName(3500), func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN"},
-		{"owner_of_40_characters", strings.Repeat("a", 40) + "/widgets", func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN"},
-		{"repository_name_of_101_characters", "acme/" + strings.Repeat("w", 101), func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN"},
-		{"a_character_no_repository_name_holds", "acme/wid gets", func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN"},
+		{"number_3000000000_and_up", "acme/widgets", func(i int) int { return 3_000_000_000 + i }, "", namesNoPullRequest, "WARN", ""},
+		{"number_zero_and_below", "acme/widgets", func(i int) int { return -i }, "", namesNoPullRequest, "WARN", ""},
+		{"repository_not_owner_name", "acmewidgets", func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN", ""},
+		{"an_answer_the_database_refuses", "acme/widgets", func(i int) int { return 900 + i }, "Change\x00", noRowHolds, "ERROR", ""},
+		{"repository_name_of_3500_random_characters", "acme/" + randomName(3500), func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN", ""},
+		{"owner_of_40_characters", strings.Repeat("a", 40) + "/widgets", func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN", ""},
+		{"repository_name_of_101_characters", "acme/" + strings.Repeat("w", 101), func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN", ""},
+		{"a_character_no_repository_name_holds", "acme/wid gets", func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN", ""},
+		{"a_rename_to_a_name_of_3500_random_characters", renamedAwayRepo, func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN", "acme/" + randomName(3500)},
+		{"a_rename_to_a_name_of_101_characters", renamedAwayRepo, func(i int) int { return 900 + i }, "", namesNoPullRequest, "WARN", "acme/" + strings.Repeat("r", 101)},
 	} {
 		t.Run(poison.name, func(t *testing.T) {
 			fastPageRetries(t)
 			logs := captureLogs(t)
 			pool, ctx := deliveryTestPool(t)
 			issue := seedHeadIssue(t, ctx, pool, 4209)
+			if poison.renamedTo != "" {
+				renameRepository(t, ctx, pool, poison.repo, poison.renamedTo)
+			}
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
@@ -142,72 +165,140 @@ func randomName(n int) string {
 	return string(name)
 }
 
-// The owed record's failure is sorted by its cause (recordRefused; review of
-// cybermonklabs/legion#4209 at ceeec40f46, B4). A failure the envelope's values cause, SQLSTATE
-// class 22, 23 or 54, can never be written, so the envelope ends at its first delivery with one
-// ERROR line and holds no slot. Every other failure is the database not taking a record now, and
-// the envelope is handed back until it does (TestAnOwedRecordTheDatabaseRefusesAtSomeDeliveriesLosesNoHead,
-// with the table locked, and the hand-back rows of intake_head_write_test.go, with SQLSTATE
-// 55P03): that is the side this does not change. Each case makes every write of
-// pull_request_reads_owed fail with one SQLSTATE, GitHub answers the pull requests of acme/widgets
-// with a 500, so each of intakeMaxAckPending envelopes of acme/widgets needs its record, and then
-// GitHub's own event of other/tools#7, which needs none, must have its head. At ceeec40f46 the
-// classes 23 and 54 were handed back for ever, so #7 had none.
-func TestAnOwedRecordRefusedForItsValuesEndsItsEnvelope(t *testing.T) {
-	for _, sqlstate := range []string{"54000", "23505", "22001"} {
+// No failure of the owed record ends an envelope once the envelope's name is checked
+// (pullRequestNamed): R4 of dispatch://INFRA-3992, "While Dispatch's database cannot take that
+// record, the bus keeps the event, for as long as the bus keeps events." The values of the record
+// are the repository and the number alone, which that check holds to what the table takes
+// (TestEachValueTheNameCheckTakesIsARowTheTablesTake), so a failure of its insert says nothing of
+// them, whatever its SQLSTATE. A unique violation (23505) of the upsert, for one, is transient:
+// PostgreSQL's page on INSERT says `ON CONFLICT` can raise one while a unique index of the table is
+// built or rebuilt concurrently, and the review of cybermonklabs/legion#4209 at ef5112db43 counted
+// 6 and 6 of them beside `REINDEX INDEX CONCURRENTLY` (B5; its red team's F1). At ef5112db43 a
+// code of class 22, 23 or 54 was read as the values' own fault, and the envelope was acknowledged
+// at its first delivery with nothing owed, so the pull request had no head until its next event.
+//
+// Each case makes every write of pull_request_reads_owed fail with one SQLSTATE over two
+// deliveries, with GitHub answering the pull request's read with a 500, and then lets the table
+// take writes again. The envelope must be handed back while the fault lasts, owed once the
+// database takes the record, and acknowledged; once GitHub answers, one reconcile pass writes the
+// head of that same pull request, with no new event.
+func TestAnOwedRecordRefusedForAnyCauseLosesNoHead(t *testing.T) {
+	for _, sqlstate := range []string{"23505", "54000", "22001"} {
 		t.Run("sqlstate_"+sqlstate, func(t *testing.T) {
 			fastPageRetries(t)
 			logs := captureLogs(t)
 			pool, ctx := deliveryTestPool(t)
-			issue := seedHeadIssue(t, ctx, pool, 7)
+			issue := seedHeadIssue(t, ctx, pool, 4213)
+			const (
+				number = 4213
+				head   = "4213421342134213421342134213421342134213"
+			)
 			fake := newFakeGitHub(t)
-			acme := serveGitHubPulls(t, fake, "acme/widgets")
-			other := serveGitHubPulls(t, fake, "other/tools")
+			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			acme.mu.Lock()
-			acme.failing = true
-			acme.mu.Unlock()
-			refuseOwedReadsWith(t, ctx, pool, sqlstate)
+			branch, body := "legion/"+issue, "Dispatch: "+issue
+			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+			github.set("acme/widgets", number, "open", head, branch, body, at)
+			github.mu.Lock()
+			github.failing = true
+			github.mu.Unlock()
+			restore := refuseOwedReadsWith(t, ctx, pool, sqlstate)
 
 			natsClient := intakeTestClient(t)
 			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
 				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
-			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
-			for n := 1; n <= intakeMaxAckPending; n++ {
-				publishPullRequestEnvelope(t, natsClient, "acme", "widgets", n,
-					prEnvelope("acme/widgets", n, "opened", fakeSHA("a", n), "feature/x", "", at))
-			}
-			const head = "7777777777777777777777777777777777777777"
-			branch, body := "legion/"+issue, "Dispatch: "+issue
-			other.set("other/tools", 7, "open", head, branch, body, at)
-			published := time.Now()
-			publishPullRequestEnvelope(t, natsClient, "other", "tools", 7,
-				prEnvelope("other/tools", 7, "opened", head, branch, body, at))
-			waitFor(t, 30*time.Second, func() bool {
-				return headRowCount(t, ctx, &Intake{pool: pool}, "other/tools", 7) == 1
-			}, func() string {
-				return fmt.Sprintf("30 s after GitHub's own event of other/tools#7, behind %d envelopes whose owed record Postgres refuses with SQLSTATE %s, #7 has no head row: they hold every in-flight slot; the durable is %+v",
-					intakeMaxAckPending, sqlstate, deliveryConsumerInfo(t, natsClient))
-			})
-			t.Logf("sqlstate=%s other_tools_7_head_after=%s", sqlstate, time.Since(published).Round(time.Millisecond))
-			awaitAcknowledged(t, natsClient)
-			if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != uint64(intakeMaxAckPending+1) {
-				t.Errorf("the durable made %d deliveries of %d envelopes, want one each: an envelope whose record its values make Postgres refuse was handed back", delivered, intakeMaxAckPending+1)
-			}
-			// The one ERROR line of an envelope deliver ends for its record names the record's
-			// failure (record_error); the hand-back's line, which also names it, is a WARN.
-			lines := 0
-			for _, record := range logs() {
-				if _, named := record["record_error"]; named && record["level"] == "ERROR" {
-					lines++
+			publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
+				prEnvelope("acme/widgets", number, "opened", head, branch, body, at))
+
+			// The second delivery is the first hand-back's; it comes headWriteRedeliverAfter after
+			// the first. An envelope ended at its first delivery is never delivered again.
+			faulted := uint64(0)
+			for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+				if faulted = deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; faulted >= 2 {
+					break
 				}
 			}
-			if lines != intakeMaxAckPending {
-				t.Errorf("%d ERROR lines name the owed read's failure, want one for each of the %d envelopes", lines, intakeMaxAckPending)
+			restore()
+
+			var info string
+			waitFor(t, 60*time.Second, func() bool {
+				stream, err := natsClient.JS().StreamInfo(bus.Stream)
+				if err != nil {
+					return false
+				}
+				consumer := deliveryConsumerInfo(t, natsClient)
+				info = fmt.Sprintf("%+v", consumer)
+				return consumer.AckFloor.Stream >= stream.State.LastSeq && consumer.NumAckPending == 0
+			}, func() string {
+				return "the intake did not acknowledge the envelope within 60 s of the database taking its owed read: " + info
+			})
+			delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before
+			owed := owedCount(t, ctx, pool, "acme/widgets", number)
+			github.mu.Lock()
+			github.failing = false
+			github.mu.Unlock()
+			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+			attributed, err := HeadAttributedTo(ctx, pool, issue, head)
+			t.Logf("sqlstate=%s deliveries_while_refused=%d deliveries=%d owed_after_acknowledgement=%d head_is_basis_after_one_pass=%v",
+				sqlstate, faulted, delivered, owed, attributed)
+			if faulted < 2 {
+				t.Errorf("the envelope was delivered %d time(s) in 30 s while the database refused its owed record with SQLSTATE %s, want it handed back: it was ended with nothing owed", faulted, sqlstate)
+			}
+			if owed != 1 {
+				t.Errorf("#%d was owed %d read(s) when the envelope was acknowledged, want 1: the envelope may go only once its record is written", number, owed)
+			}
+			if err != nil || !attributed {
+				t.Fatalf("HeadAttributedTo(%s, #%d's head) after the fault ends, GitHub answers again and one reconcile pass = %v, %v, want true: the database refused the owed record with SQLSTATE %s for a time, and that lost the head", issue, number, attributed, err, sqlstate)
+			}
+			// While the envelope is handed back, the operator sees the hand-back's WARN line at its
+			// first delivery, naming the record's failure; the second delivery's is DEBUG.
+			var lines []map[string]any
+			for _, record := range logs() {
+				if message, _ := record["msg"].(string); record["level"] == "WARN" && strings.Contains(message, "handing the envelope back") {
+					lines = append(lines, record)
+				}
+			}
+			if len(lines) != 1 {
+				t.Fatalf("%d WARN lines say the envelope is handed back over %d hand-backs, want 1: the line is written at the first delivery and then once every %d", len(lines), faulted, handBackLineEvery)
+			}
+			if cause, _ := lines[0]["record_error"].(string); lines[0]["deliveries"] != float64(1) || !strings.Contains(cause, "SQLSTATE "+sqlstate) {
+				t.Errorf("the hand-back's WARN line = %v, want it at delivery 1 and naming the record's failure, SQLSTATE %s", lines[0], sqlstate)
 			}
 		})
+	}
+}
+
+// The hand-back's WARN line is written at an envelope's first delivery and once every
+// handBackLineEvery deliveries after it, and at DEBUG at every other (logHandBack): an envelope
+// handed back every headWriteRedeliverAfter for the 72 hours of the bus is delivered up to 25,920
+// times. A delivery whose count cannot be read logs at WARN.
+func TestAHandedBackEnvelopeLogsItsCauseOnceEveryThirtyDeliveries(t *testing.T) {
+	logs := captureLogs(t)
+	cause := errors.New("ERROR: the test refuses writes of pull_request_reads_owed (SQLSTATE 55P03)")
+	for delivered := 1; delivered <= 61; delivered++ {
+		// Msg.Metadata reads the count from the reply subject of a message a subscription
+		// delivered, as JetStream writes it: $JS.ACK.<stream>.<consumer>.<delivered>.<stream
+		// sequence>.<consumer sequence>.<time>.<pending>.
+		logHandBack(&natsgo.Msg{Subject: "notifications.github.acme.widgets.pr.7", Sub: &natsgo.Subscription{},
+			Reply: fmt.Sprintf("$JS.ACK.ENVOY.dispatch-delivery.%d.%d.%d.1794892314678155619.0", delivered, delivered, delivered)},
+			"acme/widgets", 7, ErrHeadNotStored, cause)
+	}
+	logHandBack(&natsgo.Msg{Subject: "notifications.github.acme.widgets.pr.8"}, "acme/widgets", 8, ErrHeadNotStored, cause)
+	var warned []float64
+	for _, record := range logs() {
+		if record["level"] != "WARN" {
+			continue
+		}
+		if cause, _ := record["record_error"].(string); !strings.Contains(cause, "SQLSTATE 55P03") {
+			t.Errorf("a hand-back line %v does not name the record's failure", record)
+		}
+		delivered, _ := record["deliveries"].(float64)
+		warned = append(warned, delivered)
+	}
+	if want := []float64{1, 31, 61, 0}; !slices.Equal(warned, want) {
+		t.Errorf("61 deliveries of one envelope and one delivery with no count wrote WARN lines at deliveries %v, want %v", warned, want)
 	}
 }
 

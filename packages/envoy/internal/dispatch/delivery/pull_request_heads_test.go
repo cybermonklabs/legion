@@ -1588,10 +1588,10 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *tes
 //
 // The one failure it leaves unmarked is here too, since what the sentinel is worth is in the
 // line it draws. A repository name that is not `owner/repo` never reaches markHeadNotStored at
-// all: recordPullRequestHead splits the canonical name for itself, before any read, and returns
-// that failure bare, which is the line this case covers; every redelivery of the envelope
-// carries the same name. A rate limit is marked, and keeps GitHub's wait inside the mark, so the
-// line deliver logs as it owes the read names the limit.
+// all: recordPullRequestHead checks the canonical name for itself, before any read of GitHub
+// (checkPullRequestKey), and returns that failure bare, which is the line this case covers; every
+// redelivery of the envelope carries the same name. A rate limit is marked, and keeps GitHub's wait
+// inside the mark, so the line deliver logs as it owes the read names the limit.
 func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)

@@ -131,8 +131,8 @@ func refuseOwedReads(t *testing.T, ctx context.Context, pool *store.Pool) (resto
 	return refuseOwedReadsWith(t, ctx, pool, "55P03")
 }
 
-// refuseOwedReadsWith is refuseOwedReads with the SQLSTATE the trigger raises: a test of a
-// failure the envelope's values cause names one of classes 22, 23 and 54 (recordRefused).
+// refuseOwedReadsWith is refuseOwedReads with the SQLSTATE the trigger raises: whatever the code,
+// the intake hands the envelope back (recordRefused, TestAnOwedRecordRefusedForAnyCauseLosesNoHead).
 func refuseOwedReadsWith(t *testing.T, ctx context.Context, pool *store.Pool, sqlstate string) (restore func()) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, fmt.Sprintf(`

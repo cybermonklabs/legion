@@ -22,13 +22,14 @@ body: |-
     reconcile's next pass, up to 5 minutes and 30 seconds later, or sooner at the pull request's
     next event, and a result recorded at that head while GitHub answers still gets it at once,
     through the read for the result's own commit. A 404 ends the read only on one answer of
-    GitHub's GraphQL API, asked with the token of the refused read, that shows the repository
-    readable and the pull request absent; every other answer leaves the read owed, and no memory of
-    a pass ends one. Each row says why its read is owed, a failure (GitHub did not answer) or a
-    refusal (GitHub cannot give the pull request), and every pass reads each failure before any
-    refusal, with 50 reads a pass for refusals, so envelopes that name pull requests GitHub never
-    had take no read from a pull request an outage left owed; a pass looks the installation of each
-    repository up once, so a repository the App is not installed on costs it one lookup. A rate
+    GitHub's GraphQL API, asked with the token of the refused read, that shows the repository and
+    its pull requests readable (a count of its pull requests) and the pull request absent; every
+    other answer leaves the read owed, and no memory of a pass ends one. Each row says why its read
+    is owed, a failure (GitHub did not answer) or a refusal (GitHub cannot give the pull request),
+    and every pass reads each failure before any refusal, with 50 reads a pass for refusals, so
+    envelopes that name pull requests GitHub never had take no read from a pull request an outage
+    left owed; a pass looks the installation of each repository up once, so a repository the App
+    is not installed on costs it one lookup. A rate
     limit on one installation ends no read of the pass for another. A stored head row's time stops
     a read of GitHub, or wins against GitHub's answer, only where a read of GitHub wrote it (the new
     column `pull_request_heads.github_read_at`): a row an earlier release stored from an envelope,
@@ -45,11 +46,13 @@ body: |-
 
     An envelope that names no pull request GitHub can have (a number outside 1 to 2147483647, or a
     repository that is not `owner/name` with GitHub's own characters and lengths: an owner of at
-    most 39, a name of at most 100), one whose head write Postgres refuses for its values, and one
-    whose owed record Postgres refuses for its values (SQLSTATE class 22, 23 or 54), are
-    acknowledged at their first delivery with one log line. An envelope whose owed record the
-    database cannot take now, for any other cause, is handed back every 10 seconds until the
-    database takes it, for as long as the bus keeps the event, 72 hours.
+    most 39, a name of at most 100), one whose repository's canonical name breaks the same bounds,
+    and one GitHub answers with a value no head row holds (text with a NUL byte, for one), are
+    acknowledged at their first delivery with one log line: each row's values are checked where the
+    row is built, before any statement. Every failure of the owed record's statement, whatever its
+    SQLSTATE, hands the envelope back every 10 seconds until the database takes the record, for as
+    long as the bus keeps the event, 72 hours, and a WARN line names the failure at the first
+    delivery and then once every 30 deliveries.
 time: 2026-11-16T13:50:24.000000000Z
 custom:
     Issue: pr4209

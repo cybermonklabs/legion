@@ -111,11 +111,11 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 
 // answerAbsenceQuery answers POST /graphql for the one query the reconcile asks of GraphQL about
 // a refused read (absenceQuery), in GitHub's own shapes (pullRequestAbsent's doc comment): the
-// pull request a repository serveGitHubPulls serves holds, GitHub's NOT_FOUND on the path
-// repository.pullRequest for a number it does not hold, and a null repository with NOT_FOUND on
-// the path repository for one it does not serve, one the App is not installed on (notInstalled),
-// and one the installation lost (hidden). Each answer is taken before it is counted
-// (absenceQueries). Any other query is a test's mistake.
+// count of the pull requests a repository serveGitHubPulls serves, beside the pull request it
+// holds or GitHub's NOT_FOUND on the path repository.pullRequest for a number it does not hold,
+// and a null repository with NOT_FOUND on the path repository for one it does not serve, one the
+// App is not installed on (notInstalled), and one the installation lost (hidden). Each answer is
+// taken before it is counted (absenceQueries). Any other query is a test's mistake.
 func (f *fakeGitHub) answerAbsenceQuery(w http.ResponseWriter, r *http.Request) {
 	query, variables := decodeGraphQLRequest(f.t, r)
 	if !strings.Contains(query, "pullRequest(number: $number)") {
@@ -136,6 +136,7 @@ func (f *fakeGitHub) answerAbsenceQuery(w http.ResponseWriter, r *http.Request) 
 	_, notInstalled := f.notInstalled.Load(repo)
 	g.mu.Lock()
 	pull, known := g.pulls[int(number)]
+	counted := map[string]any{"totalCount": len(g.pulls)}
 	unread := g.hidden || notInstalled
 	g.mu.Unlock()
 	defer g.absenceQueries.Add(1)
@@ -143,10 +144,11 @@ func (f *fakeGitHub) answerAbsenceQuery(w http.ResponseWriter, r *http.Request) 
 	case unread:
 		mustEncode(f.t, w, nullRepositoryAnswer(repo))
 	case known:
-		mustEncode(f.t, w, map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"number": pull["number"]}}}})
+		mustEncode(f.t, w, map[string]any{"data": map[string]any{"repository": map[string]any{
+			"pullRequests": counted, "pullRequest": map[string]any{"number": pull["number"]}}}})
 	default:
 		mustEncode(f.t, w, map[string]any{
-			"data": map[string]any{"repository": map[string]any{"pullRequest": nil}},
+			"data": map[string]any{"repository": map[string]any{"pullRequests": counted, "pullRequest": nil}},
 			"errors": []any{map[string]any{"type": "NOT_FOUND", "path": []any{"repository", "pullRequest"},
 				"message": fmt.Sprintf("Could not resolve to a PullRequest with the number of %d.", int(number))}},
 		})

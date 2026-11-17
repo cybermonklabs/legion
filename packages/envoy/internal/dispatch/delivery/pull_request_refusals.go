@@ -28,40 +28,52 @@ type pullRequestRefusal struct {
 }
 
 // absenceQuery asks GitHub's GraphQL API about one pull request of one repository in one request,
-// so that one answer shows two facts at once: whether the credential reads the repository, and
-// whether the repository holds a pull request of that number. GraphQL's Int is 32 bits, which
-// every number pullRequestNamed lets through fits.
+// so that one answer shows three facts at once: whether the credential reads the repository,
+// whether it reads the repository's pull requests (pullRequests' totalCount, which only a
+// credential with the pull-requests permission is given), and whether the repository holds a pull
+// request of that number. GraphQL's Int is 32 bits, which every number pullRequestNamed lets
+// through fits.
 const absenceQuery = `query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) { pullRequest(number: $number) { number } }
+  repository(owner: $owner, name: $name) { pullRequests { totalCount } pullRequest(number: $number) { number } }
 }`
 
 // pullRequestAbsent answers whether GitHub's refusal of a read of a pull request is final: whether
 // one answer of GitHub, to absenceQuery asked with the token of the read GitHub refused, shows the
-// repository readable and the pull request absent. Then the repository holds no such pull request,
-// which R4 counts as a read that succeeded, and Dispatch keeps nothing for that number. That answer
-// is HTTP 200 with a repository object whose pullRequest is null, beside errors that are all of
+// repository readable, its pull requests readable, and the pull request absent. Then the
+// repository holds no such pull request, which R4 counts as a read that succeeded, and Dispatch
+// keeps nothing for that number. That answer is HTTP 200 with a repository object whose
+// pullRequests holds a totalCount and whose pullRequest is null, beside errors that are all of
 // type NOT_FOUND on the path repository.pullRequest. GitHub answers a number its repository does
-// not have, and an issue's number, so (read with `gh api graphql`):
+// not have, and an issue's number, so (read with `gh api graphql`, 2026-11-17):
 //
-//	{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","path":["repository","pullRequest"],"message":"Could not resolve to a PullRequest with the number of 2000000000."}]}
+//	{"data":{"repository":{"pullRequests":{"totalCount":3856},"pullRequest":null}},"errors":[{"type":"NOT_FOUND","path":["repository","pullRequest"],"message":"Could not resolve to a PullRequest with the number of 2000000000."}]}
+//
+// The count is the proof that the token can read pull requests of the repository at all. Without
+// it, a token that reads the repository and holds no pull-requests permission could be answered
+// a null pull request with NOT_FOUND for one that exists, and that would end a real pull request's
+// read and lose its head (hardening note H1 of the review of cybermonklabs/legion#4209 at
+// ef5112db43). GitHub's guide to forming GraphQL calls says a token that lacks the permissions a
+// resource needs gets an error that states them, so such a token gets no count; an answer with no
+// count, or a null one, is no evidence.
 //
 // Every other answer is no evidence, and the read stays owed: a refusal that is not GitHub's 404
 // or 410 of the pull request; one the App had no token for, since no installation covers the
 // repository; a null repository, which GitHub answers alike for a repository the token does not
-// read and for one that does not exist (NOT_FOUND on the path repository); an error of another
-// type, FORBIDDEN for one, or on another path; a pull request GitHub now answers; a status other
-// than 200; an answer that does not decode; and a request that failed, which is answered as the
-// error, so the pass keeps a rate limit (passRateLimit) and logs any other failure.
+// read and for one that does not exist (NOT_FOUND on the path repository); an answer with no count
+// of the pull requests; an error of another type, FORBIDDEN for one, or on another path; a pull
+// request GitHub now answers; a status other than 200; an answer that does not decode; and a
+// request that failed, which is answered as the error, so the pass keeps a rate limit
+// (passRateLimit) and logs any other failure.
 //
-// The token of the refused read is what makes the two facts one answer about that read: an
+// The token of the refused read is what makes the facts one answer about that read: an
 // installation that lost the repository between the two reads answers a null repository, and one
 // that has it again answers the pull request. No memory of a pass or of the process ends a record:
 // each refusal is asked about on its own, at its own read. The call is githubapp.Client.GraphQL,
 // the client the CI reconcile's batched read queries GitHub through (cireconcile.Reconciler.query),
 // held by the token's installation scope and by the App's GraphQL budget (githubapp.GraphQLScope).
-// It costs one request, one point of that budget, for each refusal of a 404 or a 410 a pass reads:
-// at most RefusedReadsPerPass from the refusals, and from the failures only a failure GitHub now
-// refuses so.
+// It costs one request, one point of that budget (the count included: `rateLimit { cost }` answers
+// 1), for each read of a 404 or a 410 a pass makes: at most RefusedReadsPerPass from the refusals,
+// and from the failures each that GitHub now refuses so, up to PullRequestHeadBatch more.
 func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *pullRequestRefusal) (bool, error) {
 	if refused == nil || refused.token == "" || !errors.Is(refused.err, ErrPullRequestNotFound) {
 		return false, nil
@@ -77,6 +89,9 @@ func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *p
 	var answer struct {
 		Data struct {
 			Repository *struct {
+				PullRequests *struct {
+					TotalCount *int `json:"totalCount"`
+				} `json:"pullRequests"`
 				PullRequest *struct {
 					Number int `json:"number"`
 				} `json:"pullRequest"`
@@ -88,6 +103,9 @@ func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *p
 		} `json:"errors"`
 	}
 	if json.Unmarshal(body, &answer) != nil || answer.Data.Repository == nil || answer.Data.Repository.PullRequest != nil || len(answer.Errors) == 0 {
+		return false, nil
+	}
+	if counted := answer.Data.Repository.PullRequests; counted == nil || counted.TotalCount == nil {
 		return false, nil
 	}
 	for _, refusal := range answer.Errors {
