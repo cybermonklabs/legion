@@ -8,24 +8,30 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-// proxiedClient connects to the proxy's URL as a deployed client does, reconnecting for as long as
-// the test runs, and reports each disconnect and reconnect on the returned channels.
-func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected, reconnected <-chan struct{}) {
+// observedClient connects to url as a deployed client does, reconnecting for as long as the test
+// runs, and reports each disconnect and reconnect on the returned channels. nats.go fills them
+// from its own callback goroutine, so a test that awaits them misses no event between two looks at
+// the client's state, however late it runs. options come after the helper's own, and each caller
+// passes there what is its own: its dial timeout and its reconnect wait.
+func observedClient(t *testing.T, url string, options ...natsgo.Option) (conn *natsgo.Conn, disconnected, reconnected <-chan struct{}) {
 	t.Helper()
 	down, up := make(chan struct{}, 8), make(chan struct{}, 8)
-	conn, err := natsgo.Connect(proxy.URL(),
-		natsgo.Timeout(dialTimeout),
+	options = append([]natsgo.Option{
 		natsgo.MaxReconnects(-1),
-		natsgo.ReconnectWait(50*time.Millisecond),
 		natsgo.DisconnectErrHandler(func(*natsgo.Conn, error) { down <- struct{}{} }),
 		natsgo.ReconnectHandler(func(*natsgo.Conn) { up <- struct{}{} }),
-	)
+	}, options...)
+	conn, err := natsgo.Connect(url, options...)
 	if err != nil {
-		t.Fatalf("connect through the proxy: %v", err)
+		t.Fatalf("connect to %s: %v", url, err)
 	}
 	t.Cleanup(conn.Close)
 	return conn, down, up
 }
+
+// proxyClientOptions are the dial timeout and reconnect wait a proxy test's client connects with
+// (observedClient).
+var proxyClientOptions = []natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.ReconnectWait(50 * time.Millisecond)}
 
 func waitSignal(t *testing.T, signal <-chan struct{}, within time.Duration, what string) {
 	t.Helper()
@@ -41,7 +47,7 @@ func waitSignal(t *testing.T, signal <-chan struct{}, within time.Duration, what
 // client connect, through the same URL.
 func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 	proxy := StartProxy(t, URL(t))
-	conn, disconnected, reconnected := proxiedClient(t, proxy)
+	conn, disconnected, reconnected := observedClient(t, proxy.URL(), proxyClientOptions...)
 	if err := conn.FlushTimeout(time.Second); err != nil {
 		t.Fatalf("flush through the proxy: %v", err)
 	}
@@ -76,7 +82,7 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T) {
 	uri := URL(t)
 	proxy := StartProxy(t, uri)
-	conn, disconnected, _ := proxiedClient(t, proxy)
+	conn, disconnected, _ := observedClient(t, proxy.URL(), proxyClientOptions...)
 	direct := Connect(t, uri)
 	t.Cleanup(direct.Close)
 	received := make(chan *natsgo.Msg, 4)
@@ -123,7 +129,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
 	const rtt = 200 * time.Millisecond
 	proxy := StartProxy(t, URL(t), ProxyLatency(rtt))
-	conn, _, _ := proxiedClient(t, proxy)
+	conn, _, _ := observedClient(t, proxy.URL(), proxyClientOptions...)
 	started := time.Now()
 	if err := conn.FlushTimeout(5 * time.Second); err != nil {
 		t.Fatalf("flush through the proxy: %v", err)
@@ -141,7 +147,7 @@ func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
 	const rate = 200_000
 	uri := URL(t)
 	proxy := StartProxy(t, uri, ProxyRate(rate))
-	conn, _, _ := proxiedClient(t, proxy)
+	conn, _, _ := observedClient(t, proxy.URL(), proxyClientOptions...)
 	direct := Connect(t, uri)
 	t.Cleanup(direct.Close)
 	var received atomic.Int64
