@@ -448,8 +448,21 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		}
 		timer := time.NewTimer(time.Until(deadline))
 		defer timer.Stop()
+		// The record answers the request as soon as the violation is recorded too
+		// (watchPublishDenials), so a refusal the flush could not name is not left to the timeout.
+		// The watch is taken before the record is first read, so a violation recorded between the
+		// two still wakes the wait.
+		refused, stopWatch := w.client.watchPublishDenials([]string{subject})
+		defer stopWatch()
+		if denial := denied(); denial != nil {
+			return denial
+		}
 		for {
 			select {
+			case <-refused:
+				if denial := denied(); denial != nil {
+					return denial
+				}
 			case err := <-flushed:
 				if settled := settleFlush(err); settled != nil {
 					return settled
@@ -540,27 +553,39 @@ func (w *window) Probe(timeout time.Duration) error {
 // the connection failed or nats.go reported the disconnect, ErrNotAcknowledged when the
 // acknowledgement ran out of time or the server answered with no responders on a connection that
 // stayed current, or the server's refusal, a full stream's as ErrStreamFull.
+//
+// A denied publish is acknowledged by nothing, so the violation the connection reported
+// (deniedPublish) is the only evidence of it, read under this send's own subject and its own send
+// time, and it answers the publish as soon as it is recorded (watchPublishDenials) rather than at
+// the end of the acknowledgement's own wait. The watch is taken before the record is first read,
+// so a violation recorded between the two still wakes the wait.
 func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time) error {
-	select {
-	case <-future.Ok():
-		return nil
-	case err := <-future.Err():
-		// A denied publish is acknowledged by nothing, so the violation the connection reported
-		// (deniedPublish) is the only evidence of it, read under this send's own subject and its
-		// own send time. A window sends every destination of one event on one connection, so a
-		// grant that denies several of them has the server report a violation of each: the record
-		// answers each send with its own, where the connection's one last error held only the one
-		// that landed last and left every other denied send to report this arm's ErrUnavailable.
+	refused, stop := w.client.watchPublishDenials([]string{topic})
+	defer stop()
+	for {
+		// A window sends every destination of one event on one connection, so a grant that
+		// denies several of them has the server report a violation of each: the record answers
+		// each send with its own, where the connection's one last error held only the one that
+		// landed last and left every other denied send to report the ErrUnavailable below.
 		if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
 			return denied
 		}
-		if !w.current() || errors.Is(err, nats.ErrDisconnected) {
-			return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+		select {
+		case <-future.Ok():
+			return nil
+		case err := <-future.Err():
+			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
+				return denied
+			}
+			if !w.current() || errors.Is(err, nats.ErrDisconnected) {
+				return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+			}
+			if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
+				return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
+			}
+			return streamFull(err)
+		case <-refused:
 		}
-		if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
-			return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
-		}
-		return streamFull(err)
 	}
 }
 

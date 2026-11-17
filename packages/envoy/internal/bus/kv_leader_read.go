@@ -98,7 +98,7 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	if err != nil {
 		return nil, named(err)
 	}
-	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	message, err := readsRefusals(kv.streams.Conn(), js).GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return nil, nats.ErrKeyNotFound
 	}

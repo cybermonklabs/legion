@@ -278,9 +278,10 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 }
 
 // A start whose lookup the server never answers ends at the start's hang guard, with an error that
-// names the lookup and the guard, rather than hanging the program's start for as long as the server
-// stays silent. The guard is shortened here (ensureKeyValue), under one send's RequestTimeout, so
-// the send in flight when it passes is cut rather than waited out (Bounded).
+// names the lookup, the sends that drew no answer and the guard, rather than hanging the program's
+// start for as long as the server stays silent. The guard is shortened here (ensureKeyValue), to
+// two seconds: each lookup is a read, waited for up to its read limit (firstReadLimit, then twice
+// that) and sent again, so the guard passes during the third send and cuts it (Bounded).
 func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 	const bucket = "envoy_unanswered_never"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
@@ -291,13 +292,13 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose lookup the server never answers = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
-	for _, want := range []string{"KV_" + bucket + " STREAM.INFO", "no send answered when the wait ended", "hang guard passed after 2s"} {
+	for _, want := range []string{"KV_" + bucket + " STREAM.INFO", "sends drew no answer when the wait ended", "no answer within ", "hang guard passed after 2s"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("a start whose lookup the server never answers = %v, want it to name %q", err, want)
 		}
 	}
-	if sends := relay.sent(); sends != 1 {
-		t.Fatalf("lookups sent = %d, want 1: the guard cut the one send in flight", sends)
+	if sends := relay.sent(); sends < 2 {
+		t.Fatalf("lookups sent = %d, want the lookup sent again after its read limit", sends)
 	}
 }
 

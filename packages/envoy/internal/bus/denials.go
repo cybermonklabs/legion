@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,7 +74,7 @@ func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
 	at := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if nc != c.Conn {
+	if nc != c.Conn && nc != c.installing {
 		return true
 	}
 	if c.deniedPublishes == nil {
@@ -96,6 +97,19 @@ func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
 		queue = slices.Delete(queue, 0, len(queue)-publishDenialDepth)
 	}
 	c.deniedPublishes[subject] = queue
+	for pattern, watchers := range c.denialWatchers {
+		if !subjectMatches(pattern, subject) {
+			continue
+		}
+		for watcher := range watchers {
+			// Each watcher's channel holds one signal, which is enough: a woken send reads the
+			// record itself (deniedPublishOf), so a second signal before it reads adds nothing.
+			select {
+			case watcher <- struct{}{}:
+			default:
+			}
+		}
+	}
 	return true
 }
 
@@ -118,6 +132,11 @@ func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
 func (c *Client) deniedPublish(subject string, sentAt time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.deniedPublishLocked(subject, sentAt)
+}
+
+// deniedPublishLocked is deniedPublish with c.mu held.
+func (c *Client) deniedPublishLocked(subject string, sentAt time.Time) error {
 	queue := c.deniedPublishes[subject]
 	for index, denial := range queue {
 		if denial.at.Before(sentAt) {
@@ -131,6 +150,73 @@ func (c *Client) deniedPublish(subject string, sentAt time.Time) error {
 		return deniedPublishError(subject, denial.violation)
 	}
 	return nil
+}
+
+// deniedPublishOf is the server's refusal of the caller's own publish to the first of subjects that
+// has one recorded at or after sentAt (deniedPublish), and nil when none has. A subject that ends
+// in ".>" stands for every subject under it (subjectMatches), for a send whose subject names a
+// part nats.go picks as it sends, such as the name of a watch's consumer.
+func (c *Client) deniedPublishOf(subjects []string, sentAt time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, pattern := range subjects {
+		if !strings.HasSuffix(pattern, ".>") {
+			if denial := c.deniedPublishLocked(pattern, sentAt); denial != nil {
+				return denial
+			}
+			continue
+		}
+		for subject := range c.deniedPublishes {
+			if !subjectMatches(pattern, subject) {
+				continue
+			}
+			if denial := c.deniedPublishLocked(subject, sentAt); denial != nil {
+				return denial
+			}
+		}
+	}
+	return nil
+}
+
+// subjectMatches reports whether subject is pattern, or lies under it when pattern ends in ".>"
+// (as NATS reads a trailing full wildcard).
+func subjectMatches(pattern, subject string) bool {
+	if prefix, ok := strings.CutSuffix(pattern, ">"); ok && strings.HasSuffix(prefix, ".") {
+		return len(subject) > len(prefix) && strings.HasPrefix(subject, prefix)
+	}
+	return pattern == subject
+}
+
+// watchPublishDenials is a channel that receives a signal when the server's refusal of a publish
+// to one of subjects is recorded from now on (recordPublishDenial), and the stop that ends the
+// watch. A send takes it before its message goes out and selects on it beside its own answer, so
+// the refusal answers the send the moment nats.go hands the server's report over, where a send that
+// read the record only once its own wait ran out spent that whole wait on a request the server had
+// refused at once. The signal says only that a refusal of one of subjects arrived: the send reads
+// which (deniedPublishOf), and goes on waiting when the refusal was another send's.
+func (c *Client) watchPublishDenials(subjects []string) (<-chan struct{}, func()) {
+	watcher := make(chan struct{}, 1)
+	c.mu.Lock()
+	if c.denialWatchers == nil {
+		c.denialWatchers = make(map[string]map[chan struct{}]struct{})
+	}
+	for _, subject := range subjects {
+		if c.denialWatchers[subject] == nil {
+			c.denialWatchers[subject] = make(map[chan struct{}]struct{})
+		}
+		c.denialWatchers[subject][watcher] = struct{}{}
+	}
+	c.mu.Unlock()
+	return watcher, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, subject := range subjects {
+			delete(c.denialWatchers[subject], watcher)
+			if len(c.denialWatchers[subject]) == 0 {
+				delete(c.denialWatchers, subject)
+			}
+		}
+	}
 }
 
 // clearPublishDenials drops every recorded violation, because they were the previous session's:
@@ -205,11 +291,14 @@ func clientOwning(conn *nats.Conn) *Client {
 	return nil
 }
 
-// refusedSend is send's answer, with an answer the server never gave (unanswered) replaced by its
-// refusal of one of subjects, the subjects send publishes to, when the client owning conn
-// recorded one of them at or after the moment this send began. The server reports such a refusal
-// on the connection and never in the request's own answer (publishRefusal), so a request it
-// refused reads exactly like one it is still working on; the record is what tells the two apart.
+// refusedSend is send's answer, or the server's refusal of one of subjects, the subjects send
+// publishes to, when the client owning conn records one of them at or after the moment this send
+// began, whichever comes first. The server reports such a refusal on the connection and never in
+// the request's own answer (publishRefusal), so a request it refused reads exactly like one it is
+// still working on until its wait runs out; the record is what tells the two apart, and the
+// signal the record gives (watchPublishDenials) is what answers the send as soon as the refusal
+// arrives, where reading the record only after send returned spent the request's whole wait,
+// RequestTimeout for a start, on a request refused at once.
 //
 // A request the connection's grant does not cover is refused however often it is sent, so naming
 // the refusal is also what keeps it from being sent again: sentAgain stops at the first answer
@@ -217,23 +306,50 @@ func clientOwning(conn *nats.Conn) *Client {
 // the subject the server refused. subjects are listed in the order a send publishes them, so the
 // refusal a step ends on is the one of the request it stopped at.
 //
-// The time is read before send, because deniedPublish takes only a violation recorded at or after
+// send runs on a goroutine of its own, so a refusal can answer before it returns; that goroutine
+// ends at send's own wait, and its answer is then dropped, as Bounded drops one. The watch is taken
+// and the time read before send, because deniedPublish takes only a violation recorded at or after
 // the moment the caller's own message went out and send's message goes out after this. A
 // connection no client owns records nothing, so its send is answered as it was before.
 func refusedSend[T any](conn *nats.Conn, subjects []string, send func() (T, error)) (T, error) {
-	owner := clientOwning(conn)
+	return refusedBy(clientOwning(conn), subjects, send)
+}
+
+// refusedBy is refusedSend with the client whose record is read named by the caller: owner, and
+// none when it is nil. The client's own stream ensure names itself (Client.readsOwnRefusals),
+// since the constructor ensures the stream before the client is registered (install).
+func refusedBy[T any](owner *Client, subjects []string, send func() (T, error)) (T, error) {
 	if owner == nil {
 		return send()
 	}
+	refused, stop := owner.watchPublishDenials(subjects)
+	defer stop()
 	sentAt := time.Now()
-	answer, err := send()
-	if !unanswered(err) {
-		return answer, err
+	type answer struct {
+		value T
+		err   error
 	}
-	for _, subject := range subjects {
-		if denial := owner.deniedPublish(subject, sentAt); denial != nil {
-			return answer, denial
+	answered := make(chan answer, 1)
+	go func() {
+		value, err := send()
+		answered <- answer{value: value, err: err}
+	}()
+	for {
+		select {
+		case got := <-answered:
+			if unanswered(got.err) {
+				// The refusal can be recorded after the send's wait ran out, nats.go handing the
+				// server's report over on another goroutine, so the record is read once more.
+				if denial := owner.deniedPublishOf(subjects, sentAt); denial != nil {
+					return got.value, denial
+				}
+			}
+			return got.value, got.err
+		case <-refused:
+			if denial := owner.deniedPublishOf(subjects, sentAt); denial != nil {
+				var none T
+				return none, denial
+			}
 		}
 	}
-	return answer, err
 }

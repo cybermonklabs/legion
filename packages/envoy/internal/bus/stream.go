@@ -863,7 +863,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	defer cancel()
 	read, create := Stream+" STREAM.INFO", Stream+" STREAM.CREATE"
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
-	info, err := sentAgain(ctx, read, readStream)
+	info, err := readAgain(ctx, read, readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = stampGeneration(cfg.Metadata)
@@ -890,7 +890,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
-		info, err = sentAgain(ctx, read, readStream)
+		info, err = readAgain(ctx, read, readStream)
 	}
 	if unanswered(err) || ctx.Err() != nil {
 		return nil, namedRequest(read, err)
@@ -1232,6 +1232,52 @@ func sentAgain[T any](ctx context.Context, request string, send func() (T, error
 			return last, unansweredUntil(sends, lastErr, ended)
 		}
 	}
+}
+
+// firstReadLimit is how long a start waits for the answer to one read of a stream's state (a
+// STREAM.INFO) before it takes that read as lost and reads again (readAgain, awaitStream). A read
+// a member answers takes milliseconds, and a read it loses never gets an answer at all, so the
+// caller's own JetStream wait, ten seconds, held the start that long after the fact it waited for
+// was already true. It is three times the slowest answer measured, the sizing docs/testing.md gives
+// a bound of this kind: on 2026-11-17, on a dev box with 288 CPUs at a one-minute load of 566 to
+// 685, 448 fresh three-member clusters of nats-server v2.15.1, 64 and then 128 at a time, each had
+// another start's three-copy create land with its first leader election held 11 s, and a start on
+// another member read the stream every 25 ms until it had had a leader for 2 s. Of 167,230 reads,
+// the slowest answered took 209 ms, and 153 drew no answer within ten seconds, in 150 of the 448
+// rounds. Three times 209 ms is 627 ms.
+//
+// The limit decides no result: each read the server leaves unanswered doubles the next one's
+// limit, up to RequestTimeout (nextReadLimit), so a server that answers slower than the
+// measurement is waited for at the caller's own wait after a few reads, and only the start's hang
+// guard ends the wait.
+const firstReadLimit = 630 * time.Millisecond
+
+// nextReadLimit is the limit of the read after one the server left unanswered within limit.
+func nextReadLimit(limit time.Duration) time.Duration {
+	return min(2*limit, RequestTimeout)
+}
+
+// readAgain is sentAgain for read, a read of a stream's state, each send of which is waited for
+// up to its read limit (firstReadLimit, nextReadLimit) rather than up to the caller's whole wait:
+// a read past its limit is abandoned, its answer dropped (Bounded), and read again, as an
+// unanswered one is. A create keeps the caller's wait (sentAgain): its first send is answered only
+// at the stream's first leader election, seconds after it is sent. Its callers are the reads a
+// start makes: EnsureKeyValue's lookup, its read of a found bucket's stream and its handle open
+// (wrapKeyValue), the stream ensure's read (ensureStreamWithConfig) and SetKeyValueMaxAge's read.
+func readAgain[T any](ctx context.Context, request string, read func() (T, error)) (T, error) {
+	limit := firstReadLimit
+	return sentAgain(ctx, request, func() (T, error) {
+		readCtx, cancel := context.WithTimeout(ctx, limit)
+		defer cancel()
+		value, answered, err := Bounded(readCtx, read)
+		if !answered {
+			err = fmt.Errorf("no answer within %s: %w", limit, context.DeadlineExceeded)
+		}
+		if unanswered(err) {
+			limit = nextReadLimit(limit)
+		}
+		return value, err
+	})
 }
 
 // unansweredUntil is sentAgain's error once ended, its context's cause, stopped it: the sends it

@@ -204,7 +204,7 @@ func TestTheMaxAgeReadTheServerLeavesUnansweredIsSentAgain(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
 	lost := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1}
-	age, err := SetKeyValueMaxAge(t.Context(), lost, bucket, time.Hour)
+	age, err := SetKeyValueMaxAge(t.Context(), conn, lost, bucket, time.Hour)
 	if err != nil || age != time.Hour {
 		t.Fatalf("set the maximum age with the first read lost = %s, %v; want 1h0m0s and no error", age, err)
 	}

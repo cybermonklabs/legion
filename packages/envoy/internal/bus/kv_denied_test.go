@@ -36,7 +36,9 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 	conn, js := relayedJetStream(t, relay)
 
 	relay.arm(0)
+	started := time.Now()
 	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	took := time.Since(started)
 
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a start whose bucket lookup the server refused = %v, want ErrPublishDenied", err)
@@ -47,6 +49,159 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 	}
 	if sends := relay.sent(); sends != 1 {
 		t.Fatalf("lookups sent = %d, want 1: a request the server refused is not sent again", sends)
+	}
+	if took > refusalAnswerBound {
+		t.Fatalf("the refused lookup ended after %s, want within %s: the refusal answers the send as it arrives, not at the end of the send's own %s wait",
+			took, refusalAnswerBound, RequestTimeout)
+	}
+}
+
+// refusalAnswerBound is how long a request the server refuses may take to end with that refusal.
+// The refusal is one round trip, which takes milliseconds; a request that read the refusal only
+// once its own wait ran out took RequestTimeout, ten seconds, so a bound of three seconds tells
+// the two apart on a loaded machine.
+const refusalAnswerBound = 3 * time.Second
+
+// grantedClient is a client of a single server whose one user may publish only to allow, the
+// connection a start opens its buckets on (a client's, so the server's refusals are recorded).
+func grantedClient(t *testing.T, allow ...string) (*nats.Conn, nats.JetStreamContext) {
+	t.Helper()
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, append([]string{"_INBOX.>"}, allow...)...)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	client, err := Connect([]string{grant.URL})
+	if err != nil {
+		t.Fatalf("connect the granted client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js, err := client.Conn.JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	return client.Conn, js
+}
+
+// A start that raises a bucket the grant does not let it update ends at once, with the server's
+// refusal of the update and the setting it asked for, rather than after the update's own ten
+// second wait with a bare "context deadline exceeded" that names neither.
+func TestARaiseTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
+	const bucket = "envoy_denied_raise"
+	stream := "KV_" + bucket
+	conn, js := grantedClient(t, accountInfoSubject(), openSubject(bucket), createSubject(bucket))
+	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage}); err != nil {
+		t.Fatalf("create the one-copy bucket: %v", err)
+	}
+	started := time.Now()
+	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
+	took := time.Since(started)
+	if !errors.Is(err, ErrPublishDenied) {
+		t.Fatalf("a raise the grant refuses = %v (after %s), want ErrPublishDenied", err, took)
+	}
+	for _, want := range []string{"raise " + stream + ": " + ReplicasEnvVar + "=3: ", `Permissions Violation for Publish to "$JS.API.STREAM.UPDATE.` + stream + `"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refused raise = %v, want it to name %q", err, want)
+		}
+	}
+	if took > refusalAnswerBound {
+		t.Fatalf("the refused raise ended after %s, want within %s", took, refusalAnswerBound)
+	}
+}
+
+// A start that creates a bucket the grant does not let it create ends at once, with the server's
+// refusal of the create, rather than after the create's own wait.
+func TestACreateTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
+	const bucket = "envoy_denied_create"
+	conn, js := grantedClient(t, accountInfoSubject(), openSubject(bucket))
+	started := time.Now()
+	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	took := time.Since(started)
+	if !errors.Is(err, ErrPublishDenied) {
+		t.Fatalf("a create the grant refuses = %v (after %s), want ErrPublishDenied", err, took)
+	}
+	if want := `Permissions Violation for Publish to "` + createSubject(bucket) + `"`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("the refused create = %v, want it to name %q", err, want)
+	}
+	if took > refusalAnswerBound {
+		t.Fatalf("the refused create ended after %s, want within %s", took, refusalAnswerBound)
+	}
+}
+
+// A write of a key, and a watch of the bucket, that the grant refuses end at once with the
+// server's refusal, as every request the bus makes of a bucket does (refusedOn), rather than after
+// the write's own wait as a write nothing answered.
+func TestAKeyWriteAndAWatchTheGrantRefusesEndAtOnceNamingTheRefusal(t *testing.T) {
+	const bucket = "envoy_denied_write"
+	stream := "KV_" + bucket
+	conn, js := grantedClient(t, accountInfoSubject(), openSubject(bucket), createSubject(bucket))
+	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create the bucket: %v", err)
+	}
+	for _, row := range []struct {
+		name    string
+		refused string
+		call    func() error
+	}{
+		{"put", "$KV." + bucket + ".key", func() error { _, err := kv.Put("key", []byte("value")); return err }},
+		{"watch", jsAPI("CONSUMER.CREATE", stream), func() error {
+			watcher, err := kv.WatchKeys(t.Context(), "key")
+			if err == nil {
+				_ = watcher.Stop()
+			}
+			return err
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			started := time.Now()
+			err := row.call()
+			took := time.Since(started)
+			if !errors.Is(err, ErrPublishDenied) {
+				t.Fatalf("a %s the grant refuses = %v (after %s), want ErrPublishDenied", row.name, err, took)
+			}
+			if want := `Permissions Violation for Publish to "` + row.refused; !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refused %s = %v, want it to name %q", row.name, err, want)
+			}
+			if took > refusalAnswerBound {
+				t.Fatalf("the refused %s ended after %s, want within %s", row.name, took, refusalAnswerBound)
+			}
+		})
+	}
+}
+
+// A client that owns the notification stream, on a grant that does not let it read the stream or
+// does not let it create the stream, fails its start at once with the server's refusal, rather than
+// sending the request until the start's hang guard passes and ending with an error that names the
+// guard and not the grant.
+func TestAStreamEnsureTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		allow   []string
+		refused string
+	}{
+		{"read", []string{jsAPI("INFO"), jsAPI("STREAM.CREATE", Stream)}, jsAPI("STREAM.INFO", Stream)},
+		{"create", []string{jsAPI("INFO"), jsAPI("STREAM.INFO", Stream)}, jsAPI("STREAM.CREATE", Stream)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			seed, public := testnats.User(t)
+			grant := testnats.StartNkeyGranted(t, public, append([]string{"_INBOX.>"}, row.allow...)...)
+			t.Setenv("NATS_NKEY_SEED", seed)
+			started := time.Now()
+			client, err := ConnectOwningStream([]string{grant.URL})
+			took := time.Since(started)
+			if err == nil {
+				client.Close()
+				t.Fatal("a client whose grant refuses the stream's ensure started")
+			}
+			if !errors.Is(err, ErrPublishDenied) {
+				t.Fatalf("the refused ensure = %v (after %s), want ErrPublishDenied", err, took)
+			}
+			if want := `Permissions Violation for Publish to "` + row.refused + `"`; !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refused ensure = %v, want it to name %q", err, want)
+			}
+			if took > refusalAnswerBound {
+				t.Fatalf("the refused ensure ended after %s, want within %s", took, refusalAnswerBound)
+			}
+		})
 	}
 }
 
@@ -82,8 +237,8 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 		t.Fatal("no client owns the connection the start looks the bucket up on, so nothing records the server's refusals")
 	}
 
-	// Every send of the lookup is dropped, so the step sends until its hang guard passes: one send
-	// of RequestTimeout, and a second one the guard cuts.
+	// Every send of the lookup is dropped, so the step sends until its hang guard passes: each
+	// send a read waited for up to its read limit (readAgain), sent again after it.
 	relay.arm(1 << 30)
 	recorded := make(chan error, 1)
 	go func() { recorded <- refusalOfAnotherSubject(t, relay, owner, conn, deleteSubject) }()
@@ -110,8 +265,9 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	}
 }
 
-// refusalGuard is the hang guard of the row above: one send's RequestTimeout, and long enough
-// after it for a second send to go out before the guard passes.
+// refusalGuard is the hang guard of the row above: long enough for the lookup to be sent several
+// times, each up to its read limit, and for the refusal of another subject to be recorded while
+// one of them is in flight.
 const refusalGuard = RequestTimeout + 5*time.Second
 
 // refusalRecordWait and refusalRecordPoll bound the waits the row above makes on the relay's

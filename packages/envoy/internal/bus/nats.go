@@ -293,6 +293,15 @@ type Client struct {
 	// record retention has spent and anything past publishDenialDepth are dropped when the next
 	// one is recorded, and a read takes the violation it answers with out.
 	deniedPublishes map[string][]publishViolation
+	// denialWatchers are the sends waiting on an answer right now, each a channel under each
+	// subject it publishes to (watchPublishDenials): recordPublishDenial signals every channel of
+	// the subject it records, so a refused send is answered as the refusal arrives rather than at
+	// the end of its own wait. c.mu guards it, as it guards deniedPublishes.
+	denialWatchers map[string]map[chan struct{}]struct{}
+	// installing is the connection install ensures the stream on before it becomes Conn, whose
+	// refusals are recorded as Conn's are (recordPublishDenial); nil outside that ensure. c.mu
+	// guards it.
+	installing *nats.Conn
 
 	// subscriptionsMu guards subscriptions and stopMode. It is held to read and write them, never
 	// across a bind's request to the server, so a reconnect's restore, the health reads and Drain
@@ -559,18 +568,27 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 		return err
 	}
 	if ensure {
+		// The server's refusals on nc are recorded while the stream is ensured on it, before nc is
+		// c.Conn (recordPublishDenial), so a request of the ensure the grant refuses ends at once.
+		c.mu.Lock()
+		c.installing = nc
+		c.mu.Unlock()
 		ctx, cancel := c.untilStopped()
 		err := c.ensureStreamReported(ctx, ctx, nc, js)
 		cancel()
+		c.mu.Lock()
+		c.installing = nil
+		c.mu.Unlock()
 		if err != nil {
 			return err
 		}
 	}
 	c.mu.Lock()
-	c.Conn, c.js = nc, js
+	c.Conn, c.js = nc, readsRefusals(nc, js)
 	c.connectionChangedLocked()
-	// install runs only from the constructor, before any connection is c.Conn, so nothing has
-	// been recorded (recordPublishDenial records only for c.Conn) and this clear finds it empty.
+	// install runs only from the constructor, before any connection is c.Conn, so the record holds
+	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
+	// connection being installed too), and nothing of it is owed to a send: it is cleared.
 	c.clearPublishDenials()
 	c.mu.Unlock()
 	registerClient(c)
@@ -636,7 +654,7 @@ func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nat
 	if err != nil {
 		return err
 	}
-	return c.ensureStream(ctx, js, defaultsAnUnsetCap)
+	return c.ensureStream(ctx, c.readsOwnRefusals(conn, js), defaultsAnUnsetCap)
 }
 
 // lookOnce is a context already done, for a read of the server version that must not wait: given
@@ -670,12 +688,12 @@ func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, time
 	js, err := conn.JetStream(nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
-		if subjects, err = readStreamSubjects(requestsUnder(ctx, js)); err == nil {
+		if subjects, err = readStreamSubjects(readsRefusals(conn, requestsUnder(ctx, js))); err == nil {
 			c.deployedSubjects.Store(&subjects)
 			return true
 		}
 	}
-	if publishDenial(conn.LastError(), streamInfoSubject) != nil {
+	if errors.Is(err, ErrPublishDenied) || publishDenial(conn.LastError(), streamInfoSubject) != nil {
 		slog.Info("envoy nats may not read the stream's subjects; the client decides each topic's transport by the subjects it compiles",
 			slog.String("name", c.name), slog.String("subject", streamInfoSubject))
 		c.subjectsRefused.Store(true)
@@ -1619,7 +1637,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
-		c.js = js
+		c.js = readsRefusals(nc, js)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()
 		c.mu.Unlock()
@@ -1992,7 +2010,10 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 // connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge,
 // ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path: its callers
 // (publishJetStreamOn, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
-// among the options, so the acknowledgement wait ends with that bound.
+// among the options, so the acknowledgement wait ends with that bound. The client's JetStream
+// context reads the server's refusal of the publish as it arrives (readsRefusals), so a denied
+// publish ends at the refusal and not at that bound; the record is read once more below for an
+// error that is not a wait running out.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (*nats.PubAck, error) {
 	sentAt := time.Now()
 	ack, err := c.JS().Publish(subject, data, options...)

@@ -412,7 +412,7 @@ func TestAPassAdoptsAMaximumAgeAnotherProcessSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := bus.SetKeyValueMaxAge(t.Context(), js, bus.SessionBucket, 90*time.Minute); err != nil {
+	if _, err := bus.SetKeyValueMaxAge(t.Context(), client.Conn, js, bus.SessionBucket, 90*time.Minute); err != nil {
 		t.Fatalf("another process raising the bucket's maximum age: %v", err)
 	}
 
