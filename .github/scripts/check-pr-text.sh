@@ -206,7 +206,22 @@ if [ -z "$skill_commit" ]; then
   echo "check-pr-text: the issue-key rule is inactive: no commit on $base_ref adds $cutoff_file"
 else
   skill_date=$(jq -s -r '[.[][]] | last | .commit.committer.date' "$work/cutoff-commits")
-  gh api "repos/$repository/releases?per_page=100" --paginate > "$work/releases"
+  # The releases route lists newest first, 100 a page: a page that comes back short is the last,
+  # and once a page reaches a release published before the marker commit, every later page is
+  # older still and none of it can contain that commit, so the paging stops there rather than
+  # reading every release the repository ever published (some thousands, at every run).
+  : > "$work/releases"
+  release_page=1
+  while :; do
+    gh api "repos/$repository/releases?per_page=100&page=$release_page" > "$work/releases-page"
+    cat "$work/releases-page" >> "$work/releases"
+    page_count=$(jq 'length' "$work/releases-page")
+    page_oldest=$(jq -r '[.[] | .published_at // empty] | min // empty' "$work/releases-page")
+    if [ "$page_count" -lt 100 ] || { [ -n "$page_oldest" ] && [[ $page_oldest < $skill_date ]]; }; then
+      break
+    fi
+    release_page=$((release_page + 1))
+  done
   jq -s -r --arg after "$skill_date" '[.[][] | select(.draft | not)
       | select(.tag_name | startswith("legion-v")) | select(.published_at >= $after)]
       | sort_by(.published_at) | .[] | "\(.tag_name)\t\(.published_at)"' "$work/releases" \

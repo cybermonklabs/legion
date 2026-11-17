@@ -452,7 +452,7 @@ cutoff_at=2026-11-20T00:00:00Z
 key_rule_on() {
   jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' > "$work/cutoff-commits"
   jq -nc --arg at "$cutoff_at" '[{tag_name: "legion-v9.0.0", published_at: $at, draft: false},
-    {tag_name: "legion-v8.9.9", published_at: "2026-11-19T00:00:00Z", draft: false}]' > "$work/releases"
+    {tag_name: "legion-v8.9.9", published_at: "2026-11-19T00:00:00Z", draft: false}]' > "$work/releases.1"
   echo ahead > "$work/contains.legion-v9.0.0"
   echo behind > "$work/contains.legion-v8.9.9"
 }
@@ -490,11 +490,38 @@ check "says the rule is inactive and why" \
   "$(contains "$out" '^check-pr-text: the issue-key rule is inactive: no commit on main adds')"
 write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
 jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' > "$work/cutoff-commits"
-jq -nc '[{tag_name: "legion-v8.9.9", published_at: "2026-11-19T00:00:00Z", draft: false}]' > "$work/releases"
+jq -nc '[{tag_name: "legion-v8.9.9", published_at: "2026-11-19T00:00:00Z", draft: false}]' > "$work/releases.1"
 echo behind > "$work/contains.legion-v8.9.9"
 key_run
 check "with a marker commit and no release that contains it, the key still passes" "$(is "$status" 0)"
 check "says no release contains it" "$(contains "$out" 'no legion-v\* release contains the commit')"
+
+echo "case: the release list is read newest first, a page at a time, and stops at the first page older than the marker"
+# Every pr-title run derives the cutoff, so it must not read every release the repository has.
+# Page 1 holds 100 releases newer than the marker commit; page 2 holds the release that contains
+# it and releases older than the marker; page 3 exists but cannot hold a candidate.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+jq -nc '[{sha: "skill-sha", commit: {committer: {date: "2026-11-18T00:00:00Z"}}}]' > "$work/cutoff-commits"
+jq -nc '[range(100) | {tag_name: "legion-v9.1.\(.)", published_at: "2026-11-2\(1 + (. % 8))T00:00:00Z", draft: false}]' \
+  > "$work/releases.1"
+jq -nc '[{tag_name: "legion-v9.0.0", published_at: "2026-11-20T00:00:00Z", draft: false}]
+  + [range(99) | {tag_name: "legion-v8.\(.).0", published_at: "2026-11-01T00:00:00Z", draft: false}]' > "$work/releases.2"
+jq -nc '[range(100) | {tag_name: "legion-v7.\(.).0", published_at: "2026-10-01T00:00:00Z", draft: false}]' > "$work/releases.3"
+echo ahead > "$work/contains.legion-v9.0.0"
+key_run
+check "finds the release that contains the marker on page 2" \
+  "$(contains "$out" '^check-pr-text: the issue-key rule is active since legion-v9.0.0, published 2026-11-20T00:00:00Z')"
+check "reads two pages of releases, never the third" \
+  "$(is "$(grep -c 'releases?per_page=100&page=' "$work/calls")" 2)"
+check "and asks for page 2 by number, without --paginate" \
+  "$(is "$(grep -c -x -F 'api repos/example/repo/releases?per_page=100&page=2' "$work/calls")" 1)"
+mv "$work/releases.2" "$work/releases.2.held"
+key_run
+check "an empty page 2 ends the list too" "$(is "$(grep -c 'releases?per_page=100&page=' "$work/calls")" 2)"
+jq -nc '[range(100) | {tag_name: "legion-v9.2.\(.)", published_at: "2026-11-25T00:00:00Z", draft: false}]' > "$work/releases.2"
+key_run
+check "a full page newer than the marker is followed by the next, until one reaches older releases" \
+  "$(is "$(grep -c 'releases?per_page=100&page=' "$work/calls")" 3)"
 
 echo "case: once a release carries the marker commit, a pull request opened before it is not read"
 write_pr_text "fix(dispatch): keep the $planted_key order" "Refs LEGION-7" "fix: keep the order"
