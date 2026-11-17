@@ -756,7 +756,10 @@ test("a tab of build A focused while A and B are both live shows no new-version 
       live: [builds.a.entry, builds.b.entry].sort(),
       serving: builds.a.entry,
     });
-    expect(await page.getByRole("status", { name: "A new version is available" }).count()).toBe(0);
+    // The absence is read once the signed-in page has drawn, not off the shell's loading
+    // skeleton, and after the page has read the builds answer (`focusedTab`).
+    await expect(heading(page, "Inbox")).toBeVisible();
+    await expect(page.getByRole("status", { name: "A new version is available" })).toHaveCount(0);
   } finally {
     await page.context().close();
   }
@@ -788,9 +791,7 @@ test("a tab of build B focused once only build A is live shows the new-version n
     const tab = await focusedTab(browser, "b");
     page = tab.page;
     expect(tab.builds).toEqual({ live: [builds.a.entry], serving: builds.b.entry });
-    expect(await page.getByRole("status", { name: "A new version is available" }).isVisible()).toBe(
-      true
-    );
+    await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
   } finally {
     if (moved.length > 0) {
       await sql(

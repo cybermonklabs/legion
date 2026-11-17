@@ -237,25 +237,38 @@ test.describe("inbox search", () => {
       return Number(/\((\d+)\)/.exec(heading ?? "")?.[1]);
     };
     const waitingOnYou = page.locator('[data-inbox-section="human"]');
+    // The heading and its band's rows are read together until they agree, since either one read
+    // alone can be taken before the list has drawn.
+    const expectHeadingCountsRows = () =>
+      expect
+        .poll(async () => {
+          const heading = await bandCount("Waiting on you");
+          const drawnRows = await waitingOnYou.count();
+          return heading === drawnRows ? "agree" : `${heading} in the heading, ${drawnRows} rows`;
+        })
+        .toBe("agree");
 
     // Three questions on one issue: three rows that say which of three.
     await expect(page.getByRole("checkbox", { name: /^Select LEDGER-2, ask 1 of 3:/ })).toHaveCount(
       1
     );
-    expect(await bandCount("Waiting on you")).toBe(await waitingOnYou.count());
-    // What the list draws before any word narrows it, which clearing the box must bring back.
-    const drawn = await rows(page).count();
     for (const index of [2, 3]) {
       await expect(
         page.getByRole("checkbox", { name: new RegExp(`^Select LEDGER-2, ask ${index} of 3:`) })
       ).toHaveCount(1);
     }
+    await expectHeadingCountsRows();
+    // What the list draws before any word narrows it, which clearing the box must bring back.
+    // It is read once the waits above have seen the list drawn: every band of it is drawn from
+    // the one answer, at once.
+    const drawn = await rows(page).count();
 
     // The word drops one of the three; the heading and the names count what is left.
     await searchInbox(page, "ledger auditor");
     await expect(rows(page)).toHaveCount(2);
     await expect(waitingOnYou).toHaveCount(2);
-    expect(await bandCount("Waiting on you")).toBe(2);
+    // The heading is a count of its own, so it is waited for too, not read off the rows' wait.
+    await expect.poll(() => bandCount("Waiting on you")).toBe(2);
     for (const index of [1, 2]) {
       await expect(
         page.getByRole("checkbox", { name: new RegExp(`^Select LEDGER-2, ask ${index} of 2:`) })
@@ -271,7 +284,7 @@ test.describe("inbox search", () => {
     // clearing must restore is what was drawn.
     await searchInbox(page, "");
     await expect(rows(page)).toHaveCount(drawn);
-    expect(await bandCount("Waiting on you")).toBe(await waitingOnYou.count());
+    await expectHeadingCountsRows();
   });
 
   // A mark is the reader's, and the box is a view of the list: a row the box hides leaves the
@@ -477,8 +490,9 @@ test.describe("inbox search", () => {
     // column is showing now.
     await inboxSearchBox(page).focus();
     await page.keyboard.press("Escape");
-    const selectedId = await selectedRow(page).getAttribute("data-inbox-row");
-    await expect(inboxRow(page, selectedId ?? "")).toBeFocused();
+    // The row is found as the selected one at each try, not by an id read once, which could name
+    // the row the selection was on before it moved.
+    await expect(selectedRow(page)).toBeFocused();
     await expect(inboxSearchBox(page)).toHaveValue("ledger auditor");
 
     await searchInbox(page, "");
@@ -520,6 +534,9 @@ test.describe("inbox search", () => {
     // Escape out of the box lands on the list's first row, and `l` from there records it. The
     // fill left the focus in the box, so the key needs no focus call of its own.
     await page.keyboard.press("Escape");
+    // The first row is waited for with the focus on it before its id is read, so the id is the
+    // row Escape landed on.
+    await expect(rows(page).first()).toBeFocused();
     const landedId = await rows(page).first().getAttribute("data-inbox-row");
     const landed = inboxRow(page, landedId ?? "");
     await expect(landed).toBeFocused();
@@ -586,6 +603,9 @@ stepped.describe("inbox search", () => {
 
       // Escape out of the box lands on the list's first row, and `l` from there records it.
       await page.keyboard.press("Escape");
+      // The first row is waited for with the focus on it before its id is read, so the id is the
+      // row Escape landed on.
+      await expect(rows(page).first()).toBeFocused();
       const landedId = await rows(page).first().getAttribute("data-inbox-row");
       const landed = inboxRow(page, landedId ?? "");
       await expect(landed).toBeFocused();

@@ -654,6 +654,9 @@ test("margin ask composer sends option choices that the inbox records as a selec
     const createdCard = needsYouCards(page).filter({
       hasText: "Which direction should we take?",
     });
+    // Read once the card has drawn with the id of the ask it holds, so the poll below asks the
+    // server about the ask this card shows.
+    await expect(createdCard).toHaveAttribute("data-margin-item", /./);
     const askId = await createdCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("The created ask has no margin id.");

@@ -935,9 +935,12 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     // one, the row clauses record intent. A third whole card is bounded by the 166 px card, not
     // by the composer. The list is windowed, so the cards on the page are the ones it drew, of
     // the forty the heading above counts and the select-all ticked.
-    const drawn = await shownAgentRows(page).count();
-    expect(drawn).toBeGreaterThan(2);
-    expect(drawn).toBeLessThanOrEqual(40);
+    // Both counts are polled: the window draws its cards after the scroll above, so a count read
+    // at once can be of a window still drawing. The floor goes first, so the ceiling is read off
+    // a window that has drawn.
+    const drawn = shownAgentRows(page);
+    await expect.poll(() => drawn.count()).toBeGreaterThan(2);
+    await expect.poll(() => drawn.count()).toBeLessThanOrEqual(40);
 
     // The defined offset: the first card scrolled to the top of the viewport (scrollY 431),
     // message empty. Two whole cards and the third card's checkbox are above the composer.

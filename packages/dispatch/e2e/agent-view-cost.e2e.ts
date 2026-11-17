@@ -147,6 +147,9 @@ test("with the sleep rule off, the same eight agents cost the page eight live vi
     }
 
     const subscriptions = await openAgentSubscriptions(page);
+    // The eight views are waited for, not read once, so the count recorded below is the count
+    // the page settled on.
+    await expect(drawnLiveViews(page)).toHaveCount(COST_RIG_IDS.length);
     const drawn = await drawnLiveViews(page).count();
     test
       .info()
@@ -155,7 +158,6 @@ test("with the sleep rule off, the same eight agents cost the page eight live vi
         { description: `${drawn}`, type: "conversations drawn with the sleep rule off" }
       );
     expect(subscriptions).toBe(COST_RIG_IDS.length);
-    expect(drawn).toBe(COST_RIG_IDS.length);
     expect(subscriptions, "a reading k11's first assertion refuses").toBeGreaterThan(2);
     expect(drawn, "a reading k11's second assertion refuses").toBeGreaterThan(2);
   } finally {
