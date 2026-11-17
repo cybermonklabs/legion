@@ -33,13 +33,14 @@ name: Dispatch unit suite repeated
 # with probability 1 - 0.95^60, about 95 per cent, against about 64 per cent for 20 runs. More
 # reruns under one seed buy no new order. More legs buy both.
 #
-# The measured legs. The first run of this workflow, on its pull request (run 44023917835, at
-# head 1df8e22c, 2026-11-17), ran six legs, each with 20 reruns and 0 failing rows. The time is
-# the test step's, and the peak is the "in use at the most" figure of the report's "Machine
-# memory" line, of the runner's 15,984 MiB:
-#   web:     502, 563 and 632 s; 5,138 to 6,120 MiB at the most (280 files, 4,885 rows a run)
-#   harness: 1,070, 1,233 and 1,334 s; 3,383 to 3,642 MiB at the most (41 files, 661 rows a run,
-#            1 skipped)
+# The measured legs. The first two runs of this workflow, on its pull request (run 44023917835 at
+# head 1df8e22c and run 44029914443 at head 8fcb4e6e, both 2026-11-17), ran six legs each, each
+# leg with 20 reruns and 0 failing rows. The time is the test step's, and the peak is the "in use
+# at the most" figure of the report's "Machine memory" line, of the runner's 15,984 MiB:
+#   web:     502, 563 and 632 s, then 575, 678 and 710 s; 4,013 to 6,120 MiB at the most
+#            (280 files, 4,885 rows a run)
+#   harness: 1,070, 1,233 and 1,334 s, then 1,066, 1,195 and 1,224 s; 3,383 to 3,642 MiB at the
+#            most (41 files, 661 and then 662 rows a run, 1 skipped)
 # So 20 reruns a leg fit one standard runner with room in memory, and a run takes about 23 min.
 #
 # What a red run does, and what it does not. The leg fails, and its report and its artifact stay
@@ -62,8 +63,9 @@ name: Dispatch unit suite repeated
 # reference, https://docs.github.com/en/billing/reference/actions-runner-pricing, links) says:
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
 # runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the first run
-# was 9, 10 and 11 minutes for the web legs and 19, 22 and 24 for the harness legs: 95 minutes a
-# run, and $0, since those minutes are free here.
+# was 9, 10 and 11 minutes for the web legs and 19, 22 and 24 for the harness legs, 95 minutes,
+# and the second 10, 12 and 13 and 19, 21 and 22, 97 minutes: about 100 minutes a run, and $0,
+# since those minutes are free here.
 
 on:
   schedule:
@@ -99,10 +101,10 @@ jobs:
     runs-on: ubuntu-24.04
     # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a job's
     # budget is the sum of its step budgets plus the measured maximum of the steps without one.
-    # The test step's budget is below. The steps without one measured at most 52 s together on
-    # run 44023917835 (19 s of it the harness legs' zsh install), so 1 minute: 13 + 1 = 14
-    # minutes for a web leg and 26 + 1 = 27 for a harness leg.
-    timeout-minutes: ${{ matrix.lane == 'web' && 14 || 27 }}
+    # The test step's budget is below. The steps without one measured at most 52 s together in
+    # runs 44023917835 and 44029914443 (19 s of it the harness legs' zsh install), so 1 minute:
+    # 14 + 1 = 15 minutes for a web leg and 26 + 1 = 27 for a harness leg.
+    timeout-minutes: ${{ matrix.lane == 'web' && 15 || 27 }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
       fail-fast: false
@@ -161,16 +163,16 @@ jobs:
           echo "LEGION_TEST_PG_DSN=$LEGION_TEST_PG_DSN" >> "$GITHUB_ENV"
           psql "$LEGION_TEST_PG_DSN" -c 'select 1'
       # The budget, by dispatch-browser.yaml's rule: the measured maximum plus 15 per cent,
-      # rounded up to the next whole minute, with a floor of two minutes. Run 44023917835
-      # measured this step at 502, 563 and 632 s for the web legs, so 632 x 1.15 = 727 s, 13
-      # minutes; and at 1,070, 1,233 and 1,334 s for the harness legs, so 1,334 x 1.15 = 1,534 s,
-      # 26 minutes.
+      # rounded up to the next whole minute, with a floor of two minutes. Runs 44023917835 and
+      # 44029914443 measured this step at 502 to 710 s for the web legs, so 710 x 1.15 = 817 s, 14
+      # minutes; and at 1,066 to 1,334 s for the harness legs, so 1,334 x 1.15 = 1,534 s, 26
+      # minutes.
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
       # new snapshot (Bun's snapshot documentation).
       - name: Run the lane with every row 20 times under one seed
-        timeout-minutes: ${{ matrix.lane == 'web' && 13 || 26 }}
+        timeout-minutes: ${{ matrix.lane == 'web' && 14 || 26 }}
         run: bun run test:repeat --lane ${{ matrix.lane }} --reruns 20 --out "$RUNNER_TEMP/unit-repeat"
         working-directory: packages/dispatch
         env:
