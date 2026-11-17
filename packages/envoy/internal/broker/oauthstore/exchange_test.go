@@ -4,14 +4,19 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"authelia.com/provider/oauth2"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
 // The principals a session name is claimed for here, spelled as the exchange spells them: a listed
@@ -211,6 +216,271 @@ func TestTheNamesTheConfigurationFixesAreHeldForTheirEntries(t *testing.T) {
 	}
 	if _, err := s.BindSession(ctx, "legion-daemon:ACME", daemonPrincipal, false, hour); !errors.Is(err, oauthstore.ErrSessionHeld) {
 		t.Errorf("BindSession(the re-pointed name, its old entry under the next configuration) = %v, want ErrSessionHeld", err)
+	}
+}
+
+// The accounts the pair tests claim names for, spelled as exchange.AccountPrincipal spells them:
+// the shared account a deployment's pods run as before an operator moves them, the project's own
+// account they move to, a third account each test pairs with one of those two and not the other,
+// and an account paired with nobody (BROKER_SESSION_ACCOUNT_PAIRS).
+const (
+	sharedWorkerPrincipal  = "account:system:serviceaccount:example-ns:shared-worker"
+	projectWorkerPrincipal = "account:system:serviceaccount:example-ns:project-worker"
+	thirdWorkerPrincipal   = "account:system:serviceaccount:example-ns:third-worker"
+	unpairedPrincipal      = "account:system:serviceaccount:example-ns:unpaired-worker"
+)
+
+// pairAccounts pairs the two accounts of each pair on s, both ways, which is the shape cmd/broker
+// hands BROKER_SESSION_ACCOUNT_PAIRS to the store in.
+func pairAccounts(s *oauthstore.Store, pairs ...[2]string) {
+	s.SessionPairs = map[string][]string{}
+	for _, pair := range pairs {
+		s.SessionPairs[pair[0]] = append(s.SessionPairs[pair[0]], pair[1])
+		s.SessionPairs[pair[1]] = append(s.SessionPairs[pair[1]], pair[0])
+	}
+}
+
+// heldBy reads the row holding session: its principal, its expiry, and whether it is held with no
+// expiry ('infinity', which reads as the zero time).
+func heldBy(t *testing.T, pool *pgxpool.Pool, session string) (principal string, expires time.Time, forever bool) {
+	t.Helper()
+	var at pgtype.Timestamptz
+	if err := pool.QueryRow(context.Background(), `select principal, expires_at from oauth_session_bindings where session = $1`, session).Scan(&principal, &at); err != nil {
+		t.Fatalf("read the claim on %s: %v", session, err)
+	}
+	return principal, at.Time, at.InfinityModifier == pgtype.Infinity
+}
+
+// raceForName makes first's claim of session, for an hour's token, in a transaction it holds
+// open; starts second's claim of it, which runs in a transaction of BindSession's own; sees that
+// claim wait on a lock first's transaction holds; and only then commits first's. It answers what
+// first's claim answered and what second's answered once first's had committed, so a test reads
+// the decision the waiting claim made after the row it waited on changed under it.
+func raceForName(t *testing.T, s *oauthstore.Store, pool *pgxpool.Pool, session, first, second string) (firstTaken, secondTaken string, secondErr error) {
+	t.Helper()
+	ctx := context.Background()
+	hour := time.Now().Add(time.Hour)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	firstTaken, err = s.BindSession(oauthstore.WithTx(ctx, tx), session, first, false, hour)
+	if err != nil {
+		t.Fatalf("BindSession(%q, %q) in a transaction held open = %v, want it claimed", session, first, err)
+	}
+	type answer struct {
+		taken string
+		err   error
+	}
+	answers := make(chan answer, 1)
+	go func() {
+		taken, err := s.BindSession(ctx, session, second, false, hour)
+		answers <- answer{taken, err}
+	}()
+	storetest.AwaitLockWaiters(t, pool, tx, 1)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit %q's claim of %q: %v", first, session, err)
+	}
+	var a answer
+	select {
+	case a = <-answers:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%q's claim of %q did not end within ten seconds of %q's claim committing", second, session, first)
+	}
+	return firstTaken, a.taken, a.err
+}
+
+// TestAPairedAccountTakesTheNameItsPairHolds: an account paired with the holder of a live session
+// name takes it, says whom it took it from, and holds it for its own claim's retention rather
+// than for the longer hold it took the name from. The pair works both ways: the account the name
+// was taken from takes it back the same way, again for its own claim's retention, though the
+// claim it takes the name from runs out later.
+func TestAPairedAccountTakesTheNameItsPairHolds(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal})
+	const session = "implementer-g1"
+	if _, err := s.BindSession(ctx, session, sharedWorkerPrincipal, false, time.Now().Add(200*24*time.Hour)); err != nil {
+		t.Fatalf("the shared account's claim: %v", err)
+	}
+	for _, c := range []struct {
+		name      string
+		principal string
+		expires   time.Time
+		from      string
+	}{
+		{name: "the project's account takes the shared account's name", principal: projectWorkerPrincipal, expires: time.Now().Add(time.Hour), from: sharedWorkerPrincipal},
+		{name: "and the shared account takes it back", principal: sharedWorkerPrincipal, expires: time.Now().Add(time.Minute), from: projectWorkerPrincipal},
+	} {
+		taken, err := s.BindSession(ctx, session, c.principal, false, c.expires)
+		if err != nil || taken != c.from {
+			t.Fatalf("%s: BindSession(%q, %q) = %q, %v, want it taken from %q", c.name, session, c.principal, taken, err, c.from)
+		}
+		want := c.expires.Add(oauthstore.SessionRetention).UTC()
+		if principal, expires, _ := heldBy(t, pool, session); principal != c.principal || expires.Sub(want).Abs() > time.Second {
+			t.Errorf("%s: %s is held by %q until %s, want %q until %s, SessionRetention past its own claim and not the later hold it took the name from",
+				c.name, session, principal, expires, c.principal, want)
+		}
+	}
+}
+
+// TestAnAccountNotPairedWithTheHolderIsRefused: only the holder's own pairs take its name. With
+// the shared account paired with the project's and the project's with a third, the third is
+// refused the shared account's name, since a pair does not chain, and so is an account paired
+// with nobody; neither refusal moves the name or its expiry. A store given no pairs, the broker
+// with BROKER_SESSION_ACCOUNT_PAIRS unset, refuses even the project's account.
+func TestAnAccountNotPairedWithTheHolderIsRefused(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal}, [2]string{projectWorkerPrincipal, thirdWorkerPrincipal})
+	const session = "implementer-g1"
+	hour := time.Now().Add(time.Hour)
+	if _, err := s.BindSession(ctx, session, sharedWorkerPrincipal, false, hour); err != nil {
+		t.Fatalf("the shared account's claim: %v", err)
+	}
+	_, held, _ := heldBy(t, pool, session)
+	refused := func(who, principal string) {
+		t.Helper()
+		taken, err := s.BindSession(ctx, session, principal, false, hour.Add(time.Hour))
+		if !errors.Is(err, oauthstore.ErrSessionHeld) || taken != "" {
+			t.Errorf("BindSession(%q, %s) = %q, %v, want ErrSessionHeld", session, who, taken, err)
+		} else if !strings.Contains(err.Error(), session) {
+			t.Errorf("BindSession(%q, %s) refused with %q, which does not name the session", session, who, err)
+		}
+		if holder, expires, _ := heldBy(t, pool, session); holder != sharedWorkerPrincipal || !expires.Equal(held) {
+			t.Errorf("after %s was refused, %s is held by %q until %s, want %q until %s, as before", who, session, holder, expires, sharedWorkerPrincipal, held)
+		}
+	}
+	refused("an account paired only with the holder's pair", thirdWorkerPrincipal)
+	refused("an account paired with nobody", unpairedPrincipal)
+	s.SessionPairs = nil
+	refused("the project's account, with no pairs given", projectWorkerPrincipal)
+}
+
+// TestAPairNeverTakesANameTheConfigurationFixes: a name the configuration fixes goes to its entry
+// and to no pair. The account paired with the holder is refused a name held with no expiry,
+// whether ReserveSessions or the entry's own fixed claim wrote it and though this replica's
+// configuration fixes neither (another replica's did); and it is refused a name this replica's
+// configuration fixes (Store.Reserved) that its pair still holds as an ordinary claim. Every row
+// keeps its principal and its expiry.
+func TestAPairNeverTakesANameTheConfigurationFixes(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal})
+	hour := time.Now().Add(time.Hour)
+	if left, err := s.ReserveSessions(ctx, map[string]string{"legion-daemon:ACME": sharedWorkerPrincipal}); err != nil || len(left) != 0 {
+		t.Fatalf("ReserveSessions = %v, %v, want the unheld name reserved", left, err)
+	}
+	if _, err := s.BindSession(ctx, "ci-release", sharedWorkerPrincipal, true, hour); err != nil {
+		t.Fatalf("the entry's fixed claim: %v", err)
+	}
+	if _, err := s.BindSession(ctx, "legion-daemon:EXAMPLE", sharedWorkerPrincipal, false, hour); err != nil {
+		t.Fatalf("the shared account's ordinary claim: %v", err)
+	}
+	s.Reserved = map[string]string{"legion-daemon:EXAMPLE": daemonPrincipal}
+	for _, c := range []struct {
+		name    string
+		session string
+		forever bool
+	}{
+		{name: "a name ReserveSessions holds with no expiry", session: "legion-daemon:ACME", forever: true},
+		{name: "a name a fixed claim holds with no expiry", session: "ci-release", forever: true},
+		{name: "a name the configuration fixes for another principal, held as an ordinary claim", session: "legion-daemon:EXAMPLE"},
+	} {
+		_, before, _ := heldBy(t, pool, c.session)
+		if taken, err := s.BindSession(ctx, c.session, projectWorkerPrincipal, false, hour); !errors.Is(err, oauthstore.ErrSessionHeld) || taken != "" {
+			t.Errorf("%s: BindSession(%q, the holder's pair) = %q, %v, want ErrSessionHeld", c.name, c.session, taken, err)
+		}
+		if principal, expires, forever := heldBy(t, pool, c.session); principal != sharedWorkerPrincipal || forever != c.forever || !expires.Equal(before) {
+			t.Errorf("%s: after the holder's pair was refused, %s is held by %q until %s (for ever: %t), want %q until %s (for ever: %t), as before",
+				c.name, c.session, principal, expires, forever, sharedWorkerPrincipal, before, c.forever)
+		}
+	}
+}
+
+// TestTwoClaimsRacingForAPairsNameEndWithOneHolder: a claim that waits on a name's row behind
+// another claim decides on the row that claim committed, not on the one it found before waiting,
+// so the two end with one holder. With the shared account paired with the project's account and
+// with a third, which are not paired with each other, the project's account takes the shared
+// account's name: the third, waiting behind it, is refused, though it would have taken the name
+// from the shared account, and the shared account, waiting behind it, takes the name back. Two
+// claims racing for an unheld name end the same way: the later takes it only from an account it
+// is paired with.
+func TestTwoClaimsRacingForAPairsNameEndWithOneHolder(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal}, [2]string{sharedWorkerPrincipal, thirdWorkerPrincipal})
+	for _, c := range []struct {
+		name    string
+		session string
+		held    string
+		second  string
+		err     error
+		taken   string
+		holder  string
+	}{
+		{name: "an account not paired with the taker is refused", session: "implementer-g1", held: sharedWorkerPrincipal,
+			second: thirdWorkerPrincipal, err: oauthstore.ErrSessionHeld, holder: projectWorkerPrincipal},
+		{name: "the account the name was taken from takes it back", session: "implementer-g2", held: sharedWorkerPrincipal,
+			second: sharedWorkerPrincipal, taken: projectWorkerPrincipal, holder: sharedWorkerPrincipal},
+		{name: "an unheld name's later claimant paired with the first takes it", session: "implementer-g3",
+			second: sharedWorkerPrincipal, taken: projectWorkerPrincipal, holder: sharedWorkerPrincipal},
+		{name: "an unheld name's later claimant paired with nobody is refused", session: "implementer-g4",
+			second: unpairedPrincipal, err: oauthstore.ErrSessionHeld, holder: projectWorkerPrincipal},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.held != "" {
+				if _, err := s.BindSession(ctx, c.session, c.held, false, time.Now().Add(time.Hour)); err != nil {
+					t.Fatalf("the holder's claim: %v", err)
+				}
+			}
+			first, taken, err := raceForName(t, s, pool, c.session, projectWorkerPrincipal, c.second)
+			if first != c.held {
+				t.Fatalf("the project account's claim answered it took %s from %q, want %q", c.session, first, c.held)
+			}
+			if !errors.Is(err, c.err) || taken != c.taken {
+				t.Fatalf("BindSession(%q, %q), waiting behind the project account's claim = %q, %v, want %q, %v", c.session, c.second, taken, err, c.taken, c.err)
+			}
+			rows, err := pool.Query(ctx, `select principal from oauth_session_bindings where session = $1`, c.session)
+			if err != nil {
+				t.Fatalf("read the claims on %s: %v", c.session, err)
+			}
+			holders, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatalf("read the claims on %s: %v", c.session, err)
+			}
+			if want := []string{c.holder}; !slices.Equal(holders, want) {
+				t.Errorf("after the race, %s is held by %q, want %q alone", c.session, holders, want)
+			}
+		})
+	}
+}
+
+// TestAPairedTakeNamesTheHolderTheUpdateRead: a claim that waited on a name's row behind a pair's
+// take answers the holder its own update took the name from, the principal whose take committed
+// while it waited, and not the one that held the name when it began. With the shared account
+// paired with the project's account and that one with a third, the project's account takes the
+// shared account's name, and the third, waiting behind it, takes the name from the project's
+// account, which is whom it must name.
+func TestAPairedTakeNamesTheHolderTheUpdateRead(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	pairAccounts(s, [2]string{sharedWorkerPrincipal, projectWorkerPrincipal}, [2]string{projectWorkerPrincipal, thirdWorkerPrincipal})
+	const session = "implementer-g1"
+	if _, err := s.BindSession(ctx, session, sharedWorkerPrincipal, false, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("the shared account's claim: %v", err)
+	}
+	first, taken, err := raceForName(t, s, pool, session, projectWorkerPrincipal, thirdWorkerPrincipal)
+	if first != sharedWorkerPrincipal {
+		t.Fatalf("the project account's take answered it took %s from %q, want %q", session, first, sharedWorkerPrincipal)
+	}
+	if err != nil || taken != projectWorkerPrincipal {
+		t.Fatalf("the third account's claim, which waited behind the project account's take = %q, %v, want it taken from %q, the holder its update read, not %q, which held the name when the claim began",
+			taken, err, projectWorkerPrincipal, sharedWorkerPrincipal)
+	}
+	if holder, _, _ := heldBy(t, pool, session); holder != thirdWorkerPrincipal {
+		t.Errorf("%s is held by %q, want %q", session, holder, thirdWorkerPrincipal)
 	}
 }
 
