@@ -833,11 +833,11 @@ jobs:
         run: |
           status=0
           # shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose
-          .github/scripts/release-push.sh version legion-envoy-v --expect "$VERSION" $LEGION_ENVOY_VERSION_ARGS >/dev/null || status=$?
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" version legion-envoy-v --expect "$VERSION" $LEGION_ENVOY_VERSION_ARGS >/dev/null || status=$?
           case $status in
             0) echo "release=true" >> "$GITHUB_OUTPUT" ;;
             3) ;;
-            4) .github/scripts/release-push.sh restart release-envoy-listener.yaml "$LOST_RACES" ;;
+            4) "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" restart release-envoy-listener.yaml "$LOST_RACES" ;;
             *) exit "$status" ;;
           esac
 
@@ -886,7 +886,7 @@ jobs:
             subjects+=("agent-secrets-$os-$arch.tar.gz")
           done
           archives+=("${subjects[@]}")
-          tag=$(.github/scripts/release-push.sh handed legion-envoy-v "$VERSION" assets "${archives[@]}")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed legion-envoy-v "$VERSION" assets "${archives[@]}")
           (cd assets && sha256sum -- "${archives[@]}" > SHA256SUMS)
           {
             echo "tag=$tag"
@@ -907,8 +907,8 @@ jobs:
           TAG: ${{ steps.assets.outputs.tag }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
-          .github/scripts/release-push.sh tag "$VERSION" "$TAG"
-          .github/scripts/release-push.sh push-tag "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
       # Build provenance for the host binaries a mise pin installs, linux or darwin, which the
       # release below uploads exactly. `--repo` alone accepts an archive any workflow of this
       # repository attested, so the check pins the signer as docs/kubernetes.md ("Pin by digest,
@@ -937,7 +937,7 @@ jobs:
           while IFS= read -r file; do
             [ -z "$file" ] || assets+=("$file")
           done <<< "$FILES"
-          .github/scripts/release-push.sh release --upload-to-published \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release --upload-to-published \
             --notes "Envoy listener release — Go binary + Docker image, plus agent-secrets and agent-secrets-helper host binaries." \
             "$TAG" "$TAG" "${assets[@]}"
       # The entries release_build rendered from this release's fragments, under the runner's
@@ -958,5 +958,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.assets.outputs.tag }}
         run: |
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/release-notes/release-notes.md"

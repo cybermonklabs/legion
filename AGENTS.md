@@ -823,6 +823,7 @@ Each item below names a task and where its code is, then notes on it.
   — in `release.yaml`, `release-envoy-listener.yaml` and `release-envoy-infra.yaml`, a job that holds `contents: write`, `id-token: write`, `attestations: write`, `actions: write` or the deploy key runs no dependency code (no `bun`, `go`, `node`, no built binary, no `scripts/` program) and restores no cache (`cache-mode: none`);
   every checkout sets `persist-credentials: false`;
   the deploy key reaches only the `env:` of the steps that run `release-push.sh push-tag`;
+  such a job runs `.github/scripts/release-push.sh` or `.github/scripts/check-private-names.sh` only as `"$GITHUB_WORKSPACE/.github/scripts/<script>"`, the checkout's own copy, since a bare, `./` or `../` path names whatever file a `working-directory` or a `cd` left there and counts as a `scripts/` program;
   every version of the three release workflows is decided by `release-push.sh version` in the build job;
   each build job ends with the tripwire `release-push.sh no-credential` (`release.yaml` keeps each package's version arguments once, in its `env:`, and its `legion_build` also decides from those lists the plugin pair it links);
   a job whose `if:` calls `always()` tests `needs.<job>.result` for every job whose outputs it reads, and a job whose `if:` calls no `always()` has no upstream job that carries an `if:` of its own (GitHub's implicit `success()` would skip it with that job, whatever its condition says).

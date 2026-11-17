@@ -152,7 +152,7 @@ jobs:
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
         run: |
           stem="sjawhar-pi-envoy-$VERSION"
-          tag=$(.github/scripts/release-push.sh handed pi-envoy-v "$VERSION" tarball "$stem.tgz")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed pi-envoy-v "$VERSION" tarball "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
       - name: Publish to npm
         env:
@@ -162,13 +162,15 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.handed.outputs.tag }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.handed.outputs.tag }}
           STEM: ${{ steps.handed.outputs.stem }}
-        run: .github/scripts/release-push.sh release "$TAG" "Pi Envoy v1" "tarball/$STEM.tgz"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Pi Envoy v1" "tarball/$STEM.tgz"
   pi_legion_publish:
     needs: [pi_legion_build, pi_envoy_build, pi_envoy_publish]
     # pi_legion_build names no job of this fixture: the checker ignores a dangling needs name on
@@ -198,7 +200,7 @@ jobs:
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
         run: |
           stem="sjawhar-pi-legion-$VERSION"
-          tag=$(.github/scripts/release-push.sh handed pi-legion-v "$VERSION" tarball "$stem.tgz")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed pi-legion-v "$VERSION" tarball "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
       - name: Publish to npm
         env:
@@ -208,13 +210,15 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.handed.outputs.tag }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.handed.outputs.tag }}
           STEM: ${{ steps.handed.outputs.stem }}
-        run: .github/scripts/release-push.sh release "$TAG" "Pi Legion v1" "tarball/$STEM.tgz"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Pi Legion v1" "tarball/$STEM.tgz"
   changes:
     runs-on: ubuntu-24.04
     permissions:
@@ -294,7 +298,7 @@ jobs:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
           git tag "$TAG"
-          .github/scripts/release-push.sh push-tag "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 YAML
   cat > "$dir/release-envoy-infra.yaml" <<'YAML'
 name: Release envoy-infra
@@ -342,14 +346,16 @@ jobs:
         env:
           TAG: envoy-infra-v1.0.0
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
       - uses: actions/attest-build-provenance@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           subject-path: assets/*.tar.gz
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: .github/scripts/release-push.sh release "$TAG" "envoy-infra v1" assets/*.tar.gz
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "envoy-infra v1" assets/*.tar.gz
 YAML
 }
 
@@ -362,7 +368,7 @@ add_publish_step() {
 # whose `run:` is the given lines (each indented ten spaces, newline-ended) and then the push-tag
 # call that allows the key there, so the check's verdict rests on the lines alone.
 add_push_tag_step() {
-  add_publish_step "$1" "      - name: $2"$'\n        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n          TAG: ${{ steps.handed.outputs.tag }}\n        run: |\n'"$3"$'          .github/scripts/release-push.sh push-tag "$TAG"\n'
+  add_publish_step "$1" "      - name: $2"$'\n        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n          TAG: ${{ steps.handed.outputs.tag }}\n        run: |\n'"$3"$'          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"\n'
 }
 
 echo "case: the three workflows in a shape every rule passes"
@@ -511,10 +517,12 @@ check "exits 1" "$(is "$status" 1)"
 check "names the value" "$(contains "$out" "must set 'persist-credentials: false', the boolean.*(found true)")"
 
 # Rule 6, on each side of its line: the same step before and after its job's checkout, at each of
-# the three paths that name the one script, and twice in one job. The script it runs is in the
-# checkout, so before it the step exits 127, which is what left every legion release's
-# "## Worker image" section unwritten.
-for cmd in '.github/scripts/release-push.sh' './release-push.sh' 'release-push.sh'; do
+# the three paths that name the one script (the checkout's own path behind $GITHUB_WORKSPACE, the
+# only form of it that is no dependency code, and two that are no scripts/ path), and twice in one
+# job. The script it runs is in the checkout, so before it the step exits 127, which is what left
+# every legion release's "## Worker image" section unwritten.
+# shellcheck disable=SC2016 # the step's own shell expands $GITHUB_WORKSPACE, not this one
+for cmd in '$GITHUB_WORKSPACE/.github/scripts/release-push.sh' './release-push.sh' 'release-push.sh'; do
   echo "case: a step runs $cmd before its job's checkout"
   root=$(fixture "release-push-before-checkout-$(printf %s "$cmd" | tr -c '[:alnum:]' -)")
   mutate "$root/$RELEASE" "      - uses: actions/checkout@$SHA"$'\n' $'      - name: Read the tag\n        run: '"$cmd"$' tagged pi-envoy-v\n'"      - uses: actions/checkout@$SHA"$'\n' 2
@@ -527,7 +535,7 @@ done
 
 echo "case: the same step after its job's checkout"
 root=$(fixture release-push-after-checkout)
-add_publish_step "$root" $'      - name: Read the tag\n        run: .github/scripts/release-push.sh tagged pi-envoy-v\n'
+add_publish_step "$root" $'      - name: Read the tag\n        run: $GITHUB_WORKSPACE/.github/scripts/release-push.sh tagged pi-envoy-v\n'
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
@@ -865,18 +873,19 @@ check "names the whole secrets context" \
 check "the listener's docker job, whose login holds secrets.GITHUB_TOKEN, is not named" \
   "$(is "$(contains "$out" "job 'docker'")" false)"
 
-echo "case: check-private-names.sh, at its own path, is no dependency code, so a job running it may hold the term list"
+echo "case: check-private-names.sh, run from the checkout, is no dependency code, so a job running it may hold the term list"
 # The step release.yaml's claude_envoy_names runs, in the fixture's plain job. Only that one
-# script, invoked at its own path, is classed so: another scripts/ path beside it, a script of the
-# same name elsewhere, or its path in a comment or an argument leaves the job a build job, which
-# holds no secret.
+# script, at the checkout's own path behind $GITHUB_WORKSPACE, is classed so: another scripts/
+# path beside it, a script of the same name elsewhere, or its path in a comment or an argument
+# leaves the job a build job, which holds no secret.
 terms_env=$'        env:\n          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}\n'
-names_step=$'      - name: Check the packed plugin names nothing private\n'"$terms_env"$'        run: .github/scripts/check-private-names.sh packages/claude-envoy/dist packages/claude-envoy/legion\n'
+names_step=$'      - name: Check the packed plugin names nothing private\n'"$terms_env"$'        run: $GITHUB_WORKSPACE/.github/scripts/check-private-names.sh packages/claude-envoy/dist packages/claude-envoy/legion\n'
+bare_step=$'      - name: Check the packed plugin names nothing private\n'"$terms_env"$'        run: .github/scripts/check-private-names.sh packages/claude-envoy/dist packages/claude-envoy/legion\n'
 terms_refused="job 'changes' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS; a build job holds no secret but GITHUB_TOKEN"
 root=$(fixture terms-names-job)
 mutate "$root/$RELEASE" $'      - run: echo hello\n' "$names_step"
 run_check "$root"
-check "the check at its own path, with the list in its step: exits 0" "$(is "$status" 0)"
+check "the check behind \$GITHUB_WORKSPACE, with the list in its step: exits 0" "$(is "$status" 0)"
 check "names no problem in that job" "$(is "$(contains "$out" "job 'changes'")" false)"
 
 root=$(fixture terms-names-job-other-script)
@@ -903,24 +912,52 @@ run_check "$root"
 check "the path as another command's argument only: exits 1" "$(is "$status" 1)"
 check "refuses the list" "$(contains "$out" "$terms_refused")"
 
-echo "case: check-private-names.sh is no dependency code only when the step runs the checkout's own copy"
-# A working-directory, the step's or the job's default, moves a bare path to some other file, and a
-# `../` names a file outside the checkout's root; a path behind $GITHUB_WORKSPACE is the
-# checkout's own wherever the step runs.
+echo "case: check-private-names.sh is no dependency code only behind \$GITHUB_WORKSPACE"
+# A bare, ./ or ../ path names whatever file sits there once a working-directory, the step's or
+# the job's default, or a cd earlier in the run has moved the shell; a path behind
+# $GITHUB_WORKSPACE, in either spelling, is the checkout's own wherever the shell stands.
 anchored_step=$'      - name: Check the packed plugin names nothing private\n'"$terms_env"$'        run: |\n          "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" packages/claude-envoy/dist\n'
-root=$(fixture terms-anchored)
-mutate "$root/$RELEASE" $'      - run: echo hello\n' "$anchored_step"
+root=$(fixture terms-anchored-braces)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "${anchored_step/\$GITHUB_WORKSPACE/\$\{GITHUB_WORKSPACE\}}"
 run_check "$root"
-check "the path behind \$GITHUB_WORKSPACE: exits 0" "$(is "$status" 0)"
+check "the path behind \${GITHUB_WORKSPACE}: exits 0" "$(is "$status" 0)"
 
 root=$(fixture terms-anchored-elsewhere)
 mutate "$root/$RELEASE" $'      - run: echo hello\n' "${anchored_step/        run:/        working-directory: packages/other
         run:}"
 run_check "$root"
-check "the path behind \$GITHUB_WORKSPACE, from another working-directory: exits 0" "$(is "$status" 0)"
+check "the anchored path from another working-directory: exits 0" "$(is "$status" 0)"
+
+# The two cd steps are written out whole: in a ${var/pattern/replacement}, Bash 5.2 reads an "&"
+# in the replacement as the matched text.
+root=$(fixture terms-anchored-after-cd)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' $'      - name: Check after a cd\n'"$terms_env"$'        run: |\n          cd packages/other && "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" ../claude-envoy/dist\n'
+run_check "$root"
+check "the anchored path after a cd in the run: exits 0" "$(is "$status" 0)"
+check "names no problem in that job" "$(is "$(contains "$out" "job 'changes'")" false)"
+
+root=$(fixture terms-bare-at-root)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$bare_step"
+run_check "$root"
+check "the bare path, with no working-directory: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+root=$(fixture terms-dot-slash-at-root)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "${bare_step/        run: /        run: ./}"
+run_check "$root"
+check "the ./ path, with no working-directory: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+root=$(fixture terms-cd-in-step)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' $'      - name: Check after a cd\n'"$terms_env"$'        run: cd packages/other && .github/scripts/check-private-names.sh ../claude-envoy/dist\n'
+run_check "$root"
+check "a cd and then the bare path, in a step: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+check "names the step and the script it runs" \
+  "$(contains "$out" "step 'Check after a cd' runs '.github/scripts/check-private-names.sh'")"
 
 root=$(fixture terms-step-working-directory)
-mutate "$root/$RELEASE" $'      - run: echo hello\n' "${names_step/        run:/        working-directory: packages/other
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "${bare_step/        run:/        working-directory: packages/other
         run:}"
 run_check "$root"
 check "the bare path under the step's working-directory: exits 1" "$(is "$status" 1)"
@@ -928,13 +965,13 @@ check "refuses the list" "$(contains "$out" "$terms_refused")"
 
 root=$(fixture terms-job-working-directory)
 mutate "$root/$RELEASE" $'  changes:\n    runs-on: ubuntu-24.04\n' $'  changes:\n    runs-on: ubuntu-24.04\n    defaults:\n      run:\n        working-directory: packages/other\n'
-mutate "$root/$RELEASE" $'      - run: echo hello\n' "$names_step"
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$bare_step"
 run_check "$root"
 check "the bare path under the job's default working-directory: exits 1" "$(is "$status" 1)"
 check "refuses the list" "$(contains "$out" "$terms_refused")"
 
 root=$(fixture terms-parent-path)
-mutate "$root/$RELEASE" $'      - run: echo hello\n' "${names_step/.github\/scripts\/check-private-names.sh/..\/.github\/scripts\/check-private-names.sh}"
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "${bare_step/.github\/scripts\/check-private-names.sh/..\/.github\/scripts\/check-private-names.sh}"
 run_check "$root"
 check "the path behind ../: exits 1" "$(is "$status" 1)"
 check "refuses the list" "$(contains "$out" "$terms_refused")"
@@ -969,6 +1006,21 @@ mutate "$root/$RELEASE" $'      - run: echo hello\n' "$uses_step"
 run_check "$root"
 check "an action the check cannot read: exits 1" "$(is "$status" 1)"
 check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+root=$(fixture terms-action-bare)
+action scan '.github/scripts/check-private-names.sh packages/claude-envoy/dist'
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$uses_step"
+run_check "$root"
+check "an action whose step runs the bare path: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+root=$(fixture terms-action-cd)
+action scan 'cd packages/other && .github/scripts/check-private-names.sh packages/claude-envoy/dist'
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$uses_step"
+run_check "$root"
+check "an action whose step runs a cd and then the bare path: exits 1" "$(is "$status" 1)"
+check "names the action's step and the script it runs" \
+  "$(contains "$out" "whose step 'Scan' runs '.github/scripts/check-private-names.sh'")"
 
 echo "case: the term list in a build job's verify-build step is refused, as any secret but GITHUB_TOKEN is"
 root=$(fixture terms-in-build-job)
@@ -1152,7 +1204,7 @@ check "does not name imagetools behind --config" "$(is "$(contains "$out" "step 
 
 echo "case: a backslash-continued command is one command, not one per line"
 root=$(fixture backslash-continuation)
-add_publish_step "$root" $'      - name: Hand over a long list\n        run: |\n          .github/scripts/release-push.sh handed pi-envoy-v "$VERSION" tarball \\\n            scripts/not-a-command.tgz \\\n            out/not-a-command-either.tgz\n      - name: Install across lines\n        run: |\n          bun \\\n            install --frozen-lockfile\n'
+add_publish_step "$root" $'      - name: Hand over a long list\n        run: |\n          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed pi-envoy-v "$VERSION" tarball \\\n            scripts/not-a-command.tgz \\\n            out/not-a-command-either.tgz\n      - name: Install across lines\n        run: |\n          bun \\\n            install --frozen-lockfile\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "does not read a continued argument line as a command" "$(is "$(contains "$out" "step 'Hand over a long list'")" false)"
@@ -1160,7 +1212,7 @@ check "still names the command a continuation starts" "$(contains "$out" "step '
 
 echo "case: a backslash ending a comment, or an escaped backslash, continues nothing"
 root=$(fixture comment-backslash)
-add_publish_step "$root" $'      - name: Install behind a comment\n        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n          TAG: ${{ steps.handed.outputs.tag }}\n        run: |\n          # keep the toolchain pinned \\\n          bun install --frozen-lockfile\n          .github/scripts/release-push.sh push-tag "$TAG"\n      - name: Install behind an escaped backslash\n        run: |\n          printf \'x\' \\\\\n          bun install\n'
+add_publish_step "$root" $'      - name: Install behind a comment\n        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n          TAG: ${{ steps.handed.outputs.tag }}\n        run: |\n          # keep the toolchain pinned \\\n          bun install --frozen-lockfile\n          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"\n      - name: Install behind an escaped backslash\n        run: |\n          printf \'x\' \\\\\n          bun install\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the command under a comment's trailing backslash" "$(contains "$out" "step 'Install behind a comment' runs 'bun'")"
@@ -1168,7 +1220,7 @@ check "names the command under an escaped backslash" "$(contains "$out" "step 'I
 
 echo "case: a comment after a separator, ending in a backslash, continues nothing"
 root=$(fixture separator-comment)
-add_publish_step "$root" $'      - name: Push tag behind a comment\n        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n          TAG: ${{ steps.handed.outputs.tag }}\n        run: |\n          .github/scripts/release-push.sh push-tag "$TAG" ;# keep the toolchain pinned \\\n          bun install --frozen-lockfile\n'
+add_publish_step "$root" $'      - name: Push tag behind a comment\n        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n          TAG: ${{ steps.handed.outputs.tag }}\n        run: |\n          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG" ;# keep the toolchain pinned \\\n          bun install --frozen-lockfile\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the command under the comment's trailing backslash" "$(contains "$out" "step 'Push tag behind a comment' runs 'bun'")"
@@ -1272,11 +1324,17 @@ check "exits 1" "$(is "$status" 1)"
 check "the plain job, running changie through fold-notes alone, must end in the tripwire" \
   "$(contains "$out" "job 'changes' runs dependency code (step 2 runs '.github/scripts/release-push.sh fold-notes' (it runs changie)), so its last step must be the tripwire 'run: .github/scripts/release-push.sh no-credential'$")"
 
-echo "case: release-push.sh push-tag through ./ in a credentialed job"
+echo "case: release-push.sh through ./ in a credentialed job is no longer the checkout's own"
+# A bare or ./ path names whatever file a working-directory or a `cd` left there, so only the path
+# behind $GITHUB_WORKSPACE is the checkout's release-push.sh.
 root=$(fixture publish-push-tag-dot-slash)
-mutate "$root/$RELEASE" $'        run: .github/scripts/release-push.sh push-tag "$TAG"\n' $'        run: ./.github/scripts/release-push.sh push-tag "$TAG"\n' 1
+mutate "$root/$RELEASE" $'          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"\n' $'          ./.github/scripts/release-push.sh push-tag "$TAG"\n' 1
 run_check "$root"
-check "exits 0" "$(is "$status" 0)"
+check "exits 1" "$(is "$status" 1)"
+check "names the ./ path as dependency code in the credentialed job" \
+  "$(contains "$out" "job 'pi_envoy_publish' holds a credential, but step 'Push tag' runs './.github/scripts/release-push.sh'")"
+check "and refuses the deploy key in a step that no longer runs the checkout's push" \
+  "$(contains "$out" "job 'pi_envoy_publish' names secrets.DEPLOY_KEY at step 'Push tag' env.DEPLOY_KEY")"
 
 echo "case: the deploy key in a build job's render step"
 root=$(fixture build-render-deploy-key)

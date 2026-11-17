@@ -16,8 +16,9 @@
 #    (a) runs no dependency code, (b) uses only the actions on CREDENTIALED_USES below, (c) sets
 #    `cache-mode: none`, and (d) names the deploy key only as `DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}`
 #    (the dot form) in the step-level `env:` of a step whose `run:` calls the one push command
-#    (PUSH_COMMAND), `release-push.sh push-tag`, and nothing else; the workflow's `env:` reaches
-#    every job, so the key there is never allowed.
+#    (PUSH_COMMAND), `release-push.sh push-tag`, as a command and through the checkout's own copy
+#    (behind `$GITHUB_WORKSPACE/`, as below), and nothing else; the workflow's `env:` reaches every
+#    job, so the key there is never allowed.
 # 2. A build job — one that runs dependency code — holds none of those four write scopes and no
 #    `secrets` reference but `secrets.GITHUB_TOKEN`, in its own text or the workflow's `env:` (so
 #    no deploy key, by dot or by index, no other secret and no `toJSON(secrets)`), declares
@@ -80,22 +81,20 @@
 # .github/scripts/check-private-names.sh) run from the checkout, or is `release-push.sh
 # fold-notes`, at any path or none (`.github/scripts/release-push.sh fold-notes`), which runs
 # changie: release-push.sh's other commands are not dependency code, and fold-notes is. A command
-# runs one of the two from the checkout when its word is the script's path behind
-# `$GITHUB_WORKSPACE/` (or `${GITHUB_WORKSPACE}/`), wherever the step runs, or the bare path or
-# `./` and the path when no working-directory moves the step (its own, the job's
-# `defaults.run.working-directory` or the workflow's); a `../` in front, or a path from another
-# directory, names some other file, which is dependency code. check-private-names.sh is not
-# dependency code: it sources nothing, and runs bash builtins and dirname, mktemp, rm, git
-# (ls-files), grep, find, sort, xargs, env, sh, tr, cat and wc, all the runner's own; it is the one
-# script a job holding the deployment's term list runs (release.yaml's claude_envoy_names, through
-# .github/actions/private-names-packed-plugin). The classification is of a command a step runs,
-# never of a word a comment or another command's argument holds: a script named only that way is
-# no exemption. A step whose `uses:` is a local action and no DEPENDENCY_USES entry is read through
-# that action's action.yml: a composite action's steps are read as a job's steps are (each `run:`
-# under its own `shell:`, at the workspace root unless it names a working-directory, which no job
-# or workflow default reaches), and any other kind of action, or one this check cannot read, runs
-# dependency code. Command position is found by one quote-aware scan of the
-# `run:` (its `${{ … }}`
+# runs one of the two from the checkout only when its word is the script's path behind
+# `$GITHUB_WORKSPACE/` (or `${GITHUB_WORKSPACE}/`): a bare or `./` path, a `../` in front, or a
+# path from another directory names whatever file sits there once a working-directory or a `cd`
+# earlier in the `run:` has moved the shell, which this check cannot follow, so it is dependency
+# code. check-private-names.sh is not dependency code: it sources nothing, and runs bash builtins
+# and dirname, mktemp, rm, git (ls-files), grep, find, sort, xargs, env, sh, tr, cat and wc, all
+# the runner's own; it is the one script a job holding the deployment's term list runs
+# (release.yaml's claude_envoy_names, through .github/actions/private-names-packed-plugin). The
+# classification is of a command a step runs, never of a word a comment or another command's
+# argument holds: a script named only that way is no exemption. A step whose `uses:` is a local
+# action and no DEPENDENCY_USES entry is read through that action's action.yml: a composite
+# action's steps are read as a job's steps are (each `run:` under its own `shell:`), and any other
+# kind of action, or one this check cannot read, runs dependency code. Command position is found
+# by one quote-aware scan of the `run:` (its `${{ … }}`
 # expressions elided first), as bash reads it: a `#` starts a comment only at word start — the
 # start of the run, after unquoted whitespace or a newline, or after an unquoted `;`, `&`, `|`,
 # `(`, `)`, `<`, `>` or backtick, not `{` (`${#x}`, `$#` and `a#b` are words) — and the comment
@@ -185,8 +184,8 @@ PRIVATE_NAMES_CHECK = ".github/scripts/check-private-names.sh"
 # The repository shell scripts under a scripts/ directory that are no dependency code, each at
 # this exact path (the header says what each runs).
 NOT_DEPENDENCY_SCRIPTS = (RELEASE_PUSH, PRIVATE_NAMES_CHECK)
-# The workspace-root prefixes a command word may carry to run one of NOT_DEPENDENCY_SCRIPTS from
-# the checkout wherever its step runs.
+# The workspace-root prefixes a command word must carry to run one of NOT_DEPENDENCY_SCRIPTS from
+# the checkout, wherever its step runs.
 WORKSPACE_ANCHORS = ("$GITHUB_WORKSPACE/", "${GITHUB_WORKSPACE}/")
 TRIPWIRE = f"{RELEASE_PUSH} no-credential"
 # The one release-push.sh command a step holding the deploy key may run: a release pushes its
@@ -425,17 +424,17 @@ def is_release_push(command: str) -> bool:
     return PATH_PREFIX.sub("", command).rsplit("/", 1)[-1] == "release-push.sh"
 
 
-def from_checkout(command: str, at_root: bool) -> bool:
+def from_checkout(command: str) -> bool:
     """Whether the command word runs one of NOT_DEPENDENCY_SCRIPTS from the checkout: its path
-    behind a WORKSPACE_ANCHORS prefix, wherever the step runs, or its bare or `./` path when no
-    working-directory moves the step (`at_root`). A `../` or any other prefix anchors nothing."""
+    behind a WORKSPACE_ANCHORS prefix. A bare or `./` path, a `../` or any other prefix anchors
+    nothing, since a working-directory or a `cd` may have moved the shell."""
     for anchor in WORKSPACE_ANCHORS:
         if command.startswith(anchor):
             return command[len(anchor):] in NOT_DEPENDENCY_SCRIPTS
-    return at_root and command.removeprefix("./") in NOT_DEPENDENCY_SCRIPTS
+    return False
 
 
-def dependency_command(words: list[str], at_root: bool) -> str | None:
+def dependency_command(words: list[str]) -> str | None:
     """How the message names the command when it is dependency code (`'bun'`, `'npm ci'`, `'docker
     container run'`, `'npm publish' without a tarball right after it (…)`), else None."""
     command = words[0]
@@ -468,7 +467,7 @@ def dependency_command(words: list[str], at_root: bool) -> str | None:
     # name counted at any path or under any directory: release-push.sh's other commands and
     # check-private-names.sh are no dependency code, and a script elsewhere is not one of them,
     # whatever it is called.
-    if DEPENDENCY_PATH.search(path) and not from_checkout(command, at_root):
+    if DEPENDENCY_PATH.search(path) and not from_checkout(command):
         return f"'{command}'"
     return None
 
@@ -488,19 +487,6 @@ def shell_of(step: Mapping, job: Mapping, workflow: Mapping) -> tuple[str, int |
         if isinstance(shell, str):
             return (shell.split() or [""])[0], scope.lines.get("shell")
     return "bash", None
-
-
-def working_directory(step: Mapping, job: Mapping, workflow: Mapping):
-    """The working-directory the step's `run:` runs in: its own, else the job's
-    `defaults.run.working-directory`, else the workflow's; None when none is set."""
-    if "working-directory" in step:
-        return step["working-directory"]
-    for scope in (job, workflow):
-        defaults = scope.get("defaults")
-        run = defaults.get("run") if isinstance(defaults, Mapping) else None
-        if isinstance(run, Mapping) and "working-directory" in run:
-            return run["working-directory"]
-    return None
 
 
 # The job and the workflow a composite action's step is read under: none of either's defaults
@@ -552,10 +538,9 @@ def dependency_code(step: Mapping, job: Mapping, workflow: Mapping, seen: tuple 
         if interpreter not in SHELLS:
             found.append(f"runs its body under shell '{interpreter}', not bash or sh")
         else:
-            at_root = working_directory(step, job, workflow) is None
             commands = []
             for words in commands_of(run):
-                what = dependency_command(words, at_root)
+                what = dependency_command(words)
                 if what and what not in commands:
                     commands.append(what)
             if commands:
@@ -602,14 +587,18 @@ def texts_of(node, path=(), line=0) -> list[tuple[tuple, int, str]]:
 
 
 def deploy_key_allowed(steps: list, path: tuple, text: str) -> bool:
-    """`DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}` in the env of a step that runs PUSH_COMMAND, and
-    nothing else: the dot form, exactly, as the one value of that key."""
+    """`DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}` in the env of a step whose `run:` runs PUSH_COMMAND,
+    the checkout's release-push.sh (from_checkout) with `push-tag`, and nothing else: the dot form,
+    exactly, as the one value of that key."""
     if len(path) != 4 or path[0] != "steps" or path[2:] != ("env", "DEPLOY_KEY"):
         return False
     if not DEPLOY_KEY_VALUE.fullmatch(text.strip()):
         return False
     run = steps[path[1]].get("run")
-    return isinstance(run, str) and PUSH_COMMAND in run
+    return isinstance(run, str) and any(
+        from_checkout(words[0]) and is_release_push(words[0]) and words[1:2] == ["push-tag"]
+        for words in commands_of(run)
+    )
 
 
 def describe(step: Mapping, index: int) -> str:
