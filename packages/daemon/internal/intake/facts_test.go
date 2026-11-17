@@ -93,7 +93,7 @@ func TestLegionHeadReadsTheHeadTheReviewSaysItRead(t *testing.T) {
 }
 
 // The reviewer's footer names the entry of the round its review is of, the number its task names
-// (workflow's ReviewEntryLabel), and only a review that names the entry that stands moves the
+// (reviewround.EntryLabel), and only a review that names the entry that stands moves the
 // commit the reviewer read (workflow's review). LegionEntry reads it as a positive whole number
 // written as a JSON integer or as a JSON string of digits, which is the form the reviewer's texts
 // give (`"entry":"<entry>"`), so a placeholder left as it is keeps the footer JSON. It answers 0

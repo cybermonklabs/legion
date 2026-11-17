@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -418,11 +419,11 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 }
 
 // The reviewer is told the commit its later round reads from, and the entry of each round, by
-// the labels its task carries (reviewedCommit.part, reviewEntry.part), and its prompt and the
-// merge gate of skill://legion-worker, which the prompt sends it to, name those fields, so a
-// rename of a label in the writer alone, in the reviewer's prompt alone or in the merge gate alone
-// fails here. The reviewer writes the entry into its review's footer, so a prompt that did not
-// name the field would leave every review moving no commit.
+// the labels its task carries (reviewround.Sentences), and its prompt and the merge gate of
+// skill://legion-worker, which the prompt sends it to, name those fields, so a rename of a label
+// in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here. The
+// reviewer writes the entry into its review's footer, so a prompt that did not name the field
+// would leave every review moving no commit.
 func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
 	body, err := os.ReadFile(mergeGate)
@@ -430,15 +431,15 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
 	}
 	prompt := reviewerPrompt(t)
+	sentences := reviewround.Sentences("<sha>", 7)
 	for _, tc := range []struct {
 		field, part string
 	}{
-		{field: ReviewedCommitLabel + ": <sha>", part: reviewedCommit("<sha>").part()},
-		{field: ReviewEntryLabel + ": <n>", part: reviewEntry(7).part()},
+		{field: reviewround.CommitLabel + ": <sha>", part: " " + reviewround.CommitLabel + ": <sha>. "},
+		{field: reviewround.EntryLabel + ": <n>", part: " " + reviewround.EntryLabel + ": 7."},
 	} {
-		label, _, _ := strings.Cut(tc.field, ": ")
-		if !strings.HasPrefix(tc.part, " "+label+": ") {
-			t.Fatalf("a task names its field as %q, want it to start with %q", tc.part, " "+label+": ")
+		if !strings.Contains(sentences, tc.part) {
+			t.Fatalf("a task names its round as %q, want it to hold %q", sentences, tc.part)
 		}
 		want := "`" + tc.field
 		if !strings.Contains(prompt, want) {

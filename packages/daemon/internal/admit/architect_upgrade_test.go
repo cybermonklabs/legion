@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -732,13 +733,16 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 const phaseReviewedHeadVersion = 20261116234034
 
 // The reviewed commit's way back, the one transaction its migration's header carries
-// (headerWayBack), drops phases.reviewed_head and deletes the migration's version row, and the
-// roll-forward after it adds the column again at its default: a reviewer's row that held a commit
-// comes through both with the rest of its record and reads no commit, so the next round of its
-// issue reads the whole change. Without the drop, the roll-forward's add of a column that stands
-// fails; without the delete, Migrate finds the version recorded and never adds the column again,
-// and every phases read, which names the column, fails. The way back leaves the round's sentences
-// in the task the row stores, which the earlier release sends as text, and the roll-forward appends
+// (headerWayBack), drops phases.reviewed_head and pending_task_deliveries.round_named, deletes the
+// key `roundNamed` from each supervise start row, and deletes the migration's version row, and the
+// roll-forward after it adds the two columns again at their defaults: a reviewer's row that held a
+// commit comes through both with the rest of its record and reads no commit, so the next round of
+// its issue reads the whole change. Without the drops, the roll-forward's adds of columns that stand
+// fail; without the delete of the version row, Migrate finds the version recorded and never adds
+// them again, and every phases read and every claims read, which name the columns, fail; without
+// the key's delete, the earlier release, which decodes an outbox row strictly, retries the row for
+// ever. The rest of the start row is left as it was. The way back leaves the round's sentences in
+// the task the row stores, which the earlier release sends as text, and the roll-forward appends
 // them again, the commit `none` and the row's entry: the task still ends with the daemon's two
 // sentences, its own two before them. The test is in this package because headerWayBack, the
 // reader of a header's way back, is a test helper here, which internal/store's own tests cannot
@@ -748,7 +752,7 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 	pool := migratedPool(t)
 	const key, reviewed = "LEGION-860", "2222222222222222222222222222222222222222"
 	sentences := func(commit string) string {
-		return " " + workflow.ReviewedCommitLabel + ": " + commit + ". " + workflow.ReviewEntryLabel + ": 2."
+		return " " + reviewround.CommitLabel + ": " + commit + ". " + reviewround.EntryLabel + ": 2."
 	}
 	held := record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Entry: 2,
 		EntryTask: "Continue " + key + ". Issue: " + key + ". Phase: reviewing." + sentences(reviewed), ReviewedHead: reviewed}
@@ -762,22 +766,40 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 	if got := phaseRow(t, pool, key, claim.RoleReviewer).ReviewedHead; got != reviewed {
 		t.Fatalf("the reviewer's row before the way back reads the reviewed commit %q, want %s", got, reviewed)
 	}
+	start := `{"op":"start","tree":"` + key + `","role":"reviewer","task":"Continue.` + sentences(reviewed) + `","generation":1,"phase":"reviewing","entry":2,"roundNamed":true}`
+	if _, err := pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('supervise', $1, $2::jsonb, 0, now(), '')`, key, start); err != nil {
+		t.Fatalf("queue the reviewer's start as this release writes it: %v", err)
+	}
 
 	if _, err := pool.Exec(ctx, headerWayBack(t, phaseReviewedHeadVersion), pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the reviewed commit's way back as its one transaction: %v", err)
 	}
-	var column bool
-	if err := pool.QueryRow(ctx, `select exists (select 1 from information_schema.columns
-		where table_schema = current_schema() and table_name = 'phases' and column_name = 'reviewed_head')`).Scan(&column); err != nil {
-		t.Fatalf("look for phases.reviewed_head after the way back: %v", err)
+	columnStands := func(table, column string) bool {
+		t.Helper()
+		var stands bool
+		if err := pool.QueryRow(ctx, `select exists (select 1 from information_schema.columns
+			where table_schema = current_schema() and table_name = $1 and column_name = $2)`, table, column).Scan(&stands); err != nil {
+			t.Fatalf("look for %s.%s: %v", table, column, err)
+		}
+		return stands
 	}
 	var recorded int
 	if err := pool.QueryRow(ctx, `select count(*) from schema_version where version = $1`, phaseReviewedHeadVersion).Scan(&recorded); err != nil {
 		t.Fatalf("count the version rows of migration %d after the way back: %v", phaseReviewedHeadVersion, err)
 	}
-	if column || recorded != 0 {
-		t.Fatalf("after the way back phases.reviewed_head stands: %v, and migration %d's version rows number %d; want neither: "+
-			"the roll-forward adds the column again only when both are gone", column, phaseReviewedHeadVersion, recorded)
+	if columnStands("phases", "reviewed_head") || columnStands("pending_task_deliveries", "round_named") || recorded != 0 {
+		t.Fatalf("after the way back phases.reviewed_head stands: %v, pending_task_deliveries.round_named stands: %v, and migration %d's version rows number %d; "+
+			"want none of them: the roll-forward adds the columns again only when all are gone",
+			columnStands("phases", "reviewed_head"), columnStands("pending_task_deliveries", "round_named"), phaseReviewedHeadVersion, recorded)
+	}
+	var keyed bool
+	var task string
+	if err := pool.QueryRow(ctx, `select payload ? 'roundNamed', payload->>'task' from outbox where kind = 'supervise' and issue = $1`, key).Scan(&keyed, &task); err != nil {
+		t.Fatalf("read the reviewer's start after the way back: %v", err)
+	}
+	if keyed || task != "Continue."+sentences(reviewed) {
+		t.Fatalf("after the way back the reviewer's start carries roundNamed: %v and the task %q; want no such key and the task as queued, "+
+			"which the earlier release decodes", keyed, task)
 	}
 
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -797,5 +819,8 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 		t.Fatalf("the reviewer's row after the roll-forward = claim %q, entry %d, task %q, reviewed commit %q; want the row as it was "+
 			"with no reviewed commit, the column's default, and the task ending with the daemon's two sentences again: %q",
 			got.Claim, got.Entry, got.EntryTask, got.ReviewedHead, want)
+	}
+	if !columnStands("pending_task_deliveries", "round_named") {
+		t.Fatal("after the roll-forward pending_task_deliveries.round_named does not stand, want it added again at its default")
 	}
 }

@@ -597,7 +597,7 @@ type PhaseRow struct {
 	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
 	// in place that the upgrade found with no work handed out, which the completion route reads
 	// as nothing to compare. The reviewer's row has a second reader: each task the reviewer is
-	// given in reviewing ends naming this number (workflow's ReviewEntryLabel), its review's
+	// given in reviewing ends naming this number (reviewround.EntryLabel), its review's
 	// footer names it back, and only a review that names the number the row holds moves
 	// ReviewedHead. Because the number is never reset and each entry raises it, a review of an
 	// earlier entry can never name the entry that stands.

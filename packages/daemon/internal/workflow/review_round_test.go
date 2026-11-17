@@ -16,20 +16,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // reviewEntryPartOf is the sentence a reviewer's task in reviewing names the entry of its round
-// with, " Review entry: <n>.", written out here rather than through reviewEntry.part, so the
+// with, " Review entry: <n>.", written out here rather than through reviewround.Sentences, so the
 // tests read the sentence and not the code that writes it.
 func reviewEntryPartOf(entry int64) string {
-	return " " + ReviewEntryLabel + ": " + strconv.FormatInt(entry, 10) + "."
+	return " " + reviewround.EntryLabel + ": " + strconv.FormatInt(entry, 10) + "."
 }
 
 // entryNamedIn is the entry the reviewer's task names in its last sentence, read as an agent reads
-// it: the number after ReviewEntryLabel, failing the test when the task does not end naming one.
+// it: the number after reviewround.EntryLabel, failing the test when the task does not end naming one.
 func entryNamedIn(t *testing.T, task string) int64 {
 	t.Helper()
-	label := " " + ReviewEntryLabel + ": "
+	label := " " + reviewround.EntryLabel + ": "
 	at := strings.LastIndex(task, label)
 	if at < 0 || !strings.HasSuffix(task, ".") {
 		t.Fatalf("the task %q does not end naming its review entry", task)
@@ -43,12 +44,17 @@ func entryNamedIn(t *testing.T, task string) int64 {
 
 // deliveredTask is the task of the one start of LEGION-208's reviewer the outbox holds, the task
 // the reviewer is DELIVERED, failing the test unless that start hands the reviewer the entry the
-// reviewer's row holds (or, for a resume level with its entry, no number at all).
+// reviewer's row holds (or, for a resume level with its entry, no number at all), and unless its
+// row, read back from the outbox, carries the typed fact that its task holds the daemon's two
+// sentences (record.SuperviseRequest.RoundNamed), so the claim's send adds none.
 func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 	t.Helper()
 	start, row := onlyReviewerStart(t, pool), reviewerRow(t, pool)
 	if start.Entry != 0 && start.Entry != row.Entry {
 		t.Fatalf("%s: the start hands the reviewer entry %d, want the row's %d", path, start.Entry, row.Entry)
+	}
+	if !start.RoundNamed {
+		t.Fatalf("%s: the reviewer's start row with the task %q carries no fact that it names its round", path, start.Task)
 	}
 	return start.Task
 }
@@ -103,7 +109,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			walk: func(t *testing.T, noCommit bool) (*pgxpool.Pool, string) {
 				pool, _, _ := reviewRoundTwoNaming(t, noCommit)
 				for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
-					if task := roleRow(t, pool, role).EntryTask; task == "" || strings.Contains(task, ReviewEntryLabel) || strings.Contains(task, ReviewedCommitLabel) {
+					if task := roleRow(t, pool, role).EntryTask; task == "" || strings.Contains(task, reviewround.EntryLabel) || strings.Contains(task, reviewround.CommitLabel) {
 						t.Fatalf("the %s's row holds the task %q, want round 2's task with no sentence of the review round: only the reviewer is told them", role, task)
 					}
 				}
@@ -236,7 +242,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				if want := before + reviewedPartOf(commitNamed(row)) + entry; delivered != want {
 					t.Fatalf("the reviewer is delivered the task %q, want %q: it ends with the daemon's two sentences, the row's commit and then its entry", delivered, want)
 				}
-				for _, label := range []string{ReviewedCommitLabel, ReviewEntryLabel} {
+				for _, label := range []string{reviewround.CommitLabel, reviewround.EntryLabel} {
 					if named := strings.Count(delivered, " "+label+": "); named != 1 {
 						t.Fatalf("the reviewer's task %q names %q %d times, want once: the daemon's own sentence", delivered, label, named)
 					}
@@ -254,7 +260,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 
 // noEntryPart is the sentence a reviewer's task in reviewing ends with while its row holds no
 // entry's task: the daemon gives that task no entry, and no review of it moves the commit.
-const noEntryPart = " " + ReviewEntryLabel + ": none."
+const noEntryPart = " " + reviewround.EntryLabel + ": none."
 
 // commitNamed is the commit row's sentence names, the commit it holds or `none`.
 func commitNamed(row record.PhaseRow) string {
@@ -329,7 +335,7 @@ func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) 
 				commit = reviewedPartOf(tc.names)
 			}
 			if entry := reviewerRow(t, pool).Entry; !strings.HasSuffix(stored, " Pull request: #42."+commit+reviewEntryPartOf(entry)) ||
-				strings.Count(stored, ReviewedCommitLabel) != 1 {
+				strings.Count(stored, reviewround.CommitLabel) != 1 {
 				t.Fatalf("the reviewer's row stores the task %q, want it to end with the pull request, then %q, then entry %d", stored, commit, entry)
 			}
 			if _, err := pool.Exec(context.Background(), "update phases set reviewed_head = $1 where issue = 'LEGION-208' and role = 'reviewer'", tc.moved); err != nil {
@@ -370,13 +376,13 @@ func TestATaskWhoseTextQuotesTheRoundsSentencesIsStillGivenThem(t *testing.T) {
 		reason func(entry int64) string
 	}{
 		{name: "a reason that ends quoting the row's entry", reason: func(entry int64) string {
-			return fmt.Sprintf("Retry %s: %d", ReviewEntryLabel, entry)
+			return fmt.Sprintf("Retry %s: %d", reviewround.EntryLabel, entry)
 		}},
 		{name: "a reason that quotes another commit", reason: func(int64) string {
-			return "the reviewer read " + ReviewedCommitLabel + ": " + headTwo + ". Read it again"
+			return "the reviewer read " + reviewround.CommitLabel + ": " + headTwo + ". Read it again"
 		}},
 		{name: "a first round's reason that ends quoting a commit", firstRound: true, reason: func(int64) string {
-			return "the reviewer read " + ReviewedCommitLabel + ": " + headTwo
+			return "the reviewer read " + reviewround.CommitLabel + ": " + headTwo
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -517,8 +523,8 @@ func wakesTheReviewerInRoundTwo(kind string) func(t *testing.T) (*pgxpool.Pool, 
 }
 
 // Each wake of the reviewer of an issue in reviewing, while the reviewer's row holds the task of
-// an entry, gives it a task that ends naming the commit the row holds (ReviewedCommitLabel) and
-// then that entry (ReviewEntryLabel), each once: a reviewer that waits for CI is released after
+// an entry, gives it a task that ends naming the commit the row holds (reviewround.CommitLabel)
+// and then that entry (reviewround.EntryLabel), each once: a reviewer that waits for CI is released after
 // the idle period, and the wake is then its newest task. The wake's task is never the phase's
 // work, and it still names the round's commit and entry, as each task of the reviewer in reviewing
 // does: the reviewer writes the number of the newest entry its session was given into its review's
@@ -526,12 +532,15 @@ func wakesTheReviewerInRoundTwo(kind string) func(t *testing.T) (*pgxpool.Pool, 
 // sentences are the ones the queue of every worker's task appends (queuedRow, namingTheReviewRound),
 // on each kind of wake.
 //
-// namingTheReviewRound gives each task of the reviewer in reviewing those two sentences, `none`
-// where its row holds no commit or no entry's task, and gives them to nothing else. The controls
-// are its three other cases: a woken reviewer whose row the generation's clear left with no task
-// and no commit (record.Store.ClearGeneration), whose wake's task ends with ` Last reviewed
-// commit: none. Review entry: none.`, and, given the wake's task alone, a woken role that is not
-// the reviewer and a woken reviewer whose issue has left reviewing, whose row still holds both.
+// namingTheReviewRound gives each task of the reviewer those two sentences, in each phase, `none`
+// where its row holds no commit or no entry's task and `none` for both outside reviewing, and
+// gives them to no other role. The controls are its three other cases: a woken role that is not
+// the reviewer, given the wake's task alone; a woken reviewer whose row the generation's clear
+// left with no task and no commit (record.Store.ClearGeneration); and a woken reviewer whose issue
+// has left reviewing, whose row still holds both, whose wake is delivered once the issue is back
+// in reviewing. The last two end with ` Last reviewed commit: none. Review entry: none.`, and the
+// start row of each of the three carries the fact the claim's send reads, so a wake queued outside
+// reviewing is sent as it stands, ending with the daemon's sentences.
 func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	for _, kind := range wakeKinds {
 		t.Run(kind, func(t *testing.T) {
@@ -546,7 +555,7 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				t.Fatalf("the woken reviewer is delivered the task %q, want %q: it ends naming %s, the row's commit, and then entry %d, the row's",
 					task, want, headOne, row.Entry)
 			}
-			for _, label := range []string{ReviewedCommitLabel, ReviewEntryLabel} {
+			for _, label := range []string{reviewround.CommitLabel, reviewround.EntryLabel} {
 				if named := strings.Count(task, label); named != 1 {
 					t.Fatalf("the woken reviewer's task %q names %q %d times, want once", task, label, named)
 				}
@@ -592,7 +601,7 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			},
 		},
 		{
-			name: "a woken reviewer whose issue has left reviewing", role: claim.RoleReviewer,
+			name: "a woken reviewer whose issue has left reviewing", role: claim.RoleReviewer, after: reviewedPartOf("none") + noEntryPart,
 			walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
 				pool, engine, apply := reviewRoundOne(t)
 				apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
@@ -616,6 +625,17 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			}
 			if want := wake + tc.after; starts[0].Task != want {
 				t.Fatalf("the woken %s is delivered the task %q, want %q", tc.role, starts[0].Task, want)
+			}
+			if named := tc.role == claim.RoleReviewer; starts[0].RoundNamed != named {
+				t.Fatalf("the woken %s's start row carries the fact that it names its round = %v, want %v", tc.role, starts[0].RoundNamed, named)
+			}
+			if tc.role == claim.RoleReviewer {
+				back := issueRecord(t, pool, "LEGION-208")
+				back.Phase = phase.Reviewing
+				seedIssue(t, pool, *back)
+				if again := wakeStarts(t, pool); len(again) != 1 || again[0].Task != wake+tc.after || !again[0].RoundNamed {
+					t.Fatalf("with the issue back in reviewing the wake's start row = %+v, want it as queued: the wake's task, then the daemon's two sentences, and the fact", again)
+				}
 			}
 		})
 	}

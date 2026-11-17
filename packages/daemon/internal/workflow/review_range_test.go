@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // reviewerRow is LEGION-208's reviewer row as the record holds it.
@@ -302,14 +303,14 @@ func TestAPersonsReviewThatQuotesTheReviewersFooterDoesNotMoveItsCommit(t *testi
 // reviewedPartOf is the part of a later round's task that names head as the commit the
 // reviewer's newest recorded review read.
 func reviewedPartOf(head string) string {
-	return " " + ReviewedCommitLabel + ": " + head + "."
+	return " " + reviewround.CommitLabel + ": " + head + "."
 }
 
 // endsNamingNoCommit says whether task ends with the daemon's sentence naming no commit,
 // reviewedPartOf("none"), and then the sentence of entry, and names the commit's label nowhere
 // else: the task of a round whose reviewer's row holds no reviewed commit.
 func endsNamingNoCommit(task string, entry int64) bool {
-	return strings.HasSuffix(task, reviewedPartOf("none")+reviewEntryPartOf(entry)) && strings.Count(task, ReviewedCommitLabel) == 1
+	return strings.HasSuffix(task, reviewedPartOf("none")+reviewEntryPartOf(entry)) && strings.Count(task, reviewround.CommitLabel) == 1
 }
 
 // readsReviewingTask fails the test unless task is the reviewing task of the round whose tester
@@ -429,12 +430,12 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 		if row.EntryTask == "" || !strings.Contains(row.EntryTask, " Phase: ") {
 			t.Fatalf("the %s's row holds the task %q, want the task round 2 started it with", role, row.EntryTask)
 		}
-		if strings.Contains(row.EntryTask, ReviewedCommitLabel) {
+		if strings.Contains(row.EntryTask, reviewround.CommitLabel) {
 			t.Fatalf("the %s's task = %q, want no reviewed commit: only the reviewer is told one", role, row.EntryTask)
 		}
 	}
 	for _, start := range superviseRowsOf(t, pool, "LEGION-208", "start") {
-		if start.Role != claim.RoleReviewer && strings.Contains(start.Task, ReviewedCommitLabel) {
+		if start.Role != claim.RoleReviewer && strings.Contains(start.Task, reviewround.CommitLabel) {
 			t.Fatalf("the %s's start carries %q, want no reviewed commit", start.Role, start.Task)
 		}
 	}

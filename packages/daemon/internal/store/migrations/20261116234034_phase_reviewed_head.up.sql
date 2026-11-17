@@ -34,29 +34,51 @@
 -- under its advisory lock: the add takes a short ACCESS EXCLUSIVE lock on phases and rewrites no
 -- row, and the update writes the reviewer's rows that store a task.
 --
+-- The two sentences are the last two of each task the reviewer is sent, whatever queued it, and a
+-- typed fact tells a task that holds them from one that does not, never the task's text: the start
+-- row's `roundNamed` (record.SuperviseRequest.RoundNamed), which the workflow writes on each start
+-- of the reviewer it names, and pending_task_deliveries.round_named below, which the claim's
+-- delivery of such a start carries (supervise.Delivery.RoundNamed). The one place each prompt is
+-- composed gives a reviewer's task without the fact the two sentences naming no commit and no
+-- entry (supervise's Delivery.message): a start row or a pending delivery the release before this
+-- one stored, whose text can end with words of the same shape, and a task an operator wrote. Every
+-- row the release before stored takes the column's default, false. The add rewrites no row.
+--
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the transaction below, run with the daemon stopped:
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
+--   update outbox set payload = payload - 'roundNamed' where kind = 'supervise' and payload ? 'roundNamed';
+--   alter table pending_task_deliveries drop column if exists round_named;
 --   alter table phases drop column if exists reviewed_head;
 --   delete from schema_version where version = 20261116234034;
 --   commit;
 --   SQL
 --
--- The release before this one needs neither statement: its phases read and its phases write name
--- each column they touch (record's Phases and PutPhase), so the column would stand there unread,
--- and every row that release inserts would take the default. Both are owed to the roll-forward:
--- with the column dropped and the row deleted, store.apply finds no row of this version and runs
--- this file again, which adds the column again at its default. The drop is also what lets this
--- file run again at all, since an add of a column that stands fails. What the drop costs is the
--- commit each reviewer's row held, so the next round of each issue then in review reads the whole
--- change. The way back leaves the sentences in the stored tasks: the release before sends a stored
--- task as text and reads nothing in it. The roll-forward appends them again to each reviewer's
--- task stored at the rollback that the release before did not write again, a task this release
--- stored with a commit among them, so each such task ends with them twice, and still ends with
--- the daemon's two sentences.
+-- The release before this one needs the first statement: it decodes an outbox row strictly
+-- (DisallowUnknownFields), so a start row that still carried `roundNamed` would be a row it retries
+-- for ever. It needs neither column dropped: its phases read and write and its claims read and
+-- delivery write name each column they touch (record's Phases and PutPhase, the claim store's
+-- claimSelect and putDelivery), so the columns would stand there unread, and every row that
+-- release inserts would take their defaults. The two drops and the delete are owed to the
+-- roll-forward: with the columns dropped and the row deleted, store.apply finds no row of this
+-- version and runs this file again, which adds the columns again at their defaults. The drops are
+-- also what let this file run again at all, since an add of a column that stands fails, and the
+-- delivery's drop is what keeps a stale fact from surviving: the release before replaces a claim's
+-- delivery by an upsert that does not name round_named, so a column left in place would say
+-- `true` of the task that release wrote. What the way back costs is the commit each reviewer's row
+-- held and the fact on each start row and delivery, so the next round of each issue then in review
+-- reads the whole change, and each task this release queued is sent after the roll-forward with
+-- the daemon's sentences naming no commit and no entry after its own two: its reviewer reads the
+-- whole change. The way back leaves the sentences in the stored tasks: the release before sends a
+-- stored task as text and reads nothing in it. The roll-forward appends them again to each
+-- reviewer's task stored at the rollback that the release before did not write again, a task this
+-- release stored with a commit among them, so each such task ends with them twice, and still ends
+-- with the daemon's two sentences.
 alter table phases add column reviewed_head text not null default '';
 
 update phases set entry_task = entry_task || ' Last reviewed commit: none. Review entry: ' || entry || '.'
 where role = 'reviewer' and entry_task <> '';
+
+alter table pending_task_deliveries add column round_named boolean not null default false;

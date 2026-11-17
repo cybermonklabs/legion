@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -273,7 +274,7 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					t.Errorf("the carried reviewer's row reads the reviewed commit %q, want %s: the carry keeps the phase rows", row.ReviewedHead, tc.reviewed)
 				}
 				starts := roleStarts(t, pool, child, claim.RoleReviewer)
-				if want := " " + workflow.ReviewedCommitLabel + ": " + tc.reviewed + "."; len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
+				if want := " " + reviewround.CommitLabel + ": " + tc.reviewed + "."; len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
 					t.Fatalf("the promoted reviewer's starts = %+v, want one whose task names %q", starts, want)
 				}
 			}

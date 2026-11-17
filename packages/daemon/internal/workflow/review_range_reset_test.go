@@ -156,7 +156,7 @@ func TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit(t *t
 }
 
 // A review the reviewer's own session submitted in the round a re-admission ended names that
-// round's entry (ReviewEntryLabel), and it moves no commit however late it is applied and
+// round's entry (reviewround.EntryLabel), and it moves no commit however late it is applied and
 // whatever time GitHub gives it: here GitHub's clock is ahead of the daemon's, so the review's
 // submission time sorts after the entry the promotion raised, though the review was submitted
 // before the re-admission. Only the entry the review names tells the two rounds apart; no time is

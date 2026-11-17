@@ -684,7 +684,7 @@ func (r PullRequestReview) LegionHead() string {
 
 // LegionEntry is the entry of the round the review says it is of: the entry field of the last
 // Legion footer in the review's body (lastLegionFooter), the number the reviewer's task names
-// (workflow's ReviewEntryLabel, record.PhaseRow.Entry). The reviewer's texts write it as a JSON
+// (reviewround.EntryLabel, record.PhaseRow.Entry). The reviewer's texts write it as a JSON
 // string of digits (`"entry":"<entry>"`), so a placeholder left unfilled keeps the footer JSON,
 // and it is read as a positive whole number written either that way or as a JSON integer. It is
 // 0 when the body carries no footer, the footer's JSON cannot be parsed, it names no entry, or

@@ -48,7 +48,7 @@ func reviewBody(said, head string) string {
 }
 
 // reviewBodyOfEntry is a review's body whose Legion footer names session, head and entry as the
-// entry of the round the review is of, the number the reviewer's task names (ReviewEntryLabel),
+// entry of the round the review is of, the number the reviewer's task names (reviewround.EntryLabel),
 // written as the reviewer's texts have an agent write it, a quoted number (`"entry":"<n>"`). A
 // fixture about a review of the round that stands writes roundReviewBody, which reads that number;
 // one about a review of another round names that round's here.

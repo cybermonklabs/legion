@@ -85,9 +85,10 @@ func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseR
 // message per wake, and the outbox row that carries it is written in the wake's own transaction,
 // so a wake that commits has its task and one that does not has neither.
 //
-// The wake's task is never the phase's work, and for the reviewer of an issue in reviewing whose
-// row holds the task of an entry it still ends naming that entry (ReviewEntryLabel), which the
-// queue appends to it as to every task (queuedRow). The reason is the reviewer's normal path: one
+// The wake's task is never the phase's work, and for the reviewer it still ends with the daemon's
+// two sentences of the review round (reviewround.Sentences), which the queue appends to it as to
+// every task of the reviewer (queuedRow, namingTheReviewRound): in reviewing, while the row holds
+// the task of an entry, they name that entry. The reason is the reviewer's normal path: one
 // waiting for CI it cannot judge yet is released after the idle period and woken by the CI
 // settlement, so the wake is its newest task, and the review it then submits moves the commit it
 // read only when its footer names the entry that stands. The text here names no entry itself.

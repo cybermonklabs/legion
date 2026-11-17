@@ -638,7 +638,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 // task of an entry, which a new generation's clear empties until the next entry is raised
 // (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review's footer names that
 // entry (intake.PullRequestReview.LegionEntry), the number every task the reviewer is given in
-// reviewing ends with (ReviewEntryLabel). The number is never reset and each entry raises it, so a
+// reviewing ends with (reviewround.EntryLabel). The number is never reset and each entry raises it, so a
 // review of an earlier entry - submitted before a re-admission and applied after it, however
 // late, or before a carried hand-over's promotion and applied after it - names a number the row
 // has left and moves nothing, and the first review of a new generation reads the whole change. No

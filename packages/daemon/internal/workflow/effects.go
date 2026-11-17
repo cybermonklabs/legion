@@ -184,18 +184,20 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // readyWorkerTask), the start of a phase worker (startOrOwe, which every start Engine.started
 // builds comes through) and a root architect's start that claims the decisions it names
 // (EnqueueNaming). It is where a task takes what every task of its worker must name: the
-// sentences of the reviewer's review round (namingTheReviewRound), the commit the reviewer's own
-// last deciding review read and the entry of its round, which the reviewer copies into the footer
-// of its review from the newest sentence naming an entry that its session was given, so a kind of
-// task added later cannot be queued without them.
+// daemon's two sentences of the reviewer's review round (namingTheReviewRound), always the last
+// two of each task of the reviewer, in each phase, so a kind of task added later cannot be queued
+// without them.
 //
-// Only a start of the reviewer can name either, so no other row reads the record for them. A
-// reviewer's start reads the phase its issue stands in and the reviewer's row as tx holds them,
-// which is the row's commit and entry at the moment the task is queued: a start that raised the
-// entry wrote the row first in this same transaction (enter). A start whose task is the stored
-// task of its entry, sent as stored, says so (record.SuperviseRequest.RoundNamed), and its task
-// is queued as it is: it holds the sentences already. That is a fact the start carries and never
-// a reading of the task's text, which can quote either sentence, a retry's reason among it.
+// Only a start of the reviewer that carries a task is named, so no other row reads the record
+// for them. A reviewer's start reads the phase its issue stands in and the reviewer's row as tx
+// holds them, which is the row's commit and entry at the moment the task is queued: a start that
+// raised the entry wrote the row first in this same transaction (enter). Each start of the
+// reviewer it queues carries the typed fact that its task ends with the daemon's sentences
+// (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none. A start
+// whose task is the stored task of its entry, sent as stored, comes with that fact already, and
+// its task is queued as it is: it holds the sentences already. That is a fact the start carries
+// and never a reading of the task's text, which can quote either sentence, a retry's reason among
+// it.
 func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
 	start, ok := payload.(record.SuperviseRequest)
 	if !ok || start.Op != "start" || start.Task == "" || start.Role != claim.RoleReviewer || start.RoundNamed {
@@ -205,13 +207,19 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	if err != nil {
 		return record.OutboxRow{}, err
 	}
+	// An issue the record does not hold stands in no phase and holds no row, so its reviewer's
+	// task names neither a commit nor an entry.
+	var standsIn phase.Phase
+	var row record.PhaseRow
 	if standing != nil {
 		rows, err := store.Phases(ctx, tx, issue)
 		if err != nil {
 			return record.OutboxRow{}, err
 		}
-		start.Task = namingTheReviewRound(start.Task, start.Role, standing.Phase, record.PhaseRowOf(rows, start.Role))
+		standsIn, row = standing.Phase, record.PhaseRowOf(rows, start.Role)
 	}
+	start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, row)
+	start.RoundNamed = true
 	return record.NewOutboxRow(issue, start, at)
 }
 
@@ -529,6 +537,8 @@ type startMarks struct {
 	// transition's start and the promotion's start of a mid-phase worker, each sending what enter
 	// answers (start, StartPromotedWorker), and the send of an owed entry whose row stores a task
 	// (sendOwedEntry). A task composed for the start is given the sentences whatever its text holds.
+	// Only the reviewer's task holds them, so only a start of the reviewer carries the fact the
+	// mark makes (started): the stored task of any other role names no review round.
 	stored bool
 	// ruleResume says the start is the boot's start of a claim the daemon itself suspended, so the
 	// outbox finishes the row rather than retrying the claim it resumed when that claim spends its
@@ -593,7 +603,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks

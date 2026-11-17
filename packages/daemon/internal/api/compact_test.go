@@ -13,10 +13,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // compactHarness is the one daemon both doors are driven against, as freshSessionHarness is: the
@@ -133,10 +133,8 @@ func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 // The compaction carries the instructions that make Oh My Pi's summary text: without them it
 // archives the history onto snapcompact's images, which a worker resumed on them needs a vision
 // model to read back (shimwire.Compact). They keep the sentence that names a reviewer's entry
-// (workflow.ReviewEntryLabel) word for word, since a reviewer whose summary dropped it writes no
-// entry; they write the label out, since workflow's tests import this package, and this test
-// builds the sentence from workflow's label, so the two cannot part. The bound it is asked within
-// is the operation's own ten minutes, not the RPC timeout.
+// (reviewround.EntryLabel) word for word, since a reviewer whose summary dropped it writes no
+// entry. The bound it is asked within is the operation's own ten minutes, not the RPC timeout.
 func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := readyImplementer(t, h)
@@ -154,7 +152,7 @@ func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	if !strings.Contains(asked[0].CustomInstructions, "Write the summary as text.") {
 		t.Errorf("the compaction's instructions are %q, want them to ask for a text summary", asked[0].CustomInstructions)
 	}
-	keepsTheEntry := "Keep word for word the newest sentence that starts \"" + workflow.ReviewEntryLabel + ":\" in the tasks you were given."
+	keepsTheEntry := "Keep word for word the newest sentence that starts \"" + reviewround.EntryLabel + ":\" in the tasks you were given."
 	if !strings.Contains(asked[0].CustomInstructions, keepsTheEntry) {
 		t.Errorf("the compaction's instructions are %q, want them to keep %q", asked[0].CustomInstructions, keepsTheEntry)
 	}

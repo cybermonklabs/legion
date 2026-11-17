@@ -51,7 +51,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // reviewRangeLive is one run of the proof: the handoff records rig booted over the real Dispatch,
@@ -131,7 +131,7 @@ func (r *reviewRangeLive) newIssue(name, title string, number int) *reviewRangeI
 func (r *reviewRangeLive) roundOneNamesNoCommit() {
 	task := r.roundOne(r.walked)
 	r.namesNoCommit("the reviewer's task of round 1", task)
-	r.note("the task names ` %s: none.` just before its entry", workflow.ReviewedCommitLabel)
+	r.note("the task names ` %s: none.` just before its entry", reviewround.CommitLabel)
 }
 
 // namesNoCommit fails the proof unless task, the reviewer's task named what, ends with the
@@ -140,9 +140,9 @@ func (r *reviewRangeLive) roundOneNamesNoCommit() {
 // yet, or its record was cleared.
 func (r *reviewRangeLive) namesNoCommit(what, task string) {
 	r.t.Helper()
-	want := " " + workflow.ReviewedCommitLabel + ": none. " + workflow.ReviewEntryLabel + ": " + strconv.FormatInt(r.entryNamedIn(task), 10) + "."
-	if !strings.HasSuffix(task, want) || strings.Count(task, workflow.ReviewedCommitLabel) != 1 {
-		r.t.Fatalf("%s = %q, want it to end with %q and to name %q once: its record holds no reviewed commit", what, task, want, workflow.ReviewedCommitLabel)
+	want := " " + reviewround.CommitLabel + ": none. " + reviewround.EntryLabel + ": " + strconv.FormatInt(r.entryNamedIn(task), 10) + "."
+	if !strings.HasSuffix(task, want) || strings.Count(task, reviewround.CommitLabel) != 1 {
+		r.t.Fatalf("%s = %q, want it to end with %q and to name %q once: its record holds no reviewed commit", what, task, want, reviewround.CommitLabel)
 	}
 }
 
@@ -153,7 +153,7 @@ func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 	issue := r.walked
 	r.requestChanges(issue)
 	task := r.roundTwo(issue)
-	want := " " + workflow.ReviewedCommitLabel + ": " + issue.first + "."
+	want := " " + reviewround.CommitLabel + ": " + issue.first + "."
 	if !strings.Contains(task, want) {
 		r.t.Fatalf("the reviewer's task of round 2 = %q, want it to hold %q, the head its review of round 1 read", task, want)
 	}
@@ -185,7 +185,7 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	r.note("cleared phases.reviewed_head of %s's reviewer; it now reads \"\"", issue.key)
 	task = r.roundTwo(issue)
 	r.namesNoCommit("the control's reviewer task of round 2", task)
-	r.note("the task names ` %s: none.` just before its entry", workflow.ReviewedCommitLabel)
+	r.note("the task names ` %s: none.` just before its entry", reviewround.CommitLabel)
 }
 
 // Check other-session-records-no-commit. The third issue walks the same first round; then the
@@ -252,11 +252,11 @@ func (r *reviewRangeLive) requestChanges(issue *reviewRangeIssue) {
 }
 
 // entryNamedIn is the entry of the round task names, read as an agent reads it: the number of its
-// last sentence, ` Review entry: <n>.` (workflow.ReviewEntryLabel). It fails the proof when task
+// last sentence, ` Review entry: <n>.` (reviewround.EntryLabel). It fails the proof when task
 // does not end naming a positive entry, since a review written without one moves no commit.
 func (r *reviewRangeLive) entryNamedIn(task string) int64 {
 	r.t.Helper()
-	label := " " + workflow.ReviewEntryLabel + ": "
+	label := " " + reviewround.EntryLabel + ": "
 	at := strings.LastIndex(task, label)
 	if at >= 0 {
 		if number, last := strings.CutSuffix(task[at+len(label):], "."); last {
@@ -265,7 +265,7 @@ func (r *reviewRangeLive) entryNamedIn(task string) int64 {
 			}
 		}
 	}
-	r.t.Fatalf("the reviewer's task %q does not end naming its %q", task, workflow.ReviewEntryLabel)
+	r.t.Fatalf("the reviewer's task %q does not end naming its %q", task, reviewround.EntryLabel)
 	return 0
 }
 

@@ -274,6 +274,42 @@ func TestARePutDeliveryCarriesItsInterruption(t *testing.T) {
 	}
 }
 
+// The fact that a reviewer's task ends with the daemon's two sentences of its review round
+// (supervise.Delivery.RoundNamed) reaches the store with the delivery and comes back from it, in
+// both directions, through a re-put that replaces the delivery: a restarted daemon sends what it
+// reads back, and a fact lost on the way would send a task of this release with the daemon's
+// sentences naming nothing after its own, or keep one the release before queued from them. A
+// delivery the release before wrote, which names no such column, reads back without the fact.
+func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-reviewer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	named := supervise.Delivery{ID: "outbox:7", Task: "Continue. Phase: reviewing. Last reviewed commit: none. Review entry: 1.", Phase: phase.Reviewing, QueuedAt: at(1), RoundNamed: true}
+	for _, put := range []supervise.Delivery{named, {ID: "outbox:8", Task: "Continue. Phase: reviewing.", Phase: phase.Reviewing, QueuedAt: at(2)}, named} {
+		if err := store.PutDelivery(ctx, c.Token, put); err != nil {
+			t.Fatalf("put the delivery %s: %v", put.ID, err)
+		}
+		if got := onlyClaim(t, store).Pending; got == nil || got.ID != put.ID || got.RoundNamed != put.RoundNamed {
+			t.Fatalf("the delivery read back = %+v, want %s with the fact %v", got, put.ID, put.RoundNamed)
+		}
+	}
+	// The release before writes a delivery naming no round_named, so a delivery it writes on a
+	// claim that holds none takes the column's default.
+	if _, err := store.pool.Exec(ctx, `delete from pending_task_deliveries where claim_token = $1`, string(c.Token)); err != nil {
+		t.Fatalf("retire the delivery: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at)
+		values ($1, 'outbox:9', 'Continue. Phase: reviewing.', 'reviewing', 1, now())`, string(c.Token)); err != nil {
+		t.Fatalf("write the delivery as the release before writes it: %v", err)
+	}
+	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "outbox:9" || got.RoundNamed {
+		t.Fatalf("the delivery read back = %+v, want outbox:9 with no fact: the release before named no round", got)
+	}
+}
+
 // The phase a task was queued for is what says the task is still the work to do, and it has to
 // survive the path that rewrites the delivery: a prompt refused or unanswered is re-put under a
 // new id, and a restart then reads the delivery back from this table. A phase lost on either side
