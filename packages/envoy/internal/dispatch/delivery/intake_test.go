@@ -342,8 +342,15 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 // locked. Call it before startIntake, so the default logger is restored only once intake stops.
 func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
+	return captureLogsAt(t, slog.LevelInfo)
+}
+
+// captureLogsAt is captureLogs of every record at level and above, for a test that reads the
+// DEBUG lines too.
+func captureLogsAt(t *testing.T, level slog.Level) func() []map[string]any {
+	t.Helper()
 	var buffer lockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
+	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: level}))
 	return func() []map[string]any {
 		var records []map[string]any
 		for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {

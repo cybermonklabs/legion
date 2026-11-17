@@ -25,11 +25,11 @@ package delivery
 // marked, owe nothing: the reconcile's open arm reads such an open row, its merged arm a merged
 // one once, and a closed one stays closed, which is no basis. An envelope leaves the intake with
 // no record of its pull request only where it, or its repository's canonical name, names no pull
-// request GitHub can have, or GitHub answers it with a value no head row holds (Intake.deliver):
-// each is checked where its row is built, before any statement. Every failure of a statement of
-// the record is the database not taking it now, so the envelope is handed back, and stays with
-// NATS for as long as the stream keeps it, 72 hours, as one a stop hands back and one a lapsed
-// hold leaves outstanding for the next holder do.
+// request GitHub can have (Intake.deliver), which is checked where each row is built, before any
+// statement; a GitHub answer that holds a value no head row holds is a head not stored, and owed
+// (errNoRowHolds). Every failure of a statement of the record is the database not taking it now,
+// so the envelope is handed back, and stays with NATS for as long as the stream keeps it, 72
+// hours, as one a stop hands back and one a lapsed hold leaves outstanding for the next holder do.
 //
 // No time decides which owed read a read answers. Each owe gives the row a new revision, a value
 // of the table's own sequence, and a read deletes the row only at the revision it read before it
@@ -75,13 +75,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logging"
 )
 
 // owedReason is why a pull request is owed a read: pull_request_reads_owed.reason.
@@ -138,7 +138,7 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 		return nil
 	}
 	if err != nil {
-		slog.Warn("dispatch delivery: read the revision of the read a pull request is owed; this read deletes no owed read, and the reconcile reads the pull request once more",
+		logging.FromContext(ctx).Warn("dispatch delivery: read the revision of the read a pull request is owed; this read deletes no owed read, and the reconcile reads the pull request once more",
 			"repo", repoFull, "number", number, "error", err)
 		return nil
 	}
@@ -157,12 +157,13 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 // which the read of its canonical name is a statement of, and then the canonical name, with the
 // number, must be a pull request GitHub can have (checkPullRequestKey), else the answer is
 // errNoPullRequestNamed and nothing is written. The canonical name is the one value of the row no
-// envelope gives: it is a repo_projects row's renamed_to, which the settings route holds to
-// `owner/name` alone (api's parseRepoRename, externalRef) and direct SQL to nothing, so a rename to
-// a name of 3,500 characters would otherwise fail the insert at the btree of the table (SQLSTATE
-// 54000) at every delivery. The reason is one of this package's two constants. So no value this
-// writes is one the table refuses, and a failure of a statement is the database's alone, which
-// the intake hands back (recordRefused).
+// envelope gives: it is a repo_projects row's renamed_to, which the settings route holds to the
+// same rule (api's parseRepoRename, IsGitHubRepositoryName), and which a target stored before that
+// rule or by direct SQL holds to nothing, so a rename to a name of 3,500 characters would
+// otherwise fail the insert at the btree of the table (SQLSTATE 54000) at every delivery. The
+// reason is one of this package's two constants. So no value this writes is one the table refuses,
+// and a failure of a statement is the database's alone, which the intake hands back
+// (recordRefused).
 func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason) error {
 	if err := checkPullRequestKey(given, number); err != nil {
 		return fmt.Errorf("the read %.140q#%d is owed: %w", given, number, err)

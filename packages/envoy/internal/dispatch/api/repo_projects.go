@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -420,16 +421,23 @@ func repoProjectPath(r *http.Request) (string, error) {
 // parseRepoRename reads the `renamed_to` of a mapping write: nil for an absent or null field,
 // which leaves the stored pair alone, nil for `""`, which clears it, and otherwise the
 // canonical `owner/name` the value names, validated the way this route validates its own path
-// (externalRef). A pair naming the mapping's own repository is refused here, where the one
-// cycle a single row can hold is cheapest to see; the database refuses it too, so direct SQL is
-// held to it (migration 20261105075455_repo_projects_renamed_to).
+// (externalRef) and then held, once canonical, to the names GitHub can have
+// (delivery.IsGitHubRepositoryName): the GitHub intake and the reconcile read a pull request of
+// the renamed repository under its target, and refuse a name that rule refuses, so a read owed
+// under the old name would stay owed for ever. A pair naming the mapping's own repository is
+// refused here, where the one cycle a single row can hold is cheapest to see; the database
+// refuses it too, so direct SQL is held to it (migration 20261105075455_repo_projects_renamed_to).
 func parseRepoRename(repo string, raw *string) (*string, error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, nil
 	}
 	canonical, _, err := externalRef(strings.TrimSpace(*raw) + "#1")
 	if err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `renamed_to must be "owner/name" (got %q)`, *raw)
+		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `renamed_to must be "owner/name" (got %.140q)`, *raw)
+	}
+	if !delivery.IsGitHubRepositoryName(canonical) {
+		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT",
+			"renamed_to must be a repository name GitHub can have: an owner of 1 to 39 letters, digits, hyphens and underscores, and a name of 1 to 100 letters, digits, hyphens, underscores and periods (got %.140q)", *raw)
 	}
 	if canonical == repo {
 		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", "%s cannot be renamed to itself", repo)

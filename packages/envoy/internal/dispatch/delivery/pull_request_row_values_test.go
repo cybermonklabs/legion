@@ -25,10 +25,11 @@ import (
 // check's own error, so no caller stores a row of it and no failure of Postgres stands in for the
 // check: an owner of 40, a name of 101, number 0 and 2147483648, "." and "..", a character no name
 // holds, a third segment. The rows that reach the owed table through a renamed repository
-// (renamedFrom) read the repository's canonical name from repo_projects, which the settings route
-// holds only to `owner/name` (api's externalRef), so that name is checked where the row is built
-// too: a rename to a name of 101 characters, or of 3,500, which the btree of the owed table refused
-// (SQLSTATE 54000), is refused there, and the head row of it as well.
+// (renamedFrom) read the repository's canonical name from repo_projects, which a target stored
+// before the settings route held it to the name rule (api's parseRepoRename), or by direct SQL,
+// holds to nothing, so that name is checked where the row is built too: a rename to a name of 101
+// characters, or of 3,500, which the btree of the owed table refused (SQLSTATE 54000), is refused
+// there, and the head row of it as well.
 func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const (

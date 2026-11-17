@@ -420,6 +420,11 @@ func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 		t.Fatalf("renamed_to after a write that did not name it = %v, want acme/gadgets kept", got)
 	}
 
+	// A target is a name GitHub can have, by the delivery package's one rule
+	// (delivery.IsGitHubRepositoryName), checked after it is canonicalised: the intake and the
+	// reconcile read a pull request of the renamed repository under it, and refuse a name the rule
+	// refuses, so a read owed under the old name would stay owed for ever (review of
+	// cybermonklabs/legion#4209 at def907052c, N10).
 	for _, refused := range []struct {
 		what string
 		repo string
@@ -429,13 +434,28 @@ func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 		{"a pair that is not owner/name", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "gadgets"}},
 		{"a target that is itself renamed", "ancient/gadgets", map[string]any{"project": "CORE", "renamed_to": "oldco/gadgets"}},
 		{"a rename of what another mapping points at", "acme/gadgets", map[string]any{"project": "CORE", "renamed_to": "newer/gadgets"}},
+		{"a name of 101 characters", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/" + strings.Repeat("w", 101)}},
+		{"an owner of 40 characters", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": strings.Repeat("a", 40) + "/gadgets"}},
+		{"a character no repository name holds", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/wid%gets"}},
+		{"a letter outside ASCII", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/widgéts"}},
+		{"a name that is a dot", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/."}},
+		{"a name that is two dots", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/.."}},
+		{"a name that is .git alone", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/.git"}},
 	} {
 		if response := put(refused.repo, refused.body); response.Code != http.StatusBadRequest {
-			t.Fatalf("%s: status=%d body=%s, want 400", refused.what, response.Code, response.Body.String())
+			t.Errorf("%s: status=%d body=%s, want 400", refused.what, response.Code, response.Body.String())
 		}
 	}
 	if got := renamedTo("oldco/gadgets"); got == nil || *got != "acme/gadgets" {
 		t.Fatalf("renamed_to after the refusals = %v, want acme/gadgets untouched", got)
+	}
+	// The longest names GitHub gives, an owner of 39 and a name of 100, are taken.
+	widest := strings.Repeat("O", 39) + "/" + strings.Repeat("R", 100)
+	if response := put("spare/gadgets", map[string]any{"project": "CORE", "renamed_to": widest}); response.Code != http.StatusOK {
+		t.Fatalf("rename spare/gadgets to an owner of 39 and a name of 100: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	if got := renamedTo("spare/gadgets"); got == nil || *got != strings.ToLower(widest) {
+		t.Fatalf("renamed_to of spare/gadgets = %v, want %s", got, strings.ToLower(widest))
 	}
 
 	// "" clears the pair, and the repository is its own canonical name again.

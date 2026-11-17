@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
@@ -62,7 +63,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 			return nil, limited
 		}
 		if status != http.StatusOK {
-			return nil, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+			return nil, fmt.Errorf("GET %s: status %d: %s", target, status, ShownBody(body))
 		}
 		next, err := nextLink(header.Get("Link"), c.base)
 		if err != nil {
@@ -111,7 +112,7 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 		return fmt.Errorf("POST %s: status %d: %w", target, status, ErrNoDelivery)
 	}
 	if status != http.StatusAccepted {
-		return fmt.Errorf("POST %s: status %d: %s", target, status, body)
+		return fmt.Errorf("POST %s: status %d: %s", target, status, ShownBody(body))
 	}
 	return nil
 }
@@ -142,7 +143,7 @@ func (e *RateLimitError) Error() string {
 		return fmt.Sprintf("GitHub rate limit on %s recorded at %s is in force; the request was not sent",
 			e.Scope, e.Recorded.UTC().Format(time.RFC3339Nano))
 	}
-	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s: %s", e.Status, e.Wait, e.Body)
+	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s: %s", e.Status, e.Wait, ShownBody(e.Body))
 }
 
 // Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
@@ -328,20 +329,50 @@ func rateLimitWait(header http.Header) time.Duration {
 }
 
 // StatusError is GitHub answering a request with a status other than 200 that is no rate limit
-// (CheckResponse): the status, and the whole body GitHub answered. Its text is `status <n>: <body>`.
+// (CheckResponse): the status, and the whole body GitHub answered. Its text is `status <n>: <body>`,
+// the body as ShownBody shows it.
 type StatusError struct {
 	Status int
 	Body   string
 }
 
 func (e *StatusError) Error() string {
-	return fmt.Sprintf("status %d: %s", e.Status, e.Body)
+	return fmt.Sprintf("status %d: %s", e.Status, ShownBody(e.Body))
 }
 
 // Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
 // body that is not JSON or names none (responseMessage).
 func (e *StatusError) Message() string {
 	return responseMessage([]byte(e.Body))
+}
+
+// shownBodyRunes is how many runes of a body GitHub answered an error's text shows (ShownBody):
+// the start of the body, where GitHub writes the `message` of a refusal, in a line of bounded
+// length.
+const shownBodyRunes = 512
+
+// ShownBody is body, an answer GitHub gave, as an error's text shows it: whole where it is at most
+// shownBodyRunes runes long, and otherwise its first shownBodyRunes runes and `… (<n> bytes)`, n
+// the length of the whole body. Every error of this package whose text holds such a body holds it
+// as this shows it: a line that logs the error writes the text whole, and a body may be as long as
+// a response may be (responseLimit, 1 MiB), which put 1,048,697 bytes into one field of a WARN
+// line (review of cybermonklabs/legion#4209 at def907052c, H3). A reader that finds the body at
+// the end of such a text (api's ciUnreadDetail) finds it as this shows it. It reads at most
+// shownBodyRunes × 4 bytes of body, the most that many runes take, and never splits a rune; a byte
+// that is no UTF-8 counts as one rune.
+func ShownBody[Body ~string | ~[]byte](body Body) string {
+	head := string(body[:min(len(body), shownBodyRunes*utf8.UTFMax)])
+	runes := 0
+	for at := range head {
+		if runes == shownBodyRunes {
+			return fmt.Sprintf("%s… (%d bytes)", head[:at], len(body))
+		}
+		runes++
+	}
+	if len(head) < len(body) {
+		return fmt.Sprintf("%s… (%d bytes)", head, len(body))
+	}
+	return head
 }
 
 // CheckResponse turns a response's status/header/body into an error only when status is not 200:

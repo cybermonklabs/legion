@@ -208,7 +208,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		d.held = nil
 		d.mu.Unlock()
 		for _, msg := range held {
-			d.handBack(msg)
+			d.handBack(slog.Default(), msg)
 		}
 		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
 		// the client had buffered, and reports it only by the subscription turning invalid.
@@ -240,12 +240,12 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 		return
 	}
 	d.mu.Unlock()
-	d.handBack(msg)
+	d.handBack(slog.Default(), msg)
 }
 
 // handBack publishes msg's hand-back to the durable, so the server redelivers it at once, while
 // the hold still covers this delivery (holdCovers), and withholds it once the hold's loss
-// deadline has passed.
+// deadline has passed. It logs through log, the logger of the delivery that hands msg back.
 //
 // Every hand-back this process makes is a publish at the message's reply subject, which names
 // the durable rather than the consumer this message was fetched on. A take-over deletes the
@@ -265,13 +265,13 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 // It reads the hold alone, and not the stop's flag as mayAnswer does: the stop is itself one of
 // the callers, and a hand-back of a message this delivery was handed is sound while the hold
 // covers it whether or not this subscription still delivers.
-func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
+func (d *intakeDelivery) handBack(log *slog.Logger, msg *natsgo.Msg) {
 	if !d.holdCovers() {
-		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
+		log.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
 		return
 	}
-	redeliverAfter(msg, 0)
+	redeliverAfter(log, msg, 0)
 }
 
 // intakeDrainWait bounds how long stop waits for the drain to end once every handler has returned.
@@ -295,7 +295,7 @@ func (d *intakeDelivery) receive(msg *natsgo.Msg) {
 	}
 	key, envelope, wanted := d.key(msg)
 	if !wanted {
-		acknowledge(msg)
+		acknowledge(slog.Default(), msg)
 		return
 	}
 	if !d.keys.run(key, intakeMessage{msg: msg, envelope: envelope}) {

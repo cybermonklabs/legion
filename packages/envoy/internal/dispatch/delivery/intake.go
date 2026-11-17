@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logging"
 )
 
 // ompSessionTrailer matches a commit message's `Omp-Session: <id>` trailer line (the same shape
@@ -174,10 +175,10 @@ func (in *Intake) route(ctx context.Context, settings *DeliverySettings, raw str
 func (in *Intake) recordDeployed(ctx context.Context, settings DeliverySettings) {
 	written, err := RecordDeployedEvents(ctx, in.pool, settings, in.events)
 	if err != nil {
-		slog.Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
+		logging.FromContext(ctx).Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
 	}
 	if written > 0 {
-		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
+		logging.FromContext(ctx).Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
 	}
 }
 
@@ -223,11 +224,22 @@ var errNoPullRequestNamed = errors.New("the envelope names no pull request GitHu
 // underscores and periods. 39 is GitHub's limit for a login, and a login holds only letters,
 // digits and hyphens, except the login of a managed user account, which ends in an underscore and
 // its enterprise's shortcode ("mona-cat_octo"); 100 is GitHub's limit for a repository name.
-// "." and ".." are no repository names either (checkPullRequestKey). So the values that key a pull
-// request's rows are values the tables take, and an index of them holds the row: a name of 3,500
-// characters was refused by the btree of pull_request_reads_owed (SQLSTATE 54000) at every
+// "." and ".." are no repository names either (IsGitHubRepositoryName). So the values that key a
+// pull request's rows are values the tables take, and an index of them holds the row: a name of
+// 3,500 characters was refused by the btree of pull_request_reads_owed (SQLSTATE 54000) at every
 // delivery (review of cybermonklabs/legion#4209 at ceeec40f46, B4).
 var githubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
+
+// IsGitHubRepositoryName reports whether full, `owner/name`, is the full name of a repository
+// GitHub can have (githubRepositoryName), and not "." or "..": the one rule of the names that key
+// a pull request's rows (checkPullRequestKey). The settings route holds a repository's rename
+// target to it (api's parseRepoRename), since the intake and the reconcile read a pull request of
+// the old name under the target and refuse a name this refuses, so that read would stay owed for
+// ever (review of cybermonklabs/legion#4209 at def907052c, N10).
+func IsGitHubRepositoryName(full string) bool {
+	_, name, _ := strings.Cut(full, "/")
+	return githubRepositoryName.MatchString(full) && name != "." && name != ".."
+}
 
 // pullRequestNamed is the repository and the number a `pull_request` envelope's payload names,
 // or errNoPullRequestNamed, which it answers before anything is read or written.
@@ -248,7 +260,7 @@ func checkPullRequestKey(repo string, number int) error {
 	if number < 1 || number > math.MaxInt32 {
 		return fmt.Errorf("%w: number %d is outside 1 to %d", errNoPullRequestNamed, number, math.MaxInt32)
 	}
-	if _, name, _ := strings.Cut(repo, "/"); !githubRepositoryName.MatchString(repo) || name == "." || name == ".." {
+	if !IsGitHubRepositoryName(repo) {
 		// The name is quoted to its first 140 characters, the longest one GitHub can have, so a
 		// name of any length costs the log line no more.
 		return fmt.Errorf("%w: %.140q is not owner/name, with an owner of 1 to 39 letters, digits, hyphens and underscores and a name of 1 to 100 letters, digits, hyphens, underscores and periods",
@@ -459,32 +471,45 @@ func consumerGenerationMetadata() map[string]string {
 // the next holder takes the envelope, which redoes the same idempotent writes.
 //
 // An envelope no delivery can get past is not handed back at all: one that names no pull request
-// GitHub can have (errNoPullRequestNamed) reads nothing and owes no read, one GitHub answers with
-// a value no head row holds (errNoRowHolds, checkHeadRow), and one whose owed record is refused
-// before its statement (recordRefused), are acknowledged at their first delivery with one line,
-// and the pull request is read again at its next event.
+// GitHub can have (errNoPullRequestNamed) reads nothing and owes no read, and one whose owed record
+// is refused before its statement (recordRefused), are acknowledged at their first delivery with
+// one line, and the pull request is read again at its next event. A GitHub answer that holds a
+// value no head row holds (errNoRowHolds, checkHeadRow) is no such envelope: it is a head not
+// stored, owed a read as every other is, and the reconcile keeps that read owed until GitHub
+// answers values a row holds.
 //
 // handling is read from the delivery, which is also what says whether that hand-back may be
 // made, and nothing else calls deliver.
+//
+// Every line the delivery writes, its callees' included, is held until it has answered
+// (deliveryLines): a delivery that hands its envelope back writes them under the hand-back's one
+// cadence (handBackLineDue), and every other delivery at their own levels.
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
-	msg, handling := message.msg, d.handling
+	msg := message.msg
+	lines := &deliveryLines{}
+	log := lines.logger()
+	handling := logging.NewContext(d.handling, log)
 	// redeliver is set where the head row was not stored and the read it is owed could not be
 	// recorded: the one answer NATS must redeliver, which the deferred answer below reads. Every
 	// other path acknowledges.
 	redeliver := false
 	defer func() {
+		handedBack := false
 		switch {
 		case handling.Err() != nil:
-			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
-			d.handBack(msg)
+			log.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
+			d.handBack(log, msg)
 		case !d.holdCovers(), redeliver && !d.mayAnswer():
-			slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope is left unanswered with the durable for the next holder's take-over",
+			log.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope is left unanswered with the durable for the next holder's take-over",
 				"subject", msg.Subject, "redeliver", redeliver)
 		case redeliver:
-			redeliverAfter(msg, headWriteRedeliverAfter)
+			redeliverAfter(log, msg, headWriteRedeliverAfter)
+			handedBack = true
 		default:
-			acknowledge(msg)
+			acknowledge(log, msg)
 		}
+		_, due := handBackLineDue(msg)
+		lines.write(handedBack && !due)
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()
@@ -493,7 +518,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	if envelope == nil {
 		decoded, err := decodeEnvelope(msg.Data)
 		if err != nil {
-			slog.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
+			log.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
 			return
 		}
 		envelope = &decoded
@@ -501,39 +526,34 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	handled, err := in.route(ctx, in.settings.Load(), envelope.Payload)
 	switch {
 	case errors.Is(err, errMalformedPayload):
-		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
+		log.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, errNoPullRequestNamed):
-		slog.Warn("dispatch delivery: acknowledging a pull-request envelope that names no pull request GitHub can have; it reads nothing and owes no read",
+		log.Warn("dispatch delivery: acknowledging a pull-request envelope that names no pull request GitHub can have; it reads nothing and owes no read",
 			"subject", msg.Subject, "error", err)
-		return
-	case errors.Is(err, errNoRowHolds):
-		repo, number, _ := decodePullRequestNamed(envelope.Payload)
-		slog.Error("dispatch delivery: GitHub answered a pull request with a value no row holds; acknowledging the envelope, since no delivery of it can get past that, and the pull request is read again at its next event",
-			"subject", msg.Subject, "repo", repo, "number", number, "error", err)
 		return
 	case errors.Is(err, ErrHeadNotStored):
 		repo, number, oweErr := in.oweEnvelopesRead(handling, envelope.Payload)
 		switch {
 		case oweErr == nil:
-			slog.Warn("dispatch delivery: a pull request's head row was not stored, and the read it is owed is recorded; acknowledging the envelope, whose pull request the reconcile reads from GitHub every pass until GitHub answers",
+			log.Warn("dispatch delivery: a pull request's head row was not stored, and the read it is owed is recorded; acknowledging the envelope, whose pull request the reconcile reads from GitHub every pass until GitHub answers",
 				"subject", msg.Subject, "repo", repo, "number", number, "error", err)
 		case recordRefused(oweErr):
-			slog.Error("dispatch delivery: the read a pull request is owed was refused before it was written; acknowledging the envelope, since no delivery of it can get past that, and the pull request is read again at its next event",
+			log.Error("dispatch delivery: the read a pull request is owed was refused before it was written; acknowledging the envelope, since no delivery of it can get past that, and the pull request is read again at its next event",
 				"subject", msg.Subject, "repo", repo, "number", number, "error", err, "record_error", oweErr)
 		default:
-			logHandBack(msg, repo, number, err, oweErr)
+			logHandBack(log, msg, repo, number, err, oweErr)
 			redeliver = true
 		}
 		return
 	case err != nil:
-		slog.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
+		log.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
 		return
 	case !handled:
 		return
 	}
 	if err := RecordEventAt(ctx, in.pool); err != nil {
-		slog.Error("dispatch delivery: record event freshness", "error", err)
+		log.Error("dispatch delivery: record event freshness", "error", err)
 	}
 }
 
@@ -552,31 +572,24 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 // the bus keeps events, 72 hours from its publish (bus.streamCfg). What ends it is the database
 // taking the owed record. Where the whole database refuses writes, no other envelope's write could
 // be stored either; a lock of pull_request_reads_owed alone holds the slot while other envelopes'
-// heads are written.
-const headWriteRedeliverAfter = 10 * time.Second
+// heads are written. A var so a test can shrink it.
+var headWriteRedeliverAfter = 10 * time.Second
 
-// handBackLineEvery is how many deliveries of one handed-back envelope logHandBack writes one WARN
-// line for: about every 5 minutes at headWriteRedeliverAfter.
-const handBackLineEvery = 30
-
-// logHandBack logs that the envelope msg carries is handed back, since its pull request's head row
-// was not stored (headErr) and the database cannot take the read it is owed now (recordErr): at
-// WARN at its first delivery and once every handBackLineEvery deliveries after it, the 1st, the
-// 31st, the 61st, and at DEBUG at every other. Each envelope is delivered every
-// headWriteRedeliverAfter while the fault lasts, for up to the 72 hours of the bus, and up to
-// intakeMaxAckPending of them at once, so a line at each delivery would write up to 25,920 lines
-// an envelope, where this writes at most 865, one every 5 minutes or so. A delivery whose count
-// cannot be read (msg.Metadata) logs at WARN. The count decides the line's level and nothing else.
-func logHandBack(msg *natsgo.Msg, repo string, number int, headErr, recordErr error) {
-	var delivered uint64
-	if meta, err := msg.Metadata(); err == nil {
-		delivered = meta.NumDelivered
-	}
+// logHandBack logs through log that the envelope msg carries is handed back, since its pull
+// request's head row was not stored (headErr) and the database cannot take the read it is owed now
+// (recordErr): at WARN where the hand-back's cadence is due (handBackLineDue), at its first
+// delivery and once every handBackLineEvery deliveries after it, and at DEBUG at every other. Each
+// envelope is delivered every headWriteRedeliverAfter while the fault lasts, for up to the 72
+// hours of the bus, and up to intakeMaxAckPending of them at once, so a line at each delivery
+// would write up to 25,920 lines an envelope, where this writes at most 865, one every 5 minutes
+// or so. Every other line of the same delivery keeps the same cadence (deliveryLines).
+func logHandBack(log *slog.Logger, msg *natsgo.Msg, repo string, number int, headErr, recordErr error) {
+	delivered, due := handBackLineDue(msg)
 	level := slog.LevelDebug
-	if delivered%handBackLineEvery == 1 || delivered == 0 {
+	if due {
 		level = slog.LevelWarn
 	}
-	slog.Log(context.Background(), level, "dispatch delivery: a pull request's head row was not stored, and the database cannot take the read it is owed now; handing the envelope back, since it is the only record of the change, which the stream keeps 72 hours",
+	log.Log(context.Background(), level, "dispatch delivery: a pull request's head row was not stored, and the database cannot take the read it is owed now; handing the envelope back, since it is the only record of the change, which the stream keeps 72 hours",
 		"subject", msg.Subject, "repo", repo, "number", number, "deliveries", delivered,
 		"redeliver_after", headWriteRedeliverAfter, "line_every", handBackLineEvery,
 		"error", headErr, "record_error", recordErr)
@@ -600,12 +613,12 @@ func (in *Intake) oweEnvelopesRead(handling context.Context, raw string) (repo s
 
 // redeliverAfter hands msg back to the server for redelivery in after — at once where after is
 // zero, which is the same message to the server, since nats.go adds a delay to the negative
-// acknowledgement only for a delay above zero (Msg.NakWithDelay, js.go) — and logs a hand-back
-// the server refused: the ack wait (intakeAckWait) then redelivers it, later than asked but
-// not never.
-func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
+// acknowledgement only for a delay above zero (Msg.NakWithDelay, js.go) — and logs through log a
+// hand-back the server refused: the ack wait (intakeAckWait) then redelivers it, later than asked
+// but not never.
+func redeliverAfter(log *slog.Logger, msg *natsgo.Msg, after time.Duration) {
 	if err := msg.NakWithDelay(after); err != nil {
-		slog.Error("dispatch delivery: hand a message back for redelivery",
+		log.Error("dispatch delivery: hand a message back for redelivery",
 			"subject", msg.Subject, "delay", after, "error", err)
 	}
 }
@@ -613,11 +626,12 @@ func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
 // acknowledge acks msg. An acknowledgement that does not reach the server is never discarded: it
 // leaves the message outstanding, and intakeMaxAckPending of those stop the consumer being given
 // anything until the ack wait expires. The Nak gives the slot back at once; when it fails too (the
-// connection is down, which is why the ack failed), the ack wait is the backstop.
-func acknowledge(msg *natsgo.Msg) {
+// connection is down, which is why the ack failed), the ack wait is the backstop. Both failures
+// are logged through log.
+func acknowledge(log *slog.Logger, msg *natsgo.Msg) {
 	if err := msg.Ack(); err != nil {
-		slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
-		redeliverAfter(msg, 0)
+		log.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
+		redeliverAfter(log, msg, 0)
 	}
 }
 
@@ -637,10 +651,10 @@ func acknowledge(msg *natsgo.Msg) {
 // (recordPullRequestHead). An envelope that names no pull request GitHub can have, a number
 // outside 1 to 2147483647 or a repository that is no name GitHub can have (githubRepositoryName),
 // is refused before anything is read or written (errNoPullRequestNamed), and so is one whose
-// repository's canonical name is none (recordPullRequestHead); a GitHub answer that holds a value
-// no head row holds is refused where the row is built (errNoRowHolds, checkHeadRow). Each of
-// those is returned to deliver too, which acknowledges it, since the same envelope delivered again
-// fails the same way.
+// repository's canonical name is none (recordPullRequestHead); each of those is returned to
+// deliver too, which acknowledges it, since the same envelope delivered again fails the same way.
+// A GitHub answer that holds a value no head row holds is refused where the row is built, before
+// any statement, and is a head not stored (errNoRowHolds, checkHeadRow).
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline
 // after that, and only where delivery is configured (settings is not nil): a deployment with no
 // settings has no population, so the head row is the whole of what an envelope is for there. The
@@ -659,11 +673,11 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *Deliv
 	// What the head write read of GitHub, so the merge below reads the same pull request and
 	// pages the same commits once rather than twice.
 	read, headErr := in.recordPullRequestHead(ctx, payload, number)
-	if errors.Is(headErr, ErrHeadNotStored) || errors.Is(headErr, errNoPullRequestNamed) || errors.Is(headErr, errNoRowHolds) {
+	if errors.Is(headErr, ErrHeadNotStored) || errors.Is(headErr, errNoPullRequestNamed) {
 		return false, headErr
 	}
 	if headErr != nil {
-		slog.Warn("dispatch delivery: record a pull request's head",
+		logging.FromContext(ctx).Warn("dispatch delivery: record a pull request's head",
 			"repo", repoFull, "number", number, "error", headErr)
 	}
 	if settings == nil || payload["action"] != "closed" || payload["merged"] != "true" {

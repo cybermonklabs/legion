@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -29,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
+	"github.com/sjawhar/envoy/internal/logging"
 )
 
 // Typed access-check failures. Handlers surface these verbatim to the human
@@ -468,7 +468,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
-		return Installation{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Installation{}, fmt.Errorf("GET %s: status %d: %s", target, status, ShownBody(body))
 	}
 	var payload installationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -691,7 +691,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 		wait, recorded, err := c.limits.Wait(ctx, GraphQLScope)
 		switch {
 		case err != nil:
-			slog.Warn("dispatch githubapp: the shared GitHub GraphQL rate limit was not read; the query is sent", "scope", GraphQLScope, "error", err)
+			logging.FromContext(ctx).Warn("dispatch githubapp: the shared GitHub GraphQL rate limit was not read; the query is sent", "scope", GraphQLScope, "error", err)
 		case wait > 0:
 			return nil, 0, nil, &RateLimitError{Wait: wait, Scope: GraphQLScope, Held: true, Recorded: recorded}
 		}
@@ -734,7 +734,7 @@ func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, li
 		limited.Scope = installation
 		struck, err := c.limits.Strike(record, installation, limited.Wait)
 		if err != nil {
-			slog.Error("dispatch githubapp: GitHub's secondary rate limit was not recorded; other processes may ask GitHub inside it", "scope", installation, "wait", limited.Wait, "error", err)
+			logging.FromContext(ctx).Error("dispatch githubapp: GitHub's secondary rate limit was not recorded; other processes may ask GitHub inside it", "scope", installation, "wait", limited.Wait, "error", err)
 			return
 		}
 		// The caller waits out the limit every process now reads, which the strike's own
@@ -744,7 +744,7 @@ func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, li
 	}
 	limited.Scope = GraphQLScope
 	if err := c.limits.Record(record, GraphQLScope, limited.Wait); err != nil {
-		slog.Error("dispatch githubapp: GitHub's GraphQL rate limit was not recorded; other processes may query inside it", "scope", GraphQLScope, "wait", limited.Wait, "error", err)
+		logging.FromContext(ctx).Error("dispatch githubapp: GitHub's GraphQL rate limit was not recorded; other processes may query inside it", "scope", GraphQLScope, "wait", limited.Wait, "error", err)
 	}
 }
 
@@ -773,7 +773,7 @@ func (c *Client) Token(ctx context.Context, installationID int64) (string, error
 		return "", limited
 	}
 	if status != http.StatusCreated {
-		return "", fmt.Errorf("POST %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("POST %s: status %d: %s", target, status, ShownBody(body))
 	}
 	var payload struct {
 		Token     string    `json:"token"`
@@ -820,7 +820,7 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 		return Source{}, fmt.Errorf("%w: its token cannot read %s/%s", ErrNoInstallation, owner, repo)
 	}
 	if status != http.StatusOK {
-		return Source{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Source{}, fmt.Errorf("GET %s: status %d: %s", target, status, ShownBody(body))
 	}
 	return Source{InstallationID: installation.ID, AppSlug: installation.AppSlug}, nil
 }
@@ -867,7 +867,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 		err := c.limits.Record(record, scope, limited.Wait)
 		cancel()
 		if err != nil {
-			slog.Error("dispatch githubapp: GitHub's rate limit was not recorded; other processes may ask GitHub inside it", "scope", scope, "wait", limited.Wait, "error", err)
+			logging.FromContext(ctx).Error("dispatch githubapp: GitHub's rate limit was not recorded; other processes may ask GitHub inside it", "scope", scope, "wait", limited.Wait, "error", err)
 		}
 	}
 	return responseBody, status, header, nil
@@ -886,7 +886,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 		wait, recorded, err := c.limits.Wait(ctx, scope)
 		switch {
 		case err != nil:
-			slog.Warn("dispatch githubapp: the shared GitHub rate limit was not read; the request is sent", "scope", scope, "error", err)
+			logging.FromContext(ctx).Warn("dispatch githubapp: the shared GitHub rate limit was not read; the request is sent", "scope", scope, "error", err)
 		case wait > 0:
 			return nil, 0, nil, &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}
 		}
@@ -946,7 +946,7 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 		return "", fmt.Errorf("%w: %s on %s/%s", ErrNoBranch, branch, owner, repo)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("GET %s: status %d: %s", target, status, ShownBody(body))
 	}
 	sha := strings.TrimSpace(string(body))
 	if !commitSHA.MatchString(sha) {
@@ -980,7 +980,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	case http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return "", noBranch
 	default:
-		return "", fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("GET %s: status %d: %s", target, status, ShownBody(body))
 	}
 	var ref struct {
 		Ref    string `json:"ref"`
@@ -1041,7 +1041,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, nil
 	}
 	if status != http.StatusOK {
-		return Dir{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Dir{}, fmt.Errorf("GET %s: status %d: %s", target, status, ShownBody(body))
 	}
 	var tree struct {
 		SHA       string `json:"sha"`
@@ -1108,7 +1108,7 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("GET %s (%s): status %d: %s", target, path, status, body)
+		return nil, fmt.Errorf("GET %s (%s): status %d: %s", target, path, status, ShownBody(body))
 	}
 	var payload struct {
 		Content  string `json:"content"`

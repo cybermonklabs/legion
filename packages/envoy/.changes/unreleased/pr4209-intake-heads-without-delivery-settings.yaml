@@ -46,13 +46,17 @@ body: |-
 
     An envelope that names no pull request GitHub can have (a number outside 1 to 2147483647, or a
     repository that is not `owner/name` with GitHub's own characters and lengths: an owner of at
-    most 39, a name of at most 100), one whose repository's canonical name breaks the same bounds,
-    and one GitHub answers with a value no head row holds (text with a NUL byte, for one), are
-    acknowledged at their first delivery with one log line: each row's values are checked where the
-    row is built, before any statement. Every failure of the owed record's statement, whatever its
-    SQLSTATE, hands the envelope back every 10 seconds until the database takes the record, for as
-    long as the bus keeps the event, 72 hours, and a WARN line names the failure at the first
-    delivery and then once every 30 deliveries.
+    most 39, a name of at most 100), and one whose repository's canonical name breaks the same
+    bounds, are acknowledged at their first delivery with one log line: each row's values are
+    checked where the row is built, before any statement. A GitHub answer that holds a value no
+    head row holds (text with a NUL byte, for one) is a head not stored: the intake owes the pull
+    request a read, and the reconcile keeps it owed until GitHub answers values a row holds. Every
+    failure of the owed record's statement, whatever its SQLSTATE, hands the envelope back every 10
+    seconds until the database takes the record, for as long as the bus keeps the event, 72 hours.
+    Every line such a delivery writes, its own WARN line and each line of the reads under it, is
+    written at its own level at the first delivery and then once every 30 deliveries, and at DEBUG
+    at every other. A pull request GitHub answers 404 for logs one INFO line, once its read is
+    owed.
 time: 2026-11-16T13:50:24.000000000Z
 custom:
     Issue: pr4209

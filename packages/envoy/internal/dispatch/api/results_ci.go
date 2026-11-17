@@ -193,17 +193,18 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 
 // ciUnreadDetail is the detail of a check whose runs at head GitHub could not be read for, err
 // the read's error. Where GitHub refused the read (githubapp.StatusError) or rate-limited it
-// (githubapp.RateLimitError), the error's text ends with GitHub's whole body, up to the 16 MiB a
-// page of check runs may take: the body is replaced by the `message` GitHub writes in the JSON it
-// refuses a request with, and left out where it holds none, so the status stays. Any other error
-// keeps its text. The sentence is then cut to ciUnreadDetailRunes.
+// (githubapp.RateLimitError), the error's text ends with GitHub's body as githubapp.ShownBody
+// shows it, its first 512 characters of a page of check runs that may take 16 MiB: that is
+// replaced by the `message` GitHub writes in the JSON it refuses a request with, read from the
+// whole body, and left out where the body holds none, so the status stays. Any other error keeps
+// its text. The sentence is then cut to ciUnreadDetailRunes.
 func ciUnreadDetail(head delivery.NewestHead, err error) string {
 	reason := err.Error()
 	var refused *githubapp.StatusError
 	if errors.As(err, &refused) {
-		reason = withGitHubMessage(reason, refused.Body, refused.Message())
+		reason = withGitHubMessage(reason, githubapp.ShownBody(refused.Body), refused.Message())
 	} else if limited, ok := githubapp.AsRateLimit(err); ok {
-		reason = withGitHubMessage(reason, limited.Body, limited.Message())
+		reason = withGitHubMessage(reason, githubapp.ShownBody(limited.Body), limited.Message())
 	}
 	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
 		head.Repo, head.HeadSHA, reason), ciUnreadDetailRunes)

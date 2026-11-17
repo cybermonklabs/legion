@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    An error that names a body GitHub answered with, a refusal, a rate limit or a 5xx, shows the
+    body's first 512 characters and its size in bytes where it is longer, so a log line that writes
+    such an error, a route that answers with it and a recorded sync failure no longer carry up to
+    1 MiB of it. A CI check's detail still names GitHub's `message`, read from the whole body.
+time: 2026-11-17T08:30:51.000000000Z
+custom:
+    Issue: pr4209

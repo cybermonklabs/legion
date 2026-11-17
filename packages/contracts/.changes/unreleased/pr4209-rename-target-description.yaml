@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The description of `PUT /api/v1/settings/repo-projects/{owner}/{repo}` says that a `renamed_to` that is no repository name GitHub can have (an owner of 1 to 39 letters, digits, hyphens and underscores, and a name of 1 to 100 letters, digits, hyphens, underscores and periods) is `400 INVALID_REPO_PROJECT`.'
+time: 2026-11-17T08:42:13.000000000Z
+custom:
+    Issue: pr4209
