@@ -598,6 +598,9 @@ RULES = {
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "darwin"}),
         run(ENVOY, ["./cmd/broker"], "cmd/agent-secrets/modules_test.go:188 cmdtest.BuildCommand . in ../broker CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"})],
+    f"{ENVOY}/cmd/architecture-check/main_test.go": reads(
+        (f"{ENVOY}/internal/dispatch/architecture/notes/testdata/**",
+         "cmd/architecture-check/main_test.go:260 testdataDir joins ../../internal/dispatch/architecture/notes/testdata, which TestTheBuiltBinary's built binary reads")),
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(path, "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it")
         for d in REFGEN_API for path in files_but_tests(d)],
@@ -652,6 +655,10 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
+    f"{ENVOY}/cmd/spec-check/main_test.go": reads(
+        (f"{ENVOY}/internal/dispatch/specgraph/testdata/**",
+         "cmd/spec-check/main_test.go:382 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
+         "lists at :68 and its built binary reads")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
                                                             "internal/broker/config/config_test.go:1372,1402 Load the URL whose sslrootcert is this bundle (rdsBundle :1332), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/broker/store/storetest/storetest_test.go": [
@@ -702,6 +709,8 @@ RULES = {
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
+    f"{ENVOY}/internal/dispatch/specgraph/imports_test.go": [
+        run(f"{ENVOY}/internal/dispatch/specgraph", ["."], "internal/dispatch/specgraph/imports_test.go:15 go list -deps .", mode="build")],
     # The server.started envelope packages/daemon's intake decodes, which this package's
     # TestTheBuiltEnvelopeIsTheSharedFixture holds its own build to: the one read here of a file
     # of another module, and the one the envoy_go filter had to grow a pattern for, since it
@@ -1355,27 +1364,28 @@ def race_step(job):
     return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
 
 
-# The architecture-note rules and the command that runs them, which envoy-go-checks tests in a
-# step of their own: they need no database, so they run there on every push, and that step is
-# their one run. Both that step's package list and the unit step's exclusion of them are built
-# from this list, so go-test-step-expansion.py finds no pair the two steps both run and neither
-# step can come to name a package the other does not leave out.
-ARCHITECTURE_CHECK_PACKAGES = ["internal/dispatch/architecture/notes", "cmd/architecture-check"]
-ARCHITECTURE_CHECK_STEP = "Test the architecture-note rules and their command"
-ARCHITECTURE_CHECK_PKGS = [f"./{p}/" for p in ARCHITECTURE_CHECK_PACKAGES]
-ARCHITECTURE_CHECK_TEXT = "go test -count=1 " + " ".join(ARCHITECTURE_CHECK_PKGS)
+# The architecture-note and spec-file rules and the commands that run them, which envoy-go-checks
+# tests in a step of their own: they need no database, so they run there on every push, and that
+# step is their one run. Both that step's package list and the unit step's exclusion of them are
+# built from this list, so go-test-step-expansion.py finds no pair the two steps both run and
+# neither step can come to name a package the other does not leave out.
+NOTE_AND_SPEC_PACKAGES = ["internal/dispatch/architecture/notes", "internal/runnerlog", "internal/dispatch/specgraph",
+                          "cmd/architecture-check", "cmd/spec-check"]
+NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their commands"
+NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
+NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
 
 # The unit step runs the module less four things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, and the architecture-note packages, which envoy-go-checks
-# runs. Its `grep -Ev` is `/integration`, then the text checks, then the architecture-note
+# checks, which the text-check job runs, and the architecture-note and spec-file packages, which
+# envoy-go-checks runs. Its `grep -Ev` is `/integration`, then the text checks, then those
 # packages, each the package alone, then, in the lane's own order, each package in the form go
 # list's import paths need - a tree matching the package and everything under it, any other the
 # package alone.
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
-    + [f"/{p}$" for p in ARCHITECTURE_CHECK_PACKAGES]
+    + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
 
 
@@ -2459,12 +2469,12 @@ GATES = [
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:3-6 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
-        (ENVOY_CLIENT_SRC, "packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, so the two suites "
-                           "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it); "
-                           "@legion/broker-client does not come with them, since no source of this program reaches "
-                           "packages/envoy-client/src/broker-credential.ts"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
-    ) + bun_job("dispatch-ui")),
+    ) + envoy_client_dep("packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, which the two suites "
+                         "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
+                         "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
+                         "(check-ts-filters.sh measures it)")
+      + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
     # projects, the two-process job, the visual job and the merge job, all in
@@ -2632,15 +2642,17 @@ GATES = [
 
     # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
-    # they are split out), with the tests of the architecture-note rules and their command and the
-    # note check over this repository's notes through the composite action. Its gofmt step reads
-    # the whole module, so no closure stands for it.
+    # they are split out), with the tests of the architecture-note and spec-file rules and their
+    # commands, the note check over this repository's notes through the composite action, and the
+    # spec-file check over its spec directory through the other one. Its gofmt step reads the
+    # whole module, so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
-        # The architecture-note rules and their command: the closure of the two packages, tests,
-        # testdata and all, built from the list the unit step's `grep -Ev` leaves them out by.
-        step_run("envoy-go-checks", ARCHITECTURE_CHECK_STEP, ARCHITECTURE_CHECK_TEXT, ENVOY, ARCHITECTURE_CHECK_PKGS),
+        # The architecture-note and spec-file rules and their commands: the closure of the five
+        # packages, tests, testdata and all, built from the list the unit step's `grep -Ev` leaves
+        # them out by.
+        step_run("envoy-go-checks", NOTE_AND_SPEC_STEP, NOTE_AND_SPEC_TEXT, ENVOY, NOTE_AND_SPEC_PKGS),
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
@@ -2690,9 +2702,10 @@ GATES = [
         (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
-        # The action builds cmd/architecture-check with GOWORK=off, so it reads packages/envoy's
-        # go.mod and go.sum and the command's packages, all under the packages/envoy/** read; what
-        # is outside packages/envoy is the action itself and the notes it judges.
+        # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
+        # go.sum and the command's packages, all under the packages/envoy/** read; what is outside
+        # packages/envoy is the action itself, the build script both actions run, and the files
+        # it judges.
         (".github/actions/architecture-check/action.yml",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
         (".github/actions/architecture-check/check.sh",
@@ -2700,8 +2713,24 @@ GATES = [
          ".github/actions/architecture-check/action.yml:95 and :121 run it"),
         (".dispatch/architecture/**",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-         "(.github/actions/architecture-check/action.yml:16), which check.sh:82 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:92 reads"),
+         "(.github/actions/architecture-check/action.yml:16), which check.sh:68 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:78 reads"),
+        (".github/actions/spec-check/action.yml",
+         f"{at('envoy-go-checks', './.github/actions/spec-check')} runs the action it defines"),
+        (".github/actions/spec-check/check.sh",
+         f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
+         ".github/actions/spec-check/action.yml:90 and :115 run it"),
+        (".github/scripts/build-envoy-command.sh",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')} and "
+         f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
+         ".github/actions/architecture-check/check.sh:60 and .github/actions/spec-check/check.sh:62 run it"),
+        # The step judges the action's default path, .dispatch/spec, which holds no file on main;
+        # the read names .dispatch whole because a read that matches no file is refused, and the
+        # envoy_go_checks filter names .dispatch whole too.
+        (".dispatch/**",
+         f"{at('envoy-go-checks', './.github/actions/spec-check')} judges the action's default path "
+         "(.github/actions/spec-check/action.yml:17), which check.sh:70 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:80 reads"),
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")),
 
 

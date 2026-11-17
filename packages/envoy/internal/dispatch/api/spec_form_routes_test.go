@@ -155,15 +155,18 @@ func answerFormApproval(t *testing.T, handler http.Handler, ask, selected, text 
 }
 
 // formFault is one of the seven fixture texts of v-form, with a clean text of the same node that
-// an edit can break, and the rule and detail its finding names. A fault of a definition (v-terms)
-// holds whole term lines: its clean line defines another term, or the same term in one sentence,
-// and excerpt is the definition its broken line gives, which the finding quotes.
+// an edit can break, and the rule and detail its finding names. A text that ste-lint reads as a
+// sentence of more than 25 words has a second finding, ste-lint's long-sentence, whose detail is
+// steLong. A fault of a definition (v-terms) holds whole term lines: its clean line defines another
+// term, or the same term in one sentence, and excerpt is the definition its broken line gives,
+// which the finding quotes.
 type formFault struct {
 	name, node    string
 	kind          specform.Kind
 	clean, broken string
 	excerpt       string
 	rule, detail  string
+	steLong       string
 }
 
 var formFaults = []formFault{
@@ -174,7 +177,8 @@ var formFaults = []formFault{
 	{name: "a sentence of 26 words", node: "refuse-write", kind: specform.KindStatement,
 		clean:  "Dispatch refuses a write that breaks the document schema.",
 		broken: "Dispatch refuses a write of the whole text of a document when that text breaks the document schema, and it answers with one named error code.",
-		rule:   "sentence-words", detail: `a sentence has 26 words, and a sentence has at most 25: "Dispatch refuses a write of the whole text"`},
+		rule:   "sentence-words", detail: `a sentence has 26 words, and a sentence has at most 25: "Dispatch refuses a write of the whole text"`,
+		steLong: `ASD-STE100 does not permit a sentence of more than 25 words: "26 words"`},
 	{name: "a hard finding of ASD-STE100", node: "check-upload", kind: specform.KindStatement,
 		clean:  "Dispatch checks each upload.",
 		broken: "Dispatch performs a validation of each upload.",
@@ -210,20 +214,31 @@ func (f formFault) document(body string) string {
 	return fmt.Sprintf("# Spec\n\n:::%s{#%s}\n%s\n:::\n", block, f.node, body)
 }
 
-// line is the refusal's line for the broken text at version of spec.md.
-func (f formFault) line(version int) string {
-	return fmt.Sprintf("- %s %s in spec.md version %d: %s.", f.kind, f.node, version, f.detail)
+// lines is the refusal's line of each finding of the broken text at version of spec.md.
+func (f formFault) lines(version int) []string {
+	lines := []string{fmt.Sprintf("- %s %s in spec.md version %d: %s.", f.kind, f.node, version, f.detail)}
+	if f.steLong != "" {
+		lines = append(lines, fmt.Sprintf("- %s %s in spec.md version %d: %s.", f.kind, f.node, version, f.steLong))
+	}
+	return lines
 }
 
-// finding is the finding the broken text at version of the issue's spec gives.
-func (f formFault) finding(issue formIssue, version int) specFormFinding {
-	return specFormFinding{
-		Document: "spec.md", ArtifactID: issue.PrimaryArtifactID, Version: version,
-		Finding: specform.Finding{
-			Node: f.node, Kind: f.kind, Where: fmt.Sprintf("spec.md version %d", version),
-			Rule: specform.Rule(f.rule), Detail: f.detail, Excerpt: cmp.Or(f.excerpt, f.broken),
-		},
+// findings is each finding the broken text at version of the issue's spec gives.
+func (f formFault) findings(issue formIssue, version int) []specFormFinding {
+	finding := func(rule specform.Rule, detail string) specFormFinding {
+		return specFormFinding{
+			Document: "spec.md", ArtifactID: issue.PrimaryArtifactID, Version: version,
+			Finding: specform.Finding{
+				Node: f.node, Kind: f.kind, Where: fmt.Sprintf("spec.md version %d", version),
+				Rule: rule, Detail: detail, Excerpt: cmp.Or(f.excerpt, f.broken),
+			},
+		}
 	}
+	findings := []specFormFinding{finding(specform.Rule(f.rule), f.detail)}
+	if f.steLong != "" {
+		findings = append(findings, finding("ste100-long-sentence", f.steLong))
+	}
+	return findings
 }
 
 // requireFormRefusal fails t unless response is the 409 SPEC_FORM refusal of act, naming exactly
@@ -402,13 +417,13 @@ func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault for
 	first := createFormIssue(t, tree.handler, tree.root, "Broken at first: "+fault.name, fault.document(fault.broken))
 	awaitSettled(t, tree.database, first.PrimaryArtifactID)
 	before := readFormState(t, tree.database, first.Key)
-	lines := []string{fault.line(1)}
+	lines := fault.lines(1)
 	requireFormRefusal(t, "path 1, open a request", requestFormApproval(t, tree.handler, first.PrimaryArtifactID, nil),
-		specform.ActRequest, lines, fault.finding(first, 1))
+		specform.ActRequest, lines, fault.findings(first, 1)...)
 	requireFormRefusal(t, "path 3 with no request open", reviewFormDocument(t, tree.handler, first.PrimaryArtifactID, "approved", ""),
-		specform.ActApproval, lines, fault.finding(first, 1))
+		specform.ActApproval, lines, fault.findings(first, 1)...)
 	requireFormRefusal(t, "path 4 with no request open", reviewFormVersion(t, tree.handler, first.PrimaryArtifactID, 1, "approved"),
-		specform.ActApproval, lines, fault.finding(first, 1))
+		specform.ActApproval, lines, fault.findings(first, 1)...)
 	if after := readFormState(t, tree.database, first.Key); after != before {
 		t.Fatalf("the refused writes on the first version changed %+v to %+v", before, after)
 	}
@@ -420,15 +435,15 @@ func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault for
 	reviseDocument(t, tree.handler, moved.PrimaryArtifactID, fault.clean, fault.broken, 2)
 	awaitSettled(t, tree.database, moved.PrimaryArtifactID)
 	before = readFormState(t, tree.database, moved.Key)
-	lines = []string{fault.line(2)}
+	lines = fault.lines(2)
 	requireFormRefusal(t, "path 2, hand the moved request back", requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil),
-		specform.ActRequest, lines, fault.finding(moved, 2))
+		specform.ActRequest, lines, fault.findings(moved, 2)...)
 	requireFormRefusal(t, "path 3 on the moved request", reviewFormDocument(t, tree.handler, moved.PrimaryArtifactID, "approved", ""),
-		specform.ActApproval, lines, fault.finding(moved, 2))
+		specform.ActApproval, lines, fault.findings(moved, 2)...)
 	requireFormRefusal(t, "path 4 on the moved request", reviewFormVersion(t, tree.handler, moved.PrimaryArtifactID, 2, "approved"),
-		specform.ActApproval, lines, fault.finding(moved, 2))
+		specform.ActApproval, lines, fault.findings(moved, 2)...)
 	requireFormRefusal(t, "path 5 on the moved request", answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""),
-		specform.ActApproval, lines, fault.finding(moved, 2))
+		specform.ActApproval, lines, fault.findings(moved, 2)...)
 	if after := readFormState(t, tree.database, moved.Key); after != before {
 		t.Fatalf("the refused writes on the moved request changed %+v to %+v", before, after)
 	}
@@ -446,7 +461,7 @@ func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault for
 	awaitSettled(t, tree.database, reparented.PrimaryArtifactID)
 	before = readFormState(t, tree.database, reparented.Key)
 	requireFormRefusal(t, "path 5 on a request moved under the root", answerFormApproval(t, tree.handler, opened.Ask.ID, docs.ApprovalOptionApprove, ""),
-		specform.ActApproval, []string{fault.line(1)}, fault.finding(reparented, 1))
+		specform.ActApproval, fault.lines(1), fault.findings(reparented, 1)...)
 	if after := readFormState(t, tree.database, reparented.Key); after != before {
 		t.Fatalf("the refused answer changed %+v to %+v", before, after)
 	}
@@ -457,7 +472,7 @@ func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault for
 	question := createSessionAsk(t, tree.handler, reopened.Key, "Which region takes the first wave?")
 	reparentFormIssue(t, tree.handler, reopened.Key, tree.root)
 	seq := reopenFormIssue(t, tree, reopened.Key)
-	requireLeftResolved(t, tree.handler, tree.database, reopened.Key, seq, request, fault.line(1), model.Actor{Kind: "user", ID: "alice"})
+	requireLeftResolved(t, tree.handler, tree.database, reopened.Key, seq, request, strings.Join(fault.lines(1), "\n"), model.Actor{Kind: "user", ID: "alice"})
 	requireRestoredOpen(t, tree, reopened.Key, seq, question)
 	reviews := readFormState(t, tree.database, reopened.Key).reviews
 	answered := answerFormApproval(t, tree.handler, request, docs.ApprovalOptionApprove, "")
@@ -498,7 +513,7 @@ func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
 			if repair.Restored != 0 || repair.LeftResolved != 1 {
 				t.Fatalf("repair = %+v, want none restored and 1 left resolved", repair)
 			}
-			requireLeftResolved(t, f.handler, f.database, withdrawn.issue, withdrawn.seq, withdrawn.request, formFaults[0].line(1), withdrawn.reopener)
+			requireLeftResolved(t, f.handler, f.database, withdrawn.issue, withdrawn.seq, withdrawn.request, strings.Join(formFaults[0].lines(1), "\n"), withdrawn.reopener)
 			if again := repairNow(t, f); again != (IssueAskRepair{}) {
 				t.Fatalf("second repair = %+v, want nothing found", again)
 			}
@@ -546,7 +561,7 @@ func TestARequestForChangesIsNotGated(t *testing.T) {
 			} else {
 				refused = answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, "")
 			}
-			reason := requireFormRefusal(t, path+" approve", refused, specform.ActApproval, []string{fault.line(2)}, fault.finding(issue, 2)).ChangesReason
+			reason := requireFormRefusal(t, path+" approve", refused, specform.ActApproval, fault.lines(2), fault.findings(issue, 2)...).ChangesReason
 			if path == "path 3" {
 				if sent = reviewFormDocument(t, tree.handler, issue.PrimaryArtifactID, "changes_requested", reason); sent.Code != http.StatusCreated {
 					t.Fatalf("request changes: status=%d body=%s, want 201", sent.Code, sent.Body.String())
@@ -565,7 +580,7 @@ func TestARequestForChangesIsNotGated(t *testing.T) {
 	t.Run("path 3 with no request open", func(t *testing.T) {
 		issue := createFormIssue(t, tree.handler, tree.root, "Changes asked with no request", fault.document(fault.broken))
 		reason := requireFormRefusal(t, "approve", reviewFormDocument(t, tree.handler, issue.PrimaryArtifactID, "approved", ""),
-			specform.ActApproval, []string{fault.line(1)}, fault.finding(issue, 1)).ChangesReason
+			specform.ActApproval, fault.lines(1), fault.findings(issue, 1)...).ChangesReason
 		sent := reviewFormDocument(t, tree.handler, issue.PrimaryArtifactID, "changes_requested", reason)
 		if sent.Code != http.StatusCreated {
 			t.Fatalf("request changes: status=%d body=%s, want 201", sent.Code, sent.Body.String())
@@ -773,7 +788,7 @@ func TestAMovedRequestIsRefusedAtTheApproval(t *testing.T) {
 	reviseDocument(t, tree.handler, issue.PrimaryArtifactID, fault.clean, fault.broken, 2)
 	before := readFormState(t, tree.database, issue.Key)
 	requireFormRefusal(t, "approve", answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""),
-		specform.ActApproval, []string{fault.line(2)}, fault.finding(issue, 2))
+		specform.ActApproval, fault.lines(2), fault.findings(issue, 2)...)
 	if after := readFormState(t, tree.database, issue.Key); after != before || after.reviews != 0 {
 		t.Fatalf("the refused approval changed %+v to %+v, want no review", before, after)
 	}
@@ -792,12 +807,18 @@ func TestARenewJudgesTheDocumentsTheHandBackGives(t *testing.T) {
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, map[string]any{"include_verification": true}))
 	longClaim := formFaults[1].broken
 	reviseDocument(t, tree.handler, verification.ID, cleanClaim, longClaim, 2)
-	requireFormRefusal(t, "renew naming the spec alone", requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil),
-		specform.ActRequest, []string{"- claim refuse-write in verification.md version 2: " + formFaults[1].detail + "."},
-		specFormFinding{Document: "verification.md", ArtifactID: verification.ID, Version: 2, Finding: specform.Finding{
+	claimFinding := func(rule specform.Rule, detail string) specFormFinding {
+		return specFormFinding{Document: "verification.md", ArtifactID: verification.ID, Version: 2, Finding: specform.Finding{
 			Node: "refuse-write", Kind: specform.KindClaim, Where: "verification.md version 2",
-			Rule: "sentence-words", Detail: formFaults[1].detail, Excerpt: longClaim,
-		}})
+			Rule: rule, Detail: detail, Excerpt: longClaim,
+		}}
+	}
+	requireFormRefusal(t, "renew naming the spec alone", requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil),
+		specform.ActRequest, []string{
+			"- claim refuse-write in verification.md version 2: " + formFaults[1].detail + ".",
+			"- claim refuse-write in verification.md version 2: " + formFaults[1].steLong + ".",
+		},
+		claimFinding("sentence-words", formFaults[1].detail), claimFinding("ste100-long-sentence", formFaults[1].steLong))
 }
 
 // The read route answers the findings of any document with no side effect, and says whether the
@@ -815,7 +836,7 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 			specform.KindStatement: 1, specform.KindClaim: 0, specform.KindProcedure: 0, specform.KindFailingExample: 0,
 			specform.KindName: 0, specform.KindPurpose: 0, specform.KindDefinition: 0,
 		},
-		Findings: []specFormFinding{fault.finding(issue, 1)}, FindingsTotal: 1,
+		Findings: fault.findings(issue, 1), FindingsTotal: 1,
 		Terms: []specFormTerm{}, RefusesApproval: true,
 	}
 	if !reflect.DeepEqual(read, want) {
@@ -834,7 +855,7 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 	}
 	uncovered := createFormIssue(t, tree.handler, tree.outside, "Read outside the root", fault.document(fault.broken))
 	read = specFormReadOf(t, tree.handler, uncovered.PrimaryArtifactID)
-	if read.InScope || read.Scope != "outside" || read.RefusesApproval || !reflect.DeepEqual(read.Findings, []specFormFinding{fault.finding(uncovered, 1)}) {
+	if read.InScope || read.Scope != "outside" || read.RefusesApproval || !reflect.DeepEqual(read.Findings, fault.findings(uncovered, 1)) {
 		t.Fatalf("an uncovered document's read = %#v, want out of scope with its finding listed", read)
 	}
 	if response := sessionRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/spec-form", nil); response.Code != http.StatusOK {
@@ -917,22 +938,22 @@ func TestTheGateReadsTheNamedVersion(t *testing.T) {
 	broken := createFormIssue(t, tree.handler, tree.root, "Broken version, clean live text", fault.document(fault.broken))
 	writeBrowserDocument(t, documentService, broken.PrimaryArtifactID, fault.document(fault.clean))
 	requireFormRefusal(t, "request", requestFormApproval(t, tree.handler, broken.PrimaryArtifactID, nil),
-		specform.ActRequest, []string{fault.line(1)}, fault.finding(broken, 1))
+		specform.ActRequest, fault.lines(1), fault.findings(broken, 1)...)
 }
 
-// A word that is a person's name piece and the name of a component of the approved spec under the
-// root is a noun of the system, not a person. The control: before that spec is approved, the same
-// word names a person.
+// A person's name whose part is the name of a component of the approved spec under the root is a
+// noun of the system and one part of a name, which is no name. The control: before that spec is
+// approved, the same words name a person.
 func TestTheGateKnowsTheComponentNamesUnderItsRoot(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	seedPeople(t, tree.database, "dispatch.admin@example.com")
 	component := createFormIssue(t, tree.handler, tree.root, "The components",
 		"# Components\n\n## Dispatch (component `dispatch`)\n\nThe server keeps each issue and each document.\n")
-	user := formFault{node: "reach-owner", kind: specform.KindStatement, broken: "Each issue reaches Dispatch before its owner starts work.",
-		rule: "person", detail: `it names a person: "Dispatch"`}
+	user := formFault{node: "reach-owner", kind: specform.KindStatement, broken: "Each issue reaches Dispatch Admin before its owner starts work.",
+		rule: "person", detail: `it names a person: "Dispatch Admin"`}
 	statement := createFormIssue(t, tree.handler, tree.root, "Uses a component name", user.document(user.broken))
 	requireFormRefusal(t, "before the component is approved", requestFormApproval(t, tree.handler, statement.PrimaryArtifactID, nil),
-		specform.ActRequest, []string{user.line(1)}, user.finding(statement, 1))
+		specform.ActRequest, user.lines(1), user.findings(statement, 1)...)
 	if response := reviewFormDocument(t, tree.handler, component.PrimaryArtifactID, "approved", ""); response.Code != http.StatusCreated {
 		t.Fatalf("approve the components: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1200,7 +1221,7 @@ func TestTheRepairPassDoesNotOpenARequestWithASecondDefinition(t *testing.T) {
 	if repair := repairNow(t, f); repair.Restored != 0 || repair.LeftResolved != 1 {
 		t.Fatalf("repair = %+v, want none restored and 1 left resolved", repair)
 	}
-	requireLeftResolved(t, f.handler, f.database, withdrawn.issue, withdrawn.seq, withdrawn.request, secondSession.line(1), withdrawn.reopener)
+	requireLeftResolved(t, f.handler, f.database, withdrawn.issue, withdrawn.seq, withdrawn.request, strings.Join(secondSession.lines(1), "\n"), withdrawn.reopener)
 }
 
 // A term that a closed issue defines is still in the list, and the refusal says to reopen that

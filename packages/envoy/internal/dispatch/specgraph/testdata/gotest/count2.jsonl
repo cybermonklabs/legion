@@ -1,0 +1,44 @@
+{"Time":"2026-11-16T16:19:17.525390719Z","Action":"start","Package":"example.com/acme/gotest/count2"}
+{"Time":"2026-11-16T16:19:17.546192394Z","Action":"run","Package":"example.com/acme/gotest/count2","Test":"TestSequentialPasses"}
+{"Time":"2026-11-16T16:19:17.54626043Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestSequentialPasses","Output":"=== RUN   TestSequentialPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546285336Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestSequentialPasses","Output":"--- PASS: TestSequentialPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546289073Z","Action":"pass","Package":"example.com/acme/gotest/count2","Test":"TestSequentialPasses","Elapsed":0}
+{"Time":"2026-11-16T16:19:17.546295604Z","Action":"run","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses"}
+{"Time":"2026-11-16T16:19:17.546298444Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Output":"=== RUN   TestParallelPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546301438Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Output":"=== PAUSE TestParallelPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546303487Z","Action":"pause","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses"}
+{"Time":"2026-11-16T16:19:17.546306868Z","Action":"run","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails"}
+{"Time":"2026-11-16T16:19:17.546308533Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Output":"=== RUN   TestParallelFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546316187Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Output":"=== PAUSE TestParallelFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546317664Z","Action":"pause","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails"}
+{"Time":"2026-11-16T16:19:17.546319576Z","Action":"cont","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses"}
+{"Time":"2026-11-16T16:19:17.546321419Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Output":"=== CONT  TestParallelPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546324427Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Output":"--- PASS: TestParallelPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546330258Z","Action":"pass","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Elapsed":0}
+{"Time":"2026-11-16T16:19:17.546332067Z","Action":"cont","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails"}
+{"Time":"2026-11-16T16:19:17.546334036Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Output":"=== CONT  TestParallelFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546336292Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Output":"--- FAIL: TestParallelFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546391665Z","Action":"fail","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Elapsed":0}
+{"Time":"2026-11-16T16:19:17.546394218Z","Action":"run","Package":"example.com/acme/gotest/count2","Test":"TestSequentialPasses"}
+{"Time":"2026-11-16T16:19:17.546395911Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestSequentialPasses","Output":"=== RUN   TestSequentialPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546406551Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestSequentialPasses","Output":"--- PASS: TestSequentialPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546409056Z","Action":"pass","Package":"example.com/acme/gotest/count2","Test":"TestSequentialPasses","Elapsed":0}
+{"Time":"2026-11-16T16:19:17.546410852Z","Action":"run","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses"}
+{"Time":"2026-11-16T16:19:17.546418377Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Output":"=== RUN   TestParallelPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546422252Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Output":"=== PAUSE TestParallelPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546424485Z","Action":"pause","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses"}
+{"Time":"2026-11-16T16:19:17.546426044Z","Action":"run","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails"}
+{"Time":"2026-11-16T16:19:17.546427818Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Output":"=== RUN   TestParallelFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546504642Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Output":"=== PAUSE TestParallelFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546506798Z","Action":"pause","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails"}
+{"Time":"2026-11-16T16:19:17.546509299Z","Action":"cont","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses"}
+{"Time":"2026-11-16T16:19:17.546511321Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Output":"=== CONT  TestParallelPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546516151Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Output":"--- PASS: TestParallelPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546518708Z","Action":"pass","Package":"example.com/acme/gotest/count2","Test":"TestParallelPasses","Elapsed":0}
+{"Time":"2026-11-16T16:19:17.546520818Z","Action":"cont","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails"}
+{"Time":"2026-11-16T16:19:17.546522469Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Output":"=== CONT  TestParallelFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546524823Z","Action":"output","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Output":"--- FAIL: TestParallelFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.546527953Z","Action":"fail","Package":"example.com/acme/gotest/count2","Test":"TestParallelFails","Elapsed":0}
+{"Time":"2026-11-16T16:19:17.546529766Z","Action":"output","Package":"example.com/acme/gotest/count2","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.54963938Z","Action":"output","Package":"example.com/acme/gotest/count2","Output":"FAIL\texample.com/acme/gotest/count2\t0.024s\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:17.549676967Z","Action":"fail","Package":"example.com/acme/gotest/count2","Elapsed":0.024}

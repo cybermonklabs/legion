@@ -11,7 +11,9 @@
 #          $RUNNER_TEMP/architecture-check/bin/architecture-check, with its module cache in
 #          $RUNNER_TEMP/architecture-check/mod and its build cache in
 #          $RUNNER_TEMP/architecture-check/build, the two directories the action's cache steps
-#          restore and save. It exits with go build's status.
+#          restore and save. The build is .github/scripts/build-envoy-command.sh, the one build of
+#          both composite actions of this repository, which holds the settings that keep the
+#          caller's job out of it. It exits with go build's status.
 #   run    Runs that binary over ARCHITECTURE_CHECK_PATH, resolved against GITHUB_WORKSPACE (an
 #          absolute path stays as it is), with --allow-empty when ARCHITECTURE_CHECK_ALLOW_EMPTY
 #          is `true`. The binary's standard error goes to the log, and its standard output to
@@ -51,28 +53,12 @@ case "$#:${1:-}" in
 esac
 
 require GITHUB_ACTION_PATH RUNNER_TEMP
-module="$GITHUB_ACTION_PATH/../../../packages/envoy"
 work="$RUNNER_TEMP/architecture-check"
 binary="$work/bin/architecture-check"
 
 build() {
-  mkdir -p "$work/mod" "$work/build" "$work/bin"
-  cd "$module"
-  # Each setting keeps the caller's job out of this build:
-  # - GOWORK=off: the repository's root go.work sits above the action's directory, and the build
-  #   reads packages/envoy/go.mod alone.
-  # - GOTOOLCHAIN=local: a Go older than go.mod's go line fails by name, and the go command
-  #   fetches no other toolchain in its place.
-  # - GOFLAGS empty and GOENV=off: the go command reads an empty GOFLAGS from the user's
-  #   `go env -w` file instead, so the variable alone does not clear a flag a runner image set.
-  # - GOOS and GOARCH unset: a job that cross-compiles its own code cannot make a binary this
-  #   runner cannot run.
-  # - GOMODCACHE and GOCACHE: the action's own caches, so an entry holds this build alone and
-  #   never the caller's.
-  env -u GOOS -u GOARCH \
-    GOWORK=off GOTOOLCHAIN=local GOFLAGS= GOENV=off \
-    GOMODCACHE="$work/mod" GOCACHE="$work/build" \
-    go build -buildvcs=false -o "$binary" ./cmd/architecture-check
+  bash "$GITHUB_ACTION_PATH/../../scripts/build-envoy-command.sh" \
+    ./cmd/architecture-check "$binary" "$work/mod" "$work/build"
 }
 
 run() {

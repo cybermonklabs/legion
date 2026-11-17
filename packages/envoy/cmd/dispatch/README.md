@@ -187,20 +187,32 @@ The server asks the broker what the token is (RFC 7662 introspection on `/v1/oau
 No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
-A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service the machine holding it belongs to, and `actor` in the body does not decide that session:
+A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
+A read-only token names no project either.
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, or it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-A websocket re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
+
+A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
+It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
+`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
+Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
+That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
+The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
+The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`.
 
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
@@ -237,10 +249,12 @@ The sign-in check refuses every write by a credential that names a service and n
 It stands in front of every mutating route whatever its class, and outermost of the three, so such a caller is told it may make no write at all rather than which project the write it tried belongs to.
 Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because Dispatch records a write under the person who made it and this credential names none.
 A broker token that does name a person, and every other credential, reaches the handler as before.
+A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
 The project and session checks are a no-op for a credential that carries no project and proves no session
 — a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, and an access token the broker scoped to a person rather than to one project.
 That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
+A read-only token carries no project either, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -4699,17 +4713,26 @@ No other document of a root is covered, and an issue that is a root inside anoth
 With no request open, these are the documents that the request names.
 With a request open, they are the documents that the open request names.
 These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
-A hard finding of ASD-STE100 also breaks it.
+Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
+The reviewer of R25 reads each text for what these rules cannot refuse.
+
+- How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
+  A block in a code block or in a table cell is no block.
+  Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
 
 - How the rules count sentences: a sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
   A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
   So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
   A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
-  An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word, and none of its stops ends a sentence, also the last one before a space.
+  An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word.
+  None of its stops ends a sentence, also the last one before a space.
+  So when a sentence ends with such an initialism, the rules count it and the next sentence as one: write the initialism in full there.
   Nothing in code font ends a sentence.
   A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
   Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
   A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
+  `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
+  Put the quoted text in code font, or write the text again in shorter sentences.
   An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
   A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
   So write the steps with words.
@@ -4720,17 +4743,25 @@ A link to a record of Dispatch, and the name of an incident, a pull request or a
 - How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
   `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
   A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
+  So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
   The finding of each rule lists the forms that it reads.
+  A person's name is the name of one person who signed in: the parts of that person's email, in order, each with a capital letter.
+  So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
+  Parts of the emails of two people are no name.
+  A part that is a word of an approved component name or term is no part of a name.
+  An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
+  A word that starts with `@` is the handle of a person, also in code font, so write a name of the system without `@`.
+  The rules also read the name of a term (kind `term`).
 
 A definition of a term has one sentence, and a term has one definition.
 An abbreviation with a stop before a space, such as `vs.`, `approx.` or `etc.`, ends a sentence.
 So a definition that holds one has two sentences and breaks the form: write the word out, such as `against` for `vs.`.
 A definition is a term line: `- **<term>**: <definition>` under a heading `Terms`, at any level.
 The list of terms holds these definitions, and no approval adds a second definition of a listed term.
-Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
+Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
 So a decision block under that heading breaks the form at its question line.
 A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
-The finding names the line, and it says where a decision block goes.
+The finding names the line by its text, and it says where a decision block goes.
 A heading that reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
 Such a heading has the text `terms` in another case, with emphasis marks or with a last colon, such as `## TERMS`, `## **Terms**` or `## Terms:`.
 A line of the term-line form in another place is no definition, and it adds no term to the list.

@@ -52,7 +52,7 @@ func TestExtractReadsEachFormOfText(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Text{
-		{Node: "ship-at-head", Kind: KindStatement, Body: "Legion lands a change at the head it read.\nIt refuses another head.", Where: fixtureWhere},
+		{Node: "ship-at-head", Kind: KindStatement, Body: "Legion lands a change at the head it read. It refuses another head.", Where: fixtureWhere},
 		{Node: "keeps-answers", Kind: KindStatement, Body: "Dispatch keeps each answer.", Where: fixtureWhere},
 		{Node: "v-one", Kind: KindClaim, Body: "The merger lands only the head it read.", Where: fixtureWhere},
 		{Node: "v-one", Kind: KindProcedure, Body: "Run the merge test.", Where: fixtureWhere},
@@ -123,38 +123,36 @@ func TestExtractReadsLevelOneShape(t *testing.T) {
 	}
 }
 
-func TestExtractNamesABlockWithNoID(t *testing.T) {
-	got, err := ExtractDocument("spec.md", 1, ":::requirement{}\nLegion lands a change.\n:::\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Texts) != 1 || got.Texts[0].Node != "requirement 1" {
-		t.Fatalf("Texts = %#v, want one text of Node requirement 1", got.Texts)
-	}
-}
-
+// TestExtractNamesARepeatedID reads two typed blocks that name one id as every reader of the
+// document reads them: the first keeps the id, and the second has the id that the parser gives
+// it. A node and kind that two other forms give with another body, a component's purpose under
+// its heading and in the table, is two texts, the second named "<node> (2)".
 func TestExtractNamesARepeatedID(t *testing.T) {
-	got, err := ExtractDocument("spec.md", 1, ":::requirement{#a}\nLegion lands a change.\n:::\n\n:::requirement{#a}\nLegion lands another change.\n:::\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var nodes []string
-	for _, text := range got.Texts {
-		nodes = append(nodes, text.Node)
-	}
-	if !reflect.DeepEqual(nodes, []string{"a", "a (2)"}) {
-		t.Fatalf("Nodes = %v, want [a a (2)]", nodes)
-	}
-	if findings := Check(planted(), Input{Texts: got.Texts}); len(findings) != 0 {
-		t.Fatalf("Check = %#v, want none", findings)
-	}
 	markdown := ":::requirement{#a}\nLegion lands a change.\n:::\n\n:::requirement{#a}\nOne. Two. Three.\n:::\n"
-	broken, err := ExtractDocument("spec.md", 1, markdown)
+	got, err := ExtractDocument("spec.md", 1, markdown)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if findings := Check(Context{}, Input{Texts: broken.Texts}); len(findings) != 1 || findings[0].Node != "a (2)" {
-		t.Fatalf("Check = %#v, want one finding of Node a (2)", findings)
+	if len(got.Texts) != 2 || got.Texts[0].Node != "a" || got.Texts[1].Node == "a" || got.Texts[1].Node == "" {
+		t.Fatalf("Texts = %#v, want a, then the id the parser gives the second block", got.Texts)
+	}
+	if findings := Check(Context{}, Input{Texts: got.Texts}); len(findings) != 1 || findings[0].Node != got.Texts[1].Node {
+		t.Fatalf("Check = %#v, want one finding of Node %s", findings, got.Texts[1].Node)
+	}
+	component := "## Records (component `r`)\n\nIt holds each record.\n\n" +
+		"| Id | Kind | Name | Purpose |\n| --- | --- | --- | --- |\n| `r` | component | Records | It keeps each record. |\n"
+	twice, err := ExtractDocument("spec.md", 1, component)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var purposes []string
+	for _, text := range twice.Texts {
+		if text.Kind == KindPurpose {
+			purposes = append(purposes, text.Node)
+		}
+	}
+	if !reflect.DeepEqual(purposes, []string{"r", "r (2)"}) {
+		t.Fatalf("purposes = %v, want [r r (2)]", purposes)
 	}
 }
 
@@ -206,10 +204,11 @@ func TestALineUnderTermsThatIsNoTermLineIsNotDroppedInSilence(t *testing.T) {
 	}
 }
 
-// Each line under a heading Terms that is not blank and is no term line is a text of Kind line,
-// named by the line in quotes, and Check gives it one finding of rule term-line, whose detail shows
-// the form of a term line. A heading below Terms is no such line, and Terms ends at the next heading
-// of its level or above. The control: the term lines are terms, and give no finding.
+// Each paragraph or list item under a heading Terms that is no term line is a text of Kind line,
+// named by its text in quotes, as a person reads it, and Check gives it one finding of rule
+// term-line, whose detail shows the form of a term line. A heading below Terms is no such line, and
+// Terms ends at the next heading of its level or above. The control: the term lines are terms, and
+// give no finding.
 func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 	markdown := "# Spec\n\n## Terms\n\nEach term has one definition.\n\n" +
 		"- **drift:** The slow change of the clock of one machine.\n" +
@@ -223,7 +222,7 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 	}
 	line := Kind("line")
 	prose := Text{Node: `"Each term has one definition."`, Kind: line, Body: "Each term has one definition.", Where: where}
-	drift := Text{Node: `"- **drift:** The slow change of the clock of one machine."`, Kind: line, Body: "- **drift:** The slow change of the clock of one machine.", Where: where}
+	drift := Text{Node: `"drift: The slow change of the clock of one machine."`, Kind: line, Body: "drift: The slow change of the clock of one machine.", Where: where}
 	if !reflect.DeepEqual(got.Texts, []Text{prose, drift}) {
 		t.Errorf("Texts =\n%#v\nwant\n%#v", got.Texts, []Text{prose, drift})
 	}
@@ -312,7 +311,7 @@ func TestADecisionBlockUnderTermsIsAFindingThatNamesTheWayOut(t *testing.T) {
 		want           []string
 	}{
 		{"under the heading", "# Spec\n\n## Terms\n\n" + block + "\n" + term, []string{
-			`"Which definition does the spec keep?"`, `"- Keep it: The spec keeps the definition."`,
+			`"Which definition does the spec keep?"`, `"Keep it: The spec keeps the definition."`,
 		}},
 		{"above the heading", "# Spec\n\n" + block + "\n## Terms\n\n" + term, nil},
 	} {

@@ -77,7 +77,8 @@ func TestANameWithAStopInsideEndsNoSentence(t *testing.T) {
 // TestTheWordRuleReadsEachSentenceAfterTheWriterPutsTheSpaceIn holds the 25-word rule to two
 // sentences that a stop joins. With no space after the stop, the text shows one sentence, and
 // the finding names the stop. With the space, the rule reads each sentence: 25 and 26 words give
-// the finding of 26, and 25 and 25 give none.
+// the finding of 26, and 25 and 25 give none. ste-lint counts the same sentences, so each long
+// one is also its hard finding long-sentence.
 func TestTheWordRuleReadsEachSentenceAfterTheWriterPutsTheSpaceIn(t *testing.T) {
 	const w25 = "Dispatch shows the person each question of each issue that the person follows, with the age of the question and the key of its project."
 	const w26 = "Dispatch shows the person each open approval request that waits for the person, with the document, its version number and the summary that its author wrote."
@@ -93,12 +94,14 @@ func TestTheWordRuleReadsEachSentenceAfterTheWriterPutsTheSpaceIn(t *testing.T) 
 	if got, want := Check(planted(), Input{Texts: []Text{joined}}), cut(
 		finding(joined, "stop-no-space", stopNoSpace("project.Dispatch")),
 		finding(joined, "sentence-words", `a sentence has 50 words, and a sentence has at most 25: "Dispatch shows the person each question of each"`),
+		finding(joined, "ste100-long-sentence", `ASD-STE100 does not permit a sentence of more than 25 words: "50 words"`),
 	); !sameFindings(got, want) {
 		t.Errorf("joined: Check = %#v, want %#v", got, want)
 	}
 	spaced := statement(w25 + " " + w26)
 	if got, want := Check(planted(), Input{Texts: []Text{spaced}}), cut(
 		finding(spaced, "sentence-words", `a sentence has 26 words, and a sentence has at most 25: "Dispatch shows the person each open approval request"`),
+		finding(spaced, "ste100-long-sentence", `ASD-STE100 does not permit a sentence of more than 25 words: "26 words"`),
 	); !sameFindings(got, want) {
 		t.Errorf("25 and 26 words: Check = %#v, want %#v", got, want)
 	}

@@ -165,7 +165,7 @@ type Config struct {
 	// Actor is the machine a person signed in on, presented as the actor token beside their own
 	// Google identity token. Nil for every trade a machine makes for itself.
 	Actor Source
-	// Session is the session name the minted token writes under, which an entry that fixes one
+	// Session is the session name the minted token carries, which an entry that fixes one
 	// refuses to be told and an entry that fixes none requires.
 	Session string
 	// Projects is the projects the minted token names, sorted and each once (TradeProjects reads

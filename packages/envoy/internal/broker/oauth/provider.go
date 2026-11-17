@@ -193,7 +193,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	// built. Its sign-in domain is empty, which admits no person at all: a set nobody built
 	// lists no machine either, so there is no box a person could have signed in on.
 	if c.Exchange.Policy == nil {
-		policy, err := exchange.NewSet(nil, nil, nil, "")
+		policy, err := exchange.NewSet(nil, nil, nil, nil, "")
 		if err != nil {
 			return nil, fmt.Errorf("oauth: the empty exchange policy: %w", err)
 		}
@@ -497,8 +497,8 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 //
 // The policy decides what may be registered, in the same words the exchange refuses a pod with
 // (exchange.Set.Registration): a token bound to no pod, an account no entry lists and an entry
-// that fixes a session are each refused, the last because the name such an entry writes under is
-// the configuration's and its pods need no registration at all. A caller maps those sentinels
+// that fixes a session are each refused, the last because the name such an entry's tokens carry
+// is the configuration's and its pods need no registration at all. A caller maps those sentinels
 // onto its own refusals; anything else is the store's.
 func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session string) (time.Time, error) {
 	if err := p.exchange.Policy.Registration(account, podUID, session); err != nil {
