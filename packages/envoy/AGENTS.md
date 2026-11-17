@@ -130,10 +130,10 @@ Each item below names a task and where its code is, then notes on it.
   `Retry-After` and the body's `retry_after_seconds` give the same whole seconds, rounded up and at least 1, until the count holds one message again.
   The JSON body also holds `reason: "sender_rate_limited"`, `messages_per_minute`, `burst` and an `error` that is the sentence `Your sending is rate limited. This message was not sent. This listener lets one session send <rate> messages a minute and <burst> at once. You can send it again after <seconds> seconds.`
   The request line of a refused message, and of each message that cost one, carries the field `sender`, and no other line of the listener carries it.
-  A counted message costs one where the route stores it, may have stored it (a role send's `504`, or a forward refused after an earlier attempt) or reports a wake for it, whatever it answers (`senderCharge.spend`).
+  A counted message costs one where the route stores it, may have stored it (a role send's `504`, or any answer after an earlier forward of the same role send, an echo, a repeat or a `403` too) or reports a wake for it, whatever it answers (`senderCharge.spend`).
   A refusal before any store or wake report, such as a `400`, `403`, `413` or `503`, costs nothing, since the deferred `settle` returns the take to the count.
-  A repeat the listener recognises costs nothing too (`senderCharge.forgive`): the stream's `duplicate` answer to a send or a topic publish, and a role send's repeat of a kept copy (`keptRoleCopy.repeat`).
-  A role send's echo, and a repeat in the route's 10-minute record, mark nothing and cost nothing.
+  A repeat the listener recognises costs nothing too (`senderCharge.forgive`): the stream's `duplicate` answer to a send or a topic publish, and a role send's repeat of a kept copy (`keptRoleCopy.repeat`) before its first forward.
+  A role send's echo, and a repeat in the route's 10-minute record, cost nothing before any forward.
   A repeat that finds the count at 0 is refused as a new message is, because the take comes first.
   This 429 is not the broker token check's (`apiauth.go`), whose log reason is `rate_limited`.
   No client sends a refused message again by itself (`packages/envoy-client/src/transport.ts` retries nothing below 500), except the Legion stall notice, whose sender waits the seconds and sends it again at most 3 times (`packages/pi-legion/src/stall-evidence.ts`).

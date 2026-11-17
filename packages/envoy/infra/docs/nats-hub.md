@@ -439,14 +439,16 @@ listener lets one session send <rate> messages a minute and <burst> at once. You
 after <seconds> seconds.` with the values filled in. The request's log line has the outcome
 `sender_rate_limited` and the field `sender`.
 
-A counted message costs one when the listener stores it, may have stored it (a role send's `504`)
-or reports a wake for it. A refusal before any store or wake report, such as a `400`, `403`, `413`
-or `503`, costs nothing. A repeat the listener recognises costs nothing too: the stream's
-`duplicate` answer, a repeat of a role message kept for the role's next holder, and a repeat of a
-role forward the route made in the last 10 minutes. So does an echo, a role message from the
-session that holds the role. A repeat that finds the count at 0 is refused as a new message is.
-The clients show the sentence and do not send the message again by themselves, except the Legion
-stall notice, whose sender waits the seconds and sends it again at most 3 times
+A counted message costs one when the listener stores it, may have stored it (a role send's `504`,
+or any answer after an earlier forward of the same role send) or reports a wake for it. A refusal
+before any store or wake report, such as a `400`, `403`, `413` or `503`, costs nothing. A repeat
+the listener recognises costs nothing too: the stream's `duplicate` answer, a repeat of a role
+message kept for the role's next holder, and a repeat of a role forward the route made in the last
+10 minutes. So does an echo, a role message from the session that holds the role. A role send's
+echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier
+forward may have stored the message. A repeat that finds the count at 0 is refused as a new
+message is. The clients show the sentence and do not send the message again by themselves, except
+the Legion stall notice, whose sender waits the seconds and sends it again at most 3 times
 ([The listener's sender limit](../README.md#the-listeners-sender-limit)).
 
 ## What the hub's VM runs

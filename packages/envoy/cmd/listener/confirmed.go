@@ -156,10 +156,11 @@ func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
 // settled: counted, and logged on the send's own delivery line.
 //
 // Each answer marks the message's take from its sender's count (record.charge) before it is
-// written: a wake reported, a forward the stream stored, and a window that ended or a refusal
-// after an earlier attempt, each of which may have stored it, cost one. A repeat the kept lane
-// answers is forgiven, and any other answer marks nothing, so the route's deferred settle gives
-// the take back.
+// written: a wake reported, a forward the stream stored and a window that ended cost one. An
+// answer after an earlier forward of the same send costs one too, whatever it answers, since that
+// forward may have stored the message: a forward refused, an echo, a repeat the route's own record
+// or the kept lane answers, and a 403. Before any forward, a repeat the kept lane answers is
+// forgiven and any other answer marks nothing, so the route's deferred settle gives the take back.
 type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
@@ -264,14 +265,16 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // A repeat of a dedupe key whose copy is still on the lane inside its hour stored nothing new
 // (storeKeptRoleCopy), so the answer is that first copy's envelope and event id, and the request's
 // record line and the send's delivery line name it too: the send's envelope becomes the copy's.
-// Such a repeat costs its sender nothing, though noHolder's wake report spent its charge.
+// Such a repeat costs its sender nothing while the send has made no forward, though noHolder's
+// wake report spent its charge. After an earlier forward of the same send it costs one, since that
+// forward may have stored the message for the holder it went to.
 //
 // 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
 // 200, the message is with a live holder; 202, no live session holds the role and the message
 // waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
 // fallback must run. INFRA-514's architect decided it on 2026-10-31.
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
-	if kept.repeat {
+	if kept.repeat && s.attempts == 0 {
 		s.record.charge.forgive()
 	}
 	s.item = kept.item
@@ -348,15 +351,23 @@ func (s *roleSend) timedOut() {
 // the payload's delivery mode, answered 403 with the refusal sendHandler gives,
 // recorded capability_refused as sendHandler records it.
 //
+// Each of those answers costs its sender nothing while the send has made no forward. After an
+// earlier forward of the same send, one whose acknowledgement did not arrive, it costs one: that
+// forward may have stored the message for the holder it went to.
+//
 // The dedupe check reads the route's own record (listenerDeps.confirmed), not the delivery
 // handlers' cache: agentSubjectDelivery and fanoutDelivery record a key there for every delivery
 // they make or hand over, so a role send under a key one of them saw would be answered 200 for a
 // holder the route never forwarded it to.
 func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 	verdict := beforeForward(s.item, s.holder, entry, s.d.confirmed.Seen)
-	switch verdict.kind {
-	case forwardAllowed:
+	if verdict.kind == forwardAllowed {
 		return false
+	}
+	if s.attempts > 0 {
+		s.record.charge.spend()
+	}
+	switch verdict.kind {
 	case forwardEcho:
 		s.delivered(sendSkipped)
 	case forwardRepeat:

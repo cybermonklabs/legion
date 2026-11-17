@@ -258,8 +258,10 @@ whether the stream stored the forward, costs one. A refusal before any store or 
 as a `400`, `403`, `413` or `503`, costs nothing. A repeat the listener recognises costs nothing
 too: the stream's `duplicate` answer to a send or a topic publish, and a role send's repeat of a
 kept copy (`keptRoleCopy.repeat`) or of a forward in the route's own 10-minute record. So does an
-echo, a role message from the session that holds the role. A repeat that finds the count at 0 is
-refused as a new message is, because the check comes first.
+echo, a role message from the session that holds the role. A role send's echo, repeat or `403`
+costs nothing only while the send has made no forward. After an earlier forward of the same send
+it costs one, as any answer then does, since that forward may have stored the message. A repeat
+that finds the count at 0 is refused as a new message is, because the check comes first.
 
 A role-holder read that did not answer, within its cap or the 3.5 s budget, is the bus-unavailable
 503 above with `Retry-After: 1`, naming the call, on the publish route and on

@@ -695,8 +695,11 @@ whether it stored the message, costs one. A message the listener refuses before 
 report costs nothing, such as a `400`, a `403`, a `413` or a `503`. A repeat that the listener
 recognises costs nothing too: one the stream answers as a `duplicate`, a repeat of a role message
 kept for the role's next holder, and a repeat of a role forward the route made in the last 10
-minutes. So does an echo, a role message from the session that holds the role. A repeat that
-finds the count at 0 is refused as a new message is, because the listener reads the count first.
+minutes. So does an echo, a role message from the session that holds the role. A role send's echo,
+repeat or `403` costs nothing only while the send has made no forward. After an earlier forward of
+the same send it costs one, as any answer then does, since that forward may have stored the
+message. A repeat that finds the count at 0 is refused as a new message is, because the listener
+reads the count first.
 
 Each listener process keeps its counts in its own memory. So each replica of a listener keeps its
 own count for a session, and a restart fills each count again. The start log states the limit in

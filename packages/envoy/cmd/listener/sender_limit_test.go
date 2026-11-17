@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -988,6 +989,64 @@ func TestSenderLimitCost(t *testing.T) {
 		answer.requireStatus(t, "the steer the next holder cannot take", http.StatusForbidden)
 		answer.requireNamed(t, "the steer the stream stored for the first holder", sender)
 		moved.requireCount(t, sender, false)
+	})
+
+	// A repeat the kept lane answers after such a forward costs one as well (roleSend.kept). Here
+	// an earlier attempt of the message, under the same idempotency key and an event id of its own,
+	// waits on the role's kept lane. The stream stores the first forward, its acknowledgement is
+	// lost and the holder gives the role up, so the next pass finds the role unclaimed and answers
+	// the earlier attempt's kept copy.
+	t.Run("role send answered 202 for a repeat of a kept copy after a forward the stream stored costs one", func(t *testing.T) {
+		released := newSenderLimitRig(t)
+		released.limit(4, 1)
+		const sender, holder, role = "ses_cost_released", "ses_cost_released_holder", "cost-released"
+		idempotencyKey := uuid.NewString()
+		earlier := listenerTestEnvelope(contracts.RoleTopicPrefix+role, publishDedupePrefix+idempotencyKey)
+		earlier.SourceSession = sender
+		if _, kept := keepRoleMessage(*released.deps.delivery, role, earlier); !kept {
+			t.Fatalf("keep the earlier attempt; the listener log says why:\n%s", released.harness.logs.String())
+		}
+		claimRoleFor(t, released.deps.registry, released.deps.sessions, holder, role, nil)
+		forwards := 0
+		delivery := *released.deps.delivery
+		forward := delivery.forwardRole
+		delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+			forwards++
+			if forwards > 1 {
+				return forward(subject, item, msgID, timeout)
+			}
+			// The first forward is stored, and its acknowledgement is lost on the way back.
+			wait, err := forward(subject, item, msgID, timeout)
+			if err != nil {
+				return nil, err
+			}
+			if err := wait(); err != nil {
+				return nil, err
+			}
+			// The claim names no process, so the release is the forced one DELETE
+			// /v1/interests/<session_id> makes (store.RoleReleaseAuthority.Force).
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := released.deps.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
+				t.Fatalf("release %s's claim of %s: %v", holder, role, err)
+			}
+			return func() error { return natsgo.ErrTimeout }, nil
+		}
+		released.deps.delivery = &delivery
+		answer := released.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": idempotencyKey})
+		if forwards != 1 {
+			t.Fatalf("the role send forwarded %d times, want the holder's one; body %s", forwards, answer.raw)
+		}
+		if stored := released.storedOn(t, contracts.LegacyAgentSubject(holder)); stored != 1 {
+			t.Fatalf("the stream holds %d forwards for %s, want the one whose acknowledgement was lost", stored, holder)
+		}
+		answer.requireStatus(t, "the role send that found the role unclaimed", http.StatusAccepted)
+		if !answer.Kept || answer.EventID != earlier.EventID {
+			t.Fatalf("the role send answered %s, want kept with the earlier attempt's event %s", answer.raw, earlier.EventID)
+		}
+		answer.requireNamed(t, "the role message the stream stored for the holder", sender)
+		released.awaitRoleWake(t, role)
+		released.requireCount(t, sender, false)
 	})
 }
 
