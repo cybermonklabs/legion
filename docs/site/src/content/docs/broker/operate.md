@@ -799,12 +799,13 @@ conditions can match.
 
 The CLI writes a type, and stores a value in a secret that holds one, only through a broker whose
 `GET /v1/settings` answers `secret_type_tag: true`, which every broker from the first release that
-reads the `type` tag answers. Against an earlier broker, which reads only the old `kind` tag and
-would serve a secret that carries `type` alone as a stored secret, `secret create --type`,
-`secret set` on a type secret and a `secret retag` that leaves the secret a type each exit 1 before
-they read a value or write anything, naming the release the CLI is from; a write that leaves no
-type goes ahead. After the write, `create`, `set` and `retag` each exit 1 when the reread names
-another type than the secret holds, and say the retag that asks the broker to read it again.
+reads the `type` tag answers. Against an earlier broker, which reads no `type` tag and, from
+legion-envoy-v16.0.0 on, would serve a secret that carries `type` alone as a stored secret,
+`secret create --type`, `secret set` on a type secret and a `secret retag` that leaves the secret
+a type each exit 1 before they read a value or write anything, naming the release the CLI is
+from; a write that leaves no type goes ahead. After the write, `create`, `set` and `retag` each
+exit 1 when the reread names another type than the secret holds, and say the retag that asks the
+broker to read it again.
 
 The CLI and the broker ship in one legion-envoy release, so move the broker's pin to that release
 before people use its CLI. An `agent-secrets` from an earlier release still writes `kind`, which

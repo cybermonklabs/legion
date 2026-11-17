@@ -752,13 +752,17 @@ func (s *secretSession) tagReadRefusal(name string, err error) error {
 
 // requireTypeTag refuses a write after which the secret name holds the type secretType ("" for
 // none) unless the broker's settings said it reads the type tag (Settings.SecretTypeTag). A
-// broker from before the tag sends no such setting, reads no type tag and never the rollback
-// guard (policy.TagRollbackGuard): it serves a secret that carries type alone as a stored secret,
-// so every grant of it would release the key or login it stores, and its reread names no type
-// this CLI can compare (rereadRetag, rereadValue). Create, set and retag ask it before they read a
-// value or write anything. A write that leaves no type is safe on every broker, and is never
-// refused. The refusal names the release this binary was built as (buildversion), whose broker
-// reads the tag, since the CLI and the broker ship in one legion-envoy release.
+// broker from before the tag sends no such setting and reads no type tag. Every broker from
+// legion-envoy-v16.0.0 to the release before the tag reads only the old kind tag and ignores the
+// rollback guard (policy.TagRollbackGuard), so it serves a secret that carries type alone as a
+// stored secret and every grant of it would release the key or login it stores; only the brokers
+// from legion-envoy-v13.19.0 to the release before v16.0.0 read the guard, and refuse the secret.
+// No broker before the tag names a type in its reread that this CLI can compare (rereadRetag,
+// rereadValue). The first release that reads the type tag is therefore the broker's rollback
+// floor. Create, set and retag ask requireTypeTag before they read a value or write anything. A
+// write that leaves no type is safe on every broker, and is never refused. The refusal names the
+// release this binary was built as (buildversion), whose broker reads the tag, since the CLI and
+// the broker ship in one legion-envoy release.
 func (s *secretSession) requireTypeTag(name, secretType string) error {
 	if secretType == "" || s.readsTypeTag {
 		return nil

@@ -397,8 +397,9 @@ var legacyMintTargetPattern = regexp.MustCompile(`^[a-z0-9-]{6,30}@[a-z0-9-]+\.i
 // beside a type fails the mint-service-account rule of the brokers from legion-envoy-v13.19.0 to
 // the release before v16.0.0, so they refuse a type secret rather than serve its stored key, while
 // this broker serves the secret as the type it is and never reads the tag. The brokers from
-// v16.0.0 to the release before the type tag read neither the tag nor type
-// (policy.TagRollbackGuard).
+// v16.0.0 to the release before the type tag read neither the tag nor type, and serve a type
+// secret as a stored one (policy.TagRollbackGuard), so the first release that reads type is the
+// rollback floor.
 func TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere(t *testing.T) {
 	if legacyMintTargetPattern.MatchString(policy.RollbackGuardValue) {
 		t.Fatalf("RollbackGuardValue %q matches the earlier brokers' mint-service-account rule, so they would mint for it", policy.RollbackGuardValue)

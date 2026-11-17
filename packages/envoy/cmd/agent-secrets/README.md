@@ -91,10 +91,10 @@ tags, and the retag says on standard error that the value was not checked and na
 permission the read needs. The broker reads every type secret's value with the same decoder and
 refuses a secret whose value it refuses as `value-malformed`. A write after which the secret holds
 a type needs a broker that reads the `type` tag, one whose `GET /v1/settings` answers
-`secret_type_tag: true`: against an earlier broker, which would serve the secret's stored key as
-its value, it exits 1 before it writes anything, naming the release to move the broker to. After
-the write, `create`, `set` and `retag` each exit 1 when the reread names another type than the
-secret holds.
+`secret_type_tag: true`: against an earlier broker, which reads no `type` tag and from
+legion-envoy-v16.0.0 on would serve the secret's stored key as its value, it exits 1 before it
+writes anything, naming the release to move the broker to. After the write, `create`, `set` and
+`retag` each exit 1 when the reread names another type than the secret holds.
 
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in

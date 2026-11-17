@@ -176,8 +176,9 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   on a type secret and a retag that leaves a type exit 1 before they write anything, naming the
   release to move the broker to, since such a broker would serve the secret's stored key as its
   value. A type also writes `mint-service-account: type-secret`, which only the brokers from
-  legion-envoy-v13.19.0 to the release before v16.0.0 read; it stops no later broker from before
-  the `type` tag.
+  legion-envoy-v13.19.0 to the release before v16.0.0 read, and refuse; it stops no later broker
+  from before the `type` tag. So once a secret carries a type, the first release that reads
+  `type` is the broker's rollback floor: a rollback past it serves the secret's stored key.
 - **`--github-owners`** is required with `--type github-app`, and refused with any other type. It
   lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.

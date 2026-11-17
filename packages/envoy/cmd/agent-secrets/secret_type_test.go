@@ -79,14 +79,16 @@ func TestSecretOldClassifierFlagIsUnknown(t *testing.T) {
 }
 
 // TestATypedWriteIsRefusedByABrokerThatDoesNotReadTheTypeTag: a broker from before the type tag
-// answers GET /v1/settings with no secret_type_tag, reads only the old kind tag and never the
-// rollback guard, and serves a secret that carries type alone as a stored secret, so every grant
-// of it would release the key it stores. On both stores, against such a broker, a create, set or
-// retag after which the secret holds a type exits 1 before it reads standard input or the stored
-// value, writes anything or asks for a reread, naming the setting and the release this
-// agent-secrets is from, and a write that leaves no type goes ahead. Against a broker that answers
-// secret_type_tag, every row is written and exits 0, so the refusal is the setting's and not the
-// row's.
+// answers GET /v1/settings with no secret_type_tag. Every such broker from legion-envoy-v16.0.0
+// on reads only the old kind tag and ignores the rollback guard, so it serves a secret that
+// carries type alone as a stored secret and every grant of it would release the key it stores;
+// only the brokers from legion-envoy-v13.19.0 to the release before v16.0.0 read the guard, and
+// refuse the secret. The first release that reads the type tag is therefore the rollback floor.
+// On both stores, against a broker that sends no secret_type_tag, a create, set or retag after
+// which the secret holds a type exits 1 before it reads standard input or the stored value, writes
+// anything or asks for a reread, naming the setting and the release this agent-secrets is from,
+// and a write that leaves no type goes ahead. Against a broker that answers secret_type_tag, every
+// row is written and exits 0, so the refusal is the setting's and not the row's.
 func TestATypedWriteIsRefusedByABrokerThatDoesNotReadTheTypeTag(t *testing.T) {
 	login := policytest.TypeValue(policy.TypeGoogleLogin)
 	rotated := appValue(t, map[string]string{"type": "authorized_user", "client_id": "client", "client_secret": "secret", "refresh_token": "rotated"})
