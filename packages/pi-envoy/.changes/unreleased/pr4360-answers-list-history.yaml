@@ -13,8 +13,9 @@ body: |-
   and every earlier failure line. Withdrawing the last item adds a list that says it has no item.
   A failed read with no list to give adds the failure line once, and later failed reads and a
   recovery to an empty window add nothing. The log now has one line for each failure episode, from
-  a failed read to the next read Dispatch answers, whether the request tells the model or not; a
-  failure line shown to the model was not logged before.
+  a failed read to the next read Dispatch answers, whether the request tells the model or not.
+  Before, a failure line from a read Dispatch answered with an error was not logged, and a read
+  that threw was logged on every request.
 
   While Oh My Pi compacts the session, a request still carries none of the answers messages sent
   and records nothing, as before: a request beside a running background compaction changes bytes
