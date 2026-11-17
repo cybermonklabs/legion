@@ -323,7 +323,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 	// Each event is marked published once the stream acknowledged its forward to S, and S is
 	// handed the same message on its own connection, which can arrive just after that
-	// acknowledgement on a busy machine (awaitReceived): S is read once it has taken all three.
+	// acknowledgement on a busy machine (handedNow): S is read once it has taken all three.
 	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 		got := taken()
 		return slices.Contains(got, first.ID) && slices.Contains(got, second.ID) && slices.Contains(got, third.ID)

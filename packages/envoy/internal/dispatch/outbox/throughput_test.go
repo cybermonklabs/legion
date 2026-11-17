@@ -634,7 +634,7 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					// Each event is marked published once the stream acknowledged its sends, and the
 					// holder is handed its forward on a connection of its own, which can take the
 					// last of them just after that acknowledgement on a busy machine
-					// (awaitReceived): the holder is read once it has taken one per routed event.
+					// (handedNow): the holder is read once it has taken one per routed event.
 					routed := load.routed(count)
 					testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 						return len(rig.roleArrivals()) >= routed
@@ -650,7 +650,7 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 						}
 					}
 					logDestinations(t, name, seeded, all)
-					if want := load.stream(count) + load.routed(count); len(all) != want {
+					if want := load.stream(count) + routed; len(all) != want {
 						t.Fatalf("the stream holds %d messages, want %d", len(all), want)
 					}
 					if len(roles) != routed {
