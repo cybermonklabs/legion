@@ -124,11 +124,14 @@
 #   ci_tools_github_url <url>             that URL with the CI_TOOLS_GITHUB_BASE seam in place
 #                                         of its https://github.com prefix.
 #   ci_tools_curl <file> <max_time>
-#                 <url> [argument…]       the one fetch this file makes: <url> into <file>,
-#                                         under the retry ladder and the bounds every source is
-#                                         read with. .github/scripts/mirror-ci-tools.sh fetches
-#                                         the asset it pushes with it, so the copy is filled
-#                                         with the same ladder an install reads it under.
+#                 <url> [argument…]       the one fetch this file makes of a request that carries
+#                                         no credential: <url> into <file>, under the retry
+#                                         ladder and the bounds every source is read with, and
+#                                         following redirects. .github/scripts/mirror-ci-tools.sh
+#                                         fetches the asset it pushes with it, so the copy is
+#                                         filled with the same ladder an install reads it under.
+#                                         A request that carries a credential follows no
+#                                         redirect (ci_tools__curl_held, ci_tools_registry_head).
 #   ci_tools_extract <archive> <member>
 #                    <destination> <url>  that member of that archive at <destination>, read by
 #                                         the suffix of the address it came from rather than by
@@ -152,6 +155,13 @@
 #                                         owner of that address: ci_tools_blob_url and every
 #                                         URL .github/scripts/mirror-ci-tools.sh pushes to and
 #                                         reads back are built from it.
+#   ci_tools_registry_head <token>
+#                  <headers> <url> [arg…] the HTTP status of one HEAD of the package with <token>
+#                                         as its bearer, the answer's headers in <headers>. The
+#                                         bearer goes with the first request alone, and a
+#                                         redirect to an https store is followed with none.
+#                                         .github/scripts/mirror-ci-tools.sh and the
+#                                         tool-fallback job read the package with it.
 #   ci_tools_token_of <file>              the `.token` of a registry token response. It is the
 #                                         one reader of such an answer this repository has, and
 #                                         ci_tools_ghcr_token below reads every token with it.
@@ -559,16 +569,25 @@ ci_tools_curl() {
 # is no redirect. `--fail` makes a 4xx or 5xx curl exit 22 as before, so exit 0 is a 2xx or a 3xx,
 # and a 3xx is one answer, which no `--retry` repeats. The caller reads that line: the token
 # request refuses a redirect, and the blob request follows it in a request handed no credential.
+# For a `Location` that is a path, curl writes the address against the request's own, and with a
+# `-u` credential it writes that user and password into it (curl 8.5.0, measured 2026-11-17), so
+# the token request's line can hold the push credential. That is no leak: the token request
+# refuses every 3xx and prints the address through ci_tools__redirect_target, which keeps its
+# scheme, host and port and drops the user part, and the line goes nowhere else. The blob request
+# carries its bearer as a header, which no address holds.
+# `-q` comes first because curl reads ~/.curlrc before its command line and `-q` there is the one
+# way to read none: a .curlrc that names `location` or `location-trusted` would make this call
+# follow the redirect, and location-trusted would send it the credential.
 ci_tools__curl_held() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -fsS --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" \
+  curl -q -fsS --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" \
     -w '%{http_code} %{redirect_url}' "$@" "$url"
 }
 
 # ci_tools__redirect_target <address>: what a line names of the address a redirect points at, its
-# scheme and its host and port alone, since the path and the query can carry a signed grant; and
-# `no address` where the redirect named none.
+# scheme and its host and port alone, since the path and the query can carry a signed grant and
+# the user part a credential; and `no address` where the redirect named none.
 ci_tools__redirect_target() {
   local url=$1 authority
   if [ -z "$url" ]; then
@@ -578,6 +597,31 @@ ci_tools__redirect_target() {
   authority=${url#*://}
   authority=${authority%%[/?#]*}
   printf '%s://%s\n' "${url%%://*}" "${authority##*@}"
+}
+
+# ci_tools__store_proto: the protocols the request after a registry's redirect may use, for curl's
+# `--proto`. That request names the store's address as a command-line URL, where curl's redirect
+# protocol filter does not apply, so without it a `Location` of file://, gopher://, dict://, scp://
+# or sftp:// would be read. It is https alone, and https and http under CI_TOOLS_REDIRECT_HTTP=1,
+# which .github/scripts/ci-tools.test.sh and .github/scripts/mirror-ci-tools.test.sh set for their
+# http stand-ins and which no workflow and no action sets.
+ci_tools__store_proto() {
+  if [ "${CI_TOOLS_REDIRECT_HTTP:-}" = 1 ]; then
+    printf '=http,https\n'
+  else
+    printf '=https\n'
+  fi
+}
+
+# ci_tools__store_address <address>: whether a registry's redirect names a store this file reads,
+# which is an address `--proto` above admits. The request after the redirect checks it before it
+# is made, so a refused one makes no request at all and the refusal names the scheme.
+ci_tools__store_address() {
+  case $1 in
+    https://*) return 0 ;;
+    http://*) [ "${CI_TOOLS_REDIRECT_HTTP:-}" = 1 ] ;;
+    *) return 1 ;;
+  esac
 }
 
 # ci_tools__curl_report <curl's exit> <the file curl was given> <what every other exit says>:
@@ -816,9 +860,11 @@ ci_tools_blob_url() {
 # ghcr-mirror row), but a registry may answer a HEAD of a blob with a redirect to the store that
 # holds it, as ghcr.io answers a GET. Such a redirect is followed in a request of its own, handed
 # no bearer, and the status printed is that of its last answer, whose headers are the ones
-# <headers> then holds. A redirect that names no address is printed as its own status, which no
-# caller reads as a copy, beside a refusal that names it. A request the service did not answer at
-# all reads 000.
+# <headers> then holds. That request reads a store at an https address alone
+# (ci_tools__store_address and ci_tools__store_proto above). A redirect that names no address,
+# or an address of another scheme, is printed as its own status, which no caller reads as a
+# copy, beside a refusal that names it. A request the service did not answer at all reads 000.
+# The first request puts `-q` first, for the reason ci_tools__curl_held gives.
 ci_tools_registry_head() {
   if [ "$#" -lt 3 ]; then
     ci_tools__error "ci_tools_registry_head takes a token, a headers file and a URL, and this call gave $#"
@@ -827,7 +873,7 @@ ci_tools_registry_head() {
   local token=$1 headers=$2 url=$3 answer status location
   shift 3
   answer=$(printf 'Authorization: Bearer %s' "$token" |
-    curl -sS -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
+    curl -q -sS -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
     answer=000
   status=${answer%% *}
   case $status in
@@ -835,9 +881,11 @@ ci_tools_registry_head() {
       location=${answer#* }
       if [ -z "$location" ]; then
         ci_tools__error "a HEAD of $url answered $status, a redirect that names no address"
+      elif ! ci_tools__store_address "$location"; then
+        ci_tools__error "a HEAD of $url answered $status, a redirect to $(ci_tools__redirect_target "$location"), which this run does not follow: it reads a store at an https address alone"
       else
-        status=$(curl -sS -o /dev/null -D "$headers" -w '%{http_code}' -I -L "$@" "$location") ||
-          status=000
+        status=$(curl -sS --proto "$(ci_tools__store_proto)" -o /dev/null -D "$headers" -w '%{http_code}' \
+          -I -L "$@" "$location") || status=000
       fi
       ;;
   esac
@@ -868,7 +916,9 @@ ci_tools__fetch_ghcr() {
   # ghcr.io answers a blob's GET with a 307 to pkg-containers.githubusercontent.com, the store
   # that holds it (measured 2026-11-17 for the crane and changie rows), and the address it names
   # carries a grant of its own. So the store is read in a request of its own, handed no header,
-  # and the bearer reaches the package and no other origin.
+  # and the bearer reaches the package and no other origin. That request reads a store at an
+  # https address alone (ci_tools__store_address and ci_tools__store_proto above): the `-L` this
+  # request had left the scheme to curl's redirect filter, which refuses file://.
   answer=$(printf 'Authorization: Bearer %s' "$token" |
     ci_tools__curl_held "$file" "$max_time" "$url" -H @-) || status=$?
   if [ "$status" -ne 0 ]; then
@@ -882,7 +932,12 @@ ci_tools__fetch_ghcr() {
         printf 'the blob request answered %s, a redirect that names no address\n' "${answer%% *}"
         return 1
       fi
-      ci_tools_curl "$file" "$max_time" "$location" || status=$?
+      if ! ci_tools__store_address "$location"; then
+        printf 'the blob request answered %s, a redirect to %s, which this run does not follow: it reads a store at an https address alone\n' \
+          "${answer%% *}" "$(ci_tools__redirect_target "$location")"
+        return 1
+      fi
+      ci_tools_curl "$file" "$max_time" "$location" --proto "$(ci_tools__store_proto)" || status=$?
       if [ "$status" -ne 0 ]; then
         ci_tools__curl_report "$status" "$file" \
           "the blob request answered ${answer%% *}, a redirect to $(ci_tools__redirect_target "$location"), and that store did not serve the blob (curl exit $status)"

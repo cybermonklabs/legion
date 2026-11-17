@@ -1496,16 +1496,26 @@ say "git=\$(cd $d/repo && env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CON
 # the one request to S. -S prints that answer's status, which is what this records, and a 3xx is
 # recorded as refused. wget still reads a refused redirect's body to its end, and a chunked body
 # that never ends held it past 50 s (measured 2026-11-17), so timeout 30 bounds the call and the
-# line says when it ran out.
-say "curl=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/curl)"
+# line says when it ran out. curl follows no redirect here, and -q first keeps a .curlrc from
+# making it follow one. Python's urllib opener follows a redirect and keeps the Authorization
+# header on it (Python 3.12, measured 2026-11-17), so its line builds an opener whose redirect
+# handler refuses, and records a 3xx as refused, as the wget line does.
+say "curl=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -q -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/curl)"
 wgetrc=\$(mktemp)
 trap 'rm -f "\$wgetrc"' EXIT
 { if [ -n "\${WGETRC:-}" ]; then cat "\$WGETRC"; echo; fi; printf 'header = Authorization: Bearer %s\n' "\$AIRLOCK_DEMO_TOKEN"; } >"\$wgetrc"
 say "wget=\$({ WGETRC="\$wgetrc" timeout 30 wget -q -S --max-redirect=0 -O /dev/null $AIRLOCK_S_URL/wget 2>&1; echo "wget-exit=\$?"; } | awk '/^  HTTP\\//{s=\$2} /^wget-exit=/{e=substr(\$0, 11)} END{if (s ~ /^3/) s = s " refused: a redirect, which a request that carries a credential does not follow"; if (s == "") s = "failed"; if (e == 124) s = s " (wget stopped after 30 s)"; print s}')"
 say "node=\$(node -e 'fetch("$AIRLOCK_S_URL/node", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}).then(r => console.log(r.status)).catch(e => console.log("error", e.message))')"
 say "bun=\$(bun -e 'const r = await fetch("$AIRLOCK_S_URL/bun", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}); console.log(r.status)' 2>&1 | tail -n 1)"
-say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.request
-print(urllib.request.urlopen(urllib.request.Request("$AIRLOCK_S_URL/urllib", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]})).status)' 2>&1 | tail -n 1)"
+say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.error, urllib.request
+class Refuse(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+request = urllib.request.Request("$AIRLOCK_S_URL/urllib", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]})
+try:
+    print(urllib.request.build_opener(Refuse).open(request).status)
+except urllib.error.HTTPError as error:
+    print(f"{error.code} refused: a redirect, which a request that carries a credential does not follow" if 300 <= error.code < 400 else error.code)' 2>&1 | tail -n 1)"
 say "requests=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, requests
 print(requests.get("$AIRLOCK_S_URL/requests", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]}).status_code)' 2>&1 | tail -n 1)"
 say "go=\$($STANDS_BIN probe-bound)"

@@ -451,13 +451,16 @@ fixture() {
 
 # run_mirror [environment assignment…]: the script under test against this case's tree and
 # origin. Sets `out` to the combined output and `status` to the exit code. Not a subshell, so
-# both survive the call.
+# both survive the call. It sets CI_TOOLS_REDIRECT_HTTP=1, which lets the helper follow a
+# redirect to this file's http store and which no workflow sets, as .github/scripts/ci-tools.test.sh
+# explains.
 run_mirror() {
   set +e
   : > "$curl_arguments"
   out=$(env \
     CI_TOOLS_GHCR_BASE="$base" \
     CI_TOOLS_GITHUB_BASE="$base/github" \
+    CI_TOOLS_REDIRECT_HTTP=1 \
     GITHUB_ACTOR="$ACTOR" \
     GITHUB_TOKEN=fixture-password \
     PATH="$work/bin:$PATH" \
@@ -638,7 +641,8 @@ echo "case: a HEAD the package answers with a redirect to the store that holds t
 # follows it, and the push token goes with the first request alone: the store is read in a
 # request of its own, with no Authorization header, and its answer is the one the row is read by.
 # The run is under the forwarding curl, so a HEAD that left the follow to curl's `-L` hands the
-# store the push token here.
+# store the push token here, and under a .curlrc that names location-trusted, which a HEAD that
+# read it would follow with the push token too.
 fixture head-store whole
 cp "$work/payloads/whole.tar.gz" "$state/blobs/sha256:$WHOLE"
 : > "$state/flags/store"
@@ -647,8 +651,11 @@ store_log=$log
 fixture head-redirect whole
 printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
 printf '%s\n' "$store_base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE" > "$state/flags/blob-head-redirect"
+curlrc_home="$work/curlrc-home"
+mkdir -p "$curlrc_home"
+printf 'location-trusted\n' > "$curlrc_home/.curlrc"
 : > "$forwarding_curl"
-run_mirror
+run_mirror HOME="$curlrc_home" CURL_HOME="$curlrc_home" XDG_CONFIG_HOME="$curlrc_home"
 rm -f -- "$forwarding_curl"
 check "exits 0" "$(is "$status" 0)"
 check "holds the row, by the store's answer" "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)$")"
@@ -656,6 +663,20 @@ check "the package was asked for the blob and the tag, each with the push token"
   "$(is "$(requests HEAD)" "HEAD blob sha256:$WHOLE HEAD manifest $WHOLE_TAG ")"
 check "the store was asked once, with no Authorization header" \
   "$(is "$(cat "$store_log")" "HEAD store /v2/$REGISTRY_PATH/blobs/sha256:$WHOLE none")"
+check "and nothing is pushed" "$(is "$(requests PUT)$(requests POST)" "")"
+
+echo "case: a HEAD the package answers with a redirect to a file:// address"
+# A store is read at an https address, or an http one under CI_TOOLS_REDIRECT_HTTP=1, and at no
+# other scheme: the 302 is the status this run reads, which it admits nowhere.
+fixture head-file whole
+printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
+printf '%s\n' "file:///etc/hostname" > "$state/flags/blob-head-redirect"
+run_mirror
+check "fails" "$(is "$status" 1)"
+check "the helper names the redirect and the scheme it reads a store at" \
+  "$(contains "$out" "^::error::ci-tools: a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302, a redirect to file://, which this run does not follow: it reads a store at an https address alone$")"
+check "and this script refuses the row for that status" \
+  "$(contains "$out" "^::error file=.github/ci-tools.yaml::whole: a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302,")"
 check "and nothing is pushed" "$(is "$(requests PUT)$(requests POST)" "")"
 
 echo "case: an npm row"

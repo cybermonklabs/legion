@@ -324,9 +324,9 @@ LADDER_CEILING=150
 # .github/workflows/ci-job-tool-fallback.yaml, the head's install-crane step, so one install
 # keeps the pinned ladder. That one install makes four fetches through the stand-in: the
 # release asset behind the fault, which ci_tools__fetch_release reads
-# (.github/scripts/ci-tools.sh:1087), and then the pull token, the blob request to the package
+# (.github/scripts/ci-tools.sh:1152), and then the pull token, the blob request to the package
 # and the read of the store that request's redirect points at, which ci_tools__fetch_ghcr makes
-# one after the other (.github/scripts/ci-tools.sh:714, 863, 875). ghcr.io answers a blob's GET
+# one after the other (.github/scripts/ci-tools.sh:758, 922-923, 940). ghcr.io answers a blob's GET
 # with a 307 to pkg-containers.githubusercontent.com (measured 2026-11-17), and a request that
 # carries the bearer follows no redirect, so that store is read in a curl call of its own.
 # Merge_group run 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read
