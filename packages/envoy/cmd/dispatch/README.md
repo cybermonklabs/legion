@@ -3180,8 +3180,8 @@ when that row cannot be written, the create goes in unchecked and its `201` name
 the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
 Both bars are set by `TestNearCopyRefusalReplay` over a frozen export of a project's history (`scripts/near-copy-replay.sh`), and a change to the term picker or to the scoring statement invalidates that calibration.
 A candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
-The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (500 ms) on the context and by `statement_timeout` inside it:
-one bound, because two would have a read of 700 ms refuse an unforced create while recording for a forced one that the check did not answer.
+The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (2 s) on the context and by `statement_timeout` inside it:
+one bound, because with two, a read that ends between the two deadlines would refuse an unforced create while recording for a forced one that the check did not answer.
 A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`:
 the create went in without the near-copy check an unforced create otherwise meets.
 A forced one also records `forced` with an empty `past` on its `issue.created` event, which is how the weekly audit tells it from an override.

@@ -71,7 +71,7 @@ func requireDuplicateRefusal(t *testing.T, response *httptest.ResponseRecorder) 
 // nearCopyVerdictBound is the near-copy gate's bound on a server whose case reads the gate's
 // verdict: the wait Envoy's tests give a step they cannot hurry (testwait.Bounded: a minute, or
 // what the test binary's deadline leaves less a second), not production's duplicateGateTimeout.
-// Under production's 500 ms a read on a loaded machine ran out of the bound and the create went
+// Under production's bound a read on a loaded machine ran out of it and the create went
 // in unchecked, so a case wanting a refusal failed on the machine's speed, and a case wanting a
 // create passed whatever the gate would have said.
 func nearCopyVerdictBound(t *testing.T) time.Duration {
