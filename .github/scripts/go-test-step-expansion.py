@@ -102,6 +102,13 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
+  * a step whose one line runs a script under a module's `scripts/` directory
+    (`packages/envoy/scripts/database-skips.sh`) is read through that script: its `go test` lines
+    are the step's, in the module the script itself `cd`s to (`$(dirname "$0")/..`), with each
+    `${NAME:-default}` read as its default and the line cut at its first redirection, `|`, `||`
+    or `&&`, which change where the output goes and not which tests run. A script that holds no
+    `go test` runs none; one that `cd`s anywhere else is refused, since its tests would run in a
+    module this script cannot name;
   * a `Benchmark…` name a listing prints is left out of both verdicts: no step passes `-bench`,
     so `go test` builds those functions and runs none of them, and reading every one of them as
     compiled and unrun would say that over and over and name no hole anyone can close.
@@ -228,6 +235,7 @@ EXCEPTIONS = (
         steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/broker/airlock",
         functions=("FuzzAirlock",),
@@ -237,11 +245,11 @@ EXCEPTIONS = (
             ".github/actions/install-elan/** and packages/envoy/scripts/airlock-lean-axioms.sh - "
             "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
             "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
-            "that same corpus, so both name the function. envoy-go compiles it in "
-            "./internal/broker/... (its step \"Count the database broker suites' skips\", through "
-            "packages/envoy/scripts/database-skips.sh, which this tool does not read) and skips it "
-            "there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so the corpus "
-            "runs only in airlock-lean."
+            "that same corpus, so both name the function. envoy-go's step \"Count the database "
+            "broker suites' skips\" runs ./internal/broker/... whole through "
+            "packages/envoy/scripts/database-skips.sh, so a listing counts the function run there "
+            "too, but it skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS "
+            "records, so the corpus runs only in airlock-lean."
         ),
     ),
 )
@@ -255,6 +263,12 @@ FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
+# A step line that runs one of a module's scripts, and the line by which that script moves into
+# its module (scripts/ sits one level under it).
+SCRIPT_RUN = re.compile(r"^(?:\./)?(?P<path>[A-Za-z0-9_./-]+/scripts/[A-Za-z0-9_.-]+\.sh)$")
+SCRIPT_CD = 'cd "$(dirname "$0")/.."'
+DEFAULTED = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}")
+CUT_WORDS = ("|", "||", "&&", ";")
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
@@ -385,13 +399,52 @@ def steps_of(found: dict) -> list[Step]:
                 if not script:
                     continue
                 workdir = step_workdir(document, body, step)
+                name = step.get("name") or f"step {index + 1}"
+                through = script_step(path, job, name, workdir, script)
+                if through is not None:
+                    if through.script:
+                        steps.append(through)
+                    continue
                 if workdir not in MODULE_DIRS:
                     continue
                 if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
                     continue
-                name = step.get("name") or f"step {index + 1}"
                 steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
     return steps
+
+
+def script_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
+    """The step a one-line run of a module's script makes, read through that script's own
+    `go test` lines (the module docstring says how), or None where the run is not such a line.
+    A script of a module that holds no `go test` makes a step with an empty script, which runs
+    nothing."""
+    lines = script_lines(script)
+    if len(lines) != 1:
+        return None
+    found = SCRIPT_RUN.match(lines[0].strip())
+    if not found:
+        return None
+    file = (ROOT / workdir / found.group("path")).resolve()
+    module = file.parent.parent.relative_to(ROOT).as_posix() if file.is_relative_to(ROOT) else ""
+    if module not in MODULE_DIRS or not file.is_file():
+        return None
+    text = file.read_text()
+    tests = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not re.match(r"go\s+test\b", line):
+            continue
+        words = shlex.split(DEFAULTED.sub(r"\1", line))
+        for at, word in enumerate(words):
+            if word in CUT_WORDS or re.match(r"^\d*>", word):
+                words = words[:at]
+                break
+        tests.append(shlex.join(words))
+    label = f"{workflow}'s {job} / {name}"
+    if tests and SCRIPT_CD not in text:
+        raise Refused(f"{label}: {found.group('path')} runs `go test` and does not move into its "
+                      f"module with `{SCRIPT_CD}`, so this script cannot say where it runs")
+    return Step(workflow=workflow, job=job, name=name, workdir=module, script="\n".join(tests))
 
 
 def commands_of(step: Step) -> list[GoTest]:
