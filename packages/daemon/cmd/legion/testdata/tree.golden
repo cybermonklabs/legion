@@ -11,6 +11,11 @@ legion claims spawn	--config string	--issue string	--json bool	--operator-token-
 legion claims stop	--claim string	--config string	--json bool	--operator-token-file string	--port int	--wait duration
 legion claims suspend	--claim string	--config string	--json bool	--operator-token-file string	--port int	--wait duration
 legion claude-bridge	hidden
+legion completion
+legion completion bash	--no-descriptions bool
+legion completion fish	--no-descriptions bool
+legion completion powershell	--no-descriptions bool
+legion completion zsh	--no-descriptions bool
 legion config
 legion config check	--config string
 legion config reference	--json bool

@@ -97,6 +97,32 @@ func TestLegionConformance(t *testing.T) {
 	})
 }
 
+// cobra's own two commands refuse a word they do not know as every other group does, exit 2:
+// left as cobra makes them, `legion completion xyz` prints completion's help and exits 0 (the
+// command is not runnable), and `legion help nope` prints the root's help and exits 0 (a root
+// with an Args of its own resolves any word to itself). The forms they serve still exit 0.
+func TestCobraBuiltinsRefuseAWordTheyDoNotKnow(t *testing.T) {
+	for _, tc := range []struct {
+		args   []string
+		code   int
+		stderr string
+	}{
+		{[]string{"completion", "xyz"}, 2, `legion completion: unknown command "xyz" for "legion completion"`},
+		{[]string{"completion"}, 2, "Usage:\n  legion completion"},
+		{[]string{"help", "nope"}, 2, `legion help: unknown help topic "nope"`},
+		{[]string{"help", "claims", "frob"}, 2, `legion help: unknown help topic "claims frob"`},
+		{[]string{"help"}, 0, ""},
+		{[]string{"help", "claims", "spawn"}, 0, ""},
+		{[]string{"help", "launcher", "role-init"}, 0, ""},
+		{[]string{"completion", "bash"}, 0, ""},
+	} {
+		code, stdout, stderr := legionRun(t, tc.args...)
+		if code != tc.code || !strings.Contains(stderr, tc.stderr) || (code == 0 && (stdout == "" || stderr != "")) {
+			t.Errorf("legion %s = %d, stdout %.80q, stderr %q; want %d and stderr holding %q", strings.Join(tc.args, " "), code, stdout, stderr, tc.code, tc.stderr)
+		}
+	}
+}
+
 // A pass-through command hands every word after its name to the program it wraps, unread: a flag
 // of git's or gh's is git's or gh's, and cobra parsing it would refuse it or take it away. Each
 // case runs the built legion as its runtime's wrapper runs it and reads what the stand-in for the

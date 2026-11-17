@@ -57,7 +57,51 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
+	// cobra's completion command runs nothing of its own, so a word naming none of its shells
+	// would print its help and exit 0: it is a group like every other. Execute adds no second one.
+	root.InitDefaultCompletionCmd()
+	for _, command := range root.Commands() {
+		if command.Name() == "completion" {
+			group(command)
+		}
+	}
+	root.SetHelpCommand(newHelpCommand())
 	return root
+}
+
+// newHelpCommand is `legion help [command]`, cobra's own but for a topic it cannot find: cobra
+// resolves every word under a command with an Args of its own to that command, so `help nope`
+// printed the root's help and exited 0. Here a word that names no command is a usage error.
+func newHelpCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "help [command]",
+		Short: "Help about any command",
+		Long:  "Help provides help for any command in the application.\nSimply type legion help [path to command] for full details.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if target, rest, err := cmd.Root().Find(args); err != nil || target == nil || len(rest) > 0 {
+				return usageError{fmt.Errorf("unknown help topic %q", strings.Join(args, " "))}
+			}
+			return nil
+		},
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+			target, _, err := cmd.Root().Find(args)
+			if err != nil || target == nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			var names []cobra.Completion
+			for _, child := range target.Commands() {
+				if child.IsAvailableCommand() && strings.HasPrefix(child.Name(), toComplete) {
+					names = append(names, cobra.CompletionWithDesc(child.Name(), child.Short))
+				}
+			}
+			return names, cobra.ShellCompDirectiveNoFileComp
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, _, _ := cmd.Root().Find(args)
+			target.InitDefaultHelpFlag()
+			return target.Help()
+		},
+	}
 }
 
 // run is `legion` on argv, its exit status what the command answered. A usage error, cobra's or a
