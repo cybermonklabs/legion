@@ -765,10 +765,10 @@ RULES = {
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
         Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:62")],
     f"{ENVOY}/internal/testnats/nats_test.go": [
-        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:818-819 go list -f ... ./... in packages/envoy", mode="build"),
-        *[Read(g, "internal/testnats/nats_test.go:851-864 walks packages/envoy but infra, node_modules and testdata, "
-                  "and :864 reads every .go file it finds, test files included (dockerDriverFiles, called from "
-                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :779)")
+        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:871-872 go list -f ... ./... in packages/envoy", mode="build"),
+        *[Read(g, "internal/testnats/nats_test.go:904-917 walks packages/envoy but infra, node_modules and testdata, "
+                  "and :917 reads every .go file it finds, test files included (dockerDriverFiles, called at :832 by "
+                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:36,43 reads it under ../../../.."),
