@@ -452,9 +452,9 @@ type RequestIssueClose struct{ Claim claim.Token }
 // linger expires, never by hand.
 type RequestOperatorClose struct{ Claim claim.Token }
 
-// RequestRetry relaunches a failed or retired claim's session with fresh budgets: the workflow's
-// decision that the role runs again — the architect that owns an issue retrying its held phase, or
-// a closed tree re-admitted after its linger stopped every claim.
+// RequestRetry relaunches a failed or retired claim with fresh budgets. It has two callers: the
+// outbox's start of a failed or retired claim (the daemon's outbox), which every start the workflow
+// or admission queues for such a claim goes through, and the daemon's controller keeper.
 //
 // FreshSession asks for a new session in place of the recorded one. It is a field rather than an
 // event of its own, as the closes are, because both answers are the same decision made by the same

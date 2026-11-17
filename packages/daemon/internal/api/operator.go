@@ -673,14 +673,14 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 }
 
 // retryStart starts a claim that is running nothing: one that failed or retired, whatever retired
-// it. It answers every refusal itself and reports the status its caller's success answer takes. A
-// phase worker is retried through its issue's phase, never on its own, because a worker relaunched
-// outside its phase is handed no task and does nothing (restartWorkedPhase). Every other claim is
-// the machine's to answer (machineRetry): an architect is relaunched from failed or retired, and a
-// phase worker whose issue works another role's phase, or that has left the workflow, is
-// relaunched on its own with whatever task it still holds. It is how an operator relaunches the
-// claims a runtime failed to launch — every failed claim in turn, with
-// `legion claims retry --failed` — once the cause is gone.
+// it. It answers every refusal itself and reports the status its caller's success answer takes.
+// Whether the retry goes through the issue's phase is restartWorkedPhase's to decide: where it
+// starts that phase again, a relaunched phase worker is handed the phase's task, since a worker
+// relaunched outside its own phase is handed none and does nothing. Every claim it does not reach,
+// an architect among them, is the machine's to answer (machineRetry), relaunched on its own with
+// whatever task it still holds. It is how an operator relaunches the claims a runtime failed to
+// launch — every failed claim in turn, with `legion claims retry --failed` — once the cause is
+// gone.
 //
 // The session is the claim's own either way: this start relaunches the recorded one, or a new one
 // once supervise's Machine.forgetSession has dropped it. A caller that wants a new session forgets
