@@ -324,10 +324,13 @@ const (
 // The guard ends the eval kernel, the Python kernel and the shell command, one at each rise, and
 // never the shim or the agent. The fake daemon reads one launcher_memory_kill frame for each, with
 // its pid, its executable's base name, its size, the reading and the limit, and neither the frame
-// nor the guard's ended line holds any part of an argument. On the guard's injected clock the hour's
-// line carries the hour's start and end, the reading's high and low and the time of the high, the
-// counter's high and low and the largest process, the agent; the next hour's line carries that
-// hour's readings alone.
+// nor the guard's ended line holds any part of an argument. The line names the rule that chose the
+// process (INFRA-3531 R3 of spec version 31): each rise goes from far below the band to the mark
+// within one interval, so no reading of a stay comes before the kill, every process is new to it,
+// and the largest of the new ends, on the sizes of the reading the kill is sent at. On the guard's
+// injected clock the hour's line carries the hour's start and end, the reading's high and low and
+// the time of the high, the counter's high and low and the largest process, the agent; the next
+// hour's line carries that hour's readings alone.
 func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -441,8 +444,9 @@ func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
 				c.what, frame, rig.id(), sequence, c.executable, c.held, atKill, counterHigh, limit)
 		}
 		ended := endedLine(g.stderr, frame.PID)
-		if !strings.Contains(ended, " role=controller ") || !strings.HasSuffix(ended, ` executable="`+c.executable+`"`) {
-			t.Errorf("the guard's ended line for %s (pid %d) is %q, want the controller's, naming %q", c.what, frame.PID, ended, c.executable)
+		if !strings.Contains(ended, " role=controller ") || !strings.HasSuffix(ended, ` rule=new sizes=reading executable="`+c.executable+`"`) {
+			t.Errorf("the guard's ended line for %s (pid %d) is %q, want the controller's, chosen as the largest of the new by the reading's sizes, naming %q",
+				c.what, frame.PID, ended, c.executable)
 		}
 		encoded, err := json.Marshal(frame)
 		if err != nil {

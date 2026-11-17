@@ -2163,14 +2163,15 @@ func TestControllerPodMemoryGuardReadsTheNewestStartedSinceTheBandWithinHalfAnIn
 }
 
 // After a kill in the controller's tree, the next in the order is the one that grew the most since
-// that kill where nothing grew over the window (INFRA-3531 R1 of spec version 26): readings more
-// than the window apart, as a throttled pod's come, leave one read of each process in the window.
-// The shell command Oh My Pi ran has started a Python pool, whose parent holds a block of 1.5 GiB
-// and whose three forked workers sleep, each reporting the block as its own, and a grower smaller
-// than the block. At the first reading, at the mark, nothing has grown and the guard ends the
-// largest, the newest worker, which frees nothing. The next reading comes 400 ms later with the
-// grower 64 MiB larger and the reading not fallen: over the window nothing grew, but the grower
-// grew since the kill, and the guard ends it, not the next worker.
+// that kill where nothing grew over the window and no process is new to the stay (INFRA-3531 R1 of
+// spec version 31): readings more than the window apart, as a throttled pod's come, leave one read
+// of each process in the window. The shell command Oh My Pi ran has started a Python pool, whose
+// parent holds a block of 1.5 GiB and whose three forked workers sleep, each reporting the block
+// as its own, and a grower smaller than the block; the band reads each of them twice. At the first
+// reading at the mark nothing has grown and none is new, and the guard ends the largest, the
+// newest worker, which frees nothing. The next reading comes 400 ms later with the grower 64 MiB
+// larger and the reading not fallen: over the window nothing grew, but the grower grew since the
+// kill, and the guard ends it, not the next worker.
 func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWiderApartThanTheWindow(t *testing.T) {
 	const pool, block = 1700, 1536 * guardMiB
 	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
@@ -2187,6 +2188,10 @@ func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWid
 	m, log := controllerManager()
 	serveControllerGuard(t, m, &pidGuard{})
 	rig.started()
+	for _, inTheBand := range []uint64{3300, 3400} {
+		pod.setAnon(inTheBand * guardMiB)
+		rig.tick()
+	}
 	// Oh My Pi, the block once and the grower: 3560 MiB, at the mark.
 	reading := func() uint64 { return guardGiB + block + grower.anon }
 	pod.setAnon(reading())
@@ -2215,16 +2220,17 @@ func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWid
 	}
 }
 
-// After a kill of the rise, the largest process the guard did not read at the reading before is
-// ended before a larger process it did read that did not grow, and before one that grew only since
-// the kill; where nothing grew and nothing is new, the largest is ended (INFRA-3531 R1 of spec
-// version 27). The shell command Oh My Pi ran runs four Python processes. At the first reading, at
-// the mark, the guard read nothing before, and it ends the largest, pid 1700. 400 ms later, the
+// After a kill of the rise, the largest process new to the stay is ended before a larger process
+// that is not and did not grow, and before one that grew only since the kill; where nothing grew
+// and nothing is new, the largest is ended (INFRA-3531 R1 of spec version 31). The shell command Oh
+// My Pi ran runs three Python processes, which the band reads twice. At the first reading at the
+// mark none is new and none grew, and the guard ends the largest, pid 1700. 400 ms later, the
 // reading not fallen, pid 1710 has grown 64 MiB since that kill, which has the guard go on, and two
 // processes have started, pids 1720 and 1721, of 200 and 100 MiB; pid 1701 sleeps at 900 MiB. Over
-// the window nothing grew, and the guard ends pid 1720, the larger of the two started since. At
-// the next reading, fallen but still at the mark, nothing grew and nothing started, and the guard
-// ends pid 1701, the largest.
+// the window nothing grew, and the guard ends pid 1720, the larger of the two new ones. At the next
+// reading, fallen but still at the mark, pid 1721 has one read before it and is new still, and
+// ends. At the reading after, fallen again, nothing grew and nothing is new, and the guard ends pid
+// 1701, the largest. Each ended line names its rule.
 func TestControllerPodMemoryGuardEndsTheLargestNewProcessAfterAKillBeforeALargerIdleOneOrAGrowerAndTheLargestWhereNoneApplies(t *testing.T) {
 	const first, idle, grower, newer, newest = 1700, 1701, 1710, 1720, 1721
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
@@ -2244,13 +2250,26 @@ func TestControllerPodMemoryGuardEndsTheLargestNewProcessAfterAKillBeforeALarger
 			t.Fatalf("%s: the guard killed %v, want %v; its log:\n%s", what, kills, want, rig.log())
 		}
 	}
+	step("at the band's first reading", 3300*guardMiB, 0)
+	step("at the band's second reading", 3400*guardMiB, 0)
 	step("at the first reading at the mark", guardHigh, 0, first)
 
 	pod.add(command(grower, 364*guardMiB), command(newer, 200*guardMiB), command(newest, 100*guardMiB))
 	step("400 ms after the kill", guardHigh, 300*time.Millisecond, first, newer)
-	step("at the next reading, fallen and with nothing grown or started", 3550*guardMiB, 0, first, newer, idle)
+	step("at the next reading, fallen, with one read of the newest before it", 3550*guardMiB, 0, first, newer, newest)
+	step("at the reading after, fallen and with nothing grown or new", 3540*guardMiB, 0, first, newer, newest, idle)
 	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
 		t.Fatalf("the guard gave the rise up: %q", stopped)
+	}
+	ended := guardLines(log, "ended ")
+	rules := []string{" rule=largest sizes=band ", " rule=new sizes=reading ", " rule=new sizes=reading ", " rule=largest sizes=reading "}
+	if len(ended) != len(rules) {
+		t.Fatalf("the ended lines are %q, want %d", ended, len(rules))
+	}
+	for i, rule := range rules {
+		if !strings.Contains(ended[i], rule) {
+			t.Errorf("ended line %d is %q, want it to hold %q", i, ended[i], rule)
+		}
 	}
 }
 
@@ -2715,9 +2734,9 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	f.role("reviewer").noMemoryKill("after the kernel killed the tester's process and one of no role, the reviewer's connection")
 	f.role("tester").noMemoryKill("after its one report, the tester's connection")
 	ended := []string{off,
-		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel executable="python3.13"`,
 			testers, 900*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
-		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel executable="python3.13"`,
 			outside, 200*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
 	}
 	if got := guardLines(f.stderr, ""); !slices.Equal(got, ended) {

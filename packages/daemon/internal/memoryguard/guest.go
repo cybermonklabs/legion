@@ -132,8 +132,9 @@ import (
 //
 // Each killed process has the guard's own endedLine, with its resident size at the last scan whose
 // snapshot came before the pass that showed its kill and the pod's memory at the burst's first
-// rise, and a Kill to the sink with its role, "" for a process of no role, the watch's id and its
-// own sequence from 1, as the guard's kills have (writeKill), and Cause
+// rise, the kernel as its rule and its sizes (ruleKernel, sizesKernel: the kernel chose it, by
+// sizes of its own), and a Kill to the sink with its role, "" for a process of no role, the watch's
+// id and its own sequence from 1, as the guard's kills have (writeKill), and Cause
 // shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process the
 // classifier protected: one of the processes that run the role's session, whose end the role is
 // told of in its own words.
@@ -841,9 +842,9 @@ func sigkillPending(status []byte) bool {
 
 // report writes the guard's own line for w, which the kernel killed, and gives its kill to the
 // sink, as the guard writes and reports its own (writeKill): with w's role, "" for a process of no
-// role, and the kernel's cause, or, for a process the classifier protected, one of those that run
-// the role's session, the kernel's protected cause. Every kill counts in the sequence, as the
-// guard's do.
+// role, the kernel as its rule and its sizes, and the kernel's cause, or, for a process the
+// classifier protected, one of those that run the role's session, the kernel's protected cause.
+// Every kill counts in the sequence, as the guard's do.
 func (g *Guest) report(w *watched) {
 	m := g.riseMemory
 	cause := shimwire.MemoryKillCauseKernel
@@ -855,7 +856,7 @@ func (g *Guest) report(w *watched) {
 			PID: w.key.pid, Executable: w.executable, SizeBytes: w.resident,
 			ReadingBytes: m.reading, CounterBytes: m.counter, LimitBytes: m.limit, At: g.riseAt, Cause: cause,
 		},
-		Role: w.class.Role,
+		Role: w.class.Role, Rule: ruleKernel, Sizes: sizesKernel,
 	}, m.shmem)
 }
 

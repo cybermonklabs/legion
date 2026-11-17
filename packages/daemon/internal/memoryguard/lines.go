@@ -33,20 +33,20 @@ import (
 //
 // The sizes the guard reads at each reading in the band below the mark and after a kill write no
 // line: they decide the order of the next kill (rank), whose endedLine names the process it ended,
-// the process that grew the most over its last few reads (growthWindow), else the largest one that
-// just started (fresh), else the one that grew the most since the previous kill of the rise, else
-// the largest, with the size it read of it at the reading it decided on: for a first kill of a rise
-// that the band's held reads decided at the reading at the mark (endHeld), the band's last reading,
-// unless the reading at the mark read that process's smaps (rereadHeld, startedSince), and for
-// every other kill the reading it is sent at. The line's reading is always the one the kill is sent
-// at.
+// with the size it read of it at the reading it decided on: for a first kill of a rise that the
+// band's held reads decided at the reading at the mark (endHeld), the band's last reading, unless
+// the reading at the mark read that process's smaps (rereadHeld, startedSince), and for every
+// other kill the reading it is sent at. The line's reading is always the one the kill is sent at.
+// Its rule and sizes, which come before the executable so that the name stays last, say why that
+// process was first (INFRA-3531 R3 of spec version 31): rule is the tier of the order of ends that
+// put it first, and sizes where the sizes the guard chose it by came from.
 const (
 	linePrefix     = "launcher: memory guard: "
 	startedLine    = linePrefix + "started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d"
 	settingsLine   = linePrefix + "settings act_percent=%d floor_percent=%d wait=%s interval=%s"
 	noSettingsLine = linePrefix + "off: the daemon's acknowledgement carries no settings"
 	refusedLine    = linePrefix + "settings refused: %v; nothing changes"
-	endedLine      = linePrefix + `ended pid=%d role=%s size=%d reading=%d counter=%d shmem=%d limit=%d executable="%s"`
+	endedLine      = linePrefix + `ended pid=%d role=%s size=%d reading=%d counter=%d shmem=%d limit=%d rule=%s sizes=%s executable="%s"`
 	stoppedLine    = linePrefix + "stopped for this rise reason=%s reading=%d endable=%d protected=%d unread=%d unheld=%d limit=%d left_out=%d unread_processes=%s"
 	hourLine       = linePrefix + "hour start=%s end=%s reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d" +
 		` largest_pid=%d largest_role=%s largest_size=%d largest_executable="%s"`
@@ -66,6 +66,36 @@ const (
 const (
 	reasonNotFallen    = "not fallen"
 	reasonNothingToEnd = "nothing to end"
+)
+
+// The ended line's rule, the tier of the order of ends (rank) that put the ended process first:
+// ruleGrew, it grew over growthWindow by growthNoise or more, the most of those that did; ruleNew,
+// none grew so, and it is the largest of the processes new to this stay in the band, read at most
+// once at the readings of the stay before the one decided on (candidate.newToStay);
+// ruleGrewSinceKill, none grew or is new, and it grew the most since the previous kill of the rise;
+// ruleLargest, none of these applies and it is the largest. ruleKernel is a process the guest
+// kernel killed (Guest), which the kernel chose by rules of its own.
+const (
+	ruleGrew          = "grew"
+	ruleNew           = "new"
+	ruleGrewSinceKill = "grew-since-kill"
+	ruleLargest       = "largest"
+	ruleKernel        = "kernel"
+)
+
+// The ended line's sizes, where the sizes the ended process was chosen by came from: sizesBand, the
+// band's held reads alone, at the first reading at or above the mark (endHeld); sizesReread, those
+// and the smaps of held processes read again at that reading (rereadHeld); sizesSearch, those and
+// the smaps of processes started since the band's last reading that the reading at the mark found
+// (startedSince); sizesReading, the assessment of the reading the kill is sent at (act), as every
+// kill after a kill of the rise and every first kill the band's reads cannot decide has.
+// sizesKernel is a process the guest kernel killed, by sizes of its own.
+const (
+	sizesBand    = "band"
+	sizesReread  = "reread"
+	sizesSearch  = "search"
+	sizesReading = "reading"
+	sizesKernel  = "kernel"
 )
 
 // The guest watch's lines (Guest). Each starts with guestPrefix and carries `key=value` fields as
