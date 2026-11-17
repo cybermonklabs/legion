@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A question's related-item check no longer falls back to keywords because it waited for the
+  answered questions of the other projects. The meaning stage now answers as soon as the asking
+  project's own meaning query does, and the check holds that answer while it waits up to 300 ms
+  for the other projects' leg, never past the meaning search's allowance. Before, the stage itself
+  waited, up to 25 ms before the meaning deadline, and a check whose stage woke later than that, as
+  it can on a loaded machine, lost its meaning result and answered `keywords_only`.

@@ -57,7 +57,7 @@ func TestAnUnreadableInterestRecordIsAnsweredAsUnreadable(t *testing.T) {
 	// bucket, which says nothing about the record this test writes.
 	waitForSessions(t, sessions)
 	if _, err := registry.Upsert(store.Interest{SessionID: readable, MachineID: "test-machine", Dir: "/test/" + readable},
-		[]string{contracts.AgentSubject(readable), topic}); err != nil {
+		[]string{contracts.LegacyAgentSubject(readable), topic}); err != nil {
 		t.Fatalf("write %s's interest record: %v", readable, err)
 	}
 	if _, err := registry.SetRole(readable, "test-machine", "reviewer", false); err != nil {

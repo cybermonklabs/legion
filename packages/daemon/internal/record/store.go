@@ -2330,6 +2330,59 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 	return nil
 }
 
+// liveClaimStates are the claim states in which a claim's session holds its role: the states
+// supervise.HoldsCapability answers true for, a registered agent with a running process. A
+// suspended, a failed and a retired claim hold none, and neither does one still launching.
+var liveClaimStates = []string{
+	string(supervise.StateRegistered), string(supervise.StateReady), string(supervise.StateWorking), string(supervise.StateIdle),
+}
+
+// RoleHolder is one live role of an issue and the session that holds it.
+type RoleHolder struct {
+	Role    claim.Role
+	Session string
+}
+
+// LiveRoleHolders is the session of each live claim of issue, by role: a claim in one of
+// liveClaimStates that records a session. It is what a role-holder publication sends.
+func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
+	rows, err := tx.Query(ctx, `select role, session from claims
+		where issue = $1 and session <> '' and state = any($2)
+		order by role`, issue, liveClaimStates)
+	if err != nil {
+		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+	}
+	holders, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (RoleHolder, error) {
+		var holder RoleHolder
+		err := row.Scan(&holder.Role, &holder.Session)
+		return holder, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+	}
+	return holders, nil
+}
+
+// RecentClaimIssues is every issue of the Dispatch project whose key starts `<project>-` and
+// that has a live claim, or a claim that changed at or after since (claims.updated_at, which every
+// claim write sets), in key order. The boot publishes each of them, for what a release that
+// published nothing left: the live ones because a daemon that starts over running sessions has
+// published nothing for them yet, and the recent ones because that release ended claims and
+// published none of those ends.
+func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error) {
+	rows, err := tx.Query(ctx, `select distinct issue from claims
+		where starts_with(issue, $1 || '-') and (updated_at >= $2 or state = any($3))
+		order by issue`, dispatchProject, since, liveClaimStates)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of %s with a recent claim: %w", dispatchProject, err)
+	}
+	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of %s with a recent claim: %w", dispatchProject, err)
+	}
+	return issues, nil
+}
+
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {

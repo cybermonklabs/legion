@@ -33,6 +33,7 @@ const NOT_PICKED = "INFRA-2523";
 /** Two asks' ids, as Dispatch writes them, and a session of the claim's round. */
 const ASK_ONE = "0b1d5a9e-3f4c-4d2a-9b8e-1c2d3e4f5a6b";
 const ASK_TWO = "7c8d9e0f-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
+const ASK_THREE = "2e3f4a5b-6c7d-4e8f-9a0b-1c2d3e4f5a6b";
 const ROUND_SESSION = "01a1e000-0000-7000-8000-000000000001";
 
 /** One event of the log; it is made at second `id` of the cut's minute unless `at` is given. */
@@ -184,6 +185,39 @@ describe("TreeLog", () => {
       group === undefined ? [] : changesAfterAskOf(group).map((change) => change.actor)
     ).toEqual(["s-late"]);
   });
+
+  test("version 3's list is every issue of each tree with an ask, less the trees version 2 held whole", () => {
+    const opened = (id: number, askId: string, key: string, at: string) =>
+      event(id, "ask.opened", { id: askId, issue_key: key, created_at: at });
+    const log = logOf([
+      // An ask before version 2's cut puts its whole tree in the list.
+      event(1, "issue.created", { key: "INFRA-1", parent: null }),
+      event(2, "issue.created", { key: "INFRA-2", parent: "INFRA-1" }),
+      opened(3, ASK_ONE, "INFRA-2", "2026-11-15T23:00:00Z"),
+      // Every ask after the cut, on a root version 2 picks: held whole, so not in the list.
+      event(4, "issue.created", { key: PICKED, parent: null }),
+      opened(5, ASK_TWO, PICKED, "2026-11-16T01:00:00Z"),
+      // After the cut, on a root version 2 does not pick: a scorer may read it, so in the list.
+      event(6, "issue.created", { key: NOT_PICKED, parent: null }),
+      opened(7, ASK_THREE, NOT_PICKED, "2026-11-16T01:00:00Z"),
+      // A tree with no ask is in no list.
+      event(8, "issue.created", { key: "INFRA-9", parent: null }),
+    ]);
+    const roots = new Map([
+      [ASK_ONE, "INFRA-1"],
+      [ASK_TWO, PICKED],
+      [ASK_THREE, NOT_PICKED],
+    ]);
+    expect(log.reserveListOf(roots)).toEqual(["INFRA-1", "INFRA-2", NOT_PICKED]);
+    // An ask that opened under a root version 2 does not pick, before its issue moved into the
+    // picked tree, puts that tree in the list too.
+    expect(log.reserveListOf(new Map([...roots, [ASK_TWO, NOT_PICKED]]))).toEqual([
+      "INFRA-1",
+      "INFRA-2",
+      NOT_PICKED,
+      PICKED,
+    ]);
+  });
 });
 
 describe("treeOutcomeOf, item 6", () => {
@@ -203,6 +237,20 @@ describe("treeOutcomeOf, item 6", () => {
     expect(treeOutcomeOf(treeOf([AFTER]), [caseRow(ASK_ONE, PICKED, PICKED)], notHeld)).toBe(
       "not-held-at-opening"
     );
+  });
+
+  test("(b) from version 3's cut, a case needs a root at its opening that version 3's list leaves out", () => {
+    const late = { ...AFTER, openedAt: "2026-11-18T01:00:00Z" };
+    const lateCase = (askRootListed: boolean | null): CaseRow => ({
+      ...caseRow(ASK_ONE, NOT_PICKED, NOT_PICKED),
+      askCreatedAt: "2026-11-18T01:00:00Z",
+      answeredAt: "2026-11-18T02:00:00Z",
+      askRootListed,
+    });
+    // Version 2's hash does not pick this root; from version 3's cut only the list decides.
+    expect(treeOutcomeOf(treeOf([late]), [lateCase(false)], NONE)).toBe("eligible");
+    expect(treeOutcomeOf(treeOf([late]), [lateCase(true)], NONE)).toBe("not-held-at-opening");
+    expect(treeOutcomeOf(treeOf([late]), [lateCase(null)], NONE)).toBe("not-held-at-opening");
   });
 
   test("(c) an ask a scorer's record names sends the tree to development", () => {

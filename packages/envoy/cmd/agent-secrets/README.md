@@ -123,9 +123,10 @@ this order, and needs no registered agent session:
    (`AGENT_SECRETS_MACHINE_IDENTITY` forces `metadata` or `pool` instead; `kubernetes` is refused,
    exit 2, since the broker mints no launcher credential for a Kubernetes identity, and a pod
    enrolls through its launcher or `enroll --pod`). The settings are read only from an `https`
-   broker, or an `http` one on loopback, and
-   the first Google audience they name is kept in the cache's `google-exchange-audience`: a broker
-   that later names another is refused before any token is minted for it. The session it
+   broker, or an `http` one on loopback. Once an identity is found, and before a token is minted
+   for it, the audience is kept in the cache's `google-exchange-audience` (a machine with no
+   identity keeps none): a broker that later names another is refused before any token is minted
+   for it. The session it
    registers is kept in the machine cache, `$XDG_STATE_HOME/agent-secrets/machine` (a 0700
    directory, `key.pem` and `enrollment` each 0600), and signs every later command with no
    network call; each registration, the first and each one after the broker says the session is
@@ -147,8 +148,9 @@ no quotes, no `export`, no expansion. It takes `AGENT_SECRETS_URL`, `AGENT_SECRE
 `AGENT_SECRETS_SIGNIN_CLIENT_ID`, `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`,
 `AGENT_SECRETS_MACHINE_IDENTITY`, `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`,
-and refuses any other key, and a file its group or others can write, as a usage error (exit 2)
-naming the file. A variable that is set and not empty wins over the file. With no `HOME` in the
+and refuses any other key, a path that is not a regular file, a file another user than this one
+or root owns, and a file its group or others can write, as a usage error (exit 2) naming the
+file. A variable that is set and not empty wins over the file. With no `HOME` in the
 environment (a system unit that names no `User=`), the file, the sign-ins and the machine cache
 are under the home the password database gives the process's user.
 

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // resolverServer is the dashboard the resolver tests read their text with.
@@ -457,9 +458,7 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	insertPrefixComment(t, tx, source, "ACME-1", body)
 
 	logged := &countingHandler{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(logged))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, logged)
 
 	located := NewReader(ctx, failingQueryer{}, "comment", source, resolverServer).Mentions(body)
 	if want := text.ExtractAt(body, resolverServer); !reflect.DeepEqual(located, want) {

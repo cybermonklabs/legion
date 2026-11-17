@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,41 @@ func TestAConfigFileOthersCanWriteIsRefused(t *testing.T) {
 	unsetenv(t, "AGENT_SECRETS_URL")
 	if err := loadClientConfig(); err != nil {
 		t.Fatalf("a file others can only read: %v", err)
+	}
+	if got := brokerBaseURL(); got != "https://secrets.example" {
+		t.Fatalf("brokerBaseURL = %q; want the file's", got)
+	}
+}
+
+// TestAConfigFileAnotherUserOwnsIsRefused: a file this user does not own can be changed by its
+// owner whatever its mode, so it is a usage error naming the file and its owner, and nothing in it
+// is read. A file root owns is taken, as OpenSSH takes one: root can change any file anyway.
+func TestAConfigFileAnotherUserOwnsIsRefused(t *testing.T) {
+	owner := func(t *testing.T, uid int) {
+		t.Helper()
+		original := fileOwner
+		fileOwner = func(os.FileInfo) (int, bool) { return uid, true }
+		t.Cleanup(func() { fileOwner = original })
+	}
+	stranger := os.Getuid() + 4242
+
+	path := writeClientConfig(t, "AGENT_SECRETS_URL=https://secrets.example\n")
+	unsetenv(t, "AGENT_SECRETS_URL")
+	owner(t, stranger)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"identity"}, &stdout, &stderr); code != exitUsageError {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitUsageError, stderr.String())
+	}
+	if want := fmt.Sprintf("is owned by uid %d", stranger); !strings.Contains(stderr.String(), path) || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr %q; want it to name %s and say it %s", stderr.String(), path, want)
+	}
+	if clientConfig != nil {
+		t.Fatalf("the settings %v were read from a file another user owns", clientConfig)
+	}
+
+	owner(t, 0)
+	if err := loadClientConfig(); err != nil {
+		t.Fatalf("a file root owns: %v", err)
 	}
 	if got := brokerBaseURL(); got != "https://secrets.example" {
 		t.Fatalf("brokerBaseURL = %q; want the file's", got)
