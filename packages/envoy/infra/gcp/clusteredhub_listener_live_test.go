@@ -104,25 +104,23 @@ func liveListenerEnv(t *testing.T, port int, natsURL string, allowUnauthenticate
 	return env
 }
 
-// startLiveListener starts a listener of the pod's environment on a port drawn from ports, on the
-// server at natsURL once it holds the buckets a listener copies, and waits for its /healthz to
-// answer 200, so it returns a process that is serving. It returns the process and the port it
-// serves on, which is drawn again on each retry a taken port costs (startBound).
+// startLiveListener starts a listener of the pod's environment on a port reservePorts reserved and
+// waits for its /healthz to answer 200, so it returns a process that is serving. It returns the
+// process and the port it serves on. The listener binds ENVOY_LISTEN_HOST=0.0.0.0 as the pod does,
+// so it binds the port itself rather than inherit a cmdtest.HoldPort socket, which listens on
+// loopback alone.
 //
 // The server is provisioned first (bustest.ProvisionURL), as `envoy-infra buckets` does before a
 // hub's first listener starts: no listener creates a bucket it copies, and one started without them
 // waits at its start, so the listener runs with the pod's environment and nothing else. That acts
 // once per server, so a second listener's start leaves the first one's buckets as they are.
-func startLiveListener(t *testing.T, name, binary, natsURL string, ports *loopbackPorts) (*cmdtest.Process, int) {
+func startLiveListener(t *testing.T, name, binary, natsURL string) (*cmdtest.Process, int) {
 	t.Helper()
 	bustest.ProvisionURL(t, natsURL, 1)
-	var port int
-	process := startBound(t, name, func() *exec.Cmd {
-		port = ports.draw(t, 1)[0]
-		cmd := exec.Command(binary)
-		cmd.Env = liveListenerEnv(t, port, natsURL, true)
-		return cmd
-	}, func(*cmdtest.Process) error {
+	port := reservePorts(t, 1)[0]
+	cmd := exec.Command(binary)
+	cmd.Env = liveListenerEnv(t, port, natsURL, true)
+	process := startReady(t, name, cmd, func(*cmdtest.Process) error {
 		status, body, err := liveListenerHealthz(port)
 		if err != nil {
 			return err
@@ -249,11 +247,10 @@ func nonLoopbackIPv4(t *testing.T) string {
 // using it is this fence.
 func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 	binary := buildLiveListener(t)
-	ports := newLoopbackPorts()
 	_, natsURL := testnats.Start(t)
 
 	listeners := 0
-	process, port := startLiveListener(t, "the listener", binary, natsURL, ports)
+	process, port := startLiveListener(t, "the listener", binary, natsURL)
 	listeners++
 
 	answers := 0
@@ -280,10 +277,10 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 	t.Logf("the listener held its durable after %.1fs: %s", waited.Seconds(), strings.TrimSpace(healthy))
 
 	// The negative control. The same environment with ENVOY_API_ALLOW_UNAUTHENTICATED removed, on
-	// a port of its own so that nothing answering there is this process's own doing: the API check
-	// runs before the socket is bound (cmd/listener/main.go), so the port is free throughout and a
-	// listener that served would answer on it.
-	controlPort := ports.draw(t, 1)[0]
+	// a port reserved for it (reservePorts), so no other program is listening there: the API check
+	// runs before the socket is bound (cmd/listener/main.go), so nothing listens on the port
+	// throughout and a listener that served would answer on it.
+	controlPort := reservePorts(t, 1)[0]
 	control := exec.Command(binary)
 	control.Env = liveListenerEnv(t, controlPort, natsURL, false)
 	refused := startLogged(t, "the listener without ENVOY_API_ALLOW_UNAUTHENTICATED", control)
@@ -329,19 +326,18 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 // instead (cmd/listener/durable.go).
 func TestClusteredNatsHubListenerHandsOverItsDurable(t *testing.T) {
 	binary := buildLiveListener(t)
-	ports := newLoopbackPorts()
 	_, natsURL := testnats.Start(t)
 
 	listeners := 0
 	answers := 0
-	first, firstPort := startLiveListener(t, "the first listener", binary, natsURL, ports)
+	first, firstPort := startLiveListener(t, "the first listener", binary, natsURL)
 	listeners++
 	waited, healthy, reads := awaitListenerStatus(t, first, firstPort, `"status":"healthy"`, clusteredHubListenerHealthWindow)
 	answers += reads
 	require.NotZero(t, reads, "no /healthz answer was read while waiting for the first listener")
 	t.Logf("the first listener held its durable after %.1fs: %s", waited.Seconds(), strings.TrimSpace(healthy))
 
-	second, secondPort := startLiveListener(t, "the second listener", binary, natsURL, ports)
+	second, secondPort := startLiveListener(t, "the second listener", binary, natsURL)
 	listeners++
 
 	// The second pod is up and serving while the first still holds the durable: 200, and a body

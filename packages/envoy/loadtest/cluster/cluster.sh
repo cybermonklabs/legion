@@ -539,7 +539,7 @@ resolve_image() {
     return 1
   fi
   if ! got=$(registry_digest "$registry" "$repo" "${digest:-$tag}"); then
-    note "image '$ref' does not resolve: $registry has no manifest for it"
+    note "image '$ref' does not resolve: $registry answered no manifest for it, or could not be reached"
     return 1
   fi
   if [ -n "$digest" ] && [ "$got" != "$digest" ]; then

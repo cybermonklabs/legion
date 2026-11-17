@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -144,7 +145,7 @@ func TestAnUnansweredCreateOfAMissingCopiedBucketIsSentAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a create-only open whose first create drew no answer = %v, want the bucket created", err)
 	}
-	if _, err := kv.ReadStreamState(); err != nil {
+	if _, err := kv.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the bucket's stream through the handle: %v", err)
 	}
 	if sends := relay.sent(); sends != 2 {
@@ -176,7 +177,7 @@ func TestCreateMissingCopiedBucketWaitsForTheMemberToApplyItsCreate(t *testing.T
 	if sends := relay.sent(); sends != 3 {
 		t.Fatalf("reads of the bucket's stream sent = %d, want 3: the lookup, the open answered as a member behind, and the open again", sends)
 	}
-	if _, err := kv.ReadStreamState(); err != nil {
+	if _, err := kv.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the bucket's stream through the handle: %v", err)
 	}
 }

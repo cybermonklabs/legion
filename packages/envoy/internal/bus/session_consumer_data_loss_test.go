@@ -52,11 +52,11 @@ func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgai
 	// many the session then takes and acks.
 	const before, acked = 20, 4
 	name, _ := SessionConsumerName(session)
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 
 	for i := range before {
-		publishStored(t, owner, contracts.AgentSubject("ses_data_loss_bystander"), fmt.Sprintf("before %02d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject("ses_data_loss_bystander"), fmt.Sprintf("before %02d", i))
 	}
 	start, err := consumers.Ensure(ctx, session, filters, 0)
 	if err != nil {
@@ -129,6 +129,7 @@ func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgai
 	t.Logf("with both awaiting an ack the server reports the ack floor as %d, the last delivery as %d and the start sequence as %d; the floor this package reads from that is %d",
 		info.AckFloor.Stream, info.Delivered.Stream, info.Config.OptStartSeq, ackFloor(info))
 
+	waitForStoredState(t, owner, session)
 	restarted, err := consumers.RestartAtFloor(ctx, session, filters)
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)

@@ -1360,7 +1360,9 @@ until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" p
 docker exec "$pg_container" createdb -U legion legion
 # NATS binds bind_host on the run's port: every pod's agent dials it there, directly or through the
 # bridge.
-docker run -d --name "$nats_container" -p "$bind_host:$port_nats:4222" nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" -p "$bind_host:$port_nats:4222" "$nats_image" -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 # No listener creates a bucket it copies, so the run provisions its own server with
 # them before the listener starts. fixturebuckets provisions only a loopback server, and bind_host is

@@ -521,7 +521,7 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 	rig.register(t, unheld, nil)
 
 	for _, target := range []string{cleanlyStopped, unheld} {
-		subject := contracts.AgentSubject(target)
+		subject := contracts.LegacyAgentSubject(target)
 		if held := rig.storedOn(t, subject); held != 0 {
 			t.Fatalf("the stream already holds %d messages on %s", held, subject)
 		}

@@ -101,6 +101,13 @@ const (
 	// exchange mints, the kind it asks for, and the kind a dev box session presents its machine
 	// login's token as. The library spells it in a package its users cannot import.
 	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token" //nolint:gosec // a token type's name, not a token
+	// PodSessionNotRegistered, then a colon, begins the error_description of the exchange's
+	// invalid_grant for a pod whose session no registration names yet (internal/broker/oauth,
+	// registeredPodSession). A pod's trade can reach the broker before its registration does, so
+	// it is the one refusal of the broker's state a later trade cures: the Go client's
+	// RefusedError.Permanent and the TypeScript client's BrokerRefusedError.permanent read it
+	// off these words, and both clients trade again on it for as long as their caller runs.
+	PodSessionNotRegistered = "pod_session_not_registered"
 )
 
 // The wire names of a token's project scope, which an introspection answer's ProjectScope carries

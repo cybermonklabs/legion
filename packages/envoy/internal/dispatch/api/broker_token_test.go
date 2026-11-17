@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const (
@@ -564,10 +565,11 @@ func TestBrokerTokenRefusalsEachHaveTheirOwnCode(t *testing.T) {
 		}
 	})
 	t.Run("the broker unreachable", func(t *testing.T) {
-		rig := newBrokerTokenRig(t)
+		// The verifier asks a broker at a port the test holds and nothing listens on.
+		refused := "http://" + testport.Refused(t)
+		rig := newBrokerTokenRig(t, func(o *brokertoken.Options) { o.BrokerURL = refused })
 		caller := newBrokerCaller(t)
 		const token = "a-token-nobody-can-be-asked-about"
-		rig.broker.Server.Close()
 
 		response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
 		refusal := decodeBody[refusalAnswer](t, response)

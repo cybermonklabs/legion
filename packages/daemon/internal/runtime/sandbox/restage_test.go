@@ -826,6 +826,14 @@ func TestEvaluateReadsAPodStaleExactlyWhenRelaunchReplacesIt(t *testing.T) {
 		"the broker's audience changed": {before: enrolled(unchanged), now: enrolled(func(a *AgentSecrets) { a.Audience = "agent-secrets-next" }), drifts: agentSecretsTokenVolume},
 		"the broker's expiry changed":   {before: enrolled(unchanged), now: enrolled(func(a *AgentSecrets) { a.TokenExpiry = 30 * time.Minute }), drifts: agentSecretsTokenVolume},
 		"the broker's URL moved alone":  {before: enrolled(unchanged), now: enrolled(func(a *AgentSecrets) { a.URL = "https://secrets-next.internal.example" }), where: "AGENT_SECRETS_URL"},
+		// The exchange identity is a volume of the pod as the enrollment is: turning it on, or
+		// moving its audience, drifts the pod for its round, and moves no address of the running
+		// generation; turning it off drifts nothing, since a pod that carries the token needs no
+		// replacing for a generation told of none (Runtime.tradesIn).
+		"the exchange identity turned on": {before: enrolled(unchanged), now: enrolled(func(a *AgentSecrets) { a.ExchangeAudience = "legion-broker-exchange" }), drifts: agentSecretsExchangeVolume},
+		"the exchange audience changed": {before: enrolled(func(a *AgentSecrets) { a.ExchangeAudience = "legion-broker-exchange" }),
+			now: enrolled(func(a *AgentSecrets) { a.ExchangeAudience = "legion-broker-exchange-next" }), drifts: agentSecretsExchangeVolume},
+		"the exchange identity turned off": {before: enrolled(func(a *AgentSecrets) { a.ExchangeAudience = "legion-broker-exchange" }), now: enrolled(unchanged)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil, withOptions(tc.before))

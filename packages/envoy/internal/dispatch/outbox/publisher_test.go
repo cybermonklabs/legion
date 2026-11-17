@@ -233,7 +233,7 @@ func (p *recordingPublisher) PublishAsync(item contracts.Envelope) <-chan error 
 // stream's acknowledgement of the copy it stored answers it, recording the envelope, whose topic
 // is still the role's.
 func (p *recordingPublisher) Request(subject string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
-	if subject != contracts.AgentSubject(roleHolder) || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
+	if subject != contracts.LegacyAgentSubject(roleHolder) || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
 		return answered(fmt.Errorf("a Request to %q with dedupe key %q is no role forward to %s", subject, item.DedupeKey, roleHolder))
 	}
 	return answered(p.Publish(item))
