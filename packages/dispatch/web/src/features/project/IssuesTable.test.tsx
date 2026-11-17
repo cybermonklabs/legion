@@ -976,20 +976,21 @@ test("a bulk action keeps at most eight writes in flight", async () => {
   expect(peak).toBeLessThanOrEqual(8);
 });
 
-/** Puts `replacement` in place of the page storage's own `name` method, and returns what puts the
- *  real one back. happy-dom's `localStorage` is a Proxy that copies each method of
- *  `Storage.prototype` onto itself, bound, the first time anything reads it: a spy on the
- *  prototype reaches the storage only when nothing in the process has read that method yet, and
- *  then stays its method after `mockRestore`, a mock that no longer reaches the real method.
- *  `Object.defineProperty` passes the Proxy's trap onto the storage itself, where every later
- *  read finds it. */
+/** Puts what `replacement` makes of the page storage's own `name` method in place of that
+ *  method, and returns what puts the real one back. `replacement` is handed the real method, so
+ *  it never reads `localStorage[name]` itself, which would find the replacement and call itself.
+ *  happy-dom's `localStorage` is a Proxy that copies each method of `Storage.prototype` onto
+ *  itself, bound, the first time anything reads it: a spy on the prototype reaches the storage
+ *  only when nothing in the process has read that method yet, and then stays its method after
+ *  `mockRestore`, a mock that no longer reaches the real method. `Object.defineProperty` passes
+ *  the Proxy's trap onto the storage itself, where every later read finds it. */
 function onLocalStorage<Name extends "getItem" | "setItem">(
   name: Name,
-  replacement: Storage[Name]
+  replacement: (real: Storage[Name]) => Storage[Name]
 ): () => void {
   const real = localStorage[name];
   const descriptor = { configurable: true, writable: true };
-  Object.defineProperty(localStorage, name, { ...descriptor, value: replacement });
+  Object.defineProperty(localStorage, name, { ...descriptor, value: replacement(real) });
   return () => Object.defineProperty(localStorage, name, { ...descriptor, value: real });
 }
 
@@ -1000,13 +1001,11 @@ test("a browser that refuses storage still renders the table and runs an action"
   const refuse = (key: string) => {
     if (key.startsWith("dispatch.project-table.")) throw new Error("Storage refused");
   };
-  const read = localStorage.getItem;
-  const write = localStorage.setItem;
-  const restoreRead = onLocalStorage("getItem", (key) => {
+  const restoreRead = onLocalStorage("getItem", (read) => (key) => {
     refuse(key);
     return read(key);
   });
-  const restoreWrite = onLocalStorage("setItem", (key, value) => {
+  const restoreWrite = onLocalStorage("setItem", (write) => (key, value) => {
     refuse(key);
     write(key, value);
   });
@@ -1829,6 +1828,7 @@ test.each([
 });
 
 // F7: the steps of a start-next are known before the first write, so the store is written once.
+// Three issues move up, because with one a record written once per issue is the same two writes.
 test("Start next writes the store once for the whole batch", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
@@ -1838,11 +1838,11 @@ test("Start next writes the store once for the whole batch", async () => {
   );
   table(rows);
   await screen.findByRole("row", { name: "CORE-10 Work CORE-10" });
-  await user.click(screen.getByRole("checkbox", { name: "Select CORE-10" }));
+  for (const key of ["CORE-8", "CORE-9", "CORE-10"])
+    await user.click(screen.getByRole("checkbox", { name: `Select ${key}` }));
   const written: string[] = [];
-  const write = localStorage.setItem;
   restores.push(
-    onLocalStorage("setItem", (key, value) => {
+    onLocalStorage("setItem", (write) => (key, value) => {
       written.push(value);
       write(key, value);
     })
@@ -1850,10 +1850,17 @@ test("Start next writes the store once for the whole batch", async () => {
   await user.click(
     within(screen.getByRole("toolbar")).getByRole("button", { name: /^Start next$/ })
   );
-  await waitFor(() => expect(send).toHaveBeenCalled());
+  // The notice follows the last rank write and the record's dismissal, so no write of the
+  // action lands after it.
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
+    ).toContain("3 issues now start next")
+  );
+  expect(send).toHaveBeenCalledTimes(3);
   const records = written.filter((value) => value.includes('"kind":"startNext"'));
   // One write to begin the action and one for its whole batch of keys, not one per issue.
-  expect(records.length).toBeLessThanOrEqual(2);
+  expect(records.length).toBe(2);
 });
 
 // O8: a record a tab left behind a day ago is not this reader's unfinished work.
