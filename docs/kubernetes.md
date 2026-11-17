@@ -5524,7 +5524,10 @@ These rules pass over it:
   The daemon writes each of the three names to its hold records ([Idle release](#idle-release));
 
 - an update round neither replaces a held pod nor reaches its bound.
-  The round waits and tells nobody, no round opens over a held pod, and the round's bound moves later by the time the pod was held (`roundBound`, `internal/daemon/podupdate.go`).
+  The round waits and tells nobody, and no round opens over a held pod.
+  The round's bound moves later by the time the pod was held, and a hold that ended at the resume or at a role's ready counts on until the wake pacing lets out the last launch that the pause held for a role of the pod, a held delivery's wake after the resume included (`roundBound` and `heldUntil`, `internal/daemon/podupdate.go`).
+  So a round replaces no pod while a role of it whose launch the pause held still waits its turn in the pacing, and the roles get what was left of the round's grace from that let-out.
+  The round's own ask (`update_ask`) brings back no stopped role, so a role of the pod that nothing else wakes takes no turn before the round's bound.
 
 An idle release that was under way when the pause began is decided at its save step (`store.IssueReleaseSave`).
 A release that had not saved its workspace by then is cancelled and keeps its pod, whatever had reached its roles first.
@@ -5533,7 +5536,8 @@ A wake that cancels a release while the project is paused queues no resume: the 
 
 A hold ends in one of three ways, and its record says which (`project_pause_pod_holds.ended_why`):
 
-- `resumed`: the resume found a role of the pod live;
+- `resumed`: the resume found a role of the pod live.
+  A claim that is `launching` with no process recorded, a launch that still waits its turn in the wake pacing, is not live, and the hold stays (`EndLivePausePodHold`, `internal/store/pause_pod_holds.go`);
 
 - `ready`: a role of the pod became ready again, at a launch the resume released or at any later wake;
 
@@ -5582,7 +5586,7 @@ The architect-stalled wake reads none of its arms while the project is paused, a
 Its took-nothing arm counts nothing while the architect's launch waits in the pacing, and its slow-before-gate arm counts from no earlier than the let-out of the launch that the pause held for the architect and, once the architect has confirmed its entry's task, than that confirmation (`tookNothingSince` and `architectSlowBeforeGate`), so the resume's queue counts against that arm only while an architect's entry stays unconfirmed.
 The stalled-tree notice and the entry sweep's gate say nothing while the project is paused, because the admission pass promotes nothing then and the gate answers no (`promoteHolds` and `OwesEntryWork`, `internal/admit/admit.go`).
 After a pause a tree is told it has stopped only once `stalled_tree_notice_hours` has passed since the pause ended, and the notice still names how long the tree has been quiet (`tellStalledTrees`, `internal/admit/stalled.go`).
-A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
+A wake that a pause held is marked with its pause (`pod_resumes.pause_id`): a wake taken while the project is paused, and a wake that a notice, a phase's end, a hook's prompt or a merge-queue removal takes after the resume for a row that fell due while the pause stood (`TakePodWake`, `internal/store/wake.go`).
 `read_release_records` counts such a wake as `heldByPause` and leaves it out of its wake-to-first-turn seconds, because its wait measures the pause.
 A held wake names no release.
 Where its issue's pod was released before the wake, that report still ends the release at the wake, as any other wake of the pod would, in its pod-hours and in its share of releases woken within ten minutes.

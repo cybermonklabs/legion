@@ -66,11 +66,12 @@ import (
 // A pod a project's pause holds (store's project_pause_pod_holds, decision 12 of
 // dispatch://INFRA-3759) is neither replaced nor given a round: the pause kept the pod and the
 // work on its disk for its stopped roles. A round over it waits as it waits for an operator's
-// suspension, tells nobody, and its bound moves by the time the pod was held (roundBound). The
-// sweep reads the claims from memory, so it reads the project's holds once, here, rather than
-// once per issue (podPauseHolds), and hands each issue its holds with the sweep's now as one
-// value (roundClock). A sweep that cannot read them decides nothing, since a reading nobody took
-// may not delete a disk (replacementWait); the next sweep reads them again.
+// suspension, tells nobody, and its bound moves by the time the pod was held, counted on to the
+// let-out of the last launch the pause held for a role of the pod (roundBound). The sweep reads
+// the claims from memory, so it reads the project's holds once, here, rather than once per issue
+// (podPauseHolds), and hands each issue its holds with the sweep's now as one value (roundClock).
+// A sweep that cannot read them decides nothing, since a reading nobody took may not delete a disk
+// (replacementWait); the next sweep reads them again.
 func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervise.Claim) {
 	now := s.plan.clock.Now()
 	byIssue := map[string][]supervise.Claim{}
@@ -117,8 +118,9 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 }
 
 // podHolds is what a project's pause did to one issue's pod as a sweep reads it
-// (store.Store.PausePodHoldsSince): each hold that stands on the pod, and each that ended since
-// the oldest round of the sweep opened (decision 12 of dispatch://INFRA-3759).
+// (store.Store.PausePodHoldsSince): each hold that stands on the pod, and each that ended, or whose
+// pause let out a launch of the pod, since the oldest round of the sweep opened (decision 12 of
+// dispatch://INFRA-3759).
 type podHolds []store.PausePodHold
 
 // held is whether a hold stands on the pod now: a round over it waits, and no round opens over
@@ -133,16 +135,14 @@ func (h podHolds) held() bool {
 }
 
 // since is how long the holds kept the pod from opened on, read at now: each hold's span after
-// opened, and a hold that stands up to now. A round's bound moves by it (roundClock.roundBound).
+// opened, up to the moment it counts to (heldUntil). A round's bound moves by it
+// (roundClock.roundBound).
 func (h podHolds) since(opened, now time.Time) time.Duration {
 	var held time.Duration
 	for _, hold := range h {
-		start, end := hold.HeldAt, hold.EndedAt
+		start, end := hold.HeldAt, heldUntil(hold, now)
 		if start.Before(opened) {
 			start = opened
-		}
-		if end.IsZero() {
-			end = now
 		}
 		if end.After(start) {
 			held += end.Sub(start)
@@ -151,9 +151,28 @@ func (h podHolds) since(opened, now time.Time) time.Duration {
 	return held
 }
 
+// heldUntil is the moment hold counts as keeping its pod to, read at now. A hold that stands
+// counts to now. A hold that ended at the resume or at a role's ready counts to the later of that
+// end and the latest let-out of a launch its pause held for a role of the pod
+// (store.PausePodHold.LetOut), which may still be ahead: a role whose launch waits its turn in the
+// wake pacing can answer no round, and the pause, not the role, kept it from taking a turn, as the
+// stuck clock of its resume counts nothing before that let-out either (decision 14 of
+// dispatch://INFRA-3759). A hold a deletion ended counts to that end: the pod is gone.
+func heldUntil(hold store.PausePodHold, now time.Time) time.Time {
+	switch {
+	case hold.EndedAt.IsZero():
+		return now
+	case hold.End == store.PausePodHoldDeleted || !hold.LetOut.After(hold.EndedAt):
+		return hold.EndedAt
+	default:
+		return hold.LetOut
+	}
+}
+
 // podPauseHolds is the holds a project's pause has or had on the project's pods, by issue, read
-// once for the sweep: every hold that stands, and every hold that ended since the oldest round
-// any of claims records opened, which are the holds a round's bound can move by.
+// once for the sweep: every hold that stands, and every hold that ended, or whose pause let out a
+// launch of its pod, since the oldest round any of claims records opened, which are the holds a
+// round's bound can move by.
 func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Claim, now time.Time) (map[string]podHolds, error) {
 	since := now
 	for _, c := range claims {
@@ -388,8 +407,9 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // A pod a project's pause holds waits as an operator's suspension does, whatever the clock says,
 // and tells nobody (waitsForPause, decision 12 of dispatch://INFRA-3759): the pause is a person's
 // or the controller's act, and its resume and a role's ready end the hold. The round's bound
-// moves by the time the pod was held (clock, roundClock.roundBound), and the replacement left to
-// the sweep carries the holds the clock was built from (podReplacement).
+// moves by the time the pod was held, counted on to the let-out of the last launch the pause held
+// for a role of the pod (clock, roundClock.roundBound), and the replacement left to the sweep
+// carries the holds the clock was built from (podReplacement).
 func (s *supervision) completePodUpdate(ctx context.Context, issue string, snapshot, live []supervise.Claim, round, pod, reasons string, clock roundClock) (*podReplacement, bool) {
 	reading := readReplacement(live, round, clock)
 	switch reading.wait {
@@ -558,11 +578,13 @@ func (c roundClock) held() bool {
 
 // roundBound is the moment the round ends whatever its roles say: its opening, the earliest its
 // claims record (roundOpenedAt), plus pod_update_grace_minutes, plus the time a project's pause
-// held the pod since the opening (podHolds.since, at the clock's now): the span of each hold that
-// ended, and the time so far of one that stands (decision 12 of dispatch://INFRA-3759). A hold
-// that stands therefore moves the bound on as long as it stands, and the roles get their whole
-// grace once it ends. It is nil where no claim of group records the opening, which no round's end
-// is read past.
+// held the pod since the opening (podHolds.since, at the clock's now): the time so far of a hold
+// that stands, and the span of each hold that ended, which for a hold that ended at the resume or
+// at a role's ready runs on to the latest let-out of a launch its pause held for a role of the pod
+// (heldUntil; decision 12 of dispatch://INFRA-3759). A hold that stands therefore moves the bound
+// on as long as it stands, and the roles get their whole grace once it has ended and the wake
+// pacing has let out every launch its pause held for them. It is nil where no claim of group
+// records the opening, which no round's end is read past.
 func (c roundClock) roundBound(group []supervise.Claim, round string) *time.Time {
 	opened := roundOpenedAt(group, round)
 	if opened == nil {

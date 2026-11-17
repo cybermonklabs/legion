@@ -179,7 +179,7 @@ type outboxTrees interface {
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
-	TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error)
+	TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at, due time.Time) (bool, error)
 	OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (id, pause int64, found bool, err error)
 	CancelPodBackstopsOf(ctx context.Context, project, issue string, role claim.Role) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
@@ -1405,7 +1405,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
 	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
 	// for an architect that is relaunching, and publishes once the woken session holds its role.
-	if woken, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue); err != nil {
+	if woken, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue, row.NextAt); err != nil {
 		return err
 	} else if woken {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
@@ -1502,7 +1502,7 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
 	// than finishing undelivered. This runs before the publish, which would otherwise answer
 	// ErrNoHolder and drop the message the woken role is owed.
-	if woken, err := r.wakeForDelivery(ctx, token, "the end of "+row.Issue+"'s "+string(payload.From)+" phase"); err != nil {
+	if woken, err := r.wakeForDelivery(ctx, token, "the end of "+row.Issue+"'s "+string(payload.From)+" phase", row.NextAt); err != nil {
 		return err
 	} else if woken {
 		return wait.Errorf("the end of %s's %s phase waits for its %s's released pod to come back", row.Issue, payload.From, payload.Role)
@@ -1550,7 +1550,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
 	// than finishing undelivered. This runs before the publish, which would otherwise answer
 	// ErrNoHolder and drop the prompt the woken role is owed.
-	if woken, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
+	if woken, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue, row.NextAt); err != nil {
 		return err
 	} else if woken {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
@@ -2866,7 +2866,9 @@ func (r *outbox) checkLookHeld(ctx context.Context, row record.OutboxRow, payloa
 // check is read first: a row of no open check, or of a check a later merge replaced (NamedBy),
 // finishes without acting, and the event is the issue, the check read (record.ProductionCheck.ID)
 // and the look, so the row run again is a duplicate and a later check's look 1 is a fact of its
-// own rather than the replaced check's.
+// own rather than the replaced check's. A look that began before the end of the project's latest
+// pause has its bound counted from the time its role could take a turn again, and the row waits
+// until then (lookBoundAfterPause).
 func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload record.CheckLook) error {
 	check, err := r.productionCheck(ctx, row.Issue)
 	if err != nil {
@@ -2885,11 +2887,72 @@ func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload re
 		r.log.Info("outbox check look bound finished without acting", "row", row.ID, "issue", row.Issue, "look", payload.Look, "why", why)
 		return nil
 	}
+	if err := r.lookBoundAfterPause(ctx, row, payload.Look, *check); err != nil {
+		return err
+	}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-look:%s:%s:%d", row.Issue, check.ID(), payload.Look),
 		intake.CheckLookEnded{Issue: row.Issue, Look: payload.Look, Cause: "look bound", OpenedAt: check.OpenedAt}, r.handlers...); err != nil {
 		return fmt.Errorf("end look %d of %s's production check at its bound: %w", payload.Look, row.Issue, err)
 	}
 	return nil
+}
+
+// lookBoundAfterPause is the wait (wait.Until) of a check_look row whose look is the check's open
+// one, began before the end of the project's latest pause, and has not yet had its bound
+// (workflow.CheckLookBound) since its role could take a turn again; nil for every other row. The
+// pause stopped the check's role and held the look's rows, and the resume let the role's launch
+// out through the wake pacing, so the bound is counted from the later of the pause's end and the
+// role's last ready where that ready is after the end (record.RoleClaim.LastReady), and, while the
+// role's claim is still coming up — queued, launch_uncertain, launching, shim_connected or
+// registered — from no earlier than now, since its ready is still ahead. A look that began after
+// the latest pause ended, or in a project no pause has ended, keeps the bound its row was due at.
+// The pause is read as admit's readStallFloor reads it (store.OpenOrLastPauseTx), with the role's
+// claim, in one transaction. While the project is paused the row is held and does not run, so a
+// pause read open here began after the row was claimed, and the row ends the look as it would
+// have.
+func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, look int, check record.ProductionCheck) error {
+	if !check.LookOpen || check.Looks != look || check.LookWakeAt == nil {
+		return nil
+	}
+	var latest store.Pause
+	var held *record.RoleClaim
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var found bool
+		var err error
+		latest, found, err = store.OpenOrLastPauseTx(ctx, tx, r.dispatchProject)
+		if err != nil || !found || !latest.Ended() || !check.LookWakeAt.Before(latest.EndedAt) {
+			latest = store.Pause{}
+			return err
+		}
+		token, err := claim.NewToken(r.project, row.Issue, check.Role)
+		if err != nil {
+			return err
+		}
+		claims, err := r.records.RoleClaims(ctx, tx, []claim.Token{token})
+		held = claims[token]
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the latest pause of %s and the role of %s's production check: %w", r.dispatchProject, row.Issue, err)
+	}
+	if latest.ID == 0 {
+		return nil
+	}
+	from, now := latest.EndedAt, r.now().UTC()
+	if held != nil {
+		if held.LastReady.After(from) {
+			from = held.LastReady
+		}
+		comingUp := !supervise.SaidReady(held.State) && !slices.Contains(supervise.GoneStates(), held.State)
+		if comingUp && now.After(from) {
+			from = now
+		}
+	}
+	due := from.Add(workflow.CheckLookBound)
+	if !now.Before(due) {
+		return nil
+	}
+	return wait.Until(due, fmt.Sprintf("look %d of %s's production check began before pause %d ended at %s, so its bound is counted from %s, when its %s could take a turn again",
+		look, row.Issue, latest.ID, latest.EndedAt.UTC().Format(time.RFC3339), from.UTC().Format(time.RFC3339), check.Role))
 }
 
 // checkWake is a check's named wake coming due (record.CheckWakeDue): the look the check stands

@@ -677,21 +677,15 @@ func TestPauseKeepsThePods(t *testing.T) {
 	pods := []string{r.issue(1), r.issue(2), r.issue(3), r.issue(4), r.issue(5), r.issue(6)}
 	worker := func(n int) claim.Token { return r.token(pods[n-1], claim.RoleImplementer) }
 	architect := func(n int) claim.Token { return r.token(pods[n-1], claim.RoleArchitect) }
-	now := r.clock.Now().UTC()
-	inRound := func(c supervise.Claim) supervise.Claim {
-		opened := now.Add(-time.Minute)
-		c.UpdateRound = supervise.PodRound("pod-" + strings.ToLower(c.Issue))
-		c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt = "the pod runs an image the deployment has moved on from", &opened, &opened
-		return c
-	}
+	opened := r.clock.Now().UTC().Add(-time.Minute)
 	r.seed(r.root(pods[0], phase.Implementing), r.running(pods[0], claim.RoleImplementer, supervise.StateIdle))
-	r.seed(r.root(pods[1], phase.Implementing), inRound(r.running(pods[1], claim.RoleImplementer, supervise.StateIdle)))
+	r.seed(r.root(pods[1], phase.Implementing), inPodRound(r.running(pods[1], claim.RoleImplementer, supervise.StateIdle), opened))
 	r.seed(r.root(pods[2], phase.Implementing), r.running(pods[2], claim.RoleImplementer, supervise.StateIdle),
 		r.running(pods[2], claim.RoleArchitect, supervise.StateWorking))
 	r.seed(r.root(pods[3], phase.Implementing), r.running(pods[3], claim.RoleArchitect, supervise.StateIdle))
 	r.seed(r.root(pods[4], phase.Implementing), r.running(pods[4], claim.RoleImplementer, supervise.StateIdle))
-	r.seed(r.root(pods[5], phase.Implementing), inRound(r.running(pods[5], claim.RoleImplementer, supervise.StateIdle)),
-		inRound(r.running(pods[5], claim.RoleArchitect, supervise.StateWorking)))
+	r.seed(r.root(pods[5], phase.Implementing), inPodRound(r.running(pods[5], claim.RoleImplementer, supervise.StateIdle), opened),
+		inPodRound(r.running(pods[5], claim.RoleArchitect, supervise.StateWorking), opened))
 	r.boot()
 
 	pause := r.pauseProject()

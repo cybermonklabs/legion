@@ -496,6 +496,25 @@ func LockOpenPauseByTokenTx(ctx context.Context, tx pgx.Tx, token string) (Pause
 	return readOpenPauseByToken(ctx, tx, token, " for share")
 }
 
+// pauseHoldingTx is the id of the pause of the project whose token is token (readOpenPauseByToken's
+// spelling) that stood at at — begun at or before it, and ended at or after it or not ended — and
+// 0 where none stood then. A project has at most one open pause (project_pauses_one_open), so its
+// pauses never overlap and at most one stood. An outbox row due at at, while that pause stood, is
+// a row the pause held (record's pauseHolds) until its resume, and a wake taken for it is a held
+// wake of that pause (Store.TakePodWake).
+func pauseHoldingTx(ctx context.Context, tx pgx.Tx, token string, at time.Time) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `select id from project_pauses where lower(project) = $1 and began_at <= $2
+		and (ended_at is null or ended_at >= $2) order by began_at desc limit 1`, token, at).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the pause of %s that stood at %s: %w", token, at.UTC().Format(time.RFC3339), err)
+	}
+	return id, nil
+}
+
 // LockPauseTx is pause id read with its row locked for share: the stop transaction of decision 6
 // takes it on the pause its suspension carries, open or ended, so a resume that would end it
 // waits for the stop's records to commit. A pause no row holds is an error.

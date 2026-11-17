@@ -44,6 +44,8 @@
 -- hand-written insert; the daemon of this release writes the column itself (store's
 -- RecordPodWakeTx). pod_resumes.pause_id is the pause that held the wake, null for every other
 -- wake. A held wake pairs with no release, so the check refuses a pause_id beside a release_id.
+-- The partial index on pause_id serves the reads of a pause's held wakes (store's PauseLetOutsTx
+-- and PausePodHoldsSince), which are a few rows of a table that holds every wake.
 --
 -- No outbox kind is added, so outbox_kind_check stays as 20261114031356 wrote it. The pause's
 -- stop is a `supervise` row whose op is `pause_stop`, and the controller's two notices are
@@ -147,3 +149,4 @@ create trigger pod_resumes_clock_from_at before insert on pod_resumes
 
 alter table pod_resumes add column pause_id bigint references project_pauses (id),
   add constraint pod_resumes_held_wake_pairs_with_no_release check (pause_id is null or release_id = 0);
+create index pod_resumes_pause on pod_resumes (pause_id) where pause_id is not null;

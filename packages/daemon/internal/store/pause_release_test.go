@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -336,7 +337,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 	st := migratedStore(t)
 	woke := pausedAt.Add(-2 * time.Hour)
 	recordRelease(t, st, woke.Add(-time.Hour))
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, claim.RoleArchitect, pods.WakeDelivery, woke); err != nil || !taken {
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, claim.RoleArchitect, pods.WakeDelivery, woke, time.Time{}); err != nil || !taken {
 		t.Fatalf("take the architect's wake = %t, %v", taken, err)
 	}
 	clock := woke.Add(30 * time.Minute)
@@ -502,5 +503,113 @@ func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
 	}
 	if ended, err := st.EndLivePausePodHold(ctx, "legion", "OTHER-5", PausePodHoldReady, pausedAt.Add(3*time.Minute)); err != nil || !ended {
 		t.Fatalf("the end at the ready of OTHER-5's architect = %t, %v; want the hold LEGION's pause put on its pod ended", ended, err)
+	}
+}
+
+// Decision 13 of dispatch://INFRA-3759: the resume ends the hold of a pod in which a role is live,
+// and a claim with no process recorded that is queued or launching is no live role. The held rows
+// are claimable from the resume's commit, before the resume ends the holds, so a held start the
+// outbox runs then, or an operator's spawn the resume's rule parks in the wake pacing, leaves its
+// claim launching with no locator while no role of the pod runs, and a claim nothing has launched
+// yet is queued with none: the hold stays. A launch whose process is recorded is coming up in the
+// pod, and the resume ends the hold for it.
+func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	if _, err := holdPod(st, pause, rootIssue, pausedAt); err != nil {
+		t.Fatalf("hold the pod: %v", err)
+	}
+	resumedAt := pausedAt.Add(time.Hour)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion", Tree: rootIssue, Issue: rootIssue,
+		Role: claim.RoleTester, TreeEpoch: 1, Generation: 1, State: supervise.StateQueued}); err != nil {
+		t.Fatalf("queue the tester: %v", err)
+	}
+	if ended, err := st.EndLivePausePodHold(ctx, "legion", rootIssue, PausePodHoldResumed, resumedAt); err != nil || ended {
+		t.Fatalf("the resume's end with the tester queued and no process recorded = %t, %v; want nothing ended", ended, err)
+	}
+	const token = claim.Token("legion-legion-legion-208-implementer")
+	waiting := supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RoleImplementer,
+		TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateLaunching}
+	if err := st.PutClaim(ctx, waiting); err != nil {
+		t.Fatalf("park the implementer's launch: %v", err)
+	}
+	if ended, err := st.EndLivePausePodHold(ctx, "legion", rootIssue, PausePodHoldResumed, resumedAt); err != nil || ended {
+		t.Fatalf("the resume's end with the implementer launching and no process recorded = %t, %v; want nothing ended", ended, err)
+	}
+	waiting.Generation = 2
+	waiting.Locator = &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: "pod-uid-2/2",
+		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-208", PodUID: "pod-uid-2", Container: "roles", Generation: 2}}
+	if err := st.PutClaim(ctx, waiting); err != nil {
+		t.Fatalf("record the implementer's launch in the pod: %v", err)
+	}
+	if ended, err := st.EndLivePausePodHold(ctx, "legion", rootIssue, PausePodHoldResumed, resumedAt); err != nil || !ended {
+		t.Fatalf("the resume's end with the implementer's process coming up in the pod = %t, %v; want the hold ended", ended, err)
+	}
+}
+
+// Decision 12 of dispatch://INFRA-3759, and the let-out of decision 14: the sweep's read of the
+// holds carries with each hold the latest let-out of a launch its own pause held for a role of the
+// pod, the greatest stuck clock of the issue's resumes that pause held, and reads a hold that ended
+// before since where that let-out came after it. A resume no pause held moves nothing.
+func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	const other = "LEGION-300"
+	resumedAt := pausedAt.Add(time.Hour)
+	for _, issue := range []string{rootIssue, other} {
+		if _, err := holdPod(st, pause, issue, pausedAt); err != nil {
+			t.Fatalf("hold the pod of %s: %v", issue, err)
+		}
+		if _, err := st.EndPausePodHold(ctx, "LEGION", issue, PausePodHoldResumed, resumedAt); err != nil {
+			t.Fatalf("end the hold of %s at the resume: %v", issue, err)
+		}
+	}
+	for _, resume := range []struct {
+		issue   string
+		role    claim.Role
+		letOut  time.Duration
+		byPause bool
+	}{
+		{rootIssue, claim.RoleImplementer, 3 * time.Minute, true},
+		{rootIssue, claim.RoleArchitect, 10 * time.Minute, true},
+		{rootIssue, claim.RoleTester, 20 * time.Minute, false},
+		{other, claim.RoleImplementer, 5 * time.Minute, true},
+	} {
+		var held *int64
+		kind := "delivery"
+		if resume.byPause {
+			held, kind = &pause.ID, pods.WakePause
+		}
+		if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6)`, resume.issue, string(resume.role), kind, pausedAt.Add(time.Minute),
+			resumedAt.Add(resume.letOut), held); err != nil {
+			t.Fatalf("record the resume of %s's %s: %v", resume.issue, resume.role, err)
+		}
+	}
+	for _, tc := range []struct {
+		since time.Duration
+		want  map[string]time.Duration
+	}{
+		{since: -time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, other: 5 * time.Minute}},
+		{since: 7 * time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute}},
+		{since: 10 * time.Minute},
+	} {
+		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since))
+		if err != nil {
+			t.Fatalf("read the holds since the resume %+v: %v", tc.since, err)
+		}
+		got := map[string]time.Duration{}
+		for _, hold := range holds {
+			if hold.Pause != pause.ID || !hold.EndedAt.Equal(resumedAt) || hold.End != PausePodHoldResumed {
+				t.Fatalf("a hold read since the resume %+v = %+v, want pause %d's, ended at the resume", tc.since, hold, pause.ID)
+			}
+			got[hold.Issue] = hold.LetOut.Sub(resumedAt)
+		}
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Fatalf("the let-outs of the holds read since the resume %+v = %v, want %v", tc.since, got, tc.want)
+		}
 	}
 }

@@ -327,7 +327,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	// mark is fresh for each row, so a tick still in flight when its row stops (renewOnce) shares
 	// none with the next row's ticks, and it is taken here, where the lane holds no connection: the
 	// claim's transaction has committed.
-	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row)
+	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row, now)
 	err := r.execute(ctx, row)
 	renewal.stop()
 	settleCtx := ctx
@@ -340,9 +340,11 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	return nil
 }
 
-// leaseRenewal keeps a running row's lease live (renewLease): the tick armed next, whether the run
-// has ended, and what the ticks have already said, so each is said once per run.
+// leaseRenewal keeps a running row's lease live (renewLease): when the run began, the tick armed
+// next, whether the run has ended, and what the ticks have already said, so each is said once per
+// run. began is set once, before the first tick, and read without the lock.
 type leaseRenewal struct {
+	began   time.Time
 	mu      sync.Mutex
 	stopped bool
 	tick    supervise.Cancel
@@ -403,10 +405,11 @@ func (l *leaseRenewal) warnOnce(held int64) bool {
 // at the next tick; a lease found no longer the row's is logged once, and the run goes on to its
 // end, since nothing cancels a row mid-effect — the finish or retry then fences on the token and
 // records nothing. A lifecycle row's tick also reads the rows its issue holds behind it, and logs
-// each once it has waited heldWarnAfter: the lane runs one row at a time, so a row that runs long
-// is what an operator looks at when a stop or a start of the issue does not happen.
-func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow) *leaseRenewal {
-	renewal := &leaseRenewal{warned: map[int64]bool{}}
+// each once it has waited heldWarnAfter behind it (warnHeld): the lane runs one row at a time, so a
+// row that runs long is what an operator looks at when a stop or a start of the issue does not
+// happen. began is when the row's run began, the moment of its claim (runRow).
+func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began time.Time) *leaseRenewal {
+	renewal := &leaseRenewal{began: began, warned: map[int64]bool{}}
 	clock := r.timers()
 	lifecycle := record.LaneOf(row.Kind) == record.LaneLifecycle
 	var tick func()
@@ -448,7 +451,10 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 }
 
 // warnHeld is one tick's look at the lifecycle rows of the row's issue held behind it
-// (record.Store.HeldRows): each that has waited heldWarnAfter is logged, once per run of this row.
+// (record.Store.HeldRows): each that has waited heldWarnAfter behind it is logged, once per run of
+// this row. The wait is counted from the later of the held row's next_at and the moment this row's
+// run began: a row a project's pause held keeps the next_at it had, which can be hours old when the
+// resume lets it run, and the time before this row began is no wait behind it.
 func (r *outbox) warnHeld(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held []record.HeldRow
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
@@ -465,7 +471,11 @@ func (r *outbox) warnHeld(ctx context.Context, row record.OutboxRow, renewal *le
 		if waiting.WaitsOn != row.ID {
 			continue
 		}
-		waited := now.Sub(waiting.NextAt)
+		since := waiting.NextAt
+		if renewal.began.After(since) {
+			since = renewal.began
+		}
+		waited := now.Sub(since)
 		if waited < heldWarnAfter || renewal.ended() || !renewal.warnOnce(waiting.ID) {
 			continue
 		}

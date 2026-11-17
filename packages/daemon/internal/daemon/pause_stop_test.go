@@ -318,7 +318,7 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 	held := r.pauseLegion()
-	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, claim.RoleTester, pods.WakeChecks, time.Now()); err != nil || !taken {
+	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, claim.RoleTester, pods.WakeChecks, time.Now(), time.Time{}); err != nil || !taken {
 		t.Fatalf("take the tester's wake = %t, %v", taken, err)
 	}
 

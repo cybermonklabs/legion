@@ -439,6 +439,14 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
+// inPodRound is c in an update round over its issue's pod (podLocator's), opened at opened and
+// asked of c then, for the reason a pod that runs an outdated image gives.
+func inPodRound(c supervise.Claim, opened time.Time) supervise.Claim {
+	c.UpdateRound = supervise.PodRound("pod-" + strings.ToLower(c.Issue))
+	c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt = "the pod runs an image the deployment has moved on from", &opened, &opened
+	return c
+}
+
 // seed records root as an admitted tree with its claims through the rig's open store
 // (seedWorkflowTreeIn), puts it on the board at its status, writes each claim's role prompt, and
 // stands its pod up in the runtime.
@@ -804,17 +812,10 @@ func (r *pauseDaemonRig) count(sql string, args ...any) int {
 }
 
 // enqueue writes payload as an outbox row of issue on the rig's database, due now on both clocks
-// that read it: the outbox judges a row due by the wall clock (newOutbox's now), and the state
-// lists a held row as due by the daemon's one clock, the rig's test clock (source.now). The test
-// clock stands still while the wall clock runs and is moved ahead of it by a test, so the row is
-// stamped with the earlier of the two.
+// that read it (dueNow).
 func (r *pauseDaemonRig) enqueue(issue string, payload record.OutboxPayload) int64 {
 	r.t.Helper()
-	at := time.Now().UTC()
-	if now := r.clock.Now().UTC(); now.Before(at) {
-		at = now
-	}
-	row, err := record.NewOutboxRow(issue, payload, at)
+	row, err := record.NewOutboxRow(issue, payload, r.dueNow())
 	if err != nil {
 		r.t.Fatalf("build the outbox row of %s: %v", issue, err)
 	}
@@ -827,6 +828,18 @@ func (r *pauseDaemonRig) enqueue(issue string, payload record.OutboxPayload) int
 		r.t.Fatalf("queue the outbox row of %s: %v", issue, err)
 	}
 	return id
+}
+
+// dueNow is the moment an outbox row is due now on both clocks that read it: the outbox judges a
+// row due by the wall clock (newOutbox's now), and the state lists a held row as due by the
+// daemon's one clock, the rig's test clock (source.now). The test clock stands still while the
+// wall clock runs and is moved ahead of it by a test, so it is the earlier of the two.
+func (r *pauseDaemonRig) dueNow() time.Time {
+	at := time.Now().UTC()
+	if now := r.clock.Now().UTC(); now.Before(at) {
+		at = now
+	}
+	return at
 }
 
 // later is the later of the test clock and the wall clock: the engine stamps the rows it queues

@@ -126,19 +126,35 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string,
 }
 
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
-// notice or a phase-ended message that found the role it is for released. Inside a fact's
-// transaction the workflow takes its four through PodRecords.TakePodWake, which is where taking
-// a wake is written out.
+// notice, a phase-ended message, a hook prompt or a merge-queue removal that found the role it is
+// for released (internal/daemon's wakeForDelivery). Inside a fact's transaction the workflow takes
+// its wakes through PodRecords.TakeHeldPodWake, which is where taking a wake is written out.
+//
+// due is the due time of the outbox row the wake is taken for (record.OutboxRow.NextAt), and the
+// zero time for a wake taken for no row. A project's pause holds such a row, keeping the due time
+// it had, and the row runs, and wakes its role, only after the resume: a wake for a row due while
+// a pause of the project stood (pauseHoldingTx) is a held wake of that pause, marked with it and
+// paired with no release (TakeHeldPodWake, decision 15 of dispatch://INFRA-3759), as the wakes the
+// workflow takes while the project is paused are. So the update round over the role's pod counts
+// that pause's hold on to the role's let-out (PausePodHoldsSince), and the release records leave
+// the wait out.
 //
 // project is the project token the claim-keyed tables hold, as it is for every other
 // project-keyed method of this file: the daemon derives it once at boot (claim.ProjectToken,
 // internal/daemon/bootreads.go) and its outbox carries that, so nothing is derived again here.
-func (s *Store) TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error) {
+func (s *Store) TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at, due time.Time) (bool, error) {
 	records := &PodRecords{store: s, project: project}
 	var taken bool
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		var pause int64
+		if !due.IsZero() {
+			var err error
+			if pause, err = pauseHoldingTx(ctx, tx, project, due); err != nil {
+				return err
+			}
+		}
 		var err error
-		taken, err = records.TakePodWake(ctx, tx, issue, role, kind, at)
+		taken, err = records.TakeHeldPodWake(ctx, tx, issue, role, kind, at, pause)
 		return err
 	})
 	return taken, err

@@ -3195,12 +3195,13 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 
 // RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
 // statement alone, for a caller that judges a role run by its claim and never reads the queued
-// starts beside it (admit's finishFencedStarts, through stopOutlivedStart). A token the store
+// starts beside it (admit's finishFencedStarts, through stopOutlivedStart, and the outbox's
+// check_look row after a project's pause, internal/daemon's lookBoundAfterPause). A token the store
 // holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
-// It saves that caller RoleRuns' first statement, which selects and strictly decodes every
+// It saves admit's caller RoleRuns' first statement, which selects and strictly decodes every
 // supervise row of every issue that owes a start, once per admission pass.
 //
-// Nothing of the ordering RoleRuns sets out is given up, and the one caller leans on it: these
+// Nothing of the ordering RoleRuns sets out is given up, and admit's caller leans on it: these
 // claims must be read after the owed rows they are judged against, so that a stop made between
 // the two reads is in the claim read here and the rule acts on this pass rather than the next.
 // The mark it weighs each owed row against is RoleClaim.RetiredAtWriteMark, taken in store's

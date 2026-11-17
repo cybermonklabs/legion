@@ -319,6 +319,109 @@ func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
 	}
 }
 
+// A look's bound counts no time a project's pause held the check's role, nor the time that role's
+// launch then waited its turn in the wake pacing: a look that began before the end of the
+// project's latest pause counts its two hours (workflow.CheckLookBound) from the later of that end
+// and the role's last ready where that ready is after the end, and nothing while the role's claim
+// is still coming up. The look began an hour into a three-hour pause, so the row of its bound fell
+// due at the pause's end and runs at the resume. With the role launching, as behind the resume's
+// queue, the row waits a whole bound out and the look stays open; a ready of the role before the
+// pause counts for nothing. With the role ready eleven minutes after the end, the row waits until
+// that ready and the bound, and then ends the look as today: the role is suspended, its pod is
+// deleted and the next look is named a bound out.
+func TestACheckLookBoundAfterAPauseCountsFromTheCheckRolesReady(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state supervise.ClaimState
+		// ready is the role's last ready after the pause's end, negative for one before the pause.
+		ready time.Duration
+		// at is when the row runs after the pause's end, and waits is when it runs again.
+		at, waits time.Duration
+	}{
+		{name: "the role still launching", state: supervise.StateLaunching, ready: -4 * time.Hour,
+			at: time.Minute, waits: time.Minute + workflow.CheckLookBound},
+		{name: "the role ready since eleven minutes after the end", state: supervise.StateReady, ready: 11 * time.Minute,
+			at: 12 * time.Minute, waits: 11*time.Minute + workflow.CheckLookBound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			ctx := context.Background()
+			st, err := store.Open(ctx, pool.Config().ConnString())
+			if err != nil {
+				t.Fatalf("open the store: %v", err)
+			}
+			t.Cleanup(st.Close)
+			root := checkRoot()
+			putOutboxIssue(t, pool, records, root)
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			ended := now.Add(-tc.at)
+			began := ended.Add(-3 * time.Hour)
+			endLegionPause(t, pool, openLegionPause(t, pool, began), ended)
+			lookAt := began.Add(time.Hour)
+			check := openCheck(root, "a1b2c3d4")
+			check.OpenedAt, check.BoundAt, check.LookWakeAt, check.LastWakeAt = lookAt, lookAt.Add(336*time.Hour), &lookAt, &lookAt
+			putProductionCheck(t, pool, records, check)
+			token, err := claim.NewToken("legion", root.Key, check.Role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: root.Tree, Issue: root.Key, Role: check.Role,
+				Generation: 1, State: tc.state, LastReady: ended.Add(tc.ready), Session: "ses_implementer",
+				SessionFile: "/sessions/implementer.jsonl"}); err != nil {
+				t.Fatalf("store the check's role %s: %v", tc.state, err)
+			}
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: check.OpenedAt}, lookAt.Add(workflow.CheckLookBound)))
+			engine := workflow.New(records, workflow.Config{Project: "legion", Linger: 24 * time.Hour}, quietLogger())
+			clock := now
+			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{engine}, project: "legion",
+				log: quietLogger(), now: func() time.Time { return clock }}
+			rowsOf := func(kind record.OutboxKind) int {
+				t.Helper()
+				var n int
+				if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = $2`, root.Key, string(kind)).Scan(&n); err != nil {
+					t.Fatalf("count the %s rows: %v", kind, err)
+				}
+				return n
+			}
+
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run once: %v", err)
+			}
+			if got := readProductionCheck(t, pool, records, root.Key); !got.LookOpen {
+				t.Fatalf("look 1 after its row ran %s after the pause's end is ended, want it open: its bound counts from %s after the end",
+					tc.at, tc.waits-workflow.CheckLookBound)
+			}
+			if suspends, wakes := rowsOf(record.OutboxKindIssueSuspend), rowsOf(record.OutboxKindCheckWake); suspends != 0 || wakes != 0 {
+				t.Fatalf("after the row waited: %d issue_suspend and %d check_wake rows, want none", suspends, wakes)
+			}
+			var attempts int
+			var nextAt time.Time
+			if err := pool.QueryRow(ctx, `select attempts, next_at from outbox where issue = $1 and kind = 'check_look'`, root.Key).Scan(&attempts, &nextAt); err != nil {
+				t.Fatalf("read the waiting check_look row: %v", err)
+			}
+			if want := ended.Add(tc.waits); attempts != 1 || !nextAt.Equal(want) {
+				t.Fatalf("the check_look row = attempts %d due %s, want one attempt due %s after the pause's end",
+					attempts, nextAt.Sub(ended), tc.waits)
+			}
+			if tc.state == supervise.StateLaunching {
+				return
+			}
+
+			clock = ended.Add(tc.waits)
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run once at the bound: %v", err)
+			}
+			if got := readProductionCheck(t, pool, records, root.Key); got.LookOpen {
+				t.Fatal("look 1 is still open once its row ran at the bound counted from the role's ready, want it ended")
+			}
+			if suspends, wakes := rowsOf(record.OutboxKindIssueSuspend), rowsOf(record.OutboxKindCheckWake); suspends != 1 || wakes != 1 {
+				t.Fatalf("after the look ended: %d issue_suspend and %d check_wake rows, want one of each", suspends, wakes)
+			}
+		})
+	}
+}
+
 // A check_look row of no open check — none recorded, or one closed since — and one of a check a
 // later merge replaced (its OpenedAt another than the issue's check's) each finish without acting:
 // the look they would end is not the issue's check's.

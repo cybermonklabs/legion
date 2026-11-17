@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // The holds a project's pause puts on its issues' pods (project_pause_pod_holds, decisions 12 and
@@ -70,6 +71,13 @@ type PausePodHold struct {
 	HeldAt  time.Time
 	EndedAt time.Time
 	End     PausePodHoldEnd
+	// LetOut is, as PausePodHoldsSince reads it, the latest let-out of a launch the hold's pause
+	// held for a role of the pod: the greatest stuck clock (pod_resumes.clock_at) of the issue's
+	// resumes that pause held (pod_resumes.pause_id), which the resume starts at its own moment
+	// (SetProjectResumeClocksTx) and the reservation of each launch moves to the moment the wake
+	// pacing lets that launch out (SetResumeClock). It is zero where the pause held no launch of
+	// the pod, and every other read of a hold leaves it zero.
+	LetOut time.Time
 }
 
 const pausePodHoldColumns = `id, pause_id, project, issue, held_at, ended_at, coalesce(ended_why, '')`
@@ -171,19 +179,35 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 	return holds, nil
 }
 
-// PausePodHoldsSince is every hold of project's pods that stands, or that ended after since, by
-// issue and then by when it began: what one sweep of the update rounds reads (decision 12 of
-// dispatch://INFRA-3759). A round waits over a pod a hold stands on, and its bound moves by the
-// time a hold kept its pod after the round opened, so since is the opening of the oldest round
-// the sweep reads. project is the Dispatch key.
+// PausePodHoldsSince is every hold of project's pods that stands, that ended after since, or whose
+// pause let out a launch of the pod after since, by issue and then by when it began, each with its
+// latest let-out (PausePodHold.LetOut), read in the one statement: what one sweep of the update
+// rounds reads (decision 12 of dispatch://INFRA-3759). A round waits over a pod a hold stands on,
+// and its bound moves by the time a hold kept its pod after the round opened, which runs on to the
+// let-out of the last launch its pause held for a role of the pod, so since is the opening of the
+// oldest round the sweep reads. project is the Dispatch key.
 func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since time.Time) ([]PausePodHold, error) {
-	rows, err := s.pool.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
-		where project = $1 and (ended_at is null or ended_at > $2) order by issue, held_at`, project, since)
+	rows, err := s.pool.Query(ctx, `select h.id, h.pause_id, h.project, h.issue, h.held_at, h.ended_at, coalesce(h.ended_why, ''), l.let_out
+		from project_pause_pod_holds h
+		left join lateral (select max(r.clock_at) as let_out from pod_resumes r
+			where r.project = lower(h.project) and r.issue = h.issue and r.pause_id = h.pause_id) l on true
+		where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2) order by h.issue, h.held_at`, project, since)
 	if err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
 	}
-	holds, err := scanPausePodHolds(rows)
-	if err != nil {
+	defer rows.Close()
+	var holds []PausePodHold
+	for rows.Next() {
+		var h PausePodHold
+		var end string
+		var ended, letOut *time.Time
+		if err := rows.Scan(&h.ID, &h.Pause, &h.Project, &h.Issue, &h.HeldAt, &ended, &end, &letOut); err != nil {
+			return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
+		}
+		h.End, h.EndedAt, h.LetOut = PausePodHoldEnd(end), orZero(ended), orZero(letOut)
+		holds = append(holds, h)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
 	}
 	return holds, nil
@@ -205,11 +229,18 @@ func scanPausePodHolds(rows pgx.Rows) ([]PausePodHold, error) {
 // EndLivePausePodHold ends, at at for the reason end, the hold that stands on issue's pod where a
 // role of the pod is live, in a transaction of its own, and answers whether it ended one: the
 // resume's end of the holds of pods with a live role (PausePodHoldResumed) and the end at a role's
-// ready (PausePodHoldReady, decision 13 of dispatch://INFRA-3759). It takes the issue's lock
-// (LockIssueForPause) and then ends the hold in one statement that reads the live role itself, so
-// a stop transaction of a role of the same pod commits first and the statement sees it: a hold
-// that stop opened stays, since no role of the pod runs then. project is the project token, as
-// the claims table holds it; the hold's own Dispatch key is read as the key it lowercases.
+// ready (PausePodHoldReady, decision 13 of dispatch://INFRA-3759). A live role is a claim that is
+// not suspended, failed or retired (supervise.GoneStates) and is not queued or launching with no
+// process recorded (no locator): a claim nothing has launched yet, or a launch that waits its turn
+// in the wake pacing or that the gate holds, runs nothing. The resume ends the holds after its
+// commit has made the held rows claimable and after it has posted the resume by rule of each
+// operator's spawn owed a launch (internal/daemon's projectPause.Resumed), so a held start the
+// outbox runs in between, or such a spawn's machine, can park a launch so while no role of the
+// pod runs. It takes the issue's lock (LockIssueForPause) and then ends the hold in one statement
+// that reads the live role itself, so a stop transaction of a role of the same pod commits first
+// and the statement sees it: a hold that stop opened stays, since no role of the pod runs then.
+// project is the project token, as the claims table holds it; the hold's own Dispatch key is read
+// as the key it lowercases.
 func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
 	if err := validPausePodHoldEnd(issue, end); err != nil {
 		return false, err
@@ -221,8 +252,9 @@ func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, 
 		}
 		tag, err := tx.Exec(ctx, `update project_pause_pod_holds h set ended_at = $3, ended_why = $4
 			where lower(h.project) = $1 and h.issue = $2 and h.ended_at is null
-			and exists (select 1 from claims c where c.project = $1 and c.issue = h.issue and c.state <> all($5))`,
-			project, issue, at, string(end), goneStates())
+			and exists (select 1 from claims c where c.project = $1 and c.issue = h.issue and c.state <> all($5)
+				and not (c.state = any($6) and c.locator is null))`,
+			project, issue, at, string(end), goneStates(), notStartedStates())
 		if err != nil {
 			return fmt.Errorf("end the pod hold of %s: %w", issue, err)
 		}
@@ -230,6 +262,14 @@ func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, 
 		return nil
 	})
 	return ended, err
+}
+
+// notStartedStates are the states in which a claim that records no process (no locator) has none
+// running or coming up yet, as the text array a query binds: queued, for which nothing was
+// launched, and launching, a launch that waits its turn in the wake pacing or that the pause's
+// gate holds (EndLivePausePodHold).
+func notStartedStates() []string {
+	return claimStateNames([]supervise.ClaimState{supervise.StateQueued, supervise.StateLaunching})
 }
 
 // endTreePausePodHoldsTx ends, at at, the hold that stands on the pod of each issue of tree: the

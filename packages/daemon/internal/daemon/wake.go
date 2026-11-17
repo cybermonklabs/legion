@@ -248,11 +248,16 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // a test's, which supervises nothing — wakes nothing: there is no machine to read a claim's state
 // from.
 //
+// due is the due time of the row the wake is for (record.OutboxRow.NextAt). A project's pause
+// holds every such row, and the row keeps the due time it had, so one due while a pause stood
+// wakes its role only after the resume: the store takes that wake as a held wake of the pause
+// (store.Store.TakePodWake, decision 15 of dispatch://INFRA-3759).
+//
 // The claim is read from the machine's View, which never waits on the decision in flight: a
 // machine holds its lock through the runtime call its decision makes, so a read that waited
 // would hold the notice and the phase-ended message behind a Sandbox relaunch waiting on the
 // cluster, which is the defect LEGION-650 fixed in the routing beside this read.
-func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string) (bool, error) {
+func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string, due time.Time) (bool, error) {
 	if r.supervisor == nil {
 		return false, nil
 	}
@@ -275,7 +280,7 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC())
+	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC(), due)
 	if err != nil {
 		return false, err
 	}
@@ -309,14 +314,16 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 
 // logRefusedByOpenResume says why a delivery wake whose take the role's open resume refused
 // resumes a claim that is still released (wakeForDelivery), by whose that open resume is
-// (store.OpenPodResume). One a project pause's stop took (its pause, the held wake of decision 15
-// of dispatch://INFRA-3759) is that pause's owed launch, whose start row waits in the outbox: the
-// resume wakes every lane at once (projectPause.Resumed), so a held notice, phase-ended message,
-// hook prompt or merge-queue removal of the same role can run before that start and find the
-// role released under the held wake. Nothing is wrong there, and the line says so at Info. Any
-// other open resume over a released claim is one whose process never came — a resume the store
-// refused after its take committed, or a daemon that stopped between the two — and the line says
-// so at Warn, as it does when the read fails, with its error: the resume goes ahead either way.
+// (store.OpenPodResume). One a pause held (its pause, the held wake of decision 15 of
+// dispatch://INFRA-3759) is that pause's owed launch, whose start row waits in the outbox, or the
+// wake an earlier delivery row of the role that the pause held took after the resume: the resume
+// wakes every lane at once (projectPause.Resumed), so a held notice, phase-ended message, hook
+// prompt or merge-queue removal of the same role can run before that start, or after that other
+// delivery's wake, and find the role released under the held wake. Nothing is wrong there, and
+// the line says so at Info. Any other open resume over a released claim is one whose process
+// never came — a resume the store refused after its take committed, or a daemon that stopped
+// between the two — and the line says so at Warn, as it does when the read fails, with its error:
+// the resume goes ahead either way.
 func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role claim.Role, detail string) {
 	_, pause, open, err := r.trees.OpenPodResume(ctx, r.project, issue, role)
 	if err == nil && open && pause != 0 {

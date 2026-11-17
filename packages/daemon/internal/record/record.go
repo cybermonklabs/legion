@@ -2138,10 +2138,12 @@ type RoleClaim struct {
 	GivenEntry int64
 	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
 	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
-	// writes it, a relaunch's included (supervise's ready). Its reader is the first stall arm
+	// writes it, a relaunch's included (supervise's ready). Its readers are the first stall arm
 	// (admit's architectTookNothing): a task waits for an agent that is up to take it, so while
 	// the claim is ready, working or idle the arm counts the task from the later of its entry's
-	// first queueing and this moment.
+	// first queueing and this moment; and a production check's look bound after a project's
+	// pause (internal/daemon's lookBoundAfterPause), which counts from no earlier than this moment
+	// where it is after the pause's end.
 	LastReady time.Time
 	// Handshake is the claim's handshake of the last entry it was queued a task of
 	// (supervise.Claim.Handshake): that entry, the run its task was of, when a task of it was
