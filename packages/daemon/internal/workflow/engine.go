@@ -1330,10 +1330,11 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // trimmer that made no reading, and a reading of a mounted volume does not have both at zero.
 //
 // The opening clause of a switched-off trimmer counts nothing, and what the report carries does
-// the counting: what stops the trimmer is three recovered panics in a row (volumeFaultLimit,
-// launcher's volumetrim.go), which the stop reason the launcher sends says and the sentence
-// quotes, while Faults holds the newest faults since the trimmer's last report, so an earlier
-// one it left out makes four.
+// the counting: what stops the trimmer is three recovered panics in a row of one kind of its
+// work, its readings of the volume or its sweeps and their reports (volumeFaultLimit and
+// faultRow, launcher's volumetrim.go), which the stop reason the launcher sends says and the
+// sentence quotes, while Faults holds the newest faults since the trimmer's last report, of
+// either kind, so an earlier one it left out makes four.
 func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	var out strings.Builder
 	switch {

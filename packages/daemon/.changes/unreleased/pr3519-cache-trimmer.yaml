@@ -16,8 +16,10 @@ body: |-
   see every process that may be using the volume.
 
   A sweep that leaves the volume above its low mark, unless the settings stopped it, and a
-  trimmer that switches itself off after three panics in a row, reach the issue's architect as a
-  new `volume-near-full` notice, bounded to three per trimmer and episode and one an hour per pod.
+  trimmer that switches itself off after three panics in a row of one kind of its work — its
+  readings of the volume, or its sweeps and their reports, each kind's row ended by a reading or
+  a sweep of that kind that runs to its end — reach the issue's architect as a new
+  `volume-near-full` notice, bounded to three per trimmer and episode and one an hour per pod.
   A report skips the hour, and not the three, where a rise raised its episode: at the start of a
   reported sweep (one that ended above the low mark and that the settings did not stop, its start
   read before its report is made, so one whose report then panicked, which sends none, counts

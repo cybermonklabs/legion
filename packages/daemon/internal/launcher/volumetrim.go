@@ -111,8 +111,10 @@ const (
 	// volumeRisePoints is how far above an episode's anchor the lower of the last two reported
 	// sweep starts must stand to raise the episode number (riseAt).
 	volumeRisePoints = 5.0
-	// volumeFaultLimit is how many recovered panics in a row stop the trimmer for the life of
-	// the launcher process, a row that only a sweep run to its end ends (fault, tick).
+	// volumeFaultLimit is how many recovered panics in a row of one kind of the trimmer's work
+	// stop the trimmer for the life of the launcher process: a row of its readings, which a
+	// reading run to its end ends, or a row of its sweeps and their reports, which a sweep run to
+	// its end ends (faultRow, fault, tick).
 	volumeFaultLimit = 3
 	// volumeSettingsWait is how often a trimmer with no settings it can run asks for settings
 	// again (awaitSettings). It is no part of how fast an operator's change reaches the pod:
@@ -240,15 +242,24 @@ type trimmer struct {
 	// faultsDropped is how many older ones the rule above left out, which the next report says
 	// rather than dropping them silently.
 	faultsDropped int
-	// refusedReads is the refused /proc reads of sweeps that sent no report, which the next
-	// report carries (carryRefused): a sweep that ends at or below the low mark sends none, and
-	// a process the trimmer could not read is one the operator must hear of. refusedDropped is
-	// how many the bound on a report's list left out, which that report says.
+	// refusedReads is the refused /proc reads no report has carried yet, which the next report
+	// carries (carryRefused): a sweep puts each here the moment it meets it (sweep), so a sweep
+	// that sends no report — one that ends at or below the low mark, or one that panics after the
+	// refusal, in itself, in its interval or in its report — leaves it for the next, and a
+	// process the trimmer could not read is one the operator must hear of. refusedDropped is how
+	// many the bound on a report's list left out, which that report says.
 	refusedReads   []string
 	refusedDropped int
-	consecutive    int // recovered panics since the last sweep run to its end (fault), which volumeFaultLimit bounds
-	held           *shimwire.LauncherVolumeReport
-	walk           walkResult // the last size walk, which a report between walks carries
+	// doing is the kind of work in flight, whose row a panic of that work adds to (fault): the
+	// readings' unless a sweep's work runs, which sets it for as long as that work runs (tick,
+	// flush), and the readings' again once that work has run to its end or its panic has been
+	// counted (ran, fault, run).
+	doing faultRow
+	// inARow is each row's recovered panics since the last work of its kind that ran to its end
+	// (ran), indexed by faultRow, which volumeFaultLimit bounds (fault).
+	inARow [sweepRow + 1]int
+	held   *shimwire.LauncherVolumeReport
+	walk   walkResult // the last size walk, which a report between walks carries
 	// said is the last standing state the trimmer wrote, which says keeps so that a state it is
 	// still in is not written once per interval.
 	said string
@@ -313,8 +324,9 @@ const (
 	// release without this work and the roll-forward after it, and keeps its trimmer.
 	trimWaits
 	// trimOff is the one ending that keeps the trimmer off while the launcher process lives:
-	// volumeFaultLimit recovered panics in a row have switched the trimmer off, and nothing
-	// starts another before the launcher process restarts (fault, run).
+	// volumeFaultLimit recovered panics in a row of one kind of its work have switched the
+	// trimmer off (faultRow), and nothing starts another before the launcher process restarts
+	// (fault, run).
 	// The report saying so is all that is left to do, and run makes it and tries it before it
 	// returns (switchOff, deliverLast).
 	trimOff
@@ -339,23 +351,40 @@ const (
 // recovered (fault), and the last report.
 //
 // A panic of the work is a fault as tick's are (fault): written with its stack, kept for the next
-// report and added to the same row of faults, toward volumeFaultLimit, which only a sweep run to
-// its end ends (tick). The work then starts again from its wait for settings, unless that fault is
-// the third in a row, which switches the trimmer off as tick's third does. A panic of the last
-// report ends the trimmer, written with its stack, and that report is not tried again: nothing is
-// left to carry a fault to the daemon or to count it toward, and a report that panicked once can
-// panic again. Each step runs inside contain and none inside a deferred handler, so a panic raised
-// while another is being handled, in tick's handler or in the counting here, meets a recovery too
-// and never escapes.
+// report and added to the row of the kind of work it interrupted (faultRow), toward
+// volumeFaultLimit. The panics run catches outside tick's own recovery are counted so:
+//   - the resend of a held report in the wait for settings adds to the sweep row, as the resend
+//     before an interval's reading does: a held report is a sweep's report, and its resend that
+//     report's delivery (flush);
+//   - the wait's own reading of the settings and its lines, and the interval loop's clock and its
+//     started: line, add to the reading row, the readings' being every work of the goroutine but a
+//     sweep's. Nothing between two starts of the loop ends that row, so a clock or a line that
+//     panics each time the loop starts switches the trimmer off at its third panic, where a panic
+//     counted in no row would start the loop again for ever;
+//   - a panic of the line tick's handler writes of a fault adds to the row of that fault. It is
+//     raised in the recovery of that work, which is not passed over until its fault is counted and
+//     written (fault), so it is one more panic of that work, kept with its stack for the next
+//     report beside the panic it was writing about.
+//
+// The work then starts again from its wait for settings, the readings' work, unless that fault is
+// the third in a row of its kind, which switches the trimmer off as tick's third does. A panic of
+// the last report ends the trimmer, written with its stack, and that report is not tried again,
+// so it is counted in no row: nothing is left to carry a fault to the daemon or to count it
+// toward, and a report that panicked once can panic again. Each step runs inside contain and none
+// inside a deferred handler, so a panic raised while another is being handled, in tick's handler
+// or in the counting here, meets a recovery too and never escapes.
 func (t *trimmer) run(ctx context.Context) {
 	ending := trimGoesOn
 	for ending == trimGoesOn {
 		if recovered, stack := contain(func() { ending = t.live(ctx) }); recovered != nil {
 			// fault counts the panic before it writes its line, so a panic of that line, which
 			// only the logger can raise, leaves the fault counted and is dropped: the logger is
-			// the one place there is to write it.
+			// the one place there is to write it. The wait the work starts again from is the
+			// readings', which fault leaves in force once its line is written and which is put
+			// back here for a line that panicked.
 			contain(func() { t.fault(recovered, stack) })
-			if t.consecutive >= volumeFaultLimit {
+			t.doing = readingRow
+			if _, off := t.switchedOffBy(); off {
 				ending = trimOff
 			}
 		}
@@ -471,8 +500,9 @@ func (t *trimmer) settingsInForce() *shimwire.LauncherVolumeTrim {
 // reading at the high mark asks for, until the container stops, the faults stop the trimmer, or
 // the settings go away and run waits for them again. It is entered with settings the trimmer
 // has already accepted and starts its ticker on nothing else: time.NewTicker panics on a
-// non-positive period, and a panic here is a fault run counts toward switching the trimmer off,
-// where settings outside the ranges are only refused (awaitSettings, run).
+// non-positive period, and a panic here, of the clock or of the started: line, is a fault of the
+// reading row (faultRow) that run counts toward switching the trimmer off, where settings outside
+// the ranges are only refused (awaitSettings, run).
 func (t *trimmer) intervals(ctx context.Context, inForce shimwire.LauncherVolumeTrim) trimEnding {
 	t.logf(volumeTrimLog+"started: trimmer %s, high %d%%, low %d%%, minimum age %d min, interval %d s, volume %s",
 		t.id, inForce.HighPercent, inForce.LowPercent, inForce.MinAgeMinutes, inForce.IntervalSeconds, t.volumeRoot)
@@ -554,13 +584,29 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // of the embedded rule file into an error) — because this goroutine runs in the process that is
 // PID 1 of the roles container: its panic takes the container down and costs six live roles their
 // round, over a cache sweep that nothing depends on. The fault is logged with its stack and
-// carried into the next report, and three in a row stop the trimmer until the launcher process
-// restarts (fault, run), which no other ending of the four does. A row is ended only by a tick
-// whose sweep, and its report where it makes one, runs to its end; a tick that only reads the
-// volume, in a pause or below the high mark, neither ends it nor adds to it unless it panics,
-// and a panic in any tick adds to it (fault). A panic leaves restart as the settings of this tick
-// set it, so a tick that changed interval_seconds and then panicked still has the interval clock
-// made again at the new period. The rest of the goroutine, this recovery's own handler included,
+// carried into the next report, and three in a row of one kind of work stop the trimmer until
+// the launcher process restarts (fault, run), which no other ending of the four does.
+//
+// Each kind keeps a row of its own (faultRow). The reading's is the interval's reading of the
+// settings and of the volume, with the line that says what the interval decided
+// (intervalReading), and a reading run to its end ends it, one that failed to read the volume
+// included, since that is a reading that answered rather than one that panicked. The sweep's is
+// the sweep, what this tick does with its outcome and its report, and the resend of a held report
+// before the reading (flush), and a sweep run to its end without a fault ends it, with its report
+// where it makes one, one the settings stopped included. A panic of one kind neither ends the
+// other's row nor adds to it. So a volume whose reading panics now and then, with readings run
+// to their end between, stays guarded however many such panics come, and a trimmer whose every
+// report panics, with the pause after each sweep, still switches itself off at its third panic:
+// the readings of the pause end the readings' row and not the sweeps'.
+//
+// The recovery is here and not in run alone, which contains every panic of the goroutine, so a
+// panic passes over this interval and no more: the interval loop goes on with its clock and takes
+// its next tick, where a panic left to run would start the loop again from the wait for settings,
+// with a started: line and a clock of its own for every fault. A panic leaves restart as the
+// settings of this tick set it, so a tick that changed interval_seconds and then panicked still
+// has the interval clock made again at the new period. The row the panic is counted in is the
+// work in flight's (doing), which this tick sets as it moves from the reading to the sweep and
+// which run reads the same way. The rest of the goroutine, this recovery's own handler included,
 // is run's to contain (run).
 func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim) (restart bool, ending trimEnding) {
 	defer func() {
@@ -596,49 +642,35 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	set := *inForce
 
 	t.flush()
-	reading, err := readVolumeUsage(t.volumeRoot)
-	if err != nil {
-		// Said when it changes and not once per interval, for the reason a refusal is (says): a
-		// volume this process cannot read is a standing state, and the statfs behind it answers
-		// the same way every interval for as long as it lasts.
-		if why := err.Error(); why != t.saidRead {
-			t.saidRead = why
-			t.logf(volumeTrimLog+"the volume at %s could not be read: %v", t.volumeRoot, err)
-		}
+	reading, sweeping := t.intervalReading(set)
+	t.ran(readingRow)
+	if !sweeping {
 		return restart, trimGoesOn
 	}
-	t.saidRead = ""
-	t.last = reading
-	percent := reading.Percent()
-	t.episodeOf(percent, set)
-	switch {
-	case t.pause > 0:
-		t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): no sweep for another %d intervals, since the last one freed under %.0f point",
-			percent, reading.UsedBytes, reading.AvailableBytes, t.pause, volumeSweepMinFreedPoints)
-		t.pause--
-		return restart, trimGoesOn
-	case percent < float64(set.HighPercent):
-		t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): below the high mark %d%%, nothing to sweep",
-			percent, reading.UsedBytes, reading.AvailableBytes, set.HighPercent)
-		return restart, trimGoesOn
-	}
-	t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): at or above the high mark %d%%, sweeping to %d%%",
-		percent, reading.UsedBytes, reading.AvailableBytes, set.HighPercent, set.LowPercent)
 
+	t.doing = sweepRow
 	out := t.sweep(ctx, set, reading)
 	t.last = out.last
 	// The sweep's last reading is the trimmer's own reading as the interval's is, so the episode
 	// rules read it too: a sweep that leaves the volume at or below the low mark ends the episode,
 	// where the next interval's reading may already stand above that mark again. Only a recovery
-	// can come of it (episodeOf).
+	// can come of it (episodeOf), which writes a line only where the sweep reached the low mark
+	// and so never for a reported sweep.
 	t.episodeOf(out.last.Percent(), set)
 	if out.settingsStop {
 		// A sweep the settings cut sends no report of its own: the report would need a size walk
 		// of up to a minute (sizes) from a trimmer that is off. What the settings do to a held
 		// report is the wait's (awaitSettings).
 		t.logf(volumeTrimLog + "the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, and no report is sent for it")
-		t.consecutive = 0 // a sweep run to its end, which makes no report: it ends a row of faults, as below
+		t.ran(sweepRow) // a sweep run to its end without a fault, which makes no report: it ends the sweep row, as below
 		return false, trimWaits
+	}
+	if out.report {
+		// Read here, before any line of the sweep is written and before its report is made, so a
+		// reported sweep whose line or report then panics has been read all the same, as riseAt
+		// says of every reported sweep. The sweep's refused /proc reads need no hand-over here or
+		// below: the sweep gave each to the trimmer the moment it met it (sweep, carryRefused).
+		t.riseAt(reading.Percent())
 	}
 	// The reading is written as the sweep left it rather than as another "the volume is" line,
 	// which is the interval reading alone: an operator reading the pod's log counts the
@@ -664,20 +696,53 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		}
 	}
 	if out.report {
-		t.riseAt(percent)
 		t.deliver(t.report(ctx, out))
-	} else {
-		t.carryRefused(out.refused)
 	}
-	// The sweep, and its report where it made one, ran to their end, which ends a row of faults
-	// (fault), and nothing else does: a tick that only read the volume, in a pause, below the high
-	// mark or with a reading that failed, returned above without touching the row. So a volume
-	// that is healthy between two faults ends the row only through a sweep run to its end, and a
-	// trimmer whose every report panics, with the pause after each sweep, still switches itself
-	// off at its third panic and tries its switched-off report (R1: "after three in a row it stays
-	// off and sends one last report saying so").
-	t.consecutive = 0
+	// The sweep, and its report where it made one, ran to their end without a fault, which ends
+	// the sweep row (faultRow), and nothing else does: a reading, in a pause, below the high mark
+	// or one that failed, ends the readings' row alone. So a trimmer whose every report panics,
+	// with the pause after each sweep, still switches itself off at its third panic and tries its
+	// switched-off report (R1: "after three in a row it stays off and sends one last report
+	// saying so").
+	t.ran(sweepRow)
 	return true, trimGoesOn
+}
+
+// intervalReading is the interval's reading of the volume: the statfs, the episode it raises, the
+// line that says what the interval decided, and whether that is a sweep, which it is at or above
+// the high mark outside a pause. A volume it cannot read asks for no sweep. It is the readings'
+// work as tick counts its faults (faultRow): a panic in it adds to the reading row, and its
+// return, whatever it answers, is a reading run to its end, which ends that row (tick).
+func (t *trimmer) intervalReading(set shimwire.LauncherVolumeTrim) (volumeUsage, bool) {
+	reading, err := readVolumeUsage(t.volumeRoot)
+	if err != nil {
+		// Said when it changes and not once per interval, for the reason a refusal is (says): a
+		// volume this process cannot read is a standing state, and the statfs behind it answers
+		// the same way every interval for as long as it lasts.
+		if why := err.Error(); why != t.saidRead {
+			t.saidRead = why
+			t.logf(volumeTrimLog+"the volume at %s could not be read: %v", t.volumeRoot, err)
+		}
+		return volumeUsage{}, false
+	}
+	t.saidRead = ""
+	t.last = reading
+	percent := reading.Percent()
+	t.episodeOf(percent, set)
+	switch {
+	case t.pause > 0:
+		t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): no sweep for another %d intervals, since the last one freed under %.0f point",
+			percent, reading.UsedBytes, reading.AvailableBytes, t.pause, volumeSweepMinFreedPoints)
+		t.pause--
+		return reading, false
+	case percent < float64(set.HighPercent):
+		t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): below the high mark %d%%, nothing to sweep",
+			percent, reading.UsedBytes, reading.AvailableBytes, set.HighPercent)
+		return reading, false
+	}
+	t.logf(volumeTrimLog+"the volume is %.1f%% full (used %d B, free %d B): at or above the high mark %d%%, sweeping to %d%%",
+		percent, reading.UsedBytes, reading.AvailableBytes, set.HighPercent, set.LowPercent)
+	return reading, true
 }
 
 // episodeOf raises the episode number on the reading, when the reading is the first at the high
@@ -732,12 +797,13 @@ func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 
 // riseAt reads a rise at start, the reading a reported sweep started from. A reported sweep, here
 // and wherever this trimmer's comments and shimwire's VolumeEpisodeRise name one, is a sweep that
-// ended above the low mark and that the settings did not stop: tick reads its start here before
-// its report is made, so the report carries the episode its start raised, and so a sweep whose
-// report then panics, which tick recovers and counts as a fault, is a reported sweep too, read
-// although it sends no report. The other two sweeps are not read, their start neither anchoring
-// nor entering the two a rise reads: one that ended at or below the low mark, since the trimmer
-// brought that volume down, and one the settings stopped (tick).
+// ended above the low mark and that the settings did not stop: tick reads its start here once the
+// sweep has returned and the settings are known not to have stopped it, before it writes any line
+// of the sweep and before its report is made, so the report carries the episode its start raised,
+// and so a sweep whose line or report then panics, which tick recovers and counts as a fault, is a
+// reported sweep too, read although it sends no report. The other two sweeps are not read, their
+// start neither anchoring nor entering the two a rise reads: one that ended at or below the low
+// mark, since the trimmer brought that volume down, and one the settings stopped (tick).
 //
 // A rise is read where the lower of the last two reported sweep starts, this one and the one
 // before it, stands five points or more above the episode's anchor. An episode that no rise
@@ -791,29 +857,85 @@ func (t *trimmer) riseAt(start float64) {
 	t.lastStart = start
 }
 
-// fault records one recovered panic and answers whether the trimmer must now stay off, which
-// is volumeFaultLimit in a row: tick then ends the interval loop with trimOff, and run switches
-// the trimmer off and makes its last report (switchOff), outside any deferred handler. It counts
-// the panic before it writes its line, so a panic of the line leaves the fault counted (run).
+// faultRow is a kind of the trimmer's work, which counts its own row of recovered panics toward
+// volumeFaultLimit (fault): R1 has the trimmer switch itself off "after three in a row", and a
+// panic of one kind with work of the other kind run between is not in a row with it. One row
+// that only a sweep ended switched off a volume below the high mark, which never sweeps, at its
+// third reading panic however many readings ran between (INFRA-2009, round 35, comment
+// ccc812fc); one that any reading ended let a trimmer whose every report panics fault for the
+// life of the pod, since the readings of the pause after each sweep would end it.
+type faultRow int
+
+const (
+	// readingRow is the readings' work, which is every work of the trimmer's goroutine but a
+	// sweep's: the interval's reading of the settings and of the volume and the line that says
+	// what it decided (intervalReading), the interval loop's clock and its started: line
+	// (intervals), and the wait for settings (awaitSettings). A reading run to its end ends the
+	// row (tick).
+	readingRow faultRow = iota
+	// sweepRow is a sweep's work: the sweep, what tick does with its outcome, its report, and
+	// the resend of a held report wherever it is tried, before an interval's reading or in the
+	// wait for settings, since a held report is a sweep's report and its resend that report's
+	// delivery (flush). A sweep run to its end without a fault ends the row, with its report
+	// where it makes one, one the settings stopped included (tick).
+	sweepRow
+)
+
+// String is the row as the fault line and the switched-off trimmer's report name it.
+func (row faultRow) String() string {
+	if row == sweepRow {
+		return "sweeps and reports"
+	}
+	return "readings"
+}
+
+// fault records one recovered panic in the row of the work it interrupted (doing) and answers
+// whether that row has now reached volumeFaultLimit, which keeps the trimmer off: tick then ends
+// the interval loop with trimOff, and run switches the trimmer off and makes its last report
+// (switchOff), outside any deferred handler. It counts the panic before it writes its line, so a
+// panic of the line leaves the fault counted, and that line's panic, which run contains, is
+// counted in the same row, since the work is passed over only once its fault is written (run).
+// What follows is the readings' work (doing).
 //
-// The row counts every recovered panic since the last tick whose sweep, and its report where it
-// makes one, ran to its end, which alone ends it (tick): a panic tick recovered and one run
-// contained alike, a panic in a tick that only reads the volume among them. A tick that only reads
-// the volume, in a pause or below the high mark, and does not panic neither ends the row nor adds
-// to it, so a trimmer whose every report panics, with the pause after each sweep, switches itself
-// off at its third panic instead of faulting for the life of the pod with nothing beyond its log
-// to show for it; and a volume that stays below the high mark, so that no sweep ends a row, is
-// switched off by its third panic however far apart the three come.
+// Each row counts the recovered panics of its kind since the last work of that kind ran to its
+// end (ran, tick), a panic tick recovered and one run contained alike, and a panic of the other
+// kind neither ends it nor adds to it. So a trimmer whose every report panics, with the pause
+// after each sweep, switches itself off at its third panic instead of faulting for the life of
+// the pod with nothing beyond its log to show for it, since the readings of the pause end the
+// readings' row and not the sweeps'; and a volume whose reading panics now and then, with
+// readings run to their end between, is not switched off by those panics however many come,
+// where three readings in a row that panic switch it off.
 //
-// Only the newest shimwire.VolumeReportFaults stacks are kept, and what they displace is
-// counted (keepNewestFaults).
+// Only the newest shimwire.VolumeReportFaults stacks are kept, of both rows together, and what
+// they displace is counted (keepNewestFaults).
 func (t *trimmer) fault(recovered any, stack []byte) bool {
-	t.consecutive++
+	row := t.doing
+	t.inARow[row]++
 	t.faults = append(t.faults, fmt.Sprintf("%v\n%s", recovered, stack))
 	t.keepNewestFaults()
-	t.logf(volumeTrimLog+"recovered a panic in the trimmer's own work (%d in a row), passing over what it was doing: %v\n%s",
-		t.consecutive, recovered, stack)
-	return t.consecutive >= volumeFaultLimit
+	t.logf(volumeTrimLog+"recovered a panic in the trimmer's own work (%d in a row of %s), passing over what it was doing: %v\n%s",
+		t.inARow[row], row, recovered, stack)
+	t.doing = readingRow
+	return t.inARow[row] >= volumeFaultLimit
+}
+
+// ran ends the row of the work that just ran to its end without a panic, and what follows is the
+// readings' work (doing): a reading's row at the reading's end, and a sweep's once the sweep and
+// its report where it makes one have run to theirs, one the settings stopped included (tick).
+func (t *trimmer) ran(row faultRow) {
+	t.inARow[row] = 0
+	t.doing = readingRow
+}
+
+// switchedOffBy is the row that has reached volumeFaultLimit, which switches the trimmer off (run,
+// switchOff), and false while neither has.
+func (t *trimmer) switchedOffBy() (faultRow, bool) {
+	for row, faults := range t.inARow {
+		if faults >= volumeFaultLimit {
+			return faultRow(row), true
+		}
+	}
+	return readingRow, false
 }
 
 // keepNewestFaults cuts the faults the trimmer holds to the newest shimwire.VolumeReportFaults and
@@ -946,7 +1068,6 @@ type sweepOutcome struct {
 	freed       int64       // the first reading's used bytes less the last's
 	freedPoints float64     // the same difference in percentage points of the volume
 	reason      string      // why the sweep stopped, in the trimmer's own words
-	refused     []string    // every /proc read the kernel refused while it ran
 	deletions   int
 	report      bool // the sweep ended with the volume still above the low mark
 	// settingsStop is the one ending the interval must act on itself: the settings stopped the
@@ -1065,8 +1186,10 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	if len(used.Refused) > 0 {
 		// Nothing is deleted. A refused read is a process whose open files are unknown, and on
 		// the first read of a sweep that is every process of the pod as far as this sweep can
-		// tell: deleting under it would be deleting a cache a role may be holding open.
-		out.refused = used.Refused
+		// tell: deleting under it would be deleting a cache a role may be holding open. The
+		// refusal goes to the trimmer now, for the next report (carryRefused), so no panic after
+		// it, in the rest of the sweep, in its interval or in its report, can lose it.
+		t.carryRefused(used.Refused)
 		out.reason = fmt.Sprintf("a /proc read the kernel refused before anything was deleted, so nothing was (%s)", refusalsSaid(used.Refused))
 		out.report = first.Percent() > float64(set.LowPercent)
 		return out
@@ -1145,8 +1268,9 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 			if len(used.Refused) > 0 {
 				// Later than the first read: what the sweep deleted stands, and it stops here
 				// rather than deleting on a reading of the pod's processes it knows to be
-				// incomplete.
-				out.refused = append(out.refused, used.Refused...)
+				// incomplete. The refusal goes to the trimmer now, as the first read's does:
+				// the sweep's last reading and the remover's close come after it.
+				t.carryRefused(used.Refused)
 				return false, &sweepHalt{reason: fmt.Sprintf("a /proc read the kernel refused while the sweep ran, so it kept what it had deleted and stopped (%s)", refusalsSaid(used.Refused))}
 			}
 		}

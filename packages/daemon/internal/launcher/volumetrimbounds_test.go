@@ -209,10 +209,11 @@ func TestASweepsReasonNamesAtMostTwentyFiveRefusals(t *testing.T) {
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
 
-	out := f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+	tr := f.trimmer()
+	out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
 
-	if len(out.refused) != refusedProcesses {
-		t.Fatalf("the sweep carried %d refusals, want the %d processes this case made unreadable", len(out.refused), refusedProcesses)
+	if carried := len(tr.refusedReads) + tr.refusedDropped; carried != refusedProcesses {
+		t.Fatalf("the sweep handed the trimmer %d refusals, kept or counted, want the %d processes this case made unreadable", carried, refusedProcesses)
 	}
 	if named := strings.Count(out.reason, "process "); named != 25 {
 		t.Errorf("the reason names %d refused processes, want 25: %q", named, out.reason)
@@ -503,8 +504,10 @@ func TestEveryListOfAReportOneEntryPastItsCapIsCutToItAndOneAtItIsCarriedWhole(t
 // faults of TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes reach the
 // report as three and one counted either way — and what the trimmer holds is read here, after
 // each fault. The faults are not in a row, as that case's four are not, since three in a row
-// switch the trimmer off: a sweep run to its end ends the row (tick), which is done here by hand
-// between each two. Three is written out rather than read off shimwire.VolumeReportFaults.
+// switch the trimmer off: each is a fault of the reading row, the readings' being the work no
+// sweep is running in (faultRow), and a reading run to its end ends that row (tick), which is done
+// here by hand between each two. Three is written out rather than read off
+// shimwire.VolumeReportFaults.
 func TestTheTrimmerHoldsTheNewestThreeFaultsAndCountsAFourth(t *testing.T) {
 	const most = 3
 	tr := newTrimFixture(t, 0).trimmer()
@@ -512,7 +515,7 @@ func TestTheTrimmerHoldsTheNewestThreeFaultsAndCountsAFourth(t *testing.T) {
 		if off := tr.fault(fmt.Sprintf("panic %d", at), []byte("the stack")); off {
 			t.Fatalf("fault %d switched the trimmer off, want it on: no two of them are in a row", at+1)
 		}
-		tr.consecutive = 0 // the sweep run to its end between two faults, which ends the row (tick)
+		tr.ran(readingRow) // a reading run to its end between two faults, which ends their row (tick)
 		held, dropped := min(at+1, most), max(0, at+1-most)
 		if len(tr.faults) != held || tr.faultsDropped != dropped {
 			t.Errorf("after %d faults the trimmer holds %d and counts %d more, want %d held and %d counted", at+1, len(tr.faults), tr.faultsDropped, held, dropped)

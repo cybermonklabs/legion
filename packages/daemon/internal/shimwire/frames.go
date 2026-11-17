@@ -358,9 +358,12 @@ type LauncherVolumeTrim struct {
 // lives, which configuration decides (`idle_release`'s `idle_minutes: 0` turns release off and a
 // pod then lives as long as its issue runs), and a trimmer is switched off with `enabled: false`,
 // never with an age. The minima are what a trimmer can be armed with at all: time.NewTicker
-// panics on a non-positive period, a fault each time the trimmer's interval loop started, three
-// of which in a row switch it off for the life of its launcher process (the launcher's run), and
-// a high mark of 0 would sweep the caches of a volume that is empty.
+// panics on a non-positive period, so a trimmer armed with an interval of 0 would fault each time
+// its interval loop started, and three of those in a row would switch it off for the life of its
+// launcher process (the launcher's run). It is not armed with one: the trimmer refuses an interval
+// below the minimum before it starts a clock, logs the refusal and stays off, and counts no fault
+// (the launcher's refusedTrimSettings). A high mark of 0 would sweep the caches of a volume that
+// is empty.
 const (
 	VolumeMarkMin     = 1
 	VolumeMarkMax     = 99
@@ -476,8 +479,9 @@ const (
 // own, which names the first read under it the walk did not make (LauncherVolumeSize.Refused).
 //
 // Faults are the panics the trimmer recovered from, each with its stack, and SwitchedOff the one
-// report no sweep produces: the trimmer has stopped itself after three faults in a row, and this
-// is the last the daemon hears from it until the launcher restarts.
+// report no sweep produces: the trimmer has stopped itself after three faults in a row of one kind
+// of its work, its readings of the volume or its sweeps and their reports, and this is the last
+// the daemon hears from it until the launcher restarts.
 //
 // Every list above is bounded, because a path two levels under /legion is a name a role of the
 // pod chose and a pod may hold thousands of them: the launcher that built the report cuts each to
@@ -530,8 +534,11 @@ const (
 	// rather than one per process.
 	VolumeReportRefusedReads = 25
 	// VolumeReportFaults is how many recovered panics a report carries (Faults), the newest ones.
-	// The launcher's trimmer stops itself after three in a row (its volumeFaultLimit), so the
-	// newest three are the run that stopped it.
+	// The launcher's trimmer stops itself after three in a row (its volumeFaultLimit) of one kind
+	// of its work, counting its readings' panics and its sweeps' in two rows, where a panic of one
+	// kind neither ends the other's row nor adds to it. So the switched-off report's newest three
+	// end with the panic that stopped the trimmer and can hold one of the other kind among those of
+	// the row that did.
 	VolumeReportFaults = 3
 )
 

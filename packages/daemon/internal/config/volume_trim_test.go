@@ -144,8 +144,10 @@ func TestVolumeTrimRefusals(t *testing.T) {
 			"an age past the maximum", fmt.Sprintf("    volume_trim: {min_age_minutes: %d}\n", shimwire.VolumeMinAgeMax+1),
 			fmt.Sprintf("runtime.kubernetes.volume_trim.min_age_minutes must be at most %d", shimwire.VolumeMinAgeMax),
 		},
-		// A zero period is no nicety: the trimmer arms a time.Ticker with it, which panics on a
-		// non-positive period, in the process that is PID 1 of the pod's roles container.
+		// A zero period is no nicety: a time.Ticker armed with it panics on a non-positive period,
+		// in the process that is PID 1 of the pod's roles container. The launcher's trimmer
+		// refuses one too, before it arms a clock (launcher's refusedTrimSettings), so the
+		// loader's refusal is the first of two.
 		{
 			"a zero interval", "    volume_trim: {interval_seconds: 0}\n",
 			"runtime.kubernetes.volume_trim.interval_seconds must be a positive integer",

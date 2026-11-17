@@ -2666,8 +2666,8 @@ func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 		if out.deletions != 0 || len(f.gone()) != 0 {
 			t.Errorf("the sweep deleted %d entries after a refused first read of /proc, want none", out.deletions)
 		}
-		if len(out.refused) != 1 || !strings.Contains(out.refused[0], refused) {
-			t.Errorf("the sweep reported the refusals %v, want exactly the process %s this case made unreadable", out.refused, refused)
+		if len(tr.refusedReads) != 1 || !strings.Contains(tr.refusedReads[0], refused) {
+			t.Errorf("the sweep handed the trimmer the refusals %v, want exactly the process %s this case made unreadable", tr.refusedReads, refused)
 		}
 		if !strings.Contains(out.reason, "refused") {
 			t.Errorf("the sweep stopped because %q, want the refusal named", out.reason)
@@ -2705,8 +2705,8 @@ func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 		if out.deletions >= len(f.entries) {
 			t.Errorf("the sweep deleted all %d entries, want it to stop at the first entry boundary after the refusal", out.deletions)
 		}
-		if len(out.refused) != 1 || !strings.Contains(out.refused[0], refused) {
-			t.Errorf("the sweep reported the refusals %v, want the process %s named", out.refused, refused)
+		if len(tr.refusedReads) != 1 || !strings.Contains(tr.refusedReads[0], refused) {
+			t.Errorf("the sweep handed the trimmer the refusals %v, want the process %s named", tr.refusedReads, refused)
 		}
 		if !strings.Contains(out.reason, "refused") {
 			t.Errorf("the sweep stopped because %q, want the refusal named", out.reason)
@@ -3988,16 +3988,23 @@ func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
 // process that is PID 1 of the roles container: a panic that escapes it ends the container and
 // every role in it. tick recovers its own interval; these are the paths the goroutine runs outside
 // that recovery (run), each made to panic through a seam the trimmer already takes, its send or its
-// logger. At e6725f56 each of the four ended this test process (INFRA-2009, review round 34).
+// logger. At e6725f56 each of the first four ended this test process (INFRA-2009, review round 34).
 //
 //   - The resend of a held report in the wait for settings (awaitSettings' flush) is a fault as
-//     tick's are: written with its stack, counted toward three in a row and carried into the next
-//     report, and the trimmer goes back to its wait and on to its interval loop.
+//     tick's are: written with its stack, counted in the sweep row toward three in a row, since a
+//     held report is a sweep's report (flush), and carried into the next report, and the trimmer
+//     goes back to its wait and on to its interval loop.
 //   - The line tick writes of a fault it recovered runs in tick's deferred handler, so its panic is
-//     raised while one is being handled; it is counted as the next fault in a row, and the third in
-//     a row switches the trimmer off with all three in its last report.
+//     raised while one is being handled; it is counted as the next fault in the row of the fault
+//     it was writing, here the reading row, and the third in that row switches the trimmer off
+//     with all three in its last report.
 //   - The last report of the switched-off trimmer, as switchOff makes it or as deliverLast tries it
 //     again, ends the trimmer with its panic written and its stack, and the report is not tried again.
+//   - A logger that panics on every line of a fault and on the line run writes of the last report's
+//     panic leaves each of those lines to fall over inside run's own contain, where it is dropped:
+//     the trimmer still counts its faults, switches itself off and ends, and the test process
+//     stands. With either of those two contains taken out the panic leaves the trimmer's goroutine
+//     and ends this test process (INFRA-2009, review round 36).
 func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 	// written is the one line the trimmer wrote holding want.
 	written := func(t *testing.T, f *trimFixture, want string) string {
@@ -4044,8 +4051,8 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 		testwait.Eventually(t, "the panic of the resend to be recovered", func() bool {
 			return f.logged("recovered a panic") == 1
 		})
-		if line := written(t, f, "recovered a panic"); !strings.Contains(line, "(1 in a row)") || !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).flush") {
-			t.Errorf("the trimmer wrote %q, want the panic of the resend counted as the first fault in a row, with the stack it was raised on", line)
+		if line := written(t, f, "recovered a panic"); !strings.Contains(line, "(1 in a row of sweeps and reports)") || !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).flush") {
+			t.Errorf("the trimmer wrote %q, want the panic of the resend counted as the first fault in the sweep row, with the stack it was raised on", line)
 		}
 		select {
 		case <-done:
@@ -4099,11 +4106,11 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 
 		// The second reading falls over, and so does the line tick's handler writes of it.
 		f.tick("recovered a panic")
-		if line := written(t, f, "recovered a panic"); !strings.Contains(line, "(2 in a row)") || !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).fault") {
-			t.Errorf("the trimmer wrote %q, want the panic of the line counted as the second fault in a row, with the stack it was raised on", line)
+		if line := written(t, f, "recovered a panic"); !strings.Contains(line, "(2 in a row of readings)") || !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).fault") {
+			t.Errorf("the trimmer wrote %q, want the panic of the line counted as the second fault in the reading row, the row of the fault it was writing, with the stack it was raised on", line)
 		}
 
-		// The third reading falls over too: the third fault in a row switches the trimmer off.
+		// The third reading falls over too: the third fault in the reading row switches the trimmer off.
 		f.tick("recovered a panic")
 		awaitClosed(t, done, "the trimmer's loop to return once three faults in a row switched it off")
 		reports := f.reports()
@@ -4113,6 +4120,9 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 		report := reports[0]
 		if !report.SwitchedOff {
 			t.Error("the last report does not say the trimmer switched itself off")
+		}
+		if !strings.Contains(report.StopReason, "3 panics in a row of readings") {
+			t.Errorf("the last report's stop reason is %q, want the three panics of the reading row that stopped it", report.StopReason)
 		}
 		want := []string{"the volume reader fell over on call 2", fell, "the volume reader fell over on call 3"}
 		if len(report.Faults) != len(want) {
@@ -4188,6 +4198,56 @@ func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
 		}
 		if _, waiting := f.ticks.live(volumeSettingsWait); waiting {
 			t.Error("the trimmer still waits on a clock to try its last report again")
+		}
+		if sent := len(f.reports()); sent != 0 {
+			t.Errorf("the trimmer sent %d reports, want none", sent)
+		}
+	})
+
+	t.Run("a logger that panics on the line of every fault and of the last report's panic", func(t *testing.T) {
+		f := newTrimFixture(t, 1)
+		f.setOnRead(func(call int) { panic(fmt.Sprintf("the volume reader fell over on call %d", call)) })
+		f.useVolume(steady(50))
+		f.setSettings(trimSettings())
+		tr := f.trimmer()
+		var faultLines, lastLines atomic.Int32
+		tr.logf = func(format string, args ...any) {
+			switch {
+			case strings.Contains(format, "recovered a panic"):
+				faultLines.Add(1)
+				panic("the log fell over writing the line of a fault")
+			case strings.Contains(format, "the last report of the switched-off trimmer panicked"):
+				lastLines.Add(1)
+				panic("the log fell over writing the line of the last report's panic")
+			}
+			f.log(format, args...)
+		}
+		var sends atomic.Int32
+		tr.send = func(shimwire.LauncherVolumeReport) error {
+			sends.Add(1)
+			panic("the connection fell over writing the last report")
+		}
+		_, done := f.start(tr)
+		testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+
+		// The first reading falls over, and so do the line tick's handler writes of it and the
+		// line run writes of that line's panic, which run drops: the loop starts again from the
+		// wait, with a started: line of its own.
+		f.tick("started:")
+		// The second does too, and its row of readings is now at four: two panics of the volume
+		// reader and two of the lines of their faults (fault, run). The switched-off trimmer's
+		// report then panics in its send, and so does the line run writes of that.
+		f.tick("off for the life of this launcher process")
+		awaitClosed(t, done, "the trimmer's loop to end once its last report panicked")
+
+		if written, last := faultLines.Load(), lastLines.Load(); written != 4 || last != 1 {
+			t.Fatalf("the logger was asked for %d fault lines and %d lines of the last report's panic, want 4 and 1: run's own lines were never reached", written, last)
+		}
+		if said := f.logged("4 panics in a row of readings: the trimmer is off for the life of this launcher process"); said != 1 {
+			t.Errorf("the trimmer wrote %q, want it switched off by the four panics of its reading row", f.linesWritten())
+		}
+		if tries := sends.Load(); tries != 1 {
+			t.Errorf("the trimmer tried its last report %d times, want once: a report whose send panicked is not tried again", tries)
 		}
 		if sent := len(f.reports()); sent != 0 {
 			t.Errorf("the trimmer sent %d reports, want none", sent)
@@ -6004,8 +6064,10 @@ func TestAReportThatReplacesAHeldOneCarriesItsFaultsAndRefusedReads(t *testing.T
 	f.refuseSends(errors.New("the bound connection is gone"))
 
 	tr.fault("a panic of A's interval", []byte("goroutine 1 [running]:\nA's stack"))
-	tr.deliver(tr.report(context.Background(), sweepOutcome{reason: "A", refused: []string{refusedA}}))
-	tr.deliver(tr.report(context.Background(), sweepOutcome{reason: "B", refused: []string{refusedB, refusedA}}))
+	tr.carryRefused([]string{refusedA}) // as A's sweep hands the trimmer what it met (sweep)
+	tr.deliver(tr.report(context.Background(), sweepOutcome{reason: "A"}))
+	tr.carryRefused([]string{refusedB, refusedA}) // B's sweep met both
+	tr.deliver(tr.report(context.Background(), sweepOutcome{reason: "B"}))
 	if tr.held == nil || tr.held.StopReason != "B" {
 		t.Fatalf("the trimmer holds %+v after two failed sends, want report B in place of A", tr.held)
 	}
@@ -6256,15 +6318,15 @@ func TestASweepWhoseWalkPanicsLeavesItsRefusedReadsForTheNextReport(t *testing.T
 	}
 }
 
-// "Three in a row" counts the ticks that do the trimmer's work (R1, as the architect read it in
-// round 35 of INFRA-2009): a tick that only reads the volume, in a pause or below the high mark,
-// neither ends the row nor adds to it, and only a tick whose sweep and report run to their end
-// ends it. So a trimmer whose every report panics, with the ten-interval pause after each sweep,
-// switches itself off at its third panic and tries its switched-off report. The case's sweeps free
-// nothing, so each one pauses, and the send of each sweep's report panics, where the send of the
-// switched-off report goes through. At c3874f11 every interval of a pause ended the row, so each
-// fault was the first in a row and the trimmer faulted after every sweep for the life of the pod,
-// with nothing beyond its log to show for it.
+// "Three in a row" keeps one row for each kind of the trimmer's work (R1, as the architect read it
+// in round 36 of INFRA-2009, comment ccc812fc): a report's panic adds to the sweep row, which only
+// a sweep run to its end ends, and a tick that only reads the volume, in a pause or below the
+// high mark, ends the reading row alone. So a trimmer whose every report panics, with the
+// ten-interval pause after each sweep, switches itself off at its third panic and tries its
+// switched-off report. The case's sweeps free nothing, so each one pauses, and the send of each
+// sweep's report panics, where the send of the switched-off report goes through. At c3874f11
+// every interval of a pause ended the row, so each fault was the first in a row and the trimmer
+// faulted after every sweep for the life of the pod, with nothing beyond its log to show for it.
 func TestATrimmerWhoseEveryReportPanicsSwitchesItselfOffAcrossItsPauses(t *testing.T) {
 	const fell = "the connection fell over sending the report"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
@@ -6287,8 +6349,8 @@ func TestATrimmerWhoseEveryReportPanicsSwitchesItselfOffAcrossItsPauses(t *testi
 		for range volumeQuietIntervals {
 			f.tick("no sweep for another")
 		}
-		if row := fmt.Sprintf("(%d in a row)", sweep); f.logged(row) != 1 {
-			t.Fatalf("after sweep %d and its pause the trimmer wrote %q, want the panic of each report so far counted, this one %s: an interval of the pause only reads the volume, which neither ends the row nor adds to it",
+		if row := fmt.Sprintf("(%d in a row of sweeps and reports)", sweep); f.logged(row) != 1 {
+			t.Fatalf("after sweep %d and its pause the trimmer wrote %q, want the panic of each report so far counted, this one %s: an interval of the pause is a reading, which ends the reading row and not the sweep row",
 				sweep, f.linesWritten(), row)
 		}
 		if f.logged("off for the life of this launcher process") != 0 {
