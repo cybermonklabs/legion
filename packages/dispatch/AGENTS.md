@@ -1707,6 +1707,37 @@ that made it, and a write it left out would go on retrying, once that test's spi
 into the tests and files after it, which one process running every file reports as failures of
 whichever test is running then.
 
+The preload fails a row in which React printed one of its five act messages: an update outside
+`act`, an `act(async () => ...)` left unawaited, overlapping `act` calls, a component suspended
+inside an `act` left unawaited, or an update inside `act` while the act environment is off.
+`installActMessageRecorder` in `web/src/__tests__/act-warnings.ts` records each as React prints it,
+and still prints it; the hooks at the end of `setup.ts` then fail with what was recorded: the
+`afterEach` charges a message to the row it was printed in, or to the next row when it was printed
+between two, and the `afterAll` charges one printed after a file's last row to that file, which
+Bun reports as `(fail) (unnamed)` under the file.
+`__tests__/act-warnings.test.ts` holds the rule in place: it runs `__tests__/act-rule.fixture.tsx`
+through the `test:web` command and reads each failure by its row.
+An update outside `act` lands at a moment the row did not choose, so what the row asserts may be
+a state the person in front of the page never sees, and a warning that only prints is read by
+nobody and survives every run.
+The failure names each message's kind, its component and up to three frames, the test's own first
+(a `*.test.*` file or one under `web/src/__tests__/`) and then the product code under `web/src/`,
+as `<kind> in <component> at <path>:<line> (<function>)`; its test frames lead to the call to wrap.
+A call whose update React sees at once goes inside `act(() => { ... })`, whose callback returns
+nothing, as `indicatorWrite` in `features/writes/PendingWritesIndicator.test.tsx` does; a call
+whose update lands a few microtasks later, in a promise it returns or one it starts, goes inside
+`await act(async () => { ... })`, as `refetchAgents` in `features/agents/AgentsPage.test.tsx` and
+`sync()` in `__tests__/proof-document.tsx` do; and never `act(() => promiseCall())`, which React
+takes for an async `act` that nobody awaits.
+A press whose answer lands outside `act` holds that answer on a `Promise.withResolvers()` and
+gives it inside `await act(async () => { ... })` after the press, as `mintLostWith` in
+`features/settings/AgentTokensSection.test.tsx` does.
+None of these clears one: silencing `console.error`, by a replacement or a spy's
+`mockImplementation`, which hides the message from the rule and from the log alike; setting
+`IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment`; or a `user-event` call inside
+`act`, after which React prints "The current testing environment is not configured to support
+act(...)" and the row fails on that instead.
+
 An interaction is performed with `@testing-library/user-event`, never dispatched with
 `fireEvent`: a `user.click` focuses what it clicks, leaves the pointer over it and refuses a
 disabled control, as a person's press does.
