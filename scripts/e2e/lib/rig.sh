@@ -259,12 +259,14 @@ start_process() {
 # `read` and `mapfile`: under `set -e`, bash 5.2 ends the shell when `$(<FILE)` cannot open FILE,
 # even on the left of `||`.
 #
-# proc_children's list is complete only for a process whose children cannot exit while it is read:
-# proc_tid_children(5) says that a child which exits during the read can leave another child out
-# of it. stop_tree stops the parent first, which stops new children, and it does not stop the
-# children, so a child that exits as the list is read can hide a sibling. `pgrep -P`, which
-# stop_tree called before, walks /proc the same way and misses the same sibling. So the list is as
-# complete as it was, and neither form is the frozen read that man page asks for.
+# proc_children's list is complete only while the children are stopped or frozen:
+# proc_tid_children(5) calls this interface less reliable than a walk of the numbered directories
+# of /proc, because when a child the read has passed then exits, the kernel goes on by position in
+# the list and can leave a surviving child out. `pgrep -P`, which stop_tree called before, walks
+# those directories and reads each process's parent, so it does not meet that case; each form can
+# still miss a child that its walk has passed. stop_tree stops the parent first, so it starts no
+# new child, and it does not stop the children. So this changes what the list can miss, and
+# neither form is the frozen read that the man page asks for.
 proc_stat_field() {
   local stat fields
   if [ -d /proc/self ]; then
