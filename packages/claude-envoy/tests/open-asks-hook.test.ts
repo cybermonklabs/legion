@@ -1,10 +1,20 @@
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { refusingOrigin } from "@legion/test-fixtures/refused-port"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
+
+// Each row waits on its hooks' exits, and on nothing else. A hook run needs about 0.3-0.4 s of
+// CPU (`/usr/bin/time` in this mode: 0.18-0.23 s user, 0.12-0.15 s sys), starts no process but
+// the jj of a row that gives it a Legion state directory, and makes no request but to the row's
+// own stand-ins, so its wall time is that CPU over the share of a CPU the machine gives it. At
+// Bun's 5 s default, 21 of 23 rows exited 143 with the run confined to one CPU beside 32 busy
+// loops, which is how this box under load ran some of them. The limit below is a hang guard, not
+// a budget: with no limit, under the same load, the slowest row without a limit of its own took
+// 12.52 s, and this is three times that, rounded up. It fires only if a hook never exits.
+setDefaultTimeout(40_000)
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment. The session's cwd is
  * the test's scratch HOME unless the input names one: the hook reads `<cwd>/.envoy/envoy.json`, so a

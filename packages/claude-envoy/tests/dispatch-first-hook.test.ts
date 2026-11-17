@@ -1,18 +1,31 @@
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first"
 
 const packageRoot = resolve(import.meta.dir, "..")
+
 const hookEntry = join(packageRoot, "hooks", "session-hook.ts")
 const sessionStart = {
   session_id: "s-1",
   source: "startup",
-  cwd: "/tmp",
   hook_event_name: "SessionStart",
 }
 
+// Each row waits on its hook's exit, and on nothing else. A hook run needs 0.2-0.35 s of CPU
+// (`/usr/bin/time`: 0.14-0.22 s user) and starts no process and makes no request in this mode,
+// so its wall time is that CPU over the share of a CPU the machine gives it. At Bun's 5 s default,
+// all 5 rows exited 143 with the run confined to one CPU beside 32 busy loops, which is how this
+// box under load ran some of them. The limit below is a hang guard, not a budget: with no limit,
+// under the same load, the slowest row took 8.76 s, and this is three times that, rounded up. It
+// fires only if a hook never exits.
+setDefaultTimeout(30_000)
+
+/** Runs the hook as Claude Code does, with `env` as its whole environment. The session's cwd is
+ *  the test's scratch HOME unless the input names one: the hook reads `<cwd>/.envoy/envoy.json`'s
+ *  Dispatch, so a shared directory's file (a `/tmp/.envoy/envoy.json` another process left) would
+ *  configure every row's Dispatch. */
 async function runHook(
   env: Record<string, string>,
   input: Record<string, unknown> = sessionStart,
@@ -20,7 +33,7 @@ async function runHook(
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const run = Bun.spawn([process.execPath, hookEntry, mode], {
     env: { PATH: process.env["PATH"] ?? "", ...env },
-    stdin: new TextEncoder().encode(JSON.stringify(input)),
+    stdin: new TextEncoder().encode(JSON.stringify({ cwd: env["HOME"], ...input })),
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -62,7 +75,7 @@ test("a subagent gets the skill under its own SubagentStart event", async () => 
       { HOME: home, CLAUDE_PLUGIN_ROOT: packageRoot, ...withDispatch },
       {
         session_id: "s-1",
-        cwd: "/tmp",
+        // No cwd: runHook gives the row's own HOME.
         hook_event_name: "SubagentStart",
         agent_id: "agent-1",
         agent_type: "general-purpose",
