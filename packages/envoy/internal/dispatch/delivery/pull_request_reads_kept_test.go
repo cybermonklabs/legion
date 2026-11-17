@@ -169,10 +169,11 @@ func TestAnOwedRecordTheDatabaseRefusesAtSomeDeliveriesLosesNoHead(t *testing.T)
 }
 
 // A refusal ends on evidence and never by its age (the red team's N1,
-// TestRedTeamRefusalBeforeSuccess). GitHub's 404 is final where the installation that read it can
-// read the repository: then the repository has no such pull request, at one more call. Where the
-// App cannot read the repository, Dispatch cannot tell a missing pull request from one it is not
-// let see, so the read stays owed, however old.
+// TestRedTeamRefusalBeforeSuccess). GitHub's 404 is final where one answer of GitHub, asked with
+// the token of the refused read, shows the repository readable and the pull request absent: then
+// the repository has no such pull request, at one more call, a GraphQL answer. Where the App
+// cannot read the repository, Dispatch cannot tell a missing pull request from one it is not let
+// see, so the read stays owed, however old.
 //
 // The first case is the App not installed on acme/widgets for 6 minutes (the owed record dated by
 // SQL), and then installed, as an owner adds a repository to an installation: at ff73c7358d the
@@ -182,7 +183,7 @@ func TestAnOwedRecordTheDatabaseRefusesAtSomeDeliveriesLosesNoHead(t *testing.T)
 // read that stays: a number that never exists in a repository the App cannot read costs no call
 // to the repository and one read of the row a pass.
 func TestARefusalEndsOnEvidenceAndNeverByItsAge(t *testing.T) {
-	type pass struct{ pullReads, repoReads int32 }
+	type pass struct{ pullReads, absenceQueries int32 }
 	for _, kase := range []string{"not_readable_for_6m_then_readable", "readable_and_the_number_does_not_exist", "not_readable_and_the_number_never_exists"} {
 		t.Run(kase, func(t *testing.T) {
 			fastPageRetries(t)
@@ -217,9 +218,9 @@ func TestARefusalEndsOnEvidenceAndNeverByItsAge(t *testing.T) {
 			}
 			reconcile := NewReconcile(pool, client, events.NewBroker())
 			runPass := func() pass {
-				pulls, repos := github.reads.Load(), github.repoReads.Load()
+				pulls, asked := github.reads.Load(), github.absenceQueries.Load()
 				reconcile.runOnce(ctx)
-				return pass{github.reads.Load() - pulls, github.repoReads.Load() - repos}
+				return pass{github.reads.Load() - pulls, github.absenceQueries.Load() - asked}
 			}
 			switch kase {
 			case "not_readable_for_6m_then_readable":
@@ -242,7 +243,7 @@ func TestARefusalEndsOnEvidenceAndNeverByItsAge(t *testing.T) {
 				owed := owedCount(t, ctx, pool, "acme/widgets", number)
 				t.Logf("first_pass=%+v owed_after=%d head_rows=%d", first, owed, headRowCount(t, ctx, intake, "acme/widgets", number))
 				if owed != 0 || first != (pass{1, 1}) {
-					t.Errorf("a number acme/widgets does not have is owed %d read(s) after the first pass, which made %+v calls; want none, at two calls: the pull request's and the repository's", owed, first)
+					t.Errorf("a number acme/widgets does not have is owed %d read(s) after the first pass, which made %+v calls; want none, at two calls: the pull request's and the one GraphQL answer", owed, first)
 				}
 			default:
 				var reads int

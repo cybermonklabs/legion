@@ -55,9 +55,21 @@ type fakeGitHub struct {
 	// installationOf names the installation GET /repos/{owner}/{repo}/installation answers for a
 	// repository other than installID's, set before newTestClient; notInstalled holds each
 	// repository ("owner/repo") the App is not installed on, which that lookup answers 404 for
-	// while it is held.
+	// while it is held. lookups counts that lookup for each repository (lookupsOf).
 	installationOf map[string]int64
 	notInstalled   sync.Map
+	lookups        sync.Map
+	// served holds each repository serveGitHubPulls answers for, by "owner/repo", which POST
+	// /graphql answers the absence query about (answerAbsenceQuery); the route is registered with
+	// the first of them (absenceRoute).
+	served       sync.Map
+	absenceRoute sync.Once
+}
+
+// lookupsOf is how many times GET /repos/{owner}/{repo}/installation was asked about repo.
+func (f *fakeGitHub) lookupsOf(repo string) int32 {
+	counter, _ := f.lookups.LoadOrStore(repo, &atomic.Int32{})
+	return counter.(*atomic.Int32).Load()
 }
 
 // tokenExpired reports whether r's bearer is an installation token this fake minted whose expiry
@@ -76,6 +88,8 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	}
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("owner") + "/" + r.PathValue("repo")
+		counter, _ := f.lookups.LoadOrStore(name, &atomic.Int32{})
+		counter.(*atomic.Int32).Add(1)
 		if _, missing := f.notInstalled.Load(name); missing {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)

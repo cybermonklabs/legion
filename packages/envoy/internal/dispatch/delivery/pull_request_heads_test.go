@@ -1218,7 +1218,7 @@ func TestAPullRequestIsAttributedToAnIssueRecordedUnderTheOldName(t *testing.T) 
 
 	const head = "4141414141414141414141414141414141414141"
 	fake := gadgetsFake(t, 521, issue+": the work, on the new name", head)
-	if _, err := RefreshPullRequestHead(ctx, pool, fake.newTestClient(), nil, gadgetsRepo, 521, time.Now()); err != nil {
+	if _, err := RefreshPullRequestHead(ctx, pool, fake.newTestClient(), nil, nil, gadgetsRepo, 521, time.Now()); err != nil {
 		t.Fatalf("refresh %s#521: %v", gadgetsRepo, err)
 	}
 
@@ -1265,7 +1265,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 		t.Fatalf("#522 is stored under %v once it has arrived under both names, want both rows", repos)
 	}
 
-	if _, err := RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 522, time.Now()); err != nil {
+	if _, err := RefreshPullRequestHead(ctx, pool, client, nil, nil, gadgetsOldRepo, 522, time.Now()); err != nil {
 		t.Fatalf("refresh the row stored under the old name: %v", err)
 	}
 	if repos := headRepos(t, ctx, pool, 522); len(repos) != 1 || repos[0] != gadgetsRepo {

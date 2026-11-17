@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -974,8 +973,10 @@ func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.C
 // cannot find (ErrPullRequestNotFound), and a repository the App cannot read (no installation,
 // or a repository or resource its token is refused), are refusals and leave the row as it is,
 // stamped so the batch moves on and does not warn about the same row every pass; a rate limit
-// comes back as the *githubapp.RateLimitError. The row is stamped even when the commit messages
-// could not be read: this pass is itself the retry, so the next one reads it again in
+// comes back as the *githubapp.RateLimitError. The refusal carries the read GitHub refused: the
+// repository's canonical owner and name, the number, and the installation token the read was
+// refused with, which pullRequestAbsent asks GitHub with. The row is stamped even when the commit
+// messages could not be read: this pass is itself the retry, so the next one reads it again in
 // PullRequestHeadStaleAfter rather than holding the front of every batch, and that write, being
 // incomplete, leaves any attribution the row already carries standing.
 //
@@ -989,11 +990,12 @@ func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.C
 // read teaches this row nothing under either name.
 //
 // broker is the reconcile's own, so a row this pass re-judges under a newer attribution rule
-// records the move on both issues (UpsertPullRequestHead).
+// records the move on both issues (UpsertPullRequestHead). installations is the pass's lookups of
+// the installation of each repository (passInstallations), nil for a caller that has no pass.
 func RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
-	repoFull string, number int, now time.Time,
-) (refused error, err error) {
+	installations *passInstallations, repoFull string, number int, now time.Time,
+) (refused *pullRequestRefusal, err error) {
 	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
 	if err != nil {
 		return nil, err
@@ -1002,17 +1004,17 @@ func RefreshPullRequestHead(
 	if err != nil {
 		return nil, err
 	}
-	token, err := client.RepositoryToken(ctx, owner, repo)
+	token, err := installations.repositoryToken(ctx, client, owner, repo)
 	if err != nil {
 		if repositoryUnreadable(err) {
-			return err, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
+			return &pullRequestRefusal{err: err, owner: owner, repo: repo, number: number}, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
 		return nil, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
 	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
 	if err != nil {
 		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
-			return err, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
+			return &pullRequestRefusal{err: err, owner: owner, repo: repo, number: number, token: token}, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
 		return nil, err
 	}
@@ -1021,52 +1023,6 @@ func RefreshPullRequestHead(
 		return nil, err
 	}
 	return nil, upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
-}
-
-// pullRequestAbsent answers whether GitHub's refusal of a read of repoFull's pull request is
-// final: GitHub has no such pull request (ErrPullRequestNotFound), and the installation that read
-// it can read the repository (`GET /repos/{owner}/{repo}`, one more call, made once a pass for each
-// repository: repositories). Then GitHub says the repository has no such pull request, and
-// Dispatch keeps nothing for it. Any other refusal, and a repository read that does not answer,
-// is no evidence: the App cannot tell a pull request that is missing from one it is not let see,
-// so the read stays owed (Reconcile.readOwedPullRequests). No age makes a refusal final.
-func pullRequestAbsent(ctx context.Context, pool *store.Pool, client *githubapp.Client, repositories *repositoryReads, repoFull string, refused error) bool {
-	if !errors.Is(refused, ErrPullRequestNotFound) {
-		return false
-	}
-	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
-	if err != nil {
-		return false
-	}
-	return repositories.readable(canonical, func() bool {
-		owner, repo, token, err := repositoryRead(ctx, client, canonical)
-		if err != nil {
-			return false
-		}
-		_, err = client.RepositoryIdentity(ctx, token, owner, repo, "")
-		return err == nil
-	})
-}
-
-// repositoryReads is whether the App could read each repository, by its canonical name, as one
-// reconcile pass read it: the pass reads a repository once however many refusals of it it reads,
-// so a run of forged envelopes that name one repository costs the pass one more call, not one
-// more for each.
-type repositoryReads struct{ known sync.Map }
-
-// repositoryAnswer is one repository's read of a pass, made once.
-type repositoryAnswer struct {
-	once     sync.Once
-	readable bool
-}
-
-// readable is read's answer for the repository canonical, which only the first caller of the
-// pass makes; the others wait for it.
-func (r *repositoryReads) readable(canonical string, read func() bool) bool {
-	entry, _ := r.known.LoadOrStore(canonical, &repositoryAnswer{})
-	repository := entry.(*repositoryAnswer)
-	repository.once.Do(func() { repository.readable = read() })
-	return repository.readable
 }
 
 // repositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
@@ -1181,13 +1137,14 @@ func ReadThroughCommitPulls(
 // are acknowledged, and both record that the pull request is owed a read
 // (owePullRequestRead): GitHub's answer to a read made a moment after its own webhook may not
 // know the pull request yet, so the reconcile reads it again, and settles the read once GitHub
-// answers for it, or once a repository the App can read has no such pull request
-// (pullRequestAbsent). A record that could not be written is marked ErrHeadNotStored, as every
-// other failure is (markHeadNotStored): Intake.deliver then owes the read as a failure and
-// acknowledges the envelope, or hands it back where that record cannot be written either, and a
-// failure Postgres gives for the values themselves is acknowledged at once (valuesRefused). The
-// name and the number were checked before this runs (pullRequestNamed); a canonical name that
-// is not `owner/repo` is returned bare, since the same envelope delivered again fails on it again.
+// answers for it, or once one answer of GitHub shows the repository readable and the pull request
+// absent (pullRequestAbsent). A record that could not be written is marked ErrHeadNotStored, as
+// every other failure is (markHeadNotStored): Intake.deliver then owes the read as a failure and
+// acknowledges the envelope, or hands it back where the database cannot take that record now,
+// and a failure Postgres gives for the values themselves is acknowledged at once (valuesRefused,
+// recordRefused). The name and the number were checked before this runs (pullRequestNamed); a
+// canonical name that is not `owner/repo` is returned bare, since the same envelope delivered
+// again fails on it again.
 //
 // The read is spared where GitHub has already answered for the event (headReadCovers): the
 // stored row is GitHub's answer to a read whose updated_at is a later second than the envelope's.

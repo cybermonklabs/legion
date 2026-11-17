@@ -465,11 +465,14 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 		bErr <- b.Commit(ctx)
 	}()
 
+	// pg_locks is the whole server's, so the count is held to this test's own database: a second
+	// run of this package against another database of the same server takes the same lock key.
 	waitFor(t, 10*time.Second, func() bool {
 		var waiting int
 		err := pool.QueryRow(ctx, `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted and classid = 6900 and objid = 0 and objsubid = 2
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting)
 		return err == nil && waiting == 1
 	}, func() string { return "B never waited on the change log's advisory lock" })

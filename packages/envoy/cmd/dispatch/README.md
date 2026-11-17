@@ -1440,22 +1440,29 @@ Messages of one key run in delivery order, each after the one before has finishe
 messages of different keys run at once, at most 4, the durable's `MaxAckPending`.
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
 Every envelope is acknowledged once its handler has run, whatever the handler made of it, with one exception:
-a `pull_request` envelope whose pull request's head row could not be stored, and whose owed read (below) could not be recorded either, is handed back to NATS instead, after `delivery.headWriteRedeliverAfter` (10 s), for as long as that lasts.
-The durable sets no `MaxDeliver`, and no count of deliveries ends the hand-backs, since that envelope is then the only record of its change.
+a `pull_request` envelope whose pull request's head row could not be stored, and whose owed read (below) the database cannot take now either, is handed back to NATS instead, after `delivery.headWriteRedeliverAfter` (10 s), for as long as that lasts.
+The durable sets no `MaxDeliver`, and no count of deliveries ends the hand-backs: while the database cannot take the record, the envelope on the bus is the only memory of the change, for as long as the bus keeps events.
+The stream keeps an event 72 hours from its publish (`bus.streamCfg`'s `MaxAge`, `DELIVERY_DUPLICATE_WINDOW_MS`), and a hand-back does not renew that.
 Where the whole database refuses writes, no other envelope's head write lands either; but a lock of `pull_request_reads_owed` alone, a migration of it, refuses the record while other heads are written, and for that lock's length each such envelope holds one of the 4 slots.
 No pass over the stored rows repairs a head row that was never written, since those passes read the rows that exist.
 So a delivery whose head write fails records the pull request in `pull_request_reads_owed` as owed a read of kind `failure`: the repository and the number, and nothing else the envelope says.
-That record is what lets the intake let go: once it is written the envelope is acknowledged at once, a rate limit included.
+That record is what lets the intake let go: once it is written the envelope is acknowledged at its first delivery, a rate limit included.
 A delivery that waited for GitHub would hold one of the 4 in-flight slots, which every repository and every installation shares, so four envelopes of one repository GitHub fails, or of one installation GitHub limits, would stop the events of all the others.
-The cost is the wait: after a failed read, the head comes at the reconcile's next pass, or sooner at the next event of that pull request or at a result's own commit lookup (`delivery.ReadThroughCommitPulls`).
+The cost is a wait for the head row, which a result recorded at that head does not share.
+After a failed read, the head waits for the reconcile's next pass, up to 5 minutes and 30 seconds, or less where the pull request's next event comes first; an envelope handed back would write it about 3 s after GitHub answers again, and four such envelopes would hold every slot.
+A result that a role records at that commit, while GitHub answers, still gets its head at once, through the read for the result's own commit (`delivery.ReadThroughCommitPulls`), and a read of the results makes the same read, at most once a commit in 5 minutes (`CommitPullReadStaleAfter`).
 The reconcile has no wake an owe could use: it is a timer loop under a lease of one period (`duty.RunJittered`, `duty.Exclusive`), so its next pass starts at most 5 minutes and a tenth more after the last one ended, and reads the owed pull request there while fewer than 200 failures were owed before it.
 A later read of the intake that writes the head, at the pull request's next event, deletes that record, unless an owe changed it after that read began:
 each owe gives the record a new revision, a value of the table's own sequence, and a read deletes the record only at the revision it read before it read GitHub (`settleOwedRead`).
 So no clock decides which owed read a read answers, and an owe made during a read, by any writer, stays for the reconcile.
 A read that cannot read that revision within `owedRevisionReadTimeout` (1 s), the table locked by another session for one, takes none and deletes nothing, so the record stays and the reconcile reads the pull request once more.
 An envelope no delivery can get past is final at its first delivery.
-An envelope that names no pull request a row can hold, a number outside 1 to 2147483647 or a repository name that is not `owner/name`, is acknowledged at its first delivery with one line, reads nothing and owes no read (`errNoPullRequestNamed`).
-A failure Postgres gives for the values themselves, of the head write or of the owed record, a data exception (SQLSTATE class 22), a not-null or a check violation, is acknowledged at its first delivery with one ERROR line that names the repository and the number, and owes no read (`valuesRefused`); the pull request is read again at its next event.
+An envelope that names no pull request GitHub can have is acknowledged at its first delivery with one line, reads nothing and owes no read (`errNoPullRequestNamed`): a number outside 1 to 2147483647, or a repository that is not `owner/name` with an owner of 1 to 39 letters, digits, hyphens and underscores and a name of 1 to 100 letters, digits, hyphens, underscores and periods (`githubRepositoryName`).
+These are GitHub's own bounds, an underscore being the one a managed user account's login holds, so an owed record's values are always values the table and its index take.
+A failure Postgres gives for the values of the head write, a data exception (SQLSTATE class 22), a not-null or a check violation, is acknowledged at its first delivery with one ERROR line that names the repository and the number, and owes no read (`valuesRefused`); the pull request is read again at its next event.
+The owed record's failure is sorted by its cause (`recordRefused`).
+A failure the envelope's values cause, SQLSTATE class 22, 23 or 54, can never be written, so the envelope ends at its first delivery with one ERROR line.
+Every other failure means the database cannot take a record now — a lost connection, a timeout, a lock, a resource limit, a missing permission, a missing table — and the envelope is handed back as above, since acknowledging it would lose a real head while an operator's fault lasts.
 Each row says why its read is owed: `failure` where GitHub did not answer (a 5xx, a timeout, a rate limit, a head write that failed), and `refusal` where GitHub answered that it cannot give the pull request (a 404 or 410, or a repository the App cannot read).
 A write of GitHub's answer that replaces a newer row no read of GitHub wrote also owes a `failure` (the trigger `pull_request_heads_older_read`, `20261116182209`): during a roll the release before stores GitHub's newer answer from an envelope, and a slower read of this build can land an older answer after it.
 So does a write that replaces a row of the same GitHub second with other facts of GitHub's (the head, its branch, the base, the state, the title or the URL), since two answers of one second say nothing of which is the newer.
@@ -1467,11 +1474,13 @@ Inside each kind the row the reconcile has read the fewest times goes first, and
 Both lists are taken before either is read, and a read that answers the other way moves its row to the other kind.
 A read that GitHub answers writes the row, creating it where none exists and whatever its state, and settles the owed read where the record still has the revision the pass listed.
 A `failure` is read again every pass until GitHub answers.
-A `refusal` ends on evidence and never by its age.
-Where GitHub answers 404 and the installation that read it can read the repository (`GET /repos/{owner}/{repo}`, one more call, made once a pass for each repository), the repository has no such pull request, and the read ends (`pullRequestAbsent`).
-Where the App cannot read the repository, Dispatch cannot tell a missing pull request from one it is not let see, so the read stays owed among the refusals, with their budget.
+A `refusal` ends on evidence and never by its age, and the evidence is one answer of GitHub (`pullRequestAbsent`).
+Where GitHub answers a read 404 or 410, the pass asks GitHub's GraphQL API, with the token of that read, `repository(owner, name) { pullRequest(number) }`, one request; an answer of a repository whose `pullRequest` is null, beside errors that are all of type `NOT_FOUND` on the path `repository.pullRequest`, shows in one answer that the repository is readable and that it holds no such pull request, and the read ends.
+Every other answer is no evidence, and the read stays owed among the refusals, with their budget: a null repository, which GitHub answers alike for a repository the token does not read and one that does not exist; an error of another type, such as `FORBIDDEN`; a pull request GitHub now answers; another status; and a request that failed.
+No memory of a pass ends a read: each refusal is asked about at its own read, so an installation that loses the repository between two reads answers a null repository for the second.
 The intake takes the events of every repository (`notifications.github.>`), so no repository leaves the intake's rule and ends a read either.
 So a pull request GitHub still answers 404 for at the reconcile's first read, in a repository the App reads, has no head until its next event.
+A pass looks the installation of each repository up once (`passInstallations`): a repository the App is not installed on costs the pass one lookup however many of its rows the pass reads, and its rows stay owed, since an installation that comes back has the pull request again.
 No reader of a head reads that table, so an owed read is never a head, a basis or a merge.
 With no forged envelopes, the reconcile writes the heads of the pull requests an outage left owed, up to 200 a pass, from the first pass after GitHub answers again, and each further 200 wait one more pass.
 A pass comes within one period, 5 minutes and up to a tenth more (`delivery.ReconcileInterval`, `duty.Jittered`).
@@ -1480,11 +1489,11 @@ Forged envelopes can delay the head of a pull request an outage left owed by mor
 During the outage, a pass reads up to 50 refusals, and each of these reads fails.
 Each such row then becomes a `failure` with fewer reads than the real failure, so it goes before the real failure.
 After the outage, each 200 such rows can delay the real head by one more pass.
-With 10,000 refusals owed before the outage and no pass during it, the first pass after GitHub answers again makes 51 reads of a pull request for the owed rows, the failure and 50 refusals, and one read of each repository those refusals name (`TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure`).
+With 10,000 refusals owed before the outage and no pass during it, the first pass after GitHub answers again makes 51 reads of a pull request for the owed rows, the failure and 50 refusals, and asks GraphQL about each of the 50 refusals (`TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure`).
 Any bearer of Envoy's `/v1` publish route can name a pull request GitHub never had, and each such envelope owes a `refusal`; dispatch://INFRA-3911 owns forged envelopes.
-Outside an outage, such envelopes cost at most 50 reads of a pull request a pass, and one read of each repository those refusals name that GitHub answers 404 in.
-One that names a number a repository the App reads does not have ends at its first read, so a run of N of them is gone after about N/50 passes: the 10,000 of the acceptance test cost 10,000 reads of the intake and then 51 a pass (50 pull requests and the repository), 200 passes and about 18 hours, and no row is read twice.
-One that names a repository the App cannot read stays, and is read at most once a pass.
+Outside an outage, such envelopes cost at most 50 reads of a pull request a pass, one GraphQL request, one point of the App's GraphQL budget, for each of those that GitHub answers 404, and one installation lookup for each repository the App is not installed on.
+10,000 of them that name numbers a repository the App reads does not have cost 10,000 reads of the intake, and then 50 reads and 50 GraphQL points a pass, up to 600 of each an hour; each ends at its first read, so they are gone after 200 passes, about 17 to 18 hours, and no row is read twice.
+10,000 of them that name a repository the App is not installed on cost the intake up to 10,000 installation lookups, signed by the App, since the client keeps no refusal, and then the reconcile one lookup a pass, up to 12 an hour, and no read of a pull request or of GraphQL; they stay, each read at most once a pass, the fewest reads first, every row once in 200 passes.
 The bound does not hold for a real pull request whose own read was refused because GitHub's answer had not caught up with its webhook, since that pull request is a `refusal` too.
 The refusals go in this order: the row with the fewest reads first, then the row owed longest.
 If no pass has read the real refusal, the first pass after the lag reads it only while fewer than 50 refusals with no reads were owed before it.

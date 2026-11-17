@@ -552,14 +552,17 @@ async function storedHead(number: number): Promise<string> {
 
 /** Waits, until the deadline `by`, for the stored row of `number` to read as `want`, and answers
  *  what it last read. The intake or the reconcile is the writer here, so this polls and writes
- *  nothing. */
+ *  nothing. The answer it accepts is held to the deadline too, as awaitCommitStands holds its
+ *  own: a row that reads `want` after `by` answers that it was late, so a writer that writes
+ *  right but late meets no bound. */
 async function awaitStoredHead(number: number, want: string, by: number): Promise<string> {
   let seen = await storedHead(number);
   while (seen !== want && Date.now() < by) {
     await Bun.sleep(pollMs);
     seen = await storedHead(number);
   }
-  return seen;
+  const late = Date.now() - by;
+  return seen === want && late > 0 ? `${seen}, read ${late} ms past the deadline` : seen;
 }
 
 /** Every `issue.pull_request_attribution_changed` event on one issue, oldest first, in the

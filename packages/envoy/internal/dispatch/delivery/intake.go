@@ -8,8 +8,9 @@
 // is a pull request's head row the envelope's read of GitHub could not write, since the passes
 // read the rows that exist: that delivery records the pull request as owed a read, which the
 // reconcile's next pass makes, and the envelope is acknowledged once that record is written; an
-// envelope whose record cannot be written is handed back to NATS, since it is then the only
-// record of the change (ErrHeadNotStored, Intake.deliver, owePullRequestRead).
+// envelope whose record the database cannot take now is handed back to NATS, since it is then
+// the only record of the change, and the stream keeps it 72 hours (ErrHeadNotStored,
+// Intake.deliver, owePullRequestRead).
 package delivery
 
 import (
@@ -206,28 +207,42 @@ func (in *Intake) routeWorkflowEnvelope(ctx context.Context, settings DeliverySe
 // is not a string.
 var errMalformedPayload = errors.New("malformed envelope payload")
 
-// errNoPullRequestNamed marks a `pull_request` envelope that names no pull request a row can
-// hold: a number that is not a number or is outside 1 to 2147483647, the range of the integer
+// errNoPullRequestNamed marks a `pull_request` envelope that names no pull request GitHub can
+// have: a number that is not a number or is outside 1 to 2147483647, the range of the integer
 // columns that key a pull request (pull_request_heads.number, pull_request_reads_owed.number), or
-// a repository name that is not owner/repo. GitHub has no such pull request and no delivery of
-// the envelope can get past it, so deliver acknowledges it at its first delivery and logs one
-// line, and it owes no read. Any caller of Envoy's /v1 publish route can send one
-// (dispatch://INFRA-3911).
-var errNoPullRequestNamed = errors.New("the envelope names no pull request a row can hold")
+// a repository that is not a name GitHub can have (githubRepositoryName). GitHub has no such pull
+// request and no delivery of the envelope can get past it, so deliver acknowledges it at its
+// first delivery and logs one line, and it reads nothing and owes no read. Any caller of Envoy's
+// /v1 publish route can send one (dispatch://INFRA-3911).
+var errNoPullRequestNamed = errors.New("the envelope names no pull request GitHub can have")
+
+// githubRepositoryName is the full name of a repository GitHub can have: an owner of 1 to 39
+// letters, digits, hyphens and underscores, and a name of 1 to 100 letters, digits, hyphens,
+// underscores and periods. 39 is GitHub's limit for a login, and a login holds only letters,
+// digits and hyphens, except the login of a managed user account, which ends in an underscore and
+// its enterprise's shortcode ("mona-cat_octo"); 100 is GitHub's limit for a repository name.
+// "." and ".." are no repository names either (pullRequestNamed). So the values of a pull request
+// an envelope names are values the tables that key one take, and an index of them holds the row:
+// a name of 3,500 characters was refused by the btree of pull_request_reads_owed (SQLSTATE 54000)
+// at every delivery (review of cybermonklabs/legion#4209 at ceeec40f46, B4).
+var githubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,39}/[A-Za-z0-9._-]{1,100}$`)
 
 // pullRequestNamed is the repository and the number a `pull_request` envelope's payload names,
-// or errNoPullRequestNamed.
+// or errNoPullRequestNamed, which it answers before anything is read or written.
 func pullRequestNamed(payload map[string]string) (repo string, number int, err error) {
 	repo = payload["repo"]
 	number, err = strconv.Atoi(payload["number"])
 	if err != nil {
-		return repo, 0, fmt.Errorf("%w: number %q: %w", errNoPullRequestNamed, payload["number"], err)
+		return repo, 0, fmt.Errorf("%w: number %.40q: %w", errNoPullRequestNamed, payload["number"], err)
 	}
 	if number < 1 || number > math.MaxInt32 {
 		return repo, number, fmt.Errorf("%w: number %d is outside 1 to %d", errNoPullRequestNamed, number, math.MaxInt32)
 	}
-	if _, _, err := splitRepo(repo); err != nil {
-		return repo, number, fmt.Errorf("%w: %w", errNoPullRequestNamed, err)
+	if _, name, _ := strings.Cut(repo, "/"); !githubRepositoryName.MatchString(repo) || name == "." || name == ".." {
+		// The name is quoted to its first 140 characters, the longest one GitHub can have, so a
+		// name of any length costs the log line no more.
+		return repo, number, fmt.Errorf("%w: %.140q is not owner/name, with an owner of 1 to 39 letters, digits, hyphens and underscores and a name of 1 to 100 letters, digits, hyphens, underscores and periods",
+			errNoPullRequestNamed, repo)
 	}
 	return repo, number, nil
 }
@@ -242,19 +257,50 @@ func decodePullRequestNamed(raw string) (repo string, number int, err error) {
 	return pullRequestNamed(flatPayload(fields))
 }
 
-// valuesRefused reports whether err is Postgres refusing a statement for the values it was
-// handed, whatever any other row holds: a *pgconn.PgError of class 22 (data exception: a value
-// out of range, a byte the encoding cannot hold, text that is not the type), a not-null violation
-// (23502) or a check violation (23514). The same values are refused the same way at every
-// delivery, so deliver acknowledges such an envelope at once rather than handing it back. A
-// unique or foreign-key violation (23505, 23503) turns on other rows, which a later read may find
-// changed, so its pull request is owed a read like any other failure's.
+// valuesRefused reports whether err is Postgres refusing a pull request's head write for the
+// values it was handed, whatever any other row holds: a *pgconn.PgError of class 22 (data
+// exception: a value out of range, a byte the encoding cannot hold, text that is not the type), a
+// not-null violation (23502) or a check violation (23514). The same values are refused the same
+// way at every delivery, so deliver acknowledges such an envelope at once rather than handing it
+// back. A unique or foreign-key violation (23505, 23503) of the head write turns on other rows, an
+// issue deleted under it for one, which a later read may find changed, so its pull request is owed
+// a read like any other failure's.
 func valuesRefused(err error) bool {
+	code := sqlState(err)
+	return strings.HasPrefix(code, "22") || code == "23502" || code == "23514"
+}
+
+// recordRefused reports whether err is the owed record of an envelope's pull request refused for
+// a cause the envelope's values carry (Intake.oweEnvelopesRead): the envelope names no pull
+// request GitHub can have, or Postgres refused the record for its values, SQLSTATE class 22 (a
+// data exception), 23 (an integrity constraint violation) or 54 (a program limit, such as an index
+// row past the btree's size). Such a record is refused the same way at every delivery, so it can
+// never be written, and the envelope names nothing the table can hold: deliver ends the envelope
+// with one ERROR line. The record holds the repository and the number alone, which
+// pullRequestNamed bounds to values the table takes, so after that check one of these classes
+// means a constraint or an index of the table itself refuses those values, which the ERROR line
+// is there to show an operator.
+// Every other failure means the database cannot take a record now — a lost connection, a
+// timeout, a lock, a resource limit, a missing permission, a missing table — which passes once an
+// operator's fault is mended, so deliver hands the envelope back rather than lose a real head.
+func recordRefused(err error) bool {
+	if errors.Is(err, errNoPullRequestNamed) || errors.Is(err, errMalformedPayload) {
+		return true
+	}
+	switch code := sqlState(err); {
+	case strings.HasPrefix(code, "22"), strings.HasPrefix(code, "23"), strings.HasPrefix(code, "54"):
+		return true
+	}
+	return false
+}
+
+// sqlState is the SQLSTATE of the *pgconn.PgError err holds, "" where it holds none.
+func sqlState(err error) string {
 	var refused *pgconn.PgError
 	if !errors.As(err, &refused) {
-		return false
+		return ""
 	}
-	return strings.HasPrefix(refused.Code, "22") || refused.Code == "23502" || refused.Code == "23514"
+	return refused.Code
 }
 
 // flatPayload is a pull request's or workflow run's string fields as the flat string map its
@@ -398,18 +444,24 @@ func consumerGenerationMetadata() map[string]string {
 // shares, so four envelopes of one repository GitHub fails, or of one installation GitHub limits,
 // would stop the events of all the others (review of cybermonklabs/legion#4209 at ff73c7358d,
 // B3). The cost is the wait: the head comes at the reconcile's next pass, or sooner at the next
-// event of that pull request or at a result's own commit lookup (ReadThroughCommitPulls). Where
-// the record cannot be written, the envelope is the only memory of the change, so it is handed
-// back with a delay (redeliverAfter), for as long as that lasts: the durable sets no MaxDeliver,
-// and no count of deliveries ends it, since R4 keeps which pull request changed until a read
-// succeeds. The write that failed is the database's: where the whole database refuses writes, no
-// other envelope's head write could be stored either, but a lock of pull_request_reads_owed alone
-// (a migration of it) refuses the record while other heads are still written, and for that lock's
-// length each such envelope holds its slot, four of them every slot. It is handed back now rather
-// than at the stop: this message wants redelivering to this same process, which still holds the
-// durable's hold and still routes that key to the one goroutine it is on. The write is idempotent
-// (both its statements are `on conflict … do update`), so a redelivery of an envelope whose write
-// had in fact landed writes the same pair again.
+// event of that pull request or at a result's own commit lookup (ReadThroughCommitPulls).
+//
+// A record that is not written is sorted by its cause (recordRefused). One the envelope's values
+// cause can never be written, so the envelope ends at that delivery with one ERROR line. Any other
+// failure is the database not taking a record now, and while it cannot, the envelope on the bus
+// is the only memory of the change, for as long as the bus keeps events: the stream keeps a
+// message 72 hours from its publish (bus.streamCfg's MaxAge, contracts.DeliveryDuplicateWindow),
+// and a hand-back does not renew that. So the envelope is handed back with a delay
+// (redeliverAfter), for as long as that lasts: the durable sets no MaxDeliver, and no count of
+// deliveries ends it, since R4 keeps which pull request changed until a read succeeds. Where the
+// whole database refuses writes, no other envelope's head write could be stored either, but a lock
+// of pull_request_reads_owed alone (a migration of it) refuses the record while other heads are
+// still written, and for that lock's length each such envelope holds its slot, four of them every
+// slot. It is handed back now rather than at the stop: this message wants redelivering to this
+// same process, which still holds the durable's hold and still routes that key to the one
+// goroutine it is on. The write is idempotent (both its statements are `on conflict … do
+// update`), so a redelivery of an envelope whose write had in fact landed writes the same pair
+// again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
 // hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
@@ -422,9 +474,10 @@ func consumerGenerationMetadata() map[string]string {
 // the next holder takes the envelope, which redoes the same idempotent writes.
 //
 // An envelope no delivery can get past is not handed back at all: one that names no pull request
-// a row can hold (errNoPullRequestNamed), and one whose head write or owed record Postgres refused
-// for its values (valuesRefused), are acknowledged at their first delivery with one line, and owe
-// no read: the pull request is read again at its next event.
+// GitHub can have (errNoPullRequestNamed) reads nothing and owes no read, one whose head write
+// Postgres refused for its values (valuesRefused), and one whose owed record the envelope's values
+// cause Postgres to refuse (recordRefused), are acknowledged at their first delivery with one
+// line, and the pull request is read again at its next event.
 //
 // handling is read from the delivery, which is also what says whether that hand-back may be
 // made, and nothing else calls deliver.
@@ -466,7 +519,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, errNoPullRequestNamed):
-		slog.Warn("dispatch delivery: acknowledging a pull-request envelope that names no pull request a row can hold; it owes no read",
+		slog.Warn("dispatch delivery: acknowledging a pull-request envelope that names no pull request GitHub can have; it reads nothing and owes no read",
 			"subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, ErrHeadNotStored) && valuesRefused(err):
@@ -480,11 +533,11 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		case oweErr == nil:
 			slog.Warn("dispatch delivery: a pull request's head row was not stored, and the read it is owed is recorded; acknowledging the envelope, whose pull request the reconcile reads from GitHub every pass until GitHub answers",
 				"subject", msg.Subject, "repo", repo, "number", number, "error", err)
-		case valuesRefused(oweErr):
-			slog.Error("dispatch delivery: Postgres refused the values of a pull request's owed read; acknowledging the envelope, since no delivery of it can get past that, and the pull request is read again at its next event",
+		case recordRefused(oweErr):
+			slog.Error("dispatch delivery: Postgres refused a pull request's owed read for its values; acknowledging the envelope, since no delivery of it can get past that, and the pull request is read again at its next event",
 				"subject", msg.Subject, "repo", repo, "number", number, "error", err, "record_error", oweErr)
 		default:
-			slog.Warn("dispatch delivery: a pull request's head row was not stored, and the read it is owed could not be recorded; handing the envelope back, since it is the only record of the change",
+			slog.Warn("dispatch delivery: a pull request's head row was not stored, and the database cannot take the read it is owed now; handing the envelope back, since it is the only record of the change, which the stream keeps 72 hours",
 				"subject", msg.Subject, "repo", repo, "number", number, "redeliver_after", headWriteRedeliverAfter,
 				"error", err, "record_error", oweErr)
 			redeliver = true
@@ -502,7 +555,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 }
 
 // headWriteRedeliverAfter is how long NATS waits before handing back an envelope whose pull
-// request's head row could not be stored and whose owed read could not be recorded either
+// request's head row could not be stored and whose owed read the database cannot take now either
 // (deliver). It is not zero because the write that failed is the same write each time: a plain
 // Nak would have the server redeliver at once, and a database that is refusing writes would then
 // spin the consumer against it as fast as the round trip allows.
@@ -512,9 +565,11 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 // timestamp and nothing else — so one such envelope holds one of the four slots
 // (intakeMaxAckPending) for every second it is waiting to come round again. No count of
 // deliveries ends that: the durable sets no MaxDeliver, since such an envelope is the only record
-// of its change. What ends it is the database taking the owed record. Where the whole database
-// refuses writes, no other envelope's write could be stored either; a lock of
-// pull_request_reads_owed alone holds the slot while other envelopes' heads are written.
+// of its change while the database cannot take the owed record, and it is that only for as long as
+// the bus keeps events, 72 hours from its publish (bus.streamCfg). What ends it is the database
+// taking the owed record. Where the whole database refuses writes, no other envelope's write could
+// be stored either; a lock of pull_request_reads_owed alone holds the slot while other envelopes'
+// heads are written.
 const headWriteRedeliverAfter = 10 * time.Second
 
 // oweEnvelopesRead records that the pull request a `pull_request` envelope's raw payload names is
@@ -563,17 +618,17 @@ func acknowledge(msg *natsgo.Msg) {
 // the pull request the envelope names, never the envelope's own fields. A head write that could
 // not be made at all is the one failure this returns to deliver (delivery.ErrHeadNotStored),
 // which owes the pull request a read the reconcile makes, since the reconcile's passes read the
-// rows that exist, and hands the envelope back only where that record cannot be written either:
-// both statements behind the write are `on conflict … do update`, so a redelivery writes the
+// rows that exist, and hands the envelope back only where the database cannot take that record
+// now: both statements behind the write are `on conflict … do update`, so a redelivery writes the
 // same pair. That covers the write itself, the reads of Postgres before it, and a read of GitHub
 // that failed, a rate limit included; a failure Postgres gives for the values themselves is
-// final at once (Intake.deliver, valuesRefused). A pull request GitHub does not know, and a
-// repository the App cannot read, write no row and are not failures here: the pull request is
-// owed a read, which the reconcile makes again in case GitHub's answer had not caught up with its
-// webhook (recordPullRequestHead). An envelope that names no pull request a row can hold, a number
-// outside 1 to 2147483647 or a repository name that is not `owner/repo`, is refused before
-// anything is read (errNoPullRequestNamed), since the same envelope delivered again fails the
-// same way, and deliver acknowledges it.
+// final at once (Intake.deliver, valuesRefused, recordRefused). A pull request GitHub does not
+// know, and a repository the App cannot read, write no row and are not failures here: the pull
+// request is owed a read, which the reconcile makes again in case GitHub's answer had not caught
+// up with its webhook (recordPullRequestHead). An envelope that names no pull request GitHub can
+// have, a number outside 1 to 2147483647 or a repository that is no name GitHub can have
+// (githubRepositoryName), is refused before anything is read or written (errNoPullRequestNamed),
+// since the same envelope delivered again fails the same way, and deliver acknowledges it.
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline
 // after that, and only where delivery is configured (settings is not nil): a deployment with no
 // settings has no population, so the head row is the whole of what an envelope is for there. The

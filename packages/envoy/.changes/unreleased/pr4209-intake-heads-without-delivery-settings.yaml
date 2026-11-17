@@ -19,29 +19,37 @@ body: |-
     once that record is written, so a fault of one repository or a limit of one installation holds
     none of the intake's four in-flight slots. The reconcile reads each failure from GitHub every
     pass until GitHub answers, creating its head row: after a failed read the head comes at the
-    reconcile's next pass, or sooner at the pull request's next event. A 404 ends the read where the
-    App can read the repository, and a read of a repository the App cannot read stays owed. Each
-    row says why its read is owed, a failure (GitHub did not answer) or a refusal (GitHub cannot
-    give the pull request), and every pass reads each failure before any refusal, with 50 reads a
-    pass for refusals, so envelopes that name pull requests GitHub never had take no read from a
-    pull request an outage left owed. A rate limit on one installation ends no read of the pass for
-    another. A stored head row's time stops a read of GitHub, or wins against GitHub's answer, only
-    where a read of GitHub wrote it (the new column `pull_request_heads.github_read_at`): a row an
-    earlier release stored from an envelope, whose time a caller sets, no longer keeps its head and
-    state against GitHub. A row that release changes while it serves beside this one loses its mark
-    and is owed a read in the same statement, and where a read of GitHub replaces a row that is newer
-    than its own answer, or a row of the same GitHub second with other facts, the pull request is
-    owed a read too, so the next pass writes GitHub's current answer. No clock decides which owed
-    read a read answers: each owe gives the record a new revision, and a read deletes the record
-    only at the revision it read before it read GitHub, so an owe made during the read stays. A
-    stored answer spares the read of an event only where its `updated_at` is a later second than
-    the event's. `delivery.AttributionRuleVersion` is 3, so the reconcile reads every stored merged
-    row from GitHub once more.
+    reconcile's next pass, up to 5 minutes and 30 seconds later, or sooner at the pull request's
+    next event, and a result recorded at that head while GitHub answers still gets it at once,
+    through the read for the result's own commit. A 404 ends the read only on one answer of
+    GitHub's GraphQL API, asked with the token of the refused read, that shows the repository
+    readable and the pull request absent; every other answer leaves the read owed, and no memory of
+    a pass ends one. Each row says why its read is owed, a failure (GitHub did not answer) or a
+    refusal (GitHub cannot give the pull request), and every pass reads each failure before any
+    refusal, with 50 reads a pass for refusals, so envelopes that name pull requests GitHub never
+    had take no read from a pull request an outage left owed; a pass looks the installation of each
+    repository up once, so a repository the App is not installed on costs it one lookup. A rate
+    limit on one installation ends no read of the pass for another. A stored head row's time stops
+    a read of GitHub, or wins against GitHub's answer, only where a read of GitHub wrote it (the new
+    column `pull_request_heads.github_read_at`): a row an earlier release stored from an envelope,
+    whose time a caller sets, no longer keeps its head and state against GitHub. A row that release
+    changes while it serves beside this one loses its mark and is owed a read in the same
+    statement, and where a read of GitHub replaces a row that is newer than its own answer, or a row
+    of the same GitHub second with other facts, the pull request is owed a read too, so the next
+    pass writes GitHub's current answer. No clock decides which owed read a read answers: each owe
+    gives the record a new revision, and a read deletes the record only at the revision it read
+    before it read GitHub, so an owe made during the read stays. A stored answer spares the read of
+    an event only where its `updated_at` is a later second than the event's.
+    `delivery.AttributionRuleVersion` is 3, so the reconcile reads every stored merged row from
+    GitHub once more.
 
-    An envelope that names no pull request a row can hold (a number outside 1 to 2147483647, a
-    repository name that is not `owner/name`), and one whose write Postgres refuses for its values,
-    are acknowledged at their first delivery with one log line. An envelope whose owed read cannot
-    be recorded is handed back every 10 seconds until the database takes it.
+    An envelope that names no pull request GitHub can have (a number outside 1 to 2147483647, or a
+    repository that is not `owner/name` with GitHub's own characters and lengths: an owner of at
+    most 39, a name of at most 100), one whose head write Postgres refuses for its values, and one
+    whose owed record Postgres refuses for its values (SQLSTATE class 22, 23 or 54), are
+    acknowledged at their first delivery with one log line. An envelope whose owed record the
+    database cannot take now, for any other cause, is handed back every 10 seconds until the
+    database takes it, for as long as the bus keeps the event, 72 hours.
 time: 2026-11-16T13:50:24.000000000Z
 custom:
     Issue: pr4209

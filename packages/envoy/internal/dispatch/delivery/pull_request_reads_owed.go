@@ -24,10 +24,10 @@ package delivery
 // row a read of GitHub wrote. An insert of the release before, and its update of a row no read
 // marked, owe nothing: the reconcile's open arm reads such an open row, its merged arm a merged
 // one once, and a closed one stays closed, which is no basis. An envelope leaves the intake with
-// no record of its pull request only where it names no pull request a row can hold or Postgres
-// refuses its values (Intake.deliver); an envelope whose record cannot be written is handed back,
-// and so stays with NATS, as one a stop hands back and one a lapsed hold leaves outstanding for the
-// next holder do.
+// no record of its pull request only where it names no pull request GitHub can have or Postgres
+// refuses its values (Intake.deliver); an envelope whose record the database cannot take now is
+// handed back, and so stays with NATS for as long as the stream keeps it, 72 hours, as one a stop
+// hands back and one a lapsed hold leaves outstanding for the next holder do.
 //
 // No time decides which owed read a read answers. Each owe gives the row a new revision, a value
 // of the table's own sequence, and a read deletes the row only at the revision it read before it
@@ -41,12 +41,13 @@ package delivery
 // the refusals, at most RefusedReadsPerPass, each kind the row read the fewest times first and
 // then the one owed longest. An answer writes the row, creating it where none existed, and
 // settles the read; a failure is read again by the next pass, so it is read every pass until
-// GitHub answers. A refusal settles on evidence and never by its age: where the installation that
-// read it can read the repository, GitHub's 404 says the repository has no such pull request
-// (pullRequestAbsent), and the read ends; where it cannot, Dispatch cannot tell a missing pull
-// request from one it is not let see, and the read stays owed. The intake takes the events of
-// every repository (githubIntakeSubject), so no repository leaves its rule and ends a read either.
-// A read that answers the other way moves the row to the other kind (recordOwedReadOutcome).
+// GitHub answers. A refusal settles on evidence and never by its age, and the evidence is one
+// answer of GitHub (pullRequestAbsent): asked with the token of the read GitHub refused, GitHub
+// shows in one answer that the repository is readable and that it holds no such pull request, and
+// the read ends. Every other answer is no evidence: Dispatch cannot tell a missing pull request
+// from one it is not let see, and the read stays owed. The intake takes the events of every
+// repository (githubIntakeSubject), so no repository leaves its rule and ends a read either. A
+// read that answers the other way moves the row to the other kind (recordOwedReadOutcome).
 //
 // The two budgets are what keep a forged envelope from costing a real one its head. Any bearer of
 // Envoy's /v1 publish route can name a pull request GitHub never had, and each such envelope owes
@@ -96,12 +97,15 @@ const (
 
 // RefusedReadsPerPass is how many pull requests owed a refusal one reconcile pass reads, after
 // every failure it reads. Outside a GitHub outage it bounds what forged envelopes cost: at most 50
-// reads of a pull request a pass, and one read of each repository among them that GitHub answers
-// 404 in (pullRequestAbsent), however many are owed, and none of them taken from a failure.
-// During an outage the refusals a pass reads fail and become failures, so they take failure reads
-// after it. A refusal of a number a repository the App reads does not have ends at its first read
-// (pullRequestAbsent), so N such forged envelopes are gone after about N/50 passes; a refusal in a
-// repository the App cannot read stays, and is read at most once a pass, the fewest reads first.
+// reads of a pull request a pass and, for each of them that GitHub answers 404, one question of
+// GitHub's GraphQL API, one point of its budget, whether the repository holds it
+// (pullRequestAbsent), and none of them taken from a failure. A repository the App is not
+// installed on costs one installation lookup a pass however many of its refusals the pass reads
+// (passInstallations). During an outage the refusals a pass reads fail and become failures, so
+// they take failure reads after it. A refusal of a number a repository the App reads does not have
+// ends at its first read, so N such forged envelopes are gone after about N/50 passes; a refusal
+// in a repository the App cannot read stays, and is read at most once a pass, the fewest reads
+// first.
 const RefusedReadsPerPass = 50
 
 // owedReadWriteTimeout bounds the write of an owed read the intake makes at each delivery whose
@@ -220,8 +224,9 @@ func listOwedPullRequestReads(ctx context.Context, pool *store.Pool, reason owed
 type owedReadOutcome int
 
 const (
-	// owedReadAnswered: GitHub answered for the pull request, and its row is written; or a
-	// repository the App reads has no such pull request (pullRequestAbsent).
+	// owedReadAnswered: GitHub answered for the pull request, and its row is written; or one
+	// answer of GitHub shows the repository readable and holding no such pull request
+	// (pullRequestAbsent).
 	owedReadAnswered owedReadOutcome = iota
 	// owedReadFailed: GitHub did not answer (owedFailure).
 	owedReadFailed

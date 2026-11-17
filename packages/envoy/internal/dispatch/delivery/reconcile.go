@@ -535,10 +535,13 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 // stands at no basis for good. A rate limit ends no read of the pass (passRateLimit): the pass
 // reads every row it listed and then fails with the first limit it met, as every other GitHub
 // step's limit fails the pass; any other per-row failure is logged and leaves the row for the
-// next pass.
+// next pass. Both arms look the installation of each repository up through the pass's own
+// lookups (passInstallations), so a repository the App is not installed on costs the pass one
+// lookup however many of its rows it reads.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time) error {
 	var limited passRateLimit
-	if err := r.readOwedPullRequests(ctx, now, &limited); err != nil {
+	installations := &passInstallations{}
+	if err := r.readOwedPullRequests(ctx, now, installations, &limited); err != nil {
 		return err
 	}
 	stale, err := ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
@@ -546,7 +549,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		if _, err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now); err != nil && !limited.keep(err) {
+		if _, err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, installations, head.Repo, head.Number, now); err != nil && !limited.keep(err) {
 			slog.Warn("dispatch delivery: re-read a pull request head", "repo", head.Repo, "number", head.Number, "error", err)
 		}
 		return nil
@@ -596,24 +599,32 @@ func (p *passRateLimit) err() error {
 // These come before the stored rows: nothing else writes the head of a pull request that has no
 // row, or reads a merged or closed one again. The read writes the row, creating it where none
 // exists, through the refresh every stored row takes, and recordOwedReadOutcome settles the owed
-// read once GitHub answers for the pull request, or once the installation can read the repository
-// and GitHub has no such pull request in it (pullRequestAbsent, one more call for a 404), and
-// otherwise counts the read under the kind it gave. So a pull request owed a failure is read every
-// pass until GitHub answers, and one GitHub refuses in a repository the App cannot read is read
-// again by a later pass, with no age that ends it. Both lists are taken before either is read, so
-// a row a read of this pass moves to the other kind is not read again in it. A rate limit is
-// counted as a failure and kept for the pass (limited). The refresh stamps the row read, so the
-// stored rows' list below does not take a row this has just read.
-func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, limited *passRateLimit) error {
-	var repositories repositoryReads
+// read once GitHub answers for the pull request, or once one answer of GitHub, asked with the
+// token of the read GitHub refused, shows the repository readable and the pull request absent
+// (pullRequestAbsent, one GraphQL request for each 404 or 410), and otherwise counts the read
+// under the kind it gave. So a pull request owed a failure is read every pass until GitHub
+// answers, and one GitHub refuses with no such answer is read again by a later pass, with no age
+// that ends it. Both lists are taken before either is read, so a row a read of this pass moves to
+// the other kind is not read again in it. A rate limit, of the read or of the question whether the
+// pull request exists, is kept for the pass (limited); the read's counts the read as a failure, and
+// the question's leaves the refusal owed. The refresh stamps the row read, so the stored rows' list
+// below does not take a row this has just read.
+func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, installations *passInstallations, limited *passRateLimit) error {
 	read := func(ctx context.Context, owed owedRead) error {
-		refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, owed.Repo, owed.Number, now)
+		refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, installations, owed.Repo, owed.Number, now)
 		outcome := owedReadAnswered
 		switch {
 		case err != nil:
 			outcome = owedReadFailed
-		case refused != nil && !pullRequestAbsent(ctx, r.pool, r.github, &repositories, owed.Repo, refused):
-			outcome = owedReadRefused
+		case refused != nil:
+			absent, askErr := pullRequestAbsent(ctx, r.github, refused)
+			if askErr != nil && !limited.keep(askErr) {
+				slog.Warn("dispatch delivery: ask GitHub whether a repository holds a pull request it refused; the read stays owed",
+					"repo", owed.Repo, "number", owed.Number, "error", askErr)
+			}
+			if !absent {
+				outcome = owedReadRefused
+			}
 		}
 		if recordErr := recordOwedReadOutcome(ctx, r.pool, owed, outcome); recordErr != nil {
 			slog.Warn("dispatch delivery: record how a pull request's owed read ended; the next pass reads it again",

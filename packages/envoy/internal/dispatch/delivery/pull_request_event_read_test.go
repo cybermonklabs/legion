@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,24 +25,35 @@ import (
 // /repos/{owner}/{repo}/pulls/{number}` from the answer a row last set, and 404 for a number it
 // was never given, as GitHub answers a pull request it does not have. Each pull request's commits
 // are an empty page, and `GET /repos/{owner}/{repo}` answers the repository, as GitHub answers an
-// installation that can read it. It counts the three reads, so a row can show what an envelope
-// cost. limited answers every pull request read with a rate limit, and failing with a 500.
-// holdFirst, where a test sets it before any read, runs at the first pull request read after its
-// answer is taken and before it is sent: a test moves GitHub on there, or holds the answer back.
+// installation that can read it. The absence query of GraphQL (absenceQuery, answerAbsenceQuery)
+// answers the repository and the pull request, or GitHub's NOT_FOUND for a number it was never
+// given. It counts the four reads, so a row can show what an envelope cost. limited answers every
+// pull request read with a rate limit, and failing with a 500. hidden is the installation losing
+// the repository: the token it minted before then is answered 404 for the repository and its pull
+// requests, and the absence query a null repository, as GitHub answers a repository a token does
+// not read. holdFirst, where a test sets it before any read, runs at the first pull request read
+// after its answer is taken and before it is sent: a test moves GitHub on there, or holds the
+// answer back. before, where a test sets it before any read, runs at each read of one number
+// before its answer is taken.
 type githubPulls struct {
-	mu          sync.Mutex
-	pulls       map[int]map[string]any
-	limited     bool
-	failing     bool
-	holdFirst   func()
-	reads       atomic.Int32
-	commitReads atomic.Int32
-	repoReads   atomic.Int32
+	mu             sync.Mutex
+	pulls          map[int]map[string]any
+	limited        bool
+	failing        bool
+	hidden         bool
+	holdFirst      func()
+	before         map[int]func()
+	reads          atomic.Int32
+	commitReads    atomic.Int32
+	repoReads      atomic.Int32
+	absenceQueries atomic.Int32
 }
 
 func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls {
 	t.Helper()
 	g := &githubPulls{pulls: map[int]map[string]any{}}
+	fake.served.Store(repo, g)
+	fake.absenceRoute.Do(func() { fake.handle("POST /graphql", fake.answerAbsenceQuery) })
 	fake.handle("GET /repos/"+repo+"/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
 		read := g.reads.Add(1)
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -49,8 +61,14 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 			t.Errorf("a pull request read of %s: %v", r.URL.Path, err)
 		}
 		g.mu.Lock()
+		before := g.before[number]
+		g.mu.Unlock()
+		if before != nil {
+			before()
+		}
+		g.mu.Lock()
 		pull, known := g.pulls[number]
-		limited, failing, hold := g.limited, g.failing, g.holdFirst
+		limited, failing, hidden, hold := g.limited, g.failing, g.hidden, g.holdFirst
 		g.mu.Unlock()
 		if read == 1 && hold != nil {
 			hold()
@@ -63,7 +81,7 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 		case failing:
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprint(w, `{"message":"Server Error"}`)
-		case !known:
+		case !known, hidden:
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 		default:
@@ -75,10 +93,74 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 		mustEncode(t, w, []any{})
 	})
 	fake.handle("GET /repos/"+repo, func(w http.ResponseWriter, _ *http.Request) {
+		// The answer is taken before the read is counted, so a test that waits for the count
+		// and then changes GitHub changes no answer already given.
+		g.mu.Lock()
+		hidden := g.hidden
+		g.mu.Unlock()
 		g.repoReads.Add(1)
+		if hidden {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
 		mustEncode(t, w, map[string]any{"full_name": repo, "id": 1, "default_branch": "main"})
 	})
 	return g
+}
+
+// answerAbsenceQuery answers POST /graphql for the one query the reconcile asks of GraphQL about
+// a refused read (absenceQuery), in GitHub's own shapes (pullRequestAbsent's doc comment): the
+// pull request a repository serveGitHubPulls serves holds, GitHub's NOT_FOUND on the path
+// repository.pullRequest for a number it does not hold, and a null repository with NOT_FOUND on
+// the path repository for one it does not serve, one the App is not installed on (notInstalled),
+// and one the installation lost (hidden). Each answer is taken before it is counted
+// (absenceQueries). Any other query is a test's mistake.
+func (f *fakeGitHub) answerAbsenceQuery(w http.ResponseWriter, r *http.Request) {
+	query, variables := decodeGraphQLRequest(f.t, r)
+	if !strings.Contains(query, "pullRequest(number: $number)") {
+		f.t.Errorf("POST /graphql asked %q; this fake answers only the absence query", query)
+		http.Error(w, `{"message":"unexpected query"}`, http.StatusBadRequest)
+		return
+	}
+	owner, _ := variables["owner"].(string)
+	name, _ := variables["name"].(string)
+	number, _ := variables["number"].(float64)
+	repo := owner + "/" + name
+	served, ok := f.served.Load(repo)
+	if !ok {
+		mustEncode(f.t, w, nullRepositoryAnswer(repo))
+		return
+	}
+	g := served.(*githubPulls)
+	_, notInstalled := f.notInstalled.Load(repo)
+	g.mu.Lock()
+	pull, known := g.pulls[int(number)]
+	unread := g.hidden || notInstalled
+	g.mu.Unlock()
+	defer g.absenceQueries.Add(1)
+	switch {
+	case unread:
+		mustEncode(f.t, w, nullRepositoryAnswer(repo))
+	case known:
+		mustEncode(f.t, w, map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"number": pull["number"]}}}})
+	default:
+		mustEncode(f.t, w, map[string]any{
+			"data": map[string]any{"repository": map[string]any{"pullRequest": nil}},
+			"errors": []any{map[string]any{"type": "NOT_FOUND", "path": []any{"repository", "pullRequest"},
+				"message": fmt.Sprintf("Could not resolve to a PullRequest with the number of %d.", int(number))}},
+		})
+	}
+}
+
+// nullRepositoryAnswer is GitHub's answer to the absence query about a repository the token does
+// not read, or one that does not exist.
+func nullRepositoryAnswer(repo string) map[string]any {
+	return map[string]any{
+		"data": map[string]any{"repository": nil},
+		"errors": []any{map[string]any{"type": "NOT_FOUND", "path": []any{"repository"},
+			"message": fmt.Sprintf("Could not resolve to a Repository with the name '%s'.", repo)}},
+	}
 }
 
 // set makes GitHub hold pull request number in repo at head, in state, with that branch and body
@@ -391,8 +473,8 @@ func TestAGitHubOutageLosesNoHead(t *testing.T) {
 // answer to a read made a moment after its webhook may not know the pull request yet, and a 404
 // writes no row, so without the read it is owed the pull request would have no head until a
 // later event of it. A pull request GitHub never had, in a repository the App reads, is settled
-// at that read with one more call, the repository's (pullRequestAbsent): GitHub then says the
-// repository has no such pull request.
+// at that read with one more call, the one GraphQL answer that shows the repository readable and
+// the pull request absent (pullRequestAbsent).
 func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -436,8 +518,8 @@ func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *t
 	if owed(lagged) != 0 || owed(never) != 0 {
 		t.Fatalf("after one pass #%d is owed %d read(s) and #%d %d, want none of either: GitHub answered for the first, and for the second the repository it can read has no such pull request", lagged, owed(lagged), never, owed(never))
 	}
-	if reads := github.repoReads.Load(); reads != 1 {
-		t.Errorf("the pass read the repository %d times, want once: the one more call of #%d's refusal", reads, never)
+	if asked, reads := github.absenceQueries.Load(), github.repoReads.Load(); asked != 1 || reads != 0 {
+		t.Errorf("the pass asked GraphQL whether the repository holds #%d %d times and read the repository %d times, want once and never: the one more call of #%d's refusal is one answer", never, asked, reads, never)
 	}
 	if count := headRowCount(t, ctx, intake, "acme/widgets", never); count != 0 {
 		t.Fatalf("#%d has %d head rows, want none", never, count)

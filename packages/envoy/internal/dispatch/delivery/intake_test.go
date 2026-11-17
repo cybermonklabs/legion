@@ -128,15 +128,22 @@ func repairDroppedTables(t *testing.T, ctx context.Context, pool *store.Pool) {
 // restore leaves the trigger, which the next deliveryTestPool drops after its truncate.
 func refuseOwedReads(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `
+	return refuseOwedReadsWith(t, ctx, pool, "55P03")
+}
+
+// refuseOwedReadsWith is refuseOwedReads with the SQLSTATE the trigger raises: a test of a
+// failure the envelope's values cause names one of classes 22, 23 and 54 (recordRefused).
+func refuseOwedReadsWith(t *testing.T, ctx context.Context, pool *store.Pool, sqlstate string) (restore func()) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
 		create function delivery_test_refuse_owed() returns trigger language plpgsql as $$
 		begin
-		  raise exception 'the test refuses writes of pull_request_reads_owed' using errcode = '55P03';
+		  raise exception 'the test refuses writes of pull_request_reads_owed' using errcode = '%s';
 		end $$;
 		create trigger delivery_test_refuse_owed before insert or update on pull_request_reads_owed
 		  for each row execute function delivery_test_refuse_owed();
-	`); err != nil {
-		t.Fatalf("make pull_request_reads_owed refuse writes: %v", err)
+	`, sqlstate)); err != nil {
+		t.Fatalf("make pull_request_reads_owed refuse writes with SQLSTATE %s: %v", sqlstate, err)
 	}
 	restore = sync.OnceFunc(func() {
 		if _, err := pool.Exec(context.WithoutCancel(ctx), refuseOwedReadsUndo); err != nil {
