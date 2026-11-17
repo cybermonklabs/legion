@@ -516,7 +516,7 @@ func TestTheReadJudgesEachReviewOnce(t *testing.T) {
 }
 
 // What the read keeps a review as refused for is a refusal that stands at every head
-// (workflow.RoundRefusal.AtEveryHead), not only one for who wrote the review. A person's listed
+// (workflow.RefusedAtEveryHead), not only one for who wrote the review. A person's listed
 // approval is refused whatever head the record comes to hold, since the commit_id GitHub lists it
 // under is GitHub's own and moves with the pull request (dispatch://INFRA-1557): this process
 // judges it once, so the read after it reads the author's write access no more and logs no second
@@ -644,7 +644,7 @@ func TestTheReadSetsAsideAnotherSessionsReviewInTheReviewersFirstRound(t *testin
 // Until the reviewer's agent registers, the claim the daemon starts the reviewer under records no
 // session: the outbox makes it with none, and before the outbox takes the start it has no row. A
 // review-App review the read lists then decides nothing, whoever submitted it, and the read does
-// not keep it as refused (workflow.RoundRefusal.AtEveryHead is false for it): the next read, once
+// not keep it as refused (it lasts workflow.RefusedWhileNoSession): the next read, once
 // the reviewer's session is recorded, judges it again by that session, and sets aside and keeps one
 // naming another session, or applies one naming the reviewer's, which decides the round.
 func TestTheReadJudgesAReviewThatWaitedForTheReviewersSessionAgain(t *testing.T) {

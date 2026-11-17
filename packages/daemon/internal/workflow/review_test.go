@@ -1723,7 +1723,7 @@ func TestAReviewAppReviewFromAnotherSessionIsSetAside(t *testing.T) {
 }
 
 // reviewWaitsLine is the one line the workflow logs for a review-App review that decides nothing
-// because the reviewer's claim records no session yet (workflow's RoundRefusal.Waits).
+// because the reviewer's claim records no session yet (workflow's RefusedWhileNoSession).
 const reviewWaitsLine = "workflow: a review of the review App waits: the reviewer's claim records no session, so the next read of the pull request's reviews judges it again"
 
 // In the reviewer's first round its row names no claim (seedRoundOneRows): the reviewer submits the
@@ -2110,7 +2110,7 @@ func TestARequestForChangesNamingAnOlderHeadLeavesTheRoundStuck(t *testing.T) {
 // GitHub's list of the pull request's reviews decides nothing, since the list answers with
 // GitHub's own commit_id for every review it holds and that id moves with the pull request
 // (intake.PullRequestReview.ReadFromList, dispatch://INFRA-1557). That refusal stands at every
-// head the record can come to hold (RoundRefusal.AtEveryHead), so the reviewer's row keeps
+// head the record can come to hold (RefusedAtEveryHead), so the reviewer's row keeps
 // nothing of it: the row carries a refusal a later head could have spared the round, and the
 // stuck notice of a round only a listed review was refused in carries its base reason alone.
 func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {

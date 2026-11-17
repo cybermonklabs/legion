@@ -561,8 +561,8 @@ type PhaseRow struct {
 	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
 	// that commit; neither does another review-App session's review or a review that decides
 	// nothing, and while the reviewer's claim records no session no review-App review decides the
-	// round or moves it (workflow's RoundRefusal.Waits). Unlike Decision it outlives its round: no
-	// entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
+	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
+	// no entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
 	// it), so the task of the reviewer's next round names it (workflow's namingTheReviewRound) and
 	// the reviewer reads the difference from it to the head. Only a review of the entry that stands
 	// moves it: the row holds the task of an entry (EntryTask), and the review's footer names that

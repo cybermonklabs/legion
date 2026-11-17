@@ -24,7 +24,7 @@ import (
 // session is held to the one the claims record holds for the claim the daemon starts the reviewer
 // under, in the first round as in every later one (workflow's byReviewer): only a review naming
 // that session decides the round, and while that claim records no session the review waits and
-// decides nothing (workflow's RoundRefusal.Waits). Of the reviewer's own reviews, only one whose
+// decides nothing (workflow's RefusedWhileNoSession). Of the reviewer's own reviews, only one whose
 // footer names the entry the reviewer's phases row stands at moves the commit the reviewer read
 // (workflow's review); no time is compared. seq numbers the envelope and reviewID the review: each
 // review a run publishes carries an id above the one before it, and its submitted_at is the moment

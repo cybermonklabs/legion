@@ -186,7 +186,7 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 // mergeWaitReviewerSession, as the registration of its agent records it, and stands as the release
 // of an idle pod leaves it (supervise.SuspendedByReleased), with the session kept: the boot's
 // resume by rule resumes no such claim, and with no session recorded each review would wait and
-// decide nothing (workflow's RoundRefusal.Waits).
+// decide nothing (workflow's RefusedWhileNoSession).
 func (r *mergeWaitReadableLive) seed() {
 	t := r.t
 	t.Helper()
