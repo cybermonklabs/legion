@@ -57,10 +57,10 @@ func heartbeatDay(t *testing.T, purge bool) (int, int) {
 		t.Fatalf("record the session: %v", err)
 	}
 	row, ok := known.cached("ses_known_day")
-	if !ok || !row.layout.Chunked() {
-		t.Fatalf("the record of %d bytes of topics is not stored in chunks: %+v", len(strings.Join(topics, "")), row.layout)
+	if !ok || !row.stored().Chunked() {
+		t.Fatalf("the record of %d bytes of topics is not stored in chunks: %+v", len(strings.Join(topics, "")), row.stored())
 	}
-	chunks := row.layout.Chunks
+	chunks := row.stored().Chunks
 	for beat := range 144 {
 		clock.set(clock.Now().Add(KnownSessionRefreshAge))
 		if err := known.RecordWithin(t.Context(), record); err != nil {
@@ -172,7 +172,7 @@ func newMarkerRig(t *testing.T, deny ...string) markerRig {
 		}
 		if label == "first" {
 			row, _ := known.cached("ses_known_marked")
-			replaced = row.layout.Chunks
+			replaced = row.stored().Chunks
 		}
 	}
 	if replaced == 0 {
@@ -250,7 +250,7 @@ func TestTheChunkMarkerPassSendsTheKnownSessionPurgeItsGrantMustAllow(t *testing
 		}
 	}
 	row, _ := rig.known.cached("ses_known_marked")
-	if subjects := chunkSubjects(t, rig.conn); subjects != row.layout.Chunks {
+	if subjects := chunkSubjects(t, rig.conn); subjects != row.stored().Chunks {
 		t.Fatalf("after the pass the bucket holds %d chunk subjects, want the record's live chunks alone", subjects)
 	}
 }

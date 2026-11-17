@@ -6,6 +6,7 @@ package store
 // rewrite cases are in interest_chunks_test.go, whose helpers these share.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -14,11 +15,68 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 )
+
+// historyFailingWatch is the interest bucket's watch handle with every watch of one key failing, as
+// a history read that does not answer fails; the watcher's own watch, of every key, is unaffected.
+type historyFailingWatch struct {
+	jetstream.KeyValue
+	key string
+}
+
+func (kv historyFailingWatch) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+	if keys == kv.key {
+		return nil, context.DeadlineExceeded
+	}
+	return kv.KeyValue.Watch(ctx, keys, opts...)
+}
+
+// A delete that read nothing and so deleted nothing, whose read of the key's history then fails,
+// leaves the cache's row as it is: the delete changed nothing in the bucket, and evicting the row
+// would leave the chunks of a record that still stands to the collection, past which the record is
+// a manifest no listener joins or reaps. The control is the same record after the collection: it
+// still reads whole.
+func TestADeleteThatReadNothingAndCannotReadHistoryKeepsTheRow(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	clock := &manualClock{at: time.Now()}
+	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(reg.StopWatch)
+	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	topics := kvchunktest.Topics("unread", 400)
+	if _, err := reg.Upsert(Interest{SessionID: "ses_unread", MachineID: "m1"}, topics); err != nil {
+		t.Fatalf("store the record: %v", err)
+	}
+	base := reg.watcher.KV()
+	reg.watcher.Stop()
+	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(missingGetKeyValue{KeyValue: base.Legacy(), key: "ses_unread"},
+		historyFailingWatch{KeyValue: base.WatchHandle(), key: "ses_unread"}, base.Streams()), interestCache{reg})
+	reg.watcher.Start()
+	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	if err := reg.deleteInterest(t.Context(), "ses_unread"); err != nil {
+		t.Fatalf("the delete whose read found nothing: %v", err)
+	}
+	if _, ok := reg.Cached("ses_unread"); !ok {
+		t.Fatal("after a delete that deleted nothing and could not read the history, the cache holds no row for the record that still stands")
+	}
+	clock.Set(time.Now().Add(kvchunk.Grace + time.Minute))
+	if collected, err := reg.collectInterestChunks(t.Context()); err != nil || collected != 0 {
+		t.Fatalf("the collection took %d chunks (%v) of a record that still stands, want none", collected, err)
+	}
+	row, _, err := openRegistry(t, conn).RefreshAt(t.Context(), "ses_unread")
+	if err != nil {
+		t.Fatalf("read the record after the collection: %v", err)
+	}
+	requireTopics(t, "the record after the collection", row, sortedTopics(topics))
+}
 
 // writingAfterDeleteKeyValue is the interest bucket with after run once a delete of key has landed:
 // another listener's registration storing the record again before the deleting listener reads the
@@ -249,12 +307,13 @@ func TestAWriteOverADamagedManifestDeletesNoChunkItNames(t *testing.T) {
 }
 
 // A manifest copied or borrowed under another session's key names the owner's chunks, so neither
-// the write that replaces it nor the deregistration that deletes it deletes them: an exact copy,
-// which the cache joins and holds as a row of its own, and one with a forged SHA-256, which no read
-// joins. Each time the owner's record still reads whole and its chunks stay in the bucket. An exact
-// copy joins into the owner's own record, naming the owner's session, so a write of the copy's
-// session targets the owner's key at a revision that is not its and is refused; only its
-// deregistration is a step here. The control is the owner's own deregistration, which deletes them.
+// the write that replaces it, nor an unsubscribe of the copy's session, nor the deregistration that
+// deletes it deletes them: an exact copy, which the cache joins and holds as a row of its own, and
+// one with a forged SHA-256, which no read joins. Each time the owner's record still reads whole and
+// its chunks stay in the bucket. An exact copy joins into the owner's own record, naming the owner's
+// session, so a registration of the copy's session targets the owner's key at a revision that is
+// not its and is refused; its unsubscribe and its deregistration are its steps here. The control is
+// the owner's own deregistration, which deletes them.
 func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)

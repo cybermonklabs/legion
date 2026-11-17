@@ -234,12 +234,12 @@ func TestAReaderDuringRewritesGetsOneWholeRecord(t *testing.T) {
 	readings := map[string]*reading{}
 	var mu sync.Mutex
 	for name, read := range readers {
-		readings[name] = &reading{}
+		got := &reading{}
+		readings[name] = got
 		wg.Go(func() {
 			for ctx.Err() == nil {
 				item, ok, err := read()
 				mu.Lock()
-				got := readings[name]
 				switch {
 				case ctx.Err() != nil:
 				case err != nil:

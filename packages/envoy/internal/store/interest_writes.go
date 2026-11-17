@@ -47,7 +47,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 			r.deleteChunks(ctx, kv, sessionID, r.ownLayout(sessionID, held.layout))
 		}
 	}
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
+	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision, deleted != nil)
 	return nil
 }
 
@@ -103,26 +103,32 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 		return false, err
 	}
 	r.deleteChunks(ctx, kv, sessionID, r.ownLayout(sessionID, layout))
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
+	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision, true)
 	return true, nil
 }
 
 // reconcileDeleted brings sessionID's cache entry in line with the bucket after a delete through
-// kv, a handle of epoch, that succeeded past revision: it applies the key's latest history entry,
-// which is the delete marker unless a write has landed since, or, when the history cannot be read
-// within ctx, evicts the entry behind a fence just past revision. A latest entry at a revision the
-// cache's fence already holds is no news - a delete that read nothing and so deleted nothing - and
-// the cache is left as it is, its row and that row's chunks named. A manifest another listener
-// stored since is evicted behind that fence rather than applied: the copy joins a manifest only
-// from the chunks its watcher delivered, which may not have reached it yet, and the watcher
-// delivers that manifest after its chunks, past the fence.
-func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, revision uint64) {
+// kv, a handle of epoch, that answered past revision, and that deleted the record when deleted:
+// it applies the key's latest history entry, which is the delete marker unless a write has landed
+// since, or, when the history cannot be read within ctx, evicts the entry behind a fence just past
+// revision. A latest entry at a revision the cache's fence already holds is no news - a delete
+// that read nothing and so deleted nothing - and the cache is left as it is, its row and that row's
+// chunks named. A delete that deleted nothing leaves the cache as it is when the history cannot be
+// read either: nothing it did changed the bucket, and evicting the row would leave the chunks of a
+// record that still stands to the collection. A manifest another listener stored since is evicted
+// behind that fence rather than applied: the copy joins a manifest only from the chunks its watcher
+// delivered, which may not have reached it yet, and the watcher delivers that manifest after its
+// chunks, past the fence.
+func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, revision uint64, deleted bool) {
 	// A history that does not answer falls back to the fence below: the delete itself answered.
 	// ReadHistory ends with ctx; bus.RequestTimeout bounds it for a caller that answers no request
 	// and so passes a context that never ends.
 	historyCtx, cancel := context.WithTimeout(ctx, bus.RequestTimeout)
 	entries, err := kv.ReadHistory(historyCtx, sessionID)
 	cancel()
+	if err != nil && !deleted {
+		return
+	}
 	r.mu.Lock()
 	var latest kvwatch.Entry
 	if err == nil && len(entries) > 0 {

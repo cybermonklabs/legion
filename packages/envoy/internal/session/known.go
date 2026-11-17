@@ -776,7 +776,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		}
 	}
 	kv, epoch := watcher.Handle()
-	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, s.ownLayout(record.SessionID, held.layout), func(head []byte) (uint64, error) {
+	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, s.ownLayout(record.SessionID, held.stored()), func(head []byte) (uint64, error) {
 		return kv.Put(record.SessionID, head)
 	}, s.now, s.logger(), knownRecord)
 	if err != nil {
@@ -790,7 +790,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	// listener - and putting this record back over it would answer the older one until the next
 	// write of the key. A write through a handle on a bucket since recreated is dropped there too.
 	s.mu.Lock()
-	s.records.Put(watcher, epoch, record.SessionID, knownRow{KnownSession: record, layout: written.Layout}, written.Revision)
+	s.records.Put(watcher, epoch, record.SessionID, newKnownRow(record, written.Layout), written.Revision)
 	s.mu.Unlock()
 	return nil
 }

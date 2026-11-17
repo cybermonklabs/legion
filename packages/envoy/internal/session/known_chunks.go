@@ -20,10 +20,30 @@ import (
 const knownRecord = "known-session record"
 
 // knownRow is a record as the bucket stores it: the record, and the layout it is stored in
-// (internal/kvchunk), so the write that replaces it deletes the chunks it leaves unnamed.
+// (internal/kvchunk), so the write that replaces it deletes the chunks it leaves unnamed. The
+// layout is held only for a record stored in chunks, nil for one stored whole: the store holds up
+// to a hundred thousand rows, nearly all of them whole, and TestKnownSessionsMemoryForAHundredThousandRecords
+// measured 1,334 bytes a record so, 1,356 with the layout held by value, and 1,324 before chunks.
 type knownRow struct {
 	KnownSession
-	layout kvchunk.Layout
+	layout *kvchunk.Layout
+}
+
+// newKnownRow is record as stored in layout.
+func newKnownRow(record KnownSession, layout kvchunk.Layout) knownRow {
+	row := knownRow{KnownSession: record}
+	if layout.Chunked() {
+		row.layout = &layout
+	}
+	return row
+}
+
+// stored is the layout the row's record is stored in, the zero layout for one stored whole.
+func (r knownRow) stored() kvchunk.Layout {
+	if r.layout == nil {
+		return kvchunk.Layout{}
+	}
+	return *r.layout
 }
 
 // decodeKnownLocked is the record a put of the bucket leaves in the copy, called under s.mu: a
@@ -39,7 +59,7 @@ func (s *KnownSessions) decodeKnownLocked(entry kvwatch.Entry) (knownRow, bool, 
 	if err := json.Unmarshal(value, &record); err != nil {
 		return knownRow{}, false, err
 	}
-	return knownRow{KnownSession: record, layout: layout}, true, nil
+	return newKnownRow(record, layout), true, nil
 }
 
 // ownLayout is layout when no record the copy holds for another session names its generation,
@@ -55,7 +75,7 @@ func (s *KnownSessions) ownLayout(sessionID string, layout kvchunk.Layout) kvchu
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for key, row := range s.records.All() {
-		if key != sessionID && row.layout.Generation == layout.Generation {
+		if key != sessionID && row.stored().Generation == layout.Generation {
 			return kvchunk.Layout{}
 		}
 	}
@@ -120,8 +140,8 @@ func (s *KnownSessions) collectChunks(ctx context.Context) (int, error) {
 	s.mu.RLock()
 	named := map[string]bool{}
 	for _, row := range s.records.All() {
-		if row.layout.Chunked() {
-			named[row.layout.Generation] = true
+		if row.stored().Chunked() {
+			named[row.stored().Generation] = true
 		}
 	}
 	unnamed := s.chunks.Unnamed(func(generation string) bool { return named[generation] }, cutoff)
