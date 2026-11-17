@@ -340,6 +340,214 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 }
 
+// Session S holds issue T-1's route and follows T-1's topic family, so its relay hands it its own
+// subject and T-1's topic family together, in stream order, and it drops a second copy of an event
+// by its id: S takes T-1's events in the order sessionOrderRig.views reads them. Event 1 is an
+// agent's message, which goes to the topic family alone, and the stream refuses its topic publish
+// (no responders), so it backs off; event 2 is a person's message, which goes to the topic family
+// and to S's own subject. S takes them in issue order, event 1 first, because event 2 reaches S's
+// subject only once event 1 has reached the topic family: when event 2 is written while event 1
+// waits out its back-off, and when both are due in one batch, where event 1's topic send is in
+// flight beside it. The control sends both events to S's own subject, which refuses event 1 first,
+// and S takes them in order there with or without the hold, which shows the rig reads S's view in
+// stream order.
+func TestASessionTakesAnOwnersEventsInOrderThroughAFailedTopicPublish(t *testing.T) {
+	t.Run("a later event written while the first backs off", func(t *testing.T) {
+		takesTheOwnersEventsInOrderThroughATopicFailure(t, false)
+	})
+	t.Run("both events due in one batch", func(t *testing.T) {
+		takesTheOwnersEventsInOrderThroughATopicFailure(t, true)
+	})
+	t.Run("control both events on the session subject", keepsTheOrderOnTheSessionsOwnSubject)
+}
+
+// sessionOrderRig is an outbox's stream with a reader of it, the stream's configuration as it
+// started, which refuse narrows and captureAgain puts back, and issue T-1, whose route is S.
+type sessionOrderRig struct {
+	client    *bus.Client
+	reader    *natsgo.Conn
+	js        natsgo.JetStreamContext
+	capturing natsgo.StreamConfig
+	database  *store.Store
+	broker    *events.Broker
+}
+
+func newSessionOrderRig(t *testing.T) sessionOrderRig {
+	t.Helper()
+	_, url := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{url})
+	if err != nil {
+		t.Fatalf("connect the outbox's client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	reader := testnats.Connect(t, url)
+	js, err := reader.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	info, err := js.StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	database := storetest.Open(t)
+	route := "session:S"
+	seedIssue(t, database, "T-1", &route)
+	return sessionOrderRig{client: client, reader: reader, js: js, capturing: info.Config, database: database, broker: events.NewBroker()}
+}
+
+// refuse has the stream capture no subject under prefix, so NATS answers a publish there with no
+// responders.
+func (r sessionOrderRig) refuse(t *testing.T, prefix string) {
+	t.Helper()
+	narrowed := r.capturing
+	narrowed.Subjects = slices.DeleteFunc(slices.Clone(r.capturing.Subjects), func(subject string) bool {
+		return strings.HasPrefix(subject, prefix)
+	})
+	if len(narrowed.Subjects) == len(r.capturing.Subjects) {
+		t.Fatalf("no stream subject is under %q: %v", prefix, r.capturing.Subjects)
+	}
+	if _, err := r.js.UpdateStream(&narrowed); err != nil {
+		t.Fatalf("stop the stream capturing %s: %v", prefix, err)
+	}
+}
+
+func (r sessionOrderRig) captureAgain(t *testing.T) {
+	t.Helper()
+	capturing := r.capturing
+	if _, err := r.js.UpdateStream(&capturing); err != nil {
+		t.Fatalf("let the stream capture every subject again: %v", err)
+	}
+}
+
+func (r sessionOrderRig) write(t *testing.T, actor model.Actor, body string) model.Event {
+	t.Helper()
+	return appendEvent(t, r.database, r.broker, model.Event{
+		IssueKey: new("T-1"), Type: "message.created", Actor: actor,
+		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
+	})
+}
+
+// settled reports whether a batch has written what event id came to: a hold-back or a back-off
+// sets its next attempt, and a publish its published_at.
+func (r sessionOrderRig) settled(t *testing.T, id int64) bool {
+	t.Helper()
+	var settled bool
+	if err := r.database.Pool.QueryRow(context.Background(),
+		`select next_attempt_at is not null or published_at is not null from events where id = $1`, id).Scan(&settled); err != nil {
+		t.Fatalf("read event %d: %v", id, err)
+	}
+	return settled
+}
+
+// views is, in stream order, the event ids on each of session's subjects - its own and T-1's topic
+// family - and session's view of them: both together, a repeated event id dropped.
+func (r sessionOrderRig) views(t *testing.T, session string) (bySubject map[string][]int64, view []int64) {
+	t.Helper()
+	bySubject = map[string][]int64{}
+	seen := map[int64]bool{}
+	for _, message := range streamMessages(t, r.reader) {
+		if !strings.HasPrefix(message.Subject, "notifications.dispatch.issue.T-1.") && message.Subject != session {
+			continue
+		}
+		id := envelopeEventID(t, message.Data)
+		bySubject[message.Subject] = append(bySubject[message.Subject], id)
+		if !seen[id] {
+			seen[id] = true
+			view = append(view, id)
+		}
+	}
+	return bySubject, view
+}
+
+// takesTheOwnersEventsInOrderThroughATopicFailure is the case: oneBatch writes both events before
+// the outbox starts, so its first batch reads both due, and otherwise the second is written once
+// the first waits out a back-off. The stream refuses the topic family until a batch has settled
+// the second event, so that batch makes or holds the second event's send to S while the first
+// event's topic send has not gone.
+func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool) {
+	rig := newSessionOrderRig(t)
+	rig.refuse(t, dispatchTopicPrefix)
+	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
+	first := rig.write(t, agent, "first, by an agent")
+	var second model.Event
+	if oneBatch {
+		second = rig.write(t, person, "second, by a person")
+	}
+	stop := runOutbox(t, rig.database, rig.client, rig.broker)
+	defer stop()
+	if !oneBatch {
+		// Refused a third time, the first event waits out a back-off of 4 s (retry.Delay), so the
+		// batch the second event's write wakes finds the first one not due.
+		waitFor(t, 60*time.Second, "the first event refused three times", func() bool {
+			_, attempts := publishedDestinations(t, rig.database, first.ID)
+			return attempts >= 3
+		})
+		second = rig.write(t, person, "second, by a person")
+	}
+	waitFor(t, 60*time.Second, "a batch settled the second event while the topic family was refused", func() bool {
+		return rig.settled(t, second.ID)
+	})
+	rig.captureAgain(t)
+	waitFor(t, 120*time.Second, "both events published", func() bool {
+		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
+	})
+
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	session := contracts.LegacyAgentSubject("S")
+	firstTo, firstAttempts := publishedDestinations(t, rig.database, first.ID)
+	secondTo, secondAttempts := publishedDestinations(t, rig.database, second.ID)
+	bySubject, view := rig.views(t, session)
+	want := []int64{first.ID, second.ID}
+	t.Logf("event %d went to %v after %d attempts; event %d went to %v after %d attempts", first.ID, firstTo, firstAttempts, second.ID, secondTo, secondAttempts)
+	t.Logf("the stream by subject: %v; S takes T-1's events as %v, want %v", bySubject, view, want)
+	if !slices.Equal(firstTo, []string{topic}) {
+		t.Fatalf("the first event went to %v, want the topic family alone", firstTo)
+	}
+	if !slices.Contains(secondTo, session) || !slices.Contains(secondTo, topic) {
+		t.Fatalf("the second event went to %v, want the topic family and S's own subject %s", secondTo, session)
+	}
+	if !slices.Equal(bySubject[topic], want) {
+		t.Errorf("the topic family holds %v, want %v", bySubject[topic], want)
+	}
+	if !slices.Equal(bySubject[session], []int64{second.ID}) {
+		t.Errorf("S's subject holds %v, want only the second event %d", bySubject[session], second.ID)
+	}
+	if !slices.Equal(view, want) {
+		t.Errorf("S takes T-1's events as %v, want %v: the second event reached S's subject before the first reached the topic family", view, want)
+	}
+}
+
+// keepsTheOrderOnTheSessionsOwnSubject is the control: both events go to S's own subject, which
+// refuses the first, and the second waits behind it on that key.
+func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
+	rig := newSessionOrderRig(t)
+	rig.refuse(t, contracts.AgentTopicPrefix)
+	person := model.Actor{Kind: "user", ID: "alice"}
+	first := rig.write(t, person, "first, by a person")
+	stop := runOutbox(t, rig.database, rig.client, rig.broker)
+	defer stop()
+	waitFor(t, 60*time.Second, "the first event backed off for S's subject", func() bool {
+		_, attempts := publishedDestinations(t, rig.database, first.ID)
+		return attempts > 0
+	})
+	rig.captureAgain(t)
+	second := rig.write(t, person, "second, by a person")
+	waitFor(t, 120*time.Second, "both events published", func() bool {
+		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
+	})
+
+	session := contracts.LegacyAgentSubject("S")
+	bySubject, view := rig.views(t, session)
+	want := []int64{first.ID, second.ID}
+	t.Logf("the stream by subject: %v; S takes T-1's events as %v, want %v", bySubject, view, want)
+	if !slices.Equal(bySubject[session], want) {
+		t.Errorf("S's subject holds %v, want %v", bySubject[session], want)
+	}
+	if !slices.Equal(view, want) {
+		t.Errorf("S takes T-1's events as %v, want %v", view, want)
+	}
+}
+
 // shiftedClock moves database's clock an hour ahead of the pod's, as a database host whose clock
 // disagrees with the pod's has it, and returns a store whose connections read it: every now() they
 // call answers an hour later than the pod's clock.

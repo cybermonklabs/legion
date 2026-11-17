@@ -310,7 +310,10 @@ const ownerTopicKey = "owner"
 // notifications.dispatch. - an issue's, a document's or a project's, one per event type - is one
 // family, the owner's topic family. Each notifications.agent.<session> subject is one, whichever
 // route reaches it: the issue's session route, an author or follower route, a previous claimant's
-// notice. A role route's key is its holder's (destination.key).
+// notice. A role route's key is its holder's (destination.key). The topic family is the one key
+// that reaches sessions the outbox does not name, every session that follows the owner, so a send
+// to it that has not gone holds back the owner's later events on every key, where a send to any
+// other key holds back that key alone (planChains, chainSend.after).
 func destinationKey(subject string) string {
 	if strings.HasPrefix(subject, dispatchTopicPrefix) {
 		return ownerTopicKey
@@ -406,7 +409,8 @@ const (
 	// lost: the send met a lost connection, the hold's deadline or the process stopping, so whether
 	// it landed is unknown and no fault of the event.
 	lost
-	// held: an earlier send of the chain failed, so this one was not made.
+	// held: an earlier send of the chain failed, or the earlier event's topic send this one waited
+	// for (chainSend.after) did not reach the topic family, so this one was not made.
 	held
 )
 
@@ -422,8 +426,14 @@ type chainSend struct {
 	state              sendState
 	err                error
 	fenced, connection bool
-	// heldBy is the event whose failed send held this one back.
+	// heldBy is the event whose failed send held this one back: an earlier send of this chain, or
+	// the topic send this one waited for (after), or the send that held that one back.
 	heldBy *batchEvent
+	// after is, on a send to any key but the owner's topic family, the last send to that family
+	// the batch makes for an earlier event of the owner, nil when there is none: this send is made
+	// only once that one reached the topic family, and is held back when it did not (planChains,
+	// sendChains).
+	after *chainSend
 	// standIn is the envelope this send carries once NATS refused the event's own
 	// (standInEnvelope): the same event with its payload left out. It is set once, so a
 	// stand-in NATS refuses too is the end of this send.
@@ -450,7 +460,8 @@ func (s *chainSend) heldByHolder() *roleForward {
 }
 
 // chain is the sends of one owner's events to one destination key, in id order. Its next send is
-// made only once the one before it reached its destination. owner is whose lane the chain runs
+// made only once the one before it reached its destination, and once the earlier event's topic
+// send it waits for (chainSend.after) reached the topic family. owner is whose lane the chain runs
 // in: a batch settles and releases an owner once every chain of that owner has finished
 // (sendChains, publishBatch).
 type chain struct {
@@ -461,17 +472,34 @@ type chain struct {
 
 // planChains orders each owner's sends. An owner's events are walked in id order, and each
 // destination an event has not reached yet goes on its owner's chain for that destination's key -
-// unless an earlier event of the owner that is not due has that key unreached, an earlier event
-// whose list is incomplete may still owe that key (below), or an earlier event's own copy for
-// that key waits on a mention (below), in which case the event is held back from it
-// (batchEvent.held). Every destination key of every owner is a chain of its own, and a
-// chain's sends go one at a time (sendChains), so the order holds per (owner, destination key):
-// event N+1 of an owner reaches a destination only after every earlier unpublished event of that
-// owner bound for it has. A destination that stalls - its send failed, its event is waiting out
-// a back-off with that destination unreached, or its copy waits on a mention - holds back that
-// destination's later events of that owner and nothing else.
+// unless an earlier event of the owner that is not due has that key or the owner's topic family
+// unreached (below), an earlier event whose list is incomplete may still owe that key (below), or
+// an earlier event's own copy for that key waits on a mention (below), in which case the event is
+// held back from it (batchEvent.held). Every destination key of every owner is a chain of its own,
+// and a chain's sends go one at a time (sendChains), so the order holds per (owner, destination
+// key): event N+1 of an owner reaches a destination only after every earlier unpublished event of
+// that owner bound for it has. A destination that stalls - its send failed, its event is waiting
+// out a back-off with that destination unreached, or its copy waits on a mention - holds back that
+// destination's later events of that owner, and nothing else unless it is the owner's topic
+// family.
 //
-// The one hold wider than a destination is an event whose recipient read failed
+// The owner's topic family holds back every key. Each session that follows the owner receives on
+// that family beside its own agent subject, and its relay hands it both in stream order, so a later
+// event that reached such a session's own subject before an earlier event reached the topic family
+// would reach that session first; the outbox cannot know which sessions follow the owner, so an
+// earlier event's topic send that has not gone comes before each later send of the owner to any
+// key. An earlier event that is not due with the topic family unreached holds the owner's later
+// events back from every key, behind its nextAttempt. A topic send of an earlier event that this
+// batch makes is what each later send of the owner to another key waits for (chainSend.after): the
+// batch's chains start at once, so the later send would otherwise go while the topic send is in
+// flight, and sendChains makes it only once the topic send reached the topic family, and holds it
+// back, with the rest of its chain, when the topic send failed or was held back itself. The hold is
+// one-sided: a session key reaches its one session, which takes the owner's events in order from
+// the topic family as well, so a session key that stalls holds back that key alone and the owner's
+// topic family goes on (TestABackedOffEventHoldsBackOnlyItsDestination,
+// TestASessionTakesAnOwnersEventsInOrderThroughAFailedTopicPublish).
+//
+// The other hold wider than a destination is an event whose recipient read failed
 // (batchEvent.incomplete): its list ends at the read, so it may be bound for any session the read
 // would name. Every later event of its owner is held back from each session key - an agent
 // subject, or a role route's key - that the incomplete event neither names in its list nor already
@@ -482,16 +510,11 @@ type chain struct {
 // by the subject it recorded, not by its key now, so a role route reached names its role topic and
 // not the agent subject of whoever holds the role in this batch, a session the failed read may yet
 // name. The owner's topic comes before every read (eventDestinations), so the owner's topic family
-// is never held this way. So a recipient read that fails holds back, until the retry of the event
-// that asked it, its owner's later session copies on the keys that event could still owe, and
-// nothing else; an event whose reads all answered holds back only the destinations it has not
-// reached.
-//
-// The order is kept per destination key, not per session: a session that subscribes to an issue's
-// topic family and is also routed to by its events receives on two keys, so when event N's topic
-// publish fails and N+1's agent publish succeeds it sees N+1's first copy before N's. Both are
-// JetStream publishes on the same stream, so it takes a stream failing one subject and not the
-// other.
+// is never held this way, and the two holds add up: a later event is held back from a session key
+// by either. So a recipient read that fails holds back, until the retry of the event that asked
+// it, its owner's later session copies on the keys that event could still owe; and every event,
+// its reads answered or not, holds back the destinations it has not reached, and every key while
+// one of them is the owner's topic family.
 //
 // A copy that waits on a mention (destination.waiting) goes on no chain and sends nothing, but
 // it holds its key: the owner's later events bound for that key are held behind it, behind the
@@ -561,6 +584,13 @@ func planChains(events []*batchEvent) []*chain {
 			byOwner[event.owner] = map[string]*chain{}
 			blocked[event.owner] = map[string]blocker{}
 		}
+		// after is the owner's last topic send of an earlier event: the event's sends to every
+		// other key wait for it (chainSend.after). Taken before the event's own sends join the
+		// chain, since the copies of one event have no order among themselves.
+		var after *chainSend
+		if topic := byOwner[event.owner][ownerTopicKey]; topic != nil {
+			after = topic.sends[len(topic.sends)-1]
+		}
 		for _, dest := range event.destinationsOf {
 			if _, ok := event.delivered[dest.subject]; ok {
 				continue
@@ -592,6 +622,11 @@ func planChains(events []*batchEvent) []*chain {
 			if by, ok := blocked[event.owner][key]; ok && by.event != event {
 				event.held = append(event.held, by)
 			}
+			if key != ownerTopicKey {
+				if by, ok := blocked[event.owner][ownerTopicKey]; ok && by.event != event {
+					event.held = append(event.held, by)
+				}
+			}
 			for _, earlier := range unknown[event.owner] {
 				if _, ok := earlier.named[key]; !ok {
 					event.held = append(event.held, earlier.by)
@@ -607,6 +642,9 @@ func planChains(events []*batchEvent) []*chain {
 				chains = append(chains, keyed)
 			}
 			send := &chainSend{event: event, dest: dest}
+			if key != ownerTopicKey {
+				send.after = after
+			}
 			keyed.sends = append(keyed.sends, send)
 			event.sends = append(event.sends, send)
 		}
@@ -634,7 +672,12 @@ func planChains(events []*batchEvent) []*chain {
 // order the chains were planned, and each chain's next send as soon as the answer to the one before
 // it came back as reached, so the chains proceed side by side and each one in order. A role route
 // is forwarded to its holder with a Request (roleForward.send), or answered at once with why it
-// stays pending. A failed send holds back the rest of its chain. A send that meets a lost
+// stays pending. A failed send holds back the rest of its chain. A send that waits for an earlier
+// event's topic send of its owner (chainSend.after) is made only once that send reached the topic
+// family, its chain parked until then, and when the topic send failed or was held back itself, the
+// waiting send and the rest of its chain are held back by the same event, as a failed send holds
+// back the rest of its own chain. A topic send waits for no other chain, so every such wait ends
+// at an answer on the owner's topic chain, or when the batch stops. A send that meets a lost
 // connection or a passed deadline (bus.ErrUnavailable; bus.ErrWindowDeadline, the window refusing
 // a send past the publisher hold's deadline) stops the batch: no further send of any chain is
 // made. So does ctx ending; the answers already in are still read, and every other send in flight
@@ -660,6 +703,9 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 	handed := newKeptHandovers()
 	stopped := false
 	var inflight []*chain
+	// parked are the chains whose next send waits for a topic send that has no answer yet
+	// (chainSend.after).
+	var parked []*chain
 	left := map[string]int{}
 	for _, c := range chains {
 		left[c.owner]++
@@ -676,6 +722,10 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			return
 		}
 		send := c.sends[c.next]
+		if send.after != nil && send.after.state != reached {
+			parked = append(parked, c)
+			return
+		}
 		routed := send.event.item
 		if send.standIn != nil {
 			routed = *send.standIn
@@ -694,7 +744,40 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		}
 		inflight = append(inflight, c)
 	}
+	// unpark takes on each parked chain whose topic send has its answer: on to its send when the
+	// topic send reached the topic family, and to its end when it did not, its sends held back by
+	// the event whose failed send stopped it, the topic send's own or the one that held it back. A
+	// batch that stopped makes no further send, so a parked chain then ends with its sends unsent,
+	// as every other chain does. Nothing parks while unpark runs: issue parks only a send whose
+	// topic send has not reached its family.
+	unpark := func() {
+		waiting := parked[:0]
+		for _, c := range parked {
+			after := c.sends[c.next].after
+			switch {
+			case stopped || ctx.Err() != nil:
+				finish(c)
+			case after.state == reached:
+				issue(c)
+			case after.state == failed, after.state == held:
+				by := after.event
+				if after.state == held {
+					by = after.heldBy
+				}
+				for _, rest := range c.sends[c.next:] {
+					rest.state, rest.heldBy = held, by
+				}
+				c.next = len(c.sends)
+				finish(c)
+			default:
+				waiting = append(waiting, c)
+			}
+		}
+		parked = waiting
+	}
 	settle := func(index int, err error) {
+		// Every answer may be the one a parked chain waits for, or the one that stopped the batch.
+		defer unpark()
 		c := inflight[index]
 		inflight = append(inflight[:index], inflight[index+1:]...)
 		send := c.sends[c.next]
