@@ -3473,6 +3473,7 @@ jobs:
               - 'packages/envoy/agentloop/**'
               - 'packages/envoy/brokerclient/**'
               - 'packages/envoy/brokertest/**'
+              - 'packages/envoy/clitest/**'
               - 'packages/envoy/cmd/**'
               - 'packages/envoy/daemonpermissions/**'
               - 'packages/envoy/deploy/**'
