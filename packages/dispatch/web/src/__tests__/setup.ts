@@ -120,7 +120,6 @@ const reportReachedNetwork = () => {
   if (reached.length === 0) return;
   throw new Error(`requests reached the network, answered by nothing: ${reached.join(", ")}`);
 };
-afterEach(reportReachedNetwork);
 afterAll(reportReachedNetwork);
 
 class WebSocketStub {
@@ -196,8 +195,15 @@ afterEach(resetReachability);
 // file's `afterEach`, because Bun keeps it across files: a test that installs it and then fails
 // before its `try` - an awaited helper of its own, say - would otherwise leave every later test
 // in the process, and every later file, with timers that never fire, so one regression reads as
-// timeouts everywhere and the real failure is buried. This runs after the hooks above, and
-// `useRealTimers` on a test that installed nothing does nothing.
+// timeouts everywhere and the real failure is buried. This runs after the resets above it and
+// before the network report, which stands last for the reason given there, and `useRealTimers`
+// on a test that installed nothing does nothing.
 afterEach(() => {
   jest.useRealTimers();
 });
+
+// The network report is the file's last `afterEach`: it throws for a row that reached the
+// network, and Bun runs no `afterEach` registered after one that throws. Placed earlier, it
+// would leave the next row the drafts, outstanding answers, writes, pin states and reachability
+// the resets above clear, and the fake clock.
+afterEach(reportReachedNetwork);
