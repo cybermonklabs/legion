@@ -116,9 +116,9 @@ function describeRecord({ component, frames, kind }: ActRecord): string {
 
 /**
  * Fails the caller when React printed an act message since the last call, naming each: its kind,
- * its component and the frames that printed it. The list is emptied before the throw, so the
- * next row starts with none. `where` says what the messages are charged to ("in or before this
- * row").
+ * and its component and the frames that printed it where React and the stack give them. The list
+ * is emptied before the throw, so the next row starts with none. `where` says what the messages
+ * are charged to ("in or before this row").
  */
 export function failOnActMessages(where: string): void {
   if (records.length === 0) return;
