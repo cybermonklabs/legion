@@ -159,9 +159,12 @@ func TestProbeAnswersTheEmailOfAGoogleMetadataServer(t *testing.T) {
 // ErrNoMetadataServer, the absence a caller skips, and its error says why. A port no one listens
 // on refuses the connection, and the error names the refusal. A listener that takes the connection
 // and never answers, as a laptop's network may, holds the probe until the probe's own deadline
-// (ProbeTimeout) ends it, and the error names that deadline. No row bounds the time from above: on
-// a loaded machine scheduling alone stretches it, and the test binary's deadline ends a probe that
-// never returns.
+// ends it, and the error names that deadline. That deadline is ProbeTimeout from the probe's start:
+// the row reads it off the request the probe sends (deadlineRecorder), and requires it no earlier
+// than ProbeTimeout after the call began and no later than ProbeTimeout after the request left.
+// Neither bound reads how long anything took, so a loaded machine does not move them, and a probe
+// whose timeout grew fails them. Only the test binary's deadline bounds the time taken, which ends
+// a probe that never returns.
 func TestProbeSaysNoMetadataServerWithinItsTimeout(t *testing.T) {
 	t.Run("a closed port", func(t *testing.T) {
 		// A port the test holds and nothing listens on, so no other process can take it and
@@ -189,13 +192,41 @@ func TestProbeSaysNoMetadataServerWithinItsTimeout(t *testing.T) {
 			}
 		}()
 		t.Setenv(MetadataHostVar, silent.Addr().String())
-		started := time.Now()
+		original := client.Transport
+		recorder := &deadlineRecorder{next: original}
+		client.Transport = recorder
+		t.Cleanup(func() { client.Transport = original })
+		before := time.Now()
 		email, err := Probe(context.Background())
-		took := time.Since(started)
+		took := time.Since(before)
 		if !errors.Is(err, ErrNoMetadataServer) || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) || took < ProbeTimeout {
 			t.Fatalf("Probe = %q, %v after %s; want ErrNoMetadataServer ended by the probe's own deadline, %s or later", email, err, took, ProbeTimeout)
 		}
+		if recorder.calls != 1 || !recorder.hasDeadline {
+			t.Fatalf("the probe sent %d requests, under a deadline: %v; want one, under the probe's own deadline", recorder.calls, recorder.hasDeadline)
+		}
+		if fromCall, fromRequest := recorder.deadline.Sub(before), recorder.deadline.Sub(recorder.entered); fromCall < ProbeTimeout || fromRequest > ProbeTimeout {
+			t.Fatalf("the probe asked under a deadline %s after the call began and %s after the request left; want at least and at most %s", fromCall, fromRequest, ProbeTimeout)
+		}
 	})
+}
+
+// deadlineRecorder is an http.RoundTripper that records when each request left and the deadline its
+// context carried, then sends it on next. http.Client calls it on the goroutine that called Do, so
+// a test reads what it recorded once that call has returned.
+type deadlineRecorder struct {
+	next        http.RoundTripper
+	calls       int
+	entered     time.Time
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (r *deadlineRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.calls++
+	r.entered = time.Now()
+	r.deadline, r.hasDeadline = req.Context().Deadline()
+	return r.next.RoundTrip(req)
 }
 
 // TestProbeRefusesAServerWithoutTheGoogleFlavor: an answer that does not carry the
