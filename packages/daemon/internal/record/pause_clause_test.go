@@ -62,8 +62,9 @@ var pauseQueue = []pauseQueued{
 // ClaimRow, and the refused claim leaves the row as it was: no lease, no attempt spent, its place
 // kept. The controller's notice, a suspend, the pause's own stop and every row of another project
 // on the same database are listed and claimed as before. PauseHeldRows lists exactly the held
-// rows with the claim each is for, the resume reads the same list in its own transaction, and
-// once the pause has ended every held row is listed and claimed again.
+// rows with the claim each is for, the resume reads the same list in its own transaction and
+// marks each of those rows, and no other, with its pause (MarkPauseHeldRows), and once the pause
+// has ended every held row is listed and claimed again.
 func TestAPausedProjectsHeldRowsAreNotClaimable(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
@@ -192,14 +193,26 @@ func TestAPausedProjectsHeldRowsAreNotClaimable(t *testing.T) {
 
 	var released []PauseHeldRow
 	resumed, err := st.Resume(ctx, store.ResumeRequest{Project: "LEGION", By: store.PauseActor{Kind: store.PauseByOperator}, At: now,
-		ReadHeld: func(ctx context.Context, tx pgx.Tx) error {
+		MarkHeld: func(ctx context.Context, tx pgx.Tx, held store.Pause) error {
 			var err error
-			released, err = records.PauseHeldRows(ctx, tx, "LEGION", now)
+			released, err = records.MarkPauseHeldRows(ctx, tx, "LEGION", held.ID, now)
 			return err
 		}})
 	must(t, err)
 	if resumed.Pause.ID != pause.ID || len(released) != len(want) {
 		t.Fatalf("the resume ended pause %d and read %d held rows, want pause %d and the %d held rows", resumed.Pause.ID, len(released), pause.ID, len(want))
+	}
+
+	// The resume marked each row its pause held with that pause, and no other row, so a held row
+	// that runs after the resume names the pause that held it (OutboxRow.HeldByPause).
+	for i, queued := range pauseQueue {
+		var marked int64
+		if err := st.Pool().QueryRow(ctx, `select coalesce((select held_by_pause from outbox where id = $1), 0)`, ids[i]).Scan(&marked); err != nil {
+			t.Fatalf("read the mark of %s: %v", queued.name, err)
+		}
+		if wantMark := map[bool]int64{true: pause.ID}[queued.held]; marked != wantMark {
+			t.Errorf("%s after the resume is marked with pause %d, want %d", queued.name, marked, wantMark)
+		}
 	}
 
 	// The rows the pause did not hold are under their leases now; the held ones are due again.

@@ -148,7 +148,8 @@ type pauseHold struct {
 // (controller_notice), since the pause never holds the controller (spec Design item 8).
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
-// so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows.
+// so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
+// exactly these rows with the pause it ends (MarkPauseHeldRows).
 // TestEveryOutboxKindIsHeldOrNotHeldByAPause names every kind the lanes run as held or not held,
 // so a kind added to a lane fails it until somebody decides which it is.
 var pauseHolds = []pauseHold{
@@ -165,11 +166,11 @@ var pauseHolds = []pauseHold{
 }
 
 // PauseHeldRow is one row a project's pause holds, as the state lists it and the resume logs it
-// (Store.PauseHeldRows). Claim is the claim the row is for where the row names one, and empty
-// where it names none: an architect's notice goes to the architect that owns its issue when it
-// runs (the daemon's readNoticeRoute walks the tree for it), and a production check's rows name
-// no role. WaitedSeconds counts from the moment the row came due (next_at), as api.HeldOutboxRow's
-// do in the state.
+// (Postgres.PauseHeldRows, Postgres.MarkPauseHeldRows). Claim is the claim the row is for where
+// the row names one, and empty where it names none: an architect's notice goes to the architect
+// that owns its issue when it runs (the daemon's readNoticeRoute walks the tree for it), and a
+// production check's rows name no role. WaitedSeconds counts from the moment the row came due
+// (next_at), as api.HeldOutboxRow's do in the state.
 type PauseHeldRow struct {
 	OutboxRow
 	Claim         claim.Token

@@ -6247,7 +6247,9 @@ The architect-stalled wake reads none of its arms while the project is paused, a
 Its took-nothing arm counts nothing while the architect's launch waits in the pacing, and its slow-before-gate arm counts from no earlier than the let-out of the launch that the pause held for the architect and, once the architect has confirmed its entry's task, than that confirmation (`tookNothingSince` and `architectSlowBeforeGate`), so the resume's queue counts against that arm only while an architect's entry stays unconfirmed.
 The stalled-tree notice and the entry sweep's gate say nothing while the project is paused, because the admission pass promotes nothing then and the gate answers no (`promoteHolds` and `OwesEntryWork`, `internal/admit/admit.go`).
 After a pause a tree is told it has stopped only once `stalled_tree_notice_hours` has passed since the pause ended, and the notice still names how long the tree has been quiet (`tellStalledTrees`, `internal/admit/stalled.go`).
-A wake that a pause held is marked with its pause (`pod_resumes.pause_id`): a wake taken while the project is paused, and a wake that a notice, a phase's end, a hook's prompt or a merge-queue removal takes after the resume for a row that fell due while the pause stood (`TakePodWake`, `internal/store/wake.go`).
+A wake that a pause held is marked with its pause (`pod_resumes.pause_id`): a wake taken while the project is paused, and two kinds of wake taken after the resume.
+The first is the wake that a notice, a phase's end, a hook's prompt or a merge-queue removal takes for a row that the pause held, whatever the row's due time: the resume marks each row its pause holds with the pause (`outbox.held_by_pause`, `MarkPauseHeldRows`, `internal/record/store.go`), and the wake reads that mark (`TakePodWake`, `internal/store/wake.go`).
+The second is a listener's wake of a role whose newest stop is the pause's and newer than the issue's newest release, such as the wake of a role message that the pause held (`StoppingPauseTx`, `internal/store/pause.go`, read by `wakeReleased`, `internal/workflow/wake.go`).
 `read_release_records` counts such a wake as `heldByPause` and leaves it out of its wake-to-first-turn seconds, because its wait measures the pause.
 A held wake names no release.
 Where its issue's pod was released before the wake, that report still ends the release at the wake, as any other wake of the pod would, in its pod-hours and in its share of releases woken within ten minutes.
@@ -6305,7 +6307,7 @@ A boot that cannot read the pause does not start.
 #### Rolling back the project pause
 
 The release that added the project pause is the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-3759`.
-Its migration `20261115194357_project_pause` adds three tables (`project_pauses`, `project_pause_stops` and `project_pause_pod_holds`) and two columns of `pod_resumes` (`clock_at` and `pause_id`), and it drops nothing.
+Its migration `20261115194357_project_pause` adds three tables (`project_pauses`, `project_pause_stops` and `project_pause_pod_holds`), two columns of `pod_resumes` (`clock_at` and `pause_id`) and one column of `outbox` (`held_by_pause`), and it drops nothing.
 An earlier release reads none of them, so the database needs no restore and no `alter table`: the tables stay, a trigger fills `clock_at` for an insert that names no value, and a roll forward reads them again.
 Re-pinning the earlier image is still not the whole rollback.
 Three steps come first, in this order.

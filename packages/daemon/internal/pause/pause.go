@@ -118,8 +118,9 @@ type Effects interface {
 // Options is what a Service is built with.
 type Options struct {
 	Store *store.Store
-	// Records reads the rows the pause holds, for the resume's log (record.Postgres.PauseHeldRows),
-	// and whether a controller is registered (record.Postgres.ControllerRegistered).
+	// Records marks the rows the pause holds with the pause at its resume, and reads them for the
+	// resume's log (record.Postgres.MarkPauseHeldRows), and reads whether a controller is
+	// registered (record.Postgres.ControllerRegistered).
 	Records *record.Postgres
 	// Project is the project's Dispatch key ("LEGION"), the spelling of project_pauses and of the
 	// outbox (internal/store/pause.go). The project token is derived from it where one is read.
@@ -228,11 +229,13 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 }
 
 // Resume ends the project's pause, by `by` (decisions 22 and 24). The store's resume transaction
-// reads the rows the pause holds before it ends the pause (record.Postgres.PauseHeldRows), and
-// refuses a project that is not paused with the *store.NotPausedError it returns unchanged. Once
-// it commits, Resume clears the flag, runs Effects.Resumed, and logs the resume and one line for
-// each held row it released. It answers the ended pause and those rows. Resume is never refused
-// for the daemon's configuration: a pause another daemon made is always this one's to end.
+// marks each row the pause holds with the pause, and reads those rows, before it ends the pause
+// (record.Postgres.MarkPauseHeldRows), so a row that runs after the resume and wakes a released
+// role takes that pause's held wake; it refuses a project that is not paused with the
+// *store.NotPausedError it returns unchanged. Once it commits, Resume clears the flag, runs
+// Effects.Resumed, and logs the resume and one line for each held row it released. It answers
+// the ended pause and those rows. Resume is never refused for the daemon's configuration: a pause
+// another daemon made is always this one's to end.
 func (s *Service) Resume(ctx context.Context, by store.PauseActor) (store.Pause, []record.PauseHeldRow, error) {
 	ctx = context.WithoutCancel(ctx)
 	s.mu.Lock()
@@ -243,9 +246,9 @@ func (s *Service) Resume(ctx context.Context, by store.PauseActor) (store.Pause,
 	}
 	at := s.now()
 	var held []record.PauseHeldRow
-	req := store.ResumeRequest{Project: s.project, By: by, At: at, ReadHeld: func(ctx context.Context, tx pgx.Tx) error {
+	req := store.ResumeRequest{Project: s.project, By: by, At: at, MarkHeld: func(ctx context.Context, tx pgx.Tx, pause store.Pause) error {
 		var err error
-		held, err = s.records.PauseHeldRows(ctx, tx, s.project, at)
+		held, err = s.records.MarkPauseHeldRows(ctx, tx, s.project, pause.ID, at)
 		return err
 	}}
 	if tell {

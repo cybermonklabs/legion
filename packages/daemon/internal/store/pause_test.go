@@ -301,9 +301,9 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 
 	var heldRows []record.PauseHeldRow
 	resumed, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: operator, At: resumedAt,
-		ReadHeld: func(ctx context.Context, tx pgx.Tx) error {
+		MarkHeld: func(ctx context.Context, tx pgx.Tx, held Pause) error {
 			var err error
-			heldRows, err = records.PauseHeldRows(ctx, tx, "LEGION", resumedAt)
+			heldRows, err = records.MarkPauseHeldRows(ctx, tx, "LEGION", held.ID, resumedAt)
 			return err
 		},
 		Notice: pauseNoticeRow(record.ProjectResumedNotice)})
@@ -329,8 +329,8 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 		t.Fatalf("open stops after the resume = %+v; want none", open)
 	}
 	if len(heldRows) != 1 || heldRows[0].ID == 0 || heldRows[0].Kind != record.OutboxKindNotice || heldRows[0].Issue != "LEGION-208" ||
-		heldRows[0].WaitedSeconds != int64(resumedAt.Sub(pausedAt).Seconds()) {
-		t.Fatalf("held rows read in the resume = %+v, want the architect's notice alone, held 1800s", heldRows)
+		heldRows[0].WaitedSeconds != int64(resumedAt.Sub(pausedAt).Seconds()) || heldRows[0].HeldByPause != pause.ID {
+		t.Fatalf("held rows marked in the resume = %+v, want the architect's notice alone, held 1800s and marked with pause %d", heldRows, pause.ID)
 	}
 	if resumed.Clocks != 2 {
 		t.Fatalf("clocks set = %d, want the project's two open resumes", resumed.Clocks)

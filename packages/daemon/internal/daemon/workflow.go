@@ -1106,16 +1106,26 @@ func (w *workflowRuntime) ensureWorkspace(ctx context.Context, issue string, rep
 // enqueueOutbox writes outbox rows of issue, due now, in one transaction of its own, which owns
 // the commit hook that write registers (projectRecords, intake.OnCommit) so each row's lane is
 // woken as it commits — exactly as the re-hold of a notice does (reholdNotice). It is what
-// supervision's update-round sweep writes its controller notice and its issue message through
-// (supervision.enqueue), and the narrowest thing that gives supervision an outbox at all: rows
-// to write, and no engine, no admission and no Dispatch client behind it. Rows given together
-// land together or not at all, so a stall is never half told.
-func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, payloads ...record.OutboxPayload) error {
+// supervision's update-round sweep and its stall backstop write their notices, their asks and
+// their issue message through (supervision.enqueue), and the narrowest thing that gives
+// supervision an outbox at all: rows to write, and no engine, no admission and no Dispatch client
+// behind it. Rows given together land together or not at all, so a stall is never half told.
+//
+// It answers whether it wrote them. Supervision builds its rows from a claim's issue with no
+// record read, and a claim of another project's issue, which the operator's spawn makes under
+// this daemon's token, is in its sweeps as every claim is: a row keyed by that issue is one only
+// that project's daemon runs (claim.KeyOfProject). So for such an issue it writes nothing, logs
+// nothing and answers false, and each caller says what it did instead; the store's refusal of
+// such a key (projectRecords.ownsKey) is never reached from here.
+func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
+	if !claim.KeyOfProject(w.dispatchProject, issue) {
+		return false, nil
+	}
 	rows := make([]record.OutboxRow, 0, len(payloads))
 	for _, payload := range payloads {
 		row, err := record.NewOutboxRow(issue, payload, time.Now().UTC())
 		if err != nil {
-			return fmt.Errorf("enqueue a %s row of %s: %w", payload.OutboxKind(), issue, err)
+			return false, fmt.Errorf("enqueue a %s row of %s: %w", payload.OutboxKind(), issue, err)
 		}
 		rows = append(rows, row)
 	}
@@ -1128,10 +1138,10 @@ func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, paylo
 		}
 		return nil
 	}); err != nil {
-		return err
+		return false, err
 	}
 	committed()
-	return nil
+	return true, nil
 }
 
 // sweptFact is one fact a sweep of supervision read and the id it is applied under. It is held

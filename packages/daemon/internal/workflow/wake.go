@@ -60,10 +60,11 @@ type Pods interface {
 	// (store's readOpenPauseByToken) and 0 while it runs, read with the pause's row locked for
 	// share, so the resume's end of it waits for the wake's fact.
 	OpenPauseID(ctx context.Context, tx pgx.Tx) (int64, error)
-	// StoppedByPause is whether the claim's newest stop is a pause's, newer than issue's newest
-	// pod release: the session the wake brings back is one a pause stopped in a pod it kept
-	// (decision 16).
-	StoppedByPause(ctx context.Context, tx pgx.Tx, issue string, token claim.Token) (bool, error)
+	// StoppingPause is the id of the pause that stopped the claim, 0 for none: the pause of the
+	// claim's newest stop, where that stop is newer than issue's newest pod release. The session
+	// the wake brings back is one that pause stopped in a pod it kept (decision 16), and a wake
+	// taken once that pause has ended is that pause's held wake (decision 15).
+	StoppingPause(ctx context.Context, tx pgx.Tx, issue string, token claim.Token) (int64, error)
 	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
 	// has gone away: a release of the issue recorded since that wake was taken. It answers the
 	// issue's newest release where it closed a row, and 0 where it closed none.
@@ -292,9 +293,13 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // A wake taken while the daemon's project is paused is a held wake (decision 15 of
 // dispatch://INFRA-3759): the open pause, read on this fact's own transaction
 // (Pods.OpenPauseID), is recorded on the resume, which pairs with no release, and on the start
-// row, which the outbox holds until the resume. The task says what stopped the session
-// (WakeTask): the pause, where the role's newest stop is a pause's and newer than the issue's
-// newest release (Pods.StoppedByPause, decision 16), and the release otherwise.
+// row, which the outbox holds until the resume. A wake taken once a pause has ended, of a role
+// whose newest stop is that pause's and newer than the issue's newest release
+// (Pods.StoppingPause), is that pause's held wake too: a message the pause held is published, and
+// reaches the listener whose report takes this wake, only after the resume, and what kept the
+// role down was the pause, not a release. That one read is also what the task names as what
+// stopped the session (WakeTask, decision 16): the pause where one stopped it, and the release
+// otherwise.
 //
 // One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
 // refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
@@ -316,9 +321,17 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
 		return false, nil
 	}
-	pause, err := e.cfg.Pods.OpenPauseID(ctx, tx)
+	open, err := e.cfg.Pods.OpenPauseID(ctx, tx)
 	if err != nil {
 		return false, err
+	}
+	stopping, err := e.cfg.Pods.StoppingPause(ctx, tx, issue.Key, released.Token)
+	if err != nil {
+		return false, err
+	}
+	pause := open
+	if pause == 0 {
+		pause = stopping
 	}
 	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
 	if err != nil {
@@ -333,15 +346,11 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		return false, err
 	}
 	stop := StoppedByRelease
-	byPause, err := e.cfg.Pods.StoppedByPause(ctx, tx, issue.Key, released.Token)
-	if err != nil {
-		return false, err
-	}
-	if byPause {
+	if stopping != 0 {
 		stop = StoppedByPause
 	}
 	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
-		"pause", pause, "stopped_by_pause", byPause)
+		"pause", pause, "stopped_by_pause", stopping)
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
 }
 

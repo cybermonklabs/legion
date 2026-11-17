@@ -1295,13 +1295,17 @@ type supervision struct {
 	// enqueue writes outbox rows of an issue, all of them in one transaction, the workflow's own
 	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
 	// outbox to write to and no Dispatch issue to write on. It is the whole of the record the
-	// update-round sweep needs (reconcilePodUpdates): the controller notice it publishes and the
-	// message it writes on the issue are both outbox rows, and threading the workflow engine into
-	// supervision to post two rows would tie every claim decision to the workflow. Those two go in
-	// one call, since a stall told the controller but not the issue would be told again at every
-	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
-	// restores or launches any claim, as it sets the supervisor's terminal callback there.
-	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
+	// update-round sweep and the stall backstop need (reconcilePodUpdates, tellStallBackstopped):
+	// the notices they publish, the asks and the message written on the issue are all outbox
+	// rows, and threading the workflow engine into supervision to post them would tie every
+	// claim decision to the workflow. Rows that must land together go in one call, since a stall
+	// told the controller but not the issue would be told again at every tick
+	// (tellUpdateStalled). It answers whether it wrote them: it writes none of a claim of another
+	// project's issue, whose rows only that project's daemon runs, and each caller says so rather
+	// than report a row it did not write. The workflow sets it where it attaches, before
+	// supervision restores or launches any claim, as it sets the supervisor's terminal callback
+	// there.
+	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error)
 	// applySweepFacts applies the facts a sweep of supervision read, through the workflow's own
 	// handlers (workflowRuntime.applySweepFacts); nil in a deployment with no workflow, which
 	// records no issue a fact could be about. It is the whole of what the silence sweep needs of
@@ -2704,10 +2708,13 @@ func (s projectRecords) owns(issue record.Issue) bool {
 // ownsKey is whether an outbox row of kind keyed key is the daemon's to write (claim.KeyOfProject),
 // the rule every write of a row by key here applies (projectRecords). A write it refuses writes
 // nothing and, but for EnqueueID, returns no error: the transaction the caller is in goes on, since
-// a row the daemon would never run must not fail the caller's own work. Once the reads answer no
-// record of another project's issue (Issue), no path of the daemon builds such a row, so a refusal
-// here is a defect of the writer, and each is logged at Warn with the kind, the key and the
-// project, so nothing is dropped in silence.
+// a row the daemon would never run must not fail the caller's own work. The reads answer no record
+// of another project's issue (Issue), so no row built from a record is keyed by one; and the rows
+// supervision builds from a claim's issue with no record read, for its update rounds and its stall
+// backstop, skip another project's issue before they reach here (workflowRuntime.enqueueOutbox),
+// since a claim of one is the operator's ordinary spawn. So a refusal here happens only by a
+// defect of the writer, and each is logged at Warn with the kind, the key and the project, so
+// nothing is dropped in silence.
 func (s projectRecords) ownsKey(kind record.OutboxKind, key string) bool {
 	if claim.KeyOfProject(s.project, key) {
 		return true

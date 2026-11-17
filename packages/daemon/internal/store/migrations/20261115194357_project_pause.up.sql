@@ -1,6 +1,6 @@
 -- 20261115194357_project_pause.up.sql — the records of a project's pause (dispatch://INFRA-3759):
--- each pause, each role a pause asks to stop, each pod a pause holds, and the two marks a resume
--- of a released pod gets from it.
+-- each pause, each role a pause asks to stop, each pod a pause holds, the two marks a resume of a
+-- released pod gets from it, and the mark of each outbox row a pause held.
 --
 -- project_pauses holds one row per pause. project is the project's Dispatch key, the spelling
 -- the outbox reads off an issue key (split_part(outbox.issue, '-', 1), record's outboxClaimable),
@@ -47,16 +47,23 @@
 -- The partial index on pause_id serves the reads of a pause's held wakes (store's PauseLetOutsTx
 -- and PausePodHoldsSince), which are a few rows of a table that holds every wake.
 --
+-- outbox.held_by_pause is the pause that held the row, null for every other row. The resume
+-- writes it, in its own transaction, on each row its pause holds (record's MarkPauseHeldRows),
+-- so a row that runs after the resume and wakes a released role names the pause whose held
+-- wake that is (store's TakePodWake), whatever the row's kind or due time. Nothing reads a row
+-- by it, so it has no index.
+--
 -- No outbox kind is added, so outbox_kind_check stays as 20261114031356 wrote it. The pause's
 -- stop is a `supervise` row whose op is `pause_stop`, and the controller's two notices are
 -- `controller_notice` rows of the notice kinds `project-paused` and `project-resumed`; no SQL
 -- constrains an op or a notice kind.
 --
 -- Migrations here are forward-only and this one has no down file. A daemon of an earlier release
--- on a shared database reads none of these tables and none of the two columns, so the tables stay
--- and are read again by the roll forward. Three steps come before the earlier image runs, in this
--- order (docs/kubernetes.md, "Rolling back the project pause"). First, resume the project while
--- this release still runs: the earlier release has no pause, and it launches every role a pause
+-- on a shared database reads none of these tables and none of the three columns, so the tables
+-- and the columns stay and are read again by the roll forward. Three steps come before the
+-- earlier image runs, in this order (docs/kubernetes.md, "Rolling back the project pause").
+-- First, resume the project while this release still runs: the earlier release has no pause,
+-- and it launches every role a pause
 -- still holds. Second, resume one role of each pod a pause still holds, until each hold has ended
 -- (select issue from project_pause_pod_holds where ended_at is null): the earlier release reads
 -- no hold, and it deletes a held pod in which no role is live as a pod no claim owns, with the
@@ -150,3 +157,5 @@ create trigger pod_resumes_clock_from_at before insert on pod_resumes
 alter table pod_resumes add column pause_id bigint references project_pauses (id),
   add constraint pod_resumes_held_wake_pairs_with_no_release check (pause_id is null or release_id = 0);
 create index pod_resumes_pause on pod_resumes (pause_id) where pause_id is not null;
+
+alter table outbox add column held_by_pause bigint references project_pauses (id);

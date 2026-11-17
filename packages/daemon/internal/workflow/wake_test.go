@@ -681,7 +681,9 @@ func TestAWakeTakenWhileThePausedProjectHoldsItRecordsThePauseAndNoRelease(t *te
 // Decision 16 of dispatch://INFRA-3759, through the engine: the task of a wake says the pause
 // stopped the session when the role's newest stop is a pause's stop that ended as `stopped` after
 // the issue's newest pod release, and says the release did once a release is recorded after that
-// stop.
+// stop. The same read decides whose wake it is (decision 15): a wake of a role the ended pause
+// stopped last is that pause's held wake, which pairs with no release, and the wake of a role a
+// later release stopped pairs with that release and names no pause.
 func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -721,6 +723,17 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 			}
 			if starts[0].Task != want {
 				t.Fatalf("the wake's task = %q, want %q (not %q)", starts[0].Task, want, other)
+			}
+			var release, held int64
+			if err := rig.pool.QueryRow(ctx, `select release_id, coalesce(pause_id, 0) from pod_resumes
+				where issue = 'LEGION-208' and role = 'implementer'`).Scan(&release, &held); err != nil {
+				t.Fatalf("read the implementer's resume: %v", err)
+			}
+			if tc.paused && (held != pause || release != 0) {
+				t.Fatalf("the wake of the role the pause stopped last pairs with release %d and pause %d, want release 0 and pause %d", release, held, pause)
+			}
+			if !tc.paused && (held != 0 || release == 0) {
+				t.Fatalf("the wake of the role a release stopped last pairs with release %d and pause %d, want the release and no pause", release, held)
 			}
 		})
 	}

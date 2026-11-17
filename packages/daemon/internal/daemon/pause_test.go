@@ -243,12 +243,14 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 // architect in a turn, both in a round opened ten minutes before the pause, five minutes short of
 // the rig's grace; 84 other issues hold an idle worker each. The pause stops every worker and
 // holds P's pod, while P's architect runs its turn on in it. Each other worker is given a held
-// wake (a listener's report, as k2's are). P's worker is given one too, or, in the second case, a
-// hook's prompt the pause holds, which wakes it only when the row runs after the resume
-// (wakeForDelivery) and is marked with the pause all the same (store.Store.TakePodWake). P's row
-// is held back, under a lease of the test's, until every other worker has reserved its turn, so
-// the pacing lets P's worker out last, 84 turns of 7.5 seconds after the resume. The resume ends
-// P's hold, since P's architect is live in the pod.
+// wake (a listener's report, as k2's are). P's worker is given one too, or, in the second and the
+// third case, a hook's prompt the pause holds, which wakes it only when the row runs after the
+// resume (wakeForDelivery) and is marked with the pause all the same: the resume marks every row
+// its pause holds (record.OutboxRow.HeldByPause, store.Store.TakePodWake), the third case's row,
+// already due when the pause began, as well as the second's. P's row is held back, under a lease
+// of the test's, until every other worker has reserved its turn, so the pacing lets P's worker
+// out last, 84 turns of 7.5 seconds after the resume. The resume ends P's hold, since P's
+// architect is live in the pod.
 //
 // The round's pod keeps a process through P's architect, whose turn runs through the pause, as
 // k4's pod 6 does: a role the rig relaunches runs in no pod (the fake runtime records a tmux pane),
@@ -256,15 +258,20 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 // replace nothing.
 //
 // Before the fix the round's bound fell five minutes after the hold's end, and P's pod was
-// replaced while P's worker still waited in the pacing.
+// replaced while P's worker still waited in the pacing; and before the resume marked the rows its
+// pause held, so did the third case's, whose wake read the pause that stood at the row's due time
+// and found none.
 func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// hook is whether P's worker is woken by a held hook's prompt rather than a held wake.
 		hook bool
+		// dueBefore is whether that hook's prompt was already due when the pause began.
+		dueBefore bool
 	}{
 		{name: "a held wake"},
 		{name: "a held hook prompt", hook: true},
+		{name: "a held hook prompt due before the pause", hook: true, dueBefore: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const others = 84
@@ -298,12 +305,26 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 					At: r.clock.Now(), Report: fmt.Sprintf("report-%d", n)})
 			}
 			// The resume makes every held row claimable at once, and their lanes race for the
-			// pacing's turns: P's row is leased to nobody for an hour, so it runs only once the test
-			// lets the lease lapse. Its due time stays the one the pause held it at.
+			// pacing's turns: P's row is leased to nobody, so it runs only once the test lets the
+			// lease lapse.
 			var held int64
+			holdUntil := r.later().Add(time.Hour)
 			if tc.hook {
 				held = r.enqueue(P, record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing,
 					To: phase.Implementing, Count: 1, Counts: map[string]int{phase.Pair(phase.Reviewing, phase.Implementing): 1}, Prompt: "Read the review."})
+				if tc.dueBefore {
+					if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = $2 where id = $1`, held, pausedAt.Add(-time.Hour)); err != nil {
+						t.Fatalf("make P's hook prompt due before the pause: %v", err)
+					}
+				}
+				// A row under a live lease is no row the pause holds, and the resume marks the rows
+				// its pause holds on the daemon's clock, the test clock, where the lanes read a lease
+				// on the wall clock. So the test clock is moved past the lease: the resume finds P's
+				// row unleased and held, and marks it with the pause, as it marks every row its pause
+				// holds (record.Postgres.MarkPauseHeldRows), while the lanes find it leased.
+				wall := time.Now().UTC()
+				holdUntil = wall.Add(5 * time.Minute)
+				r.clock.advanceTo(wall.Add(10 * time.Minute))
 			} else {
 				r.applyFact("listener", "wake-1", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(worker(P)),
 					At: r.clock.Now(), Report: "report-1"})
@@ -313,7 +334,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 				}
 			}
 			if _, err := r.pool.Exec(r.ctx, `update outbox set lease_token = 'held back by the test', lease_until = $2 where id = $1`,
-				held, r.later().Add(time.Hour)); err != nil {
+				held, holdUntil); err != nil {
 				t.Fatalf("hold P's row back: %v", err)
 			}
 
@@ -370,33 +391,111 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 
 // A wake a pause held is marked with its pause (decision 15 of dispatch://INFRA-3759), and so is
 // the wake of a delivery the pause held. A notice for an architect the pause stopped waits as its
-// outbox row, keeping the due time it had, and wakes the architect only when it runs after the
-// resume (wakeForDelivery): its due time fell while the pause stood, so the wake is a held wake of
-// that pause, which pairs with no release (store.Store.TakePodWake), as a wake the workflow takes
-// while the project is paused is. Before the fix it was recorded as the wake of the issue's latest
-// release, with no pause, and the release records counted the pause's wait as that release's.
+// outbox row, and wakes the architect only when it runs after the resume (wakeForDelivery). The
+// pause holds the row whatever its due time, and the resume marks it with the pause
+// (record.OutboxRow.HeldByPause), so the wake is a held wake of that pause, which pairs with no
+// release (store.Store.TakePodWake), as a wake the workflow takes while the project is paused is:
+// for a notice that fell due while the pause stood, and for one already due when the pause began,
+// the backlog of an outage. Before the first fix the wake was recorded as the wake of the issue's
+// latest release, with no pause, and the release records counted the pause's wait as that
+// release's; before the second, the wake of a notice due before the pause still was, since the
+// wake read the pause that stood at the row's due time.
 func TestANoticeThePauseHeldWakesItsArchitectWithThatPause(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// dueBefore is how long before the pause began the notice was due, 0 for a notice that fell
+		// due while the pause stood.
+		dueBefore time.Duration
+	}{
+		{name: "a notice due while the pause stood"},
+		{name: "a notice already due when the pause began", dueBefore: time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newPauseDaemonRig(t, nil)
+			issue := r.issue(1)
+			architect := r.token(issue, claim.RoleArchitect)
+			r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleArchitect, supervise.StateIdle))
+			// A release of the issue's pod from before the pause, which a wake no pause held would
+			// pair with.
+			if _, err := r.pool.Exec(r.ctx, `insert into pod_releases (project, issue, generation, roles, at)
+				values ($1, $2, 1, 'architect', $3)`, r.project, issue, r.clock.Now().UTC().Add(-2*time.Hour)); err != nil {
+				t.Fatalf("record a release of %s's pod: %v", issue, err)
+			}
+			r.boot()
+
+			pause := r.pauseProject()
+			r.awaitState(architect, supervise.StateSuspended, "the pause stops the idle architect")
+			notice := r.enqueue(issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"})
+			if tc.dueBefore > 0 {
+				if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = $2 where id = $1`, notice, pause.Since.Add(-tc.dueBefore)); err != nil {
+					t.Fatalf("make the notice due before the pause: %v", err)
+				}
+			}
+			r.resumeProject()
+			testwait.Eventually(t, "the held notice to wake its architect", func() bool {
+				return r.count(`select count(*) from pod_resumes where issue = $1 and role = 'architect' and kind = $2`, issue, pods.WakeDelivery) == 1
+			})
+			var held *int64
+			var release int64
+			if err := r.pool.QueryRow(r.ctx, `select pause_id, release_id from pod_resumes where issue = $1 and role = 'architect' and kind = $2`,
+				issue, pods.WakeDelivery).Scan(&held, &release); err != nil {
+				t.Fatalf("read the notice's wake: %v", err)
+			}
+			if held == nil || *held != pause.ID || release != 0 {
+				t.Fatalf("the held notice's wake is marked with pause %v and release %d, want pause %d and no release", held, release, pause.ID)
+			}
+		})
+	}
+}
+
+// A role message the pause held is published only once the resume lets its row run, and the
+// Envoy listener reports it to the daemon then, after the pause has ended. The listener's wake of
+// the role the pause stopped finds no open pause, and is that pause's held wake all the same: the
+// role's newest stop is the pause's and newer than the issue's newest release, which is what kept
+// the role down (workflow's wakeReleased, store.StoppingPauseTx). So its resume names the pause
+// and pairs with no release, as the wake of a delivery the pause held does
+// (TestANoticeThePauseHeldWakesItsArchitectWithThatPause). Before the fix the wake read the open
+// pause alone, found none, and was recorded as the wake of the issue's latest release.
+func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(t *testing.T) {
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
-	architect := r.token(issue, claim.RoleArchitect)
-	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleArchitect, supervise.StateIdle))
+	worker := r.token(issue, claim.RoleImplementer)
+	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
+	// A release of the issue's pod from before the pause, which a wake no pause held would pair
+	// with.
+	if _, err := r.pool.Exec(r.ctx, `insert into pod_releases (project, issue, generation, roles, at)
+		values ($1, $2, 1, 'implementer', $3)`, r.project, issue, r.clock.Now().UTC().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("record a release of %s's pod: %v", issue, err)
+	}
 	r.boot()
 
 	pause := r.pauseProject()
-	r.awaitState(architect, supervise.StateSuspended, "the pause stops the idle architect")
-	r.enqueue(issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"})
+	r.awaitState(worker, supervise.StateSuspended, "the pause stops the idle implementer")
+	message := r.enqueue(issue, record.RoleMessage{Role: string(worker), Body: "The checks of your head settled."})
+	// The listener takes the message once the row runs, and keeps it for the stopped role.
+	r.envoy.hold(worker)
+	time.Sleep(time.Second)
+	if sent := r.envoy.publishedTo(worker); len(sent) != 0 {
+		t.Fatalf("the role message was published %d times while the project was paused, want it held", len(sent))
+	}
 	r.resumeProject()
-	testwait.Eventually(t, "the held notice to wake its architect", func() bool {
-		return r.count(`select count(*) from pod_resumes where issue = $1 and role = 'architect' and kind = $2`, issue, pods.WakeDelivery) == 1
+	testwait.Eventually(t, "the held role message to be published after the resume", func() bool {
+		return len(r.envoy.publishedTo(worker)) == 1 && r.count(`select count(*) from outbox where id = $1`, message) == 0
 	})
+	if c := r.claim(worker); !c.Released() {
+		t.Fatalf("the implementer after the resume is %s by %s, want it still stopped: the pause stopped it owing nothing", c.State, c.SuspendedBy)
+	}
+
+	r.applyFact("listener", "wake-after-resume", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(worker),
+		At: r.clock.Now(), Report: "report-after-resume"})
 	var held *int64
 	var release int64
-	if err := r.pool.QueryRow(r.ctx, `select pause_id, release_id from pod_resumes where issue = $1 and role = 'architect' and kind = $2`,
-		issue, pods.WakeDelivery).Scan(&held, &release); err != nil {
-		t.Fatalf("read the notice's wake: %v", err)
+	if err := r.pool.QueryRow(r.ctx, `select pause_id, release_id from pod_resumes where issue = $1 and role = 'implementer' and kind = $2`,
+		issue, pods.WakeRoleMessage).Scan(&held, &release); err != nil {
+		t.Fatalf("read the listener's wake of the implementer: %v", err)
 	}
 	if held == nil || *held != pause.ID || release != 0 {
-		t.Fatalf("the held notice's wake is marked with pause %v and release %d, want pause %d and no release", held, release, pause.ID)
+		t.Fatalf("the listener's wake after the resume is marked with pause %v and release %d, want pause %d and no release", held, release, pause.ID)
 	}
 }
 

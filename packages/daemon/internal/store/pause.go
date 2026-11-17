@@ -311,11 +311,12 @@ type ResumeRequest struct {
 	By      PauseActor
 	// At is when the resume ends the pause, on the daemon's clock.
 	At time.Time
-	// ReadHeld, when given, reads in the resume's transaction the outbox rows the pause holds,
-	// for the resume's log (record.Postgres.PauseHeldRows). It runs once the pause's row is
-	// locked and before it is ended, so the outbox's clause still holds every row it read, and
-	// it keeps what it read itself: the store does not import record.
-	ReadHeld func(ctx context.Context, tx pgx.Tx) error
+	// MarkHeld, when given, marks in the resume's transaction each outbox row the pause holds
+	// with the pause, held, and reads those rows for the resume's log
+	// (record.Postgres.MarkPauseHeldRows). It runs once the pause's row is locked and before it is
+	// ended, so the outbox's rule still holds every row it marks, and no lane can run one of them
+	// before the resume commits; it keeps what it read itself: the store does not import record.
+	MarkHeld func(ctx context.Context, tx pgx.Tx, held Pause) error
 	// Notice builds the controller's notice of the resume from the pause it ended, queued under
 	// the project's key, or is nil to queue none.
 	Notice func(ended Pause) (PauseRow, error)
@@ -337,13 +338,13 @@ type Resumed struct {
 // Resume is the resume's one transaction (decision 22 of dispatch://INFRA-3759). It takes no
 // treelifecycle.Serialize (decision 13). It locks the project's open pause row for update, which
 // waits for every stop transaction that holds that row for share (LockPauseTx), and refuses with
-// a *NotPausedError when no pause is open. It reads the held rows (req.ReadHeld), ends the pause
-// with who ended it, deletes the pause's `pause_stop` outbox rows no lane is running (a row under
-// a live lease runs to its end and finds its pause ended) — those of the project's issues and
-// those keyed by the project itself, the stops of claims of another project's issue, since the
-// split_part of a project key is that key — ends the pause's open stop rows `cancelled`, sets the
-// stuck clock of the project's open resumes to the resume's moment (SetProjectResumeClocksTx),
-// and queues the controller's notice when req.Notice is given.
+// a *NotPausedError when no pause is open. It marks each outbox row the pause holds with the pause
+// (req.MarkHeld), ends the pause with who ended it, deletes the pause's `pause_stop` outbox rows
+// no lane is running (a row under a live lease runs to its end and finds its pause ended) — those
+// of the project's issues and those keyed by the project itself, the stops of claims of another
+// project's issue, since the split_part of a project key is that key — ends the pause's open stop
+// rows `cancelled`, sets the stuck clock of the project's open resumes to the resume's moment
+// (SetProjectResumeClocksTx), and queues the controller's notice when req.Notice is given.
 func (s *Store) Resume(ctx context.Context, req ResumeRequest) (Resumed, error) {
 	if err := req.By.validate(); err != nil {
 		return Resumed{}, fmt.Errorf("resume %s: %w", req.Project, err)
@@ -365,9 +366,9 @@ func (s *Store) Resume(ctx context.Context, req ResumeRequest) (Resumed, error) 
 		if !open {
 			return &NotPausedError{Project: req.Project}
 		}
-		if req.ReadHeld != nil {
-			if err := req.ReadHeld(ctx, tx); err != nil {
-				return fmt.Errorf("read the rows pause %d holds: %w", pause.ID, err)
+		if req.MarkHeld != nil {
+			if err := req.MarkHeld(ctx, tx, pause); err != nil {
+				return fmt.Errorf("mark the rows pause %d holds: %w", pause.ID, err)
 			}
 		}
 		if out.Pause, err = scanPause(tx.QueryRow(ctx, `update project_pauses
@@ -494,25 +495,6 @@ func LockOpenPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, boo
 // held wake it wrote (SetProjectResumeClocksTx).
 func LockOpenPauseByTokenTx(ctx context.Context, tx pgx.Tx, token string) (Pause, bool, error) {
 	return readOpenPauseByToken(ctx, tx, token, " for share")
-}
-
-// pauseHoldingTx is the id of the pause of the project whose token is token (readOpenPauseByToken's
-// spelling) that stood at at — begun at or before it, and ended at or after it or not ended — and
-// 0 where none stood then. A project has at most one open pause (project_pauses_one_open), so its
-// pauses never overlap and at most one stood. An outbox row due at at, while that pause stood, is
-// a row the pause held (record's pauseHolds) until its resume, and a wake taken for it is a held
-// wake of that pause (Store.TakePodWake).
-func pauseHoldingTx(ctx context.Context, tx pgx.Tx, token string, at time.Time) (int64, error) {
-	var id int64
-	err := tx.QueryRow(ctx, `select id from project_pauses where lower(project) = $1 and began_at <= $2
-		and (ended_at is null or ended_at >= $2) order by began_at desc limit 1`, token, at).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read the pause of %s that stood at %s: %w", token, at.UTC().Format(time.RFC3339), err)
-	}
-	return id, nil
 }
 
 // LockPauseTx is pause id read with its row locked for share: the stop transaction of decision 6
@@ -872,20 +854,25 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 	return owed, nil
 }
 
-// StoppedByPauseTx is whether the newest stop of claim token is a pause's that ended `stopped`
-// after issue's newest pod release, through tx: then a wake of the claim brings back a session
-// the pause stopped in a pod it kept, and the wake's task says so (decision 16 of
-// dispatch://INFRA-3759, workflow.WakeTask). A release recorded after that stop took the pod, and
-// the release's words are the true ones. project is the project token, as pod_releases holds it.
-func StoppedByPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (bool, error) {
-	var paused bool
-	if err := tx.QueryRow(ctx, `select coalesce((select s.ended_as = $4 and s.ended_at > coalesce(
+// StoppingPauseTx is the id of the pause that stopped claim token, through tx: the pause of the
+// claim's newest stop, where that stop ended `stopped` after issue's newest pod release, and 0
+// otherwise. It is the one statement of which pause stopped a claim, and a wake of the claim
+// reads it twice over (workflow's wakeReleased): the session the wake brings back is one that
+// pause stopped in a pod it kept, which the wake's task says (decision 16 of
+// dispatch://INFRA-3759, workflow.WakeTask), and a wake taken once that pause has ended is that
+// pause's held wake, which pairs with no release (decision 15, PodRecords.TakeHeldPodWake). A
+// release recorded after that stop took the pod, and the release's words are the true ones.
+// project is the project token, as pod_releases holds it.
+func StoppingPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (int64, error) {
+	var pause int64
+	if err := tx.QueryRow(ctx, `select coalesce((select case when s.ended_as = $4 and s.ended_at > coalesce(
 			(select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
-		from project_pause_stops s where s.claim = $3 order by s.id desc limit 1), false)`,
-		project, issue, string(token), string(PauseStopStopped)).Scan(&paused); err != nil {
-		return false, fmt.Errorf("read whether a pause stopped %s last: %w", token, err)
+			then s.pause_id else 0 end
+		from project_pause_stops s where s.claim = $3 order by s.id desc limit 1), 0)`,
+		project, issue, string(token), string(PauseStopStopped)).Scan(&pause); err != nil {
+		return 0, fmt.Errorf("read the pause that stopped %s: %w", token, err)
 	}
-	return paused, nil
+	return pause, nil
 }
 
 // IssueHasLiveRoleTx is whether any claim of issue is live through tx: not suspended, failed or

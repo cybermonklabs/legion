@@ -1174,7 +1174,8 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 // podWentWithoutItsRound is the round's pod gone before the round could finish: the message the
 // issue's spec requires is written on the issue, naming what was lost, and the round ends.
 // Nothing here can bring the work back — the disk went with the pod — so the message is the whole
-// of it.
+// of it. On another project's issue, the pod of the operator's spawn of it, no message is written
+// (writeOnIssue), and the daemon's log lines are the whole of it.
 //
 // Three readings say the pod went. The claims recording a pod other than the round's own is one
 // (reconcileIssuePodUpdate), which calls this with the claims it decided from; the runtime
@@ -1195,9 +1196,14 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 	reasons := roundReasons(group, round)
 	s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 		"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
-	if err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)}); err != nil {
+	written, err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)})
+	switch {
+	case err != nil:
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
 			"issue", issue, "round", round, "error", err)
+	case !written:
+		s.log.Info("supervise: nothing is written on the issue that its pod went without its update round: its issue is another project's, whose rows this daemon writes none of",
+			"issue", issue, "round", round)
 	}
 	s.endPodUpdates(group, round)
 }
@@ -1314,6 +1320,12 @@ type updateStall struct {
 // find it open: the telling is marked on every claim of the round (UpdateToldAt), and a round
 // already marked is told nothing more. The mark is written after the row is enqueued, so a row
 // the store refuses is written again at the next tick rather than swallowed.
+//
+// A round over the pod of a claim of another project's issue, which the operator's spawn makes,
+// queues no notice: its row would be keyed by that issue, which only that project's daemon runs
+// (supervision.enqueue). Its line is then the whole of its telling, as the stall backstop's line
+// is for a claim no owner can be told of (tellStallBackstopped), and says that the controller is
+// told nothing; the round is marked told, so the line is written once rather than at every tick.
 func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) {
 	if roundTold(stall.group, stall.round) {
 		return
@@ -1328,15 +1340,21 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 		Reason: stall.reason,
 		Update: &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Reasons: stall.reasons, Waiting: stall.waiting},
 	}}
-	if err := s.enqueue(ctx, stall.issue, rows...); err != nil {
+	written, err := s.enqueue(ctx, stall.issue, rows...)
+	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: tell the operator's side that an update round is held past its bound; telling again at the next sweep",
 				"issue", stall.issue, "round", stall.round, "error", err)
 		}
 		return
 	}
-	s.log.Warn("supervise: an update round is held past its bound; the controller is told", "issue", stall.issue, "round", stall.round,
-		"pod", stall.pod, "reason", stall.reason, "waiting", stall.waiting)
+	if written {
+		s.log.Warn("supervise: an update round is held past its bound; the controller is told", "issue", stall.issue, "round", stall.round,
+			"pod", stall.pod, "reason", stall.reason, "waiting", stall.waiting)
+	} else {
+		s.log.Warn("supervise: an update round is held past its bound; its issue is another project's, whose rows this daemon writes none of, so the controller is told nothing and this line is the whole of the telling",
+			"issue", stall.issue, "round", stall.round, "pod", stall.pod, "reason", stall.reason, "waiting", stall.waiting)
+	}
 	s.markUpdateTold(ctx, stall.group, stall.round)
 }
 
@@ -1400,7 +1418,11 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // (supervise's openPodUpdate), so this is never expected.
 //
 // A deployment with no outbox (enqueue nil) publishes nothing. The round still runs: it records
-// itself on the claims, and its roles can answer it all the same.
+// itself on the claims, and its roles can answer it all the same. Nor does a round over the pod of
+// a claim of another project's issue, which the operator's spawn makes: its ask would be a row
+// keyed by that issue, which only that project's daemon runs, so enqueue writes none and the
+// claim is not marked asked, since nothing asked it. Each tick then passes over it as it passes
+// over a deployment with no outbox, at Debug, writing nothing.
 func (s *supervision) askRound(ctx context.Context, issue string, group []supervise.Claim, round, pod string, clock roundClock) {
 	var asking []supervise.Claim
 	var machines []*supervise.Machine
@@ -1433,11 +1455,17 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	for i, c := range asking {
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: text}
 	}
-	if err := s.enqueue(ctx, issue, rows...); err != nil {
+	written, err := s.enqueue(ctx, issue, rows...)
+	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: enqueue the update round's ask to its roles; asking again at the next sweep",
 				"issue", issue, "round", round, "roles", namesOf(asking), "error", err)
 		}
+		return
+	}
+	if !written {
+		s.log.Debug("supervise: the update round's ask is published to no role: its issue is another project's, whose rows this daemon writes none of",
+			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
 	}
 	s.log.Info("supervise: the update round's ask is enqueued for each role of the pod",
@@ -1466,10 +1494,11 @@ func unaskedClaims(group []supervise.Claim, round string) []supervise.Claim {
 }
 
 // writeOnIssue posts one message on the issue, with the document it links when it links one,
-// through the outbox's Dispatch message row.
-func (s *supervision) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) error {
+// through the outbox's Dispatch message row, and answers whether it queued it: it queues none on
+// another project's issue (supervision.enqueue).
+func (s *supervision) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) (bool, error) {
 	if s.enqueue == nil {
-		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
+		return false, fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
 	}
 	return s.enqueue(ctx, issue, post)
 }

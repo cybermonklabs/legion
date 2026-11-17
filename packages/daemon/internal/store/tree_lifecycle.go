@@ -289,6 +289,12 @@ func (s *Store) TreeLive(ctx context.Context, project, tree string) (bool, error
 // tree whose cleanup confirmed holds none. The orphan sweep keeps a Sandbox whose home is the
 // tree it is labelled with; a tree's cleanup deletes every Sandbox of its own tree, carrying
 // nothing over, since an issue pod's disk goes with its pod and its next launch makes both again.
+//
+// The record is the project's own (lower(project) = project, the token, as readIdleView reads
+// it): the issues table holds every project's records, and the Sandbox of the operator's spawn
+// of another project's issue is this project's, labelled with that issue. That project's record
+// of the issue is no record of this one's, so it keeps no such Sandbox past its own tree, whatever
+// it says of that project's line, linger or hand-over.
 func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (string, error) {
 	var home string
 	err := s.pool.QueryRow(ctx, `select coalesce((select case
@@ -298,7 +304,7 @@ func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (st
 					then i.tree else '' end
 			when (i.status = 'todo' and i.handed_over and i.key = i.tree) or i.linger_until > now() then i.tree
 			else '' end
-		from issues i where i.key = $2), '')`, project, issue).Scan(&home)
+		from issues i where i.key = $2 and lower(i.project) = $1), '')`, project, issue).Scan(&home)
 	if err != nil {
 		return "", fmt.Errorf("read the tree issue %s's Sandbox belongs to: %w", issue, err)
 	}

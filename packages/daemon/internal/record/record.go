@@ -1364,6 +1364,12 @@ type OutboxRow struct {
 	CreatedAt  time.Time
 	LeaseToken string
 	LeaseUntil *time.Time
+	// HeldByPause is the id of the project pause that held the row, and 0 for a row no pause
+	// held. The resume writes it, in its own transaction, on every row the pause it ends holds
+	// (Postgres.MarkPauseHeldRows), whatever the row's kind or due time, and nothing else writes it:
+	// a row that runs after the resume carries it, so the wake the row takes of a released role
+	// is that pause's held wake (internal/daemon's wakeForDelivery, store.Store.TakePodWake).
+	HeldByPause int64
 }
 
 // Handover is a root linger's pending move of one child to an independent tree. It persists from

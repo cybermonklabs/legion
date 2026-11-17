@@ -182,11 +182,11 @@ type wakeCountingTrees struct {
 	takes int
 }
 
-func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at, due time.Time) (bool, error) {
+func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error) {
 	w.mu.Lock()
 	w.takes++
 	w.mu.Unlock()
-	return w.outboxTrees.TakePodWake(ctx, project, issue, role, kind, at, due)
+	return w.outboxTrees.TakePodWake(ctx, project, issue, role, kind, at, pause)
 }
 
 func (w *wakeCountingTrees) taken() int {

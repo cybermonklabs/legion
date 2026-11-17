@@ -2383,7 +2383,10 @@ func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchPro
 	return issues, nil
 }
 
-const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
+// outboxColumns is an outbox row as scanOutbox reads it. held_by_pause is read as 0 for the null
+// of a row no pause held (OutboxRow.HeldByPause).
+const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
+	coalesce(held_by_pause, 0) as held_by_pause`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
@@ -2602,12 +2605,12 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 }
 
 // The outbox's runnable predicates are one SQL text, so the lanes' list of due rows (DueRows), their
-// claim (ClaimRow) and the state report's held rows (HeldRows, PauseHeldRows) can never disagree
-// about which row may run. Each refers to the statement's first five parameters, which
-// outboxDueArgs supplies — $1 is now, $2 to $4 the kinds the ordering rules name, $5 the lifecycle
-// lane's kinds — so a statement embedding one numbers its own parameters from $6; the pause rule
-// (outboxPauseFree) refers to none. The outer table is `outbox`, unaliased, which the rules'
-// subqueries name.
+// claim (ClaimRow), the state report's held rows (HeldRows, PauseHeldRows) and the resume's mark of
+// the rows its pause held (MarkPauseHeldRows) can never disagree about which row may run. Each
+// refers to the statement's first five parameters, which outboxDueArgs supplies — $1 is now, $2
+// to $4 the kinds the ordering rules name, $5 the lifecycle lane's kinds — so a statement
+// embedding one numbers its own parameters from $6; the pause rule (outboxPauseFree) refers to
+// none. The outer table is `outbox`, unaliased, which the rules' subqueries name.
 
 // outboxUnleasedDue is a row due at $1 that no live lease holds.
 const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null or outbox.lease_until <= $1)`
@@ -2914,18 +2917,35 @@ var heldRowsSQL = `select ` + outboxColumns + `, (select min(running.id) from ou
 
 // PauseHeldRows is every row of project's issues that the project's open pause holds at now
 // (outboxPauseFree negated) and that is due and under no live lease, by next_at then id: what the
-// state lists under the pause (decision 25 of dispatch://INFRA-3759) and what the resume logs as
-// released, read in the resume's own transaction before it ends the pause (store's
-// ResumeRequest.ReadHeld). It is the lanes' own rule read back, so what it lists is exactly what
-// the lanes hold for the pause, and it lists nothing while no pause is open. A row not yet due
-// waits on its own time and is listed once it comes due; a row a lane leased before the pause runs
-// to its end and is not listed. project is the Dispatch key.
+// state lists under the pause (decision 25 of dispatch://INFRA-3759). It is the lanes' own rule
+// read back, so what it lists is exactly what the lanes hold for the pause, and it lists nothing
+// while no pause is open. A row not yet due waits on its own time and is listed once it comes
+// due; a row a lane leased before the pause runs to its end and is not listed. project is the
+// Dispatch key.
 func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]PauseHeldRow, error) {
+	return pauseHeldRows(ctx, tx, project, now, pauseHeldRowsSQL, now, project)
+}
+
+// MarkPauseHeldRows is PauseHeldRows for the resume of pause, the project's open pause, run in
+// the resume's own transaction before it ends that pause (store's ResumeRequest.MarkHeld): the
+// one statement that lists the rows the pause holds writes pause on each of them
+// (OutboxRow.HeldByPause), so the rows it marks are the rows the resume logs as released, and
+// each carries the pause when it runs after the resume, whatever its kind or due time. No lane
+// runs a held row before that statement or between it and the resume's commit: the pause stands
+// until that commit, and its rule holds every such row. A restart while the project is paused
+// changes nothing of it, since the marks are written by the resume alone.
+func (s *Postgres) MarkPauseHeldRows(ctx context.Context, tx pgx.Tx, project string, pause int64, now time.Time) ([]PauseHeldRow, error) {
+	return pauseHeldRows(ctx, tx, project, now, markPauseHeldRowsSQL, now, project, pause)
+}
+
+// pauseHeldRows runs statement, PauseHeldRows' or MarkPauseHeldRows', and reads the rows it
+// answers, each with the claim it is for and how long it has waited at now.
+func pauseHeldRows(ctx context.Context, tx pgx.Tx, project string, now time.Time, statement string, args ...any) ([]PauseHeldRow, error) {
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 	}
-	rows, err := tx.Query(ctx, pauseHeldRowsSQL, now, project)
+	rows, err := tx.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 	}
@@ -2947,11 +2967,22 @@ func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string,
 	return held, nil
 }
 
-// pauseHeldRowsSQL is PauseHeldRows' statement, built once from the outbox's rules
-// (outboxUnleasedDue, outboxPauseFree).
-var pauseHeldRowsSQL = `select ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') from outbox
-		where split_part(outbox.issue, '-', 1) = $2 and ` + outboxUnleasedDue + ` and not ` + outboxPauseFree + `
+// pauseHeld is the rows of the project $2 that its open pause holds at $1 and that are due and
+// under no live lease: the outbox's own rules (outboxUnleasedDue, outboxPauseFree), the pause's
+// negated, which PauseHeldRows lists and MarkPauseHeldRows marks.
+var pauseHeld = `split_part(outbox.issue, '-', 1) = $2 and ` + outboxUnleasedDue + ` and not ` + outboxPauseFree
+
+// pauseHeldRowsSQL is PauseHeldRows' statement, and markPauseHeldRowsSQL MarkPauseHeldRows', which
+// writes the pause $3 on each row it answers; both are built once from the rows a pause holds
+// (pauseHeld).
+var (
+	pauseHeldRowsSQL = `select ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') from outbox
+		where ` + pauseHeld + `
 		order by next_at, id`
+	markPauseHeldRowsSQL = `with held as (update outbox set held_by_pause = $3 where ` + pauseHeld + `
+			returning ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') as role)
+		select * from held order by next_at, id`
+)
 
 // pauseHeldClaim is the claim a held row is for, where the row names one, and "" where it names
 // none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
@@ -3202,13 +3233,11 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 	}
 	for rows.Next() {
-		var row OutboxRow
-		var kind, role, generation string
-		var payload []byte
+		var role, generation string
 		var age time.Duration
 		var running bool
-		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
-			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation, &age, &running); err != nil {
+		row, err := scanOutbox(rows, &role, &generation, &age, &running)
+		if err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
@@ -3216,8 +3245,6 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		if !wanted {
 			continue
 		}
-		row.Kind = OutboxKind(kind)
-		row.Payload = append(json.RawMessage(nil), payload...)
 		decoded, err := DecodeOutboxPayload(row)
 		if err != nil {
 			rows.Close()
@@ -3409,7 +3436,7 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	var kind string
 	var payload []byte
 	if err := row.Scan(append([]any{&out.ID, &kind, &out.Issue, &payload, &out.Attempts, &out.NextAt, &out.LastError,
-		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil}, extra...)...); err != nil {
+		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &out.HeldByPause}, extra...)...); err != nil {
 		return OutboxRow{}, err
 	}
 	out.Kind = OutboxKind(kind)
