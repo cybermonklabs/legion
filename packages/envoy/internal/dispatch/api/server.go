@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -178,11 +179,14 @@ type Deps struct {
 	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
 	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
 	// earlier event of its comment's owner still owes a send its session may take
-	// (model.MentionCopyHeldSQL, deliverResolvedCommentMention), the order the outbox keeps for its
+	// (model.MentionCopyHolderSQL, deliverResolvedCommentMention), the order the outbox keeps for its
 	// own sends. With no outbox no event is ever sent, so there is no order to keep with them and
 	// the wait would never end: the send goes at once, as it does in every test of this package
 	// that runs no outbox.
 	OutboxPublishes bool
+	// Metrics is the process's registry, which register adds the gauges of the mention sends held
+	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
+	Metrics *metrics.Registry
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -265,6 +269,8 @@ type DepsInput struct {
 	// OutboxPublishes is that an outbox publishes this deployment's events; see
 	// Deps.OutboxPublishes.
 	OutboxPublishes bool
+	// Metrics is the process's metrics registry; see Deps.Metrics.
+	Metrics *metrics.Registry
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
@@ -350,6 +356,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		OutboxPublishes:        input.OutboxPublishes,
+		Metrics:                input.Metrics,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil
@@ -732,6 +739,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
+	s.registerHeldGauges(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)

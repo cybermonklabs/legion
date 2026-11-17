@@ -137,12 +137,18 @@ type Outbox struct {
 	probeBeforeHold bool
 }
 
-// New returns an outbox for deps, with an instance id of its own. Run starts it.
+// New returns an outbox for deps, with an instance id of its own. Run starts it. It makes the
+// record of the fallback copies its passes find held behind an earlier event (heldCopies) and
+// registers that record's gauges on deps.Metrics when it is set.
 func New(deps Deps) *Outbox {
 	host, err := os.Hostname()
 	if err != nil {
 		host = "unknown-host"
 	}
+	if deps.held == nil {
+		deps.held = newHeldCopies()
+	}
+	deps.held.register(deps.Metrics)
 	return &Outbox{
 		deps:        deps,
 		instance:    uuid.New(),

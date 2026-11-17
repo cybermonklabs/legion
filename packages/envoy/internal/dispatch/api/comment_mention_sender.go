@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // mentionSendLanes is how many recipients the mention sender sends to at once.
@@ -91,6 +92,33 @@ type mentionSend struct {
 	// parks is how many times this send has waited for an earlier event of its comment's owner,
 	// which paces its lane's next try (mentionOrderRetry).
 	parks int
+	// heldFor is the session this send last waited to reach, heldBy the earlier event it waited
+	// behind, and heldSince when it first waited, all zero for a send that has not waited; warned
+	// is that its WARN was logged (mentionSender.park). A send that waited reads the rule again for
+	// heldFor before it tries once more (sendCommentMention).
+	heldFor   string
+	heldBy    model.MentionCopyHolder
+	heldSince time.Time
+	warned    bool
+}
+
+// held records that the send waited behind h.by to reach the session h names, from now when it
+// had not waited before.
+func (m *mentionSend) held(h *mentionHeldForOrder) {
+	m.heldBy = h.by
+	if h.target.SessionID != nil {
+		m.heldFor = *h.target.SessionID
+	}
+	if m.heldSince.IsZero() {
+		m.heldSince = time.Now()
+	}
+}
+
+// owner is the issue or document the send's comment belongs to, the owner the outbox orders its
+// events among.
+func (m mentionSend) owner() string {
+	_, owner := commentEventOwner(m.comment)
+	return owner
 }
 
 // mentionKey names one attempt: its comment, its target and its number.
@@ -146,7 +174,7 @@ func (m mentionSend) lane() string {
 // internal/dispatch/outbox).
 //
 // A send also waits for every earlier event of its comment's owner that the outbox still owes the
-// mentioned session (mentionHeldForOrder, model.MentionCopyHeldSQL), so the session takes the
+// mentioned session (mentionHeldForOrder, model.MentionCopyHolderSQL), so the session takes the
 // comment after them. Such a send makes no try: it hands its claim back, goes back to the head of
 // its lane, and the lane parks, with no goroutine on it and its later sends behind it, until
 // mentionOrderRetry of that send's parks has passed (park, unpark). A parked lane sends nothing,
@@ -187,6 +215,9 @@ type mentionSender struct {
 	// claimRefresh is how often keepClaims writes the claims of the queued sends again:
 	// mentionClaimRefresh, which only a test shortens.
 	claimRefresh time.Duration
+	// heldWarnAfter is how long a send waits behind an earlier event before park logs its one WARN:
+	// model.MentionCopyHeldWarnAfter, which only a test shortens.
+	heldWarnAfter time.Duration
 
 	mu sync.Mutex
 	// lanes holds each lane's sends that have not started. A key is present while its lane is
@@ -231,9 +262,9 @@ func newMentionSender(
 	context.AfterFunc(lifetime, func() { time.AfterFunc(mentionDrainTimeout, cancel) })
 	m := &mentionSender{
 		lifetime: lifetime, ctx: ctx, cancel: cancel, send: send, refresh: refresh, release: release,
-		capacity: maxQueuedMentionSends, claimRefresh: claimRefresh, lanes: map[string][]mentionSend{},
-		parked: map[string]struct{}{}, claims: map[mentionKey]time.Time{}, held: map[mentionKey]struct{}{},
-		stopped: make(chan struct{}),
+		capacity: maxQueuedMentionSends, claimRefresh: claimRefresh, heldWarnAfter: model.MentionCopyHeldWarnAfter,
+		lanes: map[string][]mentionSend{}, parked: map[string]struct{}{}, claims: map[mentionKey]time.Time{},
+		held: map[mentionKey]struct{}{}, stopped: make(chan struct{}),
 	}
 	m.done.Add(1)
 	go m.keepClaims()
@@ -370,15 +401,78 @@ func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, str
 // goroutine until mentionOrderRetry of item's parks has passed (unpark). Its attempt stays held,
 // so a keyed repeat of the comment queues it no second time (queueLocked). A park once the sender
 // stopped still records the claim, which the drain gives back with the rest (wait).
+//
+// The wait has no bound, so it shows instead: the held gauges read every parked lane's head send
+// (heldSamples), and a send held heldWarnAfter since it first waited is logged once at WARN,
+// naming its owner, the earlier event it waits behind and that event's last publish error - beside
+// the ERROR the outbox writes for that event's own failed publish, which is the cause.
 func (m *mentionSender) park(lane string, item mentionSend) {
 	item.parks++
+	if item.heldSince.IsZero() {
+		item.heldSince = time.Now()
+	}
 	delay := mentionOrderRetry(item.parks)
 	m.mu.Lock()
+	warn := !item.warned && time.Since(item.heldSince) >= m.heldWarnAfter
+	item.warned = item.warned || warn
 	m.claims[item.key()] = item.claimed
 	m.lanes[lane] = append([]mentionSend{item}, m.lanes[lane]...)
 	m.parked[lane] = struct{}{}
 	m.mu.Unlock()
+	if warn {
+		publishError := ""
+		if item.heldBy.PublishError != nil {
+			publishError = *item.heldBy.PublishError
+		}
+		slog.Warn("dispatch: a comment mention's send waits behind an earlier event of its owner",
+			"owner", item.owner(), "comment", item.comment.ID, "target", item.mention.Target, "session", item.heldFor,
+			"event_id", item.heldBy.EventID, "publish_error", publishError,
+			"held_for", time.Since(item.heldSince).Round(time.Second))
+	}
 	time.AfterFunc(delay, func() { m.unpark(lane) })
+}
+
+// heldSamples is, by owner, how many sends wait at the head of a parked lane behind an earlier
+// event and how long the oldest has, in whole seconds, as of now: what the held gauges read
+// (registerHeldGauges). The sends queued behind such a send wait on their lane, as behind any
+// send that takes time, and are not counted.
+func (m *mentionSender) heldSamples(now time.Time) (count, oldest []metrics.GaugeSample) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	counts := map[string]int64{}
+	ages := map[string]time.Duration{}
+	for lane := range m.parked {
+		if len(m.lanes[lane]) == 0 {
+			continue
+		}
+		head := m.lanes[lane][0]
+		owner := head.owner()
+		counts[owner]++
+		ages[owner] = max(ages[owner], now.Sub(head.heldSince))
+	}
+	for owner, held := range counts {
+		labels := [][2]string{{"owner", owner}}
+		count = append(count, metrics.GaugeSample{Labels: labels, Value: held})
+		oldest = append(oldest, metrics.GaugeSample{Labels: labels, Value: int64(ages[owner] / time.Second)})
+	}
+	return count, oldest
+}
+
+// registerHeldGauges adds to registry the two gauges of the sends this server's mention sender
+// holds behind an earlier event, by owner: envoy_dispatch_mention_sends_held and
+// envoy_dispatch_mention_send_held_oldest_seconds. They read the sender register built, so a test
+// that replaces it registers none (withMentionClaimRefresh) - nor does a nil registry.
+func (s *server) registerHeldGauges(registry *metrics.Registry) {
+	if registry == nil {
+		return
+	}
+	sender := s.mentions
+	registry.NewGaugeSetFunc("envoy_dispatch_mention_sends_held",
+		"Comment mention sends that wait behind an earlier event of their owner the outbox still owes a send their session may take, by owner",
+		func() []metrics.GaugeSample { count, _ := sender.heldSamples(time.Now()); return count })
+	registry.NewGaugeSetFunc("envoy_dispatch_mention_send_held_oldest_seconds",
+		"How long the oldest comment mention send has waited behind an earlier event of its owner, in whole seconds, by owner",
+		func() []metrics.GaugeSample { _, oldest := sender.heldSamples(time.Now()); return oldest })
 }
 
 // unpark makes a parked lane ready again: a goroutine starts on it when fewer than
@@ -501,13 +595,27 @@ func (m *mentionSender) wait() {
 // sweep once the claim it took lapses. A send that waited for an earlier event of its comment's
 // owner (mentionHeldForOrder) answers the send to take up again - the same attempt, under the
 // claim that send renewed, with a take-over window of its own - which its lane parks (park).
+//
+// A send that waited before reads the rule alone first, for the session it waited to reach
+// (mentionCopyHolderFor), and parks again on that one statement while the earlier event still
+// owes its send: a parked lane's try then costs one indexed read, no claim, no listener lookup and
+// no write, while its claim is the one the sender writes again for every queued send. Only a send
+// the rule lets go makes the whole delivery, which claims, resolves and asks the rule once more.
 func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (mentionSend, bool) {
+	ctx = store.WithTransactionTracking(ctx)
+	if item.heldFor != "" {
+		if by, err := s.mentionCopyHolderFor(ctx, item.created, item.heldFor); err == nil && by != nil {
+			item.heldBy = *by
+			return item, true
+		}
+	}
 	_, err := s.deliverResolvedCommentMention(
-		store.WithTransactionTracking(ctx), item.comment, item.created, item.mention, item.actor,
+		ctx, item.comment, item.created, item.mention, item.actor,
 		attemptClaim{attempt: item.attempt, claimedAt: item.claimed}, item.takeover,
 	)
 	if held, ok := errors.AsType[*mentionHeldForOrder](err); ok {
 		item.claimed, item.takeover = held.claim.claimedAt, s.newTakeoverRetry()
+		item.held(held)
 		return item, true
 	}
 	if err != nil {

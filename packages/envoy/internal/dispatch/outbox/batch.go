@@ -287,7 +287,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 // then on, so this destination sends nothing, is recorded reached by nothing, and holds no
 // later event of the owner back: the row is the fallback pass's to publish, after the owner's
 // earlier events and in that pass's own time, so the owner's later events can reach the holder
-// before it (planChains, publishFallbackCopies, copyWaitsForAnEarlierEvent).
+// before it (planChains, publishFallbackCopies, copyHolder).
 type destination struct {
 	subject       string
 	label         string
@@ -514,7 +514,7 @@ type chain struct {
 // pass's to publish. One copy is left that way, a role route's forward past the bound it waits
 // an unnamed mention out for, and the owner's later events reaching that holder before it is
 // what it costs; the row still comes after the owner's earlier events (holdsTheForwardAsARow,
-// unnamedForwardBound, copyWaitsForAnEarlierEvent).
+// unnamedForwardBound, copyHolder).
 //
 // A mentioned session's own copy, which the mention rule leaves out of the list entirely, is the
 // other case and holds nothing back: the mention itself delivers that comment to that very

@@ -119,6 +119,18 @@ type Deps struct {
 	// rather than paging whoever alerts on publish failures.
 	PublishFailures  *metrics.Counter
 	RoleForwardsHeld *metrics.Counter
+	// Metrics is the registry New registers the gauges of the fallback copies held behind an
+	// earlier event on (heldCopies.register); nil registers none, as this package's tests run it.
+	Metrics *metrics.Registry
+	// held is the fallback copies this process's passes found waiting behind an earlier event of
+	// their owner, which the gauges read and which logs one WARN for a copy held past
+	// heldCopyWarnAfter (heldCopies). New makes it; a pass run with none - one by itself, as this
+	// package's tests run it - counts and reports nothing.
+	held *heldCopies
+	// heldCopyWarnAfter is how long a copy waits before that WARN, and zero is
+	// model.MentionCopyHeldWarnAfter, which is what cmd/dispatch runs. A test shortens it, so it
+	// need not wait a claim lease out; it is unexported, so no importer can.
+	heldCopyWarnAfter time.Duration
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox
 	// pool's one statement at a time, and the wake a released owner gives the scan (Outbox.scan).
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
@@ -560,7 +572,7 @@ type outcome struct {
 }
 
 // owedKeys is what event still owes once its batch has settled it, as events.owed_keys records it
-// for the two roads a mention's copy takes outside the chains (model.MentionCopyHeldSQL): the key
+// for the two roads a mention's copy takes outside the chains (model.MentionCopyHolderSQL): the key
 // of every destination of its list that neither an earlier batch (batchEvent.delivered) nor this
 // one (reached) reached, by destination.key, the owner's topic family spelled
 // model.OwedTopicFamily. A copy that waits on a mention is owed, and holds its key as planChains

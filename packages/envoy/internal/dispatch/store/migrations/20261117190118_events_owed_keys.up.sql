@@ -15,7 +15,7 @@
 --
 -- A copy of a mention reaches its session outside the outbox's chains - the API's own send, and
 -- the outbox's fallback pass - so it is held behind the earlier events of its owner that still
--- owe a send its session may take (model.MentionCopyHeldSQL), and this column is what says so:
+-- owe a send its session may take (model.MentionCopyHolderSQL), and this column is what says so:
 -- only the outbox computes an event's destinations. The read walks events_outbox_owner, whose
 -- rows are the owner's unpublished events.
 --
