@@ -14,8 +14,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // stubMetadata stands up a metadata server at a host GCE_METADATA_HOST names, answering handler.
@@ -159,9 +157,12 @@ func TestProbeAnswersTheEmailOfAGoogleMetadataServer(t *testing.T) {
 // on, or a listener that takes the connection and never answers, as a laptop's network may - the
 // probe answers ErrNoMetadataServer, the absence a caller skips, within 2 s.
 func TestProbeSaysNoMetadataServerWithinItsTimeout(t *testing.T) {
-	// A port the test holds and nothing listens on (testport.Refused), not a listener it closed:
-	// a freed port is any other program's to take and answer at.
-	closedAddr := testport.Refused(t)
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedAddr := closed.Addr().String()
+	closed.Close()
 
 	silent, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

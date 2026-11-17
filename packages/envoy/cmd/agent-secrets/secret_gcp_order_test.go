@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,7 +28,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testport"
 	"google.golang.org/grpc/codes"
 )
 
@@ -310,9 +310,13 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
 	t.Setenv("PATH", t.TempDir())
-	// A port the test holds and nothing listens on (testport.Refused), not a listener it closed:
-	// a freed port is any other program's to take and answer at.
-	t.Setenv("GCE_METADATA_HOST", testport.Refused(t))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := lis.Addr().String()
+	lis.Close()
+	t.Setenv("GCE_METADATA_HOST", closed)
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 	started := time.Now()
 	_, stderr, code := runSecret("show", "SCRATCH_TEST")
