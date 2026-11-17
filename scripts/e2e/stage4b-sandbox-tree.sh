@@ -265,7 +265,8 @@ stream=ENVOY_NOTIFICATIONS
 # controller-walk.
 admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
-# each in an issue pod of its own under tree 1's architect and each holding a slot of its own.
+# each in an issue pod of its own with an architect of its own, which its first phase start
+# starts, and each holding a slot of its own.
 # Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting
 # holding no slot at all, and are parked there; with tree 2 gone and child 2 parked they raise no
 # peak either.
@@ -4012,7 +4013,8 @@ pass
 
 begin child-release
 # Acceptance 3, both paths, while the parent keeps running. Child 1 set done by the proof human: the
-# daemon retires every claim of the child with its session dropped (issue_close) and its durable
+# daemon retires every claim of the child, its own architect's included, each keeping its session
+# (issue_close), and its durable
 # close effect foreground-deletes the child's Sandbox (SuspendIssue,
 # internal/runtime/sandbox/issue_suspend.go), logging the release; its pod goes with that Sandbox
 # and its disk goes with the pod, since an issue's disk is its pod's own ephemeral volume
@@ -4050,8 +4052,8 @@ deleted=$(deleted_lines "$child1" | grep -c . || true)
 lost_now=$(grep -c 'volume was lost' "$daemon_log" || true)
 [ "$lost_now" = "$lost_before" ] || fail "the daemon reported a lost volume across $child1's release: $(grep 'volume was lost' "$daemon_log" | tail -3 | cut -c1-300 | tr '\n' ' ')"
 retired=$(claims_cli list --json | jq -c --arg issue "$child1" '[.claims[] | select(.issue == $issue) | {role, state, session: (.session // ""), sessionFile: (.sessionFile // "")}]')
-jq -e 'length > 0 and all(.[]; .state == "retired" and .session == "" and .sessionFile == "")' <<<"$retired" >/dev/null ||
-  fail "$child1's claims after its done are $retired, want every one retired with no session"
+jq -e 'length > 0 and all(.[]; .state == "retired" and .session != "" and .sessionFile != "")' <<<"$retired" >/dev/null ||
+  fail "$child1's claims after its done are $retired, want every one retired with its session kept"
 note "at $at $child1 is done: its Sandbox and pod are gone (kubectl get sandboxes,pods -l legion.dev/issue=$child1: nothing), and the disk $child1_pod-issue its pod owned is gone with it; the daemon logged \"$deleted_msg\" for it once and no lost volume; its claims: $retired"
 note "the root $tree1 kept Sandbox $root_pod Running, its pod's own disk ${found%% *} Bound and pod uid $root_uid"
 set_status "$child2" backlog
@@ -4470,8 +4472,8 @@ begin tree-moved
 # no holder. The row waits, and the architect stays suspended, `suspendedBy: operator`, at the same
 # generation while it does; the operator's resume then relaunches it and the held notice arrives.
 # Each operator request that changed the claim logs one `api: operator request` line naming its
-# route and the claim. No rule acts on a tree architect, so this cannot show the rule passing over
-# an operator's suspension: child-reentered's control shows that, on a phase owner.
+# route and the claim. No phase start resumes a root's architect, so this cannot show the rule
+# passing over an operator's suspension: child-reentered's control shows that, on a phase owner.
 held_architect=$(claim_token "$tree1" architect)
 held_needle=$(notice_needle phase-finished "$tree1")
 held_before=$(notice_deliveries "$tree1" architect "$held_needle")
@@ -6368,7 +6370,8 @@ on_tree "$tree1" wait_for_worker "$tree1" merger
 # entered the tree since, which beneath an accepted root the daemon refuses — so the merge's own
 # close runs (closeMerged, internal/workflow/pullrequest.go): the status done, the slots its
 # issues held already freed, the tree lingered
-# (linger_hours 0.5) with every member's claims suspended, and the production check opened on the
+# (linger_hours 0.5) with every member's claims suspended except child 1's, which its done retired,
+# and the production check opened on the
 # merge commit, whose first look the daemon hands the tester — the role a project that names no
 # `production_check` gets — in the still-live pod: its claim alone comes back, resumed on its kept
 # session, while the other five stay suspended, and the root's Sandbox stays Running for the look
@@ -6556,7 +6559,7 @@ begin production-check-bound
 # look, woken by the bound. The wait runs from here, after done: what remains of the 15 minutes,
 # and a bound deferred by a look still open when it came due (by the look's own two-hour bound)
 # fails here by name rather than hanging. The last look's pending closes the check as not_run: the
-# tester's claim is retired, its session dropped (issue_close), the state omits the check, and the
+# tester's claim is retired, its session kept (issue_close), the state omits the check, and the
 # root's Sandbox is deleted again with the pod it ran in and the disk that pod owned, leaving the
 # close at linger expiry nothing of it to take. It runs before node-release, which needs tree 1's
 # pods gone for good, and the tree's close at its linger expiry (close) waits for no open check

@@ -364,9 +364,11 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its live session, and the
-  other five claims of the issue are retired. With `off`, no check opens at all: the close
-  retires every claim of the issue and releases its pod. The loader refuses any other value,
+  With `tester`, the merge hands the tester the check's first look in its session. A child's
+  other five claims are retired. A root's are suspended with the rest of its tree for the linger,
+  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
+  every claim of the child and releases its pod, and a root's close suspends every claim of its
+  tree for the linger. The loader refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.
@@ -658,7 +660,7 @@ What each part is for:
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
   the line can move, one whose only quiet issues gave their slot back to wait on work outside
   their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
-  daemon has released. A wait on a child its architect has not released is no such wait. Where
+  daemon has released. A wait on a child an architect has not released is no such wait. Where
   the issue waited on is in this project and its own tree has stopped, that tree is told; a
   wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
   and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
@@ -756,9 +758,10 @@ What each part is for:
   claim whose record holds neither is judged from nothing and left alone, as is a claim in no turn
   and a claim in an open pod-update round, whose replacement that round owns. The stop re-reads
   the claim's own record before it acts, and charges nothing — neither a launch failure nor a
-  death with work outstanding — so a worker it ends keeps its supervision budgets. The issue's
-  architect is told what the record held: how long the agent was silent, the bound it passed, when
-  the turn began, and the call the record names, if any. A tree architect's own stall is told to
+  death with work outstanding — so a worker it ends keeps its supervision budgets. The architect
+  that owns the issue is told what the record held: how long the agent was silent, the bound it
+  passed, when the turn began, and the call the record names, if any. The stall of a child's own
+  architect is told to the architect above that child. A root architect's own stall is told to
   the controller as well.
 
   A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
@@ -1163,13 +1166,17 @@ Closing the terminal leaves the project without one, and the daemon logs
    and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
-   role of an open issue live and idle between phases, while the root waits on a person, and when a
-   child re-enters. It suspends or ends claims only when an issue leaves the workflow, when a claim
+   role of an open issue live and idle between phases and while the root waits on a person. A child
+   that left the workflow and is set back to `todo` gets its own architect and its planner back, on
+   their kept sessions, at its next first phase start, and each other role at the start of its
+   phase. It suspends or ends claims only when an issue leaves the workflow, when a claim
    moves to another tree, or for a production check after the issue is done. A phase start gives
    its task to that live claim. At boot the daemon resumes by rule a suspended worker that still
    owns its issue's phase, but never a claim an operator suspended; a start for an
-   operator-suspended claim waits instead. A notice for an operator-suspended architect waits until
-   the operator resumes it. A drain therefore ends with the operator resuming every claim they
+   operator-suspended claim waits instead. A notice for a root's operator-suspended architect waits
+   until the operator resumes it. A notice for a child whose own architect an operator suspended
+   goes to the architect above that child. A drain therefore ends with the operator resuming every
+   claim they
    suspended, one `legion claims resume` each; `legion claims list --json` names each one's
    `suspendedBy` (`operator`, `daemon`, `exit`, or `unknown` for one suspended before this
    release). A daemon suspension of a claim whose issue left the workflow waits for its current turn
@@ -1191,7 +1198,8 @@ Closing the terminal leaves the project without one, and the daemon logs
    [A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)
    shows for its `suspendedBy`. A claim the state names `retired` takes neither resume nor retry —
    `legion claims retry` refuses a claim that has not failed — and comes back only on a workflow
-   start of the phase it owns, as that page's `needsWorkflowStart` shows.
+   start: a start of the phase it owns, its tree's admission for a root's architect, or its child's
+   next first phase start for a child's own architect, as that page's `needsWorkflowStart` shows.
    Never resume or retry by hand a claim of a lingering tree or of an issue parked out of the
    workflow: re-admission or the issue's return to `todo` starts it.
 

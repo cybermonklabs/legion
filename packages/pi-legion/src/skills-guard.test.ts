@@ -755,6 +755,6 @@ test("the architect shows a person the surface before it asks them to approve th
     "Where the `Design gate steps` sentence of your `Legion addressing` line says `none`, nobody approves the spec. Make the picture, put it in the spec for whoever builds it, and ask nobody."
   );
   expect(gate).toContain(
-    "The surfaces this tree's children build are yours. Their pictures go in the root spec, and a sub-architect that finds a surface the root spec never drew tells the root architect."
+    "The surfaces this tree's children build are the root architect's. Their pictures go in the root spec. A sub-architect that finds a surface the root spec never drew tells the architect above it, and each architect above sends it up the tree to the root architect."
   );
 });

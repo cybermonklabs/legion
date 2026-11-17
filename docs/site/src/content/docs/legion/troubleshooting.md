@@ -337,9 +337,10 @@ Check, in order:
 
    Fix what GitHub names, such as the implement App's permissions or a ruleset on `legion/*`
    branches. The next attempt then creates the branch, and the tree starts.
-6. **Someone else holds it.** The architect's first act is to claim the issue in Dispatch. When a
-   person or another session already holds the claim, the architect starts nothing and asks the
-   holder, on the issue, to release it or take the issue back; the tree keeps its slot meanwhile.
+6. **Someone else holds it.** A root's architect's first act is to claim the root in Dispatch.
+   When a person or another session already holds that claim, the root's architect starts nothing
+   and asks the holder, on the root, to release it or take the issue back; the tree keeps its slot
+   meanwhile. A child's own architect claims nothing in Dispatch.
 
 ## A tree waits on a person
 
@@ -627,11 +628,13 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 
 `phase` is `held`, `heldFrom` names the phase the hold took the issue out of, and the failed
 claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
-to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
-architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
-and the controller is woken. Unless the root's `phase` is `done`, it restarts the tree when it
+to retry or escalate, and `holdReason: "escalated"` means it went to the controller. A root's
+architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on what it
+owns, and the controller is woken. Unless the root's `phase` is `done`, it restarts the tree when it
 finds no cause or the cause is gone, and asks a person whether to park it when the cause stays.
-What brings the architect back depends on where its tree stands:
+A child's own architect that failed holds nothing and wakes no controller: the architect above it
+is told with a `worker-died` and takes the child's notices, and the child's next phase start
+starts it again. What brings a root's architect back depends on where its tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will
   wake` line names the architect under `failed, retry`. Retry it, as
@@ -841,16 +844,20 @@ idle, and, in the log, either the boot's one line per claim for the degraded dae
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, a tree's architect
 by its admission, and a child's own architect by the child's first phase start, and again after a
-failure by the child's next phase start; a notice to an architect with no process waits for it
-rather than starting it. A suspended worker of its issue's current phase that the daemon suspended
+failure by the child's next phase start. A notice starts no architect, except one whose idle pod
+the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
+undelivered once that claim has failed or retired, and a notice for a child whose own architect
+does not hold its role goes to the architect above. A suspended worker of its issue's current
+phase that the daemon suspended
 is resumed by the daemon at boot. One an operator suspended (`legion claims suspend`, one claim at
 a time or a whole fleet before a restart), or whose suspension predates the release that records
 who suspended it (`suspendedBy: unknown`), is not; neither is an operator-suspended or failed tree
 architect, nor a claim whose launches ran out, nor a claim a close or a stop retired while its tree
-runs, whatever its role, except a child's own architect, which the list below never names. Each of
-those is woken by nothing: the daemon looks healthy and the
-state shows the tree active, but the tree stops for good at the worker's phase, or at the first
-decision that needs its architect. Once a boot has re-adopted its claims, the daemon names every
+runs, whatever its role. Each of those but a child's own architect is woken by nothing: the
+daemon looks healthy and the state shows the tree active, but the tree stops for good at the
+worker's phase, or at the first decision that needs its architect. A child's own architect is not
+resumed at boot either, and the list below never names it: the paragraph under the list says what
+brings one back. Once a boot has re-adopted its claims, the daemon names every
 such claim in one error line, under the move that brings it back:
 
 ```text
@@ -957,7 +964,7 @@ start is queued for it, since the next phase start or re-admission resumes it as
 
 The issue stands in its phase, its worker does nothing, and the daemon's record of it reads like a healthy one.
 The claim is up and the state shows the tree at work.
-The daemon finds such a worker by itself and writes one `worker-silent` notice to the issue's architect.
+The daemon finds such a worker by itself and writes one `worker-silent` notice to the architect that owns the issue.
 The project's controller reads the same issue in the `silent` list of its periodic tick.
 
 The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
@@ -978,7 +985,7 @@ The merge ends the merger's work, but the root stands in `merging` until the res
 
 A worker whose own session — the process the claim runs now — reports background work of its own running, an async job, a subagent or a background task, is left alone, however long it has been quiet.
 No bound can tell a forty-minute job from a worker that stopped, so the daemon prompts no such worker at all.
-When that report has stood past `worker_background_hours`, four hours by default, the daemon writes one `worker-background-stalled` notice to the issue's architect, naming the kinds the session reported and how long they have stood, and sends the worker nothing, because a background job can hang.
+When that report has stood past `worker_background_hours`, four hours by default, the daemon writes one `worker-background-stalled` notice to the architect that owns the issue, naming the kinds the session reported and how long they have stood, and sends the worker nothing, because a background job can hang.
 The architect reads what the session says it is waiting on and decides.
 The report counts for the process the claim runs now and for no other.
 A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
@@ -1285,7 +1292,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   or the daemon stopping a controller it launched, and its cause is `its claim was stopped`:
   every retry that keeps the session resumes the stopped claim's session, which is told what the
   stop ended. That is `legion claims retry` without `--fresh-session`, the daemon's own retry of
-  a retired controller it keeps, and the daemon's start of a retired worker's phase. A suspension
+  a retired controller it keeps, the daemon's start of a retired worker's phase, and a child's next
+  first phase start, which starts that child's own architect when an operator stopped it. A
+  suspension
   that lands over a process the daemon had already found gone, as a fresh session over a dead
   role does, records the death in the runtime's words, not the suspension. The claim
   records it (the `ended_work` column of its row), and the first prompt the next process is sent

@@ -238,8 +238,10 @@ For the third, decide what the time means — a tree whose spec is long is worki
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
 
-A person's spec decision, or answer, resolution or reply on an ask, on a tree Legion is not
-running, which nobody inside the tree heard. The payload names the decision, the tree's `root`,
+A person's decision that nobody inside its tree heard: a spec decision on a tree Legion is not
+running, or on a tree whose root architect's claim has failed, retired or is not supervised, or an
+answer, resolution or reply on an ask of a tree Legion is not running. The payload names the
+decision, the tree's `root`,
 the decision's Dispatch `ref`, the person (`actor`), and a spec decision's `version` and a changes
 request's `reason`. Decide it as `skill://legion-controller/references/parked-decisions.md#deciding`
 says.
@@ -416,9 +418,13 @@ escalated hold above says.
 
 ## `worker-died on <KEY>` (`role: "architect"`)
 
-The tree's architect ran out of launches or prompts, and the daemon relaunches nothing. A child's
-own architect still takes that child's notices while it holds its role. Every other notice of the
-tree goes to the failed architect, so nobody inside the tree can act on those. Check that
+The root's architect ran out of launches or prompts, and the daemon relaunches nothing. This wake
+comes for a root's architect alone: when a child's own architect fails, the daemon tells the
+architect above that child, and the child's next phase start starts it again. A child's own
+architect that holds its role still takes the notices of its child and of the issues under it,
+but for the child's own `child-status` and `child-closed` and a `worker-died` or `worker-stalled`
+of that architect. Every other notice of the tree goes to the failed architect, so nobody inside
+the tree can act on those. Check that
 `issues.<KEY>.architect.state` is `failed`. When the root's `phase` is `done`, the tree is already
 parked: do nothing (a failed architect reads `failed` until the tree closes). Otherwise look for
 the cause. `issues.<KEY>.architect.failure` holds the record the `held` wake above describes. Read
@@ -519,8 +525,9 @@ Read the role's claim in `read_state`. Name the run and its model in the day's r
 reason names no status, the turns ended on nothing but a message, which is what a content filter
 leaves: the session has already stepped down its model chain, so a run that long says the whole
 chain refuses the same work. Either way, `envoy_publish` the key, the role and the reason to the
-issue's architect, which is who can narrow the work. Re-admit nothing and park nothing, because
-the task is not lost and the session still runs.
+architect that owns the issue, which is who can narrow the work. When the stuck role is a child's
+own architect, send them to the architect above that child. Re-admit nothing and park nothing,
+because the task is not lost and the session still runs.
 
 One claim that stays stuck after that is yours to act on, and which door you use depends on what
 the claim is doing. `compact` is the first thing for a claim whose session the provider keeps
@@ -535,9 +542,11 @@ one's were.
 
 `compact` is the wrong door for a claim no process stands behind, which is a role that died: it
 refuses such a claim `CLAIM_NOT_RUNNING` and names `fresh_session`, because it has no agent to
-ask. Ask for `fresh_session` there. It is the one way back for a dead role, a dead architect of
-your project included: it suspends the claim where your request arrives, leaves the session that
-claim recorded behind, and starts the claim again with the task its dead turn held. Both doors
+ask. Ask for `fresh_session` there. Of your two doors, it is the one that brings back a dead role,
+a dead architect of your project included: it suspends the claim where your request arrives,
+leaves the session that claim recorded behind, and starts the claim again with the task its dead
+turn held. The daemon also starts a child's dead architect again at its child's next phase start,
+in the session it recorded. Both doors
 read the claim's process at the moment you ask, not the daemon's memory of an older report,
 which a daemon restart forgets. A refusal of `CLAIM_IN_A_TURN` is a claim whose process that
 read found running, or one whose session is being compacted. A claim whose process the runtime

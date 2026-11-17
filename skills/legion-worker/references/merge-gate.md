@@ -51,7 +51,7 @@ as the fingerprint decides (*The reviewer*, below, and
   ```
 
   A read GitHub refuses stops the command there, and is reported to the architect, never guessed.
-  With that read refused, the required set is unknown, so no required item can be judged: do not approve, and wait with a `WAITING` line naming the refused read. The architect has the read made with a credential that can make it, or asks a person, and the review goes on from its answer.
+  With that read refused, the required set is unknown, so no required item can be judged: do not approve, and wait with a `WAITING` line naming the refused read. The architect has the read made with a credential that can make it, or asks a person (a child's own architect asks through the architect above it), and the review goes on from the answer.
   The head's check-runs
   (`gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --paginate --jq '.check_runs[] | [.name, .status, .conclusion] | @tsv'`):
   every required name present, `completed` and `success` (GitHub counts `neutral` and `skipped`
@@ -282,10 +282,11 @@ it there until that answer comes clean.
     passes `--merge` in place of `--squash` where the repository allows merge commits
     (`allow_merge_commit`) and the base's rules require no linear history
     (`required_linear_history`), since a squash there leaves each open pull request built on the
-    merged branch a conflict of history alone; otherwise it squashes and tells the architect which
-    open pull requests of the tree build on the merged branch. Each one GitHub then reports
-    `CONFLICTING` comes back to `implementing`, and the architect tells its implementer to expect
-    it and to merge the base forward in that implementing round. On a base with a merge queue —
+    merged branch a conflict of history alone; otherwise it squashes and tells the architect its
+    addressing line names which open pull requests of the tree build on the merged branch. Each one
+    GitHub then reports `CONFLICTING` comes back to `implementing` by the daemon's own move, with a
+    task that names the base to merge forward, and the architect that owns its issue hears of it by
+    a `checks-red` notice. On a base with a merge queue —
     a `merge_queue`
     rule among the base branch's rules — it enqueues the pull request instead, with GraphQL
     `enqueuePullRequest` and the same head as `expectedHeadOid`, because `gh pr merge` on such a

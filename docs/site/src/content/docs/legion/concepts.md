@@ -206,7 +206,7 @@ A wait on an open child the architect filed and has not released is not one, bec
 that child is the tree's own work.
 
 An issue holding a slot starts its next phase whatever the cap says, and so does an issue past
-its review, which holds none. An issue that holds none and is owed a start, a child its architect
+its review, which holds none. An issue that holds none and is owed a start, a child an architect
 has just released among them, waits in line while the project stands at the cap.
 A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
@@ -503,9 +503,10 @@ it.
 ## The production check
 
 The merge closes the issue: the daemon reads the merged pull request, writes `done`, and nothing is
-left of the issue to develop. A root whose tree still runs is the one issue the merge does not
-close at once: the daemon records the merge, and the root stays in `merging` with its workers
-while its children reach their own merges.
+left of the issue to develop. A root whose tree still runs, and a child with an issue beneath it
+still in the workflow, are the issues the merge does not close at once: the daemon records the
+merge, and the issue stays in `merging` with its workers while the issues beneath it reach their
+own merges.
 It stands there on no admission slot, as every phase past the review does, so no wait of it
 changes the cap.
 Its architect is told once which issues the close waits for,
@@ -513,8 +514,9 @@ and the close comes when the last of them is done or parked. What is
 left after the close is to see the change work in production, and that is
 work after the close, where your project asks for it: `projects.<KEY>.production_check` in
 `legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a
-production check in its live session as the issue closes, and a project that sets `off` opens no
-check at all — the close retires every claim of the issue and releases its pod. The loader
+production check in its session as the issue closes, and a project that sets `off` opens no
+check at all — a child's close retires every claim of the child and releases its pod, and a
+root's close suspends every claim of its tree for the linger, whose end retires them. The loader
 refuses any other value, naming the key and the value it read. The check's record carries the
 role, written when the check opened, so changing the setting leaves an open check with the role
 it started under, and only that role may report on it. Each look of the check reaches the deploy

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # The live proof that every child that starts runs under an architect of its own (INFRA-3915): a
 # child's first phase start starts that architect beside its planner, whether the child came in by
-# its architect's release_children, by a person's todo under a live tree or by the close of the
-# issue it waited on; at its ready the child's architect is told its own issue and every issue
-# under it, in a catch-up on its own topic alone, which the daemon logs as it publishes it; it
-# files and releases its own children, whose notices then reach it rather than the root's
-# architect; it parks only issues under its own and is answered 403 ISSUE_NOT_OWNED for its
+# the release_children of the architect above it, by a person's todo under a live tree or by the
+# close of the issue it waited on; at its ready the child's architect is told its own issue and
+# every issue under it, in a catch-up on its own topic alone, which the daemon logs as it publishes
+# it; it files and releases its own children, whose child-status and child-closed notices then
+# reach it rather than the root's architect; it parks only issues under its own and is answered 403
+# ISSUE_NOT_OWNED for its
 # sibling and for the root; when its claim fails, the root's architect is told and hears the
 # child's next notice too, and the child's next phase start retries the claim in the same session
 # with fresh budgets; and a parked child's architect is suspended and resumed in its session by the

@@ -82,7 +82,7 @@ The evidence of each is the `Sources` list of its statement in version 7 of disp
 
 Legion's issue lifecycle lives entirely on native Dispatch (triage → done); the daemon never creates, reads, or writes a GitHub issue.
 It derives role and gate state from Dispatch issue events plus GitHub PR/CI artifacts, records root-process session locators, and publishes only the verdict changes each role needs.
-The daemon (`packages/daemon`, Go) runs every root architect and phase worker as a headless `omp --mode rpc` process bridged through `legion worker-shim`:
+The daemon (`packages/daemon`, Go) runs every architect, a root's or a child's, and every phase worker as a headless `omp --mode rpc` process bridged through `legion worker-shim`:
 one pane of its private tmux server per process under `runtime: tmux`, or, under `runtime: kubernetes`, one Agent Sandbox pod per issue running the published worker image, with one container whose `legion launcher` runs every resident role (`docs/kubernetes.md`;
 `scripts/e2e/stage4a-sandbox-runtime.sh` is that runtime's live proof).
 A phase worker whose role `legion.yaml`'s `worker_backends` puts on `claude` runs Claude Code in Oh My Pi's place under either runtime:
@@ -326,7 +326,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>`
 
-  Bridges a headless OMP process (a root architect, a phase worker, or the controller the daemon launches under `controller: daemon`) to the daemon:
+  Bridges a headless OMP process (an architect, a root's or a child's, a phase worker, or the controller the daemon launches under `controller: daemon`) to the daemon:
   the shim dials the daemon's worker stream listener (`unix://` from a tmux pane, `tcp://` from a pod) and authenticates with its boot token;
   --provider-env-dir exports each mounted secret file as NAME=contents into the OMP child's environment only (skipping a NAME the pod already consumes through a NAME_FILE pointer, e.g. DISPATCH_TOKEN;
   and refusing to start — exit 1 naming the key and its file, Oh My Pi never spawned
@@ -947,7 +947,7 @@ A wait on a blocker or on its children is the exception: the issue gives its slo
 Past its review an issue holds no slot, so a wait there has none to give back.
 The admission pass that sees one of those five cases deletes the slot row.
 `admission_cap` keeps its name and counts these issues, four by default, so a cap of N issues holds fewer issues in progress than a cap of N trees did.
-An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child its architect has just released among them — waits in the line while the project stands at its cap.
+An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child an architect has just released among them — waits in the line while the project stands at its cap.
 A slot change stops no process, claim, session or pod:
 every worker of a waiting issue stays live in the issue's pod and answers questions until the issue closes.
 A transition applies at once — the phase, the Dispatch status, the role's phase entry raised by one with that entry's work written beside it, and the notices — and only the outbox row that delivers the worker's start waits for a slot;
@@ -973,7 +973,8 @@ the architect that owns the issue reads the tester's handoff, each `check` block
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
 refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there moves nothing, and is the architect's own read before it accepts.
-The architect's `catch-up` at each launch names, in its `reason`, every issue in `accepting` whose acceptance is that architect's, since the reviewer's notice that moved it there is dropped while the architect's claim has failed.
+The architect's `catch-up` at each launch names, in its `reason`, every issue in `accepting` whose acceptance is that architect's, since the reviewer's notice that moved it there may never have reached it:
+while a root's architect's claim has failed, that notice ends undelivered, and while a child's own architect does not hold its role, it goes to the architect above.
 
 **Retro:** runs after the architect's acceptance and before the merger merges the head it reads; it commits nothing and records what the work taught as a `dispatch comment` on the issue.
 
@@ -982,6 +983,7 @@ A child's close tells the architect above it `child-closed`; where the project's
 a root's close lingers the tree, and every slot a member of it still holds is freed.
 A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, and no slot, since `merging` stands past its review and holds none, so no blocker has a slot to take back — and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
 — and closes that way once the last open member of the tree is done or parked.
+A child whose pull request merges while an issue beneath it is still in the workflow waits in `merging` the same way, and its own architect gets the `pr-merged` notice while it holds its role.
 A person's own close of a root from the Dispatch dashboard lingers the tree at once, children and all.
 The architect does nothing after the merge.
 

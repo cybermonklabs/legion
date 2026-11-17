@@ -80,7 +80,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
-| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
+| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the architect that owns the issue, or, for a stuck child's own architect, to the architect above that child; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |

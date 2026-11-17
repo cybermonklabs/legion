@@ -33,16 +33,19 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 
 - The issue's Dispatch status stays `needs_review` in `accepting`; `sign_off` moves it to `retro`.
 - A `catch-up` whose `reason` names an issue as waiting for your acceptance is the wake for it: it
-  is in `accepting`, and the `phase-finished` that moved it there may never have reached you (a
-  failed architect's notice is dropped, so a retried one learns of the wait from its catch-up
-  alone). Accept it as this section says, a parent only after its last round (below).
+  is in `accepting`, and the `phase-finished` that moved it there may never have reached you.
+  While a root's architect has failed, its notices end undelivered. While a child's own architect
+  does not hold its role, the child's notices go to the architect above it. Either way, a retried
+  architect learns of the wait from its catch-up alone. Accept it as this section says, a parent
+  only after its last round (below).
 - The daemon refuses `sign_off` while an issue beneath the one you accept is still in the workflow
   (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done, and sign off again.
   Park one with `park_child` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed,
   and say in a comment which of those it is. Ask the person about a child that can reach neither
-  `done` nor a park under that rule, and hold the acceptance until they answer. Hold it too, for
-  the root and for the issue you moved an unreleased child under, until the person answers the ask
-  on the root about that child (`skill://legion-architect`, section 3): release the child when they
+  `done` nor a park under that rule, and hold the acceptance until they answer. Until the person
+  answers the ask on the root about an unreleased child you moved, sign off neither the issue you
+  moved it under nor any issue above it that you accept (`skill://legion-architect`, section 3):
+  release the child when they
   say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when
   they say its work should wait, citing their answer. A parent: sign off only after its last round
   (below). The daemon then closes a parent that is not the root at its own merge, which under this
@@ -79,8 +82,8 @@ While the approved head does not carry those
 merges, or a check in another repository has no pass standing since the close of a child it
 needs, leave the issue in `accepting` until each has closed (`child-closed`) or a park has
 already taken it out (`child-status`). That wait is no reason to park a child. Move a parked
-child's criterion to the root's own pull request or a released, open child first; never
-downgrade it. A root's requirement stays the root's, pending
+child's criterion to the parent's own pull request or a released, open child first; never
+downgrade it. The parent's requirement stays the parent's, pending
 until this round, where its head must meet it.
 Then, in one turn:
 
@@ -133,8 +136,8 @@ The daemon keeps this order from its fixed table; you start none of its steps:
    person can give is waited for, never bypassed. Nothing compares that head with the approved one:
    a repository that wants a later push reviewed says so in its own rulesets. The merger's
    completion records its phase row and moves nothing, and the daemon posts no packet.
-5. The merge lands under the repository's rules, the daemon reads it and closes the issue; a
-   root's close waits until the rest of its tree has left the workflow.
+5. The merge lands under the repository's rules, the daemon reads it and closes the issue once
+   every issue beneath it has left the workflow (for a root, every other issue of its tree).
 
 A person's request after your sign-off is a requirement of this issue, filed nowhere else: in
 `retro` or `merging` the role holding the phase makes the `request_backward_move`.
@@ -150,11 +153,12 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
   you, and only a person can change it. Ask one with `dispatch ask`, naming the pull request, the
   head and GitHub's refusal; never bypass a rule.
 - A squash into a base other than the default branch, where the repository allows only squash or
-  the base's rules require a linear history: the merger names each open pull request of the tree
-  built on the merged branch. Each one GitHub then reports `CONFLICTING` comes back to
-  `implementing` (*A conflicting head*, below). Tell each one's implementer (`envoy_publish` to its
-  role topic) to expect its pull request back, and to merge that base forward in that implementing
-  round.
+  the base's rules require a linear history: the merger tells the architect its addressing line
+  names which open pull requests of the tree build on the merged branch. Each one GitHub then
+  reports `CONFLICTING` comes back to `implementing` (*A conflicting head*, below), and the
+  architect that owns its issue hears of it by `checks-red`. For each one whose issue is yours,
+  tell its implementer (`envoy_publish` to its role topic) to expect its pull request back, and to
+  merge that base forward in that implementing round.
 
 ## A conflicting head
 
@@ -197,8 +201,8 @@ The merge closes the issue: the daemon reads the merged pull request — from Gi
 from its own read of the issue — and writes `done`. An issue that reaches `merging` on a pull
 request GitHub has already merged closes at once.
 
-- A root whose merge lands while another issue of its tree is still in the workflow stays in
-  `merging`, its workers kept and live, until the last of
+- An issue whose merge lands while an issue beneath it is still in the workflow (for a root,
+  another issue of its tree) stays in `merging`, its workers kept and live, until the last of
   them is done or parked. One
   `pr-merged` notice names what it waits for and none follows as they depart, so read the pull
   request on GitHub.

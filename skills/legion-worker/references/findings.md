@@ -7,6 +7,9 @@ every Legion role (each phase worker, each architect, the controller) and for ea
 subagents, and it replaces the filing step of `skill://dispatch-first` and `skill://dispatch`. The
 controller fixes nothing itself: it hands a finding to the tree that owns the code, as
 `skill://legion-controller`, "Findings, and the issues you file", says.
+A child's own architect opens no ask itself: where this page says to open a `dispatch ask`, it
+sends the finding to the architect above it with `envoy_publish`, and the root's architect opens
+the ask (`skill://legion-architect`, "Every turn").
 
 ## Fix it where you are, else hand it over, and ask only for a decision
 
@@ -22,7 +25,8 @@ three steps that fits:
    the running tree whose code it is. Only when no tree owns that code does it file a Legion root.
 3. **Ask.** A finding that needs a person's authority, taste or risk appetite is a `dispatch ask`
    with one recommendation, as [Where it goes](#where-it-goes) says: whether the work is wanted at
-   all, which of several designs, who owns it, or a change of scope, cost or risk.
+   all, which of several designs, who owns it, or a change of scope, cost or risk. A child's own
+   architect opens none itself: it sends the finding to the architect above it.
 
 A fix you are not sure of is not step 1: hand it over, or ask when a person must decide.
 
@@ -31,8 +35,9 @@ A fix you are not sure of is not step 1: hand it over, or ask when a person must
 - A problem inside your tree is work its root spec's acceptance needs. A phase worker's such
   problem outside its own issue goes to the architect that owns its issue, the one its
   `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). That architect adds it
-  to an open pull request of the tree, or files a child when it is a separately deliverable
-  change. Anything else, in the same repository or not, is a finding.
+  to an open pull request of an issue it owns, or files a child under its own issue when it is a
+  separately deliverable change. It sends a problem in an issue it does not own to the architect
+  above it. Anything else, in the same repository or not, is a finding.
 - Search first (`skill://dispatch-first`): when an open issue already tracks the problem, comment
   the evidence on that issue and send or ask nothing. When an open ask on the report issue already
   asks about it (`dispatch open-asks --project <PROJECT>` lists them), add your evidence under that
@@ -98,8 +103,9 @@ of these that holds, so a person sees it and the controller finds it when it ret
    report issue's assignee sees the ask, and the controller's catch-up takes it.
 2. **The report issue is missing or closed:** ask on your own issue, the evidence posted there as
    a comment first. Then publish the ask's reference to the architect that owns your issue, the
-   one your `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). An architect
-   holds its own. The architect holds your issue's
+   one your `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). A root's
+   architect holds its own ask. A child's own architect opens none: it sends the finding to the
+   architect above it. The architect holds your issue's
    acceptance until a controller has taken the ask (`skill://legion-architect`, "Acceptance and the
    merge"). That hold is what keeps the ask readable: an open ask on a closed issue drops out of
    the controller's own listing (`asks.go`'s `listOpenAsks` takes `i.closed_at is null`), so an

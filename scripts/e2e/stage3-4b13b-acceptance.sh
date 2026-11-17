@@ -959,12 +959,14 @@ pass
 begin pr-closed-unmerged
 retarget_pr "$child"
 gh -R "$repo" pr close "${pr_of[$child]}" >/dev/null
-until_true 300 "the pr-closed-unmerged notice for $child on $root1's architect" notice_delivered "$root1" architect "$(notice_needle pr-closed-unmerged "$child")"
+# The notice is queued on the child and walks from it, and the child's rerun gave the child its own
+# architect back, which holds its role: the notice lands in that architect's session.
+until_true 300 "the pr-closed-unmerged notice for $child on $child's own architect" notice_delivered "$child" architect "$(notice_needle pr-closed-unmerged "$child")"
 sleep 30
-n=$(notice_deliveries "$root1" architect "$(notice_needle pr-closed-unmerged "$child")")
-[ "$n" = 1 ] || soft "$root1's architect received $n pr-closed-unmerged notices for $child, want 1"
-notice_line "$root1" architect "$(notice_needle pr-closed-unmerged "$child")" | head -1 >"$evidence/notice-pr-closed-unmerged.jsonl"
-note "closed $repo#${pr_of[$child]} unmerged; $root1's architect got pr-closed-unmerged for $child $n time(s)"
+n=$(notice_deliveries "$child" architect "$(notice_needle pr-closed-unmerged "$child")")
+[ "$n" = 1 ] || soft "$child's own architect received $n pr-closed-unmerged notices for $child, want 1"
+notice_line "$child" architect "$(notice_needle pr-closed-unmerged "$child")" | head -1 >"$evidence/notice-pr-closed-unmerged.jsonl"
+note "closed $repo#${pr_of[$child]} unmerged; $child's own architect got pr-closed-unmerged for $child $n time(s)"
 set_status "$child" backlog
 note "the proof human parked $child (backlog) so it takes no further turns"
 pass

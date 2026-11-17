@@ -1074,7 +1074,7 @@ primary_issue() {
   # here, after the first look's report and the smoke main's cleanup: what remains of the 30
   # minutes, and a bound deferred by a look still open when it came due (by the look's own
   # two-hour bound) fails here by name rather than hanging. The last look's pending closes the
-  # check as not_run: the tester's claim is retired, its session dropped (issue_close), and the
+  # check as not_run: the tester's claim is retired, its session kept (issue_close), and the
   # state omits the check.
   until_true 1800 "the bound to start the last look of $root_issue's production check" last_look_started "$root_issue"
   state_file check-look-2
@@ -1360,7 +1360,7 @@ status_actors() {
   note "every lifecycle transition on $root_issue ($(jq -r '[.[] | select(.type | IN("issue.updated", "issue.closed")) | .payload.status] | join(" ")' "$evidence/root-events.json")) records actor legion-daemon:$project; one agent-attributed write was rejected"
   pass
 }
-# Every workflow notice is for the architect that owns its issue, on that architect's role topic:
+# Every workflow notice is for an architect, on that architect's role topic:
 # the run's pr-blocked, the reviewer's phase-finished at its approval (the architect's acceptance
 # cue) and worker-died reach their architects (checked where each is written), and no phase-worker
 # session of the run receives any notice.

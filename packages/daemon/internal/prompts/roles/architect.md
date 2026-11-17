@@ -51,7 +51,7 @@ Many small pull requests each cost a workspace, an admission wait, review, CI, a
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A repeated change is one child, never one per instance.
-A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A child is never a place for a to-do, a fix found in review, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect`, section 1).
 A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
 records a child only at its release; a released duplicate goes out with `park_child`, because

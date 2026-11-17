@@ -6,7 +6,8 @@ components.
 
 ## Reading the tree
 
-Read the root issue, its acceptance criteria, its existing children and their current handoffs.
+Read your own issue (the root in a root session, your child in a sub-architect session), its
+acceptance criteria, its existing children and their current handoffs.
 Your issue record is the `legion` tool's `read_record`. A child's handoffs are records on its
 Dispatch issue: read the newest of a phase with
 `dispatch handoff-read --issue <child> --phase <word>` (`plan`, `implement`, `test` or `review`),
@@ -44,8 +45,9 @@ EOF
   tree's open children with their repositories and pull requests, and the proposed
   child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
   that each child should not exist. Name every child that is a to-do, a fix found in review, a
-  proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
-  the root's pull request or an open child's. Weigh each separate pull request against combining
+  proof of the acceptance of the issue it is filed under, or a part of the architect's own work,
+  and say where it folds: that issue's own pull request or an open child's. Weigh each separate
+  pull request against combining
   its work. Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
   Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
   It can also conflict with the default branch.
