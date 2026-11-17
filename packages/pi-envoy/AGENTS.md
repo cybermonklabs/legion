@@ -1246,11 +1246,11 @@ handler's result. A handler that throws loses
 everything it returns, the skill included, so a read that throws rather than answering gives the
 failure line with the error as its reason, which is appended as any failure line is and logged
 once per failure episode as any failed read is (above). `src/session-answers-context.test.ts`
-holds the rule on scripted reads (the spec's five cases and the restart, each checking that a
-request starts with every byte of the one before it; the "no item" list; the failure line once;
-the episode rule; the entry recorded; a guarded write; an older copy's list), the compaction path,
-the requests that carry no list and the two-copy cases, two copies with an empty list making one
-HTTP read among them, `src/session-answers-read.test.ts` the rule on reads through the real
+holds the rule on scripted reads (the prefix cases, five changes and the restart, each checking
+that a request starts with every byte of the one before it; the "no item" list; the failure line
+once; the episode rule; the entry recorded; a guarded write; an older copy's list), the compaction
+path, the requests that carry no list and the two-copy cases, two copies with an empty list making
+one HTTP read among them, `src/session-answers-read.test.ts` the rule on reads through the real
 `readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the "no item" list, the
 window), `extensions/envoy.test.ts` the handler, a subagent reading its parent's id, a Dispatch
 that answers no list (the failure line), one with no answers route (no line, one warning for two

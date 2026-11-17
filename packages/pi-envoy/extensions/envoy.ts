@@ -4313,16 +4313,17 @@ export default function envoyExtension(pi: PiApi): void {
       // The host's own live id, as `message_end` reads it: this one process serves one session at
       // a time and moves between them, and a session that followed the same topic reads the same
       // event when its own host writes it, not when the session before it did (`../src/card-age`).
+      // It is also the session the request is built from, as it began: the host can move to
+      // another session while the read waits, and an answers message this request sent belongs
+      // to this one alone.
+      const id = context.sessionManager.getSessionId();
       const aged = cardAges.annotate(
         event.messages,
         () => context.sessionManager.getBranch?.() ?? [],
-        context.sessionManager.getSessionId()
+        id
       );
       if (!atStart.dispatch.enabled) return aged === undefined ? undefined : { messages: aged };
       const withSkill = withDispatchFirst(aged ?? event.messages, DISPATCH_FIRST_CONTEXT);
-      // The session the request is built from, as it began: the host can move to another session
-      // while the read waits, and an answers message this request sent belongs to this one alone.
-      const id = context.sessionManager.getSessionId();
       const messages = await withSessionAnswers(withSkill ?? aged ?? event.messages, {
         branch: () => context.sessionManager.getBranch?.() ?? [],
         session: context.sessionManager,

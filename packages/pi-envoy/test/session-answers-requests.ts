@@ -70,6 +70,9 @@ export const ITEM: SessionAnswer = {
   href: "/agents/ses/live",
 };
 
+/** The session id `recordedFor` and `requestOf` use unless given one. */
+const SESSION_ID = "ses_a";
+
 /** What each request's `record` wrote, by its session object and then its session id, in the
  *  order written: the entries a session's branch holds after the items its fixture branch lists.
  *  A module-level `WeakMap`, so every request built with the same `session` object reads what the
@@ -78,7 +81,7 @@ const recorded = new WeakMap<object, Map<string, unknown[]>>();
 
 /** The data of every entry the requests of `session` (and `id`) recorded, in the order written:
  *  what a case reads to check what a request recorded. */
-export function recordedFor(session: object, id = "ses_a"): readonly unknown[] {
+export function recordedFor(session: object, id = SESSION_ID): readonly unknown[] {
   return recorded.get(session)?.get(id) ?? [];
 }
 
@@ -99,7 +102,7 @@ export function requestOf(
   branch: () => readonly unknown[],
   session: object = {},
   compacting = false,
-  id = "ses_a"
+  id = SESSION_ID
 ): SessionAnswersRequest {
   return {
     read,

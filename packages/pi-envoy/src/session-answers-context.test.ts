@@ -31,7 +31,7 @@ import { type CarriedAnswers, withSessionAnswers } from "./session-answers-conte
  *  (`SESSION_ANSWERS_REPLACES`), and the first block of the "no item" list
  *  (`SESSION_ANSWERS_NO_ITEM`), as the model reads them. Written out rather than imported: the
  *  cases pin the bytes a request carries, and the file loads against a source without those
- *  exports, where the spec cases below then fail on bytes rather than at import. */
+ *  exports, where the prefix cases below then fail on bytes rather than at import. */
 const REPLACES =
   "This list replaces every earlier list of people's answers in this conversation, and every earlier line saying the list could not be read: read only the newest one as current.";
 const NO_ITEM = `${SESSION_ANSWERS_MARKER}\n\nNo item: every item an earlier list showed was withdrawn or is now older than 72 hours.`;
@@ -204,11 +204,14 @@ function readingEach(
 
 const FAILURE = sessionAnswersFailureLine("Dispatch did not answer within 800 ms");
 const failureLine = sent(FAILURE);
+/** A read that failed for `reason` with no list to give: the failure line naming that reason. */
+const failedRead = (reason: string) => ({ text: sessionAnswersFailureLine(reason), reason });
 
-// The spec's cases: a session that compacted, whose first list went after the question and sits
-// four messages deep by the time the people's answers change. Each request after a change must
-// begin with every message of the request before it, byte for byte, the answers messages sent
-// included, and end with the change. They match the sentence by its opening words, and use
+// The prefix cases: each request after a change begins with every byte of the request before it,
+// the answers messages sent included, and ends with the change; and the first request after a
+// restart carries every answers message sent at its old place, with its bytes. They run in a
+// session that compacted, whose first list went after the question and sits four messages deep by
+// the time the people's answers change. They match the sentence by its opening words, and use
 // nothing this rule added to the source, so against the source before it they fail on the bytes
 // at the list's place.
 const summary = { role: "compactionSummary", summary: "Earlier work.", timestamp: 0 };
@@ -232,7 +235,7 @@ const docsResult = {
   isError: false,
   timestamp: 10,
 };
-// The requests of the spec cases, in turn. After a compaction the host hands the summary first,
+// The requests of the prefix cases, in turn. After a compaction the host hands the summary first,
 // then the skill (`withDispatchFirst`).
 const opened = [summary, skill, ask];
 const deep = [...opened, readCall, readResult, grepCall, grepResult];
@@ -279,7 +282,7 @@ function listWithSentence(text: string) {
 /** The list `LIST` with alice's answer edited. */
 const EDITED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · alice answered your ask\nShip it after the docs.`;
 
-test("spec case: a new answer goes after the last message, and the list sent stays where it went", async () => {
+test("prefix case: a new answer goes after the last message, and the list sent stays where it went", async () => {
   const [, placed, changed] = await deepRequests({}, LIST, LIST, LATER);
   keepsSent(placed, changed);
   expect(changed?.slice(placed?.length)).toEqual([done, docs, listWithSentence(LATER)]);
@@ -292,27 +295,27 @@ test("spec case: a new answer goes after the last message, and the list sent sta
   ]);
 });
 
-test("spec case: a retraction that leaves an item goes after the last message, and the list sent stays where it went", async () => {
+test("prefix case: a retraction that leaves an item goes after the last message, and the list sent stays where it went", async () => {
   const [, placed, changed] = await deepRequests({}, LATER, LATER, LIST);
   keepsSent(placed, changed);
   expect(changed?.slice(placed?.length)).toEqual([done, docs, listWithSentence(LIST)]);
 });
 
-test("spec case: an edit goes after the last message, and the list sent stays where it went", async () => {
+test("prefix case: an edit goes after the last message, and the list sent stays where it went", async () => {
   const [, placed, changed] = await deepRequests({}, LIST, LIST, EDITED);
   keepsSent(placed, changed);
   expect(changed?.slice(placed?.length)).toEqual([done, docs, listWithSentence(EDITED)]);
 });
 
-test("spec case: a failed read with no list to give appends the failure line, and the list sent stays where it went", async () => {
-  const failed = { text: FAILURE, reason: "Dispatch did not answer within 800 ms" };
+test("prefix case: a failed read with no list to give appends the failure line, and the list sent stays where it went", async () => {
+  const failed = failedRead("Dispatch did not answer within 800 ms");
   const [, placed, changed] = await deepRequests({}, LIST, LIST, failed);
   keepsSent(placed, changed);
   expect(changed?.slice(placed?.length)).toEqual([done, docs, failureLine]);
 });
 
-test("spec case: the list a read gives after a failure line goes after the last message, and the failure line stays where it went", async () => {
-  const failed = { text: FAILURE, reason: "Dispatch did not answer within 800 ms" };
+test("prefix case: the list a read gives after a failure line goes after the last message, and the failure line stays where it went", async () => {
+  const failed = failedRead("Dispatch did not answer within 800 ms");
   const [, , withFailure, recovered] = await deepRequests({}, LIST, LIST, failed, LIST);
   keepsSent(withFailure, recovered);
   expect(recovered?.slice(withFailure?.length)).toEqual([
@@ -325,7 +328,7 @@ test("spec case: the list a read gives after a failure line goes after the last 
 // A process that resumed the session holds nothing an earlier process kept in memory for it: only
 // the session's branch, with every answers message the earlier process recorded in it. The whole
 // request is compared first, so a failure shows where each answers message went.
-test("spec case: after a restart the first request carries every answers message sent at its old place, with its bytes", async () => {
+test("prefix case: after a restart the first request carries every answers message sent at its old place, with its bytes", async () => {
   const session = {};
   const [, , changed] = await deepRequests(session, LIST, LIST, LATER);
   const [first, second] = recordedFor(session).map((data, index) =>
@@ -631,7 +634,7 @@ test("a failure line is appended once; a second failure and a recovery to an emp
   const session = {};
   const waiting = "an earlier read is still waiting on Dispatch";
   const read = readingEach(
-    { text: FAILURE, reason: "Dispatch did not answer within 800 ms" },
+    failedRead("Dispatch did not answer within 800 ms"),
     { text: sessionAnswersFailureLine(waiting), reason: waiting },
     { text: undefined, words: [], since: SINCE, answered: true },
     LIST
@@ -652,11 +655,12 @@ test("a failure line is appended once; a second failure and a recovery to an emp
 // line after it: an item of that list withdrawn inside the window appends the "no item" list.
 test('a recovery to an empty window after a failure line appends the "no item" list when the newest list sent shows an item it withdrew', async () => {
   const session = {};
-  const read = readingEach(
-    LIST,
-    { text: FAILURE, reason: "Dispatch did not answer within 800 ms" },
-    { text: undefined, words: [], since: SINCE, answered: true }
-  );
+  const read = readingEach(LIST, failedRead("Dispatch did not answer within 800 ms"), {
+    text: undefined,
+    words: [],
+    since: SINCE,
+    answered: true,
+  });
   await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
   const turn = [skill, ask, readCall, readResult];
   const failed = [skill, ask, list, readCall, readResult, failureLine];
@@ -830,7 +834,7 @@ test("no text to carry adds no message", async () => {
 // read is compared with. A failure line's read gives no words, and its entry holds none.
 test("the entry recorded names the request's last message and holds the blocks sent and the read's words", async () => {
   const session = {};
-  const read = readingEach(LIST, { text: FAILURE, reason: "database is down" });
+  const read = readingEach(LIST, failedRead("database is down"));
   const turn = [skill, ask, readCall, readResult];
   await withSessionAnswers([...turn], requestOf(read, noBranch, session));
   await withSessionAnswers([...turn, grepCall, grepResult], requestOf(read, noBranch, session));
@@ -840,7 +844,7 @@ test("the entry recorded names the request's last message and holds the blocks s
       blocks: [LIST, REPLACES],
       words: carry(LIST)?.words,
     },
-    { after: "toolResult@6#call-2", blocks: [FAILURE] },
+    { after: "toolResult@6#call-2", blocks: [sessionAnswersFailureLine("database is down")] },
   ]);
 });
 
@@ -1132,7 +1136,8 @@ test("readFailed is told once per failure episode, shown or not, and again after
   const words = carry(LIST)?.words;
   const answered = { text: LIST, words, since: SINCE, answered: true };
   const timedOut = "Dispatch did not answer within 800 ms";
-  const down = { text: FAILURE, reason: "database is down" };
+  const down = failedRead("database is down");
+  const downLine = sent(sessionAnswersFailureLine("database is down"));
   const reads = readingEach(
     answered,
     { text: CACHED, words, since: SINCE, reason: timedOut },
@@ -1159,11 +1164,11 @@ test("readFailed is told once per failure episode, shown or not, and again after
   expect(told).toStrictEqual([[timedOut, false]]);
   // The same episode: the failure line is appended, and nothing is told.
   const tools = [...turn, grepCall, grepResult];
-  expect((await withSessionAnswers([...tools], request))?.at(-1)).toEqual(failureLine);
+  expect((await withSessionAnswers([...tools], request))?.at(-1)).toEqual(downLine);
   expect(told).toStrictEqual([[timedOut, false]]);
   // A read that answered ends the episode, so the next failure line is told, shown.
   expect((await withSessionAnswers([...tools, reply], request))?.at(-1)).toEqual(list);
-  expect((await withSessionAnswers([...tools, reply, docs], request))?.at(-1)).toEqual(failureLine);
+  expect((await withSessionAnswers([...tools, reply, docs], request))?.at(-1)).toEqual(downLine);
   expect(told).toStrictEqual([
     [timedOut, false],
     ["database is down", true],

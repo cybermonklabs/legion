@@ -96,7 +96,6 @@ import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
-import { ANSWERS_SENT_ENTRY } from "../src/session-answers-context";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 import { runSessionPod } from "../test/session-pod-report";
 import {
@@ -18548,6 +18547,10 @@ console.log(JSON.stringify(args));
   const REPLACES =
     "This list replaces every earlier list of people's answers in this conversation, and every earlier line saying the list could not be read: read only the newest one as current.";
 
+  /** The custom type of an answers message recorded, written as a literal so the cases also load
+   *  against a source without that export. */
+  const ANSWERS_SENT = "envoy-answers-sent";
+
   /** `sessionContext()` whose session manager hands back what the extension appended (`entries`,
    *  a fixture's) as the session's branch, as Oh My Pi's hands back what `pi.appendEntry` wrote,
    *  so each request reads every answers message the requests before it recorded. `id` is read on
@@ -18560,10 +18563,10 @@ console.log(JSON.stringify(args));
     };
   }
 
-  /** The answers messages the extension recorded in the session (`ANSWERS_SENT_ENTRY`), in the
-   *  order it wrote them. */
+  /** The answers messages the extension recorded in the session (`ANSWERS_SENT`), in the order it
+   *  wrote them. */
   const answersSent = (entries: readonly BranchEntry[]) =>
-    entries.filter((entry) => entry.customType === ANSWERS_SENT_ENTRY);
+    entries.filter((entry) => entry.customType === ANSWERS_SENT);
 
   /** Tool round `n` of a conversation: a read call and its result. */
   const toolRound = (n: number) => [
@@ -18629,7 +18632,7 @@ console.log(JSON.stringify(args));
     expect(answersSent(fixture.entries)).toEqual([
       {
         type: "custom",
-        customType: ANSWERS_SENT_ENTRY,
+        customType: ANSWERS_SENT,
         data: {
           after: "toolResult@3#call-1",
           blocks: [list, REPLACES],
@@ -18861,7 +18864,7 @@ console.log(JSON.stringify(args));
       expect(answersSent(fixture.entries)).toEqual([
         {
           type: "custom",
-          customType: ANSWERS_SENT_ENTRY,
+          customType: ANSWERS_SENT,
           data: { after: "user@1", blocks: [sessionAnswersFailureLine(reason)] },
         },
       ]);
@@ -18956,7 +18959,7 @@ console.log(JSON.stringify(args));
       expect(recorded).toEqual([
         {
           type: "custom",
-          customType: ANSWERS_SENT_ENTRY,
+          customType: ANSWERS_SENT,
           data: { after: "user@1", blocks, words: [expect.any(String)] },
         },
       ]);

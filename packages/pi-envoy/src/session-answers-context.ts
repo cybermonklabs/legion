@@ -327,10 +327,10 @@ function readLineFailure(text: string): string | undefined {
   return at < 0 ? undefined : line.slice(at + failed.length);
 }
 
-/** Whether `carried` is a list of what people wrote, rather than the failure line, which says the
+/** Whether `text` is a list of what people wrote, rather than the failure line, which says the
  *  list could not be read and shows nothing a person wrote. */
-function isList(carried: ShownAnswers): boolean {
-  return carried.text.startsWith(SESSION_ANSWERS_MARKER);
+function isList(text: string): boolean {
+  return text.startsWith(SESSION_ANSWERS_MARKER);
 }
 
 /**
@@ -371,8 +371,8 @@ function isList(carried: ShownAnswers): boolean {
  * words; the older-copy path is in both places, and goes from both.
  */
 function showsNew(shown: ShownAnswers, next: ShownAnswers): boolean {
-  if (isList(shown) !== isList(next)) return true;
-  if (!isList(next)) return false;
+  if (isList(shown.text) !== isList(next.text)) return true;
+  if (!isList(next.text)) return false;
   if (shown.words === undefined || next.words === undefined) {
     return withoutReadLine(shown.text) !== withoutReadLine(next.text);
   }
@@ -496,11 +496,11 @@ function addedBlocks(
     if (newest !== undefined && !showsNew({ text: newest.blocks[0], words: newest.words }, next)) {
       return undefined;
     }
-    return isList(next) ? [text, SESSION_ANSWERS_REPLACES] : [text];
+    return isList(text) ? [text, SESSION_ANSWERS_REPLACES] : [text];
   }
   const words = carried?.words;
   if (words === undefined) return undefined;
-  const list = present.findLast((sent) => isList({ text: sent.blocks[0] }));
+  const list = present.findLast((sent) => isList(sent.blocks[0]));
   return list !== undefined &&
     (list.words === undefined || sessionAnswersChanged(list.words, words, carried?.since))
     ? [SESSION_ANSWERS_NO_ITEM, SESSION_ANSWERS_REPLACES]
@@ -549,6 +549,24 @@ function withAnswersSent(
     ...(words === undefined ? {} : { words }),
   });
   return [...(sent?.messages ?? messages), userTextMessage(...added)];
+}
+
+/** `messages` decided with `carried`: through the compaction path (`whileCompacting`) when
+ *  `compacting`, else through the rule over the answers messages the branch `entries` record
+ *  (`withAnswersSent`), the only path that calls `entries`. A result is added to `decided`, so no
+ *  other copy of this extension decides the request again. */
+function decide(
+  messages: readonly unknown[],
+  entries: () => readonly unknown[],
+  carried: CarriedAnswers | undefined,
+  request: SessionAnswersRequest,
+  compacting: boolean
+): unknown[] | undefined {
+  const result = compacting
+    ? whileCompacting(messages, carried, request)
+    : withAnswersSent(messages, entries(), carried, request);
+  if (result !== undefined) decided.add(result);
+  return result;
 }
 
 export interface SessionAnswersRequest {
@@ -679,11 +697,7 @@ export async function withSessionAnswers(
   }
   const carried = await request.read();
   const compacting = previous === "cut" || request.compacting();
-  const result = compacting
-    ? whileCompacting(messages, carried, request)
-    : withAnswersSent(messages, entries, carried, request);
-  if (result !== undefined) decided.add(result);
-  return result;
+  return decide(messages, () => entries, carried, request, compacting);
 }
 
 /**
@@ -718,12 +732,7 @@ function placedLegacy(
   const carried: CarriedAnswers = {
     text,
     reason,
-    answered: reason === undefined && text.startsWith(SESSION_ANSWERS_MARKER),
+    answered: reason === undefined && isList(text),
   };
-  const base = messages.slice(0, -1);
-  const result = compacting
-    ? whileCompacting(base, carried, request)
-    : withAnswersSent(base, request.branch(), carried, request);
-  if (result !== undefined) decided.add(result);
-  return result;
+  return decide(messages.slice(0, -1), request.branch, carried, request, compacting);
 }
