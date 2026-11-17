@@ -3,28 +3,38 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // endMeaningStatementsAt points searchMeaningScan's bound (searchMeaningStatementBound) at `at`
 // for one test, so that a meaning statement is ended by the server rather than answered, without
 // a test waiting production's fifteen seconds out. The bound it replaces must be in the list: a
-// list that holds none is the defect INFRA-988 fixed, and a test that quietly added its own
-// bound would pass on a server that holds none.
+// list that holds none is the defect an earlier fix closed (a meaning statement with no bound of
+// its own), and a test that quietly added its own bound would pass on a server that holds none.
 //
 // Swapping a package-level statement is safe only because no test in internal/dispatch/api calls
 // t.Parallel, so no other test's meaning query can read the shortened list before the cleanup
 // puts it back; a test added here that does call t.Parallel breaks these. It is the same seam,
 // under the same constraint, as the claim path's (issue_claim_test.go).
 //
-// A millisecond is not a race against a Go timer: a meaning query is five index arms fused,
-// ranked and paged, which no database plans and runs in a millisecond. Were a millisecond ever
-// enough for the two `set local` statements the bound precedes, beginMeaningScan would fail with
-// that same cancellation instead, and each caller below reports it the same way, so what these
-// tests assert does not depend on which of the transaction's statements the bound ends.
+// The shortened bound alone does not end a meaning statement. On a test database of a few rows
+// the statement itself executes in well under a millisecond (0.14 to 0.53 ms measured on Postgres
+// 18); what takes longer is its plan, 9 to 18 ms for each custom plan the server makes. A
+// backend that reuses a plan it has already made answers the statement inside the bound: 39
+// runs of 40 did with plan_cache_mode = force_generic_plan, and one run of the whole package saw
+// a search answered in 7 ms. So each test below also holds the one table every meaning
+// statement reads (holdMeaningStatements): the statement waits however fast it would run, and
+// the bound is what ends it. Were the bound ever to end one of the two `set local` statements
+// it precedes instead, beginMeaningScan would fail with that same cancellation, and each caller
+// below reports it the same way, so what these tests assert does not depend on which of the
+// transaction's statements the bound ends.
 func endMeaningStatementsAt(t *testing.T, at string) {
 	t.Helper()
 	healthy := searchMeaningScan
@@ -42,6 +52,39 @@ func endMeaningStatementsAt(t *testing.T, at string) {
 	}
 	searchMeaningScan = shortened
 	t.Cleanup(func() { searchMeaningScan = healthy })
+}
+
+// holdMeaningStatements locks embeddings, the table every meaning statement reads its vectors
+// from, in ACCESS EXCLUSIVE mode on a transaction of the test's own, and answers the function
+// that rolls that transaction back; the test's cleanup rolls it back too, should the test end
+// first. A meaning statement started while the lock is held waits for it, and Postgres checks a
+// statement's statement_timeout while the statement waits for a lock as it does while the
+// statement runs, so until the release such a statement can be ended by the server's bound on
+// it and never answered. That is what lets these tests assert what a caller makes of a
+// statement the server ended without betting that the bound is shorter than the statement
+// (endMeaningStatementsAt says why that bet loses).
+//
+// Nothing else on these tests' paths reads embeddings: search's own key and numnode reads, the
+// related-item check's keyword stage and the fill's progress read (embeddingProjectKeysFilled)
+// read other tables, so only the meaning statement waits. The lock is taken after the test has
+// written its embeddings (processAllPending) and released before the server's cleanups, so
+// neither those writes nor the server's own shutdown queue behind it.
+func holdMeaningStatements(t *testing.T, database *store.Store) (release func()) {
+	t.Helper()
+	ctx := context.Background()
+	hold, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds embeddings: %v", err)
+	}
+	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
+	if _, err := hold.Exec(ctx, "lock table embeddings in access exclusive mode"); err != nil {
+		t.Fatalf("lock embeddings: %v", err)
+	}
+	return func() {
+		if err := hold.Rollback(ctx); err != nil {
+			t.Fatalf("release the lock on embeddings: %v", err)
+		}
+	}
 }
 
 // A meaning query's transaction carries the server's own bound, read from the transaction itself
@@ -128,6 +171,11 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 // is - 500 INTERNAL - and never as an answer. runSearch keeps its keyword-only answer for a query
 // whose embedding could not be had; papering a cut-off search over as a degraded result would
 // serve a caller a page of keyword hits as though meaning search had run.
+//
+// The bounded search runs while embeddings is held (holdMeaningStatements), so its meaning
+// statement cannot answer before the shortened bound ends it. A server that held no bound on the
+// statement would wait for that lock until the test binary's deadline guard fails the case by
+// name.
 func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -147,7 +195,15 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 	}
 
 	endMeaningStatementsAt(t, "1ms")
-	ended := searchRequest(t, handler, "q=wibbleflorp")
+	release := holdMeaningStatements(t, database)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=wibbleflorp", nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	ended := answeredBeforeTheBinaryDeadline(t, "the search", func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	})
+	release()
 	if ended.Code != http.StatusInternalServerError || !strings.Contains(ended.Body.String(), `"code":"INTERNAL"`) {
 		t.Fatalf("search under a statement the server ends: status=%d body=%s, want 500 INTERNAL", ended.Code, ended.Body.String())
 	}
@@ -156,15 +212,20 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 	}
 }
 
-// The related-item check reports a meaning statement the server ended the way INFRA-148 made it
-// report a meaning search that did not answer: the check is still made, by keywords alone, and
+// The related-item check reports a meaning statement the server ended the way it already reports
+// a meaning search that did not answer: the check is still made, by keywords alone, and
 // says why. Before this it would have read the server's own bound as "meaning search failed",
 // which is what it says when something broke.
 //
-// The check answers at once rather than at the end of its three-second meaning allowance, which
-// is what tells the two apart: the statement was ended, not waited out. The text shares one word
-// with the issue and means the same thing, so the keyword stage has the item to fall back on and
-// the meaning stage has a reason to be running at all.
+// The check answers when the statement is ended rather than at the end of its meaning allowance,
+// which is what tells the two apart: the statement was ended, not waited out. Here that
+// allowance is an hour (server.meaningBound, with the check's own allowance raised to match),
+// and the check runs while embeddings is held (holdMeaningStatements), so its meaning statement
+// cannot answer before the shortened bound ends it: a check that answered at all answered
+// because the server ended the statement, and one that waited the allowance out fails by name
+// before the binary's deadline. The text shares one word with the issue and means the same
+// thing, so the keyword stage has the item to fall back on and the meaning stage has a reason
+// to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
@@ -183,19 +244,19 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 		t.Fatalf("suggestions = %+v before the bound was shortened, want found by meaning and keywords", healthy)
 	}
 
+	const meaningBound = time.Hour
+	srv.meaningBound, srv.suggestionTimeout = meaningBound, meaningBound
 	endMeaningStatementsAt(t, "1ms")
-	started := time.Now()
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
-	elapsed := time.Since(started)
+	release := holdMeaningStatements(t, database)
+	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
+		return srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
+	})
+	release()
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
-		suggestions.SearchNote != "meaning search did not answer within 3s" {
+		suggestions.SearchNote != "meaning search did not answer within "+meaningBound.String() {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the server having ended the meaning statement", suggestions)
 	}
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("related = %+v, want %s from the keyword search", suggestions.Related, key)
-	}
-	if elapsed >= relatedMeaningAllowance {
-		t.Fatalf("the check took %s, want it answered when the statement was ended rather than at the end of the "+
-			"%s meaning allowance", elapsed, relatedMeaningAllowance)
 	}
 }

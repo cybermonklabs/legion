@@ -180,6 +180,13 @@ An agent subscribes with Envoy's `envoy_subscribe` tool, which stores the subscr
 listener. A subscription to `<subject>.>` also covers `<subject>` itself, so subscribing to a pull
 request's `.>` gets its lifecycle events as well as its comments and checks.
 
+An issue's topic, a session's inbox and a role's lane each have a second form that names the
+project too: `notifications.dispatch.issue.<PROJECT>.<KEY>.>`, `notifications.agent.<PROJECT>.<session_id>`
+(`_` for no project) and `notifications.role.<PROJECT>.<role>`. While Envoy moves to it, a session
+receives each event in either form, whichever form it subscribed with. A subscription or a role
+claim that names the form without the project is kept as written and answered with a warning that
+names the new form; nothing is refused for it yet.
+
 A publish to a role through the API resolves the role's holder, waits for the stream to store the
 forward to it, and answers `200` naming the holder and its `holder_state`. If no live session
 holds the role, the listener keeps the message for one hour and answers `202` with
@@ -748,6 +755,15 @@ volume: update your checkout, then
 which starts 2.15.1 on the same volume, and the listener's next start sets the cap. A store
 written by nats-server 2.10.29 opens on 2.15.1 with its stream, its messages and its consumers
 intact.
+
+**The listener and the Legion daemon need nats-server v2.11.12, v2.12.4, or v2.14.0 and later**,
+and refuse to start against any other, naming its version and those releases. From v2.10.26, and
+in 2.11 before v2.11.12 and 2.12 before v2.12.4, nats-server can skip a message on a consumer that
+filters on a wildcard and a literal at the same token, and a session's consumer does (its inbox in
+both forms of its name), so on such a server a session would lose messages with no error. No 2.10
+release has the fix, so every 2.10 is refused, and so are the first fixed releases' own
+candidates. The 2.15.1 this file pins is past all of them; a machine still on an earlier file's
+2.10 moves to it as above.
 
 1. Write the machine's settings:
 

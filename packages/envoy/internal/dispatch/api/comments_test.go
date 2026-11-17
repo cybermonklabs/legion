@@ -547,7 +547,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("accept suggestion: status=%d body=%s", accepted.Code, accepted.Body.String())
 	}
-	assertResolution("accept", decodeBody[model.Comment](t, accepted), model.Actor{Kind: "user", ID: "alice"})
+	assertResolution("accept", decodeBody[model.Comment](t, accepted), model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	rejectedSuggestion := createThreadComment(t, handler, issue.Key, map[string]any{
 		"body": "reject", "suggestion": map[string]string{"replace_with": "ignored"}, "actor": sessionActor(),
@@ -556,7 +556,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 	if rejected.Code != http.StatusOK {
 		t.Fatalf("reject suggestion: status=%d body=%s", rejected.Code, rejected.Body.String())
 	}
-	assertResolution("reject", decodeBody[model.Comment](t, rejected), model.Actor{Kind: "user", ID: "bob"})
+	assertResolution("reject", decodeBody[model.Comment](t, rejected), model.Actor{Kind: "user", ID: "bob", Proven: true})
 }
 
 // What the API writes for a stored instant is the same text whatever zone the host runs in. The

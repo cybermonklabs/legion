@@ -33,7 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -329,7 +329,7 @@ func TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort(t *testing.T) 
 			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cfg.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
+			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			cfg.Bind, cfg.AdvertiseHost, cfg.WorkerStreamPort = tc.bind, tc.advertiseHost, 47381
 
 			p, err := prepare(cfg, quietLogger(), overrides{environ: []string{}})
@@ -570,6 +570,52 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	}
 }
 
+// runtime.kubernetes.sandbox reaches sandbox.Options member for member: the type, the canary list
+// and the microvm block with its ComputeClass, its storage class (the one the loader settled,
+// runtime.kubernetes.storage_class where the file names none) and its metadata endpoint, while
+// leaving the block out runs every pod in gVisor.
+func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
+	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
+	k := config.Kubernetes{
+		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
+		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+	}
+	k.Sandbox = config.SandboxConfig{
+		Type: config.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
+		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &config.MetadataConfig{
+			WorkloadPool:     "example-project.svc.id.goog",
+			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
+		}},
+	}
+	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions: %v", err)
+	}
+	want := sandbox.SandboxConfig{
+		Type: sandbox.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
+		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &sandbox.MetadataEndpoint{
+			WorkloadPool:     "example-project.svc.id.goog",
+			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
+		}},
+	}
+	if !reflect.DeepEqual(opts.Sandbox, want) {
+		t.Errorf("Options.Sandbox = %+v, want %+v", opts.Sandbox, want)
+	}
+	if opts.Sandbox.Of("TEST-7") != sandbox.SandboxGVisor || opts.Sandbox.Of("TEST-8") != sandbox.SandboxMicroVM {
+		t.Errorf("Options.Sandbox runs TEST-7 in %s and TEST-8 in %s, want the canary in gVisor and every other issue in a microVM",
+			opts.Sandbox.Of("TEST-7"), opts.Sandbox.Of("TEST-8"))
+	}
+
+	k.Sandbox = config.SandboxConfig{}
+	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions without a sandbox block: %v", err)
+	}
+	if opts.Sandbox.AnyMicroVM() || opts.Sandbox.MicroVM != nil {
+		t.Errorf("Options.Sandbox = %+v without runtime.kubernetes.sandbox, want every pod in gVisor", opts.Sandbox)
+	}
+}
+
 // runtime.kubernetes.repository_cache reaches the runtime's Options as its volume, its intervals and
 // its container's requirements, a settled reservation's lower memory request under its limit.
 func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
@@ -742,10 +788,52 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cfg.NatsNkeySeedFile = testnats.SeedFile(t, testnats.UserSeed(t))
+			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			tc.change(&cfg)
 			if _, err := prepare(cfg, quietLogger(), overrides{environ: []string{}}); err == nil || err.Error() != tc.want {
 				t.Fatalf("prepare = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The daemon holds the operator's pod to the exchange identity's names, before its boot and for
+// `legion start --check-config`, only where runtime.kubernetes.agent_secrets names an
+// exchange_audience. With no agent_secrets block, or one that names no exchange_audience, an
+// operator's AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_TOKEN_FILE, a volume named
+// agent-secrets-exchange and a mount at /var/run/legion/agent-secrets-exchange are the operator's,
+// as they were before the key existed (R9); with one, the first of them is refused by name.
+func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *testing.T) {
+	emptyDir := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	pod := config.PodConfig{
+		Env: map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "metadata", "AGENT_SECRETS_MACHINE_TOKEN_FILE": "/etc/operator/identity/token"},
+		Volumes: []corev1.Volume{
+			{Name: "agent-secrets-exchange", VolumeSource: emptyDir},
+			{Name: "operator-identity", VolumeSource: emptyDir},
+		},
+		VolumeMounts: []corev1.VolumeMount{{Name: "operator-identity", MountPath: "/var/run/legion/agent-secrets-exchange"}},
+	}
+	enrolled := func(exchange string) *config.AgentSecretsConfig {
+		return &config.AgentSecretsConfig{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: exchange}
+	}
+	for name, tc := range map[string]struct {
+		agentSecrets *config.AgentSecretsConfig
+		want         string
+	}{
+		"no agent_secrets block":                  {nil, ""},
+		"agent_secrets with no exchange_audience": {enrolled(""), ""},
+		"exchange_audience set": {enrolled("legion-broker-exchange"),
+			"runtime.kubernetes.pod.env sets AGENT_SECRETS_MACHINE_IDENTITY, which Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			cfg.Runtime.Kubernetes.AgentSecrets, cfg.Runtime.Kubernetes.Pod = tc.agentSecrets, pod
+			err := checkOperatorConfig(cfg, lookup(nil))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("checkOperatorConfig = %v, want the operator's pod accepted as it was before the key existed", err)
+			case tc.want != "" && (err == nil || err.Error() != tc.want):
+				t.Fatalf("checkOperatorConfig = %v, want %q", err, tc.want)
 			}
 		})
 	}
@@ -783,7 +871,7 @@ func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
 // NATS_NKEY_SEED — it is a launch secret the runtime reads from the providers mount, and with none
 // it is neither.
 func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) {
-	seedFile := testnats.SeedFile(t, testnats.UserSeed(t))
+	seedFile := testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 	for _, tc := range []struct {
 		name string
 		key  string
@@ -874,13 +962,13 @@ func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
 func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1") // the file's fixture (`:32-41`): testConfig under runtime: kubernetes
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
-		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 1800,
+		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 1800, ExchangeAudience: "legion-broker-exchange",
 	}
 	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &sandbox.AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: 30 * time.Minute}
+	want := &sandbox.AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: 30 * time.Minute, ExchangeAudience: "legion-broker-exchange"}
 	if opts.AgentSecrets == nil || *opts.AgentSecrets != *want {
 		t.Fatalf("AgentSecrets = %+v, want %+v", opts.AgentSecrets, want)
 	}
@@ -938,16 +1026,23 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 	if opts.AgentSecrets == nil || opts.AgentSecrets.URL != "https://s" || opts.AgentSecrets.Audience != "agent-secrets" || opts.AgentSecrets.TokenExpiry != time.Hour {
 		t.Fatalf("AgentSecrets = %+v, want only the URL, audience and token lifetime the pod's own client needs", opts.AgentSecrets)
 	}
-	enroller, client := newSecretsLogin(cfg, quietLogger())
+	enroller, registrar, client := newSecretsLogin(cfg, quietLogger())
 	if enroller == nil || client == nil {
 		t.Fatalf("enroller %v, client %v; want both", enroller, client)
+	}
+	if registrar != nil {
+		t.Fatalf("registrar %v with no exchange_audience, want none: no pod session is registered without the key", registrar)
 	}
 	if client.URL != "https://s" || client.TokenFile != cfg.Runtime.Kubernetes.AgentSecrets.TokenFile {
 		t.Fatalf("client = %+v, want only the configured URL and token file, never a key or a bearer", client)
 	}
+	cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = "legion-broker-exchange"
+	if _, registrar, client := newSecretsLogin(cfg, quietLogger()); registrar == nil || client == nil {
+		t.Fatalf("with exchange_audience: registrar %v, client %v; want both", registrar, client)
+	}
 	cfg.Runtime.Kubernetes.AgentSecrets = nil
-	if enroller, client := newSecretsLogin(cfg, quietLogger()); enroller != nil || client != nil {
-		t.Fatalf("without the block: %v, %v; want nil, nil", enroller, client)
+	if enroller, registrar, client := newSecretsLogin(cfg, quietLogger()); enroller != nil || registrar != nil || client != nil {
+		t.Fatalf("without the block: %v, %v, %v; want nil, nil, nil", enroller, registrar, client)
 	}
 }
 
@@ -982,7 +1077,7 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 		URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", TokenExpirySeconds: 3600,
 	}
 	var logged lockedBuffer
-	enroller, client := newSecretsLogin(cfg, slog.New(slog.NewJSONHandler(&logged, nil)))
+	enroller, _, client := newSecretsLogin(cfg, slog.New(slog.NewJSONHandler(&logged, nil)))
 	if enroller == nil || client == nil {
 		t.Fatal("want an enroller and a client")
 	}

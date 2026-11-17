@@ -329,7 +329,7 @@ func destinationKey(subject string) string {
 // could not be read, or churned - is keyed on its role topic.
 func (d destination) key() string {
 	if d.forward != nil && d.forward.holder != "" {
-		return contracts.AgentSubject(d.forward.holder)
+		return contracts.LegacyAgentSubject(d.forward.holder)
 	}
 	return destinationKey(d.subject)
 }

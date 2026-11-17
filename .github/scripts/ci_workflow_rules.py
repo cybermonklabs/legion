@@ -98,7 +98,7 @@ def ci_only_documents(documents: dict) -> dict:
     file two workflows call is live under each caller's events, and a file with a trigger of its
     own has runs no caller starts at all. Both cases are in this repository today:
     .github/workflows/docs-site.yaml is called by docs-pages.yaml as well, which runs on a push
-    to main, and docs-site.yaml:159 carries `github.event_name == 'push'` for exactly that
+    to main, and docs-site.yaml:189 carries `github.event_name == 'push'` for exactly that
     caller; .github/workflows/worker-image.yaml is called by release.yaml twice. The
     .github/workflows/ci-job-*.yaml files, which hold the steps of one ci.yaml job each, are the
     other case: nothing else calls them and they run on workflow_call alone, so a push condition
@@ -387,7 +387,7 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
     already, and because nothing here imports ci_job_reads: the engine's names are all this
     module takes.
 
-    The manifest is read as .github/scripts/check-bun-workspace-manifests.sh:103-111 reads it,
+    The manifest is read as .github/scripts/check-bun-workspace-manifests.sh:101-109 reads it,
     at every shape, since the two checks are about the same list and a list one of them cannot
     read is not a list the other may pass over: a root manifest that is missing or is not valid
     JSON, and a `workspaces` that is not a list or holds anything but non-empty strings, are

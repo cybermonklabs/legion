@@ -476,9 +476,9 @@ func (r *SessionRegistry) Ping() error {
 }
 
 // Rewatch moves the cache's watcher and the handle the registry writes through to conn
-// (kvwatch.Watcher.Rewatch).
-func (r *SessionRegistry) Rewatch(conn *nats.Conn) error {
-	return r.watcher.Rewatch(conn)
+// (kvwatch.Watcher.Rewatch), waiting on nothing past ctx, the reconnect hook's run.
+func (r *SessionRegistry) Rewatch(ctx context.Context, conn *nats.Conn) error {
+	return r.watcher.Rewatch(ctx, conn)
 }
 
 // Servable reports whether the copy List answers from can be served (kvwatch.Watcher.Servable):
