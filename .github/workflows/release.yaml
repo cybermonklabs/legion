@@ -808,14 +808,13 @@ jobs:
 
   # The private-name check of the plugin claude_envoy_build packed, over the tarball publish will
   # hand npm: its dist/ and legion/, the very bytes verify-build.sh tarred and extract-built put
-  # into the package before the pack, laid out at their repository path (the vendored NATS
-  # client's exception is a path, packages/claude-envoy/dist/envoy-channel.js). A job of its own,
-  # because the check reads the deployment's term list (PRIVATE_NAME_TERMS) and no build job holds
-  # it: this one checks out the .github cone for the script, downloads the tarball, and runs that
-  # shell script, tar and mkdir alone, no dependency code
-  # (.github/scripts/check-release-credentials.sh classes check-private-names.sh as none). The
-  # check fails a push's run without the list. publish needs this job, and its claude-envoy steps
-  # run only when it succeeded.
+  # into the package before the pack. A job of its own, because the check reads the deployment's
+  # term list (PRIVATE_NAME_TERMS) and no build job holds it: this one checks out the .github cone
+  # and runs .github/actions/private-names-packed-plugin, which downloads the tarball, lays its two
+  # directories out at their repository path and runs the check, and no dependency code
+  # (.github/scripts/check-release-credentials.sh reads the action's steps). The check fails a
+  # push's run without the list. publish needs this job, and its claude-envoy steps run only when
+  # it succeeded.
   claude_envoy_names:
     needs: claude_envoy_build
     if: always() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true'
@@ -830,25 +829,10 @@ jobs:
           sparse-checkout: .github
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.github/actions/private-names-packed-plugin
         with:
-          name: claude-envoy-tarball
-          path: ${{ runner.temp }}/claude-envoy-tarball
-
-      - name: Lay the packed plugin's dist/ and legion/ out at their repository path
-        run: |
-          tarballs=("$RUNNER_TEMP"/claude-envoy-tarball/*.tgz)
-          if [ ${#tarballs[@]} -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
-            echo "::error::the claude-envoy-tarball artifact holds no single tarball"
-            exit 1
-          fi
-          mkdir -p packages/claude-envoy
-          tar -xzf "${tarballs[0]}" -C packages/claude-envoy --strip-components=1 package/dist package/legion
-
-      - name: Check the packed plugin's dist/ and legion/ name nothing private
-        env:
-          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
-        run: .github/scripts/check-private-names.sh packages/claude-envoy/dist packages/claude-envoy/legion
+          artifact: claude-envoy-tarball
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # Publishes what the four build jobs made, in one job for all four packages, so their release
   # waits for a runner once: pi-envoy, pi-legion, claude-envoy, then legion, which links the two

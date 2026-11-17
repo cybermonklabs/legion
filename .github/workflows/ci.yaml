@@ -1168,7 +1168,9 @@ jobs:
               # 0.0.0 placeholder and admits the first release. No step of the test job runs that
               # test, so the entry is this job's alone.
               - '.claude-plugin/marketplace.json'
-              # The private-names job of ci-job-claude-envoy.yaml checks the packed plugin with it.
+              # The private-names job of ci-job-claude-envoy.yaml checks the packed plugin with
+              # this action, which runs the check.
+              - '.github/actions/private-names-packed-plugin/**'
               - '.github/scripts/check-private-names.sh'
             contracts:
               - *ci_router

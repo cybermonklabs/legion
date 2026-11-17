@@ -75,16 +75,26 @@
 # DOCKER_DEPENDENCY_LONG (`docker container run`, `docker image build`, `docker buildx build`, …),
 # past docker's global options (`--config /tmp/c`, `-H tcp://x`, `-D`), is a path with a
 # `scripts/` or `out/` component (`./scripts/x`, `../../scripts/x`, `out/x`,
-# `"$GITHUB_WORKSPACE/out/x"`), other than the two repository shell scripts NOT_DEPENDENCY_SCRIPTS
-# names, each at that exact path (.github/scripts/release-push.sh and
-# .github/scripts/check-private-names.sh), or is `release-push.sh fold-notes`, at any path or none
-# (`.github/scripts/release-push.sh fold-notes`), which runs changie: release-push.sh's other
-# commands are not dependency code, and fold-notes is. check-private-names.sh is not dependency
-# code: it sources nothing, and runs bash builtins and dirname, mktemp, rm, git (ls-files, grep),
-# grep, find, sort, wc, cut and cat, all the runner's own; it is the one script a job holding the
-# deployment's term list runs (release.yaml's claude_envoy_names). The classification is of a
-# command a step runs, never of a word a comment or another command's argument holds: a script
-# named only that way is no exemption. Command position is found by one quote-aware scan of the
+# `"$GITHUB_WORKSPACE/out/x"`), other than one of the two repository shell scripts
+# NOT_DEPENDENCY_SCRIPTS names (.github/scripts/release-push.sh and
+# .github/scripts/check-private-names.sh) run from the checkout, or is `release-push.sh
+# fold-notes`, at any path or none (`.github/scripts/release-push.sh fold-notes`), which runs
+# changie: release-push.sh's other commands are not dependency code, and fold-notes is. A command
+# runs one of the two from the checkout when its word is the script's path behind
+# `$GITHUB_WORKSPACE/` (or `${GITHUB_WORKSPACE}/`), wherever the step runs, or the bare path or
+# `./` and the path when no working-directory moves the step (its own, the job's
+# `defaults.run.working-directory` or the workflow's); a `../` in front, or a path from another
+# directory, names some other file, which is dependency code. check-private-names.sh is not
+# dependency code: it sources nothing, and runs bash builtins and dirname, mktemp, rm, git
+# (ls-files), grep, find, sort, xargs, env, sh, tr, cat and wc, all the runner's own; it is the one
+# script a job holding the deployment's term list runs (release.yaml's claude_envoy_names, through
+# .github/actions/private-names-packed-plugin). The classification is of a command a step runs,
+# never of a word a comment or another command's argument holds: a script named only that way is
+# no exemption. A step whose `uses:` is a local action and no DEPENDENCY_USES entry is read through
+# that action's action.yml: a composite action's steps are read as a job's steps are (each `run:`
+# under its own `shell:`, at the workspace root unless it names a working-directory, which no job
+# or workflow default reaches), and any other kind of action, or one this check cannot read, runs
+# dependency code. Command position is found by one quote-aware scan of the
 # `run:` (its `${{ … }}`
 # expressions elided first), as bash reads it: a `#` starts a comment only at word start — the
 # start of the run, after unquoted whitespace or a newline, or after an unquoted `;`, `&`, `|`,
@@ -175,6 +185,9 @@ PRIVATE_NAMES_CHECK = ".github/scripts/check-private-names.sh"
 # The repository shell scripts under a scripts/ directory that are no dependency code, each at
 # this exact path (the header says what each runs).
 NOT_DEPENDENCY_SCRIPTS = (RELEASE_PUSH, PRIVATE_NAMES_CHECK)
+# The workspace-root prefixes a command word may carry to run one of NOT_DEPENDENCY_SCRIPTS from
+# the checkout wherever its step runs.
+WORKSPACE_ANCHORS = ("$GITHUB_WORKSPACE/", "${GITHUB_WORKSPACE}/")
 TRIPWIRE = f"{RELEASE_PUSH} no-credential"
 # The one release-push.sh command a step holding the deploy key may run: a release pushes its
 # tag, and nothing else pushes.
@@ -412,7 +425,17 @@ def is_release_push(command: str) -> bool:
     return PATH_PREFIX.sub("", command).rsplit("/", 1)[-1] == "release-push.sh"
 
 
-def dependency_command(words: list[str]) -> str | None:
+def from_checkout(command: str, at_root: bool) -> bool:
+    """Whether the command word runs one of NOT_DEPENDENCY_SCRIPTS from the checkout: its path
+    behind a WORKSPACE_ANCHORS prefix, wherever the step runs, or its bare or `./` path when no
+    working-directory moves the step (`at_root`). A `../` or any other prefix anchors nothing."""
+    for anchor in WORKSPACE_ANCHORS:
+        if command.startswith(anchor):
+            return command[len(anchor):] in NOT_DEPENDENCY_SCRIPTS
+    return at_root and command.removeprefix("./") in NOT_DEPENDENCY_SCRIPTS
+
+
+def dependency_command(words: list[str], at_root: bool) -> str | None:
     """How the message names the command when it is dependency code (`'bun'`, `'npm ci'`, `'docker
     container run'`, `'npm publish' without a tarball right after it (…)`), else None."""
     command = words[0]
@@ -441,10 +464,11 @@ def dependency_command(words: list[str]) -> str | None:
     path = PATH_PREFIX.sub("", command)
     if is_release_push(command) and words[1:2] == ["fold-notes"]:
         return f"'{command} fold-notes' (it runs changie)"
-    # The exemptions are the checkout's own paths, not a name counted at any path: release-push.sh's
-    # other commands and check-private-names.sh are no dependency code, and a script under some
-    # other scripts/ directory is not one of them, whatever it is called.
-    if DEPENDENCY_PATH.search(path) and path not in NOT_DEPENDENCY_SCRIPTS:
+    # The exemptions are the checkout's own scripts, run from the checkout (from_checkout), not a
+    # name counted at any path or under any directory: release-push.sh's other commands and
+    # check-private-names.sh are no dependency code, and a script elsewhere is not one of them,
+    # whatever it is called.
+    if DEPENDENCY_PATH.search(path) and not from_checkout(command, at_root):
         return f"'{command}'"
     return None
 
@@ -466,22 +490,72 @@ def shell_of(step: Mapping, job: Mapping, workflow: Mapping) -> tuple[str, int |
     return "bash", None
 
 
-def dependency_code(step: Mapping, job: Mapping, workflow: Mapping) -> str | None:
+def working_directory(step: Mapping, job: Mapping, workflow: Mapping):
+    """The working-directory the step's `run:` runs in: its own, else the job's
+    `defaults.run.working-directory`, else the workflow's; None when none is set."""
+    if "working-directory" in step:
+        return step["working-directory"]
+    for scope in (job, workflow):
+        defaults = scope.get("defaults")
+        run = defaults.get("run") if isinstance(defaults, Mapping) else None
+        if isinstance(run, Mapping) and "working-directory" in run:
+            return run["working-directory"]
+    return None
+
+
+# The job and the workflow a composite action's step is read under: none of either's defaults
+# reaches it.
+NO_SCOPE = Mapping()
+NO_SCOPE.lines = {}
+
+
+def local_action_code(uses: str, seen: tuple) -> str | None:
+    """How a local action runs dependency code, read off its action.yml in the checkout: each step
+    of a composite action as dependency_code reads a job's step, under no job or workflow default;
+    any other kind of action, or one this check cannot read, as dependency code itself."""
+    if uses in seen:
+        return None
+    directory = Path(uses)
+    files = [directory / name for name in ("action.yml", "action.yaml") if (directory / name).is_file()]
+    if not files:
+        return "has no action.yml in the checkout for this check to read"
+    try:
+        action = yaml.load(files[0].read_text(), Loader=LineLoader)
+    except yaml.YAMLError:
+        return f"has a {files[0].name} that is not valid YAML"
+    runs = action.get("runs") if isinstance(action, Mapping) else None
+    using = runs.get("using") if isinstance(runs, Mapping) else None
+    if using != "composite":
+        return f"runs '{using}', a program this check cannot read"
+    found = []
+    for index, step in enumerate(runs.get("steps") or []):
+        if isinstance(step, Mapping):
+            if what := dependency_code(step, NO_SCOPE, NO_SCOPE, seen + (uses,)):
+                found.append(f"{describe(step, index)} {what}")
+    return "; ".join(found) or None
+
+
+def dependency_code(step: Mapping, job: Mapping, workflow: Mapping, seen: tuple = ()) -> str | None:
     """How the step runs dependency code (`runs 'bun'`, `uses 'actions/setup-go@…'`, `runs its body
-    under shell 'python', not bash or sh`), or None."""
+    under shell 'python', not bash or sh`, `uses './.github/actions/x', whose step …`), or None."""
     found = []
     uses = step.get("uses")
     if isinstance(uses, str) and uses.lower().startswith(DEPENDENCY_USES):
         found.append(f"uses '{uses}'")
+    elif isinstance(uses, str) and uses.startswith("./"):
+        if what := local_action_code(uses, seen):
+            joined = "whose" if what.startswith("step") else "which"
+            found.append(f"uses '{uses}', {joined} {what}")
     run = step.get("run")
     if isinstance(run, str):
         interpreter, _ = shell_of(step, job, workflow)
         if interpreter not in SHELLS:
             found.append(f"runs its body under shell '{interpreter}', not bash or sh")
         else:
+            at_root = working_directory(step, job, workflow) is None
             commands = []
             for words in commands_of(run):
-                what = dependency_command(words)
+                what = dependency_command(words, at_root)
                 if what and what not in commands:
                     commands.append(what)
             if commands:

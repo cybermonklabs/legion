@@ -49,6 +49,30 @@ check "annotates the file and line" \
 check "counts the finding" "$(contains "$out" '^check-private-names: 1 finding(s)')"
 check "does not print the term" "$(is "$(names_planted "$out")" false)"
 
+echo "case: a run with the list says how many terms it read, and never a term"
+# Each job that maps the secret runs the check once, so its log holds this line once: the proof,
+# on a pull request's own run, that the job read the list. An unset list prints the warning
+# instead.
+terms_read='^check-private-names: PRIVATE_NAME_TERMS: 3 terms read$'
+root=$(fixture term-count-line)
+run_check "$root"
+check "a clean scan names the count of the three placeholder terms" "$(contains "$out" "$terms_read")"
+check "once" "$(is "$(grep -c 'terms read' <<< "$out")" 1)"
+printf 'the %s notes\n' "$planted" > "$root/docs/notes.md"
+run_check "$root"
+check "a scan with a hit names the count too" "$(contains "$out" "$terms_read")"
+check "prints no spelling of a term" "$(is "$(names_planted "$out")" false)"
+run_check_as pull_request "$planted" "$root"
+check "one term reads as one term" "$(contains "$out" '^check-private-names: PRIVATE_NAME_TERMS: 1 term read$')"
+run_check_as pull_request - "$root"
+check "an unset list prints the warning instead" \
+  "$(contains "$out" '^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty')"
+check "and no count" "$(is "$(contains "$out" 'terms\? read')" false)"
+clean_pr
+run_pr_text
+check "the pull request's text check names the count once" \
+  "$(is "$(grep -c "$terms_read" <<< "$out")" 1)"
+
 echo "case: with no term in the tree, the list passes and says it ran"
 root=$(fixture term-absent)
 run_check "$root"
@@ -118,6 +142,51 @@ done
 check "counts the three" "$(contains "$out" '^check-private-names: 3 finding(s)')"
 folded=$(LC_ALL=C.UTF-8 grep -i -F -e moss -e lift -e κοσμοσ <<< "$out" || true)
 check "prints no spelling grep folds to a term" "$(is "$folded" "")"
+
+echo "case: a Kelvin sign and a dotless i fold to a term the same way in both scan modes"
+# The repository scan and a named path's scan, and the masking of each, run one grep with one
+# pattern per term, so a spelling one of them folds to a term, the others fold too. A file named
+# with a Kelvin sign holds the term in ASCII, so its line is a hit whose path must be masked; a
+# file named with a dotless i is clean; a third file holds the dotless spelling in its text.
+kelvin=$'\xe2\x84\xaa'
+dotless_i=$'\xc4\xb1'
+fold_terms=$(printf '%s\n' kelp lift)
+for mode in repository named; do
+  root=$(fixture "term-fold-$mode")
+  mkdir -p "$root/docs/fold"
+  printf 'kelp\n' > "$root/docs/fold/${kelvin}ELP.md"
+  printf 'clean text\n' > "$root/docs/fold/l${dotless_i}ft.md"
+  printf 'about l%sft\n' "$dotless_i" > "$root/docs/fold/plain.md"
+  git -C "$root" add docs
+  if [ "$mode" = repository ]; then
+    LC_ALL=C.UTF-8 run_check_as pull_request "$fold_terms" "$root"
+  else
+    LC_ALL=C.UTF-8 run_check_as pull_request "$fold_terms" "$root" docs
+  fi
+  check "$mode: fails" "$(is "$status" 1)"
+  check "$mode: masks the Kelvin-sign file's line" \
+    "$(contains "$out" '^::error file=docs/fold/<name>,line=1::docs/fold/<name>:1: names a term')"
+  check "$mode: masks both folded file names as paths" \
+    "$(is "$(grep -c -F -x "::error::docs/fold/<name>: names a term of the deployment's own list (PRIVATE_NAME_TERMS) in its path" <<< "$out")" 2)"
+  check "$mode: finds the dotless spelling in a file's text" \
+    "$(contains "$out" '^::error file=docs/fold/plain.md,line=1::docs/fold/plain.md:1: names a term')"
+  check "$mode: counts the four findings" "$(contains "$out" '^check-private-names: 4 finding(s)')"
+  folded=$(LC_ALL=C.UTF-8 grep -i -F -e kelp -e lift -e "$kelvin" -e "l${dotless_i}ft" <<< "$out" || true)
+  check "$mode: prints no spelling of either term" "$(is "$folded" "")"
+done
+
+echo "case: a file name holding a colon is reported and masked whole"
+root=$(fixture term-colon)
+printf 'clean text\n' > "$root/docs/prefix:${planted^^}.md"
+printf 'the %s notes\n' "$planted" > "$root/docs/a:b,c.md"
+git -C "$root" add docs
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "masks the whole name that holds the term" \
+  "$(contains "$out" "^::error::docs/<name>: names a term of the deployment's own list (PRIVATE_NAME_TERMS) in its path\$")"
+check "escapes a clean name's colon and comma in the annotation's file property" \
+  "$(contains "$out" '^::error file=docs/a%3Ab%2Cc.md,line=1::docs/a:b,c.md:1: names a term')"
+check "prints no spelling of the term" "$(is "$(names_planted "$out")" false)"
 
 echo "case: two terms that overlap across a path's parts leave no fragment of either"
 # sorrel/wicket and wicket/tamarind share their middle part. Masking the first occurrence alone
@@ -218,6 +287,37 @@ check "the reserved example host is named" "$(contains "$out" "docs/notes.md:1: 
 check "the example tailnet host is named" "$(contains "$out" "docs/notes.md:2: names a term of the deployment's own list")"
 check "the vendored property is named" "$(contains "$out" "$vendored_nats:1: names a term of the deployment's own list")"
 
+echo "case: the built docs site, scanned as docs-site.yaml's private-names job scans it"
+# That job downloads the built site to docs/site/dist and runs the check over that path from the
+# checkout's root, on a pull request, a merge group or (docs-pages.yaml) a push.
+root=$(fixture term-site)
+mkdir -p "$root/docs/site/dist/reference"
+printf '<p>clean</p>\n' > "$root/docs/site/dist/index.html"
+run_check_as push "$planted_terms" "$root" docs/site/dist
+check "a clean built site passes on a push" "$(is "$status" 0)"
+printf '<pre>The %s tool.</pre>\n' "$planted" > "$root/docs/site/dist/reference/tools.html"
+run_check_as push "$planted_terms" "$root" docs/site/dist
+check "a built page naming a term fails" "$(is "$status" 1)"
+check "names the page and its line" \
+  "$(contains "$out" '^::error file=docs/site/dist/reference/tools.html,line=1::docs/site/dist/reference/tools.html:1: names a term')"
+check "prints no spelling of the term" "$(is "$(names_planted "$out")" false)"
+
+echo "case: the packed plugin's dist/ and legion/, scanned as the private-names-packed-plugin action scans them"
+# The action lays the tarball's two directories out at packages/claude-envoy and runs the check
+# over them from the checkout's root.
+root=$(fixture term-plugin)
+mkdir -p "$root/packages/claude-envoy/dist" "$root/packages/claude-envoy/legion/skills"
+printf 'export {};\n' > "$root/packages/claude-envoy/dist/envoy-channel.js"
+printf 'Nothing private here.\n' > "$root/packages/claude-envoy/legion/skills/notes.md"
+run_check_as merge_group "$planted_terms" "$root" packages/claude-envoy/dist packages/claude-envoy/legion
+check "a clean packed plugin passes on a merge group" "$(is "$status" 0)"
+printf 'Ask the %s team.\n' "${planted^}" > "$root/packages/claude-envoy/legion/skills/notes.md"
+run_check_as merge_group "$planted_terms" "$root" packages/claude-envoy/dist packages/claude-envoy/legion
+check "a packed file naming a term fails" "$(is "$status" 1)"
+check "names the file and its line" \
+  "$(contains "$out" 'packages/claude-envoy/legion/skills/notes.md:1: names a term')"
+check "prints no spelling of the term" "$(is "$(names_planted "$out")" false)"
+
 echo "case: an unset or empty list on a pull request's events warns, and keeps the other rules' exit"
 root=$(fixture terms-unset-pr)
 unset_warning='^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the'
@@ -255,6 +355,23 @@ printf '%s\n' "$key-7" > "$root/docs/notes.md"
 run_check_as merge_group - "$root"
 check "merge_group, unset, over a tree with a hit: still exits 2" "$(is "$status" 2)"
 check "and reports no finding, having scanned nothing" "$(is "$(contains "$out" 'finding(s)')" false)"
+
+echo "case: a pull request's clean text passes with the list set"
+run_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+check "a clean title, body, branch, commit and no comment pass" "$(is "$status" 0)"
+
+echo "case: a pull request's title naming a term"
+run_pr_text "fix(dispatch): keep the $planted order" "Refs LEGION-7" "fix: keep the order"
+check "a title naming a term fails" "$(is "$status" 1)"
+check "names the title" "$(contains "$out" 'title:1: names a term')"
+check "does not print the term" "$(is "$(names_planted "$out")" false)"
+
+echo "case: a pull request's commit message naming a term"
+run_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" \
+  "$(printf 'fix: keep the order\n\nAs the %s runbook says.\n' "$planted_dotted")"
+check "a commit message naming a term fails" "$(is "$status" 1)"
+check "names the commit text's line" "$(contains "$out" 'commits:3: names a term')"
+check "does not print the term" "$(is "$(names_planted "$out")" false)"
 
 echo "case: a pull request's text naming a term of the deployment's own list"
 run_pr_text "fix(dispatch): keep the inbox order" "$(printf 'Line one.\nThe %s runbook says so.\n' "$planted")" \

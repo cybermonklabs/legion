@@ -363,8 +363,11 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:10-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:41, legion-pane-mcp.test.ts:18, legion-tool.test.ts:13"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:8"),
-        (".github/scripts/check-private-names.sh", at("private-names", "Check the packed plugin's dist/ and legion/ name nothing private",
-                                                      job_file("claude-envoy"))),
+        (".github/actions/private-names-packed-plugin/**",
+         at("private-names", "./.github/actions/private-names-packed-plugin", job_file("claude-envoy"))),
+        (".github/scripts/check-private-names.sh", ".github/actions/private-names-packed-plugin/action.yml runs it, "
+                                                   "called by " + at("private-names", "./.github/actions/private-names-packed-plugin",
+                                                                     job_file("claude-envoy"))),
 )
 
 
@@ -1920,7 +1923,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:178 runs it too: the pull request's text is the guard's other surface"),
     ], lib=False),
     harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
-        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:22 sources it for its fixtures"),
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:36 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
         (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:178 runs it, over a pull request's text naming a term"),
