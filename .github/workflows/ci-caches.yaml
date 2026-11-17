@@ -373,7 +373,11 @@ jobs:
   # after seven days unread, and over the repository's cache limit GitHub evicts the least recently
   # used entries, which can be another family's live one. Only this ref's entries are deleted, and
   # none unless the new key is among them, so a save that did not land leaves the old entry in
-  # place. A job of its own, so the token that may delete caches is in no job that builds code.
+  # place. A job of its own, so the token that may delete caches is in no job that builds code. A
+  # cache key is text any build that saves on this ref chose, so the step never splits or prints
+  # one raw: the list stays JSON, jq selects the numeric ids of this ref's go-envoy-infra entries
+  # other than the new one, and each id is checked to be a number before `gh cache delete` gets
+  # it. A key holding a newline then cannot add a line of its own, such as `--all`, to that list.
   envoy-infra-superseded:
     needs: envoy-infra
     if: needs.envoy-infra.outputs.filled == 'true'
@@ -390,17 +394,21 @@ jobs:
           REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          entries=$(gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key --jq '.[] | "\(.id) \(.key)"')
-          if ! printf '%s\n' "$entries" | awk -v keep="$KEEP" '$2 == keep { found = 1 } END { exit !found }'; then
-            echo "::warning::$KEEP is not among $REF's go-envoy-infra entries, so none is deleted"
+          entries=$(gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
+          if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
+            echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted"
             exit 0
           fi
-          printf '%s\n' "$entries" | while read -r id key; do
-            if [ "$key" != "$KEEP" ]; then
-              echo "Deleting $key ($id), which $KEEP supersedes"
+          jq -r --arg keep "$KEEP" --arg ref "$REF" \
+            '.[] | select(.ref == $ref and (.key | startswith("go-envoy-infra-")) and .key != $keep) | .id' <<<"$entries" |
+            while read -r id; do
+              if ! [[ $id =~ ^[0-9]+$ ]]; then
+                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
+                exit 1
+              fi
+              echo "Deleting go-envoy-infra entry $id, which the new entry supersedes"
               gh cache delete "$id"
-            fi
-          done
+            done
 
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
   # needs. No setup-go and no Go family: the key is the content of the lean-toolchain the model
