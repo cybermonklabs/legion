@@ -206,8 +206,10 @@ func TestTheControllerCarriesNoVariant(t *testing.T) {
 
 // A launch over a pod built before an arm's mount was added is told none of that arm's overlays —
 // the degrade a kept pod has always had — and says so once, naming the issue, the role, the
-// experiment and the arm, since nothing else would record that this generation ran outside the
-// arm it was drawn into. The other arm, whose mount the pod does hold, still reaches the role.
+// experiment and the arm. The other arm, whose mount the pod does hold, still reaches the role.
+// The launch's spend attributes name only that other arm in legion.arms, so each model call of
+// the generation records that it ran outside the arm it was drawn into; a launch that builds its
+// own pod, the control, names both arms there.
 func TestAKeptPodMissingOneArmsMountDropsThatArmAndLogsIt(t *testing.T) {
 	before := runtimeWithOptions(t, func(o *Options) {
 		mountExperiments(o, alphaDir)
@@ -216,6 +218,23 @@ func TestAKeptPodMissingOneArmsMountDropsThatArmAndLogsIt(t *testing.T) {
 	})
 	after := twoExperimentRuntime(t, false)
 	spec := drawnIntoBoth(t, t.TempDir(), claim.RoleTester, false)
+	arms := func(env []corev1.EnvVar) string {
+		t.Helper()
+		value := envOf(corev1.Container{Env: env})[runtime.SpendAttributesVariable]
+		var named []string
+		for _, member := range strings.Split(value, ",") {
+			if arm, ok := strings.CutPrefix(member, runtime.SpendArmsAttribute+"="); ok {
+				named = append(named, arm)
+			}
+		}
+		if len(named) != 1 {
+			t.Fatalf("%s = %q names %s %d times, want once", runtime.SpendAttributesVariable, value, runtime.SpendArmsAttribute, len(named))
+		}
+		return named[0]
+	}
+	if got, want := arms(after.roleOperatorEnv(launchOf(t, after, spec))), "alpha%3Aon%2Cbeta%3Aon"; got != want {
+		t.Errorf("a launch that builds its pod names %s=%q, want %q", runtime.SpendArmsAttribute, got, want)
+	}
 	s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Spec: podOf(t, before, spec)}}}
 	l := launchOf(t, after, spec)
 	kept, readable := after.keptBy(s, l)
@@ -228,15 +247,22 @@ func TestAKeptPodMissingOneArmsMountDropsThatArmAndLogsIt(t *testing.T) {
 	l.kept = &kept
 	logs := &bytes.Buffer{}
 	after.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	env := after.roleOperatorEnv(l)
 	want := strings.Join(slices.Concat([]string{operatorPod().Env["PI_CONFIG_FILES"]}, baselineRoleFiles[claim.RoleTester], alphaOverlays), ":")
-	if got := envOf(corev1.Container{Env: after.roleOperatorEnv(l)})["PI_CONFIG_FILES"]; got != want {
+	if got := envOf(corev1.Container{Env: env})["PI_CONFIG_FILES"]; got != want {
 		t.Errorf("the kept launch's PI_CONFIG_FILES = %q, want %q", got, want)
+	}
+	if got, want := arms(env), "alpha%3Aon"; got != want {
+		t.Errorf("the kept launch names %s=%q, want %q: beta's overlays are not in its pod", runtime.SpendArmsAttribute, got, want)
 	}
 	line := logs.String()
 	for _, named := range []string{"issue=" + spec.Issue, "role=tester", "experiment=beta", "variant=on", betaOverlays[0]} {
 		if !strings.Contains(line, named) {
 			t.Errorf("the launch logged\n%s\nwant one line naming %s", line, named)
 		}
+	}
+	if n := strings.Count(line, "experiment=beta"); n != 1 {
+		t.Errorf("the launch logged beta's drop %d times, want once:\n%s", n, line)
 	}
 	if strings.Contains(line, "experiment=alpha") {
 		t.Errorf("the launch logged a drop of alpha, whose mount the pod holds:\n%s", line)

@@ -5949,10 +5949,12 @@ each issue's pod (every role of it alike) and the image probe's.
   `legion start --check-config` runs the same check.
   `OTEL_RESOURCE_ATTRIBUTES` is composed here rather than refused, as `PI_CONFIG_FILES` is:
   the operator sets the attributes their deployment's spend is billed under (`theorem.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
+  A launch that runs in an arm of a declared experiment carries `legion.arms` after those: one `<experiment>:<variant>` for each arm whose overlays its pod holds, comma-joined in the order the project's file declares the experiments (`legion.arms=memory:memory,plan-length:long` once decoded).
+  A launch that keeps a pod built before an arm's overlays were mounted runs without them and names no such arm, and a role an experiment's `roles` leaves out names none of its arms, so each model call says which arm's files it ran with, where the unit's recorded arm says only what the unit was drawn into.
   The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, a launch spec may not set the name, and the spend collector's `theorem.*` keep-list drops both keys today.
   A row grouped by issue follows when that collector keeps them (dispatch://INFRA-1835).
   The project controller's pod serves no issue and carries the role alone, and the image probe's container, which runs no role either, keeps the operator's value as the operator wrote it.
-  The value is read for its content as well as its name: load refuses a member the agent's detector would throw on — one that does not split on `=` into one key and one value, one with an empty key, one whose key or value does not percent-decode or runs past 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the runtime writes itself — naming that one member and what is wrong with it, never the rest of the value.
+  The value is read for its content as well as its name: load refuses a member the agent's detector would throw on — one that does not split on `=` into one key and one value, one with an empty key, one whose key or value does not percent-decode or runs past 255 characters once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which the runtime writes itself — naming that one member and what is wrong with it, never the rest of the value.
   One such member costs the launch every attribute of the variable, the operator's own `theorem.project` among them, because the detector's caller catches the throw with an empty hand, and `legion start --check-config` gives boot's verdict before a restart.
   Like every `pod.env` variable, the attributes reach a role with the start command of its next generation, in no pod specification, so no pod is replaced.
   [`deploy/kubernetes/operator-route/`](../deploy/kubernetes/operator-route/README.md) is an example of one, the one the Go live harnesses run on:
@@ -6177,7 +6179,8 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **`projects.<KEY>.experiments`** declares the experiments the project draws its trees and its issues into, as a mapping of an experiment's name to its block, read and kept in the file's order.
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it once:
-  every draw records it.
+  every draw records it, and each launch in one of its arms names it in `OTEL_RESOURCE_ATTRIBUTES`'s `legion.arms`.
+  The agent's telemetry takes that value up to 255 characters, so load refuses a project whose experiments, each at its longest arm's name and the memory experiment among them, would make it longer.
   `mode` is `off`, `on` or `random`: `off` draws for no unit and is what a block with no mode gets, `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue of the project on its own.
   `roles` lists the issue roles whose launches load the experiment's arms, each once, and every issue role where the block names none: a launch of a role the list leaves out loads none of this experiment's overlays or instructions while its unit keeps the arm it drew (the operator's and the role's own overlays, and other experiments' arms that reach it, still apply), so an experiment can leave the roles that judge the work (the reviewer, the tester, the architect who accepts it) out of what it changes.
