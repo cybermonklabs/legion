@@ -18,9 +18,28 @@
 -- was owed news, so the news task carries the opening in place of the role message. opening_seq
 -- names the last settlement of the opening on the row (design_news_opening_settled, below). told_at
 -- is when a write of the row's versions last touched it: the baseline or the fill that wrote it, or
--- the last raise, which sets it whether or not a version rose. It is null for a row that carries
+-- the last fold, which sets it whether or not a version rose. It is null for a row that carries
 -- only the owed opening. A row goes with its issue's generation (record.Postgres.clearGeneration),
 -- beside the issue's gate rows.
+--
+-- What an audience took is never written as a bare version a later write must find again to undo.
+-- It is read (design_news_told_in, below) as a function of what the row holds and of the credit
+-- each delivery holds. A credit is a pair: the version a told prompt or a raise counted from (null
+-- for one told with no earlier version) and the version it told. The version an audience took of a
+-- step is the highest one reached from the row's versions through the credits that stand
+-- (design_news_known): a credit reaches from any version at or above its own earlier one, so a
+-- credit counted from a version that another credit gave, and that credit was then given back,
+-- reaches nothing. A confirmed delivery's credit is its own row of pending_task_deliveries (below),
+-- so the write that takes the confirmation back, or retires the delivery, ends exactly that credit,
+-- whatever has been credited since, and a second confirmation of the same delivery replaces it. Once
+-- the turn's result says the turn ran, the credit is final, and the write that records that folds
+-- it into the row (design_news_folded): its versions rise where the credit reaches, and a credit
+-- that does not reach yet waits in unreached, a JSON array of {step, from, to}, until a version it
+-- counted from is reached. A work-unchanged raise (record.Postgres.RaiseTold) is folded the same
+-- way, as a credit counted from the version its pair names. So no ordering of confirmations,
+-- take-backs, raises and retirements can leave a version taken that a give-back should have undone.
+-- An unfinal credit's openings count the same way: the row owes no opening that a standing credit
+-- carried under the row's opening_seq.
 --
 -- design_changes holds what changed in one document from one version to another, read from
 -- Dispatch (GET /api/v1/artifacts/{id}/changes). Two stored versions of a document never change,
@@ -63,12 +82,15 @@
 -- pending_task_deliveries.carried_news is the copy of design_news that the prompt whose turn the
 -- delivery's confirmation takes carried: written when Oh My Pi acknowledges a prompt of the task,
 -- which is after the working-copy adoption and the identity mint succeeded, and fixed by the
--- confirmation. It is what that confirmation raises in design_news_told, never design_news, which
--- a later send may have rendered again with more in it. The write that takes the confirmation back
--- puts back what the row it replaces holds here, and so does the retirement of a confirmed delivery
--- whose turn's result never said the turn ran: the news goes back to owed, and a later task carries
--- it again. The result of a turn that ran clears it, so the confirmation's raise stands. It is
--- null wherever no prompt's raise is pending.
+-- confirmation, never design_news, which a later send may have rendered again with more in it.
+-- While the row holds a confirmation and carried_ran is false, it is the delivery's credit: each
+-- item and each opening it carries counts in what its audience took (design_news_told_in), and
+-- nothing else is written. So the write that takes the confirmation back, or the retirement of the
+-- delivery, ends that credit and no other, and the news goes back to owed for a later task to
+-- carry. carried_ran says the turn's result said the turn ran with no provider error: the write
+-- that sets it folds the copy into design_news_told (design_news_folded, design_news_opening_told),
+-- so the credit is final and outlives the row. Both are null and false wherever no prompt's credit
+-- is held.
 --
 -- pending_task_deliveries.news_only says the delivery is a task queued for news of the approved
 -- design alone (supervise.Delivery.NewsOnly), which is no task of its phase to any reader of a
@@ -87,21 +109,23 @@
 -- records it. Only a database that a build of this branch migrated before the forward merge does,
 -- and such a database is a test's own: it would apply this file a second time and fail on the
 -- first create table below, so make it again rather than upgrade it. design_history_unread,
--- design_changes.unchanged with its check, the function design_news_raised, the function
--- design_news_opening_settled with design_news_told.opening_seq, and the columns
--- pending_task_deliveries.carried_news and news_only were added to this file before any release
--- carried 20261114082752, so they are written here rather than in a migration of their own. A
--- database a build of this branch migrated before one of them was added records this version
--- without it, and it too is a test's own, to make again.
+-- design_changes.unchanged with its check, design_news_told.opening_seq and unreached, the
+-- functions below, and the columns pending_task_deliveries.carried_news, carried_ran and news_only
+-- were added to this file before any release carried 20261114082752, so they are written here
+-- rather than in a migration of their own. A database a build of this branch migrated before one
+-- of them was added records this version without it, and it too is a test's own, to make again.
 --
 -- Rolling the image back to the release before this one needs no restore of the schema, but it
 -- needs four statements first, run with this release's daemon stopped: that release refuses an
 -- outbox payload member it does not know, keeps this release's news and its carried copy on a
 -- delivery it writes over, and reads a task queued for news alone as its claim's phase task. The
 -- statements, and why each is needed, are in docs/kubernetes.md under "Rolling back the release
--- that tells a holder of an approved new version". The outbox and pending_task_deliveries hold the
--- rows of every project that shares the database, so every daemon of one database moves to this
--- release, and back, together.
+-- that tells a holder of an approved new version". They clear carried_news, so the credit of a
+-- confirmed delivery whose turn's result had not come goes with it, and this release tells that
+-- news again after the roll forward; a credit already folded into design_news_told stands, and so
+-- does every column the earlier release leaves alone (carried_ran on a row with no copy counts for
+-- nothing). The outbox and pending_task_deliveries hold the rows of every project that shares the
+-- database, so every daemon of one database moves to this release, and back, together.
 --
 -- There is no down file: migrations here are forward-only.
 create table design_news_told (
@@ -111,44 +135,76 @@ create table design_news_told (
   opening_owed boolean not null default false,
   opening_seq integer not null default 0,
   told_at timestamptz,
+  unreached jsonb not null default '[]'::jsonb check (jsonb_typeof(unreached) = 'array'),
   primary key (issue, audience));
 
--- design_news_raised is the one statement of how a raise writes a told row's versions, held as
--- the row holds them and raised as the raise names them: each step raised takes the greater of the
--- two versions, a step the row does not know takes the one raised, and a step not raised keeps
--- what the row holds, so a raise never lowers a version and never forgets one. Both raises call it:
--- record.Postgres.RaiseTold, and the confirmation of a delivery that carried news (the claim
--- store's tellDesignNews), which is in a package that imports no record.
-create function design_news_raised(held jsonb, raised jsonb) returns jsonb language sql immutable as $$
-  select held || (select coalesce(jsonb_object_agg(step.key,
-      greatest(step.value::int, coalesce((held ->> step.key)::int, step.value::int))), '{}'::jsonb)
-    from jsonb_each_text(raised) step)
+-- design_news_known is the one statement of what an audience took of each step: the versions held
+-- (a row's versions), raised through links, a JSON array of credits {step, from, to}. A credit
+-- reaches a step whose version is at or above its from, or any step where its from is null (told
+-- with no earlier version), and takes it to its to where that is higher; reached again, it changes
+-- nothing. Links are read until none reaches further, so the order they are given in says nothing,
+-- and a credit counted from a version that no standing credit or held version gives reaches
+-- nothing. A step no credit names keeps what is held. Every reader of what an audience took reads
+-- it through this (design_news_told_in), and so does every fold of a credit into the row
+-- (design_news_folded).
+create function design_news_known(held jsonb, links jsonb) returns jsonb language plpgsql immutable as $$
+declare
+  known jsonb := coalesce(held, '{}'::jsonb);
+  link record;
+  reached boolean := true;
+begin
+  while reached loop
+    reached := false;
+    for link in select credit.step, credit."from", credit."to"
+        from jsonb_to_recordset(coalesce(links, '[]'::jsonb)) as credit (step text, "from" int, "to" int) loop
+      if (link."from" is null or (known ->> link.step)::int >= link."from")
+          and coalesce((known ->> link.step)::int < link."to", true) then
+        known := known || jsonb_build_object(link.step, link."to");
+        reached := true;
+      end if;
+    end loop;
+  end loop;
+  return known;
+end
 $$;
 
--- design_news_opening_settled is the one statement of how a told row's opening is settled. Every
--- writer of opening_owed calls it: the gate's opening, its close and its opened role message
--- (record.Postgres.SettleOpening and CloseOpenings, called from workflow's tellGateMoved), and the
--- confirmation of a delivery that carried the opening and the write that takes that confirmation
--- back (the claim store's tellDesignNews and untellDesignNews).
---
--- With carried null it is a new settlement of the opening: the gate opened while the audience is
--- owed news (owed true, which writes the row where there is none), or the gate closed, or the opened
--- role message told the audience (owed false). Each of the three takes the row's next opening_seq.
--- So an opening is named by the seq its row held when it became owed, and the close or the role
--- message that ends it moves the seq past it.
---
--- With carried set it is a delivery's settlement of the opening it carried under that seq: its
--- confirmation (owed false) and the take-back of that confirmation (owed true). Each acts only on a
--- row whose opening_seq is still carried. So a close and a reopening before the carried opening's
--- turn make a new opening, which that confirmation does not clear, and a role message or a close
--- since then is not undone by the take-back.
-create function design_news_opening_settled(told_issue text, told_audience text, owed boolean, carried integer)
+-- design_news_folded is the one write of a final credit into a told row: a work-unchanged raise
+-- (record.Postgres.RaiseTold) and the copy of a delivery whose turn's result said the turn ran (the
+-- claim store's settleDesignNews). links are the credits, as design_news_known reads them. The row
+-- is written where there is none. Its versions take what they reach through its own unreached
+-- credits and links, and every credit that still reaches no further than they do is kept in
+-- unreached, so a credit counted from a version an unfinal credit gave waits for that credit to be
+-- folded too, and reaches nothing if that one is given back. Folding a credit a second time changes
+-- nothing. told_at is set either way. The row is read under its own lock, so a fold, a fill or a
+-- baseline of the same row that commits first is read, never overwritten.
+create function design_news_folded(told_issue text, told_audience text, links jsonb, at timestamptz)
+  returns void language plpgsql as $$
+declare
+  waiting jsonb;
+  known jsonb;
+begin
+  insert into design_news_told (issue, audience, told_at) values (told_issue, told_audience, at)
+    on conflict (issue, audience) do nothing;
+  select told.unreached || coalesce(links, '[]'::jsonb), told.versions into waiting, known
+    from design_news_told told where told.issue = told_issue and told.audience = told_audience for update;
+  known := design_news_known(known, waiting);
+  update design_news_told set versions = known, told_at = at,
+    unreached = coalesce((select jsonb_agg(distinct credit) from jsonb_array_elements(waiting) credit
+      where coalesce((known ->> (credit ->> 'step'))::int < (credit ->> 'to')::int, true)), '[]'::jsonb)
+    where issue = told_issue and audience = told_audience;
+end
+$$;
+
+-- design_news_opening_settled is the one statement of how the gate settles a told row's opening:
+-- the gate opened while the audience is owed news (owed true, which writes the row where there is
+-- none), or the gate closed, or the opened role message told the audience (owed false). Its callers
+-- are record.Postgres.SettleOpening and CloseOpenings, called from workflow's tellGateMoved. Each of
+-- the three takes the row's next opening_seq, so an opening is named by the seq its row held when
+-- it became owed, and the close or the role message that ends it moves the seq past it.
+create function design_news_opening_settled(told_issue text, told_audience text, owed boolean)
   returns void language plpgsql as $$
 begin
-  if carried is not null then
-    update design_news_told set opening_owed = owed
-      where issue = told_issue and audience = told_audience and opening_seq = carried;
-  elsif owed then
+  if owed then
     insert into design_news_told as told (issue, audience, opening_owed, opening_seq)
       values (told_issue, told_audience, true, 1)
       on conflict (issue, audience) do update set opening_owed = true, opening_seq = told.opening_seq + 1;
@@ -157,6 +213,19 @@ begin
       where issue = told_issue and audience = told_audience;
   end if;
 end
+$$;
+
+-- design_news_opening_told is the one statement of how a delivery settles the opening it carried:
+-- the fold of a final credit that said the gate opened under told_seq (the claim store's
+-- settleDesignNews) owes it no longer, on a row that still holds that seq. A close and a reopening
+-- before the turn make a new opening, which this leaves owed, and a null seq matches no row, so a
+-- copy that names no seq clears nothing. Until its credit is final, a delivery writes nothing: the
+-- read counts its standing credit instead (design_news_told_in), so its take-back owes the opening
+-- again only where nothing else has settled it since.
+create function design_news_opening_told(told_issue text, told_audience text, told_seq integer)
+  returns void language sql as $$
+  update design_news_told set opening_owed = false
+    where issue = told_issue and audience = told_audience and opening_seq = told_seq
 $$;
 
 create table design_changes (
@@ -186,7 +255,51 @@ create table design_history_unread (
   primary key (artifact_id, to_version));
 
 alter table pending_task_deliveries add column design_news jsonb, add column carried_news jsonb,
-  add column news_only boolean not null default false;
+  add column carried_ran boolean not null default false, add column news_only boolean not null default false;
+
+-- design_news_told_in is every told row of tree's issues as its audience took it: the one read of
+-- design_news_told (record.Postgres.TreeTold), which every reader of what an audience took goes
+-- through, so record.OwedNews, the reconcile's settlement and raise, a start and a send all weigh
+-- the same answer. A row's versions are what design_news_known reaches from the row's versions
+-- through its unreached credits and the credit of every confirmed delivery whose result has not
+-- yet said its turn ran (pending_task_deliveries.carried_news, not carried_ran). Its opening is owed
+-- where the row owes it and no such delivery carried that same opening, under the row's
+-- opening_seq, as opened. An audience a standing credit names while it has no row is read as a row
+-- that knows only what the credits give and owes no opening. An item of an issue outside the tree
+-- counts for nothing here.
+create function design_news_told_in(tree text)
+  returns table (issue text, audience text, versions jsonb, opening_owed boolean, opening_seq integer, told_at timestamptz)
+  language sql stable as $$
+  with member as (select owner.key from issues owner where owner.tree = $1),
+  credit as (
+    select item.issue, item.audience,
+      jsonb_build_object('step', item.step, 'from', item."from", 'to', item."to") as link
+    from pending_task_deliveries delivery
+      cross join jsonb_to_recordset(coalesce(delivery.carried_news -> 'items', '[]'::jsonb))
+        as item (issue text, audience text, step text, "from" int, "to" int)
+    where delivery.confirmed_at is not null and not delivery.carried_ran
+      and item.issue in (select member.key from member)),
+  cleared as (
+    select opened.issue, opened.audience, opened.seq
+    from pending_task_deliveries delivery
+      cross join jsonb_to_recordset(coalesce(delivery.carried_news -> 'openings', '[]'::jsonb))
+        as opened (issue text, audience text, seq int, closed boolean)
+    where delivery.confirmed_at is not null and not delivery.carried_ran and not coalesce(opened.closed, false)
+      and opened.issue in (select member.key from member)),
+  pair as (
+    select told.issue, told.audience from design_news_told told where told.issue in (select member.key from member)
+    union
+    select credit.issue, credit.audience from credit)
+  select pair.issue, pair.audience,
+    design_news_known(coalesce(told.versions, '{}'::jsonb), coalesce(told.unreached, '[]'::jsonb)
+      || coalesce((select jsonb_agg(credit.link) from credit
+        where credit.issue = pair.issue and credit.audience = pair.audience), '[]'::jsonb)),
+    coalesce(told.opening_owed, false) and not exists (select 1 from cleared
+      where cleared.issue = pair.issue and cleared.audience = pair.audience and cleared.seq = told.opening_seq),
+    coalesce(told.opening_seq, 0), told.told_at
+  from pair left join design_news_told told on told.issue = pair.issue and told.audience = pair.audience
+  order by pair.issue, pair.audience
+$$;
 
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (

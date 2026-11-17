@@ -13,6 +13,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
+// raisedTo is the raise of each step of versions to its version from whatever the row took
+// (Postgres.RaiseTold with no From): what a case seeds a told row with.
+func raisedTo(versions map[DesignStep]int) []NewsItem {
+	items := make([]NewsItem, 0, len(versions))
+	for step, version := range versions {
+		items = append(items, NewsItem{Step: step, To: version})
+	}
+	return items
+}
+
 // A holder's baseline is written once, at the versions its tree root's gate stands approved at in
 // the writing transaction, and a later baseline leaves it as it stands: the work started from those
 // versions, and a second baseline would hide the news of every version approved since. A step
@@ -20,8 +30,9 @@ import (
 // then only rises: a raise takes the greater of each step's two versions, fills a step the row did
 // not know and keeps a step the raise does not name. The owed opening is set apart from the
 // versions, and owing it to an issue with no row writes one that knows no version. What clears it
-// is the opened role message, a close, or a confirmation's own write in the claim store (its
-// design_news_told tests).
+// is the opened role message, a close, or a delivery's credit of it: counted while the delivery
+// holds its confirmation, and folded into the row once its turn's result says it ran (the claim
+// store's design_news_told tests).
 func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -66,9 +77,9 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	}
 
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.RaiseTold(ctx, tx, child.Key, AudienceHolder, map[DesignStep]int{DesignStepCriteria: 2}, at.Add(2*time.Hour)))
-		must(t, records.RaiseTold(ctx, tx, child.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 2, DesignStepCriteria: 1}, at.Add(3*time.Hour)))
-		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceArchitect, map[DesignStep]int{DesignStepSpec: 4}, at.Add(3*time.Hour)))
+		must(t, records.RaiseTold(ctx, tx, child.Key, AudienceHolder, raisedTo(map[DesignStep]int{DesignStepCriteria: 2}), at.Add(2*time.Hour)))
+		must(t, records.RaiseTold(ctx, tx, child.Key, AudienceHolder, raisedTo(map[DesignStep]int{DesignStepSpec: 2, DesignStepCriteria: 1}), at.Add(3*time.Hour)))
+		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceArchitect, raisedTo(map[DesignStep]int{DesignStepSpec: 4}), at.Add(3*time.Hour)))
 	})
 	if got := toldOf(child.Key, AudienceHolder).Versions; !reflect.DeepEqual(got, map[DesignStep]int{DesignStepSpec: 3, DesignStepCriteria: 2}) {
 		t.Fatalf("%s's versions after the raises = %v, want spec 3 kept against a lower raise and criteria filled at 2", child.Key, got)
@@ -165,7 +176,7 @@ func TestAFillWritesOnlyTheVersionsTheToldRowDoesNotKnow(t *testing.T) {
 	var rows []DesignTold
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, root))
-		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 4}, at))
+		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceHolder, raisedTo(map[DesignStep]int{DesignStepSpec: 4}), at))
 		must(t, records.SettleOpening(ctx, tx, root.Key, AudienceHolder, true))
 		must(t, records.FillTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 2, DesignStepCriteria: 1}, at.Add(time.Hour)))
 		must(t, records.FillTold(ctx, tx, root.Key, AudienceArchitect, map[DesignStep]int{DesignStepSpec: 3}, at.Add(time.Hour)))
@@ -420,10 +431,10 @@ func TestClearGenerationTakesTheToldRowsWithTheGate(t *testing.T) {
 		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root.Key, Step: DesignStepSpec, ArtifactID: "doc-spec", LatestVersion: 3, ApprovedVersion: new(3)}))
 		must(t, records.PutGate(ctx, tx, DesignGate{Issue: other.Key, Step: DesignStepSpec, ArtifactID: "doc-other", LatestVersion: 1, ApprovedVersion: new(1)}))
 		for _, issue := range []string{root.Key, child.Key} {
-			must(t, records.RaiseTold(ctx, tx, issue, AudienceHolder, map[DesignStep]int{DesignStepSpec: 3}, at))
+			must(t, records.RaiseTold(ctx, tx, issue, AudienceHolder, raisedTo(map[DesignStep]int{DesignStepSpec: 3}), at))
 		}
-		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceArchitect, map[DesignStep]int{DesignStepSpec: 3}, at))
-		must(t, records.RaiseTold(ctx, tx, other.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 1}, at))
+		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceArchitect, raisedTo(map[DesignStep]int{DesignStepSpec: 3}), at))
+		must(t, records.RaiseTold(ctx, tx, other.Key, AudienceHolder, raisedTo(map[DesignStep]int{DesignStepSpec: 1}), at))
 	})
 	count := func(tree string) int {
 		t.Helper()

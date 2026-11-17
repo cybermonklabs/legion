@@ -32,11 +32,11 @@ import (
 //   - an item stands while the gate's row of its step still holds the document it names, approved
 //     at its To (classify.DesignApprovalStands), and the told row of its audience still holds a
 //     version below To or none it knows; every other item is dropped from the text and from the
-//     news the delivery carries, so its confirmation raises only what was told;
+//     news the delivery carries, so its confirmation credits only what was told;
 //   - an item or an opening told to the holder audience of a member stands only while the claim
 //     the task is held for holds that member's phase now (newsClaims.holderOf): the claim of the
 //     role its phase names, or, for a member in accepting, the architect that owns it. The
-//     confirmation raises the member's holder row, which records what the session holding its
+//     confirmation credits the member's holder row, which records what the session holding its
 //     phase took. So an architect's task does not tell a member that its architect signed off
 //     while the task waited: the member's next holder is told it;
 //   - an opening stands while the told row of its audience still owes it and the standing gate is
@@ -46,39 +46,46 @@ import (
 //     carried it. The gate can close and open again while a task waits, and the opening then
 //     finds the holder owed news, so no role message tells it (workflow's openingDelivery), and
 //     the reconcile queues no news-only start beside the task the holder has not taken
-//     (holdsUntakenTask). The task is then the one delivery of that opening, and the confirmation
-//     of the prompt that carried it clears it, and no earlier or later one. A task that carried an
+//     (holdsUntakenTask). The task is then the one delivery of that opening, and the credit of the
+//     prompt that carried it tells it, and no earlier or later one. A task that carried an
 //     opening and is sent after a later version closed the gate again says the gate is closed, and
 //     carries the opening marked closed (record.DeliveryOpening.Closed), which clears nothing;
+//   - an item is re-keyed to the version its audience's told row holds of its step now, whenever
+//     the item carries another (rekeyed): the row can have come to know a version, another
+//     delivery's credit can have told part of the news, or a credit the item was rendered against
+//     can have been given back, and the pair the send names is the pair the audience is owed now;
 //   - an item that names its pair (From) is told with that pair's change set, and is dropped as well
 //     where none is recorded yet: nothing else can say what changed, and the item stays owed for a
 //     later start, or the reconcile, to carry;
-//   - an item carried with no earlier version (From nil) is decided on what the delivery carries,
-//     never on whether the record still holds its history unread (carriedChange). Where its told
-//     row has come to know a version of its step since, the item is re-keyed to that version, and
-//     told as that pair once the pair's change set is recorded. Otherwise, where the start attached
-//     it with its review history unread (record.DeliveryNewsItem.HistoryUnread), it is told as that
-//     history, with the reason it was attached with, never as a first approval: a reconcile that has
-//     run or is pending since changes nothing a start already attached, so a re-send never loses it.
-//     An item carrying neither, which only a delivery written before that field was can hold, is
-//     read as a start reads the record (readNewsRecorded) and takes the unread history on;
+//   - an item with no earlier version (From nil, its told row knowing none) is decided on what the
+//     delivery carries, never on whether the record still holds its history unread
+//     (carriedChange). Where the start attached it with its review history unread
+//     (record.DeliveryNewsItem.HistoryUnread), it is told as that history, with the reason it was
+//     attached with, never as a first approval: a reconcile that has run or is pending since
+//     changes nothing a start already attached, so a re-send never loses it. An item carrying
+//     neither is read as a start reads the record (readNewsRecorded) and takes the unread history
+//     on;
 //   - the root architect's summary of a tree that lingers is dropped whole: linger holds every
 //     member where it stood, record.OwedNews owes such a tree nothing, and nothing goes to it.
 //
-// The task text is the start's own text (record.DeliveryNews.Task), a blank line, and the news. A
-// phase start whose news is all dropped is sent as its own text alone, carrying no news; a task
-// queued for its news alone (supervise.Delivery.NewsOnly) with nothing left to say — no item
-// standing, and no opening owed while the gate stands open — answers "", which the machine retires
-// rather than sends. A task whose news all stands as it is carried is answered with the bytes it
-// carries, so a send of a task the record has not moved under writes nothing; one whose items the
-// send dropped, re-keyed or told by another state than they carry, or whose openings it dropped,
-// took on, numbered anew or said closed, is answered with its news encoded again, so any later send
-// reads what this send told, and so does the copy this prompt's acknowledgement records
-// (supervise.Delivery.Carried), which is what the confirmation of this prompt's turn raises.
+// The task text is the start's own text (record.DeliveryNews.Task), a blank line, and the news,
+// rendered by the one render every task of news goes through (renderNews). A phase start whose
+// news is all dropped is sent as its own text alone, carrying no news; a task queued for its news
+// alone (supervise.Delivery.NewsOnly) with nothing left to say — no item standing, and no opening
+// owed while the gate stands open — answers "", which the machine retires rather than sends. A task
+// whose news all stands as it is carried is answered with the bytes it carries, so a send of a task
+// the record has not moved under writes nothing; one whose items the send dropped, re-keyed or told
+// by another state than they carry, or whose openings it dropped, took on, numbered anew or said
+// closed, is answered with its news encoded again, so any later send reads what this send told, and
+// so does the copy this prompt's acknowledgement records (supervise.Delivery.Carried), which is
+// what the confirmation of this prompt's turn credits.
 //
 // An item dropped from the text and the delivery queues one design_changes row for its tree
-// (record.QueueDesignNews): the item no longer stands, or the record could not tell it yet, and
-// the reconcile weighs again what that tree's holders are owed now and records what changed.
+// (record.QueueDesignNews) where a reconcile has something to send it: the item no longer stands,
+// the record could not tell it yet, or its holder is another claim now, and the reconcile weighs
+// again what that tree's holders are owed and records what changed. An item whose issue or tree
+// the record does not hold, and one to the architect of a lingering tree, queue none, since no
+// reconcile can send them anything (readNewsAtSend).
 //
 // It is the machine that asks, because the machine owns the pending delivery: it holds its own
 // lock and asks this in a short read-only transaction of its own, as rootHears is asked. A send
@@ -93,10 +100,10 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	if err := json.Unmarshal(d.News, &carried); err != nil {
 		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
 	}
-	var sent newsAtSend
+	var sent renderedNews
 	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		sent, err = readNewsAtSend(ctx, tx, w.records, w.gatedSteps, c.Token, carried, time.Now)
+		sent, err = renderNews(ctx, tx, w.records, w.gatedSteps, c.Token, carried, d.News, time.Now)
 		return err
 	}); err != nil {
 		return "", nil, fmt.Errorf("read what the news the task held for %s carries says now: %w", c.Token, err)
@@ -109,28 +116,60 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	if d.NewsOnly && !sent.says {
 		return "", nil, nil
 	}
-	task := paragraphs(carried.Task, sent.text)
-	switch {
-	case !sent.rewritten && len(sent.kept.Items) == len(carried.Items) && len(sent.kept.Openings) == len(carried.Openings):
-		return task, d.News, nil
-	case sent.kept.Empty():
-		return task, nil, nil
-	}
-	news, err := json.Marshal(sent.kept)
+	return sent.task, sent.news, nil
+}
+
+// renderedNews is a task of news as the one render says it (renderNews): its text, the news the
+// delivery carries with it (nil for none), whether any of that news is worth a task of its own
+// (newsAtSend.says), and the trees whose reconcile the caller queues (newsAtSend.dropped).
+type renderedNews struct {
+	task    string
+	news    []byte
+	says    bool
+	dropped []string
+}
+
+// renderNews is the one render of a task that carries news of the approved design, and every
+// builder of such a task goes through it: a start's task and a start queued for news alone
+// (newsForStart), each send of a held task (designNews), and the narrowing of a root architect's
+// held task (rootTask, through designNews). So the news a delivery carries is computed from the
+// text it sends, by the function that renders that text, and nothing keeps a news field beside a
+// text it did not render. It reads carried as the record stands in the caller's transaction, for
+// the claim whose token is reader (readNewsAtSend), and answers the text — carried's own Task, a
+// blank line, then the news — and exactly the news that text names: none where nothing stands;
+// encoded, the bytes carried was decoded from, where it keeps carried as it was; and carried
+// encoded again otherwise. A builder with no bytes to keep (a start, or a narrowing, which changed
+// the start's own text) passes nil.
+func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
+	carried record.DeliveryNews, encoded []byte, now func() time.Time) (renderedNews, error) {
+	sent, err := readNewsAtSend(ctx, tx, records, steps, reader, carried, now)
 	if err != nil {
-		return "", nil, fmt.Errorf("encode what the news the task held for %s still carries: %w", c.Token, err)
+		return renderedNews{}, err
 	}
-	return task, news, nil
+	rendered := renderedNews{task: paragraphs(carried.Task, sent.text), says: sent.says, dropped: sent.dropped}
+	switch {
+	case sent.kept.Empty():
+	case encoded != nil && !sent.rewritten && len(sent.kept.Items) == len(carried.Items) &&
+		len(sent.kept.Openings) == len(carried.Openings):
+		rendered.news = encoded
+	default:
+		if rendered.news, err = json.Marshal(sent.kept); err != nil {
+			return renderedNews{}, fmt.Errorf("encode the news %s's task carries: %w", reader, err)
+		}
+	}
+	return rendered, nil
 }
 
 // newsAtSend is what a delivery's news says at its send: the text that follows the start's own
 // (text), what of the news still stands (kept, which keeps the start's own text), whether any of
 // it is worth a task of its own (says): an item that stands, or an opening owed while the gate
 // stands open, whether it keeps the news otherwise than it was carried (rewritten: an item
-// re-keyed to the version its told row has come to know, or with its unread review history taken
-// on or let go, carriedChange, or an opening the delivery did not carry, one it carried and no
-// longer tells, one it carries under another opening number, or one it now says is closed), and
-// the tree of each item it dropped (dropped), each once, whose reconcile the send queues.
+// re-keyed to the version its told row holds now, or with its unread review history taken on or
+// let go, carriedChange, or an opening the delivery did not carry, one it carried and no longer
+// tells, one it carries under another opening number, or one it now says is closed), and the tree
+// of each item it dropped that a reconcile can still send (dropped), each once, whose reconcile
+// the send queues: not the tree of an item dropped because the record does not hold its issue or
+// its tree, or because it is to the architect of a lingering tree (readNewsAtSend).
 type newsAtSend struct {
 	text      string
 	kept      record.DeliveryNews
@@ -326,8 +365,8 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 //   - while the gate stands open and the row owes the opening, the opening, under the number the
 //     row holds for it now (record.DesignTold.Opening), whether or not the delivery carried it: the
 //     gate can close and open again while the task waits, and the opening that the reopening owes
-//     is a new one, which only a prompt carrying its number tells (the claim store's
-//     tellDesignNews clears no other);
+//     is a new one, which only a prompt carrying its number tells (the claim store's credit of a
+//     delivery counts no other, and design_news_opening_told clears no other);
 //   - while the gate stands closed and the delivery carried an opening, the close: a task composed
 //     while the gate stood open and sent after a later version closed it says closed (RenderNews),
 //     and carries the opening marked closed, which the confirmation clears nothing for;
@@ -392,15 +431,26 @@ func itemStands(item record.DeliveryNewsItem, gate record.DesignGate, told recor
 	return !known || took < item.To
 }
 
-// rekeyed is a carried item as this send reads it against its audience's told row now: an item
-// carried with no earlier version takes the version the row has come to know since, where it has
-// (a reconcile filled it from the review history), so the send names the pair the row names and a
-// confirmation taken back restores that version; any other item is as carried.
+// rekeyed is a carried item as this send reads it against its audience's told row now: its earlier
+// version (From) is the version the row holds of its step, whenever the two differ, so the send
+// names the pair from what the audience took now. The row can have come to know a version since
+// the item was rendered (a reconcile filled it from the review history), or another delivery's
+// credit since can have told part of the news, or a credit the item was rendered against can have
+// been given back, which leaves the row below the From it carried: told as carried, that item would
+// leave the news of the pair before it untold, and its credit, counted from a version the row does
+// not hold, would reach nothing (the SQL function design_news_known). An item whose re-keyed pair
+// has no change set recorded yet is dropped and its tree's reconcile queued (carriedChange,
+// readNewsAtSend). A row that knows no version of the step leaves the item with none, which is
+// told as its unread review history says, or dropped until that history is recorded. An item whose
+// From is already the row's is returned as carried, the same value under the same pointer, which is
+// what says the send kept it unchanged.
 func rekeyed(item record.DeliveryNewsItem, told record.DesignTold) record.DeliveryNewsItem {
-	if item.From == nil {
-		if took, known := told.Took(item.Step); known {
-			item.From = &took
-		}
+	took, known := told.Took(item.Step)
+	switch {
+	case known && (item.From == nil || *item.From != took):
+		item.From = &took
+	case !known && item.From != nil:
+		item.From = nil
 	}
 	return item
 }

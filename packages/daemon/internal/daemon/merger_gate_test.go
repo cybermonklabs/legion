@@ -128,7 +128,7 @@ func putOutboxGate(t *testing.T, pool *store.Pool, records record.Store, gate re
 func putOutboxTold(t *testing.T, pool *store.Pool, records record.Store, issue string, versions map[record.DesignStep]int) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return records.RaiseTold(context.Background(), tx, issue, record.AudienceHolder, versions, time.Now().UTC())
+		return records.RaiseTold(context.Background(), tx, issue, record.AudienceHolder, raisedTo(versions), time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("record what %s's holder took: %v", issue, err)
 	}

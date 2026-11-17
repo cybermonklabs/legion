@@ -30,11 +30,14 @@ func scanTold(row scanner) (DesignTold, error) {
 	return told, nil
 }
 
-// TreeTold is every told row of the issues of tree, by issue and then audience: what OwedNews
-// weighs the tree's gate against, in one read.
+// TreeTold is every told row of the issues of tree, by issue and then audience, as each audience
+// took it: what OwedNews weighs the tree's gate against, in one read. It reads the rows through
+// the SQL function design_news_told_in, which counts beside each row's own versions the credit of
+// every confirmed delivery whose turn's result has not yet made it final (the claim store's
+// carried_news), so every reader of a told row — OwedNews, the reconcile's settlement and raise, a
+// start and a send — weighs the same answer, and the give-back of a credit needs no write here.
 func (s *Postgres) TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error) {
-	rows, err := tx.Query(ctx, `select `+toldColumns+` from design_news_told
-		where issue in (select key from issues where tree = $1) order by issue, audience`, tree)
+	rows, err := tx.Query(ctx, `select `+toldColumns+` from design_news_told_in($1)`, tree)
 	if err != nil {
 		return nil, fmt.Errorf("read what the holders of tree %s took: %w", tree, err)
 	}
@@ -67,42 +70,51 @@ func (s *Postgres) BaselineTold(ctx context.Context, tx pgx.Tx, issue string, au
 	return nil
 }
 
-// RaiseTold raises each step of versions on issue's audience row to the greater of the version the
-// row holds and the one given, writing the row when there is none. A step the row does not know
-// takes the version given, and a step versions does not name keeps what the row holds, so a raise
-// never lowers a version and never forgets one: the SQL function design_news_raised states that
-// rule once, for this raise and for the confirmation's (the claim store's tellDesignNews). The
-// owed opening is left as it stands.
-func (s *Postgres) RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error {
-	if versions == nil {
-		versions = map[DesignStep]int{}
+// RaiseTold raises issue's audience row past each of items, which names the pair it is raised over
+// (From, nil for none) and the version it is raised to (To), writing the row when there is none.
+// Each is folded as a final credit counted from its From (the SQL function design_news_folded,
+// which the claim store's fold of a delivery whose turn ran calls too): a step the row takes at or
+// above From rises to To, or keeps a greater version, and a step the row does not reach From of
+// yet keeps the credit waiting until it does. So a raise read off a version an unfinal delivery's
+// credit gave the row (TreeTold) reaches nothing if that credit is given back, and the news of the
+// pair before it stays owed. An item with no From raises the step whatever the row holds. A raise
+// never lowers a version and never forgets one, and a step items do not name keeps what the row
+// holds. The owed opening is left as it stands.
+func (s *Postgres) RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, items []NewsItem, at time.Time) error {
+	links := make([]toldCredit, len(items))
+	for i, item := range items {
+		links[i] = toldCredit{Step: item.Step, From: item.From, To: item.To}
 	}
-	encoded, err := json.Marshal(versions)
+	encoded, err := json.Marshal(links)
 	if err != nil {
 		return fmt.Errorf("encode the versions %s's %s took: %w", issue, audience, err)
 	}
-	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
-		values ($1, $2, $3, false, $4)
-		on conflict (issue, audience) do update set
-			versions = design_news_raised(design_news_told.versions, excluded.versions),
-			told_at = excluded.told_at`, issue, string(audience), encoded, at); err != nil {
+	if _, err := tx.Exec(ctx, `select design_news_folded($1, $2, $3, $4)`, issue, string(audience), encoded, at); err != nil {
 		return fmt.Errorf("raise the versions %s's %s took: %w", issue, audience, err)
 	}
 	return nil
+}
+
+// toldCredit is one credit as the SQL functions design_news_known and design_news_folded read it:
+// the step, the version it counts from (null for none), and the version it tells.
+type toldCredit struct {
+	Step DesignStep `json:"step"`
+	From *int       `json:"from"`
+	To   int        `json:"to"`
 }
 
 // SettleOpening settles the gate's opening on issue's audience row as the opening reaches it now:
 // owed, where the gate opened while the audience is owed news, so the task that carries that news
 // leads with the opening (writing a row that knows no version where there is none); or not owed,
 // where the opened role message told it. Either way the row takes its next opening number
-// (DesignTold.Opening), so a delivery that carried an earlier opening neither clears this one at
-// its confirmation nor owes it again where that confirmation is taken back. The rule is the SQL
-// function design_news_opening_settled, which every writer of the owed opening calls: this, the
-// close (CloseOpenings), and the claim store's confirmation and its take-back (tellDesignNews,
-// untellDesignNews), which are in a package that imports no record. Its one caller is the
-// opening's own (workflow's tellGateMoved).
+// (DesignTold.Opening), so a delivery that carried an earlier opening neither clears this one when
+// its credit is folded nor owes it again where that credit is given back. The rule is the SQL
+// function design_news_opening_settled, the gate's settlement, which the close calls too
+// (CloseOpenings); a delivery settles the opening it carried through design_news_opening_told
+// alone (the claim store's settleDesignNews). Its one caller is the opening's own (workflow's
+// tellGateMoved).
 func (s *Postgres) SettleOpening(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error {
-	if _, err := tx.Exec(ctx, `select design_news_opening_settled($1, $2, $3, null)`, issue, string(audience), owed); err != nil {
+	if _, err := tx.Exec(ctx, `select design_news_opening_settled($1, $2, $3)`, issue, string(audience), owed); err != nil {
 		return fmt.Errorf("settle the opening on %s's %s: %w", issue, audience, err)
 	}
 	return nil
@@ -112,10 +124,10 @@ func (s *Postgres) SettleOpening(ctx context.Context, tx pgx.Tx, issue string, a
 // an opening once the gate has closed, since each holder is told the close and the next opening
 // decides afresh how each is told that one (workflow's openingDelivery). Each row takes its next
 // opening number, as at SettleOpening, through the same function, so a task that carried the
-// opening before the close says closed when it is sent after it, and its confirmation clears
-// nothing of a reopening that follows.
+// opening before the close says closed when it is sent after it, and its credit clears nothing of
+// a reopening that follows.
 func (s *Postgres) CloseOpenings(ctx context.Context, tx pgx.Tx, tree string) error {
-	if _, err := tx.Exec(ctx, `select design_news_opening_settled(told.issue, told.audience, false, null)
+	if _, err := tx.Exec(ctx, `select design_news_opening_settled(told.issue, told.audience, false)
 		from design_news_told told join issues owner on owner.key = told.issue where owner.tree = $1`, tree); err != nil {
 		return fmt.Errorf("settle the close of tree %s's gate on its told rows: %w", tree, err)
 	}

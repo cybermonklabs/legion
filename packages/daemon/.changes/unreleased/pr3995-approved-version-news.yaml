@@ -44,9 +44,15 @@ body: |-
   a number, so a task that carried an opening before the gate closed and opened again does not
   clear the new opening, and the holder gets a task that tells it. The opened message and the
   close settle the opening too, so a holder told the opening by message is not sent it again with
-  a later decision-only version. A news task that a newer task replaces while its turn runs, or
-  whose turn ends with no result the daemon waited on, gives its news back, so a provider error in
-  that turn loses nothing: the next task tells it again.
+  a later decision-only version. What a turn records is that delivery's own credit, and what a
+  holder took is read from the credits that stand: a credit counts only from the version its news
+  started from. So a news task that a newer task replaces while its turn runs, or whose turn ends
+  with no result the daemon waited on, gives back exactly its own news, and anything counted from
+  the version it gave goes with it. A provider error in that turn loses nothing: the next task
+  tells it again. A second confirmation of the same task replaces the first one's credit. A task's
+  text and the news it records are rendered together, so a root architect's task narrowed to the
+  decisions its tree still owes carries exactly the news its text names. Dispatch's error text and
+  a document's block ids are quoted where a task names them.
 
   The daemon reads the change set from Dispatch (`GET /api/v1/artifacts/{id}/changes`). Against a
   Dispatch without that route, the task names the two versions and says why it lists no change.
@@ -60,9 +66,10 @@ body: |-
   queue. At the gate's opening, a holder owed news gets the opening as the first sentence of that
   task's news, and every other holder gets the opened message, which now says, where the record
   shows it, that nothing its issue holds changed. Migration `20261114082752_design_news` adds the
-  tables `design_news_told` (with its column `opening_seq`), `design_changes` and
-  `design_history_unread`, the functions `design_news_raised` and `design_news_opening_settled`,
-  and the columns `pending_task_deliveries.design_news`, `carried_news` and `news_only`.
+  tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and
+  `design_history_unread`, the functions `design_news_known`, `design_news_folded`,
+  `design_news_opening_settled`, `design_news_opening_told` and `design_news_told_in`, and the
+  columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`.
 
   A rollback to the release before this one needs no schema restore, but it needs four statements
   first, because that release refuses an outbox payload member it does not know, its upsert of a
@@ -73,5 +80,7 @@ body: |-
   alone. The second takes `holds` out of each queued design-gates publish. The third deletes each
   pending task queued for news alone, and the fourth takes the news, and the copy of it a prompt
   carried, off each other task delivery that is still pending. News that no turn took stays owed in
-  `design_news_told`, so this release sends it again
-  after the roll forward. That section also says why each statement is needed.
+  `design_news_told`, so this release sends it again after the roll forward. A confirmed task whose
+  turn's result had not come holds its credit in its own row, so these statements give that credit
+  back, and this release tells that news again after the roll forward. That section also says why
+  each statement is needed.

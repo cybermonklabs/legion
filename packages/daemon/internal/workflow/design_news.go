@@ -482,14 +482,18 @@ func changeLines(tree string, item NewsChange, taker string) []string {
 	return append(lines, fmt.Sprintf("Read it: `dispatch doc-read --issue %s --artifact %s --version %d`", tree, item.artifact(), item.to()))
 }
 
-// couldNotRead is the sentence that says subject could not be read, and why where reason says,
-// its own closing stop and spaces trimmed so the sentence ends with one.
+// couldNotRead is the sentence that says subject could not be read, and why where reason says. The
+// reason is Dispatch's own error text, or the reconcile's record of it, so it is quoted as a Go
+// string (%q), as a heading is (headingName): the quotes mark where text from outside the daemon
+// begins and ends, and a newline or a quote inside it is escaped rather than read as words of the
+// daemon's own. Its own closing stop and spaces are trimmed first, so the quoted reason ends where
+// its words do.
 func couldNotRead(subject, reason string) string {
 	reason = strings.TrimRight(reason, ". ")
 	if reason == "" {
 		return subject + " could not be read."
 	}
-	return fmt.Sprintf("%s could not be read: %s.", subject, reason)
+	return fmt.Sprintf("%s could not be read: %q.", subject, reason)
 }
 
 // sectionsLine names each top-level unit that changed (sectionName), and how, in Dispatch's own
@@ -554,7 +558,8 @@ func ordinal(n int) string {
 
 // blockLines names the typed blocks of step's document that changed, one line for each type in
 // the order the types first appear: the checks of the Verification document (criteria), and
-// every other block of the spec and the decisions document.
+// every other block of the spec and the decisions document. A block's id is the document's own
+// text, so it is quoted (%q), as a heading is (headingName).
 func blockLines(step record.DesignStep, blocks []record.BlockChange) []string {
 	var types []string
 	byType := map[string][]string{}
@@ -565,7 +570,7 @@ func blockLines(step record.DesignStep, blocks []record.BlockChange) []string {
 		if _, seen := byType[block.Type]; !seen {
 			types = append(types, block.Type)
 		}
-		byType[block.Type] = append(byType[block.Type], block.ID+" "+block.Change)
+		byType[block.Type] = append(byType[block.Type], fmt.Sprintf("%q %s", block.ID, block.Change))
 	}
 	lines := make([]string, len(types))
 	for i, blockType := range types {
@@ -574,7 +579,8 @@ func blockLines(step record.DesignStep, blocks []record.BlockChange) []string {
 	return lines
 }
 
-// blockKind is the words a line of changed blocks of one type opens with.
+// blockKind is the words a line of changed blocks of one type opens with. A type the daemon does
+// not name is the document's own text, so it is quoted (%q).
 func blockKind(blockType string) string {
 	switch blockType {
 	case "requirement":
@@ -586,7 +592,7 @@ func blockKind(blockType string) string {
 	case "callout":
 		return "Callouts"
 	}
-	return fmt.Sprintf("Blocks of type %s", blockType)
+	return fmt.Sprintf("Blocks of type %q", blockType)
 }
 
 // workUnchanged says whether no item changed anything of the work

@@ -8,17 +8,18 @@ import "time"
 // as Kept is) and is persisted with the delivery (pending_task_deliveries.design_news).
 //
 // Three readers take it, each for one thing. The daemon's send (supervise.Deps.DesignNews) reads
-// it at every send: it drops each item and opening that no longer stands, re-keys an item it
-// carried with no earlier version to the version its told row has come to know, and renders the
-// text again from the record, so the text sent is always Task, a blank line, then the news as the
-// record stands at that send. The claim store reads it in SQL, by these JSON names, from the copy
-// the prompt a confirmed turn answers carried (supervise.Delivery.Carried, persisted as
-// pending_task_deliveries.carried_news): the write that records the delivery's confirmation
-// raises each item's told version and clears each opening that copy carried (store's
-// tellDesignNews), and the write that takes that confirmation back, or retires the delivery before
-// its turn's result said the turn ran, puts both back (store's untellDesignNews). So the prompt
-// that carried an item is the one thing that says the audience took it, and a delivery retired
-// unconfirmed tells nothing.
+// it at every send: it drops each item and opening that no longer stands, re-keys each item it
+// carries to the version its told row holds now, and renders the text again from the record, so
+// the text sent is always Task, a blank line, then the news as the record stands at that send, and
+// the news the delivery carries is exactly what that text names. The claim store reads it in SQL,
+// by these JSON names, from the copy the prompt a confirmed turn answers carried
+// (supervise.Delivery.Carried, persisted as pending_task_deliveries.carried_news): while the
+// delivery holds that confirmation, the copy is the delivery's credit, which every read of what an
+// audience took counts (the SQL function design_news_told_in, Postgres.TreeTold), and once the
+// turn's result says the turn ran, the write that records it folds the copy into the told rows
+// (store's settleDesignNews). A take-back or a retirement of the delivery ends its credit with its
+// row and writes nothing else. So the prompt that carried an item is the one thing that says the
+// audience took it, and a delivery retired unconfirmed tells nothing.
 type DeliveryNews struct {
 	// Task is the start's own text, before any news: the task the start would carry had nothing
 	// been owed. The send renders the news after it, so a phase start whose every item stopped
@@ -43,9 +44,10 @@ func (n DeliveryNews) Empty() bool {
 // its document (Artifact), the version that audience's told row held when the item was last
 // rendered (From, nil where the row did not know it), the approved version it tells (To), and,
 // for an item whose row knew no version, the review history that could not say which, as the start
-// attached it (HistoryUnread). Its confirmation raises the row's version of Step to To, whatever
-// From is, and taking that confirmation back puts it back to From, or forgets the step where From
-// is nil, which is what the row held.
+// attached it (HistoryUnread). Its credit is the pair: it reaches a told row that took From or more
+// (any row, for a From of nil), and takes the step to To (the SQL function design_news_known), so a
+// credit counted from a version another credit gave reaches nothing once that credit is given
+// back.
 type DeliveryNewsItem struct {
 	Issue    string         `json:"issue"`
 	Audience DesignAudience `json:"audience"`
@@ -90,13 +92,13 @@ func (i DeliveryNewsItem) Unread() *DesignHistoryUnread {
 // DeliveryOpening is one audience of one issue a delivery says the gate's state to: the opening its
 // told row owed when the send rendered it, named by the number the row held for it then (Seq,
 // DesignTold.Opening), or, where the gate closed again after the delivery took that opening on,
-// that the gate is closed (Closed). The confirmation of a prompt that carried it clears the opening
-// only where it said opened and the row still holds that number, and the take-back of that
-// confirmation owes it again on the same terms (the claim store's tellDesignNews and
-// untellDesignNews, through the SQL function design_news_opening_settled). A close, a reopening and
-// the opened role message each give the row its next number (Postgres.SettleOpening,
-// CloseOpenings), so no confirmation of an earlier opening clears a later one, and no take-back owes
-// again an opening that something else has told or ended since.
+// that the gate is closed (Closed). The credit of a confirmed delivery that carried it says the
+// opening told only where it said opened and the row still holds that number, and so does the fold
+// of that credit once its turn's result says it ran (the claim store's settleDesignNews, through
+// the SQL function design_news_opening_told, in which a missing number matches no row). A close, a
+// reopening and the opened role message each give the row its next number (Postgres.SettleOpening,
+// CloseOpenings, through design_news_opening_settled), so no credit of an earlier opening tells a
+// later one, and no give-back owes again an opening that something else has told or ended since.
 type DeliveryOpening struct {
 	Issue    string         `json:"issue"`
 	Audience DesignAudience `json:"audience"`

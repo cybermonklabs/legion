@@ -329,7 +329,7 @@ func TestNewsNamesEachStepsSectionsAndBlocksWithItsVersionPair(t *testing.T) {
 	spec := newsItem(t, text, "The spec document (artifact-spec)")
 	for _, want := range []string{"version 5, since version 3, which your phase last took",
 		`"Design" changed`, `"Rollout" added`, `the text after "Rollout" changed`, `the 2nd section headed "Notes" removed`,
-		"Requirements: r2 changed; r7 added; r3 removed.", "Callouts: note-rollback added.",
+		`Requirements: "r2" changed; "r7" added; "r3" removed.`, `Callouts: "note-rollback" added.`,
 		"`dispatch doc-read --issue LEGION-208 --artifact artifact-spec --version 5`"} {
 		if !strings.Contains(spec, want) {
 			t.Errorf("the spec's item does not say %q:\n%s", want, spec)
@@ -337,7 +337,7 @@ func TestNewsNamesEachStepsSectionsAndBlocksWithItsVersionPair(t *testing.T) {
 	}
 	checks := newsItem(t, text, "The criteria document (artifact-checks)")
 	for _, want := range []string{"version 3, since version 2, which your phase last took", `"Checks" changed`,
-		"Checks: c-live changed; c-upgrade added.", "`dispatch doc-read --issue LEGION-208 --artifact artifact-checks --version 3`"} {
+		`Checks: "c-live" changed; "c-upgrade" added.`, "`dispatch doc-read --issue LEGION-208 --artifact artifact-checks --version 3`"} {
 		if !strings.Contains(checks, want) {
 			t.Errorf("the Verification document's item does not say %q:\n%s", want, checks)
 		}
@@ -370,7 +370,7 @@ func TestNewsOfAnUnreadPairNamesTheReasonAndTheCommandThatPrintsIt(t *testing.T)
 	t.Logf("the news of an unread pair:\n%s", text)
 	item := newsItem(t, text, "The spec document (artifact-spec)")
 	for _, want := range []string{"version 5, since version 4, which your phase last took",
-		"The change list could not be read: dispatch has no changes route: GET /api/v1/artifacts/artifact-spec/changes answered 404 Not Found.",
+		`The change list could not be read: "dispatch has no changes route: GET /api/v1/artifacts/artifact-spec/changes answered 404 Not Found".`,
 		"`dispatch doc-read --issue LEGION-208 --artifact artifact-spec --version 5`"} {
 		if !strings.Contains(item, want) {
 			t.Errorf("the unread pair's item does not say %q:\n%s", want, item)
@@ -392,7 +392,7 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 	t.Logf("the news of an item whose review history could not be read:\n%s", text)
 	item := newsItem(t, text, "The spec document (artifact-spec)")
 	for _, want := range []string{"version 5, since a version the daemon could not read",
-		"The version your phase last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 Bad Gateway.",
+		`The version your phase last took could not be read: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 Bad Gateway".`,
 		"`dispatch doc-read --issue LEGION-208 --artifact artifact-spec --version 5`"} {
 		if !strings.Contains(item, want) {
 			t.Errorf("the item does not say %q:\n%s", want, item)
@@ -419,7 +419,7 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 		t.Errorf("the summary's line of the member whose history named no earlier approval = %q, want it to say %q", line, want)
 	}
 	unread := newsItem(t, summary, "The spec document (artifact-spec): version 5, since a version the daemon could not read.")
-	if want := "The version each issue owed it last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 Bad Gateway."; !strings.Contains(unread, want) {
+	if want := `The version each issue owed it last took could not be read: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 Bad Gateway".`; !strings.Contains(unread, want) {
 		t.Errorf("the summary's entry of the unread history does not say %q:\n%s", want, unread)
 	}
 	if firstEntry := newsItem(t, summary, "The spec document (artifact-spec): version 5, the first version a person approved."); !strings.Contains(firstEntry, "No approved version came before it, so read it whole.") {
@@ -601,14 +601,14 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 		}
 	}
 	if own := newsItem(t, text, "The spec document (artifact-spec): version 5, since version 3"); !strings.Contains(own, "which you last took") ||
-		!strings.Contains(own, "Requirements: r2 changed; r7 added; r3 removed.") || !strings.Contains(own, "--version 5`") {
+		!strings.Contains(own, `Requirements: "r2" changed; "r7" added; "r3" removed.`) || !strings.Contains(own, "--version 5`") {
 		t.Errorf("the architect's own spec pair = %q, want it named as what it last took, with its change list and command", own)
 	}
 	if other := newsItem(t, text, "The spec document (artifact-spec): version 5, since version 4."); !strings.Contains(other, "Sections:") {
 		t.Errorf("the pair of LEGION-210 and LEGION-211 = %q, want its own change list", other)
 	}
 	if checks := newsItem(t, text, "The criteria document (artifact-checks)"); !strings.Contains(checks, "version 3, since version 2, which you last took") ||
-		!strings.Contains(checks, "Checks: c-live changed; c-upgrade added.") {
+		!strings.Contains(checks, `Checks: "c-live" changed; "c-upgrade" added.`) {
 		t.Errorf("the architect's own checks pair = %q, want its pair and its checks", checks)
 	}
 	if count := strings.Count(text, "- The spec document (artifact-spec): version 5, since version 3"); count != 1 {
@@ -640,7 +640,7 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 	if line := newsLine(t, text, "- LEGION-210, in admitted: "); !strings.Contains(line, "out of the workflow") {
 		t.Errorf("the parked child's line %q does not say it is out of the workflow", line)
 	}
-	if checks := newsItem(t, text, "The criteria document (artifact-checks)"); !strings.Contains(checks, "Checks: c-live changed; c-upgrade added.") {
+	if checks := newsItem(t, text, "The criteria document (artifact-checks)"); !strings.Contains(checks, `Checks: "c-live" changed; "c-upgrade" added.`) {
 		t.Errorf("the summary's checks pair = %q, want its checks", checks)
 	}
 }

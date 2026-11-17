@@ -57,15 +57,16 @@ func (r *toldRig) tell(issue string, audience record.DesignAudience, versions ma
 		issue, string(audience), encoded, openingOwed, r.at)
 }
 
-// told reads issue's audience row: the version of each step it holds, whether it owes the opening,
-// and when it last rose.
+// told reads issue's audience row as every reader reads it (the SQL function design_news_told_in,
+// record.Postgres.TreeTold): the version of each step it holds with every standing credit counted
+// in, whether it owes the opening, and when a write of its versions last touched it.
 func (r *toldRig) told(issue string, audience record.DesignAudience) (map[record.DesignStep]int, bool, time.Time) {
 	r.t.Helper()
 	var encoded []byte
 	var owed bool
 	var at *time.Time
-	if err := r.store.Pool().QueryRow(r.ctx, `select versions, opening_owed, told_at from design_news_told
-		where issue = $1 and audience = $2`, issue, string(audience)).Scan(&encoded, &owed, &at); err != nil {
+	if err := r.store.Pool().QueryRow(r.ctx, `select versions, opening_owed, told_at from design_news_told_in($3)
+		where issue = $1 and audience = $2`, issue, string(audience), toldRoot).Scan(&encoded, &owed, &at); err != nil {
 		r.t.Fatalf("read the %s row of %s: %v", audience, issue, err)
 	}
 	var versions map[record.DesignStep]int
@@ -92,7 +93,7 @@ func (r *toldRig) wantTold(why string, issue string, audience record.DesignAudie
 // no version of it and whose review history could not say which (record.DeliveryHistoryUnread),
 // and the opening to the child's holder, under the opening number the child's row holds as tell
 // writes it (0). Its prompt was acknowledged carrying exactly that news, so the delivery holds it as
-// the copy its confirmation raises (supervise.Delivery.Carried).
+// the copy its confirmation credits (supervise.Delivery.Carried).
 func (r *toldRig) newsTask(id string) supervise.Delivery {
 	r.t.Helper()
 	news, err := json.Marshal(record.DeliveryNews{Task: "Review the change.", Items: []record.DeliveryNewsItem{
@@ -118,11 +119,12 @@ func (r *toldRig) seedTold() {
 }
 
 // A turn that starts carrying news is what makes its audience have taken it, so the write that
-// records the delivery's confirmation is the write that raises each item's told version and
-// clears each opening it carried, in that write's own transaction: a confirmation rolled back
-// raises nothing, and one that commits cannot have left the told rows behind. Writing the task
-// before then — the queue, and every write while it waits — raises nothing. The delivery is read
-// back carrying the news it was written with.
+// records the delivery's confirmation is the write that makes its credit: each item's told version
+// and each opening it carried read as taken, in that write's own transaction, so a confirmation
+// rolled back credits nothing, and one that commits cannot have left the told rows behind. Writing
+// the task before then — the queue, and every write while it waits — credits nothing. The delivery
+// is read back carrying the news it was written with. The write that records that the turn ran
+// makes the credit final, and folds it into the told rows at the confirmation's moment.
 func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()
@@ -172,6 +174,15 @@ func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	r.wantTold("after the confirmation", toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
 	r.wantTold("after the confirmation", toldRoot, record.AudienceArchitect,
 		map[record.DesignStep]int{record.DesignStepSpec: 5, record.DesignStepCriteria: 2}, false)
+	if _, _, at := r.told(toldChild, record.AudienceHolder); !at.Equal(r.at) {
+		t.Fatalf("the child's holder row was written at %s before its credit was final, want the seed's moment %s", at, r.at)
+	}
+	final := confirmed
+	final.Ran = true
+	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, final); err != nil {
+		t.Fatalf("make the confirmation's credit final: %v", err)
+	}
+	r.wantTold("after the credit was made final", toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
 	if _, _, at := r.told(toldChild, record.AudienceHolder); !at.Equal(confirmed.ConfirmedAt) {
 		t.Fatalf("the child's holder row rose at %s, want the confirmation's moment %s", at, confirmed.ConfirmedAt)
 	}
@@ -194,9 +205,9 @@ func TestAConfirmationNeverLowersAToldVersion(t *testing.T) {
 
 // A confirmation the machine takes back — a prompt refused busy after a turn of the agent's own
 // confirmed it, a late refusal, a turn its process died in — writes the delivery back unconfirmed,
-// and the agent never read it, so what the confirmation raised goes back: each item's step to the
-// version the row held before, forgotten where the row knew none, and the opening owed again. The
-// resend's own confirmation raises it then.
+// and the agent never read it, so its credit goes: each item's step reads as the version the row
+// held before, unknown where the row knew none, and the opening owed again. The resend's own
+// confirmation credits it then.
 func TestATakenBackConfirmationPutsBackWhatItRaised(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()
@@ -229,9 +240,10 @@ func TestATakenBackConfirmationPutsBackWhatItRaised(t *testing.T) {
 		map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
 }
 
-// What a taken-back confirmation puts back is only what it raised: a step that rose past the
-// item's version since — a later delivery's confirmation raised it — keeps what it holds, since
-// the session holding the issue took that version from somebody else.
+// What a taken-back confirmation ends is only its own credit: a step that rose past the item's
+// version since — a raise or another credit folded in — keeps what it holds, since the session
+// holding the issue took that version from somebody else. Only a fold or the gate settles the
+// row's owed opening, so the raise leaves it owed, and the take-back reads it owed again.
 func TestATakenBackConfirmationKeepsAVersionRaisedPastWhatItTold(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()
@@ -243,7 +255,7 @@ func TestATakenBackConfirmationKeepsAVersionRaisedPastWhatItTold(t *testing.T) {
 			t.Fatalf("write the task: %v", err)
 		}
 	}
-	r.tell(toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 6}, false)
+	r.tell(toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 6}, true)
 
 	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, task); err != nil {
 		t.Fatalf("take the confirmation back: %v", err)
@@ -252,14 +264,15 @@ func TestATakenBackConfirmationKeepsAVersionRaisedPastWhatItTold(t *testing.T) {
 		map[record.DesignStep]int{record.DesignStepSpec: 6}, true)
 }
 
-// What a taken-back confirmation puts back is computed from the told row its write locks, never
-// from a read before that lock: a write of the same row by another transaction — here the fill of
-// the Verification document's version, as the reconcile writes one (record.Postgres.FillTold) —
-// that commits while the take-back waits for the row's lock is kept, and the take-back still puts
-// the spec back to the version the row held before its confirmation. The take-back is started
-// while the other transaction holds the row, and that transaction commits only once Postgres shows
-// the take-back waiting on it, so the two always meet in this order.
-func TestATakenBackConfirmationKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t *testing.T) {
+// A take-back writes no told row, so a write of the same row by another transaction — here the
+// fill of the Verification document's version, as the reconcile writes one
+// (record.Postgres.FillTold) — neither holds it up nor is lost to it. The fold of a final credit
+// does write the row, and computes it from the row it locks, never from a read before that lock
+// (design_news_folded): the fill that commits while the fold waits for the row's lock is kept, and
+// the fold still takes the spec from the version the row held to the version the credit told. The
+// fold is started while the other transaction holds the row, and that transaction commits only
+// once Postgres shows the fold waiting on it, so the two always meet in this order.
+func TestAFoldKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()
 	task := r.newsTask("outbox:7")
@@ -287,26 +300,39 @@ func TestATakenBackConfirmationKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t 
 		t.Fatalf("fill the child's holder row: %v", err)
 	}
 
-	takenBack := make(chan error, 1)
-	go func() { takenBack <- r.store.PutDelivery(r.ctx, r.reviewer.Token, task) }()
+	// The take-back and the second confirmation land while the fill still holds the row.
+	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, task); err != nil {
+		t.Fatalf("take the confirmation back while the fill holds the row: %v", err)
+	}
+	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, confirmed); err != nil {
+		t.Fatalf("confirm the task again while the fill holds the row: %v", err)
+	}
+
+	final := confirmed
+	final.Ran = true
+	folded := make(chan error, 1)
+	go func() { folded <- r.store.PutDelivery(r.ctx, r.reviewer.Token, final) }()
 	waitedOn := false
 	for deadline := time.Now().Add(30 * time.Second); !waitedOn && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		if err := r.store.Pool().QueryRow(r.ctx, `select exists (select 1 from pg_stat_activity where $1::int = any(pg_blocking_pids(pid)))`,
 			fillPID).Scan(&waitedOn); err != nil {
-			t.Fatalf("read whether the take-back waits on the fill: %v", err)
+			t.Fatalf("read whether the fold waits on the fill: %v", err)
 		}
 	}
 	if !waitedOn {
-		t.Fatal("the take-back never waited on the fill's lock of the child's holder row, so the two did not meet")
+		t.Fatal("the fold never waited on the fill's lock of the child's holder row, so the two did not meet")
 	}
 	if err := fill.Commit(r.ctx); err != nil {
 		t.Fatalf("commit the fill: %v", err)
 	}
-	if err := <-takenBack; err != nil {
-		t.Fatalf("take the confirmation back: %v", err)
+	if err := <-folded; err != nil {
+		t.Fatalf("make the credit final: %v", err)
 	}
-	r.wantTold("after a take-back that waited on a fill of the same row", toldChild, record.AudienceHolder,
-		map[record.DesignStep]int{record.DesignStepSpec: 3, record.DesignStepCriteria: 2}, true)
+	if err := r.store.RetireDelivery(r.ctx, r.reviewer, final.ID); err != nil {
+		t.Fatalf("retire the task: %v", err)
+	}
+	r.wantTold("after a fold that waited on a fill of the same row", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 5, record.DesignStepCriteria: 2}, false)
 }
 
 // A delivery retired without a confirmation — its phase moved on, it was replaced, or it was left
@@ -327,8 +353,9 @@ func TestARetirementRaisesNothing(t *testing.T) {
 }
 
 // A confirmed delivery is written again whenever the machine owed a write and makes it at its next
-// decision. That write records no confirmation — the row already holds it — so it raises nothing
-// and clears nothing: an opening the gate owes the holder again since the first write stays owed.
+// decision. That write carries the same credit, so it credits nothing a second time and clears
+// nothing: an opening the gate owes the holder again since the first write (a close and a reopening
+// settle it, design_news_opening_settled) stays owed.
 func TestASecondConfirmedWriteRaisesNothingAgain(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()
@@ -338,7 +365,7 @@ func TestASecondConfirmedWriteRaisesNothingAgain(t *testing.T) {
 		t.Fatalf("confirm the task: %v", err)
 	}
 	r.wantTold("after the confirmation", toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
-	r.exec(`update design_news_told set opening_owed = true where issue = $1 and audience = 'holder'`, toldChild)
+	r.exec(`select design_news_opening_settled($1, 'holder', true)`, toldChild)
 
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
 		t.Fatalf("write the confirmed task again: %v", err)
@@ -410,8 +437,8 @@ func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
 	}
 	// The gate closes and opens again while the reviewer is still owed news: the close settles the
 	// row's opening, and the reopening owes it a new one.
-	r.exec(`select design_news_opening_settled($1, 'holder', false, null)`, toldChild)
-	r.exec(`select design_news_opening_settled($1, 'holder', true, null)`, toldChild)
+	r.exec(`select design_news_opening_settled($1, 'holder', false)`, toldChild)
+	r.exec(`select design_news_opening_settled($1, 'holder', true)`, toldChild)
 	confirmed := task
 	confirmed.ConfirmedAt = r.at.Add(time.Minute)
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
@@ -421,7 +448,7 @@ func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
 		map[record.DesignStep]int{record.DesignStepSpec: 5}, true)
 
 	// The take-back of that confirmation owes nothing more than the reopening does.
-	r.exec(`select design_news_opening_settled($1, 'holder', false, null)`, toldChild)
+	r.exec(`select design_news_opening_settled($1, 'holder', false)`, toldChild)
 	retaken := task
 	retaken.ID = "outbox:7-1"
 	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, retaken); err != nil {
@@ -437,7 +464,7 @@ func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
 		toldChild).Scan(&seq); err != nil {
 		t.Fatalf("read the child's opening number: %v", err)
 	}
-	r.exec(`select design_news_opening_settled($1, 'holder', true, null)`, toldChild)
+	r.exec(`select design_news_opening_settled($1, 'holder', true)`, toldChild)
 	var current record.DeliveryNews
 	if err := json.Unmarshal(task.News, &current); err != nil {
 		t.Fatal(err)
@@ -465,12 +492,12 @@ func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
 		map[record.DesignStep]int{record.DesignStepSpec: 3}, true)
 }
 
-// A confirmed delivery retired while it still holds the copy of the news its confirmation raised —
-// a newer task took its place while its turn ran, or its turn ended with no result the daemon was
-// waiting on — gives that news back, in the retirement's own transaction: the result of that turn,
-// a provider error among them, now answers a task the claim no longer holds. A confirmed delivery
-// whose turn's result said the turn ran holds no copy any more, and its retirement gives nothing
-// back.
+// A confirmed delivery retired while its credit is not final — a newer task took its place while
+// its turn ran, or its turn ended with no result the daemon was waiting on — ends that credit with
+// its row, in the retirement's own transaction: the result of that turn, a provider error among
+// them, now answers a task the claim no longer holds. A confirmed delivery whose turn's result said
+// the turn ran (supervise.Delivery.Ran) folded its credit into the told rows when that was written,
+// and its retirement takes nothing back.
 func TestARetirementOfAConfirmedTaskGivesBackWhatItsTurnHasNotMadeFinal(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()
@@ -493,9 +520,9 @@ func TestARetirementOfAConfirmedTaskGivesBackWhatItsTurnHasNotMadeFinal(t *testi
 	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, final); err != nil {
 		t.Fatalf("confirm the second task: %v", err)
 	}
-	final.Carried = nil
+	final.Ran = true
 	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, final); err != nil {
-		t.Fatalf("make the second task's raise final: %v", err)
+		t.Fatalf("make the second task's credit final: %v", err)
 	}
 	if err := r.store.RetireDelivery(r.ctx, r.reviewer, final.ID); err != nil {
 		t.Fatalf("retire the second task: %v", err)

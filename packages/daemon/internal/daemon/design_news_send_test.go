@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -69,7 +70,7 @@ func newNewsRig(t *testing.T) *newsRig {
 			{newsReviewed, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}},
 			{newsTested, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 4}},
 		} {
-			if err := records.RaiseTold(r.ctx, tx, told.issue, told.audience, told.versions, time.Now()); err != nil {
+			if err := records.RaiseTold(r.ctx, tx, told.issue, told.audience, raisedTo(told.versions), time.Now()); err != nil {
 				return err
 			}
 		}
@@ -169,7 +170,7 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 	if !strings.HasPrefix(task, ownText+"\n\nThe design gate of LEGION-500 opened: a person approved version 5 of its spec document (artifact-spec)") {
 		t.Fatalf("task = %q, want the start's own text, a blank line, then the opened gate sentence", task)
 	}
-	for _, want := range []string{"version 5, since version 3, which your phase last took", `"Design" changed`, "r2 changed"} {
+	for _, want := range []string{"version 5, since version 3, which your phase last took", `"Design" changed`, `"r2" changed`} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("task = %q, want the standing spec item rendered with its recorded change set (%q)", task, want)
 		}
@@ -269,7 +270,7 @@ func TestAnItemWhoseReviewHistoryIsRecordedUnreadIsSentSoAndOneNotYetReadIsDropp
 	}
 	task, carried := r.send(newsTested, claim.RoleTester, tester)
 	for _, want := range []string{testerText + "\n\n", "version 5, since a version the daemon could not read",
-		"The version your phase last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY."} {
+		`The version your phase last took could not be read: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY".`} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("the tester's task with its history recorded unread = %q, want it to say %q", task, want)
 		}
@@ -301,7 +302,7 @@ func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *
 	attached := record.DeliveryNewsItem{Issue: newsTested, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", To: 5,
 		HistoryUnread: &record.DeliveryHistoryUnread{Reason: reason, ReadAt: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}}
 	tester := record.DeliveryNews{Task: testerText, Items: []record.DeliveryNewsItem{attached}}
-	unreadWords := "The version your phase last took could not be read: " + reason + "."
+	unreadWords := "The version your phase last took could not be read: " + strconv.Quote(reason) + "."
 
 	// A reconcile of the tree is queued, and the record holds no unread row: a start would attach
 	// nothing, but the delivery carries the item as it was attached.

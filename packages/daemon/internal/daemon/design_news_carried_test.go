@@ -427,7 +427,7 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 			{pathRoot, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 4, record.DesignStepCriteria: 1}},
 			{pathChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 3}},
 		} {
-			if err := r.records.RaiseTold(r.ctx, tx, told.issue, told.audience, told.versions, time.Now()); err != nil {
+			if err := r.records.RaiseTold(r.ctx, tx, told.issue, told.audience, raisedTo(told.versions), time.Now()); err != nil {
 				return err
 			}
 		}

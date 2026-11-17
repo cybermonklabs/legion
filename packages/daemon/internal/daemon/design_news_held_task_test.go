@@ -197,7 +197,7 @@ func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *tes
 	if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 		t.Fatalf("the merger's prompts = %+v, want its task, once", prompted)
 	}
-	for _, want := range []string{"version 5, since version 4, which your phase last took", `"Design" changed`, "r2 changed"} {
+	for _, want := range []string{"version 5, since version 4, which your phase last took", `"Design" changed`, `"r2" changed`} {
 		if !strings.Contains(prompted[0].Message, want) {
 			t.Fatalf("the merger's task = %q, want it to say %q: the architect's task never told the member's news", prompted[0].Message, want)
 		}

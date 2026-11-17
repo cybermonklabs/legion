@@ -955,7 +955,7 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		}
 		// What the child's holders took of the old generation's gate goes with that gate.
 		if err := records.RaiseTold(context.Background(), tx, "LEGION-CHILD", record.AudienceHolder,
-			map[record.DesignStep]int{record.DesignStepSpec: 2}, fixedNow); err != nil {
+			[]record.NewsItem{{Step: record.DesignStepSpec, To: 2}}, fixedNow); err != nil {
 			t.Fatalf("seed what the child's holder took: %v", err)
 		}
 		if err := records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-CHILD", Role: claim.RoleImplementer, Claim: "implementer-claim", HandoffCommit: "abc123", Rounds: 2, Verdict: "pass"}); err != nil {

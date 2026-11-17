@@ -359,11 +359,16 @@ func treeNothingChangedClause(version int) string {
 	return fmt.Sprintf("Nothing the tree holds changed since version %d, which you took.", version)
 }
 
-// seedTold records what issue's audience took of its tree's approved design.
+// seedTold records what issue's audience took of its tree's approved design: each step of versions
+// raised to its version from whatever the row took.
 func seedTold(t *testing.T, pool *pgxpool.Pool, issue string, audience record.DesignAudience, versions map[record.DesignStep]int) {
 	t.Helper()
+	items := make([]record.NewsItem, 0, len(versions))
+	for step, version := range versions {
+		items = append(items, record.NewsItem{Step: step, To: version})
+	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().RaiseTold(t.Context(), tx, issue, audience, versions, time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC))
+		return record.NewStore().RaiseTold(t.Context(), tx, issue, audience, items, time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC))
 	})
 }
 

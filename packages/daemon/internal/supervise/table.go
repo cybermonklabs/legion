@@ -126,15 +126,14 @@ type StreamLateRefusal struct {
 	ConnSequence uint64
 }
 
-// PromptAcked is a send's prompt acknowledged, posted by the send's own goroutine. News is the
-// news of the approved design that prompt carried (Delivery.News as the send rendered it), which
-// the acknowledgement records as what a confirmation of that prompt's turn raises
-// (Delivery.Carried, acked).
+// PromptAcked is a send's prompt acknowledged, posted by the send's own goroutine. What that prompt
+// carried of news of the approved design is the pending delivery's own news, read where the
+// acknowledgement is decided (acked): the fence passes only an acknowledgement of the pending id
+// (fenceOutcome), and every rendering of the news takes a new id (currentNews, currentRootTask).
 type PromptAcked struct {
 	Claim      claim.Token
 	Generation uint64
 	DeliveryID string
-	News       []byte
 }
 
 // PromptRefused is a send's prompt refused, or lost to the transport, posted by the send's own
@@ -1363,25 +1362,23 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // It tells nothing of what the prompt carried, as confirm states, and so writes the delivery
 // alone, as for every other prompt.
 //
-// It does record what the prompt carried of news of the approved design (PromptAcked.News), with
-// the prompt (awaitResult), and as the copy the task's confirmation raises (Delivery.Carried): the
-// news of the first prompt still outstanding, whose turn is the session's next (turnNews). The
-// acknowledgement is the one word that the send's adoption of the working copy and its identity
-// mint went through and that the agent took the prompt, so a send refused at either, or answered
-// busy, records none, and a task no prompt of which was acknowledged stays one the question a
-// restart leaves never takes a turn of the agent's own for (unsentNews). The copy is written with
-// the delivery, so a restart reads what the prompt it may find running carried. An
-// acknowledgement the shim gave from its own record, for a send under an id it already carried
-// (shimwire's Dedupe), reports the news the forwarded send carried, since every send under one id
-// carries the same news (currentNews takes a new id for a new rendering).
-func acked(m *Machine, ctx context.Context, ev Event) error {
+// It does record what the prompt carried of news of the approved design, the pending delivery's
+// own news (PromptAcked says why that is the prompt's), with the prompt (awaitResult), and as the
+// copy the task's confirmation credits (copyTurnNews): the news of the first prompt still
+// outstanding, whose turn is the session's next (turnNews). The acknowledgement is the one word that
+// the send's adoption of the working copy and its identity mint went through and that the agent
+// took the prompt, so a send refused at either, or answered busy, records none, and a task no
+// prompt of which was acknowledged stays one the question a restart leaves never takes a turn of
+// the agent's own for (unsentNews). The copy is written with the delivery, so a restart reads what
+// the prompt it may find running carried. An acknowledgement the shim gave from its own record, for
+// a send under an id it already carried (shimwire's Dedupe), is of the same news as the send it
+// forwarded, since every send under one id carries the same news.
+func acked(m *Machine, ctx context.Context, _ Event) error {
 	m.helloDuringSend = false
 	p := m.claim.Pending
-	m.awaitResult(p.ID, ev.(PromptAcked).News)
+	m.awaitResult(p.ID, p.News)
 	m.markRead(p)
-	if p.ConfirmedAt.IsZero() {
-		p.Carried = m.turnNews()
-	}
+	m.copyTurnNews(p)
 	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	return m.putPending(ctx)
 }
@@ -1391,11 +1388,12 @@ func acked(m *Machine, ctx context.Context, ev Event) error {
 // confirmed the delivery (turnStarted). The mark and the wait for a turn are that turn's to need,
 // and it has started — but the prompt itself is still outstanding, and which of the turns that
 // follow is its own is still a question only its result answers, so it is recorded here too, with
-// the news it carried. The copy the confirmation raised stays as that confirmation fixed it
-// (confirmedNews). Nothing else moves, and nothing is written.
-func ackedInTurn(m *Machine, _ context.Context, ev Event) error {
+// the news it carried. The copy the confirmation credits stays as that confirmation fixed it
+// (turnAnswers). Nothing else moves, and nothing is written.
+func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 	m.helloDuringSend = false
-	m.awaitResult(m.claim.Pending.ID, ev.(PromptAcked).News)
+	p := m.claim.Pending
+	m.awaitResult(p.ID, p.News)
 	return nil
 }
 
@@ -1762,8 +1760,8 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 // confirmation records the news as taken, so a turn the agent started by itself, an Envoy
 // message's while the daemon was down, would record news nobody read — a task whose adoption or
 // identity mint failed before any prompt went among them. Only a send of this machine's own or a
-// prompt it waits for a turn on makes such a turn that task's, and its confirmation raises what
-// that prompt carried (confirmedNews).
+// prompt it waits for a turn on makes such a turn that task's, and its confirmation credits what
+// that prompt carried (turnAnswers).
 //
 // A prompt of the task acknowledged and still outstanding (Machine.outstanding) makes the turn the
 // task's however late it starts, past the wait for it (noTurn) and past any busy answer to a
@@ -1793,15 +1791,14 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart func(delivery string)) error {
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	p := m.claim.Pending
-	_, awaiting := m.timers[TimerTurn]
-	inFlight := m.send != nil || awaiting || m.awaitsResult() || (m.askFirst && (p == nil || !m.askFirstNeverTakes(*p)))
+	news, inFlight := m.turnAnswers()
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
 	// The write is the confirmation where this start is the pending delivery's turn, and the
 	// claim alone where it is a foreign one; the delivery is named in the start's line for the
 	// same reason, so both are decided in the one place that asks the question.
 	persist, task := m.persist, ""
 	if own {
-		persist, task = m.confirm, p.ID
+		persist, task = func(ctx context.Context) error { return m.confirmCarrying(ctx, news) }, p.ID
 	}
 	// The start is logged before the write, never after it: the decision this line exists for is
 	// a turn start whose claim write failed, and a line written after the write would leave
@@ -2159,13 +2156,14 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // beat its turn's end leaves both to that end.
 //
 // A result that says the turn ran with no provider error makes final what the task's confirmation
-// raised of news of the approved design: the copy goes (Delivery.Carried), so the retirement that
-// follows gives nothing back. Until then the copy is what a take-back or a retirement puts back
-// (the claim store's RetireDelivery), so a task a newer one replaced while its turn still ran, or
-// whose turn ended in a provider error that the fence then dropped as stale, owes its news again.
-// A task this result confirms is confirmed with the news its own prompt carried
-// (Machine.promptNews), or, for a prompt this daemon did not see acknowledged, the copy the task
-// holds.
+// credited of news of the approved design: the delivery is marked so (Delivery.Ran), and the write
+// that records the mark folds the copy into the told rows (the claim store's settleDesignNews), so
+// the retirement that follows ends nothing of it. Until then the credit is the delivery's own row,
+// so a task a newer one replaced while its turn still ran, or whose turn ended in a provider error
+// that the fence then dropped as stale, owes its news again once that row goes. A write of the mark
+// that fails leaves the delivery unsaved, and settle's next write of it folds the copy then. A task
+// this result confirms is confirmed with the news its own prompt carried (promptNews), or, for a
+// prompt this daemon did not see acknowledged, the copy the task holds.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if !r.AgentInvoked {
@@ -2190,7 +2188,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		}
 		return m.promptFailed(ctx, why, taskRead)
 	}
-	ran, acknowledged := m.promptNews[r.DeliveryID], m.outstandingPrompt(r.DeliveryID)
+	ran, acknowledged := m.promptNews(r.DeliveryID)
 	m.forgetOutstanding()
 	if r.Error != "" {
 		return m.providerErrored(ctx, r)
@@ -2215,8 +2213,8 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 			return err
 		}
 	}
-	if p := m.claim.Pending; len(p.Carried) > 0 {
-		p.Carried = nil
+	if p := m.claim.Pending; len(p.Carried) > 0 && !p.Ran {
+		p.Ran = true
 		if err := m.putPending(ctx); err != nil {
 			return err
 		}

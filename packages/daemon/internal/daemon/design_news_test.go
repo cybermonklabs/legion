@@ -1202,7 +1202,7 @@ func TestThreeFailedHistoryReadsRecordTheHistoryUnreadWithNoVersionAndReleaseThe
 	}
 	task, news := pendingNews(t, machine)
 	for _, want := range []string{"version 5, since a version the daemon could not read",
-		"The version your phase last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY."} {
+		`The version your phase last took could not be read: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY".`} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("the merger's task = %q, want it to say %q", task, want)
 		}
@@ -1364,7 +1364,7 @@ func TestAMergerReleasedOnAnUnreadHistoryIsSentWhatItsStartAttached(t *testing.T
 			never: []string{"could not be read", "502 BAD_GATEWAY"}},
 		{name: "a reconcile is pending while Dispatch still fails", answers: false,
 			says: []string{"version 5, since a version the daemon could not read",
-				"The version your phase last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY."},
+				`The version your phase last took could not be read: "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY".`},
 			never: []string{"first version a person approved"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1497,10 +1497,10 @@ func TestTheSweepQueuesTheReconcileOfATreeOwedNewsAndOfNoOther(t *testing.T) {
 			LatestVersion: 5, ApprovedVersion: new(5), EverOpened: true}); err != nil {
 			return err
 		}
-		if err := r.records.RaiseTold(r.ctx, tx, quiet, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}, time.Now()); err != nil {
+		if err := r.records.RaiseTold(r.ctx, tx, quiet, record.AudienceHolder, raisedTo(map[record.DesignStep]int{record.DesignStepSpec: 5}), time.Now()); err != nil {
 			return err
 		}
-		return r.records.RaiseTold(r.ctx, tx, quiet, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 5}, time.Now())
+		return r.records.RaiseTold(r.ctx, tx, quiet, record.AudienceArchitect, raisedTo(map[record.DesignStep]int{record.DesignStepSpec: 5}), time.Now())
 	})
 	sweeper := &workflowRuntime{pool: r.pool, records: r.records, gatedSteps: config.DesignGateRootIssues.Steps(), dispatchProject: "LEGION",
 		log: quietLogger()}

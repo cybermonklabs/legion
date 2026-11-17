@@ -1019,11 +1019,12 @@ func versionNewsNamesVersion(text string, n int) bool {
 }
 
 // versionNewsNamesCheck says whether text names check where the news names a changed check, at the
-// head of its `Checks:` line ("Checks: c-a7 changed."), the one check of each tree's Verification
-// document, followed by the space that ends it. A bare check id is no proof: `c-a7` can stand
-// inside a UUID the news prints, and `Checks: c-a7` alone matches `Checks: c-a7-open`.
+// head of its `Checks:` line (`Checks: "c-a7" changed.`), the one check of each tree's Verification
+// document, quoted as the news quotes a block id, which is the document's own text. A bare check id
+// is no proof: `c-a7` can stand inside a UUID the news prints, and the quotes are what keep
+// `Checks: "c-a7"` from matching `Checks: "c-a7-open"`.
 func versionNewsNamesCheck(text, check string) bool {
-	return strings.Contains(text, "Checks: "+check+" ")
+	return strings.Contains(text, "Checks: "+strconv.Quote(check)+" ")
 }
 
 // Step A2. A tree registers its spec alone, and its gate opens on the setup approval of version 1.

@@ -196,7 +196,7 @@ func TestAHolderRowThatKnowsNoVersionKeepsItAcrossTheNextEntry(t *testing.T) {
 	root, member := laterEntryRoot, laterEntryMember
 	engine, apply := seedTestedMember(t, pool, 4)
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().RaiseTold(t.Context(), tx, member, record.AudienceHolder, map[record.DesignStep]int{}, engine.now())
+		return record.NewStore().RaiseTold(t.Context(), tx, member, record.AudienceHolder, nil, engine.now())
 	})
 
 	apply("test-0", laterEntryTesterFails)

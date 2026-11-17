@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -307,7 +306,9 @@ const (
 	settleLater newsSettlement = iota
 	// settleRaise raises the told versions directly and sends nothing: no pair changed anything of
 	// the work, each changing decision blocks alone or nothing at all, which tells nobody anything,
-	// and no opening is owed.
+	// and no opening is owed. Each pair is raised over as a credit counted from its From
+	// (record.Store.RaiseTold), so a raise read off a version an unfinal delivery's credit gave the
+	// row reaches nothing once that credit is given back, and the news before it stays owed.
 	settleRaise
 	// settleSend sends the news, by a news-only start.
 	settleSend
@@ -315,7 +316,7 @@ const (
 
 // settlementOf is what the reconcile does for one told row owed items, given what is recorded:
 // settleLater while the record cannot yet tell some item (newsRecorded.change); settleRaise, with
-// the version of each step to raise to, when no pair changed anything of the work
+// the items to raise past, when no pair changed anything of the work
 // (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all) and the row owes
 // no opening; and settleSend otherwise. An item whose review history could not be read is sent,
 // never raised: nothing says what changed since the version its holder took. A pair that changed
@@ -323,8 +324,7 @@ const (
 // was told it closed, and a person approved it later, so the holder is owed the opening as a task,
 // with the words that nothing its issue holds changed and no change list (workflow.RenderNews),
 // since no role message carried that opening.
-func settlementOf(items []record.NewsItem, recorded newsRecorded, openingOwed bool) (newsSettlement, map[record.DesignStep]int) {
-	versions := map[record.DesignStep]int{}
+func settlementOf(items []record.NewsItem, recorded newsRecorded, openingOwed bool) (newsSettlement, []record.NewsItem) {
 	workUnchanged := true
 	for _, item := range items {
 		change, told := recorded.change(item)
@@ -332,10 +332,9 @@ func settlementOf(items []record.NewsItem, recorded newsRecorded, openingOwed bo
 			return settleLater, nil
 		}
 		workUnchanged = workUnchanged && change.HistoryUnread == nil && change.Changes.WorkUnchanged()
-		versions[item.Step] = item.To
 	}
 	if workUnchanged && !openingOwed {
-		return settleRaise, versions
+		return settleRaise, items
 	}
 	return settleSend, nil
 }
@@ -501,12 +500,12 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		// settled. A row raised or left for later queues no start, so its holder is never read.
 		var sendTo []toldKey
 		for _, news := range owed.Members {
-			settlement, versions := settlementOf(news.Items, recorded, record.ToldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed)
+			settlement, past := settlementOf(news.Items, recorded, record.ToldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed)
 			switch settlement {
 			case settleLater:
 				continue
 			case settleRaise:
-				if err := r.records.RaiseTold(ctx, tx, news.Issue, record.AudienceHolder, versions, now); err != nil {
+				if err := r.records.RaiseTold(ctx, tx, news.Issue, record.AudienceHolder, past, now); err != nil {
 					return err
 				}
 				raised++
@@ -515,10 +514,10 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			sendTo = append(sendTo, toldKey{news.Issue, record.AudienceHolder})
 		}
 		if owed.ArchitectOwed() {
-			settlement, versions := settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed)
+			settlement, past := settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed)
 			switch settlement {
 			case settleRaise:
-				if err := r.records.RaiseTold(ctx, tx, root.Key, record.AudienceArchitect, versions, now); err != nil {
+				if err := r.records.RaiseTold(ctx, tx, root.Key, record.AudienceArchitect, past, now); err != nil {
 					return err
 				}
 				raised++
@@ -590,18 +589,19 @@ type startNews struct {
 // newsForStart is the news a start of role on issue carries, read from the record in one read
 // transaction when the start runs, with no Dispatch read: the items record.OwedNews owes the told
 // rows the claim speaks for (owedToClaim), and the opening where its row owes it and the standing
-// gate is open, each rendered as a send renders it (readNewsAtSend). An item the record cannot tell
-// yet — its change set not recorded, or, where its told row knows no version, that version neither
-// read from the review history nor recorded unread with no reconcile of its tree pending
-// (readNewsRecorded) — is left out and stays owed, for the reconcile or a later start to carry. An
-// item it attaches with its review history unread carries that history's reason and time
+// gate is open, rendered by the one render every task of news goes through (renderNews), so the
+// news the start carries is exactly what its task names. An item the record cannot tell yet — its
+// change set not recorded, or, where its told row knows no version, that version neither read from
+// the review history nor recorded unread with no reconcile of its tree pending (readNewsRecorded)
+// — is left out and stays owed, for the reconcile or a later start to carry. An item it attaches
+// with its review history unread carries that history's reason and time
 // (record.DeliveryNewsItem.HistoryUnread), so every later send of the task tells it as attached,
 // whatever a reconcile does before then (carriedChange). The task is the start's own text
 // (record.DeliveryNews.Task), a blank line, then the news; a start that carries nothing delivers
 // its own text.
 func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload record.SuperviseRequest, token claim.Token) (startNews, error) {
 	carried := record.DeliveryNews{Task: payload.Task}
-	var sent newsAtSend
+	sent := renderedNews{task: payload.Task}
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Tree)
 		if err != nil {
@@ -613,19 +613,12 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 		if carried.Empty() {
 			return nil
 		}
-		sent, err = readNewsAtSend(ctx, tx, r.records, r.gatedSteps, token, carried, r.now)
+		sent, err = renderNews(ctx, tx, r.records, r.gatedSteps, token, carried, nil, r.now)
 		return err
 	}); err != nil {
 		return startNews{}, fmt.Errorf("read the news the start of %s's %s carries: %w", issue.Key, payload.Role, err)
 	}
-	if sent.kept.Empty() {
-		return startNews{task: payload.Task}, nil
-	}
-	news, err := json.Marshal(sent.kept)
-	if err != nil {
-		return startNews{}, fmt.Errorf("encode the news the start of %s's %s carries: %w", issue.Key, payload.Role, err)
-	}
-	return startNews{task: paragraphs(payload.Task, sent.text), news: news, says: sent.says}, nil
+	return startNews{task: sent.task, news: sent.news, says: sent.says}, nil
 }
 
 // owedToClaim is what facts owe the claim token, of role on issue, speaks for, as a delivery

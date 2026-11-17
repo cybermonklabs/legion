@@ -214,7 +214,7 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
 					// What the child's holder took of the old root's gate: version 1, below the
 					// version the gate the carry copies stands approved at.
-					records.RaiseTold(context.Background(), tx, child, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 1}, fixedNow),
+					records.RaiseTold(context.Background(), tx, child, record.AudienceHolder, []record.NewsItem{{Step: record.DesignStepSpec, To: 1}}, fixedNow),
 				} {
 					if put != nil {
 						t.Fatalf("seed: %v", put)

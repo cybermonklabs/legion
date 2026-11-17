@@ -655,7 +655,7 @@ func TestAFreshSessionOfAWorkerHoldingOnlyANewsTaskRestartsItsPhase(t *testing.T
 			m, _ := h.supervisor.Machine(token)
 			// A news-only start reached the worker between turns. No shim is connected, so the
 			// task waits unsent.
-			news := []byte(`{"news_only":true,"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5}]}`)
+			news := []byte(`{"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5}]}`)
 			if err := m.Handle(h.ctx, supervise.RequestDeliver{Claim: token, ID: "outbox:91", Task: "The approved design changed.",
 				Phase: phase.Implementing, Generation: h.stored(token).Generation, News: news, NewsOnly: true}); err != nil {
 				t.Fatalf("queue the news task: %v", err)

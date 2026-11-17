@@ -185,8 +185,18 @@ func (r *newsPathRig) member(m pathMember, i int) {
 func (r *newsPathRig) told(issue string, audience record.DesignAudience, version int) {
 	r.t.Helper()
 	r.inTx(func(tx pgx.Tx) error {
-		return r.records.RaiseTold(r.ctx, tx, issue, audience, map[record.DesignStep]int{record.DesignStepSpec: version}, time.Now())
+		return r.records.RaiseTold(r.ctx, tx, issue, audience, raisedTo(map[record.DesignStep]int{record.DesignStepSpec: version}), time.Now())
 	})
+}
+
+// raisedTo is the raise of each step of versions to its version from whatever the row took
+// (record.Store.RaiseTold with no From): what a case seeds a told row with.
+func raisedTo(versions map[record.DesignStep]int) []record.NewsItem {
+	items := make([]record.NewsItem, 0, len(versions))
+	for step, version := range versions {
+		items = append(items, record.NewsItem{Step: step, To: version})
+	}
+	return items
 }
 
 // toldOf is issue's audience row as the record holds it, the zero row where there is none.
@@ -774,12 +784,12 @@ func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T)
 		state    record.DesignChangesState
 		says     []string
 	}{
-		{name: "recorded read", attempts: 1, state: record.DesignChangesRead, says: []string{`"Design" changed`, "r2 changed"}},
+		{name: "recorded read", attempts: 1, state: record.DesignChangesRead, says: []string{`"Design" changed`, `"r2" changed`}},
 		{name: "recorded unavailable by a Dispatch without the route", attempts: designChangesAttempts, state: record.DesignChangesUnavailable,
 			answer: func(pair record.VersionPair) (dispatch.ArtifactChanges, error) {
 				return dispatch.ArtifactChanges{}, fmt.Errorf("%w: GET /api/v1/artifacts/%s/changes: 404 NOT_FOUND", dispatch.ErrNoChangesRoute, pair.ArtifactID)
 			},
-			says: []string{"The change list could not be read", "dispatch has no changes route"}},
+			says: []string{`The change list could not be read: "Dispatch failed`, "dispatch has no changes route"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newNewsPathRig(t, 5, pathMember{key: pathRoot, at: phase.Retro})

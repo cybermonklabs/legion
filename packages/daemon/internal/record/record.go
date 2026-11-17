@@ -1749,16 +1749,18 @@ type Store interface {
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
-	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience.
+	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience,
+	// as each audience took it, the credit of every confirmed delivery not yet final counted in
+	// (Postgres.TreeTold).
 	TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error)
 	// BaselineTold writes issue's audience row at the approved versions root's gate rows hold in
 	// this transaction, when issue holds no such row: the version work starts from
 	// (Postgres.BaselineTold).
 	BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error
-	// RaiseTold raises each step of versions on issue's audience row to the greater of what the
-	// row holds and the version given, writing the row when there is none; a step versions does
-	// not name keeps what the row holds.
-	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
+	// RaiseTold raises issue's audience row past each of items, from its From (nil for none) to its
+	// To, as a final credit that reaches only a row that took its From, writing the row when there
+	// is none; a step items do not name keeps what the row holds (Postgres.RaiseTold).
+	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, items []NewsItem, at time.Time) error
 	// SettleOpening settles the gate's opening on issue's audience row as it reaches the audience
 	// now: owed, for the task that carries its news to lead with, or told by the opened role
 	// message; the row takes its next opening number either way (Postgres.SettleOpening).

@@ -23,15 +23,18 @@ const (
 // DesignTold is what one audience took of its tree's approved design: the approved version of each
 // gated step's document it took, and whether the gate's opening is owed to it.
 //
-// A holder row rises only where a delivery that carried news is confirmed, or where what it would
-// be told changes nothing of the work (DesignChanges.WorkUnchanged: decision blocks alone, or
-// nothing at all), which tells nobody anything; so it says what the session holding the issue's
-// phase was given, never what the daemon meant to give it. Its first value is the baseline: the
-// approved versions the issue's first working phase of its generation started from (workflow's
-// Engine.enter), and for a tree root's architect row those its tree's first opening released
-// (workflow's putGateTold), or the gate a hand-over carried to it (admit's readmit). The rows go
-// with the issue's generation (Postgres.ClearGeneration), so the next generation takes its own
-// baseline.
+// A holder row rises only by a credit: a confirmed delivery's, the copy of news its prompt carried,
+// counted while the delivery holds that confirmation and folded in once its turn's result says the
+// turn ran, or a raise where what it would be told changes nothing of the work
+// (DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all), which tells nobody
+// anything. A credit reaches only a row that took the version it counts from, and its give-back
+// ends it alone (Postgres.TreeTold reads the row as its credits make it). So it says what the
+// session holding the issue's phase was given, never what the daemon meant to give it. Its first
+// value is the baseline: the approved versions the issue's first working phase of its generation
+// started from (workflow's Engine.enter), and for a tree root's architect row those its tree's
+// first opening released (workflow's putGateTold), or the gate a hand-over carried to it (admit's
+// readmit). The rows go with the issue's generation (Postgres.ClearGeneration), so the next
+// generation takes its own baseline.
 type DesignTold struct {
 	Issue    string
 	Audience DesignAudience
@@ -47,7 +50,7 @@ type DesignTold struct {
 	// (Postgres.SettleOpening, CloseOpenings): each opening that became owed to the audience, each
 	// close of the gate and each opened role message the audience was sent takes the next one. An
 	// owed opening is named by it, and a delivery carries the number it rendered the opening under
-	// (DeliveryOpening.Seq), so its confirmation clears that opening and no later one.
+	// (DeliveryOpening.Seq), so its credit tells that opening and no later one.
 	Opening int
 	// ToldAt is when a write of its versions last touched the row: the baseline or the fill that
 	// wrote it, or the last raise, which sets it whether or not a version rose. A fill of a row

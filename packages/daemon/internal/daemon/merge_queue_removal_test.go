@@ -449,7 +449,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
 			return err
 		}
-		return r.records.RaiseTold(ctx, tx, key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: approved}, time.Now().UTC())
+		return r.records.RaiseTold(ctx, tx, key, record.AudienceHolder, raisedTo(map[record.DesignStep]int{record.DesignStepSpec: approved}), time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
 	}
@@ -472,7 +472,7 @@ func (r *dequeueRig) oweNews(t *testing.T, issue dequeueIssue) {
 			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
 			return err
 		}
-		return r.records.RaiseTold(ctx, tx, issue.key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 1}, time.Now().UTC())
+		return r.records.RaiseTold(ctx, tx, issue.key, record.AudienceHolder, raisedTo(map[record.DesignStep]int{record.DesignStepSpec: 1}), time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("record the news %s's merger is owed: %v", issue.key, err)
 	}
