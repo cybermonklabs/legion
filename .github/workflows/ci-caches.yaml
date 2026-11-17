@@ -353,11 +353,11 @@ jobs:
       - name: Build what envoy-infra-go builds
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |
-          sets=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+          flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
           go vet -tags pulumilive,natslive ./...
-          while IFS= read -r tags; do
-            GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...
-          done <<< "$sets"
+          while IFS= read -r flag; do
+            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+          done <<< "$flags"
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
         working-directory: packages/envoy/infra

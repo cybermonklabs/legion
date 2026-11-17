@@ -89,11 +89,11 @@ jobs:
       # One darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
       - name: Vet envoy-infra for darwin, its live-test tags included
         run: |
-          sets=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
-          while IFS= read -r tags; do
-            echo "Vetting for darwin with -tags ${tags:-(none)}"
-            GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...
-          done <<< "$sets"
+          flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+          while IFS= read -r flag; do
+            echo "Vetting for darwin with $flag"
+            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+          done <<< "$flags"
         working-directory: packages/envoy/infra
       # Every package of the module except internal/textcheck, whose tests are the text-check
       # job's: a change to only what they read must not start this job, and they must not run

@@ -1,199 +1,95 @@
 #!/usr/bin/env python3
 """The tag sets a vet of a Go module for another platform runs under, so that between them they
-compile every file of the module that platform can build.
+compile every file of the module that platform builds under some choice of tags.
 
 A tag adds files to a package and a negated tag takes them out, so no one `-tags` list compiles
 both a `//go:build feature` file and a `//go:build !feature` one, and a list kept by hand falls
 behind the module the day a new tag lands: `go vet -tags A,B ./...` passes over a file outside
-that list and stays green, since it never read the file. This prints the sets instead, one per
-line, comma-joined (an empty line is the set with no tag), read off the module's own files:
+that list and stays green, since it never read the file. This prints the sets instead, read off
+the module's own files, one per line, each as the whole go flag that selects it: `-tags=A,B`,
+and `-tags=` for the set with no tag. No line is ever empty, since a shell's command
+substitution drops trailing empty lines and with them a last set with no tag:
 
-    sets=$(python3 .github/scripts/go_build_tags.py packages/envoy darwin arm64)
-    while IFS= read -r tags; do GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...; done <<< "$sets"
+    flags=$(python3 .github/scripts/go_build_tags.py packages/envoy darwin arm64)
+    while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./...; done <<< "$flags"
 
-The first set is every tag a constraint of the module names. For each file the target can build
-under some choice of tags (its name and its constraint allow the target platform) and no set so
-far builds, one more set is added: every tag, with that file's own tags set to a choice that
-builds it. A tag is a name of a constraint that no toolchain sets (is_tag): not a GOOS or GOARCH,
-not one of an architecture's feature names (`amd64.v1`, `arm64.v8.0`), and none of NOT_TAGS, the
-release tags or the GOEXPERIMENT ones. A constraint is the file's `//go:build` line, else its
-`// +build` lines, read as Go reads them (constraint), with names in any script Go accepts.
-
-What the target's toolchain sets is asked of the go command, never written here (toolchain_names):
-its tool and release tags and whether cgo is on. check-ci-filters.sh's rule 20 then asks go list
-itself, under each set, which files the vet compiles, and fails on a file go would build for the
-target under some tags while no set does; a set this script gets wrong fails there, by name.
+The first set is every tag a build constraint of the module names. Then, for each file no set
+so far compiles whose constraint names a tag, every choice of that file's own tags is tried
+over the rest, and the first one under which the file compiles is added as a set. Whether a
+file compiles is never decided here: `go list -find`, run with the module's own toolchain for
+the target platform and the set, says so, so Go's own constraint grammar, file-name suffixes
+and toolchain names decide every answer. This script only reads which names a constraint uses
+(constraint_names) and which of those are tags (is_tag). check-ci-filters.sh's rule 20 asks go
+list again, file by file from disk, whether the sets a vet step loops over miss any file, and
+fails naming it.
 """
 
 import itertools
+import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-# The names a constraint may use that no vet chooses, beyond the platform names: the toolchain
-# sets each (gc, gccgo, the sanitizer modes the -race, -msan and -asan builds turn on, cgo,
-# unix, boringcrypto, which Go reads as goexperiment.boringcrypto), or nothing ever does
-# (ignore, for a file no build compiles, such as a generator `go run` starts).
+# The names a constraint may use that no vet chooses, beyond the platform names and the
+# patterns below: the toolchain sets each (gc, gccgo, the sanitizer modes the -race, -msan and
+# -asan builds turn on, cgo, unix, boringcrypto, which Go reads as goexperiment.boringcrypto), or
+# nothing ever does (ignore, for a file no build compiles, such as a generator `go run` starts).
+# Passing one as a tag would make a constraint on it true where the toolchain makes it false.
 NOT_TAGS = frozenset({"unix", "cgo", "gc", "gccgo", "race", "msan", "asan", "ignore", "boringcrypto"})
 NOT_TAG_PATTERN = re.compile(r"go1\.\d+|goexperiment\..+")
-# The GOOS and GOARCH values go/build knows beyond `go tool dist list`'s ports (syslist.go):
-# a file named for one, foo_zos.go say, is still a file of that platform alone.
+# The GOOS and GOARCH values go/build knows beyond `go tool dist list`'s ports (its syslist):
+# names a constraint can use that are platforms, so never tags.
 EXTRA_OS = frozenset({"hurd", "nacl", "zos"})
 EXTRA_ARCH = frozenset({"amd64p32", "armbe", "arm64be", "mips64p32", "mips64p32le", "ppc", "riscv",
                         "s390", "sparc", "sparc64"})
-# The GOOS values the `unix` constraint matches (go/build's unixOS).
-UNIX_OS = frozenset({"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios",
-                     "linux", "netbsd", "openbsd", "solaris"})
-# A GOOS that matches another's name too, as go/build's matchTag has it.
-IMPLIES = {"android": "linux", "illumos": "solaris", "ios": "darwin"}
-GO_BUILD = re.compile(r"^//go:build(?:\s(.*))?$")
-PLUS_BUILD = re.compile(r"^//\s*\+build(?:\s(.*))?$")
-# A name is any run of characters that is no operator, parenthesis, comma or space: Go's own
-# lexer takes letters and digits of every script, `_` and `.`, so this never cuts one short.
+# A constraint line, either syntax, and the names it uses: any run of characters that is no
+# operator, parenthesis, comma or space, so a name in any script Go accepts is read whole.
+CONSTRAINT_LINE = re.compile(r"^//(?:go:build|\s*\+build)(?:\s(.*))?$")
 NAME = re.compile(r"[^\s()!&|,]+")
-TOKEN = re.compile(r"\s*(&&|\|\||!|\(|\)|[^\s()!&|]+)")
 # A file whose constraint names more tags than this is refused rather than searched.
-MAX_FILE_TAGS = 10
+MAX_FILE_TAGS = 6
+LISTED = ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles")
+
+
+def go(module: Path, args: list, **env) -> str:
+    """The output of a go command run in the module, so with its own toolchain, with `env` added
+    to the environment (GOOS and GOARCH, for a listing of another platform)."""
+    result = subprocess.run(["go", *args], cwd=module, env={**os.environ, **env}, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"go_build_tags.py: in {module}, go {' '.join(args[:3])} ... failed: "
+                         f"{' '.join(result.stderr.split())[:500]}")
+    return result.stdout
 
 
 def platforms(module: Path) -> tuple:
     """(every GOOS, every GOARCH) go/build knows: `go tool dist list`'s ports, with the module's
     own toolchain, and the extra names above."""
-    listed = subprocess.run(["go", "tool", "dist", "list"], cwd=module, capture_output=True, text=True, check=True)
-    pairs = [line.split("/") for line in listed.stdout.split()]
+    pairs = [line.split("/") for line in go(module, ["tool", "dist", "list"]).split()]
     return frozenset(o for o, _ in pairs) | EXTRA_OS, frozenset(a for _, a in pairs) | EXTRA_ARCH
 
 
-def toolchain_names(module: Path, goos: str, goarch: str) -> frozenset:
-    """Every constraint name the module's toolchain sets for goos/goarch, as go/build's matchTag
-    reads it: the platform and its implied names, gc, unix on a unix GOOS, cgo when the go command
-    says cgo is on for that target, and the context's tool tags (architecture features,
-    GOEXPERIMENTs) and release tags, read from the go command itself."""
-    form = '{{join context.ToolTags " "}}|{{join context.ReleaseTags " "}}|{{context.CgoEnabled}}'
-    listed = subprocess.run(["go", "list", "-e", "-f", form, "runtime"], cwd=module, capture_output=True,
-                            text=True, check=True, env={**os.environ, "GOOS": goos, "GOARCH": goarch})
-    tool, release, cgo = listed.stdout.strip().split("|")
-    names = set(tool.split()) | set(release.split()) | {goos, goarch, "gc"}
-    if goos in IMPLIES:
-        names.add(IMPLIES[goos])
-    if goos in UNIX_OS:
-        names.add("unix")
-    if cgo == "true":
-        names.add("cgo")
-    return frozenset(names)
-
-
-def constraint(path: Path) -> str | None:
-    """A Go file's build constraint as a `//go:build` expression: its `//go:build` line, else its
-    `// +build` lines (a line's space-separated options or'd, an option's comma-separated terms
-    and'd, the lines and'd), else None. Only the comments above the package clause count."""
-    plus = []
+def constraint_names(path: Path) -> set:
+    """The names a Go file's build constraint lines use, `//go:build` and `// +build` alike, read
+    from the comments above its package clause."""
+    names = set()
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        found = GO_BUILD.match(line)
+        found = CONSTRAINT_LINE.match(line)
         if found:
-            return (found.group(1) or "").strip()
-        found = PLUS_BUILD.match(line)
-        if found:
-            options = (found.group(1) or "").split()
-            plus.append("(" + " || ".join("(" + " && ".join(option.split(",")) + ")" for option in options) + ")")
+            names |= set(NAME.findall(found.group(1) or ""))
         elif line.strip() and not line.lstrip().startswith("//"):
             break
-    return " && ".join(plus) if plus else None
-
-
-def names_of(expression: str) -> set:
-    """The names a constraint expression uses, its operators and parentheses aside."""
-    return set(NAME.findall(expression))
-
-
-def parse(expression: str):
-    """A `//go:build` expression as a tree of ("or", a, b), ("and", a, b), ("not", a) and
-    ("name", n). Raises ValueError on anything Go would refuse to read."""
-    tokens, at = [], 0
-    while at < len(expression.rstrip()):
-        found = TOKEN.match(expression, at)
-        if not found:
-            raise ValueError(f"cannot read {expression[at:]!r}")
-        tokens.append(found.group(1))
-        at = found.end()
-    position = 0
-
-    def take(expected=None):
-        nonlocal position
-        if position >= len(tokens) or (expected and tokens[position] != expected):
-            raise ValueError(f"expected {expected or 'more'} in {expression!r}")
-        position += 1
-        return tokens[position - 1]
-
-    def either():
-        node = both()
-        while position < len(tokens) and tokens[position] == "||":
-            take()
-            node = ("or", node, both())
-        return node
-
-    def both():
-        node = single()
-        while position < len(tokens) and tokens[position] == "&&":
-            take()
-            node = ("and", node, single())
-        return node
-
-    def single():
-        token = take()
-        if token == "!":
-            return ("not", single())
-        if token == "(":
-            node = either()
-            take(")")
-            return node
-        if token in ("&&", "||", ")"):
-            raise ValueError(f"unexpected {token} in {expression!r}")
-        return ("name", token)
-
-    tree = either()
-    if position != len(tokens):
-        raise ValueError(f"unexpected {tokens[position]} in {expression!r}")
-    return tree
-
-
-def evaluate(tree, true_names) -> bool:
-    """Whether the expression holds when exactly the names in true_names are set."""
-    kind = tree[0]
-    if kind == "name":
-        return tree[1] in true_names
-    if kind == "not":
-        return not evaluate(tree[1], true_names)
-    left, right = evaluate(tree[1], true_names), evaluate(tree[2], true_names)
-    return left or right if kind == "or" else left and right
+    return names
 
 
 def is_tag(name: str, known: tuple) -> bool:
     """Whether a constraint name is a tag a vet chooses, given (every GOOS, every GOARCH): no
-    platform name, no architecture feature name (`<GOARCH>.<feature>`), none the toolchain sets."""
+    platform name, no architecture feature name (`<GOARCH>.<feature>`, as amd64.v1), none of
+    NOT_TAGS, and no release (go1.N) or GOEXPERIMENT name."""
     oses, arches = known
     return not (name in oses or name in arches or name in NOT_TAGS or NOT_TAG_PATTERN.fullmatch(name)
                 or ("." in name and name.split(".", 1)[0] in arches))
-
-
-def name_allows(file_name: str, goos: str, goarch: str, known: tuple) -> bool:
-    """Whether a file's name lets goos/goarch build it, as go/build's goodOSArchFile reads a
-    `_<GOOS>`, `_<GOARCH>` or `_<GOOS>_<GOARCH>` suffix (before `_test`)."""
-    oses, arches = known
-    stem = file_name[: -len(".go")] if file_name.endswith(".go") else file_name
-    if "_" not in stem:
-        return True
-    parts = stem[stem.index("_"):].split("_")
-    if parts and parts[-1] == "test":
-        parts = parts[:-1]
-    target = {goos, goarch, IMPLIES.get(goos, goos)}
-    if len(parts) >= 2 and parts[-2] in oses and parts[-1] in arches:
-        return parts[-2] in target and parts[-1] in target
-    if parts and (parts[-1] in oses or parts[-1] in arches):
-        return parts[-1] in target
-    return True
 
 
 def go_skips_dir(parent: Path, name: str) -> bool:
@@ -208,52 +104,68 @@ def go_skips_dir(parent: Path, name: str) -> bool:
 
 
 def go_files(directory: Path):
-    """Every .go file under `directory` that its `./...` pattern walks."""
+    """Every .go file under `directory` that its `./...` pattern walks, less the names starting
+    with `_` or `.`, which the go command never reads."""
     for path in sorted(directory.iterdir()):
         if path.is_dir():
             if not go_skips_dir(directory, path.name):
                 yield from go_files(path)
-        elif path.suffix == ".go":
+        elif path.suffix == ".go" and not path.name.startswith(("_", ".")):
             yield path
 
 
+def compiled(module: Path, goos: str, goarch: str, tags: list, dirs: list) -> set:
+    """The files, as resolved paths, that go list compiles in `dirs` (each named as a directory,
+    not a pattern, so a directory whose every file is excluded is still listed) for goos/goarch
+    under `tags`: a package's files and its test files, which a vet reads too. `-find` reads
+    the directories alone and resolves no import, so no module is downloaded."""
+    base = module.resolve()
+    patterns = ["." if d.resolve() == base else f"./{d.resolve().relative_to(base).as_posix()}" for d in dirs]
+    out = go(module, ["list", "-e", "-find", f"-json=Dir,{','.join(LISTED)}", "-tags", ",".join(tags), *patterns],
+             GOOS=goos, GOARCH=goarch)
+    files, decoder, at = set(), json.JSONDecoder(), 0
+    while at < len(out):
+        if out[at].isspace():
+            at += 1
+            continue
+        package, at = decoder.raw_decode(out, at)
+        files |= {str((Path(package["Dir"]) / name).resolve()) for field in LISTED for name in package.get(field) or []}
+    return files
+
+
 def tag_sets(module: Path, goos: str, goarch: str) -> list:
-    """The tag sets, as sorted lists, under which a vet of every package of the module for
-    goos/goarch compiles each file that platform can build under some choice of tags."""
+    """The tag sets, as sorted lists, under which vets of every package of the module for
+    goos/goarch compile between them each file that platform builds under some choice of tags."""
     if not (module / "go.mod").is_file():
         raise SystemExit(f"go_build_tags.py: {module} holds no go.mod, so it is no Go module")
     known = platforms(module)
-    toolchain = toolchain_names(module, goos, goarch)
-    constrained = []
-    for path in go_files(module):
-        expression = constraint(path)
-        if expression is None:
-            continue
-        try:
-            tree = parse(expression)
-        except ValueError as refusal:
-            raise SystemExit(f"go_build_tags.py: {path}: its build constraint cannot be read: {refusal}")
-        constrained.append((path, tree, sorted(n for n in names_of(expression) if is_tag(n, known))))
-    every = frozenset(tag for _, _, tags in constrained for tag in tags)
+    files = list(go_files(module))
+    if not files:
+        raise SystemExit(f"go_build_tags.py: {module} holds no .go file")
+    own = {path: sorted(n for n in constraint_names(path) if is_tag(n, known)) for path in files}
+    every = sorted(set().union(*own.values()))
+    dirs = sorted({path.parent for path in files})
     sets = [every]
-    for path, tree, tags in constrained:
-        if not tags or not name_allows(path.name, goos, goarch, known):
-            continue
-        if any(evaluate(tree, toolchain | chosen) for chosen in sets):
+    covered = compiled(module, goos, goarch, every, dirs)
+    for path, tags in own.items():
+        if not tags or str(path.resolve()) in covered:
             continue
         if len(tags) > MAX_FILE_TAGS:
             raise SystemExit(f"go_build_tags.py: {path} names {len(tags)} tags, more than the "
-                             f"{MAX_FILE_TAGS} this script searches for a set that builds it")
+                             f"{MAX_FILE_TAGS} this script tries to find a set that builds it")
         for bits in itertools.product((True, False), repeat=len(tags)):
-            chosen = (every - set(tags)) | {tag for tag, on in zip(tags, bits) if on}
-            if evaluate(tree, toolchain | chosen):
-                sets.append(frozenset(chosen))
+            chosen = sorted((set(every) - set(tags)) | {tag for tag, on in zip(tags, bits) if on})
+            if chosen in sets:
+                continue
+            if str(path.resolve()) in compiled(module, goos, goarch, chosen, [path.parent]):
+                sets.append(chosen)
+                covered |= compiled(module, goos, goarch, chosen, dirs)
                 break
-    return [sorted(chosen) for chosen in sets]
+    return sets
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         raise SystemExit("usage: go_build_tags.py <module directory> <GOOS> <GOARCH>")
     for chosen in tag_sets(Path(sys.argv[1]), sys.argv[2], sys.argv[3]):
-        print(",".join(chosen))
+        print(f"-tags={','.join(chosen)}")

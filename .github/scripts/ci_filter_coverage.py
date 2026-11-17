@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from go_build_tags import constraint, go_files, go_skips_dir, is_tag, names_of, platforms
+from go_build_tags import constraint_names, go_files, go_skips_dir, is_tag, platforms
 from workflow_paths import PathsFilter, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -2411,7 +2411,7 @@ def check_vet_tags(session: Session, data, problems: list) -> list:
         tagged = misses = 0
         trials: dict = {}
         for path in sorted(disk - compiled):
-            names = sorted(n for n in names_of(constraint(REPO / path) or "") if is_tag(n, known))
+            names = sorted(n for n in constraint_names(REPO / path) if is_tag(n, known))
             if not names:
                 continue
             tagged += 1

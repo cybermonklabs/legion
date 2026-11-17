@@ -130,14 +130,14 @@ def pinned_step(job, step, workdir, script, runs, workflow=""):
 
 def darwin_vet_script(workdir):
     """The run of a darwin vet step in `workdir`: the tag sets BUILD_TAGS prints for the module,
-    taken into a variable first so a failure of the script fails the step before go runs, then
-    one vet of every package per set."""
+    each as a whole `-tags=` flag so no line is empty, taken into a variable first so a failure
+    of the script fails the step before go runs, then one vet of every package per set."""
     up = "/".join([".."] * len(Path(workdir).parts))
-    return (f"sets=$(python3 {up}/{BUILD_TAGS} . darwin arm64)\n"
-            "while IFS= read -r tags; do\n"
-            '  echo "Vetting for darwin with -tags ${tags:-(none)}"\n'
-            '  GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./...\n'
-            'done <<< "$sets"')
+    return (f"flags=$(python3 {up}/{BUILD_TAGS} . darwin arm64)\n"
+            "while IFS= read -r flag; do\n"
+            '  echo "Vetting for darwin with $flag"\n'
+            '  GOOS=darwin GOARCH=arm64 go vet "$flag" ./...\n'
+            'done <<< "$flags"')
 
 
 def darwin_vet(job, step, workdir):
@@ -2077,6 +2077,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2241 imports this table to derive the plain step's -run lists"),
         ("AGENTS.md", "check-ci-filters.test.sh:2695-2717 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
+                                                    "over a module with a negated tag"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:49-50)"),

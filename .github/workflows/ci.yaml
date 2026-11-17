@@ -1568,6 +1568,8 @@ jobs:
               # the guide's slow-suite list to the jobs the full-ci label gates.
               - '.github/scripts/ci_job_reads.py'
               - 'AGENTS.md'
+              # It runs the darwin vet step's own run text over a module with a negated tag.
+              - '.github/workflows/ci-job-typecheck.yaml'
             check_ts_filters_test: &check_ts_filters_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'

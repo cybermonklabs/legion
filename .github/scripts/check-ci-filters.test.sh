@@ -2155,7 +2155,8 @@ check "names the file whose only constraint is a +build line" \
 # go_build_tags.py, the script the vet steps take their sets from, over a module holding each
 # shape above: the first set is every tag, and the file under the negated tag adds a set
 # without it, which also builds the file whose +build line wants legacy and not probe. No set
-# names the platform's, the toolchain's or the feature's names.
+# names the platform's, the toolchain's or the feature's names. go list decides every answer,
+# so a go command that fails fails the script, and the step that takes its sets stops there.
 echo "case: go_build_tags.py's sets for a module with a negated tag, a tag-only package and +build lines"
 root=$(fixture vet-tags-sets)
 darwin_vet "$root" probe
@@ -2165,13 +2166,36 @@ printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/m
 printf '// +build legacy,!probe\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
 printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
 sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
-check "prints every tag, then the set without probe" \
-  "$(is "$sets" $'hidden,legacy,probe,probe_\xce\xb2\nhidden,legacy,probe_\xce\xb2')"
-printf '//go:build probe && (\n\npackage lib\n' > "$root/mod/lib/broken.go"
+check "prints every tag, then the set without probe, each as a whole -tags= flag" \
+  "$(is "$sets" $'-tags=hidden,legacy,probe,probe_\xce\xb2\n-tags=hidden,legacy,probe_\xce\xb2')"
 status=0
-sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
-check "and refuses a constraint it cannot read" "$(is "$status" 1)"
-check "naming the file" "$(contains "$sets" 'mod/lib/broken.go: its build constraint cannot be read')"
+sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
+check "and fails when go list fails" "$(is "$status" 1)"
+check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
+
+# The typecheck step's own run text, taken from its workflow, over a module with one tag and a
+# file under its negation that does not compile: the script's last set is the one with no tag,
+# and a shell's command substitution drops a trailing empty line, so a transport of bare sets
+# would vet only -tags=feature and pass. The module sits two directories deep, as
+# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script.
+echo "case: the typecheck step's own loop vets the file under a negated tag"
+root=$(fixture vet-tags-loop)
+mkdir -p "$root/deep/module"
+printf 'module example.com/deep\n\ngo 1.21\n' > "$root/deep/module/go.mod"
+printf '//go:build feature\n\npackage module\n\nvar On = 1\n' > "$root/deep/module/on.go"
+printf '//go:build !feature\n\npackage module\n\nvar _ = notDefined\n' > "$root/deep/module/off.go"
+PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci-job-typecheck.yaml" "$root/step.sh" <<'PY'
+import sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"].values()
+step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith("Vet the Go daemon for darwin"))
+open(sys.argv[2], "w").write(step["run"])
+PY
+status=0
+loop=$(cd "$root/deep/module" && GOWORK=off bash -e "$root/step.sh" 2>&1) || status=$?
+check "fails" "$(is "$status" 1)"
+check "vets under both sets" \
+  "$(is "$(grep -c '^Vetting for darwin with -tags=' <<<"$loop")" 2)"
+check "and names the file only the set with no tag compiles" "$(contains "$loop" 'off.go:5:9: undefined: notDefined')"
 
 # No case runs this rule, or any other rule of check-ci-filters.sh, over this repository's own
 # tree: ci.yaml's ci-filters job runs the whole check there (.github/workflows/ci-job-ci-filters.yaml,

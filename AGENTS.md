@@ -245,7 +245,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   Type check the three script directories that are no workspace, as ci.yaml's `test` job does
 
-- `(cd packages/daemon && go vet -tags e2e ./... && sets=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64) && while IFS= read -r tags; do GOOS=darwin GOARCH=arm64 go vet -tags "$tags" ./... || exit 1; done <<< "$sets")`
+- `(cd packages/daemon && go vet -tags e2e ./... && flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64) && while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./... || exit 1; done <<< "$flags")`
 
   What ci.yaml's `typecheck` job runs: vet of the Go daemon, its e2e-tagged live proofs included, as linux and as darwin compile it, the darwin vet once per tag set that script reads off the module's build constraints
 
