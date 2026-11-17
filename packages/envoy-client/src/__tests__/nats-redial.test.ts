@@ -134,8 +134,10 @@ describe("brokerRedialDelays", () => {
     expect(clock.ask(0)).toBe(0);
     // Refused 30 ms after the dial: the loop sleeps to its last dial (0) plus the answer.
     expect(clock.ask(30)).toBe(2_000);
-    expect(clock.ask(1_999)).toBe(2_000);
-    expect(clock.ask(2_000)).toBe(0);
+    expect(clock.ask(1_900)).toBe(2_000);
+    // Due a little early, so a dial nats.js would make on its own clock, which it reads after the
+    // answer, is one the handler made too.
+    expect(clock.ask(1_950)).toBe(0);
   });
 
   test("a call after the outage gap starts a new outage, at once; one inside it keeps its place", () => {

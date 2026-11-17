@@ -81,6 +81,10 @@ export const BROKER_REDIAL_CAP_MS = 20_000;
  */
 export const BROKER_REDIAL_OUTAGE_GAP_MS = 60_000;
 
+/** How early a redial may go out before it is due: more than nats.js takes between the handler's
+ *  answer and its own read of the clock, and too little to change any wait. */
+const DUE_SLACK_MS = 50;
+
 /** The range the wait before the `wait`-th planned redial of an outage is drawn from, uniformly:
  *  from half its highest to its highest, the highest being `BROKER_REDIAL_FIRST_MS` doubled
  *  `wait - 1` times, at most `BROKER_REDIAL_CAP_MS`. So 2-4 s, 4-8 s, 8-16 s, then 10-20 s on. */
@@ -148,7 +152,10 @@ export function brokerRedialDelays(
       waits = 0;
     }
     lastCall = at;
-    if (at < dueAt) return dueAt - dialedAt;
+    // nats.js reads its own clock after this answer (`protocol.js:519-536`), so a dial due in
+    // between would go out on a nonzero answer, which this handler would not count; a dial due
+    // within `DUE_SLACK_MS` goes out now, on this answer, instead.
+    if (at < dueAt - DUE_SLACK_MS) return dueAt - dialedAt;
     waits += 1;
     const { lowestMs, highestMs } = brokerRedialWaitBounds(waits);
     dialedAt = at;
