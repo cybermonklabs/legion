@@ -1,7 +1,7 @@
 # coupling-sites.tsv: the coupling check's table (.github/scripts/coupling-check.sh reads it).
 # Lines: row <id> <pattern> <allow> <kind>, and state <id> <owner> open|fixed; tab-separated.
 # A pull request may change nothing here but its own owner's state lines, from open to fixed.
-row	app-id-implement	(^|[^[:alnum:]])5341240([^[:alnum:]]|$)	docs/solutions/**,docs/plans/**,docs/superpowers/**,packages/daemon/internal/config/kubernetes_test.go	fix
+row	app-id-implement	(^|[^[:alnum:]])5341240([^[:alnum:]]|$)	docs/solutions/**,docs/plans/**,docs/superpowers/**,packages/daemon/internal/config/kubernetes_test.go,packages/dispatch/README.md	fix
 state	app-id-implement	D1	open
 state	app-id-implement	D4	open
 row	app-id-review	(^|[^[:alnum:]])5341243([^[:alnum:]]|$)	docs/solutions/**,docs/plans/**,docs/superpowers/**,packages/daemon/internal/config/kubernetes_test.go,packages/envoy/cmd/dispatch/ci_reconcile_test.go,packages/envoy/cmd/dispatch/settings_test.go	fix
