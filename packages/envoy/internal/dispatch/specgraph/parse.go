@@ -32,17 +32,49 @@ var checkFields = [...]string{"Claim:", "Procedure:", "Failing example:"}
 // heading is a markdown heading line, which a spec file may hold between blocks.
 var heading = regexp.MustCompile(`^#{1,6}(\s|$)`)
 
-// The Detail of each problem Parse finds whose text does not depend on the block.
+// problemKind is one kind of problem that Parse gives, an index of problemKinds.
+type problemKind int
+
+// The kinds of problem that Parse gives. numProblemKinds counts them, so each new kind is a place
+// of problemKinds, and TestEachProblemOfParseSaysWhetherItLosesANode fails until it has a row.
 const (
-	detailTextOutsideBlock = "text-outside-block: a spec file holds only blocks, headings and blank lines"
-	detailUnclosedBlock    = "unclosed-block: the block has no closing ::: line"
-	detailNestedBlock      = "nested-block: a block cannot hold a block"
-	detailBadBlockLine     = "bad-block-line: the line opens no block"
-	detailBadField         = "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order"
-	detailClaimOneLine     = "bad-field: a claim is one line"
-	detailClaimOneSentence = "bad-field: a claim is one sentence"
-	detailBadEncoding      = "bad-encoding: a spec file is UTF-8 text with no NUL byte"
+	textOutsideBlock problemKind = iota
+	unclosedBlock
+	nestedBlock
+	badBlockLine
+	unknownBlock
+	unknownAttribute
+	badComponentKind
+	badTimeLimit
+	badFieldOrder
+	claimOfLines
+	claimOfSentences
+	badEncoding
+	headingNamesCode
+	numProblemKinds
 )
+
+// problemKinds is each kind of problem that Parse gives: its Effect on the tree, which the reader's
+// problem method sets on each problem of the kind, and the format of its Detail, which begins with
+// its rule. A kind with no entry has no Effect, and a caller that compares reads that as LosesNode.
+var problemKinds = [numProblemKinds]struct {
+	effect Effect
+	format string
+}{
+	textOutsideBlock: {LosesNode, "text-outside-block: a spec file holds only blocks, headings and blank lines"},
+	unclosedBlock:    {LosesNode, "unclosed-block: the block has no closing ::: line"},
+	nestedBlock:      {LosesNode, "nested-block: a block cannot hold a block"},
+	badBlockLine:     {LosesNode, "bad-block-line: the line opens no block"},
+	unknownBlock:     {LosesNode, "unknown-block: %q is not requirement, check, component or term"},
+	unknownAttribute: {LosesNode, "unknown-attribute: %s takes no attribute %q"},
+	badComponentKind: {LosesNode, `bad-component: kind is "interface" or absent, not %q`},
+	badTimeLimit:     {LosesNode, "bad-time-limit: %q is not a positive Go duration"},
+	badFieldOrder:    {LosesNode, "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order"},
+	claimOfLines:     {KeepsEachNode, "bad-field: a claim is one line"},
+	claimOfSentences: {KeepsEachNode, "bad-field: a claim is one sentence"},
+	badEncoding:      {KeepsEachNode, "bad-encoding: a spec file is UTF-8 text with no NUL byte"},
+	headingNamesCode: {KeepsEachNode, "code-in-text: heading names code: %s"},
+}
 
 // Parse reads the spec files, keyed by their names directly in the spec directory, and gives the
 // tree they hold and each line of them that the grammar does not hold.
@@ -108,9 +140,14 @@ func (b *block) node() string {
 	return b.id
 }
 
-func (r *reader) problem(pos Position, node, detail string) {
+// problem records a problem of Parse of the kind kind at pos, of the node with the id node: its
+// Detail is the kind's format filled with args, its rule the word before the Detail's first colon,
+// and its Effect the kind's.
+func (r *reader) problem(pos Position, node string, kind problemKind, args ...any) {
+	k := problemKinds[kind]
+	detail := fmt.Sprintf(k.format, args...)
 	rule, _, _ := strings.Cut(detail, ":")
-	r.problems = append(r.problems, Problem{Pos: pos, Node: node, Rule: rule, Detail: detail})
+	r.problems = append(r.problems, Problem{Pos: pos, Node: node, Rule: rule, Detail: detail, Effect: k.effect})
 }
 
 // file reads one spec file into the tree.
@@ -120,7 +157,7 @@ func (r *reader) file(name string, content []byte) {
 	text = strings.ReplaceAll(text, "\r", "\n")
 	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 	if number := unstorableLine(lines); number > 0 {
-		r.problem(Position{File: name, Line: number}, "-", detailBadEncoding)
+		r.problem(Position{File: name, Line: number}, "-", badEncoding)
 	}
 	var open *block
 	inParagraph := false
@@ -134,9 +171,9 @@ func (r *reader) file(name string, content []byte) {
 				open = nil
 			case strings.HasPrefix(text, ":::"):
 				if _, _, ok := openingLine(text); ok {
-					r.problem(pos, open.node(), detailNestedBlock)
+					r.problem(pos, open.node(), nestedBlock)
 				} else {
-					r.problem(pos, open.node(), detailBadBlockLine)
+					r.problem(pos, open.node(), badBlockLine)
 				}
 			default:
 				open.body = append(open.body, line{number: pos.Line, text: text})
@@ -148,24 +185,24 @@ func (r *reader) file(name string, content []byte) {
 			inParagraph = false
 		case text == ":::":
 			inParagraph = false
-			r.problem(pos, "-", detailBadBlockLine)
+			r.problem(pos, "-", badBlockLine)
 		case strings.HasPrefix(text, ":::"):
 			inParagraph = false
 			open = r.open(pos, text)
 		case heading.MatchString(text):
 			inParagraph = false
 			if names := CodeNames(strings.TrimLeft(text, "#")); len(names) > 0 {
-				r.problem(pos, "-", "code-in-text: heading names code: "+strings.Join(names, ", "))
+				r.problem(pos, "-", headingNamesCode, strings.Join(names, ", "))
 			}
 		default:
 			if !inParagraph {
-				r.problem(pos, "-", detailTextOutsideBlock)
+				r.problem(pos, "-", textOutsideBlock)
 			}
 			inParagraph = true
 		}
 	}
 	if open != nil {
-		r.problem(open.pos, open.node(), detailUnclosedBlock)
+		r.problem(open.pos, open.node(), unclosedBlock)
 		r.finish(open)
 	}
 }
@@ -196,18 +233,18 @@ func (r *reader) open(pos Position, text string) *block {
 	name, attrs, ok := openingLine(text)
 	b := &block{name: name, attrs: attrs, pos: pos}
 	if !ok {
-		r.problem(pos, "-", detailBadBlockLine)
+		r.problem(pos, "-", badBlockLine)
 		return b
 	}
 	b.id, _ = attrs[pmdoc.BlockIDAttr].(string)
 	allowed, known := blockAttributes[name]
 	if !known {
-		r.problem(pos, b.node(), fmt.Sprintf("unknown-block: %q is not requirement, check, component or term", name))
+		r.problem(pos, b.node(), unknownBlock, name)
 		return b
 	}
 	for _, attr := range slices.Sorted(maps.Keys(attrs)) {
 		if attr != pmdoc.BlockIDAttr && !slices.Contains(allowed, attr) {
-			r.problem(pos, b.node(), fmt.Sprintf("unknown-attribute: %s takes no attribute %q", name, attr))
+			r.problem(pos, b.node(), unknownAttribute, name, attr)
 		}
 	}
 	b.readable = true
@@ -251,7 +288,7 @@ func (r *reader) finish(b *block) {
 		case "interface":
 			c.Interface = true
 		default:
-			r.problem(b.pos, b.node(), fmt.Sprintf(`bad-component: kind is "interface" or absent, not %q`, kind))
+			r.problem(b.pos, b.node(), badComponentKind, kind)
 		}
 		r.tree.Components = append(r.tree.Components, c)
 	case "term":
@@ -272,7 +309,7 @@ func (r *reader) check(b *block) Check {
 	if limit := b.attr("time_limit"); limit != "" {
 		d, err := time.ParseDuration(limit)
 		if err != nil || d <= 0 {
-			r.problem(b.pos, b.node(), fmt.Sprintf("bad-time-limit: %q is not a positive Go duration", limit))
+			r.problem(b.pos, b.node(), badTimeLimit, limit)
 		} else {
 			c.TimeLimit = d
 		}
@@ -285,7 +322,7 @@ func (r *reader) check(b *block) Check {
 	for _, l := range b.body {
 		if k, rest, ok := fieldStart(l.text); ok {
 			if k < next {
-				r.problem(Position{File: b.pos.File, Line: l.number}, b.node(), detailBadField)
+				r.problem(Position{File: b.pos.File, Line: l.number}, b.node(), badFieldOrder)
 				current = -2
 				continue
 			}
@@ -296,7 +333,7 @@ func (r *reader) check(b *block) Check {
 		switch current {
 		case -1:
 			if l.text != "" {
-				r.problem(Position{File: b.pos.File, Line: l.number}, b.node(), detailBadField)
+				r.problem(Position{File: b.pos.File, Line: l.number}, b.node(), badFieldOrder)
 				current = -2
 			}
 		case -2:
@@ -306,9 +343,9 @@ func (r *reader) check(b *block) Check {
 	}
 	switch claim := trimBlank(fields[0]); {
 	case len(claim) > 1:
-		r.problem(Position{File: b.pos.File, Line: claim[1].number}, b.node(), detailClaimOneLine)
+		r.problem(Position{File: b.pos.File, Line: claim[1].number}, b.node(), claimOfLines)
 	case len(claim) == 1 && sentenceEnd.MatchString(claim[0].text):
-		r.problem(Position{File: b.pos.File, Line: claim[0].number}, b.node(), detailClaimOneSentence)
+		r.problem(Position{File: b.pos.File, Line: claim[0].number}, b.node(), claimOfSentences)
 	}
 	c.Claim, c.ProcedureText, c.FailingExample = bodyText(fields[0]), bodyText(fields[1]), bodyText(fields[2])
 	return c

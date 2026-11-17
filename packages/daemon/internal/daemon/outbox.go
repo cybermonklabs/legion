@@ -751,7 +751,8 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	if statusMoved(payload, issue) {
 		return nil
 	}
-	// A done write's reason goes on the issue first, so it is there before the status closes it.
+	// A write's reason goes on the issue first, so it is there before the status moves the issue:
+	// a done write's before the close, and a workflow move's before the move it explains.
 	// It is posted as this row's message, so a retry after a failed write finds it and posts none.
 	// The post is an event of the issue and moves its sequence, so the issue read above is stale
 	// the moment it lands and the write is fenced on a read made after it (writeStatus). Fenced on

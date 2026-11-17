@@ -125,11 +125,11 @@ type releasedName struct {
 	// session holds is filled with those slots' placeholders. airlockSplitOf always answers a
 	// map, so a nil one is what says the airlock does not hold this name back (behindAirlock).
 	split airlockSplit
-	// expires is when a minted value stops working, zero for a stored one, and kind the policy
-	// kind that says what the slots are. The proxy holds both beside the values: the first is
+	// expires is when a minted value stops working, zero for a stored one, and type the policy
+	// type that says what the slots are. The proxy holds both beside the values: the first is
 	// what it mints again before, the second what says how to spend them.
-	expires time.Time
-	kind    string
+	expires    time.Time
+	secretType string
 }
 
 // behindAirlock reports whether the airlock's rules hold this name back, which is what says
@@ -140,7 +140,7 @@ func (r releasedName) behindAirlock() bool { return r.split.values != nil }
 // airlock alone — in the grant's own name order, and takes the split of each name the airlock
 // holds back. Once every value is read, each stored one is checked against the policy as it
 // stands then (recheckStoredSources), so a retag that lands during the reads never releases
-// what the secret stores once it is a kind. A read that fails after it minted a value for an
+// what the secret stores once it is a type. A read that fails after it minted a value for an
 // earlier name, or for this one, hands that value to nobody, so it starts each such value's
 // give-back (giveBack) before it answers the failure; the give-back runs in the background, and a
 // broker that stops first cuts it short and leaves the token to lapse.
@@ -163,10 +163,10 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		}
 		// Held for the give-back as soon as it is read, so a split that refuses this value gives
 		// it back as well as every value before it.
-		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, kind: served.Kind()})
+		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type()})
 		if entry != nil {
 			released := &read[len(read)-1]
-			if released.split, err = airlockSplitOf(entry.Kind, released.kind, minted.Value); err != nil {
+			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, minted.Value); err != nil {
 				return nil, fmt.Errorf("release %s behind the airlock: %w", g.name, err)
 			}
 		}
@@ -177,10 +177,10 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 	return read, nil
 }
 
-// giveBack hands each value in read that a kind's minter made back to that kind's upstream
+// giveBack hands each value in read that a type's minter made back to that type's upstream
 // (Machine.GiveBacks), for a release that minted it and hands it to nobody: one that failed, or a
 // name the airlock holds back, whose session gets placeholders (heldBack). A stored value, and a
-// value of a kind with no GiveBack, is left as it is. It runs in the background, detached from
+// value of a type with no GiveBack, is left as it is. It runs in the background, detached from
 // ctx, and the release answers at once: nothing the release answers depends on it, and a
 // give-back that waited on GitHub, up to its bound for each installation of each value, could
 // hold a session's release past the time its client gives the call. Each GiveBack bounds its own
@@ -192,7 +192,7 @@ func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	}
 	var back []minted
 	for _, released := range read {
-		if giveBack := m.GiveBacks[released.kind]; giveBack != nil && released.value != "" {
+		if giveBack := m.GiveBacks[released.secretType]; giveBack != nil && released.value != "" {
 			back = append(back, minted{giveBack, released.name, released.value})
 		}
 	}
