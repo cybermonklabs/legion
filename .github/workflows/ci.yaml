@@ -717,6 +717,9 @@ jobs:
               # internal/dispatch/redeliver sweeps its redelivery records through
               # kvwatch.ScanExistingKeys (redeliver/sweep.go:50,488).
               - 'packages/envoy/internal/kvwatch/*'
+              # internal/dispatch/api checks a role-holder publication against legionagents.Roles
+              # (issue_role_holders.go).
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -1992,6 +1995,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -2080,6 +2084,9 @@ jobs:
               # internal/dispatch/redeliver sweeps its redelivery records through
               # kvwatch.ScanExistingKeys (redeliver/sweep.go:50,488).
               - 'packages/envoy/internal/kvwatch/*'
+              # internal/dispatch/api checks a role-holder publication against legionagents.Roles
+              # (issue_role_holders.go).
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/metrics/*'
@@ -3698,6 +3705,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/metrics/*'
@@ -3784,6 +3792,7 @@ jobs:
               - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/kvwatch/**/*_test.go'
+              - '!packages/envoy/internal/legionagents/**/*_test.go'
               - '!packages/envoy/internal/logging/**/*_test.go'
               - '!packages/envoy/internal/metrics/**/*_test.go'
               - '!packages/envoy/internal/oidc/**/*_test.go'

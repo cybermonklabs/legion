@@ -477,28 +477,36 @@ func (l launch) trades(r *Runtime) bool {
 // in it starts its role without them — in neither arm, until the update round replaces the pod —
 // since Oh My Pi refuses to start on an entry that is not there and a role that never starts
 // never answers that round (INFRA-484). Each such drop is logged once, at the launch that makes
-// it, naming the issue, the role, the experiment and the arm, because nothing else says that this
-// generation ran outside the arm it was drawn into.
-func (l launch) overlays(r *Runtime) []string {
+// it, naming the issue, the role, the experiment and the arm.
+//
+// carried are the arms the launch runs in: each arm of l.spec.Variants, in its order, of which
+// the launch names every overlay — every arm for a launch that builds its pod, and for one that
+// keeps a pod, each arm none of whose overlays the pod lacks. An arm the pod holds only some of
+// is not carried, though the launch still names the overlays it holds. They are what the launch's
+// spend attributes name as its arms (roleOperatorEnv, runtime.SpendArmsAttribute), so each model
+// call of this generation says which arm's files it ran with, which nothing else records.
+func (l launch) overlays(r *Runtime) (files []string, carried []runtime.Variant) {
 	own := r.roleConfigFiles[l.spec.Role]
 	if l.kept != nil {
 		own = l.kept.overlays
 	}
 	var variants []string
 	for _, variant := range l.spec.Variants {
-		files := variant.ConfigFiles
+		held := variant.ConfigFiles
+		var dropped []string
 		if l.kept != nil {
-			var dropped []string
-			files, dropped = splitHeld(l.kept.variantFiles, variant.ConfigFiles)
-			if len(dropped) > 0 {
-				r.log.Warn("sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod",
-					"issue", l.spec.Issue, "role", l.spec.Role, "experiment", variant.Experiment, "variant", variant.Name,
-					"dropped", dropped)
-			}
+			held, dropped = splitHeld(l.kept.variantFiles, variant.ConfigFiles)
 		}
-		variants = append(variants, files...)
+		variants = append(variants, held...)
+		if len(dropped) > 0 {
+			r.log.Warn("sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod",
+				"issue", l.spec.Issue, "role", l.spec.Role, "experiment", variant.Experiment, "variant", variant.Name,
+				"dropped", dropped)
+			continue
+		}
+		carried = append(carried, variant)
 	}
-	return withVariantOverlays(own, variants)
+	return withVariantOverlays(own, variants), carried
 }
 
 // splitHeld is want in two, each part in want's order: the files held holds, and the files it
@@ -1125,13 +1133,15 @@ const settingsOverlays = "PI_CONFIG_FILES"
 // is inserted in name order when the operator's pod env names none. A role with none is told
 // operatorEnv unchanged.
 //
-// runtime.SpendAttributesVariable carries the launch's issue and role after the operator's own
-// attributes (runtime.SpendResourceAttributes), so a pod's resource attributes name the issue it
-// serves: the detector that reads the value assigns last-wins, which is why the daemon's pairs are
-// written after the operator's rather than before. Every launch has a role, so this entry is in
-// every role's environment, inserted in name order where the operator sets no attributes at all.
-// It is the launch's own, not the pod's: it travels in the generation's start command
-// (launchEnvironment), so no pod is replaced for it.
+// runtime.SpendAttributesVariable carries the launch's issue, its role and the arms it runs in
+// after the operator's own attributes (runtime.SpendResourceAttributes), so a pod's resource
+// attributes name the issue it serves and each arm whose files it runs with: the detector that
+// reads the value assigns last-wins, which is why the daemon's pairs are written after the
+// operator's rather than before. The arms are the ones launch.overlays carries, not every arm the
+// unit was drawn into, so a launch that keeps a pod lacking an arm's overlays names no such arm.
+// Every launch has a role, so this entry is in every role's environment, inserted in name order
+// where the operator sets no attributes at all. It is the launch's own, not the pod's: it travels
+// in the generation's start command (launchEnvironment), so no pod is replaced for it.
 //
 // The overlays are the launch's, not the configuration's, so a role started in a live pod the
 // launch keeps is told only the files that pod holds (keptPod): Oh My Pi refuses to start on an
@@ -1140,8 +1150,9 @@ const settingsOverlays = "PI_CONFIG_FILES"
 // is told operatorEnv unchanged, exactly as a role with none configured is, and runs without them
 // until the round replaces its pod.
 func (r *Runtime) roleOperatorEnv(l launch) []corev1.EnvVar {
+	overlays, carried := l.overlays(r)
 	env := composeEntry(r.operatorEnv(), settingsOverlays, func(operator string) string {
-		own := strings.Join(l.overlays(r), ":")
+		own := strings.Join(overlays, ":")
 		switch {
 		case own == "":
 			return operator
@@ -1151,8 +1162,10 @@ func (r *Runtime) roleOperatorEnv(l launch) []corev1.EnvVar {
 			return operator + ":" + own
 		}
 	})
+	spec := l.spec
+	spec.Variants = carried
 	return composeEntry(env, runtime.SpendAttributesVariable, func(operator string) string {
-		return runtime.SpendResourceAttributes(operator, l.spec)
+		return runtime.SpendResourceAttributes(operator, spec)
 	})
 }
 
