@@ -369,7 +369,7 @@ const (
 
 // ErrNoChangesRoute is a Dispatch build that cannot say what changed between two versions: it
 // answered GET /api/v1/artifacts/{id}/changes with its router's 404 `no route for <METHOD> <path>`
-// (noRoute), or with a 405, which is what a build without the route answers. ArtifactChanges wraps
+// (NoRoute), or with a 405, which is what a build without the route answers. ArtifactChanges wraps
 // it around Dispatch's own refusal, so errors.Is finds it and the message keeps what Dispatch
 // said. It is no reason to stop asking: while a release of Dispatch rolls out, two builds serve,
 // and the next attempt can reach the one with the route (packages/envoy/cmd/dispatch/README.md,
@@ -380,7 +380,7 @@ var ErrNoChangesRoute = errors.New("dispatch has no changes route")
 // ErrDocumentNotFound is a Dispatch that holds no document of the id a read of one document
 // names, GET /api/v1/artifacts/{id}/changes or GET /api/v1/artifacts/{id}/reviews: it answered
 // 404 ARTIFACT_NOT_FOUND (ArtifactNotFound), a document deleted since its gate recorded it. A
-// build without a route answers its router's own 404, whose code is not this one (noRoute), so
+// build without a route answers its router's own 404, whose code is not this one (NoRoute), so
 // the two stay apart and the reason recorded says which it was. ArtifactChanges and
 // ApprovedVersionBefore wrap it around Dispatch's own refusal, and a caller records what it asked
 // unreadable at once: a deleted document does not come back with a wait.

@@ -2599,7 +2599,7 @@ it refuses a controller notice of a kind it does not know (`record.DecodeOutboxP
 After the roll-forward no wake of the first or the third arm comes again for a root whose run has started, since the upgrade marks both arms for every such root it settles;
 a wake of the second arm comes again on the first pass for a root whose claim is still failed or retired with no start of its run that is the daemon's next move for it: none queued in the last ten minutes, or only one that has already run against the claim and left it failed or retired.
 The `drop table` and the last `delete` go together.
-The earlier release reads no such table, and the delete makes the store report that release's own version again.
+The earlier release reads no such table, and the delete takes that migration's version row, so the store reports the highest row neither block deletes: 20261114031356 on a store #3711's release migrated, and 20261117133401 on one that cybermonklabs/legion#3995's release migrated.
 The drop is owed to the roll-forward, which cannot create the table again while it stands.
 `Migrate` makes the table again, empty, and the re-armed upgrade marks it again.
 The SQL was run on 2026-11-15 at 17:51Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500, leaving 143 versions recorded, and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
