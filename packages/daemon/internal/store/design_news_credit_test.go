@@ -8,14 +8,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Review thread PRRT_kwDORFy7ds64UpvG: two confirmations of one task can reach the store as one
-// write of confirmed over confirmed. The store holds the delivery confirmed with copy C1; the
-// machine takes that confirmation back in memory (a refused send, which keeps the id), that write
-// fails and is carried past, and settle's repair of it fails too; a new turn confirms the task again
-// with copy C2, and that write lands. The credit is the delivery's own, so the write of C2 ends C1's
-// credit and makes C2's, whatever the row it replaces held: the holder reads as told what C2's
-// prompt carried and nothing of C1, and the take-back of C2 leaves the row as it stood before
-// either. The same confirmation written a second time changes nothing.
+// Two confirmations of one task can reach the store as one write of confirmed over confirmed. The
+// store holds the delivery confirmed with copy C1; the machine takes that confirmation back in
+// memory (a refused send, which keeps the id), that write fails and is carried past, and settle's
+// repair of it fails too; a new turn confirms the task again with copy C2, and that write lands.
+// The credit is the delivery's own, so the write of C2 ends C1's credit and makes C2's, whatever
+// the row it replaces held: the holder reads as told what C2's prompt carried and nothing of C1,
+// and the take-back of C2 leaves the row as it stood before either. The same confirmation written
+// a second time changes nothing.
 func TestASecondConfirmationOverAConfirmationWhoseTakeBackWasLostCreditsOnlyItsOwnCopy(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()

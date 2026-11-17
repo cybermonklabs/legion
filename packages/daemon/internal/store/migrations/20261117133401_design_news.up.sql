@@ -319,26 +319,28 @@ $$;
 -- design_news_told (record.Postgres.TreeTold), which every reader of what an audience took goes
 -- through, so record.OwedNews, the reconcile's settlement and raise, a start and a send all weigh
 -- the same answer. A row's versions are what design_news_known reaches from the row's versions
--- through its unreached credits and the credits of every confirmed delivery whose result has not
--- yet said its turn ran (design_news_credits of pending_task_deliveries.carried_news, not
--- carried_ran). Its opening is owed where the row owes it and no such delivery carried that same
--- opening, under the row's opening_seq, as opened (design_news_openings). An audience a standing
--- credit names while it has no row is read as a row that knows only what the credits give and owes
--- no opening. An item of an issue outside the tree counts for nothing here.
+-- through its unreached credits and the credits of every confirmed delivery holding a copy whose
+-- result has not yet said its turn ran (standing: design_news_credits of
+-- pending_task_deliveries.carried_news, not carried_ran). Its opening is owed where the row owes
+-- it and no such delivery carried that same opening, under the row's opening_seq, as opened
+-- (design_news_openings). An audience a standing credit names while it has no row is read as a row
+-- that knows only what the credits give and owes no opening. An item of an issue outside the tree
+-- counts for nothing here.
 create function design_news_told_in(tree text)
   returns table (issue text, audience text, versions jsonb, opening_owed boolean, opening_seq integer, told_at timestamptz)
   language sql stable as $$
   with member as (select owner.key from issues owner where owner.tree = $1),
+  standing as (
+    select delivery.carried_news from pending_task_deliveries delivery
+    where delivery.confirmed_at is not null and not delivery.carried_ran and delivery.carried_news is not null),
   credit as (
     select credited.issue, credited.audience, credited.link
-    from pending_task_deliveries delivery cross join design_news_credits(delivery.carried_news) credited
-    where delivery.confirmed_at is not null and not delivery.carried_ran
-      and credited.issue in (select member.key from member)),
+    from standing cross join design_news_credits(standing.carried_news) credited
+    where credited.issue in (select member.key from member)),
   cleared as (
     select opened.issue, opened.audience, opened.seq
-    from pending_task_deliveries delivery cross join design_news_openings(delivery.carried_news) opened
-    where delivery.confirmed_at is not null and not delivery.carried_ran
-      and opened.issue in (select member.key from member)),
+    from standing cross join design_news_openings(standing.carried_news) opened
+    where opened.issue in (select member.key from member)),
   pair as (
     select told.issue, told.audience from design_news_told told where told.issue in (select member.key from member)
     union

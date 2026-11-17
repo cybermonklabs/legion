@@ -134,8 +134,8 @@ type Delivery struct {
 	// late refusal of its own (lateRefused), which charges the budget, so it bounds itself and
 	// is read there rather than in this record of the silent ones. All three are written
 	// together on every send that fails in refused, and cleared together where the budgets are
-	// cleared (confirm), so a task that got through carries zeroes. LastSendError is never the
-	// far side's text as it arrived: the write that records it scrubs and bounds it first
+	// cleared (confirmCarrying), so a task that got through carries zeroes. LastSendError is never
+	// the far side's text as it arrived: the write that records it scrubs and bounds it first
 	// (scrubSendError), because the text is the far side's own and the store takes only some of
 	// what the far side can say.
 	SendFailures      int
@@ -294,7 +294,7 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 // session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
 // process ended (EndedWork, relaunchSentence). Delivery.message answers it beside the prompt it
 // composes, so what a prompt is marked as telling is what its text holds (Machine.carried, which
-// confirm reads).
+// confirmCarrying reads).
 type sentences struct{ abandoned, ended bool }
 
 // message is the prompt a delivery is sent as, and which of the claim's two untold records it
@@ -329,7 +329,7 @@ type sentences struct{ abandoned, ended bool }
 //     last death's words. With an abandoned session still to tell, that turn was the old
 //     session's, and the abandoned session's sentence stands in its place (the first item).
 //
-// Composing a prompt tells nothing (confirm).
+// Composing a prompt tells nothing (confirmCarrying).
 //
 // Behind the interruption, when its end was the pod running out of memory, comes outOfMemoryTask
 // — the agent reads that its turn was interrupted, then why, then the task. A task a provider
@@ -445,10 +445,10 @@ func pendingID(p *Delivery) string {
 // turn on the held task has ended and the delivery retired.
 //
 // A pending delivery whose task the worker has already taken refuses nothing: the turn took it
-// (confirm writes ConfirmedAt), so there is no task left to give and the delivery is only the
-// record of the turn in flight. Such a delivery is retired here and the newer task queued in its
-// place. Refusing it instead is what left three supervise rows of the live daemon answered "a
-// delivery is already pending" with nothing ever sent (dispatch://INFRA-1352, INFRA-1443,
+// (confirmCarrying writes ConfirmedAt), so there is no task left to give and the delivery is only
+// the record of the turn in flight. Such a delivery is retired here and the newer task queued in
+// its place. Refusing it instead is what left three supervise rows of the live daemon answered
+// "a delivery is already pending" with nothing ever sent (dispatch://INFRA-1352, INFRA-1443,
 // INFRA-1519): the phase's own start was the newer task, and the worker that would have taken it
 // was holding a delivery it had finished with. The newer task is not sent into the running turn —
 // queue sends nothing, and sendPending hands a working claim nothing — so it goes at the next
@@ -1446,10 +1446,10 @@ func (m *Machine) retirePending(ctx context.Context) error {
 // saved records the outcome of a write of the pending delivery that memory changed first, since
 // the decision it records has been made whether or not the store takes it. A write that failed
 // leaves the delivery unsaved, and settle writes it again, with the claim, before the next decision
-// - confirm's write covers both, and a delivery written confirmed beside a claim still ready is a
-// turn a restart would find over. So once the store takes writes again, a restart reads what the
-// machine decided rather than what it replaced; one before that reads the older rows, as a restart
-// after a crash between a decision and its write does.
+// - confirmCarrying's write covers both, and a delivery written confirmed beside a claim still
+// ready is a turn a restart would find over. So once the store takes writes again, a restart reads
+// what the machine decided rather than what it replaced; one before that reads the older rows, as
+// a restart after a crash between a decision and its write does.
 func (m *Machine) saved(err error) error {
 	m.unsaved = err != nil
 	return err
@@ -1894,8 +1894,8 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // runs. A decision that records its let-go before this take-back marks the task first, under the
 // id it holds (recordGoneEnd), and this moves the mark to the new id.
 //
-// What the confirmation it clears told stays told (confirm) where the result of the prompt it
-// confirmed has come: that result says a turn ran the prompt, so the agent read the sentence the
+// What the confirmation it clears told stays told (confirmCarrying) where the result of the prompt
+// it confirmed has come: that result says a turn ran the prompt, so the agent read the sentence the
 // prompt carried, and the let-go that cuts that turn off takes no telling back (moveTelling). A
 // confirmation a turn took while the send of its prompt was still in flight, or while a prompt of
 // the task still waited on its result, may be another input's, and goes back to untold before the
@@ -2129,9 +2129,9 @@ func (m *Machine) turnNews() []byte {
 // A confirmation taken back was never the worker's, so the claim's handshake gives back its own
 // too (takeBackConfirmation); a confirmation kept for an outstanding prompt keeps the handshake's
 // with it, since that prompt's turn is the task's. Where the handshake gives its own back, the
-// claim goes with the delivery in one write, as confirm wrote the two and as a telling that moved
-// goes: a write that fails leaves the delivery unsaved as before, and settle's write of it
-// (putClaimAndPending) carries the claim, so the cleared handshake reaches the store with the
+// claim goes with the delivery in one write, as confirmCarrying wrote the two and as a telling
+// that moved goes: a write that fails leaves the delivery unsaved as before, and settle's write of
+// it (putClaimAndPending) carries the claim, so the cleared handshake reaches the store with the
 // first write the store takes and no failure is handled any other way.
 func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)

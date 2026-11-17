@@ -95,16 +95,15 @@ func TestEveryBuilderRecordsExactlyTheNewsItsTextNames(t *testing.T) {
 		claim supervise.Claim
 		task  string
 		news  []byte
-		says  bool
 	}{
-		{"a phase entry's start", childClaim, entry.task, entry.news, true},
-		{"a start queued for news alone", childClaim, alone.task, alone.news, true},
-		{"the root architect's entry start", rootClaim, architect.task, architect.news, true},
-		{"the send of a held task again", childClaim, resentTask, resentNews, true},
-		{"the narrowing of a root architect's held task", rootClaim, narrowedTask, narrowedNews, true},
+		{"a phase entry's start", childClaim, entry.task, entry.news},
+		{"a start queued for news alone", childClaim, alone.task, alone.news},
+		{"the root architect's entry start", rootClaim, architect.task, architect.news},
+		{"the send of a held task again", childClaim, resentTask, resentNews},
+		{"the narrowing of a root architect's held task", rootClaim, narrowedTask, narrowedNews},
 	} {
 		t.Run(built.name, func(t *testing.T) {
-			wantTextNamesExactly(t, built.task, built.news, built.says)
+			wantTextNamesExactly(t, built.task, built.news)
 			again, carried, err := sender.designNews(r.ctx, built.claim, supervise.Delivery{ID: "outbox:9", Task: "stale text", News: built.news})
 			if err != nil {
 				t.Fatalf("render the recorded news again: %v", err)
@@ -117,20 +116,13 @@ func TestEveryBuilderRecordsExactlyTheNewsItsTextNames(t *testing.T) {
 	}
 }
 
-// wantTextNamesExactly fails the test unless text names exactly the news it carries: the start's
-// own text first, each item told by its pair, the opened gate where an opening it carries says the
-// gate opened, and no item told that the news does not carry. says is whether the news must tell
-// something at all.
-func wantTextNamesExactly(t *testing.T, text string, encoded []byte, says bool) {
+// wantTextNamesExactly fails the test unless text carries news and names exactly that news: the
+// start's own text first, each item told by its pair, the opened gate where an opening it carries
+// says the gate opened, and no item told that the news does not carry.
+func wantTextNamesExactly(t *testing.T, text string, encoded []byte) {
 	t.Helper()
 	if len(encoded) == 0 {
-		if says {
-			t.Fatalf("the task %q carries no news, want news", text)
-		}
-		if strings.Contains(text, ", since version") || strings.Contains(text, "design gate of") {
-			t.Fatalf("the task %q tells news, but carries none", text)
-		}
-		return
+		t.Fatalf("the task %q carries no news, want news", text)
 	}
 	var news record.DeliveryNews
 	if err := json.Unmarshal(encoded, &news); err != nil {

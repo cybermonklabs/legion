@@ -143,8 +143,9 @@ type renderedNews struct {
 // the claim whose token is reader (readNewsAtSend), and answers the text — carried's own Task, a
 // blank line, then the news — and exactly the news that text names: none where nothing stands;
 // encoded, the bytes carried was decoded from, where it keeps carried as it was; and carried
-// encoded again otherwise. A builder with no bytes to keep (a start, or a narrowing, which changed
-// the start's own text) passes nil.
+// encoded again otherwise. A start has no bytes to keep, and passes nil. A narrowing passes the
+// news it encoded again under the narrowed text (narrowedNews, through designNews), so news it
+// keeps as it was is answered as those bytes, under that text.
 func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
 	carried record.DeliveryNews, encoded []byte, now func() time.Time) (renderedNews, error) {
 	sent, err := readNewsAtSend(ctx, tx, records, steps, reader, carried, now)
@@ -298,14 +299,14 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			if !itemStands(item, tree.gates[item.Step], heard.told) {
 				continue
 			}
-			items[i] = inRun(rekeyed(item, heard.told), *issue, tree.root)
+			items[i] = inRun(rekeyed(item, heard.told), issue.Generation, tree.root.Generation)
 			heard.items = append(heard.items, i)
 			// An item told by the unread history it carries asks the record nothing of it.
 			if items[i].From != nil || items[i].HistoryUnread == nil {
 				asks.add(issue.Tree, items[i].NewsItem())
 			}
 		}
-		heard.opening = openingAtSend(listener, heard.told, tree.open, *issue, tree.root)
+		heard.opening = heard.openingAtSend()
 		if listener.audience == record.AudienceArchitect && claim.IsTreeRoot(issue.Key, issue.Tree) {
 			if heard.members, err = readTreeMembers(ctx, tx, records, steps, tree.claims); err != nil {
 				return newsAtSend{}, err
@@ -367,9 +368,9 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	return sent, nil
 }
 
-// openingAtSend is the gate's state a send says to listener, whose told row is told, while the
-// standing gate is open or not, as the opening the send carries (nil for none), marked with the
-// run of issue, the listener's issue, whose tree's root is root (inRun):
+// openingAtSend is the gate's state a send says to heard's listener, whose told row is heard.told,
+// while the standing gate of heard's tree is open or not, as the opening the send carries (nil for
+// none), marked with the run of heard's issue and of its tree's root (inRun):
 //
 //   - while the gate stands open and the row owes the opening, the opening, under the number the
 //     row holds for it now (record.DesignTold.Opening), whether or not the delivery carried it: the
@@ -381,14 +382,16 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 //     and carries the opening marked closed, which the confirmation clears nothing for;
 //   - otherwise nothing: the row owes no opening, so the opened role message or a confirmation
 //     told it, or the gate is closed and the delivery carried none.
-func openingAtSend(listener *newsListener, told record.DesignTold, open bool, issue, root record.Issue) *record.DeliveryOpening {
+func (heard *newsListened) openingAtSend() *record.DeliveryOpening {
+	listener, open := heard.listener, heard.tree.open
+	generation, treeGeneration := heard.issue.Generation, heard.tree.root.Generation
 	switch {
-	case open && told.OpeningOwed:
-		return &record.DeliveryOpening{Issue: listener.issue, Audience: listener.audience, Seq: told.Opening,
-			Generation: issue.Generation, TreeGeneration: root.Generation}
+	case open && heard.told.OpeningOwed:
+		return &record.DeliveryOpening{Issue: listener.issue, Audience: listener.audience, Seq: heard.told.Opening,
+			Generation: generation, TreeGeneration: treeGeneration}
 	case !open && listener.opening != nil:
 		closed := *listener.opening
-		closed.Closed, closed.Generation, closed.TreeGeneration = true, issue.Generation, root.Generation
+		closed.Closed, closed.Generation, closed.TreeGeneration = true, generation, treeGeneration
 		return &closed
 	}
 	return nil
@@ -465,13 +468,14 @@ func rekeyed(item record.DeliveryNewsItem, told record.DesignTold) record.Delive
 	return item
 }
 
-// inRun is item marked with the run the send renders it in: the generation of issue, the item's
-// issue, and of root, the root of the tree issue stands in (record.DeliveryNewsItem.Generation and
-// TreeGeneration), as the transaction reads them. The credit of the prompt that carries it counts
-// only while the record still holds that run (the SQL function design_news_current), so a send after
-// a clear of a generation marks the item with the next run, and tells that run what it is owed now.
-func inRun(item record.DeliveryNewsItem, issue, root record.Issue) record.DeliveryNewsItem {
-	item.Generation, item.TreeGeneration = issue.Generation, root.Generation
+// inRun is item marked with the run the send renders it in: generation, the generation of the
+// item's issue, and treeGeneration, that of the root of the tree the issue stands in
+// (record.DeliveryNewsItem.Generation and TreeGeneration), as the transaction reads them. The
+// credit of the prompt that carries it counts only while the record still holds that run (the SQL
+// function design_news_current), so a send after a clear of a generation marks the item with the
+// next run, and tells that run what it is owed now.
+func inRun(item record.DeliveryNewsItem, generation, treeGeneration uint64) record.DeliveryNewsItem {
+	item.Generation, item.TreeGeneration = generation, treeGeneration
 	return item
 }
 

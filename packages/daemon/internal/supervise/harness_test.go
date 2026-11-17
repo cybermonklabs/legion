@@ -740,11 +740,7 @@ func (h *harness) promptInTurn() string {
 func (h *harness) outstanding() []string {
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()
-	ids := make([]string, 0, len(h.m.outstanding))
-	for _, prompt := range h.m.outstanding {
-		ids = append(ids, prompt.id)
-	}
-	return ids
+	return h.m.outstanding.ids()
 }
 
 func (h *harness) must(ev Event) {

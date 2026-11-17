@@ -9,14 +9,13 @@ import (
 	"time"
 )
 
-// The case here is review thread PRRT_kwDORFy7ds64Upu_. Since #3711 a root architect's entry
-// start can carry the decisions a person made while nobody in its tree could hear them and news of
-// the approved design together. At its send, a decision whose issue has left the tree is dropped
-// from the task (Deps.RootTask). The task's text and the news it carries are written by the one
-// render (Deps.DesignNews, and Deps.RootTask's own narrowing through it), so a narrowed task carries
-// exactly the news its text names: its prompt holds that news, its confirmation credits exactly
-// what that prompt named, and a later send renders from the narrowed text, never naming the
-// released decision again.
+// Since #3711 a root architect's entry start can carry the decisions a person made while nobody
+// in its tree could hear them and news of the approved design together. At its send, a decision
+// whose issue has left the tree is dropped from the task (Deps.RootTask). The task's text and the
+// news it carries are written by the one render (Deps.DesignNews, and Deps.RootTask's own
+// narrowing through it), so a narrowed task carries exactly the news its text names: its prompt
+// holds that news, its confirmation credits exactly what that prompt named, and a later send
+// renders from the narrowed text, never naming the released decision again.
 
 const (
 	// heldDecisions is what the held task names of the tree's kept decisions: two, one of which
@@ -95,16 +94,15 @@ func narrowingRootTask(t *testing.T) func(context.Context, Claim, Delivery) (str
 	}
 }
 
-// wantNamesExactly fails the test unless message ends with the text news renders, after only the
-// sentences the machine puts in front of a task (Delivery.message, a provider error's note among
-// them): every item the news carries is named by it, and nothing else is.
+// wantNamesExactly fails the test unless the delivery carries news and message ends with the text
+// that news renders, after only the sentences the machine puts in front of a task
+// (Delivery.message, a provider error's note among them): every item the news carries is named by
+// it, and nothing else is. Every caller here expects news, so a delivery that carries none fails:
+// a narrowing that dropped the news would leave a text that names none, and pass otherwise.
 func wantNamesExactly(t *testing.T, when, message string, news []byte) {
 	t.Helper()
 	if len(news) == 0 {
-		if strings.Contains(message, "The approved spec") {
-			t.Fatalf("%s: the prompt %q names news, but the delivery carries none", when, message)
-		}
-		return
+		t.Fatalf("%s: the delivery carries no news, want the news the held task carried (the prompt is %q)", when, message)
 	}
 	want := renderFakeNews(t, news)
 	before, found := strings.CutSuffix(message, want)

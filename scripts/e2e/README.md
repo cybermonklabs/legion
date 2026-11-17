@@ -6027,8 +6027,9 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 
 ## lib/run-verdict.sh
 
-A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints a verdict.
+A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
 Sourced by each of them, never run.
+Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
 
 ```sh
@@ -6052,8 +6053,9 @@ A run a signal ends never reaches that statement, so the mark alone keeps it fro
 The lib sets no signal trap, and a script needs none for this rule.
 bash runs a trapped signal's handler only once the foreground command returns, and a proof runs its driver in the foreground for up to an hour, so a trap would make a killed proof wait for its driver:
 measured in a Legion pod, a `TERM` trap held a shell's exit for 6069 ms behind a 6 s `sleep`, against 1217 ms with no trap.
-`dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh` and [`lib/two-builds.sh`](#libtwo-buildssh) trap `INT` and `TERM` for their own teardown, and pass the signal's status (130, 143) to `run_verdict`;
-a `HUP`, which none of them traps, reaches their `EXIT` trap as status 0 and reads FAIL by the mark.
+`dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, `dispatch-session-settings.sh` and [`lib/two-builds.sh`](#libtwo-buildssh) trap `INT` and `TERM` for their own teardown, and pass the signal's status (130, 143) to `run_verdict`:
+`dispatch-session-settings.sh` traps each to an `exit` with that status, which its `EXIT` trap reads, and the other seven trap each to their teardown with it.
+A `HUP`, which none of them traps, reaches their `EXIT` trap as status 0 and reads FAIL by the mark.
 
 Each item below names a function, then what it does.
 

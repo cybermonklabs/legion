@@ -7,6 +7,7 @@ import {
   type KillPoint,
   liveDaemonStandIns,
   type StopSignal,
+  stopped,
 } from "./live-daemon-proof-fixture";
 
 // live-daemon-proof.sh's last line, printed by its EXIT trap (cleanup) through lib/run-verdict.sh.
@@ -51,9 +52,6 @@ live_daemon_proof 'fixture proof' fixture-proof ${testName} ${JSON.stringify(evi
   );
   return { ...run, evidence };
 }
-
-const stopped =
-  "the run stopped before its end, by a signal or an exit of its own: its status 0 is no pass";
 
 describe.skipIf(withoutSetsid)("the run's last line", () => {
   for (const signal of ["TERM", "HUP", "INT"] as const) {

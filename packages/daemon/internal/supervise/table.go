@@ -1359,8 +1359,8 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // acknowledges a prompt at its admission, before its pre-turn work, and its turn is the session's
 // next whenever it starts, so a late start confirms the task (turnStarted) and the prompt's own
 // result settles it (fence, promptResulted).
-// It tells nothing of what the prompt carried, as confirm states, and so writes the delivery
-// alone, as for every other prompt.
+// It tells nothing of what the prompt carried, as confirmCarrying states, and so writes the
+// delivery alone, as for every other prompt.
 //
 // It does record what the prompt carried of news of the approved design, the pending delivery's
 // own news (PromptAcked says why that is the prompt's), with the prompt (awaitResult), and as the
@@ -1405,15 +1405,15 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // goes with it unless another prompt of the task is still outstanding (Machine.outstanding): the
 // pinned Oh My Pi refuses this send because it is preparing or running that prompt's turn, the
 // very turn whose start, with this send in flight, confirmed the task, so it stays the task's.
-// A confirmation that goes takes back what it told (moveTelling, confirm): the turn that confirmed
-// the task was another's, so the agent never read the sentence the task's prompt carried, and the
-// next prompt carries it again. The credit it made of the news of the approved design goes with
-// it: the copy goes (Delivery.Carried), and the write of the delivery without it ends that credit,
-// since the store counts only the copy a confirmed row holds (design_news_told_in). A refused
-// send writes no copy of its own news, since only an acknowledgement does (acked): a task whose
-// every send was refused here — its adoption refused, its identity not minted, its prompt answered
-// busy — is one no acknowledged prompt carried, which no turn of the agent's own confirms across a
-// restart (unsentNews).
+// A confirmation that goes takes back what it told (moveTelling, confirmCarrying): the turn that
+// confirmed the task was another's, so the agent never read the sentence the task's prompt
+// carried, and the next prompt carries it again. The credit it made of the news of the approved
+// design goes with it: the copy goes (Delivery.Carried), and the write of the delivery without it
+// ends that credit, since the store counts only the copy a confirmed row holds
+// (design_news_told_in). A refused send writes no copy of its own news, since only an
+// acknowledgement does (acked): a task whose every send was refused here — its adoption refused,
+// its identity not minted, its prompt answered busy — is one no acknowledged prompt carried, which
+// no turn of the agent's own confirms across a restart (unsentNews).
 //
 // Which failures cost budget is decided here, and this doc is where the split is stated.
 // Charged are the two answers the far side gave about this very workspace: a refused prompt and a

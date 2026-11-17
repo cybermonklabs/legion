@@ -44,7 +44,8 @@
 # after <n>s (evidence: <dir>)` on stderr. lib/run-verdict.sh holds that rule and its reason: bash
 # runs the EXIT trap with status 0 when a signal (TERM, INT or HUP) ends the shell, so the status
 # alone would read such a run as a pass. A run that ended before its last check with status 0
-# says so on the line before its FAIL line, and exits 1.
+# says so on the line before its FAIL line, and exits 1, or with the signal's status when a signal
+# ended it.
 
 # shellcheck source-path=SCRIPTDIR source=transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"

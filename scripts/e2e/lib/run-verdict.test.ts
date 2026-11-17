@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
+import { stopped } from "./live-daemon-proof-fixture";
 import { scriptFunctions, sourcedLibraries } from "./script-functions";
 
 // lib/run-verdict.sh is the one rule for a proof's last line: PASS only for a run that ends with
@@ -12,8 +13,6 @@ import { scriptFunctions, sourcedLibraries } from "./script-functions";
 
 const lib = join(import.meta.dir, "run-verdict.sh");
 const e2e = join(import.meta.dir, "..");
-const stopped =
-  "the run stopped before its end, by a signal or an exit of its own: its status 0 is no pass";
 
 /** Where the fixture proof stops: before its first check, between its two checks, or nowhere. */
 type Stop = { at: "setup" | "checks"; with: string } | undefined;
@@ -98,8 +97,10 @@ describe("run_verdict over a fixture proof", () => {
 });
 
 // The shape of dispatch-claimant-delivery.sh, verification-results.sh, plan-pointer-drive.sh,
-// refusal-fallback-omp.sh and lib/two-builds.sh: INT and TERM trapped to cleanup with the
-// signal's status, HUP not trapped, so the EXIT trap reads 0 for a hangup.
+// refusal-fallback-omp.sh, clean-session-stop-tmux.sh, envoy-session-states.sh and
+// lib/two-builds.sh: INT and TERM trapped to cleanup with the signal's status, HUP not trapped, so
+// the EXIT trap reads 0 for a hangup. dispatch-session-settings.sh, the eighth script that traps
+// INT and TERM, traps them to an exit with that status, which reaches its EXIT trap as the status.
 describe("run_verdict under a script that traps INT and TERM itself", () => {
   const traps = `trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT

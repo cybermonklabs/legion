@@ -523,7 +523,7 @@ func TestATaskCarryingNewsTakesTheRelaunchDeliverysPlace(t *testing.T) {
 }
 
 // A turn the in-flight rule takes for the pending task while the send in flight is an older task's
-// raises none of that send's news (confirmedNews). The send of a task carrying news is past its
+// credits none of that send's news (turnAnswers). The send of a task carrying news is past its
 // adoption and on its way when a turn starts, which confirms that task with the news the send
 // carries. A newer task carrying news takes the confirmed task's place while the send is still
 // out, the turn ends, and another turn starts before the send returns: the start is taken for the

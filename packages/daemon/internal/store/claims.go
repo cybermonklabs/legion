@@ -666,30 +666,24 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 
 // putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
 // the one that carries the claim the delivery is confirmed against. It takes a transaction
-// because an unconfirmed write reads the row it is about to replace and holds that reading until it
-// has written (replacesConfirmed), which no autocommit statement can do. The rows the task names go
-// with it: a delivery still unconfirmed holds them, under this claim and this delivery id, taking
-// each from the start row that claimed it and from whatever id the claim's previous delivery held it
-// under; the write that records the confirmation tells them. The news a prompt of it carried
-// (Delivery.Carried) is the delivery's credit while the row holds a confirmation, which the readers
-// of what an audience took read from the row; the write of a final credit (Delivery.Ran) folds it
-// into the told rows (settleDesignNews). All of it is in the caller's transaction, so no row is
-// ever held by a delivery the store does not hold, and no confirmation commits without telling
-// what it confirmed.
+// because it reads the row it is about to replace and holds that reading until it has written
+// (kept_decisions.go's putBackARetakenConfirmation), which no autocommit statement can do. The
+// rows the task names go with it: a delivery still unconfirmed holds them, under this claim and
+// this delivery id, taking each from the start row that claimed it and from whatever id the
+// claim's previous delivery held it under; the write that records the confirmation tells them.
+// The news a prompt of it carried (Delivery.Carried) is the delivery's credit while the row holds
+// a confirmation, which the readers of what an audience took read from the row; the write of a
+// final credit (Delivery.Ran) folds it into the told rows (settleDesignNews).
+// All of it is in the caller's transaction, so no row is ever held by a delivery the store does
+// not hold, and no confirmation commits without telling what it confirmed.
 func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
 	kept, news, carried := keptDecisions(d.Kept), designNews(d.News), designNews(d.Carried)
 	unconfirmed := d.ConfirmedAt.IsZero()
-	// Every unconfirmed write reads the row it replaces, since any of them may take a confirmation
-	// back, and only that row says whether it held one.
 	if unconfirmed {
-		confirmed, err := replacesConfirmed(ctx, tx, token)
-		if err != nil {
-			return err
-		}
-		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept, confirmed); err != nil {
+		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
 			return err
 		}
 	}
@@ -728,23 +722,6 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		return holdKeptDecisions(ctx, tx, token, d.ID, kept)
 	}
 	return tellKeptDecisions(ctx, tx, token, d.ID)
-}
-
-// replacesConfirmed reads whether the row a write of token's delivery is about to replace holds a
-// confirmation, false where there is no row. It is the read the put-back of a retaken
-// confirmation takes its side from (putBackARetakenConfirmation), made before the upsert, since
-// afterwards nothing says what the write changed, and it takes that row's own lock, so no write of
-// another transaction lands between the read and the write.
-func replacesConfirmed(ctx context.Context, tx pgx.Tx, token claim.Token) (bool, error) {
-	var confirmed bool
-	switch err := tx.QueryRow(ctx, `select confirmed_at is not null from pending_task_deliveries
-		where claim_token = $1 for update`, string(token)).Scan(&confirmed); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("read whether the delivery %s holds was confirmed: %w", token, err)
-	}
-	return confirmed, nil
 }
 
 // PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation
@@ -797,14 +774,14 @@ func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryI
 		if queued, err = s.putClaim(ctx, tx, c); err != nil {
 			return err
 		}
-		err = tx.QueryRow(ctx,
-			"delete from pending_task_deliveries where claim_token = $1 and delivery_id = $2 returning delivery_id",
+		tag, err := tx.Exec(ctx,
+			"delete from pending_task_deliveries where claim_token = $1 and delivery_id = $2",
 			string(c.Token), deliveryID,
-		).Scan(new(string))
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		)
+		if err != nil {
 			return fmt.Errorf("retire delivery %s on %s: %w", deliveryID, c.Token, err)
 		}
-		if errors.Is(err, pgx.ErrNoRows) {
+		if tag.RowsAffected() == 0 {
 			var stored string
 			switch err := tx.QueryRow(ctx,
 				"select delivery_id from pending_task_deliveries where claim_token = $1",

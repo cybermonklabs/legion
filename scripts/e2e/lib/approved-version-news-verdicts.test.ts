@@ -11,6 +11,7 @@ import {
   type KillPoint,
   liveDaemonStandIns,
   type StopSignal,
+  stopped,
 } from "./live-daemon-proof-fixture";
 import {
   expectNoMissingHelpers,
@@ -280,9 +281,7 @@ ${body}`,
 }
 
 // What finish prints for a run that ended before either of the script's ends with status 0:
-// lib/run-verdict.sh's line that says so, then the FAIL line.
-const stopped =
-  "the run stopped before its end, by a signal or an exit of its own: its status 0 is no pass";
+// lib/run-verdict.sh's line that says so (stopped), then the FAIL line.
 const interrupted = new RegExp(
   `^${stopped}\\napproved version news e2e: FAIL at driver after \\d+s \\(assertions: 3/52; part one alone, part two did not run, evidence: /evidence\\)\\n$`
 );

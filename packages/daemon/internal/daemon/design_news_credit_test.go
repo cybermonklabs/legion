@@ -17,13 +17,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The cases here are review thread PRRT_kwDORFy7ds64UpvF's two traces. In each, a delivery's
-// confirmation credited news its turn's result has not yet made final, and something then built on
-// that credit: a start that computed its news from the row the credit raised, and the reconcile's
-// raise past it. The credit is then given back. Since a credit is the delivery's own and a raise is
-// a credit counted from the version its pair names, the give-back ends exactly that credit, and
-// whatever was counted from the version it gave reaches nothing: the news of the pair before it is
-// told, never lost.
+// The cases here are two traces. In each, a delivery's confirmation credited news its turn's
+// result has not yet made final, and something then built on that credit: a start that computed
+// its news from the row the credit raised, and the reconcile's raise past it. The credit is then
+// given back. Since a credit is the delivery's own and a raise is a credit counted from the
+// version its pair names, the give-back ends exactly that credit, and whatever was counted from
+// the version it gave reaches nothing: the news of the pair before it is told, never lost.
 
 // creditRig is the reconcile rig with its child in implementing, its holder's row at version 3 of
 // the spec, its implementer's claim, and the daemon's claim store on the rig's pool.
@@ -55,13 +54,7 @@ func (r *creditRig) claim() supervise.Claim {
 	if err != nil {
 		r.t.Fatalf("read the claims: %v", err)
 	}
-	for _, c := range claims {
-		if c.Token == r.token {
-			return c
-		}
-	}
-	r.t.Fatalf("the store holds no claim %s", r.token)
-	return supervise.Claim{}
+	return storedOf(r.t, claims, r.token)
 }
 
 // confirmedTask writes the implementer's task id, whose prompt carried version to of the spec

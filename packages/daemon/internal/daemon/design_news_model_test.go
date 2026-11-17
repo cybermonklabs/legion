@@ -60,12 +60,12 @@ import (
 //
 // With no variable set it runs newsModelCISeed for 40 steps, a few seconds: a seed whose run
 // reaches every kind of step at least once (newsModelCISeed says how that was read).
-// LEGION_NEWS_MODEL_SEED runs one seed, LEGION_NEWS_MODEL_RUNS runs seeds 1 to that many,
-// LEGION_NEWS_MODEL_STEPS sets the steps each drives, and LEGION_NEWS_MODEL_TRACE prints each
-// seed's steps and the state each left. A seed's steps are its own: every step waits for the
-// machine before the next, and the machine's timers fire only when a step fires them.
+// LEGION_NEWS_MODEL_SEED runs one seed, LEGION_NEWS_MODEL_RUNS runs seeds 1 to that many (1 runs
+// seed 1 alone), LEGION_NEWS_MODEL_STEPS sets the steps each drives, and LEGION_NEWS_MODEL_TRACE
+// prints each seed's steps and the state each left. A seed's steps are its own: every step waits
+// for the machine before the next, and the machine's timers fire only when a step fires them.
 func TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold(t *testing.T) {
-	steps := newsModelCount(t, "LEGION_NEWS_MODEL_STEPS", 40)
+	steps := keptPropertyEnv(t, "LEGION_NEWS_MODEL_STEPS", 40)
 	seeds := []int64{newsModelCISeed}
 	if named := os.Getenv("LEGION_NEWS_MODEL_SEED"); named != "" {
 		seed, err := strconv.ParseInt(named, 10, 64)
@@ -73,7 +73,7 @@ func TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold(t *testing.T) {
 			t.Fatalf("LEGION_NEWS_MODEL_SEED=%q is no seed: %v", named, err)
 		}
 		seeds = []int64{seed}
-	} else if runs := newsModelCount(t, "LEGION_NEWS_MODEL_RUNS", 1); runs > 1 {
+	} else if runs := keptPropertyEnv(t, "LEGION_NEWS_MODEL_RUNS", 0); runs > 0 {
 		seeds = seeds[:0]
 		for seed := int64(1); seed <= int64(runs); seed++ {
 			seeds = append(seeds, seed)
@@ -102,20 +102,6 @@ func TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold(t *testing.T) {
 // with -v, which prints how many of the sixteen kinds each seed's drive chose (newsModel.kinds);
 // seeds 25 and 126 were the two that reached all sixteen.
 const newsModelCISeed = 25
-
-// newsModelCount is the positive count the environment variable name sets, or fallback.
-func newsModelCount(t *testing.T, name string, fallback int) int {
-	t.Helper()
-	set := os.Getenv(name)
-	if set == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(set)
-	if err != nil || n <= 0 {
-		t.Fatalf("%s=%q is no count: %v", name, set, err)
-	}
-	return n
-}
 
 // errModelWrite is a write the model's claim store refused (newsModelStore).
 var errModelWrite = errors.New("the claim store refused this write")
@@ -248,6 +234,14 @@ type newsModelStored struct {
 	ran       bool
 }
 
+// storedFrom is the delivery d as far as its credit goes (newsModelStored), the zero value for nil.
+func storedFrom(d *supervise.Delivery) newsModelStored {
+	if d == nil {
+		return newsModelStored{}
+	}
+	return newsModelStored{held: true, id: d.ID, confirmed: !d.ConfirmedAt.IsZero(), carried: string(d.Carried), ran: d.Ran}
+}
+
 // stored is the reviewer's delivery as the store holds it now.
 func (m *newsModel) stored() newsModelStored {
 	m.t.Helper()
@@ -256,9 +250,8 @@ func (m *newsModel) stored() newsModelStored {
 		m.fail("read the stored claims: %v", err)
 	}
 	for _, c := range claims {
-		if c.Token == m.token && c.Pending != nil {
-			return newsModelStored{held: true, id: c.Pending.ID, confirmed: !c.Pending.ConfirmedAt.IsZero(),
-				carried: string(c.Pending.Carried), ran: c.Pending.Ran}
+		if c.Token == m.token {
+			return storedFrom(c.Pending)
 		}
 	}
 	return newsModelStored{}
@@ -698,11 +691,7 @@ func (m *newsModel) lagging() bool {
 		}
 		m.behind = nil
 	}
-	held := m.machine.Claim().Pending
-	if held == nil {
-		return stored.held
-	}
-	return stored != newsModelStored{held: true, id: held.ID, confirmed: !held.ConfirmedAt.IsZero(), carried: string(held.Carried), ran: held.Ran}
+	return stored != storedFrom(m.machine.Claim().Pending)
 }
 
 // check holds the reviewer's told row, as every reader reads it, to the model. While a refused

@@ -234,8 +234,8 @@ func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.N
 // The delivery has no phase, no run, no entry and no look, so nothing holds it back
 // (phaseHolds, asksRoot), no working copy is adopted for it (adopts), and its confirmation and
 // retirement leave what the claim is serving alone and end no phase (serving, settle). Its id is
-// relaunchTaskID's. The record is told when a turn confirms a prompt of it (confirm), as a task's
-// would be, and its text is the record as it stands when the prompt goes (Delivery.message).
+// relaunchTaskID's. The record is told when a turn confirms a prompt of it (confirmCarrying), as a
+// task's would be, and its text is the record as it stands when the prompt goes (Delivery.message).
 //
 // It is queued by finishReady after the ready's durable write and report, which the workflow reads
 // synchronously (Machine.OnDurableState, the daemon's applyTerminal): the workflow's ready reads

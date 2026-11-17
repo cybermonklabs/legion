@@ -7,8 +7,9 @@ package daemon
 // and the checks that every claim stands at the entry that path gives it. Part two's seed
 // (approved_version_news_sessions_live_test.go) starts its roles through the same path and checks
 // them by the same rule, so the pieces both seeds use are here: the start of a fixture's roles
-// (startRoles), the rule a claim's entries are held to (claimEntries, entryRefusal), and the read of
-// a told row, in the seed's transaction or in a savepoint of it (heldTold, toldInSavepoint).
+// (startRoles), the rule a claim's entries are held to (claimEntries, entryRefusal), the read of a
+// told row, in the seed's transaction or in a savepoint of it (heldTold, toldInSavepoint), and the
+// write of a told row by hand, checked against the row the start path writes (seedToldRow).
 
 import (
 	"context"
@@ -338,6 +339,22 @@ func (seeded versionNewsTold) differences(path versionNewsTold) []string {
 	return differs
 }
 
+// seedToldRow writes issue's row of the told record for audience by hand, holding versions and
+// owing no opening, and answers how it differs from path, the row the daemon's start path writes
+// for the same audience (versionNewsTold.differences), none where it does not. what names the row,
+// for an error.
+func seedToldRow(ctx context.Context, tx pgx.Tx, issue, audience, versions, what string, path versionNewsTold) ([]string, error) {
+	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
+		values ($1, $2, $3::jsonb, false, now())`, issue, audience, versions); err != nil {
+		return nil, fmt.Errorf("seed %s: %w", what, err)
+	}
+	seeded, err := heldTold(ctx, tx, issue, audience)
+	if err != nil {
+		return nil, err
+	}
+	return seeded.differences(path), nil
+}
+
 // seedHolderRow writes member's holder row of the told record by hand, at version 1 of each
 // document tree registers (toldVersions), and answers how it differs from the row the daemon's
 // start path writes for the same holder, "" where it does not. member's own start comes after it
@@ -351,15 +368,10 @@ func (r *versionNewsLive) seedHolderRow(ctx context.Context, tx pgx.Tx, engine *
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
-		values ($1, 'holder', $2::jsonb, false, now())`, member.Key, toldVersions(tree)); err != nil {
-		return "", fmt.Errorf("seed the holder row of %s: %w", member.Key, err)
-	}
-	seeded, err := heldTold(ctx, tx, member.Key, "holder")
+	differs, err := seedToldRow(ctx, tx, member.Key, "holder", toldVersions(tree), "the holder row of "+member.Key, path)
 	if err != nil {
 		return "", err
 	}
-	differs := seeded.differences(path)
 	if len(differs) == 0 {
 		return "", nil
 	}

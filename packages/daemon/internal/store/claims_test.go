@@ -191,9 +191,9 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 			got, failing.SendFailures, failing.LastSendFailureAt)
 	}
 
-	// The send that reached a turn clears all three (supervise's confirm), through the same
-	// upsert: a delivery read back still counting failures an earlier turn got past would name a
-	// stall that is over.
+	// The send that reached a turn clears all three (supervise's confirmCarrying), through the
+	// same upsert: a delivery read back still counting failures an earlier turn got past would name
+	// a stall that is over.
 	confirmed := failing
 	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = at(6), failing.ID, at(7)
 	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""

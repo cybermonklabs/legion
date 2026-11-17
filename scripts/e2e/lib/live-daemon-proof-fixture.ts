@@ -18,6 +18,13 @@ export type StandInRun = {
   kill?: { at: KillPoint; signal: StopSignal };
 };
 
+/**
+ * The line lib/run-verdict.sh prints above the FAIL line of a run that ended with status 0 before
+ * its end, as a signal or an exit of its own ends it.
+ */
+export const stopped =
+  "the run stopped before its end, by a signal or an exit of its own: its status 0 is no pass";
+
 // Each stand-in's own check of where to stop the run: it signals its whole process group, as a
 // closed pane (HUP), a Ctrl-C (INT) or timeout's TERM does, and then waits to be ended with it.
 // It waits half a second first, so the shell has started every command of the pipeline the

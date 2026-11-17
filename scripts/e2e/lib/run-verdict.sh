@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # A proof's last line, and the mark it rests on: one rule for every script under scripts/e2e
-# whose EXIT trap prints a verdict. Sourced by each of them, never run; it needs nothing of its
-# caller's.
+# whose EXIT trap prints PASS. Sourced by each of them, never run; it needs nothing of its
+# caller's. Every other EXIT trap there that prints a verdict prints FAIL only, from a mark of its
+# own, and its script does not source this file.
 #
 # bash runs the EXIT trap of a shell that a signal ends (a closed pane's HUP, a Ctrl-C's INT or
 # timeout's TERM, none of them trapped) with $? at the status of the last command it finished,

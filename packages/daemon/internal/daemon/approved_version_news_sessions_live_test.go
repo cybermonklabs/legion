@@ -840,15 +840,10 @@ const sessionsArchitectTook = `{"spec": 1}`
 // no opened message goes (tellGateMoved). The seed writes the gate open without that opening, so
 // the start path writes no such row here.
 func seedArchitectTold(ctx context.Context, tx pgx.Tx, root string, path versionNewsTold) (string, error) {
-	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
-		values ($1, 'architect', $2::jsonb, false, now())`, root, sessionsArchitectTook); err != nil {
-		return "", fmt.Errorf("seed the architect's told row of %s: %w", root, err)
-	}
-	seeded, err := heldTold(ctx, tx, root, "architect")
+	differs, err := seedToldRow(ctx, tx, root, "architect", sessionsArchitectTook, "the architect's told row of "+root, path)
 	if err != nil {
 		return "", err
 	}
-	differs := seeded.differences(path)
 	if len(differs) == 0 {
 		return "", nil
 	}
