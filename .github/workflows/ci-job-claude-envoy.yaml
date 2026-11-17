@@ -82,11 +82,10 @@ jobs:
   # packages/claude-envoy/scripts/verify-build.sh leaves out, over the very bytes it tarred, which
   # the job above put into the package (release-push.sh extract-built) and packed. A job of its
   # own, because the check reads the deployment's term list (PRIVATE_NAME_TERMS) and no job that
-  # runs dependency code holds it: this one checks out the .github cone for the script, downloads
-  # the tarball, lays its two directories out at their repository path (the vendored NATS
-  # client's exception is a path, packages/claude-envoy/dist/envoy-channel.js), and runs that
-  # shell script, tar and mkdir alone. release.yaml's claude_envoy_names runs the same check over
-  # the tarball the release publishes.
+  # runs dependency code holds it: this one checks out the .github cone and runs
+  # .github/actions/private-names-packed-plugin, which downloads the tarball, lays its two
+  # directories out and runs the check, and nothing else. release.yaml's claude_envoy_names runs
+  # the same action over the tarball the release publishes.
   private-names:
     needs: claude-envoy
     runs-on: ubuntu-24.04
@@ -96,23 +95,10 @@ jobs:
         with:
           sparse-checkout: .github
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.github/actions/private-names-packed-plugin
         with:
-          name: claude-envoy-pr
-          path: ${{ runner.temp }}/claude-envoy-pr
-      - name: Lay the packed plugin's dist/ and legion/ out at their repository path
-        run: |
-          tarballs=("$RUNNER_TEMP"/claude-envoy-pr/*.tgz)
-          if [ ${#tarballs[@]} -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
-            echo "::error::the claude-envoy-pr artifact holds no single tarball"
-            exit 1
-          fi
-          mkdir -p packages/claude-envoy
-          tar -xzf "${tarballs[0]}" -C packages/claude-envoy --strip-components=1 package/dist package/legion
-      - name: Check the packed plugin's dist/ and legion/ name nothing private
-        env:
-          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
-        run: .github/scripts/check-private-names.sh packages/claude-envoy/dist packages/claude-envoy/legion
+          artifact: claude-envoy-pr
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

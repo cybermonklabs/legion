@@ -903,6 +903,73 @@ run_check "$root"
 check "the path as another command's argument only: exits 1" "$(is "$status" 1)"
 check "refuses the list" "$(contains "$out" "$terms_refused")"
 
+echo "case: check-private-names.sh is no dependency code only when the step runs the checkout's own copy"
+# A working-directory, the step's or the job's default, moves a bare path to some other file, and a
+# `../` names a file outside the checkout's root; a path behind $GITHUB_WORKSPACE is the
+# checkout's own wherever the step runs.
+anchored_step=$'      - name: Check the packed plugin names nothing private\n'"$terms_env"$'        run: |\n          "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" packages/claude-envoy/dist\n'
+root=$(fixture terms-anchored)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$anchored_step"
+run_check "$root"
+check "the path behind \$GITHUB_WORKSPACE: exits 0" "$(is "$status" 0)"
+
+root=$(fixture terms-anchored-elsewhere)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "${anchored_step/        run:/        working-directory: packages/other
+        run:}"
+run_check "$root"
+check "the path behind \$GITHUB_WORKSPACE, from another working-directory: exits 0" "$(is "$status" 0)"
+
+root=$(fixture terms-step-working-directory)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "${names_step/        run:/        working-directory: packages/other
+        run:}"
+run_check "$root"
+check "the bare path under the step's working-directory: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+root=$(fixture terms-job-working-directory)
+mutate "$root/$RELEASE" $'  changes:\n    runs-on: ubuntu-24.04\n' $'  changes:\n    runs-on: ubuntu-24.04\n    defaults:\n      run:\n        working-directory: packages/other\n'
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$names_step"
+run_check "$root"
+check "the bare path under the job's default working-directory: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+root=$(fixture terms-parent-path)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "${names_step/.github\/scripts\/check-private-names.sh/..\/.github\/scripts\/check-private-names.sh}"
+run_check "$root"
+check "the path behind ../: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+echo "case: a local composite action is read through its steps"
+# action <name> <run>: a composite action in the fixture whose one step runs that text, as a YAML
+# block.
+action() {
+  mkdir -p "$root/.github/actions/$1"
+  # shellcheck disable=SC2016 # the `${{ … }}` is the action's own text, written literally
+  printf 'name: %s\nruns:\n  using: composite\n  steps:\n    - name: Scan\n      shell: bash\n      env:\n        PRIVATE_NAME_TERMS: ${{ inputs.terms }}\n      run: |\n        %s\n' \
+    "$1" "$2" > "$root/.github/actions/$1/action.yml"
+}
+uses_step=$'      - uses: ./.github/actions/scan\n        with:\n          terms: ${{ secrets.PRIVATE_NAME_TERMS }}\n'
+root=$(fixture terms-action-check)
+# shellcheck disable=SC2016 # the step's own shell expands $GITHUB_WORKSPACE, not this one
+action scan '"$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" packages/claude-envoy/dist'
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$uses_step"
+run_check "$root"
+check "an action whose step runs the checkout's check-private-names.sh: exits 0" "$(is "$status" 0)"
+
+root=$(fixture terms-action-bun)
+action scan 'bun install --frozen-lockfile'
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$uses_step"
+run_check "$root"
+check "an action whose step runs bun: exits 1" "$(is "$status" 1)"
+check "names the action's step" \
+  "$(contains "$out" "job 'changes' runs dependency code (step './.github/actions/scan' uses './.github/actions/scan', whose step 'Scan' runs 'bun'), but its text names secrets.PRIVATE_NAME_TERMS")"
+
+root=$(fixture terms-action-missing)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$uses_step"
+run_check "$root"
+check "an action the check cannot read: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
 echo "case: the term list in a build job's verify-build step is refused, as any secret but GITHUB_TOKEN is"
 root=$(fixture terms-in-build-job)
 mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' \

@@ -901,10 +901,11 @@ Each item below names a task and where its code is, then notes on it.
   write "the deployment repository" or `<deployment repo>`, and a neutral project key such as `ACME` in a fixture or example.
   `.github/scripts/check-private-names.sh` fails the build on any text file or path that names either, and on any text that names a private internal host or a Tailscale MagicDNS host, and `docs-site.yaml`, which the `docs` job of `ci.yaml` calls, runs it over the built site too.
   The deployment's names that the script cannot spell, because the script is public too, are its term list, `PRIVATE_NAME_TERMS`:
-  one term a line, each matched as a fixed string in any case (grep's own case folding) anywhere in a line or a path, read from the Actions secret of that name.
+  one term a line, each matched as given in any case anywhere in a line or a path, read from the Actions secret of that name.
+  One engine, GNU grep with one pattern per term, reads the repository, a named path, every path and the masking, so a spelling one finds, all find (grep's case counterparts, plus the characters such as a Kelvin sign or a dotless i whose case mapping folds to a letter grep does not count beside it).
   The allowed hosts of the host rules are no exception for a term.
   Only jobs that run no dependency code map that secret: each checks out the repository or downloads what another job built, and runs the script (its header lists them).
-  A hit names its file and line, or its path with `<name>` where a term stands, or `<name>` alone for a path a term cannot be masked in; a named target and another command's message are masked the same way, a traced run prints nothing, and the log never prints a term.
+  A hit names its file and line, or its path with `<name>` where a term stands, or `<name>` alone for a path a term cannot be masked in; a file name holding a `:` or a newline stays whole, a named target and another command's message are masked the same way, a traced run prints nothing, and the log never prints a term.
   With the list unset or empty, a `pull_request` or `pull_request_review` run, which a fork's pull request makes with no secret, and a run outside Actions warn that only the committed rules ran and keep their exit;
   a merge group, a push or a dispatched run fails with exit 2.
   A term lives in that secret alone, never in a file, commit, issue, pull request or log of this repository.
