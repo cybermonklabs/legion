@@ -41,14 +41,16 @@ export type CallerMiseEnvironment = {
  *   - MISE_SYSTEM_CONFIG_FILE (lines 312-313), which replaces the system config directory's files
  *     (src/config/mod.rs:3364-3375);
  *   - MISE_TRUSTED_CONFIG_PATHS, split on the path separator with its empty entries dropped
- *     (settings.toml:4364-4379, crates/mise-settings/src/lib.rs:504-511), each entry's `~/`
+ *     (settings.toml:4364-4379, crates/mise-settings/src/lib.rs:504-511), each entry's leading `~`
  *     expanded (src/config/settings.rs:1103-1109), and read by is_trusted
  *     (src/config/config_file/mod.rs:688).
  * The last four are passed only when the caller names them: the system config directory does not
  * depend on HOME, so the child finds the same /etc/mise by itself.
- * mise reads an empty variable as unset and expands a leading `~/` against its HOME (var_path,
- * env.rs:724-729, and replace_path, crates/mise-util/src/file.rs:897-909). The `~/` is expanded
- * here, against the caller's home: in the child it would name the child's.
+ * mise reads an empty variable as unset, and expands a first path component of `~` (a bare `~`
+ * too) against its HOME, keeping every `..` of the rest (var_path, env.rs:724-729, and
+ * replace_path, crates/mise-util/src/file.rs:878-909). It appends `mise` to an XDG base with
+ * PathBuf::join, which folds nothing either. The `~` is expanded here, against the caller's home:
+ * in the child it would name the child's.
  *
  * A child's mise writes into the caller's state directory what any mise run there writes: a link
  * for each config file it loads (src/config/mod.rs:3876), and the trust record of the active config
@@ -59,17 +61,25 @@ export function callerMiseEnvironment(
   env: Record<string, string | undefined> = process.env,
   home: string = homedir()
 ): CallerMiseEnvironment {
-  const expand = (entry: string) =>
-    entry.startsWith("~/") ? path.join(home, entry.slice(2)) : entry;
+  const expand = (entry: string) => {
+    // replace_path: a first component of `~` (bare `~` included) is the home, and the rest is
+    // pushed component by component, which drops empty and `.` components and keeps `..`.
+    if (entry !== "~" && !entry.startsWith("~/")) return entry;
+    return entry
+      .slice(1)
+      .split("/")
+      .filter((component) => component !== "" && component !== ".")
+      .reduce(under, home);
+  };
   const value = (name: string): string | undefined => {
     const set = env[name];
     return set === undefined || set === "" ? undefined : expand(set);
   };
   // mise's Windows data home (LOCALAPPDATA, env.rs:95-100) is not copied: rig.sh, which these
   // variables are for, is bash, and its tests run only on Linux and macOS.
-  const dataHome = value("XDG_DATA_HOME") ?? path.join(home, ".local", "share");
-  const configHome = value("XDG_CONFIG_HOME") ?? path.join(home, ".config");
-  const stateHome = value("XDG_STATE_HOME") ?? path.join(home, ".local", "state");
+  const dataHome = value("XDG_DATA_HOME") ?? under(under(home, ".local"), "share");
+  const configHome = value("XDG_CONFIG_HOME") ?? under(home, ".config");
+  const stateHome = value("XDG_STATE_HOME") ?? under(under(home, ".local"), "state");
   const globalConfigFile = value("MISE_GLOBAL_CONFIG_FILE") ?? value("MISE_CONFIG_FILE");
   const systemConfigDir = value("MISE_SYSTEM_CONFIG_DIR") ?? value("MISE_SYSTEM_DIR");
   const systemConfigFile = value("MISE_SYSTEM_CONFIG_FILE");
@@ -78,9 +88,9 @@ export function callerMiseEnvironment(
     .filter((entry) => entry !== "")
     .map(expand);
   return {
-    MISE_DATA_DIR: value("MISE_DATA_DIR") ?? path.join(dataHome, "mise"),
-    MISE_CONFIG_DIR: value("MISE_CONFIG_DIR") ?? path.join(configHome, "mise"),
-    MISE_STATE_DIR: value("MISE_STATE_DIR") ?? path.join(stateHome, "mise"),
+    MISE_DATA_DIR: value("MISE_DATA_DIR") ?? under(dataHome, "mise"),
+    MISE_CONFIG_DIR: value("MISE_CONFIG_DIR") ?? under(configHome, "mise"),
+    MISE_STATE_DIR: value("MISE_STATE_DIR") ?? under(stateHome, "mise"),
     ...(globalConfigFile === undefined ? {} : { MISE_GLOBAL_CONFIG_FILE: globalConfigFile }),
     ...(systemConfigDir === undefined ? {} : { MISE_SYSTEM_CONFIG_DIR: systemConfigDir }),
     ...(systemConfigFile === undefined ? {} : { MISE_SYSTEM_CONFIG_FILE: systemConfigFile }),
@@ -88,4 +98,11 @@ export function callerMiseEnvironment(
       ? {}
       : { MISE_TRUSTED_CONFIG_PATHS: trustedConfigPaths.join(path.delimiter) }),
   };
+}
+
+/** `name` under `dir` as PathBuf::push puts it: one separator between them, and nothing of
+ *  `dir` normalized. path.join would fold a `..` away, and after a symlink the folded path names
+ *  another directory. */
+function under(dir: string, name: string): string {
+  return dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
 }

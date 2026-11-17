@@ -96,6 +96,45 @@ test("a leading ~/ is the caller's home, not the child's", () => {
   });
 });
 
+// replace_path matches `~` as a whole first component, so a bare `~` is the home too, and
+// `~user/...` is not expanded at all.
+test("a bare ~ is the caller's home, and ~user is left as written", () => {
+  expect(
+    callerMiseEnvironment(
+      { MISE_DATA_DIR: "~", XDG_CONFIG_HOME: "~", MISE_TRUSTED_CONFIG_PATHS: "~:~other/work" },
+      home
+    )
+  ).toEqual({
+    ...defaults,
+    MISE_DATA_DIR: "/caller-home",
+    MISE_CONFIG_DIR: "/caller-home/mise",
+    MISE_TRUSTED_CONFIG_PATHS: "/caller-home:~other/work",
+  });
+});
+
+// replace_path rebuilds the rest of a `~/` path component by component, which folds repeated
+// separators and `.` but keeps `..`, and mise appends `mise` to an XDG base with PathBuf::join,
+// which normalizes nothing. A `..` after a symlink names another directory than the collapsed
+// path does, so it stays.
+test("a .. is kept as written, in a ~/ path and under an XDG base", () => {
+  expect(
+    callerMiseEnvironment(
+      {
+        XDG_CONFIG_HOME: "~/link/../config",
+        XDG_DATA_HOME: "/x/link/../data/",
+        MISE_STATE_DIR: "/y/link/../state",
+        MISE_GLOBAL_CONFIG_FILE: "~//a/./b/../m.toml",
+      },
+      home
+    )
+  ).toEqual({
+    MISE_DATA_DIR: "/x/link/../data/mise",
+    MISE_CONFIG_DIR: "/caller-home/link/../config/mise",
+    MISE_STATE_DIR: "/y/link/../state",
+    MISE_GLOBAL_CONFIG_FILE: "/caller-home/a/b/../m.toml",
+  });
+});
+
 test("a global config file is passed only when the caller names one", () => {
   const named = (env: Record<string, string>) =>
     callerMiseEnvironment(env, home).MISE_GLOBAL_CONFIG_FILE;
