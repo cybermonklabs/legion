@@ -426,23 +426,30 @@ func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 		"kind": "session", "id": brokerTestSession, "proven": true,
 		"act": map[string]any{"session": brokerTestSession, "session_proven": true},
 	}
+	// Each row's issue is written in words no other row's shares - its title, its spec's one
+	// sentence and the sentence its edit puts there - so the near-copy gate on POST /api/v1/issues
+	// reads no row's issue as a copy of an earlier row's (409 POSSIBLE_DUPLICATE).
 	for _, credential := range []struct {
 		name string
+		// title, first and second are the row's issue title, its spec's sentence and the
+		// sentence the edit replaces it with.
+		title, first, second string
 		// actor is the body's actor: none for the token that proves its session, the session
 		// claimed, or claimed with a forged mark, for every other.
 		actor  map[string]any
 		proven bool
 		send   func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder
 	}{
-		{"a broker-issued token", nil, true, func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
-			return rig.serve(caller.presenting(t, method, path, brokerToken, body))
-		}},
-		{"the shared agent token", claimed, false, bearer("agent-token")},
-		{"a personal token", claimed, false, bearer(personal)},
-		{"a service-account token", claimed, false, bearer(service)},
-		{"the shared agent token with a body that says proven", forged, false, bearer("agent-token")},
-		{"a personal token with a body that says proven", forged, false, bearer(personal)},
-		{"a service-account token with a body that says proven", forged, false, bearer(service)},
+		{"a broker-issued token", "Harbor lighthouse inventory", "Seagulls circle the pier.", "Ferries dock at dawn.", nil, true,
+			func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+				return rig.serve(caller.presenting(t, method, path, brokerToken, body))
+			}},
+		{"the shared agent token", "Orchard pruning calendar", "Apples ripen in autumn.", "Pears follow in winter.", claimed, false, bearer("agent-token")},
+		{"a personal token", "Volcanic basalt survey", "Lava cools into columns.", "Ash settles downhill.", claimed, false, bearer(personal)},
+		{"a service-account token", "Violin rehearsal notes", "Strings need fresh rosin.", "Bows rest overnight.", claimed, false, bearer(service)},
+		{"the shared agent token with a body that says proven", "Glacier melt telemetry", "Ice retreats each July.", "Meltwater feeds rivers.", forged, false, bearer("agent-token")},
+		{"a personal token with a body that says proven", "Bakery sourdough starter", "Flour ferments slowly.", "Loaves rise by noon.", forged, false, bearer(personal)},
+		{"a service-account token with a body that says proven", "Comet orbit sketch", "Tails point sunward.", "Perihelion arrives soon.", forged, false, bearer(service)},
 	} {
 		t.Run(credential.name, func(t *testing.T) {
 			write := func(method, path string, body map[string]any) *httptest.ResponseRecorder {
@@ -452,7 +459,7 @@ func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 				return credential.send(t, method, path, body)
 			}
 			issue := write(http.MethodPost, "/api/v1/issues", map[string]any{
-				"project": brokerTestProject, "title": "Written under " + credential.name, "spec": "# Spec\n\nThe first text.",
+				"project": brokerTestProject, "title": credential.title, "spec": credential.first,
 			})
 			if issue.Code != http.StatusCreated {
 				t.Fatalf("create the issue: status=%d body=%s", issue.Code, issue.Body.String())
@@ -469,7 +476,7 @@ func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 				ID string `json:"id"`
 			}](t, comment).ID
 			edited := write(http.MethodPost, "/api/v1/artifacts/"+created.PrimaryArtifactID+"/edits", map[string]any{
-				"ops": []map[string]string{{"op": "replace", "find": "The first text.", "with": "The second text."}},
+				"ops": []map[string]string{{"op": "replace", "find": credential.first, "with": credential.second}},
 			})
 			if edited.Code != http.StatusOK {
 				t.Fatalf("edit the spec: status=%d body=%s", edited.Code, edited.Body.String())
