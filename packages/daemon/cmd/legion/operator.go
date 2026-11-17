@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -26,13 +28,14 @@ import (
 // commands print carries it.
 type operatorCall struct {
 	name           string
-	flags          *flag.FlagSet
+	cmd            *cobra.Command
+	flags          *pflag.FlagSet
 	tokenFile      *string
 	configPath     *string
 	port           *int
 	stdout, stderr io.Writer
 	// wait is the bound the command's whole call runs under, when the command takes one
-	// (withWait), and until the moment that bound expires, fixed when the flags are parsed. Every
+	// (withWait), and until the moment that bound expires, fixed when check reads the call. Every
 	// request the command makes is bounded by that one moment, so a command that reads the claims
 	// in a loop is bounded by its --wait and not by --wait per request.
 	wait  *time.Duration
@@ -50,7 +53,7 @@ func (c *operatorCall) withWait(usage string) {
 }
 
 // bound is ctx under the command's remaining --wait, and ctx itself for a command that takes no
-// --wait. The deadline is the one parse fixed, so every request shares it.
+// --wait. The deadline is the one check fixed, so every request shares it.
 func (c *operatorCall) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	if c.until.IsZero() {
 		return ctx, func() {}
@@ -58,12 +61,13 @@ func (c *operatorCall) bound(ctx context.Context) (context.Context, context.Canc
 	return context.WithDeadline(ctx, c.until)
 }
 
-// newOperatorCall is the `legion <sub>` command's flag set with the three flags every operator
-// command takes; usage heads its help, and tokenUsage is how --operator-token-file reads in it.
-func newOperatorCall(sub, usage, tokenUsage string, stdout, stderr io.Writer) *operatorCall {
-	flags := newFlags(sub, usage, stderr)
+// newOperatorCall gives cmd, `legion <sub>`, the three flags every operator command takes;
+// tokenUsage is how --operator-token-file reads in its help.
+func newOperatorCall(cmd *cobra.Command, sub, tokenUsage string, stdout, stderr io.Writer) *operatorCall {
+	flags := cmd.Flags()
 	return &operatorCall{
 		name:       "legion " + sub,
+		cmd:        cmd,
 		flags:      flags,
 		tokenFile:  flags.String("operator-token-file", "", tokenUsage),
 		configPath: flags.String("config", "", "path to legion.yaml (default "+defaultConfigPath+")"),
@@ -73,24 +77,17 @@ func newOperatorCall(sub, usage, tokenUsage string, stdout, stderr io.Writer) *o
 	}
 }
 
-// parse reads args, then refuses a word that is not a flag and any required flag left out or
-// empty, by name — each a usage error, before anything is read or sent. A false ok carries the
-// exit code, 0 for a help request (parseFlags). A command that takes a --wait starts its bound
-// here, before its first request, so the bound covers the whole call (bound).
-func (c *operatorCall) parse(args []string, required ...string) (code int, ok bool) {
-	if code, ok := parseFlags(c.flags, args); !ok {
-		return code, false
-	}
-	if c.flags.NArg() > 0 {
-		fmt.Fprintf(c.stderr, "%s: unexpected argument %q\n", c.name, c.flags.Arg(0))
-		c.flags.Usage()
-		return 2, false
+// check refuses a word that is not a flag and any required flag left out or empty, by name —
+// each a usage error, before anything is read or sent. A false ok carries the exit code. A
+// command that takes a --wait starts its bound here, before its first request, so the bound
+// covers the whole call (bound).
+func (c *operatorCall) check(args []string, required ...string) (code int, ok bool) {
+	if len(args) > 0 {
+		return refuse(c.cmd, "unexpected argument %q", args[0]), false
 	}
 	for _, name := range required {
 		if c.flags.Lookup(name).Value.String() == "" {
-			fmt.Fprintf(c.stderr, "%s: --%s is required\n", c.name, name)
-			c.flags.Usage()
-			return 2, false
+			return refuse(c.cmd, "--%s is required", name), false
 		}
 	}
 	if c.wait != nil && *c.wait > 0 {

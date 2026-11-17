@@ -1555,9 +1555,9 @@ func TestControllerStartUsage(t *testing.T) {
 		argv []string
 		want string
 	}{
-		{[]string{"legion", "controller"}, subcommandUsage("controller", controllerCommands)},
-		{[]string{"legion", "controller", "stop"}, `legion controller: unknown subcommand "stop"`},
-		{[]string{"legion", "controller", "start"}, "usage: legion controller start --config <controller.yaml> [--daemon-url <url>]"},
+		{[]string{"legion", "controller"}, "legion controller [command]"},
+		{[]string{"legion", "controller", "stop"}, `legion controller: unknown command "stop" for "legion controller"`},
+		{[]string{"legion", "controller", "start"}, "legion controller start: --config is required"},
 	} {
 		var out, errb bytes.Buffer
 		if code := run(context.Background(), tc.argv, &out, &errb); code != 2 || !strings.Contains(errb.String(), tc.want) {

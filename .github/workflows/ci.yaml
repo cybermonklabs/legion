@@ -560,6 +560,8 @@ jobs:
             daemon_envoy_deps: &daemon_envoy_deps
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
+              # The cobra conformance harness cmd/legion's tests drive the built legion with.
+              - 'packages/envoy/clitest/*'
               - 'packages/envoy/daemonpermissions/*'
               # dispatchbody is the one public door onto the Dispatch server's own block
               # splitter, which the daemon refuses a close reason or a READY packet the server

@@ -7,7 +7,7 @@
 # filter - a declared read applies to every compiled source file of a run - and a documentation
 # edit would then start the whole daemon Go lane. The product half is cmd/legion's
 # TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces, which takes every row
-# of the table here and holds it to a refusal `legion start --check-config` prints;
+# of the table here and holds it to a refusal `legion config check` prints;
 # packages/daemon/internal/textcheck's TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable
 # holds these lines to the guide itself, as one passage under that heading. Neither half alone is
 # the guarantee: a heading renamed, or a row reworded, added or deleted, in the guide alone fails
