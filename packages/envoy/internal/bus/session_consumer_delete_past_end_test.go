@@ -79,12 +79,12 @@ func deletePastEndRecordsTheSequenceBeforeTheStreamsFirst(t *testing.T, session 
 	for _, again := range createdAgain {
 		t.Run(again.name, func(t *testing.T) {
 			owner, consumers, logs := sessionConsumersLogging(t)
-			agent := contracts.AgentSubject(session)
+			agent := contracts.LegacyAgentSubject(session)
 			filters := []string{agent}
 			// Another session's messages, so the stream's first sequence is below every message
 			// this case stores for the session itself.
 			for i := range 3 {
-				publishStored(t, owner, contracts.AgentSubject(session+"_bystander"), fmt.Sprintf("bystander %d", i))
+				publishStored(t, owner, contracts.LegacyAgentSubject(session+"_bystander"), fmt.Sprintf("bystander %d", i))
 			}
 			id := streamIDOf(t, consumers)
 			lastSeq := createAsAnEarlierBuild(t, consumers, session, filters, pastTheEnd)
@@ -148,7 +148,7 @@ func requireFloorBeforeTheStreamsFirst(t *testing.T, consumers *SessionConsumers
 func createdAtTheStreamsFirstSequence(t *testing.T, again createAgain, owner *Client, consumers *SessionConsumers, logs *capturedLogs, session, id string, recordFloor uint64, held []uint64) {
 	t.Helper()
 	ctx := context.Background()
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	state := streamStateOf(t, consumers)
 	first := state.firstStart()
 	asked := again.start(state.lastSeq)
@@ -302,11 +302,11 @@ func TestADeleteOfTheConsumerAWholeLossLeftUnreconciledRecordsTheSequenceBeforeT
 			// before is how many messages the stream holds when the consumer is created (N).
 			const before = 20
 			const session = "ses_delete_whole_loss"
-			agent := contracts.AgentSubject(session)
+			agent := contracts.LegacyAgentSubject(session)
 			filters := []string{agent}
 
 			for i := range before {
-				publishStored(t, owner, contracts.AgentSubject(session+"_bystander"), fmt.Sprintf("before %02d", i))
+				publishStored(t, owner, contracts.LegacyAgentSubject(session+"_bystander"), fmt.Sprintf("before %02d", i))
 			}
 			id := streamIDOf(t, consumers)
 			start, err := consumers.Ensure(ctx, session, filters, 0)
@@ -358,6 +358,9 @@ func TestADeleteOfTheConsumerAWholeLossLeftUnreconciledRecordsTheSequenceBeforeT
 				t.Fatalf("the stream holds %d to %d before the delete, want %d to %d, the two messages stored after the cut", end.firstSeq, end.lastSeq, held[0], held[1])
 			}
 
+			// The reconcile the restarted server made of the consumer kicked its state file's
+			// write.
+			waitForStoredState(t, owner, session)
 			floor, err := consumers.Delete(ctx, session, nil)
 			if err != nil {
 				t.Fatalf("delete: %v", err)

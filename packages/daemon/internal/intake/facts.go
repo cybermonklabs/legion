@@ -1067,16 +1067,20 @@ type SessionStoreFault struct {
 func (SessionStoreFault) isFact() {}
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
-// was near its memory limit, as the pod's launcher reported it on the connection of the role
-// whose process it was (shimwire.LauncherMemoryKill). It is never decoded from an event: the
-// launcher's frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per
-// report under the id `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a
-// report the launcher sent twice is applied once (INFRA-3557).
+// was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
+// the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
+// launcher reported it on the connection of the role whose process it was
+// (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
+// the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
+// `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
+// twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
+// guest watch (memoryguard.Guest).
 //
 // Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
 // the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why
-// (workflow's memoryGuardKill).
+// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// in the note the report's Cause chooses (workflow's memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
 	Token  claim.Token

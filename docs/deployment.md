@@ -141,7 +141,15 @@ gh acts on another's, or a workspace whose remotes name two), one naming an owne
 holds no directory for, every command where `PATH`'s first `gh` is not Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
-and send nothing. The real gh runs with `GH_PATH`
+and send nothing.
+Under a set `GH_TOKEN` or `GITHUB_TOKEN`, `legion gh` runs these calls and refuses every other one:
+the leak guard's own two visibility reads, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token;
+the shared check's own visibility read, which `legion gh` answers itself with the guard's read;
+the exact `gh api rate_limit`;
+and `gh auth git-credential`, which answers from the bundle.
+The guard's reads use the caller's token because a push made with the token writes the repository they read,
+and the bundle may hold no directory for that repository's owner.
+The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
@@ -418,18 +426,20 @@ provider_keys:
   attributes are the operator's to begin and the runtime's to finish.
   The operator sets the attributes this deployment's spend is billed
   under, and each pane carries them with its own `legion.issue` and `legion.role` after them,
-  so a pane's own attributes name the issue it serves. The agent keeps the last value a key is
-  given, so the daemon's two pairs come last. Both keys reach the spend collector today, and
-  its keep-list of six `theorem.*` attributes drops every other key, so no spend row names an
-  issue yet. A row grouped by issue follows when the collector keeps them, which
-  dispatch://INFRA-1835 adds to that list. A controller pane serves no issue and carries the
+  so a pane's own attributes name the issue it serves. A pane of a unit drawn into arms of the
+  project's experiments carries `legion.arms` after those, one `<experiment>:<variant>` for each
+  arm it runs in (`legion.arms=memory:memory` once decoded), so each model call says which arm's
+  files it ran with. The agent keeps the last value a key is
+  given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
+  where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
+  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it
   refuses a member the agent's OpenTelemetry detector would throw on — one that is no single
   `key=value`, one with an empty key, one whose key or value does not percent-decode or is longer
-  than 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the
-  runtime writes itself — and names that member and what is wrong with it, never the rest of the
+  than 255 characters once decoded, and one naming `legion.issue`, `legion.role` or
+  `legion.arms`, which the runtime writes itself — and names that member and what is wrong with it, never the rest of the
   value. One such member costs the pane every attribute of the variable, the operator's own among
   them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
@@ -511,6 +521,9 @@ provider_keys:
   `on_variant` names, or `random`, which draws among the arms by their weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
+  issue role where the block names none; a pane of a role the list leaves out loads none of this
+  experiment's overlays or instructions while its unit keeps the arm it drew.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole

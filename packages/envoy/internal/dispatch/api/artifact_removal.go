@@ -49,7 +49,10 @@ import (
 // no longer resolves. The removing process closes its own room after the commit, and only then
 // (docs.Service.Evict): a settlement that commits against a row that has gone would fail, and a
 // client that reconnects between the two reads the document as gone rather than loading a room
-// for a row that is no longer there.
+// for a row that is no longer there. A settlement of the document already under way at the
+// commit - queued behind this transaction for the owner's row, or started before the eviction
+// ended what the room had armed - reads the row gone and ends without a word
+// (docs.Service.settleRoomWithin).
 func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -300,7 +303,10 @@ type artifactClear struct {
 // 20261028195714_doc_compaction_owed.up.sql), and artifact_versions was 27.5 GB in production
 // against a census limit of one GiB. The keys that do cascade are left to the artifact row's own
 // delete, and the reference rows, which carry no key either, to package refs
-// (refs.ForgetDocument).
+// (refs.ForgetDocument). document_search_backfill's one row is not cleared, though it carries an
+// artifact_id: that id is the search fill's keyset cursor, a position in the fill and not a row of
+// the document, and the boot's fill reads that row every time, so deleting it when the cursor
+// named the removed document left no Dispatch process able to start (dispatch://INFRA-4018).
 //
 // Five more keys to artifacts(id) carry no cascade - asks.artifact_id, asks.block_artifact_id,
 // comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement
@@ -322,7 +328,6 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "snapshots", statement: `delete from doc_snapshots where artifact_id = $1`, args: id},
 		{what: "checkpoints", statement: `delete from doc_checkpoints where artifact_id = $1`, args: id},
 		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
-		{what: "search backfill rows", statement: `delete from document_search_backfill where artifact_id = $1`, args: id},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
 		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},

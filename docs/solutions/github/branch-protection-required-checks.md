@@ -40,7 +40,7 @@ gh api -H 'Accept: application/vnd.github+json' \
 
 The initial U5 inspection found GitHub Actions App ID `15368` on existing job
 checks, but no bare `CI` check on the sampled open PR. That prerequisite must
-be satisfied before this script is applied.
+be satisfied before the policy is applied.
 
 ## Verify `tester` with the reviewer App
 
@@ -74,34 +74,51 @@ Record the created run's `id`, `head_sha`, `app_id`, and `app_slug` with the
 deployment evidence. Do not use an implementer-App token: a run made by that
 App does not prove the reviewer App can publish the required verdict.
 
-## Apply the prepared policy
+## Apply the policy
 
-The script is dry-run by default and only targets `cybermonklabs/legion:main`. It
-requires a credential with repository Administration write access and never
-runs as part of CI.
+One `gh api` call applies it. It needs a credential with repository
+Administration write access, and it never runs as part of CI. Set
+`REVIEWER_APP_ID` as in the verification above; the command stops before it
+sends anything when that variable is unset.
 
 ```bash
-REVIEWER_APP_ID=<reviewer-app-id> \
-APPLY_BRANCH_PROTECTION=1 \
-scripts/branch-protection.sh
+gh api --method PUT -H 'Accept: application/vnd.github+json' \
+  repos/cybermonklabs/legion/branches/main/protection --input - <<JSON
+{
+  "required_status_checks": {
+    "strict": true,
+    "checks": [
+      {"context": "CI", "app_id": 15368},
+      {"context": "tester", "app_id": ${REVIEWER_APP_ID:?}},
+      {"context": "architect", "app_id": ${REVIEWER_APP_ID:?}}
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "dismissal_restrictions": {"users": [], "teams": [], "apps": []},
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 1,
+    "require_last_push_approval": false,
+    "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []}
+  },
+  "restrictions": null,
+  "required_linear_history": false,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": false,
+  "lock_branch": false,
+  "allow_fork_syncing": false
+}
+JSON
 ```
 
-`CI_APP_ID` defaults to `15368`, the GitHub Actions App ID observed on the
-sampled PR. Set `CI_APP_ID=<numeric-id>` only if the CI publisher changes.
+`15368` is the GitHub Actions App ID observed on the sampled PR. Change it only
+if the CI publisher changes.
 
-For a previously unprotected branch, the script creates the minimum policy:
-the three pinned checks and one required approval. For an already protected
-branch, it preserves unrelated required checks and review settings, replaces
-only the three managed check names with their pinned App IDs, and raises the
-required approval count to at least one. Re-running it converges on the same
-policy.
-
-## Implementation Notes
-
-### Check Merge Logic
-
-When updating an already-protected branch, the script merges existing checks with required checks. The merge uses only `$current.checks` (which already carries every context with its app_id from the GitHub API response). The legacy `.contexts` array is not included in the merge to avoid duplicate context entries with conflicting app_ids.
-
-### Strict Mode Preservation
-
-On PATCH updates to existing protection, the script preserves the branch's current `strict` value from the GET response. The `strict: true` setting is applied only on fresh PUT operations for unprotected branches. This prevents silent flipping of an existing `strict: false` configuration.
+The PUT replaces the branch's whole protection. If `main` is already protected,
+read what it holds first (`gh api repos/cybermonklabs/legion/branches/main/protection`)
+and copy into the JSON every other required check, the current `strict` value and
+any approval count above one. Otherwise the PUT drops them. Running the same
+JSON again gives the same policy.

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // deliveryModeConsumer is the one mode a registration is answered (deliveryAnswer.Mode): the
@@ -549,7 +550,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -1011,11 +1012,23 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // the session gets no consumer at all, and no message can reach such a subject anyway.
 func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
-	filter = append(filter, contracts.AgentSubject(sessionID))
+	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
 	for _, topic := range topics {
 		if m.stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
 			filter = append(filter, topic)
 		}
 	}
+	return filter
+}
+
+// storedRowFilter is sessionConsumerFilter of topics, sessionID's interest row as read from
+// registry, and counts each topic of the filter that is in the old form of its name
+// (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of the old
+// form for as long as the row holds one. Every read of a stored row into a filter comes through
+// here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
+// does not, since the subscribe route counted its old forms as it took them.
+func (m *sessionDelivery) storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
+	filter := m.sessionConsumerFilter(sessionID, topics)
+	registry.CountStoredLegacyTopics(sessionID, filter)
 	return filter
 }

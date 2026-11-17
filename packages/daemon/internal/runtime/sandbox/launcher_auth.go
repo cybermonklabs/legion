@@ -108,12 +108,17 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 // controller's pod is handed neither here: its guard's settings are a block of their own that
 // this runtime does not carry, and its launcher returns in its single-role form before the
 // background block that would run a trimmer, the volume it works on being its Sandbox's own and
-// no issue's cache. An absent member is what a launcher reads as "run none".
+// no issue's cache. An absent member is what a launcher reads as "run none". Every issue pod's
+// launcher is also told that this daemon knows the pod's kernel's kill (KernelKills), whatever
+// the guard's settings, since a microVM pod's launcher sends those reports only where it is told
+// so and its roles are owed the note however the guard is set; the controller's pod runs no watch
+// whose reports it would carry.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
 	var ack shimwire.LauncherHelloAck
 	if _, issue := kind.(issuePod); issue {
 		ack.MemoryGuard = r.memoryGuard
 		ack.VolumeTrim = r.volumeTrim
+		ack.KernelKills = true
 	}
 	return ack
 }

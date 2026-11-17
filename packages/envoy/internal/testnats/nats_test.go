@@ -15,6 +15,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -380,6 +383,58 @@ func TestEveryGatePortLiesJustBelowThisMachinesEphemeralRange(t *testing.T) {
 	}
 }
 
+// A closed gate keeps its port. While it is closed a dial of its address is refused, as a client's
+// failed reconnect needs, a program that binds the port without SO_REUSEADDR is refused, and no
+// other gate can take the port; Open then listens on the same address again and a client connects
+// through it. Each row is the control of one hold: with the reservation gone the bind succeeds and
+// Open fails, with the claim gone the second gate's hold succeeds, and with the reservation
+// listening the dial succeeds.
+func TestAClosedGateKeepsItsPort(t *testing.T) {
+	server, _ := Start(t)
+	gate := StartGate(t, server)
+	address, err := net.ResolveTCPAddr("tcp", gate.address)
+	if err != nil {
+		t.Fatalf("resolve the gate's address %s: %v", gate.address, err)
+	}
+	gate.Close()
+
+	conn, err := net.DialTimeout("tcp", gate.address, 5*time.Second)
+	if err == nil {
+		_ = conn.Close()
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Errorf("a dial of the closed gate at %s: %v, want connection refused", gate.address, err)
+	}
+
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err != nil {
+		t.Fatalf("open the other program's socket: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte{127, 0, 0, 1}})
+	if err == nil {
+		// The port was free: hold it listening, as a program that took it would, so the Open below
+		// meets it.
+		_ = syscall.Listen(fd, 16)
+		t.Errorf("another program bound the closed gate's port %d", address.Port)
+	} else if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("another program's bind of the closed gate's port %d: %v, want address already in use", address.Port, err)
+	}
+
+	if claim, reservation, err := holdGatePort(address.Port); err == nil {
+		_ = syscall.Close(reservation)
+		_ = claim.Close()
+		t.Errorf("a second gate held the closed gate's port %d", address.Port)
+	}
+
+	gate.Open()
+	nc, err := natsgo.Connect(gate.URL(), natsgo.Timeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("connect through the reopened gate at %s: %v", gate.URL(), err)
+	}
+	nc.Close()
+}
+
 // Terminate ends the server for good and gives up the port its URL named, so nothing answers there
 // any more; the cleanup that runs at the test's end finds the work done and does it no second time.
 func TestTerminateEndsTheServerAndGivesUpItsPort(t *testing.T) {
@@ -456,6 +511,114 @@ func TestARefusedReloadAnswersWithTheServersReasonAndKeepsTheOldConfiguration(t 
 	}
 	if _, err := ConnectSeed(t, uri, ""); !errors.Is(err, natsgo.ErrAuthorization) {
 		t.Fatalf("a client with no credential after the refused reload: %v, want %v", err, natsgo.ErrAuthorization)
+	}
+}
+
+// reloadRequesters is how many requesters TestAReloadUnderJetStreamRequestsAnswersEveryOne runs on
+// each of reloadConnections connections, each keeping one JetStream request in flight, and
+// reloadCount how many reloads it makes under them.
+const (
+	reloadConnections = 4
+	reloadRequesters  = 8
+	reloadCount       = 200
+)
+
+// A reload under clients' JetStream requests answers every request and keeps every connection, and
+// under the race detector it is no data race. nats-server writes each service import's account on
+// an authorization reload and reads it without the lock while it sets up the response to a request
+// through that import (Server.Reload), so Reload holds the clients' messages until the server has
+// processed the ones it has, and lets them through once it has reloaded. Before Reload held them,
+// this test's reloads drew that race report in each of twenty runs under -race, and so did a Reload
+// that held the clients without waiting for the server to finish what it had; each reload here
+// changes the user's grant, so each one runs the server's authorization reload, and the server's
+// log says so.
+func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
+	seed, public := User(t)
+	grant := func(n int) string {
+		return publishGrantConfig(public, []string{"$JS.API.>", "_INBOX.>", fmt.Sprintf("reload%d.>", n)})
+	}
+	server, uri := StartConfig(t, grant(0), []string{"-js"}, false)
+	stop := make(chan struct{})
+	var answered atomic.Int64
+	failures := make(chan error, reloadConnections*reloadRequesters)
+	var requesters sync.WaitGroup
+	for range reloadConnections {
+		conn, err := ConnectSeed(t, uri, seed)
+		if err != nil {
+			t.Fatalf("connect as the user: %v", err)
+		}
+		t.Cleanup(conn.Close)
+		for range reloadRequesters {
+			requesters.Go(func() {
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if _, err := conn.Request("$JS.API.INFO", nil, 5*time.Second); err != nil {
+						failures <- err
+						return
+					}
+					answered.Add(1)
+				}
+			})
+		}
+	}
+	for n := 1; n <= reloadCount; n++ {
+		if err := server.Reload(t, grant(n)); err != nil {
+			t.Fatalf("reload %d: %v", n, err)
+		}
+	}
+	close(stop)
+	requesters.Wait()
+	close(failures)
+	for err := range failures {
+		t.Errorf("a request across the reloads failed: %v", err)
+	}
+	if answered.Load() == 0 {
+		t.Fatal("no request was answered; this test says nothing about a reload under requests")
+	}
+	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != reloadCount {
+		t.Fatalf("the server reloaded its nkey users %d times, want %d: a reload that changed no grant tests nothing", reloads, reloadCount)
+	}
+	t.Logf("%d requests answered across %d reloads", answered.Load(), reloadCount)
+}
+
+// nats-server takes in a message whose Nats-Trace-Only header asks for a trace alone and whose
+// Nats-Trace-Dest is not a subject, and drops it without processing or counting it (msgtrace.go
+// 470-475 and parser.go 512-538 in 2.15.1: no in_msgs for it in /connz). A Reload after one still
+// reloads: the hold waits for the server's answer to the relay's PING, which the server sends once
+// it has read everything before it, and not for a count of messages the server never reaches.
+func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
+	seed, public := User(t)
+	grant := func(subjects ...string) string { return publishGrantConfig(public, subjects) }
+	server, uri := StartConfig(t, grant("traced.>"), []string{"-js"}, false)
+	conn, err := ConnectSeed(t, uri, seed)
+	if err != nil {
+		t.Fatalf("connect as the user: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	message := natsgo.NewMsg("traced.one")
+	message.Header.Set("Nats-Trace-Dest", "not..a.subject")
+	message.Header.Set("Nats-Trace-Only", "true")
+	if err := conn.PublishMsg(message); err != nil {
+		t.Fatalf("publish the trace-only message: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the trace-only message: %v", err)
+	}
+	if !strings.Contains(server.Log(), `Destination "not..a.subject" is not valid`) {
+		t.Fatalf("the server did not drop the trace-only message, so this test says nothing about one:\n%s", server.Log())
+	}
+	if err := server.Reload(t, grant("traced.>", "more.>")); err != nil {
+		t.Fatalf("reload after the trace-only message: %v", err)
+	}
+	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != 1 {
+		t.Fatalf("the server reloaded its nkey users %d times, want 1", reloads)
+	}
+	if _, err := conn.Request("more.echo", nil, 5*time.Second); !errors.Is(err, natsgo.ErrNoResponders) {
+		t.Fatalf("a request on the subject the reload granted: %v, want %v from the server that took the grant", err, natsgo.ErrNoResponders)
 	}
 }
 
