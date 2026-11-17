@@ -846,7 +846,7 @@ func OpenPauseStopsTx(ctx context.Context, tx pgx.Tx, pause int64) ([]PauseStop,
 // outbox's start reads the issue's record, so held's resume launches it by rule
 // (projectPause.Resumed in internal/daemon). A record another project's daemon keeps of the same
 // key on a shared database is not this daemon's, and the stop transaction reads it as no record
-// too (internal/daemon's projectPause.pauseIssue). A claim another source has suspended since, or
+// too (internal/daemon's projectRecords.Issue). A claim another source has suspended since, or
 // that runs again, is not the resume's to launch. held's project is its Dispatch key, as the stops
 // and the issues table hold it.
 func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) ([]claim.Token, error) {

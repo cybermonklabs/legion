@@ -277,7 +277,7 @@ func notStartedStates() []string {
 // the tree is one the issues table files under it under the hold's project, or one a claim of
 // project's names under it: a claim of the operator's spawn has no issue record, of this project's
 // issue or of another's, and a record another project's daemon keeps of the same key on a shared
-// database is not this project's (internal/daemon's projectPause.pauseIssue). Each hold ends under
+// database is not this project's (internal/daemon's projectRecords.Issue). Each hold ends under
 // its issue's lock, in key order. project is the project token, as the claims table holds it.
 func endTreePausePodHoldsTx(ctx context.Context, tx pgx.Tx, project, tree string, at time.Time) error {
 	rows, err := tx.Query(ctx, `select h.project, h.issue from project_pause_pod_holds h

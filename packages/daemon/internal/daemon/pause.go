@@ -52,7 +52,10 @@ const pauseStopWait = 10 * time.Minute
 type projectPause struct {
 	service *pause.Service
 	store   *store.Store
-	records *record.Postgres
+	// records is the project's records (projectRecords), built with no wake: the stop transaction
+	// writes its start row outside a commit scope and wakes that row's lane itself once it has
+	// committed (stopped).
+	records projectRecords
 	pods    *store.PodRecords
 	// project is the project's Dispatch key ("LEGION"), the spelling of project_pauses; token is
 	// its claim token ("legion", claim.ProjectToken), the spelling of the claim-keyed tables.
@@ -79,9 +82,11 @@ func newProjectPause(cfg config.Config, st *store.Store, token string, w *workfl
 	if err != nil {
 		return nil, err
 	}
-	p := &projectPause{store: st, records: record.NewStore(), pods: pods, project: cfg.Project, token: token,
-		backstop: releaseBackstop(cfg), now: clock.Now, log: log, workflow: w}
-	if p.service, err = pause.New(pause.Options{Store: st, Records: p.records, Project: cfg.Project, Config: cfg,
+	p := &projectPause{store: st, records: projectRecords{Store: record.NewStore(), project: cfg.Project}, pods: pods, project: cfg.Project,
+		token: token, backstop: releaseBackstop(cfg), now: clock.Now, log: log, workflow: w}
+	// The service reads the rows the pause holds and whether a controller is registered, and no
+	// issue record, so it reads the store as it is (pause.Options.Records).
+	if p.service, err = pause.New(pause.Options{Store: st, Records: record.NewStore(), Project: cfg.Project, Config: cfg,
 		Effects: p, Log: log, Now: clock.Now}); err != nil {
 		return nil, err
 	}
@@ -142,12 +147,15 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // A claim of an issue the daemon keeps no record of — an operator's own spawn, of the project's
 // issue or of another project's — gets no start row, since the outbox's start reads the issue's
 // record, and no backstop, since no workflow serves it. A record that another project's daemon
-// keeps of the issue on the same database is no record of this daemon's (pauseIssue). The launch
-// it is owed is the resume's instead: one owed while its pause stood is launched by that pause's
-// resume (Resumed, resumeOwedSpawns), and one owed once its pause has ended, with no pause open
-// after it, is launched by rule as soon as this transaction commits (made.resume), through the
-// wake pacing as every resume of the rule is. A later open pause's resume launches one owed under
-// it.
+// keeps of the issue on the same database is no record of this daemon's, and the project's records
+// read it as none (projectRecords, which says why). Read as this daemon's, its start row would
+// also leave the claim suspended: the resume launches by rule only a claim of an issue with no
+// record of its project (store.Store.OwedLaunchesWithNoIssueRecord, the same rule in SQL). The
+// launch it is owed is the resume's instead: one owed while its pause stood is launched by that
+// pause's resume (Resumed, resumeOwedSpawns), and one owed once its pause has ended, with no pause
+// open after it, is launched by rule as soon as this transaction commits (made.resume), through
+// the wake pacing as every resume of the rule is. A later open pause's resume launches one owed
+// under it.
 //
 // It is safe to make again: the machine owes a stop whose commit's answer was lost and makes it
 // again with its next claim write. store.RecordPauseStopTx answers false for a stop already
@@ -232,7 +240,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 			}
 			rec.HoldPod = !live
 		}
-		if issue, err = p.pauseIssue(ctx, tx, held, c.Issue); err != nil {
+		if issue, err = p.records.Issue(ctx, tx, c.Issue); err != nil {
 			return made, err
 		}
 		if issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
@@ -278,25 +286,6 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		made.released = id
 	}
 	return made, nil
-}
-
-// pauseIssue is the daemon's record of issue as the stop transaction of held reads it: the record
-// where it is of held's project, and nil where there is none or it is of another project. The
-// issues table holds the issues of every project on the database, each under its project
-// (issues.project), and record.Postgres.Issue reads it by key alone, so a claim of another
-// project's issue, which the operator's spawn makes under this daemon's own token, can find the
-// record that project's daemon keeps of the issue. That record is not this daemon's. A start row
-// built from it would be keyed by that issue, whose rows the other project's daemon runs and this
-// daemon's outbox never does (record's DueRows reads the rows of its own project's keys), and the
-// resume, which launches by rule only a claim of no record of its project
-// (store.Store.OwedLaunchesWithNoIssueRecord, the same rule in SQL), would leave the claim
-// suspended. So the claim is read as an operator's spawn with no record.
-func (p *projectPause) pauseIssue(ctx context.Context, tx pgx.Tx, held store.Pause, issue string) (*record.Issue, error) {
-	recorded, err := p.records.Issue(ctx, tx, issue)
-	if err != nil || recorded == nil || recorded.Project != held.Project {
-		return nil, err
-	}
-	return recorded, nil
 }
 
 // wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment the wake pacing lets a launch

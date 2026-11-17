@@ -5518,7 +5518,7 @@ It writes the claim and the stop's record, and with them:
 - for a role that is owed a launch, a held `start` row, which the resume launches through the wake pacing.
   A role is owed a launch when it holds a task that no turn has taken, or when the stop met a launch of it: a wake parked in the pacing, a start that the stop cancelled, a launch held until its agent was ready, a relaunch waiting for its retry, or a launch that the gate held.
   An operator's spawn, whose issue the daemon keeps no record of, gets no `start` row, and the resume launches it itself (below).
-  A record of the issue that another project's daemon keeps on the same database is no record of this daemon's, because its project is another (`pauseIssue`, `internal/daemon/pause.go`);
+  A record of the issue that another project's daemon keeps on the same database is no record of this daemon's, because its project is another: every read of an issue record by its key goes through the daemon's project-scoped records (`projectRecords.Issue`, `internal/daemon/daemon.go`), so the pause, its stop, a wake, the resume, a launch's ready and each failure after it read no such record;
 
 - for a role that is owed none and is the worker of its issue's open phase, the release's backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the stop.
 
@@ -5586,7 +5586,7 @@ So a resume launches each session that the pause held something for once, and ne
 `wakesWaiting` on `GET /legion/v1/state` lists the launches that still wait in the pacing.
 `legion state` prints them as its `wakes waiting:` line, and the summary of the controller's `read_state` counts them in its `wakes waiting <n>` line, with the moment the next one is due.
 Every other session that the pause stopped stays stopped until its next wake, which launches it in its own pod.
-No wake launches an operator's spawn that the pause stopped owing nothing, whether its issue has no record or a record that another project's daemon keeps on the same database (`wakeReleased`, `internal/workflow/wake.go`): such a session stays stopped until the operator resumes it or gives it a task (`legion claims resume`, `legion claims deliver`).
+No wake launches an operator's spawn that the pause stopped owing nothing, whether its issue has no record or a record that another project's daemon keeps on the same database (`projectRecords.Issue`, `internal/daemon/daemon.go`, read by `wakeReleased`, `internal/workflow/wake.go`): such a session stays stopped until the operator resumes it or gives it a task (`legion claims resume`, `legion claims deliver`).
 The admission pass promotes issues again, and each launch that it causes takes the same pacing.
 
 A long queue at the resume is not reported as stuck.

@@ -830,6 +830,43 @@ func (r *pauseDaemonRig) enqueue(issue string, payload record.OutboxPayload) int
 	return id
 }
 
+// outboxRows is every outbox row keyed by issue, by id, each spelled `<kind>/<payload kind or op>`.
+func (r *pauseDaemonRig) outboxRows(issue string) map[int64]string {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select id, kind || '/' || coalesce(payload->>'kind', payload->>'op', '') from outbox where issue = $1`, issue)
+	if err != nil {
+		r.t.Fatalf("read the outbox rows of %s: %v", issue, err)
+	}
+	defer rows.Close()
+	found := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var what string
+		if err := rows.Scan(&id, &what); err != nil {
+			r.t.Fatalf("read the outbox rows of %s: %v", issue, err)
+		}
+		found[id] = what
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the outbox rows of %s: %v", issue, err)
+	}
+	return found
+}
+
+// recordOf is the issues table's record of key, whatever project holds it, nil for none.
+func (r *pauseDaemonRig) recordOf(key string) *record.Issue {
+	r.t.Helper()
+	var recorded *record.Issue
+	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		recorded, err = r.records.Issue(r.ctx, tx, key)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the record of %s: %v", key, err)
+	}
+	return recorded
+}
+
 // dueNow is the moment an outbox row is due now on both clocks that read it: the outbox judges a
 // row due by the wall clock (newOutbox's now), and the state lists a held row as due by the
 // daemon's one clock, the rig's test clock (source.now). The test clock stands still while the

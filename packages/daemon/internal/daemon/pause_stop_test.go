@@ -67,7 +67,7 @@ func newPauseRig(t *testing.T, roles ...claim.Role) *pauseRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.pauses = &projectPause{store: st, records: records, pods: podRecords, project: "LEGION", token: "legion",
+	r.pauses = &projectPause{store: st, records: projectRecords{Store: records, project: "LEGION"}, pods: podRecords, project: "LEGION", token: "legion",
 		backstop: time.Hour, now: time.Now, log: log, workflow: &workflowRuntime{}}
 	if r.pauses.service, err = pause.New(pause.Options{Store: st, Records: records, Project: "LEGION", Config: config.Config{}, Log: log}); err != nil {
 		t.Fatal(err)

@@ -604,9 +604,11 @@ func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
 // The boot's sweep closes a migrated issue that awaits a merge GitHub already reported, as the
 // merge would have: a root with no running child, and an issue held from merging, whose
 // hold the close clears, each with a check opened on no merge commit yet. A root with a child still
-// in the workflow stays, and closes when that child leaves; an issue whose pull request is open,
-// and another project's, stay as they are. The boot writes its "closes" line only where it closed,
-// and no notice at all: the architect was told of the wait when the close entered it.
+// in the workflow stays, and closes when that child leaves; an issue whose pull request is open
+// stays as it is. The boot writes its "closes" line only where it closed, and no notice at all:
+// the architect was told of the wait when the close entered it. Another project's merged issue is
+// never read here, since the daemon's records hold no record of another project: that case is the
+// daemon package's (TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands).
 func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t *testing.T) {
 	rig := newCheckRig(t)
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-301", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-301", Project: "LEGION", Title: "alone", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "A"})
@@ -619,8 +621,6 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-304", Repo: "sjawhar/legion", Number: 4, Branch: "legion/LEGION-304", HeadSHA: "h4", Failing: []string{}})
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-305", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-305", Project: "LEGION", Title: "open", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "E"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-305", Repo: "sjawhar/legion", Number: 5, Branch: "legion/LEGION-305", HeadSHA: "h5", Failing: []string{}})
-	seedIssue(t, rig.pool, record.Issue{Key: "OTHER-1", Repo: "acme/other", DefaultBranch: "main", GitHubRepo: "acme/other", Tree: "OTHER-1", Project: "OTHER", Title: "elsewhere", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "F"})
-	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "OTHER-1", Repo: "acme/other", Number: 6, Branch: "legion/OTHER-1", HeadSHA: "h6", Failing: []string{}})
 
 	rig.apply("boot", intake.DaemonBooted{Boot: 1})
 	phases := map[string]phase.Phase{}
@@ -639,7 +639,7 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 		phases[key], lingering[key] = p, lingers
 	}
 	rows.Close()
-	for key, want := range map[string]phase.Phase{"LEGION-301": phase.Done, "LEGION-302": phase.Merging, "LEGION-303": phase.Implementing, "LEGION-304": phase.Done, "LEGION-305": phase.Merging, "OTHER-1": phase.Merging} {
+	for key, want := range map[string]phase.Phase{"LEGION-301": phase.Done, "LEGION-302": phase.Merging, "LEGION-303": phase.Implementing, "LEGION-304": phase.Done, "LEGION-305": phase.Merging} {
 		if phases[key] != want || lingering[key] != (want == phase.Done) {
 			t.Fatalf("%s after the boot = %s lingering %t, want %s", key, phases[key], lingering[key], want)
 		}
@@ -656,7 +656,7 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	if err := rig.pool.QueryRow(context.Background(), "select held_from from issues where key = 'LEGION-304'").Scan(&held); err != nil || held != nil {
 		t.Fatalf("the held issue's hold after its close = %v, %v; want cleared", held, err)
 	}
-	for _, key := range []string{"LEGION-302", "LEGION-305", "OTHER-1"} {
+	for _, key := range []string{"LEGION-302", "LEGION-305"} {
 		if check := productionCheck(t, rig.pool, key); check != nil {
 			t.Fatalf("%s's check after the boot = %+v, want none", key, check)
 		}

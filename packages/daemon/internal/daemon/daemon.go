@@ -2337,7 +2337,9 @@ func (l *servingLatch) serving() bool { return l.served.Load() }
 // machine whose relaunch holds it, and the stop on them — and then drains the API until drainBy,
 // letting the decisions its routes asked for finish, and ends them when the drain does (endDrain).
 func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt time.Time, bootID int64, listener net.Listener, s *supervision, p plan, workflow *workflowRuntime) error {
-	records := record.Store(record.NewStore())
+	// A daemon with no workflow reads the records through the project's scope as one with it does
+	// (projectRecords), with no lane to wake.
+	records := record.Store(projectRecords{Store: record.NewStore(), project: cfg.Project})
 	var handlers []intake.Handler
 	var client dispatch.Client
 	var tokens appauth.Tokens
@@ -2589,18 +2591,38 @@ type source struct {
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
-// widening record.Store's fixed transaction interface; the workflow and the state route read the
-// store through it. Every read that starts from Issues or QueuedRootsUnder is within this
-// filtered set. Slots are not filtered here: a slot's index is unique across every project's
-// slots, so admission chooses the next one over all of them and counts only its own against its
-// cap (admit.ownSlots). The outbox's claim is scoped in its SQL instead, because the lease it
-// takes is itself the damage.
+// widening record.Store's fixed transaction interface; the workflow, its admission and its
+// blockers mirror, the outbox, the API's routes, the project's pause and the state route read the
+// store through it.
+//
+// Its rule is that a record of another project is no record of this daemon's (owns). The issues
+// table holds the records of every project on the database, each under its project
+// (record.Issue.Project, the Dispatch key, which is project's spelling too), and a record is read
+// by key alone (record.Postgres.Issue), or by tree alone (TreeIssues), so a claim of another
+// project's issue, which the operator's spawn makes under this daemon's own token, would find the
+// record that project's daemon keeps of the issue. A row built from that record would be keyed by
+// an issue whose rows the other project's daemon runs, against its own claims, and this daemon's
+// outbox never does (record's DueRows reads the rows of its own project's keys); and a drop or a
+// write it led to would change that daemon's rows. So each read here that returns issue records
+// and names no project answers this project's alone: Issue answers no record, and no error, for
+// a record of another project, and TreeIssues, Issues and QueuedRootsUnder leave such records
+// out. Every read that starts from them is within this filtered set, and so is every path of a
+// claim through the workflow: a claim of another project's issue reads no record at all, as a
+// claim of an issue nobody records reads none. The reads that name a project (LiveIssues,
+// IssuesOf, AncestorsOf, SlottedIssues, UnfilledIssues, UnnamedIssues) are scoped by their own
+// SQL to the project their caller names, which every caller names as this one.
+//
+// Slots are not filtered here: a slot's index is unique across every project's slots, so
+// admission chooses the next one over all of them and counts only its own against its cap
+// (admit.ownSlots). The outbox's claim is scoped in its SQL instead, because the lease it takes is
+// itself the damage.
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
 // the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
-// no lane polls for one. wake is nil where there is no workflow to wake: the API-only daemon, the
-// state route's reads and the stranded report.
+// no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
+// its own lanes once it commits: the API-only daemon, the state route's reads, the stranded report
+// and the project's pause (projectPause.stopped).
 type projectRecords struct {
 	record.Store
 	project string
@@ -2609,8 +2631,25 @@ type projectRecords struct {
 	log *slog.Logger
 }
 
+// Issue is the record of key where it is a record of the daemon's project, and nil otherwise.
+func (s projectRecords) Issue(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, error) {
+	issue, err := s.Store.Issue(ctx, tx, key)
+	if err != nil || issue == nil || !s.owns(*issue) {
+		return nil, err
+	}
+	return issue, nil
+}
+
 func (s projectRecords) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, error) {
 	all, err := s.Store.Issues(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	return s.own(all), nil
+}
+
+func (s projectRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]record.Issue, error) {
+	all, err := s.Store.TreeIssues(ctx, tx, tree)
 	if err != nil {
 		return nil, err
 	}
@@ -2625,15 +2664,21 @@ func (s projectRecords) QueuedRootsUnder(ctx context.Context, tx pgx.Tx, key str
 	return s.own(all), nil
 }
 
-// own is every issue of all in the daemon's project, in all's order.
+// own is every issue of all that the daemon's project owns (owns), in all's order.
 func (s projectRecords) own(all []record.Issue) []record.Issue {
 	issues := make([]record.Issue, 0, len(all))
 	for _, issue := range all {
-		if issue.Project == s.project {
+		if s.owns(issue) {
 			issues = append(issues, issue)
 		}
 	}
 	return issues
+}
+
+// owns is whether issue is a record of the daemon's project, the rule every read of issue records
+// here applies (projectRecords).
+func (s projectRecords) owns(issue record.Issue) bool {
+	return issue.Project == s.project
 }
 
 func (s projectRecords) Enqueue(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {

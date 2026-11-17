@@ -269,18 +269,15 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
 // resume, never a wake's.
 //
-// The issue is this daemon's only where its record is of the engine's project (Config.Project).
-// The issues table holds the issues of every project on the database, each under its project, and
-// the record is read by key alone, so a claim of another project's issue, which the operator's
-// spawn makes under this daemon's token and a project's pause stops as released, can find the
-// record that project's daemon keeps of the issue. That record is no record of this daemon's, as
-// it is not for the pause's stop (internal/daemon's projectPause.pauseIssue): a start row built
-// from it would be keyed by an issue whose rows the other project's daemon runs, against its own
-// claim, and this daemon's outbox never does (record's DueRows), and the resume it took would
-// refuse every later wake of the role. So such a wake is refused as the wake of every operator's
-// spawn of an issue with no record is: it takes nothing and queues nothing. What brings such a
-// claim back is what brings back every operator's spawn: the resume of the pause that stopped it
-// owing a launch (internal/daemon's resumeOwedSpawns), or the operator's own resume or delivery
+// A claim of another project's issue, which the operator's spawn makes under this daemon's token
+// and a project's pause stops as released, finds no record here, even where the database it shares
+// with that project's daemon holds that daemon's record of the issue: the daemon's store reads no
+// record of another project (internal/daemon's projectRecords, which says why). Read as this
+// daemon's, that record would also leave the resume this wake took open, refusing every later wake
+// of the role. So such a wake is refused as the wake of every operator's spawn of an issue with no
+// record is: it takes nothing and queues nothing. What brings such a claim back is what brings back
+// every operator's spawn: the resume of the pause that stopped it owing a launch
+// (internal/daemon's resumeOwedSpawns), or the operator's own resume or delivery
 // (`legion claims resume`, `legion claims deliver`).
 //
 // A wake of a role whose resume is already open wakes nothing a second time: that pod is coming
@@ -309,7 +306,7 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // resume was itself written after every release there is.
 func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (bool, error) {
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
-	if err != nil || issue == nil || issue.Project != e.cfg.Project {
+	if err != nil || issue == nil {
 		return false, err
 	}
 	root, err := e.store.Issue(ctx, tx, issue.Tree)

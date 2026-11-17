@@ -664,9 +664,6 @@ type phaseWorker struct {
 func (a *Admission) phaseWorkerOf(project string, issue record.Issue, byKey map[string]record.Issue,
 	facts record.LineFacts,
 ) (phaseWorker, bool) {
-	if issue.Project != a.project {
-		return phaseWorker{}, false
-	}
 	role := workflow.OpenPhaseRole(issue.Phase)
 	if role == "" {
 		return phaseWorker{}, false
@@ -721,7 +718,7 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 // key yields a claim token. Which of these roots the rule reaches is read once the claim is
 // behind (architectReached), so a root owed nothing costs no read of its own.
 func (a *Admission) rootArchitectOf(project string, issue record.Issue) (phaseWorker, bool) {
-	if issue.Project != a.project || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
 		return phaseWorker{}, false
 	}
 	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
@@ -2269,7 +2266,7 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // (workflow's sessionStatusWrite). A root in todo without the label is not one: taking the label
 // off is a pause the label ends.
 func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, waits map[string]record.ChildWait) bool {
-	if issue.Project != a.project || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || issue.AwaitingPerson() {
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || issue.AwaitingPerson() {
 		return false
 	}
 	switch issue.Status {
@@ -2336,7 +2333,7 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 // this root may come back at all, which its label and its Dispatch claim decide, and the root
 // keeps its row through the whole wait either way (record.KeepsSlot).
 func (a *Admission) awaitingUnresumable(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, bool, error) {
-	if issue.Project != a.project || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || !issue.AwaitingPerson() {
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || !issue.AwaitingPerson() {
 		return "", false, nil
 	}
 	reason, err := workflow.Unresumable(ctx, a.store, tx, issue)

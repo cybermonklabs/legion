@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -103,7 +105,7 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 //
 // The same holds where the database the daemon shares with another project's daemon holds that
 // daemon's record of the issue (the issues table holds every project's issues, under its
-// project). That record is not this daemon's (projectPause.pauseIssue): a start row built from it
+// project). That record is not this daemon's (projectRecords.Issue): a start row built from it
 // would be keyed by an issue whose rows the other project's daemon runs, so the stop queues none,
 // and the resume finds the spawn as one with no record of its own and launches it. A message to
 // the spawn the resume left stopped wakes it no more than a message to any operator's spawn does
@@ -502,5 +504,114 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 			t.Errorf("the resumed spawn's ready queued outbox row %d (%s) keyed %s, want none: this daemon's outbox runs no row of another project's issue, and that project's daemon runs every one",
 				id, what, issue)
 		}
+	}
+}
+
+// A fact of a claim of another project's issue that the resume launched again reads the issue's
+// record by key, as its ready does: the claim's failure (workflow's claimFailed), the loss of the
+// session it recorded (sessionLost), a fault of the session store at its start
+// (sessionStoreFault) and a memory guard's kill of one of its processes (memoryGuardKill). On a
+// database shared with another project's daemon that record is that daemon's, and this daemon's
+// records answer it as no record (projectRecords.Issue). So each fact is applied as a fact of a
+// claim of an issue the daemon keeps no record of: it tells nobody and writes nothing of the
+// other project's record, it queues no row keyed by that project's issue and deletes none of that
+// daemon's, and a memory guard's kill is logged as one that names an issue the daemon does not
+// record. The spawn is of the root's architect, as the operator's spawn of a tree's root makes
+// one, so its failure is one that would tell the tree's architect and the controller were the
+// record this daemon's.
+func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t *testing.T) {
+	const issue = "OTHERPROJECT-9"
+	const role = claim.RoleArchitect
+	for _, tc := range []struct {
+		name string
+		fact func(token claim.Token) intake.Fact
+		// logged is the line the daemon writes of the fact, "" for none.
+		logged string
+	}{
+		{name: "its claim failed", fact: func(claim.Token) intake.Fact {
+			return intake.ClaimFailed{Issue: issue, Role: role, Reason: "the claim's start budget ran out"}
+		}},
+		{name: "its session was lost", fact: func(claim.Token) intake.Fact {
+			return intake.SessionLost{Issue: issue, Role: role, Detail: "/sessions/ses-other-root-architect.jsonl is in no session store"}
+		}},
+		{name: "the session store faulted at its start", fact: func(claim.Token) intake.Fact {
+			return intake.SessionStoreFault{Issue: issue, Role: role, Detail: "the session store refused the connection"}
+		}},
+		{name: "a memory guard killed one of its processes", fact: func(token claim.Token) intake.Fact {
+			return intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: "pod-other-9", Report: shimwire.LauncherMemoryKill{
+				Guard: "launcher", Sequence: 1, PID: 4242, Executable: "go", SizeBytes: 6 << 30, ReadingBytes: 7 << 30, LimitBytes: 8 << 30}}
+		}, logged: "workflow: a memory guard kill names an issue the daemon does not record, so no role is told"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newPauseDaemonRig(t, nil)
+			r.boot()
+			recorded := r.root(issue, phase.Planning)
+			recorded.Project = "OTHERPROJECT"
+			if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+				t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
+			}
+			token := r.d.spawn(api.SpawnRequest{Tree: issue, Issue: issue, Role: role, Prompt: "Reply ready and wait.",
+				Task: "Summarize the incident for the operator."})
+			r.pauseProject()
+			testwait.Eventually(t, "the pause's stop of the spawn to be held until its agent is ready", func() bool {
+				return r.claim(token).SuspensionHeld
+			})
+			launched := r.claim(token)
+			const session = "ses-other-root-architect"
+			r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
+			r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
+				SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+			r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
+			r.awaitState(token, supervise.StateSuspended, "the held stop runs at the agent's ready")
+			launches := len(r.rt.launchesOf(token))
+			r.resumeProject()
+			if !testwait.Holds(testwait.Bounded(t, 20*time.Second, time.Second), testwait.Poll, func() bool {
+				if len(r.rt.launchesOf(token)) > launches {
+					return true
+				}
+				for _, wake := range r.state().WakesWaiting {
+					if wake.Claim == token {
+						r.clock.advanceTo(wake.DueAt)
+					}
+				}
+				return false
+			}) {
+				c := r.claim(token)
+				t.Fatalf("after the resume the spawn owed a launch is %s by %s; want it launched once through the pacing", c.State, c.SuspendedBy)
+			}
+
+			// The other project's daemon has a catch-up of its own queued for the issue.
+			theirs := r.enqueue(issue, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "OTHERPROJECT's own catch-up of its root",
+				CatchUp: &record.CatchUp{Generation: 1, Launch: 1, Gates: []record.CatchUpGate{}, Issues: []record.CatchUpIssue{}}})
+			before, held := r.outboxRows(issue), r.recordOf(issue)
+			mark := r.mark()
+			event := "fact-of-" + string(token)
+			r.applyFact("supervise", event, tc.fact(token))
+
+			after := r.outboxRows(issue)
+			if _, kept := after[theirs]; !kept {
+				t.Errorf("the other project's daemon's catch-up row %d keyed %s is gone after the fact: this daemon deleted a row of another project's issue",
+					theirs, issue)
+			}
+			for id, what := range after {
+				if _, had := before[id]; !had {
+					t.Errorf("the fact queued outbox row %d (%s) keyed %s, want none: this daemon's outbox runs no row of another project's issue, and that project's daemon runs every one",
+						id, what, issue)
+				}
+			}
+			if now := r.recordOf(issue); now == nil || !reflect.DeepEqual(*now, *held) {
+				t.Errorf("OTHERPROJECT's record of %s after the fact = %+v, want it as that daemon wrote it: %+v", issue, now, held)
+			}
+			if got := r.count(`select count(*) from processed_events where source = 'supervise' and event_id = $1`, event); got != 1 {
+				t.Errorf("the fact's processed marks = %d, want 1: it is applied as a fact of an issue the daemon keeps no record of", got)
+			}
+			if tc.logged == "" {
+				return
+			}
+			lines := r.linesAfter(mark, tc.logged)
+			if len(lines) != 1 || lines[0]["issue"] != issue {
+				t.Errorf("the daemon wrote %v of the fact, want one %q naming %s", lines, tc.logged, issue)
+			}
+		})
 	}
 }
