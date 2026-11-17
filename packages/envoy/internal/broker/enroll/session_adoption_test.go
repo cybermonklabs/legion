@@ -17,8 +17,8 @@ import (
 // movedTo enrols the session name again as the box it moved to does: a runtime id of its own, a
 // key of its own, and the same session name under the same principal, which is the whole of what
 // the carry follows. A session's credential is a second one of the same person, because a new box
-// is a new key and so a credential of its own; a pod's is the login its daemon already holds
-// (daemonLogin), since a daemon enrols the next pod of a session under its one live login.
+// is a new key and so a credential of its own; a pod's is its daemon's login (daemonLogin), which
+// answers the same credential at every call, since the broker keeps one live login per account.
 func movedTo(t *testing.T, svc *Service, issuer *oidctest.Issuer, key *oidctest.Key, kind, session, runtime string) (Credential, Enrollment) {
 	t.Helper()
 	in := Enrollment{Kind: kind, RuntimeID: runtime, Thumbprint: "tp-" + runtime, SessionID: str(session)}
@@ -432,9 +432,9 @@ func TestAnAdoptedPredecessorIsNoLongerDormantSoTheCarrySweepTakesNothing(t *tes
 		t.Fatalf("Revoke: %v", err)
 	}
 	_, moved := movedTo(t, svc, issuer, key, "session", session, session+"-2")
-	// A carry window of 0 is the sweep's floor: it ends every dormant enrollment it finds, so
-	// what it does not end here is not a row whose window is still running.
-	ended, err := svc.EndCarried(ctx, 0)
+	// A carry window of 0 (the Service's Carry unset) is the sweep's floor: it ends every dormant
+	// enrollment it finds, so what it does not end here is not a row whose window is still running.
+	ended, err := svc.EndCarried(ctx)
 	if err != nil {
 		t.Fatalf("EndCarried: %v", err)
 	}

@@ -610,6 +610,27 @@ func TestClaimsForgetSessionPostsToTheClaimRoute(t *testing.T) {
 	}
 }
 
+// release-names posts to the claim's release route with no body and prints the release as one
+// line: how many names it freed and how it knew no grant follows one. This daemon enrolls no
+// process with a secrets broker, and the ready claim holds only the names of the session it
+// records, which the release keeps, so it frees none and says why it asked no broker.
+func TestClaimsReleaseNamesPostsToTheClaimRoute(t *testing.T) {
+	d := newOperatorDaemon(t)
+	d.succeed(d.spawnArgs()...)
+	d.ready(architectClaim)
+
+	out := d.succeed(append(append([]string{"release-names"}, d.reach()...), "--claim", string(architectClaim))...)
+
+	seen := d.lastOperatorRequest()
+	wantOperatorRequest(t, seen, http.MethodPost, "/legion/v1/operator/claims/"+string(architectClaim)+"/release-names")
+	if len(seen.body) != 0 {
+		t.Fatalf("release-names sent the body %q, want none", seen.body)
+	}
+	if want := string(architectClaim) + ": freed 0 names of its other sessions; " + supervise.CheckedNoBroker + "\n"; out != want {
+		t.Fatalf("release-names stdout = %q, want %q", out, want)
+	}
+}
+
 // retry --failed lists the claims and retries every one the daemon holds failed, in its token
 // order, printing each retried claim as --claim prints it, and asks nothing of a claim that has not
 // failed; with none failed it retries nothing and exits 0. --claim and --failed name what to retry,

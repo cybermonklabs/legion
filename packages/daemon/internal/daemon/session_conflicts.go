@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -71,7 +72,9 @@ import (
 // asks again.
 //
 // The settle statement is a statement an operator runs, and a session's names are the agent's own
-// text, so each is written into it as a SQL literal (supervise.SQLLiteral), never as it came.
+// text, so each is written into it as a SQL literal (supervise.SQLLiteral), never as it came. It
+// moves only a name still held for no claim, and only to one of the claims the line names, so a
+// second run answers UPDATE 0 and a token that names none of them moves nothing.
 func (s *supervision) holdRecordedSessions(ctx context.Context) error {
 	held, err := s.supervisor.store.HoldRecordedSessions(ctx, s.plan.project)
 	if err != nil {
@@ -111,8 +114,13 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 				append(line, "bytes", len(c.Hold.Name))...)
 		default:
 			if c.Holder == "" {
+				claims := make([]string, len(c.Claims))
+				for i, token := range c.Claims {
+					claims[i] = supervise.SQLLiteral(string(token))
+				}
 				line = append(line, "settle", "update claim_sessions set claim = '<token>' where project = "+supervise.SQLLiteral(s.plan.project)+
-					" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''")
+					" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''"+
+					" and '<token>' in ("+strings.Join(claims, ", ")+")")
 			}
 			s.log.Error("supervise: a session name is recorded by claims that do not hold it; each of them this daemon supervises is suspended until an operator gives it a new session, or records it as the rightful holder of a name held for none, and resumes it", line...)
 		}

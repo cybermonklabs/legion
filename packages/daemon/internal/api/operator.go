@@ -628,6 +628,65 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// ReleasedNames is the answer of `POST /legion/v1/operator/claims/{token}/release-names` (`legion
+// claims release-names`): every name of the claim's other sessions the release freed, in kind and
+// then name order, how it knew no grant follows one of them (supervise.CheckedByBroker or
+// supervise.CheckedNoBroker), and the session the claim last abandoned whose names it freed, if
+// any, which the claim's record now marks released.
+type ReleasedNames struct {
+	Claim     claim.Token    `json:"claim"`
+	Freed     []ReleasedName `json:"freed"`
+	Checked   string         `json:"checked"`
+	Abandoned string         `json:"abandoned,omitempty"`
+}
+
+// ReleasedName is one name a release freed: its kind (supervise.HoldKind) and the name.
+type ReleasedName struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+// releaseNames is the operator's release of a claim's names (supervise.Machine.ReleaseNames): it
+// frees every name the claim holds but those of the session it records, once the secrets broker
+// answers that it carries nothing of them. A broker that still carries some is a 409 naming each
+// enrollment and when it ends (supervise.NamesCarriedError), a broker that does not answer a 503
+// (supervise.ErrCarryUnanswered); neither frees anything, and the operator runs the command again.
+// It reaches a claim in any state, since the names it frees are of sessions no process of the
+// claim runs.
+func (s *server) releaseNames(w http.ResponseWriter, r *http.Request) {
+	token := claim.Token(r.PathValue("token"))
+	m, ok := s.supervisor.Machine(token)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		return
+	}
+	ctx, decided := s.decision(r, token)
+	defer decided()
+	if s.stopped(w, "release-names") {
+		return
+	}
+	released, err := m.ReleaseNames(ctx)
+	var carried *supervise.NamesCarriedError
+	switch {
+	case errors.As(err, &carried):
+		writeJSON(w, http.StatusConflict, errorBody("release-names refused: "+carried.Error()))
+		return
+	case errors.Is(err, supervise.ErrCarryUnanswered):
+		writeJSON(w, http.StatusServiceUnavailable, errorBody("release-names refused: "+err.Error()+"; nothing was freed, run it again"))
+		return
+	case err != nil:
+		s.operatorFailure(w, "release-names", token, err)
+		return
+	}
+	answer := ReleasedNames{Claim: token, Freed: make([]ReleasedName, len(released.Freed)), Checked: released.Checked, Abandoned: released.Abandoned}
+	for i, h := range released.Freed {
+		answer.Freed[i] = ReleasedName{Kind: string(h.Kind), Name: h.Name}
+	}
+	s.log.Info("api: operator released a claim's names", "claim", token, "freed", len(answer.Freed), "checked", answer.Checked, "abandoned", answer.Abandoned)
+	s.operatorDone(r, token)
+	writeJSON(w, http.StatusOK, answer)
+}
+
 func forgettable(state supervise.ClaimState) bool {
 	return state == supervise.StateQueued || state == supervise.StateSuspended || state == supervise.StateFailed || state == supervise.StateRetired
 }

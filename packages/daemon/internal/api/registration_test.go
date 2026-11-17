@@ -65,6 +65,10 @@ func (noEnrollments) Enroll(_ context.Context, e supervise.PodEnrollment) (strin
 
 func (noEnrollments) Revoke(context.Context, string) error { return nil }
 
+func (noEnrollments) Carried(context.Context, []string) ([]supervise.CarriedEnrollment, error) {
+	return []supervise.CarriedEnrollment{}, nil
+}
+
 // newRegistrationHarness is newHarness under a Kubernetes deployment that enrolls its pods, and
 // registers each role's session for its pod when registrar is non-nil — the daemon's wiring with
 // runtime.kubernetes.agent_secrets.exchange_audience set — and registers nothing when it is nil,

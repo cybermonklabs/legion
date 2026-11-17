@@ -3,17 +3,20 @@
 package supervisetest
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Holds is supervise.Store.HoldSessions as the store's claim_sessions table keeps it, in memory:
-// the first claim of a project to record a name holds it, all of one call's names or none. The
-// zero value holds nothing and is ready to use.
+// Holds is supervise.Store.HoldSessions, ClaimHolds and FreeHolds as the store's claim_sessions
+// table keeps them, in memory: the first claim of a project to record a name holds it, all of one
+// call's names or none, until its own release frees it. The zero value holds nothing and is ready
+// to use.
 type Holds struct {
 	mu    sync.Mutex
 	holds map[holdKey]claim.Token
@@ -61,4 +64,43 @@ func (h *Holds) HoldSessions(_ context.Context, project string, token claim.Toke
 		h.holds[holdKey{project, hold}] = token
 	}
 	return holders, nil
+}
+
+// ClaimHolds is supervise.Store.ClaimHolds: every name token's claim holds within project, in kind
+// and then name order.
+func (h *Holds) ClaimHolds(_ context.Context, project string, token claim.Token) ([]supervise.Hold, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var holds []supervise.Hold
+	for k, holder := range h.holds {
+		if k.project == project && holder == token {
+			holds = append(holds, k.hold)
+		}
+	}
+	sortHolds(holds)
+	return holds, nil
+}
+
+// FreeHolds is supervise.Store.FreeHolds: it deletes every one of holds held for token's claim
+// within project and answers those, in kind and then name order.
+func (h *Holds) FreeHolds(_ context.Context, project string, token claim.Token, holds []supervise.Hold) ([]supervise.Hold, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var freed []supervise.Hold
+	for _, hold := range holds {
+		k := holdKey{project, hold}
+		if holder, held := h.holds[k]; held && holder == token {
+			delete(h.holds, k)
+			freed = append(freed, hold)
+		}
+	}
+	sortHolds(freed)
+	return freed, nil
+}
+
+// sortHolds puts holds in the store's order: kind, then name.
+func sortHolds(holds []supervise.Hold) {
+	slices.SortFunc(holds, func(a, b supervise.Hold) int {
+		return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Name, b.Name))
+	})
 }

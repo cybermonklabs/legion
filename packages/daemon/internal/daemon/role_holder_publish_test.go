@@ -180,25 +180,32 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 // a session held for another claim, held for none, or held by no row at all — which the boot finds
 // where a daemon from before the hold ran, and suspends, but not before a working claim's turn
 // ends, nor after a suspension the runtime refused — is left out, so Dispatch is never told that
-// its role holds a session that is not its own. The claim holding its own session is published as
+// its role holds a session that is not its own. So is a claim whose session's text is held for it
+// only as another kind of name, or only in another project: the hold that counts is of the
+// session's id, in the claim's own project. The claim holding its own session is published as
 // before.
 //
-// The control (the pull request records the run): LiveRoleHolders without its claim_sessions
-// clause publishes all four sessions.
+// The controls (the pull request records the runs): LiveRoleHolders without its claim_sessions
+// clause publishes all six sessions; without its `h.kind` predicate it publishes the one held as a
+// file name, and without its `h.project` predicate the one held in another project.
 func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
 	const issue = "LEGION-209"
 	r := newRoleHoldersRig(t)
 	r.seedClaim(issue, claim.RoleTester, "ses-own", supervise.StateReady, time.Minute)
-	// Three live claims whose sessions the table holds for another claim, for none, and not at all.
+	// Five live claims whose sessions the table holds for another claim, for none, not at all, for
+	// the claim itself as a file name, and for the claim itself in another project.
 	for _, seeded := range []struct {
-		role    claim.Role
-		session string
-		holder  string
-		held    bool
+		role          claim.Role
+		session       string
+		holder        string
+		held          bool
+		kind, project string
 	}{
-		{claim.RoleReviewer, "ses-another-claims", "legion-legion-legion-299-tester", true},
-		{claim.RoleImplementer, "ses-held-for-none", "", true},
-		{claim.RolePlanner, "ses-held-by-no-row", "", false},
+		{claim.RoleReviewer, "ses-another-claims", "legion-legion-legion-299-tester", true, "session", "legion"},
+		{claim.RoleImplementer, "ses-held-for-none", "", true, "session", "legion"},
+		{claim.RolePlanner, "ses-held-by-no-row", "", false, "", ""},
+		{claim.RoleArchitect, "ses-held-as-a-file-name", "self", true, "file-name", "legion"},
+		{claim.RoleMerger, "ses-held-in-another-project", "self", true, "session", "other"},
 	} {
 		token, err := claim.NewToken("legion", issue, seeded.role)
 		if err != nil {
@@ -210,10 +217,13 @@ func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
 			string(token), issue, string(seeded.role), seeded.session); err != nil {
 			t.Fatalf("seed the %s claim: %v", seeded.role, err)
 		}
+		if seeded.holder == "self" {
+			seeded.holder = string(token)
+		}
 		if seeded.held {
-			if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', 'session', $1, $2)`,
-				seeded.session, seeded.holder); err != nil {
-				t.Fatalf("hold %s for %q: %v", seeded.session, seeded.holder, err)
+			if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ($3, $4, $1, $2)`,
+				seeded.session, seeded.holder, seeded.project, seeded.kind); err != nil {
+				t.Fatalf("hold %s for %q as %s in %s: %v", seeded.session, seeded.holder, seeded.kind, seeded.project, err)
 			}
 		}
 	}

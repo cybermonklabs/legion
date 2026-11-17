@@ -188,6 +188,78 @@ func (s *server) deleteEnrollment(w http.ResponseWriter, r *http.Request, cred e
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// maxCarriedBodyBytes is POST /v1/enrollments/carried's body cap, in place of maxJSONBodyBytes:
+// the longest list Carried takes, written compactly, with every byte of every id escaped as
+// JSON's longest escape (\u00XX, six bytes), its quotes and commas, and the object around it.
+// About 6 MiB. Under maxJSONBodyBytes a list of 4,096 plain 255-byte ids, which Carried answers,
+// would be refused 413 before it reached Carried.
+const maxCarriedBodyBytes = int64(enroll.MaxCarriedSessionIDs*(6*enroll.MaxCarriedSessionIDBytes+3) + len(`{"session_ids":[]}`))
+
+// carriedBody is POST /v1/enrollments/carried's body.
+type carriedBody struct {
+	// The session ids to ask about: 1 to 4096 of them, each 1 to 255 bytes. An id named twice is
+	// answered once.
+	SessionIDs []string `json:"session_ids"`
+}
+
+// carriedResponse is POST /v1/enrollments/carried's answer.
+type carriedResponse struct {
+	// Every pod enrollment a login of the caller's own account launched that still carries
+	// something for one of the named sessions, sorted by session id and then enrollment id; empty,
+	// never null, when none does.
+	Carried []carriedEnrollment `json:"carried"`
+}
+
+// carriedEnrollment is one enrollment POST /v1/enrollments/carried answers.
+type carriedEnrollment struct {
+	// The session id the enrollment names.
+	SessionID string `json:"session_id"`
+	// The enrollment's id.
+	EnrollmentID string `json:"enrollment_id"`
+	// "live": no end has reached it, and it counts whatever it holds, since it may still be
+	// granted something or ask for something. "dormant": a box's end left it holding a live grant
+	// or a pending request for the session's next enrollment.
+	State string `json:"state"`
+	// When it stops carrying unless something ends it first: a live enrollment's lease end, which
+	// each renewal moves, and a dormant one's carry window end (BROKER_SESSION_CARRY_SECONDS past
+	// its end), when the broker's sweep revokes what it holds.
+	EndsAt time.Time `json:"ends_at"`
+}
+
+// carriedEnrollments answers which pod enrollments a login of the caller's own account launched
+// still carry something for the named sessions, that the next enrollment of the session under
+// the same login would take: what enroll.Service.Carried reads, and why each row counts, is that
+// method's. A Legion daemon asks before it frees a session id it holds, and frees one only when
+// the answer names none of its enrollments (plan E's t-e-54). Another login's enrollments
+// are never answered, so another daemon's session of the same id never keeps this one from
+// freeing it. A credential that proved no account, one a person approved, launched nothing it
+// could be answered for (403 SERVICE_LOGIN_REQUIRED).
+func (s *server) carriedEnrollments(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
+	var body carriedBody
+	if !readJSONUpTo(w, r, &body, "INVALID_SESSION_IDS", maxCarriedBodyBytes) {
+		return
+	}
+	carried, err := s.deps.Enroll.Carried(r.Context(), cred, body.SessionIDs)
+	switch {
+	case errors.Is(err, enroll.ErrServiceLoginRequired):
+		writeError(w, http.StatusForbidden, "SERVICE_LOGIN_REQUIRED", err.Error())
+		return
+	case errors.Is(err, enroll.ErrInvalidSessionIDs):
+		writeError(w, http.StatusBadRequest, "INVALID_SESSION_IDS", err.Error())
+		return
+	case err != nil:
+		writeInternal(w, "read carried enrollments", err)
+		return
+	}
+	out := carriedResponse{Carried: make([]carriedEnrollment, 0, len(carried))}
+	for _, c := range carried {
+		out.Carried = append(out.Carried, carriedEnrollment{
+			SessionID: c.SessionID, EnrollmentID: c.EnrollmentID.String(), State: c.State, EndsAt: c.EndsAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // renewEnrollment renews the caller's own enrollment. The proof-verified enrollment id is
 // authoritative — a session can only ever act as itself — so a URL {id} that names a different
 // enrollment is refused rather than silently honored or silently ignored. A pod's renewal carries
