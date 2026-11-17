@@ -1835,6 +1835,10 @@ func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 			o.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}
 			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour, ExchangeAudience: testWorkloadPool}
 		}, `agent secrets: the exchange audience is the Workload Identity pool's, "` + testWorkloadPool + `"`},
+		"the enrollment's audience is the Workload Identity pool's on a canary": {func(o *Options) {
+			o.Sandbox = SandboxConfig{CanaryIssues: []string{testTree}, MicroVM: testMicroVM()}
+			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: testWorkloadPool, TokenExpiry: time.Hour}
+		}, `agent secrets: the enrollment's audience is the Workload Identity pool's, "` + testWorkloadPool + `"`},
 		"no binary": {func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour}
 			o.Tools.AgentSecrets = ""
@@ -1847,6 +1851,21 @@ func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("configure() = %v, want %q", err, tc.want)
 			}
+		})
+	}
+}
+
+// New accepts a broker audience equal to the Workload Identity pool of a microvm block no issue pod
+// uses (a gVisor project with no canary), since no pod carries the pool's token: a block kept for a
+// revert changes nothing.
+func TestNewAcceptsABrokerAudienceEqualToThePoolOfABlockNoPodUses(t *testing.T) {
+	unused := SandboxConfig{Type: SandboxGVisor, MicroVM: testMicroVM()}
+	for name, secrets := range map[string]*AgentSecrets{
+		"the enrollment's audience": {URL: "https://s", Audience: testWorkloadPool, TokenExpiry: time.Hour},
+		"the exchange audience":     {URL: "https://s", Audience: "a", ExchangeAudience: testWorkloadPool, TokenExpiry: time.Hour},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sandboxRuntime(t, unused, func(o *Options) { o.AgentSecrets = secrets })
 		})
 	}
 }

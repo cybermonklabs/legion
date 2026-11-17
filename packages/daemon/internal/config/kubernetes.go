@@ -615,8 +615,8 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 // any value a pod could not run with. A key an earlier shape of the block had (tree_volume, the
 // TypeScript daemon's role_profiles and gateway) is known so that its refusal names what replaced
 // it, which is what `legion start --check-config` shows the operator to edit. The sandbox's rules
-// that read the block's scheduling and pod too are checked once all three are read
-// (checkSandboxSchedulingAndPod). What depends on keys outside the block is checked once the whole
+// that read the block's scheduling, pod and agent_secrets too are checked once all four are read
+// (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the whole
 // file is read (checkKubernetesKeys), and the reservations the file leaves out are filled when the
 // block is settled (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
@@ -705,7 +705,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.Sandbox, err = readSandbox(fields["sandbox"], block.StorageClass); err != nil {
 		return nil, err
 	}
-	if err := checkSandboxSchedulingAndPod(block); err != nil {
+	if err := checkSandboxAgainstTheBlock(block); err != nil {
 		return nil, err
 	}
 	return block, nil
@@ -1005,7 +1005,7 @@ func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
 	return block, nil
 }
 
-// checkSandboxSchedulingAndPod refuses, while an issue pod runs in a microVM, what the operator's
+// checkSandboxAgainstTheBlock refuses, while an issue pod runs in a microVM, what the operator's
 // scheduling, pod and broker blocks would set that the microVM pod's own placement and endpoint
 // own: a node selector or a toleration on sandbox.gke.io/runtime, since the pod's RuntimeClass
 // adds both at admission; and, while the metadata endpoint is on, a pod.env variable the pod's
@@ -1014,7 +1014,7 @@ func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
 // audience and the pool's token is the launcher's alone. Each refusal names the operator's key.
 // With no issue pod in a microVM it refuses nothing, so a microvm block kept for a revert changes
 // nothing.
-func checkSandboxSchedulingAndPod(block *Kubernetes) error {
+func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 	sandbox := block.Sandbox
 	if !sandbox.AnyMicroVM() {
 		return nil
