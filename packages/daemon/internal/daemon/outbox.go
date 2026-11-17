@@ -1293,10 +1293,10 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // undelivered with one log line. So does a row whose architect cannot be resolved from the record
 // (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a row
 // whose architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while
-// the child is out of the workflow, whose next launch writes a fresh one. A person's spec decision
-// in either of the two cases a notice finishes undelivered because nobody will hold the role (its
-// architect stopped with its finished tree, or will not hold its role again) goes to the
-// controller instead (parkDecision).
+// the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
+// launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
+// undelivered because nobody will hold the role (its architect stopped with its finished tree, or
+// will not hold its role again) goes to the controller instead (parkDecision).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
@@ -1413,19 +1413,18 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
-		// A child parked out of the workflow has its architect suspended with its launch and its
-		// own generation kept (workflow's leave), so no newer catch-up supersedes this one and its
-		// claim has not ended (claimEnded): held, the row would publish to a role nobody holds on
-		// every attempt for as long as the child stays parked. A child closed as done has its
-		// architect retired, which ends the row at its publish anyway. Either way no ready queues a
-		// catch-up while the child is out (workflow's claimReady), and its next launch writes a
-		// fresh one, so this one finishes here, before any publish. A child's catch-up names no
-		// kept decision (workflow.QueueCatchUp), and one that named any is not finished here, so
-		// nothing it named is lost. A root's catch-up is not judged here: it ends with its tree's
-		// linger (stoppedWithTree).
-		if !claim.IsTreeRoot(issue.Key, issue.Tree) && record.OutOfWorkflow(issue.Status) && payload.CatchUp.Kept == nil {
+		// A child that runs nothing (record.InWorkflow: out of the workflow by its status, or done,
+		// as a parked child stays when a person writes a running status on it without a todo) has
+		// its architect suspended or retired with its launch and its generation kept, so nothing
+		// supersedes the row. It finishes here, before any publish, since no ready queues a
+		// catch-up while the child runs nothing (workflow's claimReady, the same rule) and its next
+		// launch writes a fresh one. A child's catch-up names no kept decision
+		// (workflow.QueueCatchUp), and one that named any is not finished here, so nothing it named
+		// is lost. A root's catch-up is not judged here: it ends with its tree's linger
+		// (stoppedWithTree).
+		if !claim.IsTreeRoot(issue.Key, issue.Tree) && !record.InWorkflow(issue) && payload.CatchUp.Kept == nil {
 			r.log.Info("outbox catch-up finished undelivered: its issue is out of the workflow", "row", row.ID, "issue", row.Issue,
-				"status", issue.Status, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
+				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
 	}
