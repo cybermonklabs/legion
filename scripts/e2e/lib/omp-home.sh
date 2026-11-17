@@ -70,9 +70,10 @@ make_omp_home() {
 # build's CURRENT_SETUP_VERSION, so on a fresh profile it holds the pane and the session never starts
 # (runInteractiveMode in packages/coding-agent/src/main.ts and selectSetupScenes in
 # packages/tui/src/setup/wizard.ts, at the pin). `startup.setupWizard: false` shuts it whatever setup
-# version the build counts to; `--mode rpc` never opens it. A named profile reads its settings from
-# its own agent/config.yml alone (getProfileConfigRoot in @oh-my-pi/pi-utils dirs.ts): no file of
-# the home reaches every profile, so each profile the run writes carries the line.
+# version the build counts to; `--mode rpc` never opens it. A named profile's own settings file is
+# its agent/config.yml, and it inherits no other config.yml of the home (getProfileConfigRoot in
+# @oh-my-pi/pi-utils dirs.ts); only the working directory's project settings and PI_CONFIG_FILES
+# overlays merge over it, and neither is in the home. So each profile the run writes carries the line.
 omp_setup_wizard_off() {
   printf 'startup:\n  setupWizard: false\n' >>"$1"
 }
