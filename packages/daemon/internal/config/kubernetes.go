@@ -914,8 +914,8 @@ func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConf
 // both: marks that met would leave the sweep no fraction to stop at. min_age_minutes is bounded
 // at shimwire.VolumeMinAgeMax and interval_seconds at shimwire.VolumeIntervalMax, and neither
 // may be 0: the trimmer arms a time.Ticker with the interval, which panics on a non-positive
-// period, in the process that is PID 1 of the pod's roles container, taking the six live roles
-// under it down with it.
+// period, a fault each time the trimmer's interval loop started, three of which in a row switch
+// the pod's trimmer off for the life of its launcher process (launcher's trimmer.run).
 //
 // The maximum of a mark, of the age and of the interval are the wire's own
 // (shimwire.VolumeMarkMax, shimwire.VolumeMinAgeMax, shimwire.VolumeIntervalMax), which the

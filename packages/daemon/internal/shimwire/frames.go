@@ -320,8 +320,9 @@ type LauncherVolumeTrim struct {
 // lives, which configuration decides (`idle_release`'s `idle_minutes: 0` turns release off and a
 // pod then lives as long as its issue runs), and a trimmer is switched off with `enabled: false`,
 // never with an age. The minima are what a trimmer can be armed with at all: time.NewTicker
-// panics on a non-positive period, in the process that is PID 1 of the roles container with six
-// live roles under it, and a high mark of 0 would sweep the caches of a volume that is empty.
+// panics on a non-positive period, a fault each time the trimmer's interval loop started, three
+// of which in a row switch it off for the life of its launcher process (the launcher's run), and
+// a high mark of 0 would sweep the caches of a volume that is empty.
 const (
 	VolumeMarkMin     = 1
 	VolumeMarkMax     = 99
@@ -371,7 +372,10 @@ type LauncherVolumeMissing struct {
 // of readings the daemon's notice bounds count against, so what raised it is what a reader needs
 // to tell three reports apart: one of a volume that has just filled, one of a volume that fell to
 // its low mark or below and has filled again, and one whose last two reported sweeps started five
-// points or more above where the episode before it was anchored.
+// points or more above where the episode before it was anchored. A reported sweep, here and below,
+// is one that ended above the low mark and that the settings did not stop, whose start the trimmer
+// reads before it makes the sweep's report, so one whose report then panics and is never sent
+// counts too (the launcher's riseAt).
 const (
 	// VolumeEpisodeFirst is the trimmer's first episode: its reading reached the high mark.
 	VolumeEpisodeFirst = "first"

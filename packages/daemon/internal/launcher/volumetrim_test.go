@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -737,7 +738,8 @@ func trimSettings() *shimwire.LauncherVolumeTrim {
 // trimmer stays off rather than starting its ticker. The daemon that sent them is another binary
 // across a connection this design expects to carry version skew both ways, and the cost of
 // believing one is paid in the process that is PID 1 of the roles container: time.NewTicker
-// panics on a non-positive period, which would take six live roles down with it.
+// panics on a non-positive period, a fault on each start of the interval loop, and three in a row
+// would switch off the pod's one guard of the volume six live roles share (run).
 func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -3788,6 +3790,217 @@ func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
 	})
 }
 
+// R1 has the trimmer contain its own faults, and the trimmer's goroutine runs in the launcher
+// process that is PID 1 of the roles container: a panic that escapes it ends the container and
+// every role in it. tick recovers its own interval; these are the paths the goroutine runs outside
+// that recovery (run), each made to panic through a seam the trimmer already takes, its send or its
+// logger. At e6725f56 each of the four ended this test process (INFRA-2009, review round 34).
+//
+//   - The resend of a held report in the wait for settings (awaitSettings' flush) is a fault as
+//     tick's are: written with its stack, counted toward three in a row and carried into the next
+//     report, and the trimmer goes back to its wait and on to its interval loop.
+//   - The line tick writes of a fault it recovered runs in tick's deferred handler, so its panic is
+//     raised while one is being handled; it is counted as the next fault in a row, and the third in
+//     a row switches the trimmer off with all three in its last report.
+//   - The last report of the switched-off trimmer, as switchOff makes it or as deliverLast tries it
+//     again, ends the trimmer with its panic written and its stack, and the report is not tried again.
+func TestAPanicOutsideTheIntervalIsContainedAndCounted(t *testing.T) {
+	// written is the one line the trimmer wrote holding want.
+	written := func(t *testing.T, f *trimFixture, want string) string {
+		t.Helper()
+		var lines []string
+		for _, line := range f.linesWritten() {
+			if strings.Contains(line, want) {
+				lines = append(lines, line)
+			}
+		}
+		if len(lines) != 1 {
+			t.Fatalf("the trimmer wrote %d lines holding %q, want one: %q", len(lines), want, f.linesWritten())
+		}
+		return lines[0]
+	}
+
+	t.Run("the resend of a held report in the wait for settings", func(t *testing.T) {
+		f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
+		f.useVolume(f.modelled(90))
+		f.setSettings(trimSettings())
+		f.refuseSends(errors.New("no daemon connection is up to carry it"))
+		tr := f.trimmer()
+		const fell = "the connection fell over resending the held report"
+		var falling atomic.Bool
+		tr.send = func(report shimwire.LauncherVolumeReport) error {
+			if falling.Load() {
+				panic(fell)
+			}
+			return f.send(report)
+		}
+		_, done := f.start(tr)
+		f.tick("the sweep ended")
+		testwait.Eventually(t, "the trimmer to hold the report its send refused", func() bool {
+			return f.logged("holding it for the next attempt") == 1
+		})
+
+		// Settings it refuses end the interval loop, and the wait tries the held report once it
+		// has said why it waits (awaitSettings): that resend falls over.
+		falling.Store(true)
+		wide := *trimSettings()
+		wide.HighPercent = shimwire.VolumeMarkMax + 1
+		f.setSettings(&wide)
+		f.tick("refusing the settings")
+		testwait.Eventually(t, "the panic of the resend to be recovered", func() bool {
+			return f.logged("recovered a panic") == 1
+		})
+		if line := written(t, f, "recovered a panic"); !strings.Contains(line, "(1 in a row)") || !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).flush") {
+			t.Errorf("the trimmer wrote %q, want the panic of the resend counted as the first fault in a row, with the stack it was raised on", line)
+		}
+		select {
+		case <-done:
+			t.Fatal("the trimmer's loop returned after one fault, want it waiting for settings it can run")
+		default:
+		}
+
+		// Settings it can run start the interval loop again: the held report goes at its first
+		// interval, and the report of that interval's sweep carries the fault.
+		falling.Store(false)
+		f.refuseSends(nil)
+		f.setSettings(trimSettings())
+		offerSettingsTicksUntil(t, f, "the interval loop to start again", func() bool { return f.logged("started:") == 2 })
+		f.tick("the sweep ended")
+		testwait.Eventually(t, "the held report and the next sweep's to be sent", func() bool { return len(f.reports()) == 2 })
+		reports := f.reports()
+		if len(reports[0].Faults) != 0 {
+			t.Errorf("the held report carries the faults %q, want none: it was made before the fault", reports[0].Faults)
+		}
+		next := reports[1]
+		switch {
+		case len(next.Faults) != 1 || next.FaultsOmitted != 0:
+			t.Errorf("the next report carries the faults %q and counts %d more, want the one fault of the resend", next.Faults, next.FaultsOmitted)
+		case !strings.Contains(next.Faults[0], fell) || !strings.Contains(next.Faults[0], "(*trimmer).flush"):
+			t.Errorf("the next report carries the fault %q, want the panic of the resend with its stack", next.Faults[0])
+		case next.SwitchedOff:
+			t.Error("the next report says the trimmer switched itself off after one fault, want it to go on")
+		}
+	})
+
+	t.Run("the line of a fault tick recovered", func(t *testing.T) {
+		f := newTrimFixture(t, 1)
+		f.setOnRead(func(call int) {
+			if call == 2 || call == 3 {
+				panic(fmt.Sprintf("the volume reader fell over on call %d", call))
+			}
+		})
+		f.useVolume(steady(50))
+		f.setSettings(trimSettings())
+		tr := f.trimmer()
+		const fell = "the log fell over writing the line of a fault"
+		var fallen atomic.Bool
+		tr.logf = func(format string, args ...any) {
+			if strings.Contains(format, "recovered a panic") && fallen.CompareAndSwap(false, true) {
+				panic(fell)
+			}
+			f.log(format, args...)
+		}
+		_, done := f.start(tr)
+		f.tick("nothing to sweep")
+
+		// The second reading falls over, and so does the line tick's handler writes of it.
+		f.tick("recovered a panic")
+		if line := written(t, f, "recovered a panic"); !strings.Contains(line, "(2 in a row)") || !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).fault") {
+			t.Errorf("the trimmer wrote %q, want the panic of the line counted as the second fault in a row, with the stack it was raised on", line)
+		}
+
+		// The third reading falls over too: the third fault in a row switches the trimmer off.
+		f.tick("recovered a panic")
+		awaitClosed(t, done, "the trimmer's loop to return once three faults in a row switched it off")
+		reports := f.reports()
+		if len(reports) != 1 {
+			t.Fatalf("the trimmer sent %d reports, want the one last report of a trimmer that switched itself off", len(reports))
+		}
+		report := reports[0]
+		if !report.SwitchedOff {
+			t.Error("the last report does not say the trimmer switched itself off")
+		}
+		want := []string{"the volume reader fell over on call 2", fell, "the volume reader fell over on call 3"}
+		if len(report.Faults) != len(want) {
+			t.Fatalf("the last report carries %d faults, want the %d in a row that stopped it: %q", len(report.Faults), len(want), report.Faults)
+		}
+		for at, fault := range report.Faults {
+			if !strings.HasPrefix(fault, want[at]) {
+				t.Errorf("fault %d of the last report is %q, want the panic %q", at+1, fault, want[at])
+			}
+		}
+	})
+
+	t.Run("the last report as the third fault switches the trimmer off", func(t *testing.T) {
+		f := newTrimFixture(t, 1)
+		f.setOnRead(func(call int) { panic(fmt.Sprintf("the volume reader fell over on call %d", call)) })
+		f.useVolume(steady(50))
+		f.setSettings(trimSettings())
+		tr := f.trimmer()
+		const fell = "the connection fell over writing the last report"
+		var attempts atomic.Int32
+		tr.send = func(shimwire.LauncherVolumeReport) error {
+			attempts.Add(1)
+			panic(fell)
+		}
+		_, done := f.start(tr)
+		for range volumeFaultLimit {
+			f.tick("recovered a panic")
+		}
+		awaitClosed(t, done, "the trimmer's loop to end once its last report panicked")
+		if line := written(t, f, "the last report of the switched-off trimmer panicked"); !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).switchOff") {
+			t.Errorf("the trimmer wrote %q, want the panic of its last report with the stack it was raised on", line)
+		}
+		if tries := attempts.Load(); tries != 1 {
+			t.Errorf("the trimmer tried its last report %d times, want once: a report whose making panicked is not tried again", tries)
+		}
+		if faults := f.logged("recovered a panic in the trimmer's own work"); faults != volumeFaultLimit {
+			t.Errorf("the trimmer wrote %d faults, want the %d that switched it off: the panic of the last report ends it and counts nothing", faults, volumeFaultLimit)
+		}
+		if _, waiting := f.ticks.live(volumeSettingsWait); waiting {
+			t.Error("the trimmer still waits on a clock to try its last report again")
+		}
+	})
+
+	t.Run("the last report's next attempt", func(t *testing.T) {
+		f := newTrimFixture(t, 1)
+		f.setOnRead(func(call int) { panic(fmt.Sprintf("the volume reader fell over on call %d", call)) })
+		f.useVolume(steady(50))
+		f.setSettings(trimSettings())
+		f.refuseSends(errors.New("no daemon connection is up to carry it"))
+		tr := f.trimmer()
+		const fell = "the connection fell over sending the last report"
+		var attempts atomic.Int32
+		tr.send = func(report shimwire.LauncherVolumeReport) error {
+			if attempts.Add(1) > 1 {
+				panic(fell)
+			}
+			return f.send(report)
+		}
+		_, done := f.start(tr)
+		for range volumeFaultLimit {
+			f.tick("recovered a panic")
+		}
+		testwait.Eventually(t, "the trimmer to hold its last report", func() bool {
+			return f.logged("holding it for the next attempt") == 1
+		})
+		offerSettingsTick(t, f)
+		awaitClosed(t, done, "the trimmer's loop to end once the attempt at its last report panicked")
+		if line := written(t, f, "the last report of the switched-off trimmer panicked"); !strings.Contains(line, fell) || !strings.Contains(line, "(*trimmer).deliverLast") {
+			t.Errorf("the trimmer wrote %q, want the panic of the attempt with the stack it was raised on", line)
+		}
+		if tries := attempts.Load(); tries != 2 {
+			t.Errorf("the trimmer tried its last report %d times, want twice: once as it switched off, once more on the clock, and not again after that panicked", tries)
+		}
+		if _, waiting := f.ticks.live(volumeSettingsWait); waiting {
+			t.Error("the trimmer still waits on a clock to try its last report again")
+		}
+		if sent := len(f.reports()); sent != 0 {
+			t.Errorf("the trimmer sent %d reports, want none", sent)
+		}
+	})
+}
+
 // The episode number follows the volume across the marks: the first reading at the high mark
 // opens episode 1, a reading at or below the low mark after that opens the next, and two reported
 // sweeps in a row that start five points or more above the episode's anchor, here the lowest start
@@ -5192,6 +5405,127 @@ func TestAReportThatReplacesAHeldOneCarriesItsFaultsAndRefusedReads(t *testing.T
 	}
 	if tr.held != nil {
 		t.Errorf("the trimmer still holds %+v after the connection took it", tr.held)
+	}
+}
+
+// A report takes the faults and the refused /proc reads the trimmer carries only once the bounded
+// report that holds them exists (report): a panic in the bound before that leaves them with the
+// trimmer, and the next report carries them, before the fault of that panic, which tick recovers.
+// The case carries one fault and one refused read of an earlier sweep that sent no report, makes
+// the bound of the next sweep's report panic, and reads the report of the sweep after it. The
+// negative control is report as it stood at e6725f56, which took them from the trimmer before the
+// bound ran: the report sent carried the bound's own fault alone and no refused read.
+func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
+	const refused = "process 7: /proc/7/fd: permission denied"
+	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
+	f.useVolume(f.modelled(90))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	set := *trimSettings()
+	tr.fault("a panic of an earlier interval", []byte("goroutine 1 [running]:\nan earlier stack"))
+	tr.carryRefused([]string{refused})
+
+	previous := boundReport
+	boundReport = func(*trimmer, shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+		panic("the bound fell over")
+	}
+	t.Cleanup(func() { boundReport = previous })
+	if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+		t.Fatalf("the interval whose bound panicked ended the trimmer (%v), want it passed over", ending)
+	}
+	if faults := f.logged("recovered a panic"); faults != 2 {
+		t.Fatalf("the trimmer wrote %d faults, want the earlier one and the bound's: %q", faults, f.linesWritten())
+	}
+	if sent := len(f.reports()); sent != 0 {
+		t.Fatalf("the trimmer sent %d reports from an interval whose bound panicked, want none", sent)
+	}
+
+	boundReport = previous
+	tr.tick(context.Background(), &set)
+	sent := f.reports()
+	if len(sent) != 1 {
+		t.Fatalf("the trimmer sent %d reports from the sweep after the one whose bound panicked, want one", len(sent))
+	}
+	report := sent[0]
+	if len(report.Faults) != 2 || report.FaultsOmitted != 0 ||
+		!strings.HasPrefix(report.Faults[0], "a panic of an earlier interval") || !strings.HasPrefix(report.Faults[1], "the bound fell over") {
+		t.Errorf("the report carries the faults %q and counts %d more, want the earlier fault and then the bound's own", report.Faults, report.FaultsOmitted)
+	}
+	if !slices.Equal(report.RefusedReads, []string{refused}) || report.RefusedReadsOmitted != 0 {
+		t.Errorf("the report names the refused reads %q and counts %d more, want the one of the earlier sweep", report.RefusedReads, report.RefusedReadsOmitted)
+	}
+	if err := report.Validate(); err != nil {
+		t.Errorf("the daemon would refuse the report: %v", err)
+	}
+}
+
+// A report that would replace a held one, and whose merge with it panics, gives back what it
+// carried (deliver, replace): report took its faults and refused /proc reads from the trimmer once
+// it was bounded, and it is neither sent nor held, so the trimmer must carry them again. The held
+// report stays held, and the next report carries the newer one's fault and refused read, before
+// the merge's own fault, which tick recovers. The case holds report A, carries a fault and a
+// refused read into report B, whose send fails too, and makes the bound panic on its second call,
+// the one that merges A into B. The negative control is deliver with no give-back, as it stood at
+// e6725f56: the report sent after it carried the merge's fault alone and no refused read.
+func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T) {
+	const refused = "process 8: /proc/8/fd: permission denied"
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	f.refuseSends(errors.New("the bound connection is gone"))
+	tr := f.trimmer()
+	set := *trimSettings()
+	ctx := context.Background()
+
+	tr.tick(ctx, &set) // report A, held
+	if tr.held == nil {
+		t.Fatalf("the trimmer holds no report after a send that failed; it wrote %q", f.linesWritten())
+	}
+	tr.pause = 0 // the pause after a sweep that freed nothing (tick), which would hold off B's sweep
+	tr.fault("a panic before B", []byte("goroutine 1 [running]:\nan earlier stack"))
+	tr.carryRefused([]string{refused})
+
+	calls := 0
+	previous := boundReport
+	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+		if calls++; calls == 2 {
+			panic("the merge fell over")
+		}
+		return previous(trim, report)
+	}
+	t.Cleanup(func() { boundReport = previous })
+	if _, ending := tr.tick(ctx, &set); ending != trimGoesOn {
+		t.Fatalf("the interval whose merge panicked ended the trimmer (%v), want it passed over", ending)
+	}
+	if calls != 2 || f.logged("recovered a panic") != 2 {
+		t.Fatalf("the bound ran %d times and the trimmer wrote %d faults, want B's bound, the merge that panicked, and that panic's fault after the earlier one: %q",
+			calls, f.logged("recovered a panic"), f.linesWritten())
+	}
+	if tr.held == nil || len(tr.held.Faults) != 0 || len(tr.held.RefusedReads) != 0 {
+		t.Fatalf("the trimmer holds %+v after the merge panicked, want report A as it was held", tr.held)
+	}
+
+	boundReport = previous
+	f.refuseSends(nil)
+	tr.pause = 0
+	tr.tick(ctx, &set) // A goes, and then report C
+	sent := f.reports()
+	if len(sent) != 2 {
+		t.Fatalf("the trimmer sent %d reports once the connection took them, want A and C", len(sent))
+	}
+	if len(sent[0].Faults) != 0 || len(sent[0].RefusedReads) != 0 {
+		t.Errorf("the held report sent carries the faults %q and the refused reads %q, want A's own, none", sent[0].Faults, sent[0].RefusedReads)
+	}
+	report := sent[1]
+	if len(report.Faults) != 2 || report.FaultsOmitted != 0 ||
+		!strings.HasPrefix(report.Faults[0], "a panic before B") || !strings.HasPrefix(report.Faults[1], "the merge fell over") {
+		t.Errorf("the report after the merge carries the faults %q and counts %d more, want B's fault and then the merge's own", report.Faults, report.FaultsOmitted)
+	}
+	if !slices.Equal(report.RefusedReads, []string{refused}) || report.RefusedReadsOmitted != 0 {
+		t.Errorf("the report after the merge names the refused reads %q and counts %d more, want B's one", report.RefusedReads, report.RefusedReadsOmitted)
+	}
+	if err := report.Validate(); err != nil {
+		t.Errorf("the daemon would refuse the report: %v", err)
 	}
 }
 

@@ -140,15 +140,16 @@ const (
 // This is the ranges checked a second time on the trimmer's own side of the wire. The daemon
 // validates them too, but it is another binary across a connection this design expects to carry
 // version skew both ways, and the cost of believing a bad one here is paid by the whole pod:
-// time.NewTicker panics on a non-positive period, in the process that is PID 1 of the roles
-// container with six live roles under it, a high mark of 0 would sweep the caches of a volume
-// that is empty, and an age of 153,722,868 minutes or more can wrap the sweep's cutoff past the
-// sweep's own start, which makes every entry of every root eligible however recently it was
-// written (sweep, shimwire.VolumeMinAgeMax). The ranges themselves are the wire's own
-// (shimwire.VolumeMarkMin and the five beside it). The daemon's loader reads the three maxima
-// among them, and its minimum of 1 is its own positive-integer rule (readPositiveInteger,
-// internal/config), which equals the three minima here: the second check is deliberate, and
-// the maxima at least are one source, not two values that could disagree.
+// time.NewTicker panics on a non-positive period, a fault on each start of the interval loop, so
+// three in a row would switch off the one guard of the volume six live roles share (run), a high
+// mark of 0 would sweep the caches of a volume that is empty, and an age of 153,722,868 minutes
+// or more can wrap the sweep's cutoff past the sweep's own start, which makes every entry of
+// every root eligible however recently it was written (sweep, shimwire.VolumeMinAgeMax). The
+// ranges themselves are the wire's own (shimwire.VolumeMarkMin and the five beside it). The
+// daemon's loader reads the three maxima among them, and its minimum of 1 is its own
+// positive-integer rule (readPositiveInteger, internal/config), which equals the three minima
+// here: the second check is deliberate, and the maxima at least are one source, not two values
+// that could disagree.
 func refusedTrimSettings(set shimwire.LauncherVolumeTrim) []string {
 	var refused []string
 	mark := func(key string, value int) {
@@ -313,34 +314,88 @@ const (
 	trimWaits
 	// trimOff is the one ending that keeps the trimmer off while the launcher process lives:
 	// volumeFaultLimit recovered panics in a row have switched the trimmer off, and nothing
-	// starts another before the launcher process restarts (fault).
-	// The report saying so is all that is left to do, and run does it before it returns
-	// (deliverLast).
+	// starts another before the launcher process restarts (fault, run).
+	// The report saying so is all that is left to do, and run makes it and tries it before it
+	// returns (switchOff, deliverLast).
 	trimOff
 	// trimStopping is the container going: ctx has ended, and run returns with it.
 	trimStopping
 )
 
-// run is the trimmer's whole life in this launcher process: the wait for settings it may run
-// by, the interval loop those settings start, and the wait again when they go away. It returns
-// on the container's stop, and on the faults once the report saying the trimmer switched itself
-// off has been sent or discarded, and never on settings alone, because a pod takes the settings
+// run is the trimmer's whole life in this launcher process: its work (live), which is the wait
+// for settings it may run by, the interval loop those settings start and the wait again when
+// they go away, and, once the faults have switched it off, its last report (switchOff,
+// deliverLast). It returns on the container's stop, and on the faults once that report has been
+// sent, discarded or has panicked, and never on settings alone, because a pod takes the settings
 // of its bound connection's latest answer and an operator who turned the trimmer off may turn it
 // on again in the pod this process is PID 1 of.
+//
+// It is where the trimmer contains every panic that tick does not recover (tick says why it
+// recovers at all), and it sits here because run is the whole of what the trimmer's goroutine
+// runs: serveVolumeTrim's goroutine waits for the first acknowledgement and calls podTrimmer,
+// which calls run, and nothing else. So one recovery here holds every path of that goroutine
+// outside tick's own: the wait for settings and the held report it tries (awaitSettings, flush),
+// the interval loop's clock and lines (intervals), what tick's deferred handler runs once it has
+// recovered (fault), and the last report.
+//
+// A panic of the work is a fault as tick's are (fault): written with its stack, kept for the next
+// report and counted toward volumeFaultLimit in a row. The work then starts again from its wait
+// for settings, unless that fault is the third in a row, which switches the trimmer off as tick's
+// third does. A panic of the last report ends the trimmer, written with its stack, and that
+// report is not tried again: nothing is left to carry a fault to the daemon or to count it
+// toward, and a report that panicked once can panic again. Each step runs inside contain and
+// none inside a deferred handler, so a panic raised while another is being handled, in tick's
+// handler or in the counting here, meets a recovery too and never escapes.
 func (t *trimmer) run(ctx context.Context) {
+	ending := trimGoesOn
+	for ending == trimGoesOn {
+		if recovered, stack := contain(func() { ending = t.live(ctx) }); recovered != nil {
+			// fault counts the panic before it writes its line, so a panic of that line, which
+			// only the logger can raise, leaves the fault counted and is dropped: the logger is
+			// the one place there is to write it.
+			contain(func() { t.fault(recovered, stack) })
+			if t.consecutive >= volumeFaultLimit {
+				ending = trimOff
+			}
+		}
+	}
+	if ending != trimOff {
+		return
+	}
+	if recovered, stack := contain(func() { t.switchOff(); t.deliverLast(ctx) }); recovered != nil {
+		// A panic of this line too, which only the logger can raise, is dropped, as above.
+		contain(func() {
+			t.logf(volumeTrimLog+"the last report of the switched-off trimmer panicked, and the trimmer ends here without trying it again: %v\n%s",
+				recovered, stack)
+		})
+	}
+}
+
+// live is the trimmer at work: the wait for settings it may run by, the interval loop those
+// settings start, and the wait again when they go away, until the container stops or the faults
+// switch the trimmer off.
+func (t *trimmer) live(ctx context.Context) trimEnding {
 	for {
 		inForce, ending := t.awaitSettings(ctx)
 		if ending != trimGoesOn {
-			return
+			return ending
 		}
-		switch t.intervals(ctx, inForce) {
-		case trimWaits:
-			continue
-		case trimOff:
-			t.deliverLast(ctx)
+		if ending := t.intervals(ctx, inForce); ending != trimWaits {
+			return ending
 		}
-		return
 	}
+}
+
+// contain runs work and answers the panic it raised, with the stack it was raised on, or nil
+// when it raised none (run).
+func contain(work func()) (recovered any, stack []byte) {
+	defer func() {
+		if recovered = recover(); recovered != nil {
+			stack = debug.Stack()
+		}
+	}()
+	work()
+	return nil, nil
 }
 
 // awaitSettings is the wait for settings the trimmer may run by: it answers the first ones it
@@ -415,7 +470,8 @@ func (t *trimmer) settingsInForce() *shimwire.LauncherVolumeTrim {
 // reading at the high mark asks for, until the container stops, the faults stop the trimmer, or
 // the settings go away and run waits for them again. It is entered with settings the trimmer
 // has already accepted and starts its ticker on nothing else: time.NewTicker panics on a
-// non-positive period, and this goroutine's panic is PID 1's panic (awaitSettings, tick).
+// non-positive period, and a panic here is a fault run counts toward switching the trimmer off,
+// where settings outside the ranges are only refused (awaitSettings, run).
 func (t *trimmer) intervals(ctx context.Context, inForce shimwire.LauncherVolumeTrim) trimEnding {
 	t.logf(volumeTrimLog+"started: trimmer %s, high %d%%, low %d%%, minimum age %d min, interval %d s, volume %s",
 		t.id, inForce.HighPercent, inForce.LowPercent, inForce.MinAgeMinutes, inForce.IntervalSeconds, t.volumeRoot)
@@ -487,18 +543,19 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // tick is one interval: the settings in force, a held report, one reading of the volume, the
 // episode that reading raises, the sweep it asks for, the recovery that sweep's last reading
 // raises where it leaves the volume at or below the low mark, and the rise that sweep's start
-// raises where the sweep reports (riseAt). restart says the interval clock must be made again, and
-// the ending what the interval loop must do now (trimEnding).
+// raises where it is a reported sweep (riseAt). restart says the interval clock must be made
+// again, and the ending what the interval loop must do now (trimEnding).
 //
 // It recovers from any panic in its own work, which is a deliberate departure from this daemon's
-// practice — no other production path of it recovers a panic it did not expect, because a
-// process that cannot keep its invariants should die and be restarted (the one other recover,
-// leakguard's compile, turns the panic regexp.MustCompile raises on a pattern of the embedded
-// rule file into an error) — because this goroutine runs in the process that is PID 1 of the
-// roles container: its panic takes the container down and costs six live roles their round,
-// over a cache sweep that nothing depends on. The fault is logged with its stack and carried
-// into the next report, and three in a row stop the trimmer until the launcher process restarts
-// (fault), which no other ending of the four does.
+// practice — no production path of it outside this trimmer recovers a panic it did not expect,
+// because a process that cannot keep its invariants should die and be restarted (the one recover
+// outside the trimmer, leakguard's compile, turns the panic regexp.MustCompile raises on a pattern
+// of the embedded rule file into an error) — because this goroutine runs in the process that is
+// PID 1 of the roles container: its panic takes the container down and costs six live roles their
+// round, over a cache sweep that nothing depends on. The fault is logged with its stack and
+// carried into the next report, and three in a row stop the trimmer until the launcher process
+// restarts (fault, run), which no other ending of the four does. The rest of the goroutine, this
+// recovery's own handler included, is run's to contain (run).
 func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim) (restart bool, ending trimEnding) {
 	defer func() {
 		recovered := recover()
@@ -628,40 +685,14 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 // Each recovery starts a new chain, anchored afresh (riseAt), so a volume that cycles can be told
 // about each cycle: its recovery episode's reports wait for the pod's hour, and a rise, raised in
 // each cycle where two reported sweeps in a row start five points or more above the lowest start
-// of that cycle's reported sweeps before them, is told without waiting. A cycle whose anchor is A
-// at its first rise holds up to (100 − A) / 5 rise episodes, rounded down (riseAt), and the daemon
-// sends up to three reports of each of them without the hour (internal/workflow's
-// volumeNoticeHeldBy), so a cycle costs at most 3 × ⌊(100 − A) / 5⌋ notices that the hour does not
-// hold back, nine at the default high mark of 85, besides its recovery episode's reports, which
-// come at most one an hour.
-//
-// Measured for one pod over a day of 60-second intervals, through this loop and those bounds,
-// with each sweep taken as instant, and with the least fill rate each figure needs: what the
-// sweeps of one cycle free, which the roles wrote in that cycle, over the cycle's length, on a
-// volume of 49 GiB, a reported sweep that pauses taken to free nothing, one that does not to free
-// one point, and the sweep that leaves 69.9% to free from where the last reported sweep left the
-// volume down to 69.9%:
-//   - sweeps that pause between reported starts of 86%, 91% and 92%, and then one that leaves
-//     69.9%: 42 notices a day at a 35-minute cycle (18.6 GiB an hour), 33 at 45 minutes (14.4 GiB
-//     an hour), 41 at 71 (9.2 GiB an hour) and 8 at six hours (1.8 GiB an hour);
-//   - that fill going on to reported starts of 93% and 94%, so that its rise episode has three
-//     reports: 76 at 57 minutes (12.4 GiB an hour) and 49 at 90 (7.9 GiB an hour);
-//   - the starts of 86%, 91% and 92% with no pause: 289 at 5 minutes (142 GiB an hour) and 48 at
-//     62 (11.4 GiB an hour); with 93% and 94% after them, 619 at 7 (118 GiB an hour) and 73 at 62
-//     (13.3 GiB an hour);
-//   - pauses, and starts of 86%, 91% to 94% and 96% to 99%, which make two rise episodes a cycle:
-//     86 at 101 minutes (8.5 GiB an hour);
-//   - no pause, and starts of 85%, three of 90%, three of 95% and four of 100%, which make three:
-//     999 at 13 minutes (90.7 GiB an hour); two of 86%, four of 91% and three of 96%, which make
-//     two: 656 at 11 (91.1 GiB an hour).
-//
-// With one interval between the marks after the sweep that leaves 69.9%, the volume climbs back
-// from there to its first start, 15.1 points or more, 7.4 GiB or more, in the two minutes after
-// that sweep. The shortest cycle of each fill has none, the volume back at that start the next
-// interval, and each such cycle is a minute shorter and costs more, as 43 at 34 minutes (19.1 GiB
-// an hour), 78 at 56 (12.7 GiB an hour), 87 at 100 (8.6 GiB an hour), 721 at 10 for the fill of
-// two rise episodes with no pause (100 GiB an hour) and 1,081 at 12 for that of three (98.2 GiB
-// an hour). A longer cycle of the same fill is a longer wait between the marks.
+// of that cycle's reported sweeps before them, is told without waiting. Each rise episode of a
+// cycle costs up to three notices that skip the hour (internal/workflow's volumeNoticeHeldBy), and
+// a cycle whose anchor is A at its first rise holds up to (100 − A) / 5 rise episodes, rounded
+// down (riseAt), so it costs at most 3 × ⌊(100 − A) / 5⌋ such notices, nine at the default high
+// mark of 85, besides its recovery episode's reports, which come at most one an hour. What fills
+// of a given shape cost a pod in a day, measured through this loop and those bounds, is in
+// docs/kubernetes.md, in the paragraph on `runtime.kubernetes.volume_trim` under "Configuration"
+// of "Kubernetes runtime: the Go daemon on Agent Sandbox".
 func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 	switch {
 	case t.episode == 0:
@@ -681,12 +712,14 @@ func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 	}
 }
 
-// riseAt reads a rise at start, the reading a sweep that reported started from, before that
-// sweep's report is made, so the report carries the episode its start raised. Two sweeps are not
-// read, their start neither anchoring nor entering the two a rise reads: one that ended at or below
-// the low mark, since the trimmer brought that volume down, and one the settings stopped (tick).
-// Every other sweep is read before its report is made, so one whose report then panics, which
-// tick recovers and counts as a fault, has been read although it sends no report.
+// riseAt reads a rise at start, the reading a reported sweep started from. A reported sweep, here
+// and wherever this trimmer's comments and shimwire's VolumeEpisodeRise name one, is a sweep that
+// ended above the low mark and that the settings did not stop: tick reads its start here before
+// its report is made, so the report carries the episode its start raised, and so a sweep whose
+// report then panics, which tick recovers and counts as a fault, is a reported sweep too, read
+// although it sends no report. The other two sweeps are not read, their start neither anchoring
+// nor entering the two a rise reads: one that ended at or below the low mark, since the trimmer
+// brought that volume down, and one the settings stopped (tick).
 //
 // A rise is read where the lower of the last two reported sweep starts, this one and the one
 // before it, stands five points or more above the episode's anchor. An episode that no rise
@@ -740,28 +773,32 @@ func (t *trimmer) riseAt(start float64) {
 	t.lastStart = start
 }
 
-// fault records one recovered panic and answers whether the trimmer must now stay off.
+// fault records one recovered panic and answers whether the trimmer must now stay off, which
+// is volumeFaultLimit in a row: tick then ends the interval loop with trimOff, and run switches
+// the trimmer off and makes its last report (switchOff), outside any deferred handler. It counts
+// the panic before it writes its line, so a panic of the line leaves the fault counted (run).
 //
 // Only the newest shimwire.VolumeReportFaults stacks are kept, and what they displace is
-// counted: the faults are cleared when a report carries them (report), so a pod whose volume
-// stays healthy never reports and would otherwise keep every stack it ever recovered for the
-// life of the launcher process, kilobytes each, in the process that is PID 1 of the roles
-// container.
+// counted (keepNewestFaults).
 func (t *trimmer) fault(recovered any, stack []byte) bool {
 	t.consecutive++
 	t.faults = append(t.faults, fmt.Sprintf("%v\n%s", recovered, stack))
+	t.keepNewestFaults()
+	t.logf(volumeTrimLog+"recovered a panic in the trimmer's own work (%d in a row), passing over what it was doing: %v\n%s",
+		t.consecutive, recovered, stack)
+	return t.consecutive >= volumeFaultLimit
+}
+
+// keepNewestFaults cuts the faults the trimmer holds to the newest shimwire.VolumeReportFaults and
+// counts what it cuts (fault, takeBack). The faults are cleared when a report carries them
+// (report), so a pod whose volume stays healthy never reports and would otherwise keep every stack
+// it ever recovered for the life of the launcher process, kilobytes each, in the process that is
+// PID 1 of the roles container.
+func (t *trimmer) keepNewestFaults() {
 	if over := len(t.faults) - shimwire.VolumeReportFaults; over > 0 {
 		t.faultsDropped += over
 		t.faults = slices.Delete(t.faults, 0, over)
 	}
-	t.logf(volumeTrimLog+"recovered a panic in the trimmer's own work (%d in a row), passing over this interval: %v\n%s",
-		t.consecutive, recovered, stack)
-	if t.consecutive < volumeFaultLimit {
-		return false
-	}
-	t.logf(volumeTrimLog+"%d panics in a row: the trimmer is off for the life of this launcher process", t.consecutive)
-	t.switchOff()
-	return true
 }
 
 // cutEach is list with every entry cut to at most runes, and nil for an empty one: a report
