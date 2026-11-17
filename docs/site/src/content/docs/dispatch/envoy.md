@@ -691,21 +691,29 @@ does not count a message with another source, such as Dispatch's (`dispatch`) or
 (`envoy`). It does not count a message with no sender either, which is how the Legion daemon sends
 its notices.
 
+So the count is bound to a session only where callers present secrets-broker tokens. A caller
+that presents one and names another session in the body gets `403`. A caller that the listener
+admits on a bearer, or with no credential where `/v1` is open, names the sender itself in
+`source_session`. Such a caller can send under another session's id and spend that session's
+count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already
+send messages as that session.
+
 A counted message costs one when the listener stores it, may have stored it or reports a wake for
-it, whatever the answer is. So a role send answered `504`, after which the listener cannot say
-whether it stored the message, costs one. So does a `503` after the listener sent the message to
-the stream, such as a write whose acknowledgement did not arrive in time, since the stream may
-hold it. A message the listener refuses before any store or wake report costs nothing, such as a
-`400`, a `403`, a `413` or a `503` before the listener sent anything, one while it waits for NATS
-to reconnect among them. A repeat that the listener recognises costs nothing too: one the stream
-answers as a `duplicate`, a repeat of a role message kept for the role's next holder, and a repeat
-of a role forward the route made in the last 10 minutes. So does an echo, a role message from the
-session that holds the role. A `duplicate` that answers the listener's own second send, made after
-its connection to NATS closed under the first, costs one, since the first may have stored the
-message. A role send's echo, repeat or `403` costs nothing only while the send has made no
-forward. After an earlier forward of the same send it costs one, as any answer then does, since
-that forward may have stored the message. A repeat that finds the count at 0 is refused as a new
-message is, because the listener reads the count first.
+it, whatever the answer is. A role send answered `504` costs one whether or not a forward went
+out, also when the window ended before the first forward. The listener does not tell a `504` that
+forwarded nothing from one whose forward the stream may hold. A `503` after the listener sent the
+message to the stream, such as a write whose acknowledgement did not arrive in time, costs one
+too, since the stream may hold it. A message the listener refuses before any store or wake report
+costs nothing, such as a `400`, a `403`, a `413` or a `503` before the listener sent anything,
+one while it waits for NATS to reconnect among them. A repeat that the listener recognises costs
+nothing too: one the stream answers as a `duplicate`, a repeat of a role message kept for the
+role's next holder, and a repeat of a role forward the route made in the last 10 minutes. So does
+an echo, a role message from the session that holds the role. A `duplicate` that answers the
+listener's own second send, made after its connection to NATS closed under the first, costs one,
+since the first may have stored the message. A role send's echo, repeat or `403` costs nothing
+only while the send has made no forward. After an earlier forward of the same send it costs one,
+as any answer then does, since that forward may have stored the message. A repeat that finds the
+count at 0 is refused as a new message is, because the listener reads the count first.
 
 Each listener process keeps its counts in its own memory. So each replica of a listener keeps its
 own count for a session, and a restart fills each count again. The start log states the limit in

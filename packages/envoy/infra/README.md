@@ -2661,6 +2661,13 @@ The sender is the session that a secrets-broker token proves, else the request's
 `dispatch` or `envoy`. It does not count a message with no sender either, which is how the Legion
 daemon sends its notices.
 
+So the count is bound to a session only where callers present secrets-broker tokens. A caller
+that presents one and names another session in the body gets `403`. A caller that the listener
+admits on a bearer, or with no credential where `/v1` is open, names the sender itself in
+`source_session`. Such a caller can send under another session's id and spend that session's
+count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already
+send messages as that session.
+
 A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
 it, keep it for a later holder of a role or report a wake for it. `Retry-After` gives the whole
 seconds, rounded up and at least 1, until the count holds one message again. The JSON body holds
@@ -2676,19 +2683,21 @@ The request's log line has the outcome `sender_rate_limited` and the field `send
 show the sentence and do not send the message again by themselves. The one exception is the
 Legion stall notice, whose sender waits the seconds and sends it again, at most 3 times.
 
-A counted message costs one when the listener stores it, may have stored it (a role send's `504`,
-any answer after an earlier forward of the same role send, or a `503` after the listener sent the
-message to the stream and the write's acknowledgement did not arrive in time) or reports a wake
-for it. A refusal before any store or wake report, such as a `400`, `403`, `413` or a `503` before
-the listener sent anything (one while it waits for NATS to reconnect), costs nothing. A repeat the
-listener recognises costs nothing too: the stream's `duplicate` answer, a repeat of a role message
-kept for the role's next holder, and a repeat of a role forward the route made in the last 10
-minutes. So does an echo, a role message from the session that holds the role. A `duplicate` that
-answers the listener's own second send, made after its connection to NATS closed under the first,
-costs one, since the first may have stored the message. A role send's echo, repeat or `403` costs
-nothing only while the send has made no forward, since an earlier forward may have stored the
-message. A repeat that finds the count at 0 is refused as a new message is. The listener's own two
-settings are on the documentation site's
+A counted message costs one when the listener stores it, may have stored it (any answer after an
+earlier forward of the same role send, or a `503` after the listener sent the message to the
+stream and the write's acknowledgement did not arrive in time) or reports a wake for it. A role
+send's `504` costs one whether or not a forward went out, also when the window ended before the
+first forward. The listener does not tell a `504` that forwarded nothing from one whose forward
+the stream may hold. A refusal before any store or wake report, such as a `400`, `403`, `413` or
+a `503` before the listener sent anything (one while it waits for NATS to reconnect), costs
+nothing. A repeat the listener recognises costs nothing too: the stream's `duplicate` answer, a
+repeat of a role message kept for the role's next holder, and a repeat of a role forward the route
+made in the last 10 minutes. So does an echo, a role message from the session that holds the role.
+A `duplicate` that answers the listener's own second send, made after its connection to NATS
+closed under the first, costs one, since the first may have stored the message. A role send's
+echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier
+forward may have stored the message. A repeat that finds the count at 0 is refused as a new
+message is. The listener's own two settings are on the documentation site's
 [Envoy page](https://cybermonklabs.github.io/legion/dispatch/envoy/#the-sender-limit).
 
 ## NATS seeds
