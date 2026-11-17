@@ -13,8 +13,9 @@
  * and skipped opening the rail. The two are told apart by one thing only - whether the writer
  * said which it is - and this module is that rule's machine check.
  * `e2e/__tests__/zero-wait-probes.test.ts` is what runs it over the suite, and
- * `e2e/__tests__/zero-wait-loops.test.ts` and `e2e/__tests__/zero-wait-cases.test.ts` hold it to
- * the loops and to a `switch`'s cases.
+ * `e2e/__tests__/zero-wait-loops.test.ts`, `e2e/__tests__/zero-wait-cases.test.ts` and
+ * `e2e/__tests__/zero-wait-calls.test.ts` hold it to the loops, to a `switch`'s cases and to a
+ * call on an answer whose result decides.
  *
  * THE RULE. A probe whose answer decides a path reads a state the page has settled on, or carries
  * a reason. The settled read is `settledState` of `e2e/settled.ts`: it reads its probes inside one
@@ -80,15 +81,23 @@
  *   its kin], where it is no string, template or function. No grammar names it: Playwright's API
  *   decides by it how the row runs.
  *
- * The climb goes up from the probe while the parent's value is computed from the node below it,
- * and stops at the first position it reaches: through `await`, parentheses, `as`, `satisfies`,
- * `<T>`, a non-null `!`, the unary `!`, `-`, `+` and `~`, `typeof`, either operand of a binary
- * operator but the comma and the assignments, the right operand of a comma or of an assignment,
- * whose value the whole expression takes, either branch of a `?:`, a template literal the answer
- * is written into, and a property or an element read on the answer, as in
- * `(await rows.all()).length` or `(await rows.allTextContents())[0]`, where that read is not
- * called. A method called on the answer passes it into a function, the first of WHAT IT DOES NOT
- * SEE. `carrier` enumerates these by `SyntaxKind` as `conditionKind` does the positions.
+ * The climb goes up from the probe through every parent, and stops at the first position it
+ * reaches or at a stop. The stops are the places where the value leaves what the check reads,
+ * which WHAT IT DOES NOT SEE names, is thrown away, or is bound to a name, and nothing else ends
+ * the climb: a function or a class written in place; a `return`, a `yield` or a `throw`; an
+ * element of an array literal, a spread among them, and a property of an object literal; the left
+ * operand of a comma and a `void`, whose value is thrown away; the left side of an assignment,
+ * where the value goes rather than a value read there; an initializer that binds a name, below;
+ * and a statement or a declaration, since the climb is over expressions. Every other parent
+ * carries the value on: `await`, parentheses, `as`, `satisfies`, a non-null `!`, every operand of
+ * an operator but those two left sides, either branch of a `?:`, a template literal, a property or
+ * an element read on the answer, the key of an element access, and a call, a `new`, a spread
+ * argument and a tagged template, the answer the receiver or an argument alike. So
+ * `(await rows.all()).length > 0`, `Boolean(await menu.isVisible())`,
+ * `(await menu.inputValue()).includes("B")` and `handlers[await menu.inputValue()]` each reach
+ * the `if` they stand in. `carrier` enumerates the stops by `SyntaxKind`, as `conditionKind`
+ * does the positions. The list is of stops and not of carriers, so a parent no one listed
+ * carries the value on rather than ending the climb unread.
  *
  * A name is bound to the answer where the climb reaches the initializer of a declaration
  * (`const`, `let`, `var` or `using`) of a plain name or of a pattern, every name in the pattern
@@ -106,11 +115,16 @@
  *   running: a later turn of a loop, a call of a function declared further down and a closure
  *   called later each read the name after a binding written below them;
  * - the name's value reaches the position as the answer written in the name's place would: the
- *   climb, run from the reference, ends at that position. So `if (shown)`, `if (!shown)`,
- *   `if (shown && open)`, `if (rows.length > 0)`, `for (const row of rows)`, `switch (label)`,
- *   `shown ?? (await menu.click())` and `shown ||= await menu.click()` read the name, and
- *   `if (Boolean(shown))`, `for (const row of rows.slice(1))` and `if (handlers[label])` do not,
- *   for the reasons WHAT IT DOES NOT SEE gives for an answer written there.
+ *   climb, run from a reference to the name, ends at that position. So `if (shown)`,
+ *   `if (!shown)`, `if (shown && open)`, `if (rows.length > 0)`, `for (const row of rows)`,
+ *   `switch (label)`, `shown ?? (await menu.click())`, `shown ||= await menu.click()`,
+ *   `if (text.includes("B"))`, `if (Boolean(shown))`, `if (label?.trim())`,
+ *   `for (const row of rows.slice(1))` and `if (handlers[label])` read the name. A reference is
+ *   an identifier that reads the name's value: a property's name (`obj.shown`'s `shown`), a
+ *   key, a declaration's own name, a label and a name written in a type are none. A second name
+ *   copied or computed from the first, `const ok = shown` or `const label = text.trim()`, is
+ *   another alias, which WHAT IT DOES NOT SEE names: the climb from `shown` stops at the
+ *   initializer of `ok`, and a position that reads only `ok` reads no answer.
  *
  * Such a probe's position is written `const shown -> ternary@42`: how the name is bound (`const`,
  * `let`, `var`, `using`, `param`, `default`, or the assignment's operator), the names read, and
@@ -138,31 +152,35 @@
  * `x.isVisible(...)`, a locator or another object, is asked for its reason rather than skipped. No
  * type checker is needed for that, so the scan parses files and builds no program.
  *
- * WHAT IT DOES NOT SEE. Three kinds of data flow, which a syntactic check cannot follow: each
- * needs to know what a function does with a value, or where a value is read again under another
- * name. A probe whose answer reaches a position only through one of them passes unread, and a
- * pass here is a claim about everything else:
+ * WHAT IT DOES NOT SEE. One class: a decision made where the check does not read. The check reads
+ * the expression an answer stands in, up to the first stop of the climb, and the positions of a
+ * bound name's scope; it does not know what a function does with a value, or where a value is
+ * read again under another name. A probe whose answer reaches a position only through one of the
+ * three kinds below passes unread, and a pass here is a claim about everything else. A call's
+ * RESULT that decides is no limit: `t.includes("B") ? a : b`, `if (Boolean(t))` and
+ * `if (t?.trim())` are refused in both forms, `t` the answer in place or a name bound to it.
  *
- * - an answer passed into a function or returned from one: a call's argument, as in
- *   `Boolean(await menu.isVisible())` or `expect(await rows.count())`; a method called on the
- *   answer, as in `(await rows.all()).map(...)`, whose callback runs once per element, or
- *   `(await rows.all()).slice(1)` walked by a `for...of`; a `new` or a tagged template it is
- *   handed to; a `return`, a `yield` or a `throw` that hands it out, or an arrow's expression
- *   body; and a getter that a property read on it runs. A name bound to the answer is read the
- *   same way, so `if (Boolean(shown))` and `for (const row of rows.slice(1))` read no `shown` and
- *   no `rows`. A function that returns a probe is a wrapper whose calls are probes (WHAT A PROBE
- *   IS), but a wrapper that returns the answer through a variable - `const shown = await
- *   menu.isVisible(); return shown;` - a wrapper that is a method, a `let` or a `var`, and one
- *   that returns another wrapper's call are not collected;
- * - an answer kept in an object property or an array element: `state.shown = await
- *   menu.isVisible()`, `{ shown: await menu.isVisible() }`, `[await rows.count()]`, a spread into
- *   an array, and an answer used as the key that picks or names one, as in `handlers[await
- *   menu.getAttribute("data-kind")]` or `{ [await menu.textContent()]: true }`;
- * - an answer read through another alias: a name copied into another name, `const ok = shown`; a
- *   name bound to a probe or a wrapper rather than to its answer, `const shows = menuShows` or
- *   `menu.isVisible.bind(menu)`; a method destructured off a locator, `const { isVisible } =
- *   menu`; a member written in brackets, `menu["isVisible"]()`, or any other computed one; and a
- *   name another file imports from the file that binds it.
+ * - inside a function the answer is passed into: the callee's own body branches on its argument
+ *   or on its `this`, as `await clickWhen(menu, await menu.isVisible())` written as a statement
+ *   does, or `expect(await rows.count()).toBe(3)`, which checks one instant's count and never
+ *   reads it again; a callback that `(await rows.all()).map(...)` or `.forEach(...)` runs once
+ *   per element, so the answer decides inside the method how many times it runs; and a getter
+ *   that a property read on the answer runs;
+ * - after the answer is returned, yielded or thrown from a function, or is an arrow's expression
+ *   body: the caller branches on what it gets. A function that returns a probe is a wrapper whose
+ *   calls are probes (WHAT A PROBE IS), but one that returns the answer through a variable -
+ *   `const shown = await menu.isVisible(); return shown;` - or a value computed from it, a
+ *   wrapper that is a method, a `let` or a `var`, and one that returns another wrapper's call are
+ *   not collected;
+ * - through an object property, an array element or another alias: a store into a property or
+ *   an element, `state.shown = await menu.isVisible()`, `answers[0] = await menu.isEnabled()`,
+ *   `{ shown: await menu.isVisible() }`, `[await rows.count()]` or a spread into an array, and a
+ *   key that names one, `{ [await menu.textContent()]: true }`; a name copied or computed from a
+ *   bound name, `const ok = shown` or `const label = text.trim()`; a name bound to a probe or a
+ *   wrapper rather than to its answer, `const shows = menuShows` or `menu.isVisible.bind(menu)`;
+ *   a method destructured off a locator, `const { isVisible } = menu`; a member written in
+ *   brackets, `menu["isVisible"]()`, or any other computed one; and a name another file imports
+ *   from the file that binds it.
  *
  * WHERE IT READS TOO MUCH. These refuse a probe that may decide nothing, and no probe passes
  * through them; a reason or a rename answers each:
@@ -172,6 +190,9 @@
  *   of another is read as that wrapper, a position that refers to an inner binding named like a
  *   name an answer is bound to is read as reading that name, and an assignment is read against
  *   the outermost function that declares its name;
+ * - a call whose result decides, which is read as deciding on its receiver and on every
+ *   argument, though the callee may read only some of them: in
+ *   `if (isReady(page, await rows.count()))` the count is refused where `isReady` never reads it;
  * - the order things run in, which the check does not read: every read in a name's scope counts,
  *   whatever runs first, so a read that runs before the answer exists is refused too, as in an
  *   `if` written above the binding that no loop and no call brings back to;
@@ -266,15 +287,6 @@ const logicalAssignments: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.AmpersandAmpersandEqualsToken,
   ts.SyntaxKind.BarBarEqualsToken,
   ts.SyntaxKind.QuestionQuestionEqualsToken,
-]);
-
-/** The prefix operators the climb goes through, whose value is computed from their operand's.
- *  `++` and `--` are not among them: their operand is a name or a property, never an answer. */
-const carriedPrefixes: ReadonlySet<ts.SyntaxKind> = new Set([
-  ts.SyntaxKind.ExclamationToken,
-  ts.SyntaxKind.MinusToken,
-  ts.SyntaxKind.PlusToken,
-  ts.SyntaxKind.TildeToken,
 ]);
 
 /** One file of the scan, parsed. */
@@ -625,47 +637,57 @@ function conditionKind(node: ts.Node): string | undefined {
   }
 }
 
-/** The parent of `node` the climb of WHAT DECIDES A PATH goes on to, by its `SyntaxKind`: one whose
- *  value is computed from `node`'s. Nothing where the value goes no further, a call `node` is
- *  passed to and a method called on it among them. */
+/** The parent of `node` the climb of WHAT DECIDES A PATH goes on to: every parent but the stops
+ *  below, enumerated by `SyntaxKind`, each a place where the value leaves what the check reads
+ *  (WHAT IT DOES NOT SEE), is thrown away, is bound to a name `bindingOf` reads, or leaves the
+ *  expression. So a call carries the value, the answer its receiver or an argument alike: a
+ *  decision on a call's result is read, and only one made inside the callee is not. */
 function carrier(node: ts.Node): ts.Node | undefined {
   const parent = node.parent;
   switch (parent.kind) {
-    case ts.SyntaxKind.AwaitExpression:
-    case ts.SyntaxKind.ParenthesizedExpression:
-    case ts.SyntaxKind.AsExpression:
-    case ts.SyntaxKind.SatisfiesExpression:
-    case ts.SyntaxKind.TypeAssertionExpression:
-    case ts.SyntaxKind.NonNullExpression:
-    case ts.SyntaxKind.TypeOfExpression:
-      return parent;
-    case ts.SyntaxKind.PrefixUnaryExpression:
-      return carriedPrefixes.has((parent as ts.PrefixUnaryExpression).operator)
-        ? parent
-        : undefined;
+    // The answer leaves the function: a decision on it is made by the caller.
+    case ts.SyntaxKind.ReturnStatement:
+    case ts.SyntaxKind.YieldExpression:
+    case ts.SyntaxKind.ThrowStatement:
+      return undefined;
+    // An element of an array literal, a spread among them, or a property of an object literal: a
+    // decision on it reads the element or the property. A shorthand's default in a pattern,
+    // `({ open = await menu.isChecked() } = options)`, is a binding `bindingOf` reads. A spread
+    // in a call's or a `new`'s arguments is no element, and carries.
+    case ts.SyntaxKind.ArrayLiteralExpression:
+    case ts.SyntaxKind.PropertyAssignment:
+    case ts.SyntaxKind.ShorthandPropertyAssignment:
+    case ts.SyntaxKind.SpreadAssignment:
+      return undefined;
+    // The value is thrown away.
+    case ts.SyntaxKind.VoidExpression:
+      return undefined;
     case ts.SyntaxKind.BinaryExpression: {
-      // The comma's value is its right operand's, and so is an assignment's: the left side of an
-      // assignment is where the value goes, not where it comes from.
+      // The comma throws its left operand's value away, and an assignment's left side is where
+      // the value goes, not a value read there.
       const binary = parent as ts.BinaryExpression;
       const operator = binary.operatorToken.kind;
-      const rightOnly = operator === ts.SyntaxKind.CommaToken || isAssignment(operator);
-      return !rightOnly || binary.right === node ? parent : undefined;
+      const leftDropped = operator === ts.SyntaxKind.CommaToken || isAssignment(operator);
+      return leftDropped && binary.left === node ? undefined : parent;
     }
-    case ts.SyntaxKind.ConditionalExpression: {
-      const conditional = parent as ts.ConditionalExpression;
-      return conditional.whenTrue === node || conditional.whenFalse === node ? parent : undefined;
-    }
-    case ts.SyntaxKind.TemplateSpan:
-      return parent.parent;
-    case ts.SyntaxKind.PropertyAccessExpression:
-    case ts.SyntaxKind.ElementAccessExpression: {
-      const access = parent as ts.PropertyAccessExpression | ts.ElementAccessExpression;
-      const above = access.parent;
-      const called = ts.isCallExpression(above) && above.expression === access;
-      return access.expression === node && !called ? parent : undefined;
-    }
-    default:
+    // An initializer, where `bindingOf` reads the name it binds.
+    case ts.SyntaxKind.VariableDeclaration:
+    case ts.SyntaxKind.Parameter:
+    case ts.SyntaxKind.BindingElement:
       return undefined;
+    // A class field's or an enum member's initializer, and the file: the climb is over
+    // expressions.
+    case ts.SyntaxKind.PropertyDeclaration:
+    case ts.SyntaxKind.EnumMember:
+    case ts.SyntaxKind.SourceFile:
+      return undefined;
+    default:
+      // A function or a class written in place: a decision in it is made inside a function the
+      // answer is passed into, or after it is returned. A statement, a declaration's among them:
+      // the climb is over expressions.
+      return isFunctionLike(parent) || ts.isClassLike(parent) || ts.isStatement(parent)
+        ? undefined
+        : parent;
   }
 }
 
@@ -725,14 +747,36 @@ function conditionsOf(sourceFile: ts.SourceFile): Condition[] {
   return conditions;
 }
 
+/** Whether `identifier` reads the value of the name it spells, by what it is: no reference is
+ *  its parent's `name`, `propertyName` or `label`, which is a property's name (`obj.shown`'s
+ *  `shown`, `{ shown: 1 }`'s key, `{ shown: s }`'s in a pattern), a declaration's own name or a
+ *  label. A shorthand property's name is one: `{ shown }` reads `shown`. */
+function isReference(identifier: ts.Identifier): boolean {
+  const parent = identifier.parent;
+  if (ts.isShorthandPropertyAssignment(parent)) return true;
+  const { name, propertyName, label } = parent as {
+    name?: ts.Node;
+    propertyName?: ts.Node;
+    label?: ts.Node;
+  };
+  return identifier !== name && identifier !== propertyName && identifier !== label;
+}
+
 /** Every reference to one of `names` under `position` whose value reaches it, in the order the
- *  file writes them: an identifier spelled so from which the climb ends at `position`, as it
- *  would from an answer written in its place. A property's name, an argument, the receiver of a
- *  method call and a key end the climb below `position`, and so do not count. */
+ *  file writes them: an identifier spelled so that `isReference` reads as one, from which the
+ *  climb ends at `position`, as it would from an answer written in its place. A name written in a
+ *  type is none, so the walk goes into no type: `x as shown` reads no `shown`. An instantiation
+ *  expression, `f<T>`, is a value, and only its type arguments are types. */
 function readsOf(position: ts.Node, names: readonly string[]): ts.Identifier[] {
   const found: ts.Identifier[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && names.includes(node.text) && climb(node).at(-1) === position) {
+    if (ts.isTypeNode(node) && !ts.isExpressionWithTypeArguments(node)) return;
+    if (
+      ts.isIdentifier(node) &&
+      names.includes(node.text) &&
+      isReference(node) &&
+      climb(node).at(-1) === position
+    ) {
       found.push(node);
     }
     ts.forEachChild(node, visit);

@@ -2265,23 +2265,35 @@ whatever its value goes on to (`(await menu.isVisible()) && (await menu.click())
 the target of an `&&=`, `||=` or `??=`; what a `?.` reads where the rest of the
 chain runs code; the source of a destructuring whose default runs code; and the
 first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail`.
-The guard reaches that place from the probe through whatever computes a value
-from the answer (`await`, parentheses, `as`, `!`, an operator, a template
-literal, `(await rows.all()).length`), and it refuses as well an answer bound to
-a name, by a declaration, a default, an assignment of any operator or a
-destructuring, that such a place reads anywhere in the name's scope: the
-function that binds it, or for an assignment the one that declares the name,
-and every function nested in it, above the binding or below it, since the
-guard reads no order of running.
+The guard reaches that place from the probe through every parent but a list of
+stops, enumerated by `SyntaxKind`: a function or a class written in place, a
+`return`, a `yield` or a `throw`, an element of an array literal or a property
+of an object literal, a comma's left operand, a `void`, an assignment's target,
+an initializer that binds a name, and a statement or a declaration.
+So `await`, parentheses, `as`, `!`, an operator, a template literal,
+`(await rows.all()).length`, a key, and a call, the answer its receiver or an
+argument alike, carry the answer on: `(await menu.inputValue()).includes("B")`
+and `Boolean(await menu.isVisible())` decide the `if` they stand in.
+It refuses as well an answer bound to a name, by a declaration, a default, an
+assignment of any operator or a destructuring, that such a place reads anywhere
+in the name's scope: the function that binds it, or for an assignment the one
+that declares the name, and every function nested in it, above the binding or
+below it, since the guard reads no order of running.
 A place reads the name where the name's value reaches it as an answer written
-there would: `if (shown)` and `if (rows.length > 0)` read it, and
-`if (Boolean(shown))` and `for (const row of rows.slice(1))` do not.
-It does not follow three kinds of data flow, which no syntactic check can: an
-answer passed into a function or returned from one (an argument, a method
-called on the answer such as `.map` or `.slice`, a `return`), an answer kept in
-an object property or an array element, and an answer read through another
-alias (a name copied into another name, a name bound to the probe rather than to
-its answer, a method destructured off a locator or written in brackets).
+there would: `if (shown)`, `if (rows.length > 0)`, `if (text.includes("B"))`,
+`if (Boolean(shown))` and `for (const row of rows.slice(1))` each read it.
+So a call whose result decides is refused in both forms, on the answer in place
+and on a name bound to it.
+What the guard does not see is one class, a decision made where it does not
+read: inside a function the answer is passed into (the callee's own body
+branching on its argument or its `this`, `expect(await rows.count()).toBe(3)`, a
+callback that `(await rows.all()).forEach(...)` runs once per element, a
+getter); after the answer is returned, yielded or thrown from a function; and
+through an object property, an array element or another alias (a store into a
+property or an element, a name copied or computed from a bound name such as
+`const ok = shown`, a name bound to the probe rather than to its answer, a
+method destructured off a locator or written in brackets, a name another file
+imports).
 A probe that is only the last operand of a statement's `&&` decides nothing.
 The reason is a comment of at least eight words that ends on the line directly
 above the probe, measured as `e2e/fixed-waits.ts` measures one, and says why one
@@ -2300,9 +2312,11 @@ of `expect(...).toPass` and a page-side callback (`evaluate`, `waitForFunction`,
 or at a moment the row did not pick.
 `e2e/__tests__/fixtures/zero-wait-probes.fixture.ts` holds its planted
 controls, `e2e/__tests__/fixtures/zero-wait-loops.fixture.ts`, which
-`e2e/__tests__/zero-wait-loops.test.ts` reads, its planted loops, and
+`e2e/__tests__/zero-wait-loops.test.ts` reads, its planted loops,
 `e2e/__tests__/fixtures/zero-wait-cases.fixture.ts`, which
-`e2e/__tests__/zero-wait-cases.test.ts` reads, its planted `case`.
+`e2e/__tests__/zero-wait-cases.test.ts` reads, its planted `case`, and
+`e2e/__tests__/fixtures/zero-wait-calls.fixture.ts`, which
+`e2e/__tests__/zero-wait-calls.test.ts` reads, its planted calls on an answer.
 A value read that is then checked by an `expect` that does not retry
 (`expect(await rows.count()).toBe(3)`) is the same defect: it reads one instant,
 and the check never reads again.

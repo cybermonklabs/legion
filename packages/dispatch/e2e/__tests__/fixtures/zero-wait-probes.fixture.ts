@@ -270,10 +270,10 @@ export async function plantedAssignedValues(menu: Locator): Promise<void> {
 }
 // biome-ignore-end lint/suspicious/noAssignInExpressions: the assignment's value is planted
 
-/** One probe per kind of data flow the scan does not follow, each a pass, in this order: an answer
- *  passed into a function that branches on it, a method called on the answer, an answer kept in a
- *  property and in an array element, a name copied into another name, an answer that `??` only
- *  replaces with a literal, and an answer returned. */
+/** One probe per kind of data flow the scan does not follow, each a pass but the second, in this
+ *  order: an answer passed into a function that branches on it, a method called on the answer,
+ *  refused because a loop walks its result, an answer kept in a property and in an array
+ *  element, a name copied into another name, an answer `??` only replaces, and one returned. */
 export async function plantedLimits(
   menu: Locator,
   rows: Locator,
@@ -321,9 +321,9 @@ export async function plantedReadsAnywhere(menu: Locator): Promise<void> {
 
 // biome-ignore-start lint/complexity/noExtraBooleanCast: a name passed into `Boolean` is planted
 /** One name per way a position reads a name bound to an answer, in this order: passed into
- *  `Boolean` and walked through a method called on it, which pass as the same answers written in
- *  place do; and the `.length` an `if` compares and the left of an `&&` an `if` reads, which are
- *  refused as the same answers written in place are. */
+ *  `Boolean`, walked through a method called on it, the `.length` an `if` compares and the left
+ *  of an `&&` an `if` reads. Each is refused as the same answer written in its place is: a call
+ *  on the answer whose result decides reads it as an operator on it does. */
 export async function plantedBoundReads(
   menu: Locator,
   rows: Locator,
@@ -340,12 +340,77 @@ export async function plantedBoundReads(
 }
 // biome-ignore-end lint/complexity/noExtraBooleanCast: a name passed into `Boolean` is planted
 
-/** A name bound to an answer that an `if` reads only as the key of an element access, which
- *  passes as the same answer used as a key in place does. */
+/** A name bound to an answer that an `if` reads only as the key of an element access, which is
+ *  refused as the same answer used as a key in place is. */
 export async function plantedBoundKey(
   menu: Locator,
   handlers: Record<string, boolean>
 ): Promise<void> {
   const label = await menu.inputValue();
   if (handlers[label]) await menu.click();
+}
+
+// biome-ignore-start lint/complexity/noExtraBooleanCast: an answer passed into `Boolean` is planted
+// biome-ignore-start lint/complexity/noUselessStringRaw: a tagged template on the answer is planted
+/** One call on a probe's answer whose result decides an `if`, per form a call takes, each written
+ *  twice and refused both times: on a name bound to the answer, then on the answer in place. In
+ *  this order: a method called on it, an optional call on it, `Boolean` of it, an argument of a
+ *  call, of a `new` and of a spread, a tagged template it is written into, and a key. */
+export async function plantedCallRefusals(
+  menu: Locator,
+  rows: Locator,
+  handlers: Record<string, boolean>
+): Promise<void> {
+  const value = await menu.inputValue();
+  if (value.includes("B")) await menu.click();
+  if ((await menu.inputValue()).includes("B")) await menu.click();
+  const text = await menu.textContent();
+  if (text?.includes("B")) await menu.click();
+  if ((await menu.textContent())?.includes("B")) await menu.click();
+  const shown = await menu.isVisible();
+  if (Boolean(shown)) await menu.click();
+  if (Boolean(await menu.isVisible())) await menu.click();
+  const entered = await menu.inputValue();
+  if (/B/.test(entered)) await menu.click();
+  if (/B/.test(await menu.inputValue())) await menu.click();
+  const texts = await rows.allTextContents();
+  if (new Set(texts).has("B")) await menu.click();
+  if (new Set(await rows.allTextContents()).has("B")) await menu.click();
+  const labels = await rows.allTextContents();
+  if ("".concat(...labels) === "B") await menu.click();
+  if ("".concat(...(await rows.allTextContents())) === "B") await menu.click();
+  const title = await menu.textContent();
+  if (String.raw`${title}` === "B") await menu.click();
+  if (String.raw`${await menu.textContent()}` === "B") await menu.click();
+  const kind = await menu.inputValue();
+  if (handlers[kind]) await menu.click();
+  if (handlers[await menu.inputValue()]) await menu.click();
+}
+// biome-ignore-end lint/complexity/noUselessStringRaw: a tagged template on the answer is planted
+// biome-ignore-end lint/complexity/noExtraBooleanCast: an answer passed into `Boolean` is planted
+
+/** One probe per decision made where the scan does not read, each a pass, in this order: an answer
+ *  passed into a function that branches on it, an answer handed to `expect`, a callback `forEach`
+ *  runs once per element, an answer stored into a property and into an element, a name copied
+ *  from a bound name and one computed from it, and a call's result returned. */
+export async function plantedCallPasses(
+  menu: Locator,
+  rows: Locator,
+  state: { shown: boolean }
+): Promise<boolean> {
+  await clickWhen(menu, await menu.isVisible());
+  expect(await rows.count()).toBe(3);
+  (await rows.all()).forEach((row) => void row.click());
+  state.shown = await menu.isChecked();
+  if (state.shown) await menu.uncheck();
+  const answers: boolean[] = [];
+  answers[0] = await menu.isEnabled();
+  if (answers[0]) await menu.click();
+  const seen = await menu.isHidden();
+  const ok = seen;
+  if (ok) await menu.hover();
+  const value = await menu.inputValue();
+  const trimmed = value.trim();
+  if (trimmed) await menu.fill(trimmed);
+  return Boolean(await menu.isEditable());
 }
