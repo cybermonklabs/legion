@@ -1,7 +1,8 @@
 kind: Fixed
 body: |-
   A listener whose start opens the jetstream handle of a KV bucket now sends that read again when
-  the NATS server leaves it unanswered, up to three sends, instead of failing with `open the
+  the NATS server leaves it unanswered, until it is answered or the start's wait ends, instead of
+  failing with `open the
   jetstream handle of KV bucket <name>: context deadline exceeded`. It holds for every start, the
   one that creates the bucket and the one that finds it already there, which is every restart of
   a deployment. Dispatch's webhook redelivery sweep opens its bucket the same way and sends that

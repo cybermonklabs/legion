@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // unansweredJetStream is a JetStream context that leaves a start's first stream reads and first
@@ -162,5 +163,52 @@ func TestAStreamReadTheServerNeverAnswersIsGivenUpOn(t *testing.T) {
 	}
 	if reads, _ := lost.sent(); reads < 2 {
 		t.Fatalf("stream reads sent = %d, want the read sent again while the start's wait lasted", reads)
+	}
+}
+
+// A start that finds its bucket reads the bucket's stream for its copies, and that read is sent
+// again when the server leaves it unanswered, as the lookup before it is: a member that is not
+// the stream's leader leaves it unanswered while that leader is gone (sentAgain). Sent once, it
+// ended the start with the bare deadline of one wait. The context here drops the first read of
+// the stream the start makes itself (nats.go's lookup reads it through its own request, which
+// this context does not see), on a bucket that already has the deployment's three copies.
+func TestAStartThatFindsItsBucketSendsTheStreamReadAgain(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	conn, js := memberJetStream(t, cluster, 0)
+	config := &nats.KeyValueConfig{Bucket: "envoy_found_read_test", Storage: nats.FileStorage, Replicas: 3}
+	if _, err := EnsureKeyValue(t.Context(), conn, js, config); err != nil {
+		t.Fatalf("create the three-copy bucket: %v", err)
+	}
+	lost := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1}
+	if _, err := EnsureKeyValue(t.Context(), conn, lost, config); err != nil {
+		t.Fatalf("a start whose first read of its bucket's stream drew no answer = %v, want it to go on", err)
+	}
+	if reads, _ := lost.sent(); reads < 2 {
+		t.Fatalf("stream reads sent = %d, want the lost one and the one sent again", reads)
+	}
+}
+
+// The session registry's start sets the bucket's maximum age right after it opens the bucket, and
+// fails if that call fails, so the call's read of the stream is sent again when the server leaves
+// it unanswered, as every read a start makes is.
+func TestTheMaxAgeReadTheServerLeavesUnansweredIsSentAgain(t *testing.T) {
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	const bucket = "envoy_max_age_unanswered"
+	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, TTL: time.Minute}); err != nil {
+		t.Fatalf("create the bucket: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+	lost := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1}
+	age, err := SetKeyValueMaxAge(t.Context(), lost, bucket, time.Hour)
+	if err != nil || age != time.Hour {
+		t.Fatalf("set the maximum age with the first read lost = %s, %v; want 1h0m0s and no error", age, err)
+	}
+	if reads, _ := lost.sent(); reads < 2 {
+		t.Fatalf("stream reads sent = %d, want the lost one and the one sent again", reads)
 	}
 }

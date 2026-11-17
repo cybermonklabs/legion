@@ -1,7 +1,8 @@
 kind: Fixed
 body: |-
   Opening a KV bucket now sends its stream lookup and its create again when the NATS server leaves
-  either unanswered, up to three sends, instead of ending the caller with `open <bucket> KV bucket:
+  either unanswered, until it is answered or the start's wait ends, instead of ending the caller
+  with `open <bucket> KV bucket:
   context deadline exceeded`. nats.go sends each JetStream request once, and a member of a cluster
   whose metadata group is younger than ten seconds, or that has not yet seen its leader go, answers
   none of the requests a bucket open makes: the lookup's `STREAM.INFO`, the account `INFO` nats.go

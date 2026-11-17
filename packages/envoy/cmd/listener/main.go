@@ -1177,10 +1177,16 @@ func main() {
 		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
 		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
-	// The opens below wait on the cluster until it answers them: a bucket's create, a raise's
-	// copies, a member applying a create (bus.EnsureKeyValue), each bounded by the start's hang
-	// guard alone. Until the ordered shutdown below (stopping), a signal ends this start at once, so
-	// starting, the context they run under, is one that never ends.
+	// starting is the context the bucket opens below run under, and it is context.Background() on
+	// purpose: do not replace it with a context a signal ends. The opens wait on the cluster until
+	// it answers them (a bucket's create, a raise's copies, a member applying a create, a stream's
+	// leader: bus.EnsureKeyValue), and what bounds each of them is the start's hang guard, 36 s per
+	// bus.EnsureKeyValue call (bus's startHangGuard, three times the slowest election measured under
+	// load), after which the start fails naming the wait. A signal needs no context here: this
+	// process installs no handler for SIGTERM or SIGINT until signal.NotifyContext makes stopping
+	// below, so until then the signal's default action ends the process at once, wherever the
+	// start is. Making stopping here instead would change that for the whole start, the NATS
+	// connect and the cache warm-ups included, into an ordered shutdown of a start not yet serving.
 	starting := context.Background()
 	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
