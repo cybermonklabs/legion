@@ -2719,8 +2719,8 @@ runtime:
     namespace: legion
     image: ghcr.io/cybermonklabs/legion-worker@sha256:<64 hex>   # digest only
     storage_class: gp2          # required: the issue volumes' class (the cluster has no default)
-    issue_volume: 50Gi          # default 50Gi; one volume per issue, and one for the controller's pod
-    kubeconfig: /home/ubuntu/.kube/legion-daemon-production   # relative to legion.yaml's directory
+    issue_volume: 50Gi          # default 50Gi; one volume per issue, and one for the controller's pod  # legion-daemon-production
+    kubeconfig: /home/ubuntu/.kube/legion-daemon-config   # relative to legion.yaml's directory
     context: legion-daemon@example   # required when the kubeconfig sets no current context
     scheduling:                 # optional, beyond the Legion pool the runtime always selects
       node_selector: {}         # merged over legion.dev/pool=legion, which it may not name
