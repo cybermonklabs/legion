@@ -210,8 +210,8 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 // A send in flight left the queue when it started, so a send that waits for an earlier event and
 // comes back to a queue others have filled meanwhile would push it past its capacity. It is
 // refused instead, as a send past the bound is: its claim is given back, the delivery sweep sends
-// it later, and the queue never holds more than its capacity - here one, the send queued behind
-// it, which then goes.
+// it later, and the queue never holds more than its capacity - here one, another issue's mention
+// of the same session queued behind it, which then goes.
 func TestASendThatWaitsAndFindsTheQueueFullGivesItsClaimBack(t *testing.T) {
 	lifetime, stop := context.WithCancel(context.Background())
 	started, release := make(chan struct{}), make(chan struct{})
