@@ -1,6 +1,6 @@
 import {
   dispatchDocumentSubject,
-  dispatchIssueSubject,
+  legacyDispatchIssueSubject,
   type OpenAskOwner,
   parseBlockFragment,
 } from "@legion/contracts";
@@ -32,7 +32,7 @@ export function ownerTitle(owner: OpenAskOwner): string {
 }
 
 export function issueTopic(key: string): OwnerTopic {
-  return { label: key, topic: dispatchIssueSubject(key, ">") };
+  return { label: key, topic: legacyDispatchIssueSubject(key, ">") };
 }
 
 export function documentTopicOf(project: string, slug: string): OwnerTopic {

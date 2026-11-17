@@ -127,23 +127,23 @@ func TestAPersonsCommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 	t.Run("a person's comment on a passage of an issue's document reaches the session that wrote it", func(t *testing.T) {
 		id := comment(t, "/api/v1/issues/"+issue.Key+"/comments",
 			map[string]any{"body": "Why Friday?", "anchor": passage(issueDocument, "on Friday")}, "alice")
-		expect(t, id, true, contracts.AgentSubject("session-writer"))
+		expect(t, id, true, contracts.LegacyAgentSubject("session-writer"))
 	})
 	t.Run("a person's comment on a project document reaches each session that wrote it once", func(t *testing.T) {
 		id := comment(t, "/api/v1/artifacts/"+projectDocument+"/comments",
 			map[string]any{"body": "Which review?", "anchor": passage(projectDocument, "after the review")}, "alice")
-		expect(t, id, true, contracts.AgentSubject("session-writer"), contracts.AgentSubject("session-editor"))
+		expect(t, id, true, contracts.LegacyAgentSubject("session-writer"), contracts.LegacyAgentSubject("session-editor"))
 	})
 	t.Run("a person's suggestion on a project document reaches each session that wrote it", func(t *testing.T) {
 		id := comment(t, "/api/v1/artifacts/"+projectDocument+"/comments", map[string]any{
 			"body": "Name the day.", "anchor": passage(projectDocument, "on Friday"),
 			"suggestion": map[string]any{"replace_with": "on Thursday"},
 		}, "alice")
-		expect(t, id, true, contracts.AgentSubject("session-writer"), contracts.AgentSubject("session-editor"))
+		expect(t, id, true, contracts.LegacyAgentSubject("session-writer"), contracts.LegacyAgentSubject("session-editor"))
 	})
 	t.Run("a person's comment on a whole project document reaches each session that wrote it", func(t *testing.T) {
 		id := comment(t, "/api/v1/artifacts/"+projectDocument+"/comments", map[string]any{"body": "Looks right."}, "alice")
-		expect(t, id, true, contracts.AgentSubject("session-writer"), contracts.AgentSubject("session-editor"))
+		expect(t, id, true, contracts.LegacyAgentSubject("session-writer"), contracts.LegacyAgentSubject("session-editor"))
 	})
 	t.Run("a document only people wrote reaches no session", func(t *testing.T) {
 		id := comment(t, "/api/v1/artifacts/"+humanDocument+"/comments",
@@ -164,8 +164,8 @@ func TestAPersonsCommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 		expect(t, root, false)
 		reply := comment(t, "/api/v1/artifacts/"+projectDocument+"/comments",
 			map[string]any{"body": "Yes, Friday.", "reply_to": root}, "alice")
-		expect(t, reply, true, contracts.AgentSubject("session-reviewer"),
-			contracts.AgentSubject("session-writer"), contracts.AgentSubject("session-editor"))
+		expect(t, reply, true, contracts.LegacyAgentSubject("session-reviewer"),
+			contracts.LegacyAgentSubject("session-writer"), contracts.LegacyAgentSubject("session-editor"))
 	})
 	t.Run("an author the comment mentions hears it once, from the mention", func(t *testing.T) {
 		id := comment(t, "/api/v1/artifacts/"+projectDocument+"/comments", map[string]any{
@@ -173,7 +173,7 @@ func TestAPersonsCommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 			"mentions": []map[string]any{{"target": "session:session-writer"}},
 		}, "alice")
 		settledCommentDeliveries(t, database, id)
-		expect(t, id, true, contracts.AgentSubject("session-editor"))
+		expect(t, id, true, contracts.LegacyAgentSubject("session-editor"))
 		sendsMu.Lock()
 		defer sendsMu.Unlock()
 		if sends["session-writer"] != 1 || sends["session-editor"] != 0 {
@@ -189,7 +189,7 @@ func TestAPersonsCommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 			"mentions": []map[string]any{{"target": "session:session-editor"}},
 		}, "alice")
 		settledCommentDeliveries(t, database, reply)
-		expect(t, reply, true, contracts.AgentSubject("session-reviewer"), contracts.AgentSubject("session-writer"))
+		expect(t, reply, true, contracts.LegacyAgentSubject("session-reviewer"), contracts.LegacyAgentSubject("session-writer"))
 		sendsMu.Lock()
 		defer sendsMu.Unlock()
 		if sends["session-editor"] != 1 {

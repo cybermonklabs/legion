@@ -61,6 +61,20 @@ func TestReduceFilterSubjects(t *testing.T) {
 			want:     []string{"a.>"},
 		},
 		{
+			// A digit sorts before `>`, so a subject can sort before the subject that contains it
+			// (`a.1` before `a.>`), and the first subject of a pair is then the one dropped. The
+			// subject after it takes its place, and must still be weighed against every subject
+			// after it: `a.2.*` contains `a.2.x`, which lies between them.
+			name:     "a subject dropped for a later one that contains it leaves the next weighed against every later subject",
+			subjects: []string{"a.>", "a.2.x", "a.1", "a.2.*"},
+			want:     []string{"a.>"},
+		},
+		{
+			name:     "every subject a wildcard before them contains is dropped, one after another",
+			subjects: []string{"a.d", "a.*", "a.c", "a.b"},
+			want:     []string{"a.*"},
+		},
+		{
 			name:     "subjects that do not overlap stay, sorted",
 			subjects: []string{"notifications.github.o.r.>", "notifications.agent.ses_a", "notifications.dispatch.issue.K-1.>"},
 			want:     []string{"notifications.agent.ses_a", "notifications.dispatch.issue.K-1.>", "notifications.github.o.r.>"},
@@ -182,7 +196,7 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 	_, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	start, err := consumers.Ensure(ctx, "ses_settings", []string{
-		contracts.AgentSubject("ses_settings"), "notifications.github.o.r.>", "notifications.github.o.r.pull.*",
+		contracts.LegacyAgentSubject("ses_settings"), "notifications.github.o.r.>", "notifications.github.o.r.pull.*",
 	}, 0)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -221,13 +235,13 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 	if config.Replicas != 0 {
 		t.Errorf("replicas = %d, want 0 (the stream's)", config.Replicas)
 	}
-	if want := []string{contracts.AgentSubject("ses_settings"), "notifications.github.o.r.>"}; !slices.Equal(config.FilterSubjects, want) {
+	if want := []string{"notifications.agent.*.ses_settings", contracts.LegacyAgentSubject("ses_settings"), "notifications.github.o.r.>"}; !slices.Equal(config.FilterSubjects, want) {
 		t.Errorf("filters = %q, want %q", config.FilterSubjects, want)
 	}
 
 	// The same settings again create nothing and change nothing, and report the start the
 	// consumer already has, which its session's entry records (SessionConsumerStart).
-	again, err := consumers.Ensure(ctx, "ses_settings", []string{contracts.AgentSubject("ses_settings"), "notifications.github.o.r.>"}, 0)
+	again, err := consumers.Ensure(ctx, "ses_settings", []string{contracts.LegacyAgentSubject("ses_settings"), "notifications.github.o.r.>"}, 0)
 	if err != nil || again != (SessionConsumerStart{StartSeq: config.OptStartSeq}) {
 		t.Fatalf("Ensure of a consumer as it stands = %+v, %v; want nothing done and its start %d", again, err, config.OptStartSeq)
 	}
@@ -251,7 +265,7 @@ func TestRestartAtFloorNeverDeliversWhatTheStreamHeldBeforeTheConsumer(t *testin
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_fresh"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent, "notifications.dispatch.issue.K-1.>"}
 	publishStored(t, owner, "notifications.dispatch.issue.K-1.comment", "before 1")
 	publishStored(t, owner, "notifications.github.o.r.push", "unfiltered")
@@ -320,7 +334,7 @@ func TestRestartAtFloorRedeliversTheUnackedInStreamOrder(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_restart"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent, "notifications.github.o.r.>"}
 	if _, err := consumers.Ensure(ctx, session, filters, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -379,7 +393,7 @@ func TestRestartAtFloorWithNothingAwaitingAnAckKeepsTheConsumer(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_kept"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -417,8 +431,14 @@ func TestRestartAtFloorWithNothingAwaitingAnAckKeepsTheConsumer(t *testing.T) {
 	if !after.Created.Equal(before.Created) {
 		t.Fatalf("the consumer was created again at %s, want the one created at %s kept", after.Created, before.Created)
 	}
-	if got := slices.Sorted(slices.Values(after.Config.FilterSubjects)); !slices.Equal(got, ReduceFilterSubjects(followed)) {
-		t.Fatalf("the kept consumer filters on %v, want %v", got, ReduceFilterSubjects(followed))
+	// The filters every form of the followed topics reduces to (sessionConsumerTarget): the
+	// session's own agent subject in the old form and under any project, and the GitHub topic.
+	_, want, err := sessionConsumerTarget(session, followed)
+	if err != nil {
+		t.Fatalf("target: %v", err)
+	}
+	if got := slices.Sorted(slices.Values(after.Config.FilterSubjects)); !slices.Equal(got, want) {
+		t.Fatalf("the kept consumer filters on %v, want %v", got, want)
 	}
 
 	nextOne := publishStored(t, owner, "notifications.github.o.r.push", "next")
@@ -436,7 +456,7 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_recreated"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -506,7 +526,7 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 	consumers.ackWait = time.Second
 	ctx := context.Background()
 	const session = "ses_ack_wait_passed"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 	// A message the consumer does not filter is stored first, so the consumer starts at 2 and the
 	// floor below the unanswered message is a sequence of its own, not the 0 of an empty stream.
@@ -628,7 +648,7 @@ func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_gap"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -647,14 +667,14 @@ func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
 		t.Fatalf("RestartAtFloor below the stream's first sequence = %+v, want it kept at %d with a gap", start, gone[0])
 	}
 
-	seeded, err := consumers.Ensure(ctx, "ses_seeded", []string{contracts.AgentSubject("ses_seeded")}, gone[0])
+	seeded, err := consumers.Ensure(ctx, "ses_seeded", []string{contracts.LegacyAgentSubject("ses_seeded")}, gone[0])
 	if err != nil {
 		t.Fatalf("ensure seeded: %v", err)
 	}
 	if seeded != (SessionConsumerStart{Created: true, StartSeq: gone[0], Gap: true, StreamID: streamIDOf(t, consumers)}) {
 		t.Fatalf("Ensure seeded below the stream's first sequence = %+v, want created at %d with a gap", seeded, gone[0])
 	}
-	held, err := consumers.Ensure(ctx, "ses_held", []string{contracts.AgentSubject("ses_held")}, last+1)
+	held, err := consumers.Ensure(ctx, "ses_held", []string{contracts.LegacyAgentSubject("ses_held")}, last+1)
 	if err != nil {
 		t.Fatalf("ensure held: %v", err)
 	}
@@ -673,10 +693,10 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 	seqs := make([]uint64, sessions)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("ses_burst_gap_%02d", i)
-		if _, err := consumers.Ensure(ctx, ids[i], []string{contracts.AgentSubject(ids[i])}, 0); err != nil {
+		if _, err := consumers.Ensure(ctx, ids[i], []string{contracts.LegacyAgentSubject(ids[i])}, 0); err != nil {
 			t.Fatalf("ensure %s: %v", ids[i], err)
 		}
-		seqs[i] = publishStored(t, owner, contracts.AgentSubject(ids[i]), "aged out or not")
+		seqs[i] = publishStored(t, owner, contracts.LegacyAgentSubject(ids[i]), "aged out or not")
 	}
 	for _, seq := range seqs[:gone] {
 		if err := owner.JS().DeleteMsg(Stream, seq); err != nil {
@@ -689,7 +709,7 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range ids {
 		wg.Go(func() {
-			starts[i], errs[i] = consumers.RestartAtFloor(ctx, ids[i], []string{contracts.AgentSubject(ids[i])})
+			starts[i], errs[i] = consumers.RestartAtFloor(ctx, ids[i], []string{contracts.LegacyAgentSubject(ids[i])})
 		})
 	}
 	wg.Wait()
@@ -708,7 +728,7 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_pull_requests"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -761,7 +781,7 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 func TestOverlappingFiltersAreReducedAndAMatchIsDeliveredOnce(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
-	disjoint := []string{contracts.AgentSubject("ses_filters"), "notifications.github.o.r.>"}
+	disjoint := []string{contracts.LegacyAgentSubject("ses_filters"), "notifications.github.o.r.>"}
 	if _, err := consumers.create(ctx, "ses_disjoint", "s-ses_disjoint", disjoint, 0, true); err != nil {
 		t.Fatalf("create with filters that do not overlap: %v", err)
 	}
@@ -796,7 +816,7 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_follow"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -821,8 +841,8 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("info: %v", err)
 	}
-	if !slices.Equal(info.Config.FilterSubjects, []string{agent}) {
-		t.Fatalf("filters after UpdateFilter = %q, want only %s", info.Config.FilterSubjects, agent)
+	if want := []string{"notifications.agent.*." + session, agent}; !slices.Equal(info.Config.FilterSubjects, want) {
+		t.Fatalf("filters after UpdateFilter = %q, want only %s in both forms", info.Config.FilterSubjects, agent)
 	}
 	if err := consumers.UpdateFilter(ctx, "ses_missing", []string{agent}); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("UpdateFilter of a missing consumer = %v, want ErrSessionConsumerNotFound", err)
@@ -836,7 +856,7 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 	consumers.ackWait = 2 * time.Second
 	ctx := context.Background()
 	const session = "ses_progress"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -863,7 +883,7 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_nak"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -886,7 +906,7 @@ func TestAConsumerCreatedAgainAtTheRecordedFloorHandsBackNothingTheSessionAcked(
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_acked_everything"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 	if _, err := consumers.Ensure(ctx, session, filters, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -963,7 +983,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_released"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -1026,7 +1046,7 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_closed"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -1080,7 +1100,7 @@ func TestSessionsWithoutAConsumer(t *testing.T) {
 	if _, err := consumers.Info(ctx, "ses_absent"); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("info of a session with no consumer = %v, want ErrSessionConsumerNotFound", err)
 	}
-	if _, err := consumers.RestartAtFloor(ctx, "ses_absent", []string{contracts.AgentSubject("ses_absent")}); !errors.Is(err, ErrSessionConsumerNotFound) {
+	if _, err := consumers.RestartAtFloor(ctx, "ses_absent", []string{contracts.LegacyAgentSubject("ses_absent")}); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("RestartAtFloor of a missing consumer = %v, want ErrSessionConsumerNotFound", err)
 	}
 	// A pull reads nothing before it starts: its first Next reports the consumer missing.
@@ -1131,7 +1151,7 @@ func TestEnsureWithoutTheCreateGrantIsErrConsumerNotGranted(t *testing.T) {
 	t.Cleanup(consumers.Close)
 
 	started := time.Now()
-	_, err = consumers.Ensure(context.Background(), "ses_ungranted", []string{contracts.AgentSubject("ses_ungranted")}, 0)
+	_, err = consumers.Ensure(context.Background(), "ses_ungranted", []string{contracts.LegacyAgentSubject("ses_ungranted")}, 0)
 	if !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("Ensure without the create grant = %v, want ErrConsumerNotGranted", err)
 	}
@@ -1162,15 +1182,15 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 		turns <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-turns }()
-			if _, err := consumers.Ensure(ctx, ids[i], []string{contracts.AgentSubject(ids[i])}, 0); err != nil {
+			if _, err := consumers.Ensure(ctx, ids[i], []string{contracts.LegacyAgentSubject(ids[i])}, 0); err != nil {
 				t.Errorf("ensure %s: %v", ids[i], err)
 			}
 		})
 	}
 	wg.Wait()
 	kept, held := ids[0], ids[1]
-	written := publishStored(t, owner, contracts.AgentSubject(kept), "written")
-	unacked := publishStored(t, owner, contracts.AgentSubject(held), "unacked")
+	written := publishStored(t, owner, contracts.LegacyAgentSubject(kept), "written")
+	unacked := publishStored(t, owner, contracts.LegacyAgentSubject(held), "unacked")
 	pull := pullSession(t, consumers, kept)
 	if msg := next(t, pull); msg.StreamSeq != written {
 		t.Fatalf("pulled %d, want %d", msg.StreamSeq, written)
@@ -1194,14 +1214,14 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 			t.Fatalf("the list holds no consumer for %s (%d listed)", id, len(listed))
 		}
 	}
-	start, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.AgentSubject(kept)}, listed[kept])
+	start, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.LegacyAgentSubject(kept)}, listed[kept])
 	if want := (SessionConsumerStart{StartSeq: written + 1, StreamID: streamIDOf(t, consumers)}); err != nil || !ok || start != want {
 		t.Fatalf("KeepListed of an acked consumer = %+v, %t, %v; want %+v kept", start, ok, err, want)
 	}
-	if _, ok, err := consumers.KeepListed(ctx, held, []string{contracts.AgentSubject(held)}, listed[held]); err != nil || ok {
+	if _, ok, err := consumers.KeepListed(ctx, held, []string{contracts.LegacyAgentSubject(held)}, listed[held]); err != nil || ok {
 		t.Fatalf("KeepListed of a consumer with a message awaiting an ack = %t, %v; want it left to RestartAtFloor", ok, err)
 	}
-	if _, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.AgentSubject(kept), "notifications.github.o.r.>"}, listed[kept]); err != nil || ok {
+	if _, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.LegacyAgentSubject(kept), "notifications.github.o.r.>"}, listed[kept]); err != nil || ok {
 		t.Fatalf("KeepListed with a new filter = %t, %v; want it left to RestartAtFloor", ok, err)
 	}
 }
@@ -1214,7 +1234,7 @@ func TestDeleteRemovesTheConsumerAndIsNoErrorWithoutOne(t *testing.T) {
 	_, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_deleted"
-	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
+	if _, err := consumers.Ensure(ctx, session, []string{contracts.LegacyAgentSubject(session)}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if _, err := consumers.Delete(ctx, session, nil); err != nil {
@@ -1241,7 +1261,7 @@ func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_delete_pending"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -1289,7 +1309,7 @@ func TestTheServerRemovesAConsumerIdlePastTheInactiveThreshold(t *testing.T) {
 	consumers.inactiveThreshold = 2 * time.Second
 	ctx := context.Background()
 	const session = "ses_idle"
-	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
+	if _, err := consumers.Ensure(ctx, session, []string{contracts.LegacyAgentSubject(session)}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	info, err := consumers.Info(ctx, session)
@@ -1317,7 +1337,7 @@ func TestAConsumerCreatedAgainStartsAtTheRecordedResumeFloor(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_resume"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -1363,7 +1383,7 @@ func TestAResumeRecordOfAnotherStreamIsIgnored(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_other_stream"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	// Floor 7 is no sequence this fixture's start could be by accident: a trusted record would
 	// start the consumer at 8, while the agent-subject start is the second sequence the stream
 	// holds. With a floor of 1 the two were the same number, so the case passed whether the
@@ -1386,13 +1406,13 @@ func TestAResumeRecordOfAnotherStreamWithNothingStoredStartsAtTheStreamsEnd(t *t
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_other_stream_empty"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	record, err := json.Marshal(SessionResumeRecord{Floor: 1, StreamID: "a stream this is not"})
 	if err != nil {
 		t.Fatalf("marshal the resume record: %v", err)
 	}
 	publishStored(t, owner, SessionResumeSubject(session), string(record))
-	last := publishStored(t, owner, contracts.AgentSubject("ses_another_session"), "another session's message")
+	last := publishStored(t, owner, contracts.LegacyAgentSubject("ses_another_session"), "another session's message")
 	start, err := consumers.Ensure(ctx, session, []string{agent}, 0)
 	if err != nil || !start.Created || start.StartSeq != last+1 {
 		t.Fatalf("Ensure with a resume record of another stream and nothing stored = %+v, %v; want the consumer created at %d, the stream's end", start, err, last+1)
@@ -1440,7 +1460,7 @@ func TestADeleteFromListedInfoRecordsAndAnswersThatInfosFloor(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_delete_listed"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -1488,7 +1508,7 @@ func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_delete_missing"
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -1641,7 +1661,7 @@ func TestAConsumerCarriesTheInactiveThresholdItsHandleWasOpenedWith(t *testing.T
 			}
 			t.Cleanup(consumers.Close)
 			ctx := context.Background()
-			if _, err := consumers.Ensure(ctx, tc.session, []string{contracts.AgentSubject(tc.session)}, 0); err != nil {
+			if _, err := consumers.Ensure(ctx, tc.session, []string{contracts.LegacyAgentSubject(tc.session)}, 0); err != nil {
 				t.Fatalf("ensure: %v", err)
 			}
 			info, err := consumers.Info(ctx, tc.session)

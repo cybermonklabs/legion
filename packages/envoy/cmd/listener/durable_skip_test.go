@@ -40,7 +40,7 @@ func TestSubjectIndexAcksADurableMessageNoSessionNeedsBeforeDecodingIt(t *testin
 	if err := harness.sessions.Put("ses_relayed", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Delivery: session.DeliveryConsumer, Epoch: "e"}); err != nil {
 		t.Fatalf("register the relayed session: %v", err)
 	}
-	if _, err := harness.registry.Upsert(store.Interest{SessionID: "ses_elsewhere", MachineID: "other-machine"}, []string{contracts.AgentSubject("ses_elsewhere")}); err != nil {
+	if _, err := harness.registry.Upsert(store.Interest{SessionID: "ses_elsewhere", MachineID: "other-machine"}, []string{contracts.LegacyAgentSubject("ses_elsewhere")}); err != nil {
 		t.Fatalf("register another listener's session: %v", err)
 	}
 	decoded := func() int { return strings.Count(harness.logs.String(), "listener decode failed") }
@@ -49,7 +49,7 @@ func TestSubjectIndexAcksADurableMessageNoSessionNeedsBeforeDecodingIt(t *testin
 	for _, subject := range []string{
 		"notifications.dispatch.issue.OTHER-1.comment",
 		"notifications.dispatch.issue.SELF-1.comment",
-		contracts.AgentSubject("ses_elsewhere"),
+		contracts.LegacyAgentSubject("ses_elsewhere"),
 	} {
 		harness.handler(&natsgo.Msg{Subject: subject, Data: undecodable})
 		if decoded() != 0 {
@@ -62,7 +62,7 @@ func TestSubjectIndexAcksADurableMessageNoSessionNeedsBeforeDecodingIt(t *testin
 
 	for want, subject := range []string{
 		"notifications.dispatch.issue.FOLLOWED-1.comment",
-		contracts.AgentSubject("ses_absent"),
+		contracts.LegacyAgentSubject("ses_absent"),
 	} {
 		harness.handler(&natsgo.Msg{Subject: subject, Data: undecodable})
 		if decoded() != want+1 {

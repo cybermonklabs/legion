@@ -154,11 +154,16 @@ func rolesOfTopics(topics []string) []string {
 }
 
 // roleOfTopic is the role whose lane topic (contracts.RoleTopicPrefix) topic is, and false for a
-// topic that is not a role lane's. A lane topic whose role is empty, or holds a subscription
-// wildcard (* or >), names no one role and answers false too. It is the one reading of a topic's
-// role, so a release of named topics (releaseRoleClaims) and a record's roles (rolesOfTopics)
-// read a topic the same way.
+// topic that is not a role lane's. The lane is read in either form: the new form names a project
+// before the role (contracts.RoleSubject), and its old form (contracts.LegacyTwin) is the role's
+// lane as a record of the old form holds it. A lane topic whose role is empty, or holds a
+// subscription wildcard (* or >), names no one role and answers false too. It is the one reading
+// of a topic's role, so a release of named topics (releaseRoleClaims) and a record's roles
+// (rolesOfTopics) read a topic the same way.
 func roleOfTopic(topic string) (string, bool) {
+	if twin, ok := contracts.LegacyTwin(topic); ok {
+		topic = twin
+	}
 	role, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
 	if !ok || role == "" || strings.ContainsAny(role, "*>") {
 		return "", false

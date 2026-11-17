@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { CaseRow } from "./build-corpus";
 import { CorpusError, listOf, numberOf, recordOf, stringOf } from "./corpus-io";
 import type { DispatchEvent } from "./dispatch-read";
-import { pickedRoot, RESERVE_TREE_CUT } from "./reserve";
+import { askTimeOf, pickedRoot, RESERVE_LIST_CUT, RESERVE_TREE_CUT } from "./reserve";
 
 /**
  * The issue trees the claim's draw groups by, under item 6 of the reserve's version 2
@@ -187,13 +187,32 @@ export class TreeLog {
     }
     return ordered;
   }
+
+  /**
+   * Version 3's list of the reserve, from what this walk has read: every issue of each group that
+   * holds an ask, except the groups version 2 holds whole, in which every ask opened at or after
+   * version 2's cut on a root its rule picks (`askRoots`, each ask's root at its first opening).
+   * The keys come sorted, so the same walk gives the same list and the same sha256.
+   */
+  reserveListOf(askRoots: ReadonlyMap<string, string | null>): string[] {
+    const cut = Date.parse(RESERVE_TREE_CUT);
+    const keys: string[] = [];
+    for (const group of this.groupsOf([...this.asks.values()].map((ask) => ask.issueKey))) {
+      const heldWhole = group.asks.every((ask) => {
+        const root = askRoots.get(ask.askId);
+        return Date.parse(ask.openedAt) >= cut && typeof root === "string" && pickedRoot(root);
+      });
+      if (!heldWhole) keys.push(...group.issues);
+    }
+    return keys.sort();
+  }
 }
 
 /** Why a group may or may not give the final test its cases (item 6). */
 export type TreeOutcome =
   /** (a) An ask of anyone opened in it before the cut: it gives no case to any slice. */
   | "ask-before-cut"
-  /** (b) A case the code does not hold, or whose root at its ask's opening the rule does not pick. */
+  /** (b) A case the code does not hold, or whose ask's root at its opening its time's rule did not hold. */
   | "not-held-at-opening"
   /** (c) One of its asks is in a scorer's record of what it read. */
   | "read-by-scorer"
@@ -224,8 +243,10 @@ export interface TreeChecks {
 /**
  * Item 6's outcome for one group, given every case of the corpus in it: (a) before (b), (b)
  * before (c), (c) before (d), so a group carries the first rule it fails. Under (b) a case is
- * taken only when the reserve holds it and the rule picks the root its ask had at its first
- * opening, so a tree that joined a picked tree after its answers were known gives none.
+ * taken only when the reserve holds it and its ask's root at its first opening is one the rule
+ * of its time held: version 2's hash picks it, for an ask before version 3's cut, or it is not in
+ * version 3's list, for an ask from that cut. So a tree that joined a held tree after its answers
+ * were known gives none.
  */
 export function treeOutcomeOf(
   group: TreeGroup,
@@ -236,11 +257,12 @@ export function treeOutcomeOf(
   const cutTime = Date.parse(cut);
   if (group.asks.some((ask) => !(Date.parse(ask.openedAt) >= cutTime))) return "ask-before-cut";
   const opened = new Set(group.asks.map((ask) => ask.askId));
+  const listCutTime = Date.parse(RESERVE_LIST_CUT);
   const allHeldAtOpening = cases.every(
     (row) =>
       checks.holds(row) &&
       typeof row.askTreeRoot === "string" &&
-      pickedRoot(row.askTreeRoot) &&
+      (askTimeOf(row) >= listCutTime ? row.askRootListed === false : pickedRoot(row.askTreeRoot)) &&
       opened.has(row.askId)
   );
   if (cases.length === 0 || !allHeldAtOpening) return "not-held-at-opening";
