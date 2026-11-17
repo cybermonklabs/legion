@@ -56,8 +56,9 @@ test("every probe of the suite that decides a path reads a settled state or says
 // Every shape the rule refuses, each read at its line: an `if`, a `const` read later in a
 // ternary, `test.skip`, a `for` loop's bound, a wrapper called in an `if`, an `if` under a
 // comment too short to be a reason, the two `if`s whose only branch throws, the branches that are
-// no `if`, and then one probe per position of the grammar, per binding, per later read and per
-// step of the climb, which the rows below read one group at a time. Nothing else of the fixture is
+// no `if`, and then one probe per position of the grammar, per binding, per read of a name
+// written above or beside its binding, per step of the climb and per way a name's value reaches
+// a position, which the rows below read one group at a time. Nothing else of the fixture is
 // refused, so none of the shapes planted to pass is.
 test("each planted refusal is refused at its line, for what its answer decides", () => {
   expect(
@@ -100,9 +101,9 @@ test("each planted refusal is refused at its line, for what its answer decides",
     [184, "isEnabled", "let enabled -> if@185"],
     [187, "isChecked", "= checked -> if@188"],
     [190, "count", "+= total -> if@191"],
-    [193, "isEditable", "&&= ready -> if@194"],
-    [196, "isHidden", "||= anyHidden -> if@197"],
-    [199, "textContent", "??= text -> if@200"],
+    [193, "isEditable", "&&= ready -> &&=@193,if@194"],
+    [196, "isHidden", "||= anyHidden -> ||=@196,if@197"],
+    [199, "textContent", "??= text -> ??=@199,if@200"],
     [201, "allTextContents", "const firstText -> if@202"],
     [203, "all", "const length -> if@204"],
     [206, "all", "= head -> if@207"],
@@ -120,6 +121,10 @@ test("each planted refusal is refused at its line, for what its answer decides",
     [254, "textContent", "if"],
     [263, "isVisible", "if"],
     [266, "isChecked", "= outer -> if@269"],
+    [311, "isVisible", "= seen -> while@309"],
+    [315, "isChecked", "var done -> while@313"],
+    [336, "allTextContents", "const texts -> if@337"],
+    [338, "isChecked", "const checked -> if@339"],
   ]);
 
   // The refusal names the file, the line, the probe, what it decides, and both ways out.
@@ -234,7 +239,8 @@ test("a probe a retry or the page reads, or that decides no path, is no instance
   expect(fixtureProbes.map((probe) => probe.line)).toEqual([
     30, 32, 35, 37, 41, 44, 62, 65, 72, 94, 101, 109, 111, 111, 114, 120, 138, 139, 142, 143, 144,
     145, 152, 157, 158, 159, 160, 161, 162, 164, 165, 173, 174, 175, 182, 184, 187, 190, 193, 196,
-    199, 201, 203, 206, 209, 219, 221, 224, 236, 241, 249, 250, 251, 252, 253, 254, 263, 266,
+    199, 201, 203, 206, 209, 219, 221, 224, 236, 241, 249, 250, 251, 252, 253, 254, 263, 266, 311,
+    315, 336, 338,
   ]);
 });
 
@@ -280,10 +286,11 @@ test("a probe in each position where the grammar lets a value decide is refused 
   ]);
 });
 
-// A probe's answer bound to a name decides where a position reads the name later, however it is
-// bound: a declaration, a parameter's or a pattern element's default, or an assignment of any
-// operator to a name or a pattern. Each binding below is read by the `if` on the line after it,
-// but the parameter's, which the body reads.
+// A probe's answer bound to a name decides where a position reads the name, however it is bound:
+// a declaration, a parameter's or a pattern element's default, or an assignment of any operator
+// to a name or a pattern. Each binding below is read by the `if` on the line after it, but the
+// parameter's, which the body reads. A logical assignment's own target is a read as well: it
+// decides whether the right side runs, on whatever the name held before.
 test("a probe's answer bound to a name in each way is refused where an `if` reads it", () => {
   expectPlanted([
     [182, "const visible = await menu.isVisible();", "const visible -> if@183"],
@@ -291,9 +298,9 @@ test("a probe's answer bound to a name in each way is refused where an `if` read
     [184, "let enabled = await menu.isEnabled();", "let enabled -> if@185"],
     [187, "checked = await menu.isChecked();", "= checked -> if@188"],
     [190, "total += await rows.count();", "+= total -> if@191"],
-    [193, "ready &&= await menu.isEditable();", "&&= ready -> if@194"],
-    [196, "anyHidden ||= await menu.isHidden();", "||= anyHidden -> if@197"],
-    [199, "text ??= await menu.textContent();", "??= text -> if@200"],
+    [193, "ready &&= await menu.isEditable();", "&&= ready -> &&=@193,if@194"],
+    [196, "anyHidden ||= await menu.isHidden();", "||= anyHidden -> ||=@196,if@197"],
+    [199, "text ??= await menu.textContent();", "??= text -> ??=@199,if@200"],
     [201, "const [firstText] = await rows.allTextContents();", "const firstText -> if@202"],
     [203, "const { length } = await rows.all();", "const length -> if@204"],
     [206, "[head] = await rows.all();", "= head -> if@207"],
@@ -305,12 +312,14 @@ test("a probe's answer bound to a name in each way is refused where an `if` read
   ]);
 });
 
-// Later is when a position runs after the binding, not only where it is written below it: an
-// `if` above an assignment in a loop's body runs after it on the next turn, and an `if` of a
-// function nested in the binding's runs after it when called, wherever the function is written.
-// A closure that assigns a name its outer function declares is read against that function, and
-// an assignment's value is the answer itself, so an `if` on it decides by the probe.
-test("a probe is refused where a later turn, a closure or an assignment's value reads it", () => {
+// A position reads a name wherever its scope writes it, above the binding or below it, since the
+// check reads no order of running: an `if` above an assignment in a loop's body runs after it on
+// the next turn, an `if` of a function nested in the binding's runs after it when called, a loop
+// above a function declared below it reads what a call of that function assigned, and a loop's
+// condition reads the `var` its body declared on the turn before. A closure that assigns a name
+// its outer function declares is read against that function, and an assignment's value is the
+// answer itself, so an `if` on it decides by the probe.
+test("a probe is refused where its name's scope reads it, wherever the read is written", () => {
   expectPlanted([
     [235, "if (seen) break;", ""],
     [236, "seen = await menu.isVisible();", "= seen -> if@235"],
@@ -319,6 +328,11 @@ test("a probe is refused where a later turn, a closure or an assignment's value 
     [263, "if ((found = await menu.isVisible()))", "if"],
     [266, "outer = await menu.isChecked();", "= outer -> if@269"],
     [269, "if (outer || found)", ""],
+    [309, "while (!seen) await look();", ""],
+    [310, "async function look(): Promise<void> {", ""],
+    [311, "seen = await menu.isVisible();", "= seen -> while@309"],
+    [313, "while (!done) {", ""],
+    [315, "var done: boolean | undefined = await menu.isChecked();", "var done -> while@313"],
   ]);
 });
 
@@ -357,7 +371,30 @@ test("a probe whose answer goes only through a named limit is no instance", () =
     [293, "return (await rows.count()) > 1;"],
   ];
   for (const [line, text] of passes) expect(fixtureLines[line - 1]).toContain(text);
-  expect(fixtureProbes.filter((probe) => probe.line >= 277)).toEqual([]);
+  expect(fixtureProbes.filter((probe) => probe.line >= 277 && probe.line <= 299)).toEqual([]);
+});
+
+// A name bound to an answer reaches a position through the steps an answer written there takes:
+// a call the name is passed into, a method called on it and a key it is read as end the climb,
+// so `if (Boolean(shown))`, a loop over `items.slice(1)` and `if (handlers[label])` read no bound
+// name and pass, as the same answers pass in place; a `.length` compared and the left of an `&&`
+// carry it on to the `if`, which refuses it. Each line is held to what it plants, so a fixture
+// edit that moved one cannot pass for the scan reading it.
+test("a bound name reaches a position only where an answer written in its place would", () => {
+  expectPlanted([
+    [332, "const shown = await menu.isVisible();", ""],
+    [333, "if (Boolean(shown))", ""],
+    [334, "const items = await rows.all();", ""],
+    [335, "for (const item of items.slice(1))", ""],
+    [336, "const texts = await rows.allTextContents();", "const texts -> if@337"],
+    [337, "if (texts.length > 0)", ""],
+    [338, "const checked = await menu.isChecked();", "const checked -> if@339"],
+    [339, "if (checked && open)", ""],
+    [349, "const label = await menu.inputValue();", ""],
+    [350, "if (handlers[label])", ""],
+  ]);
+  const passes = [332, 334, 349];
+  expect(fixtureProbes.filter((probe) => passes.includes(probe.line))).toEqual([]);
 });
 
 // `Promise.all` is named like `locator.all()`, but it waits for the promises it is handed and

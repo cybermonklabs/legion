@@ -456,6 +456,8 @@ const boundedCalls: readonly BoundedCall[] = [
  *  which under the export's own name is the same export. A file that imports neither calls it
  *  nowhere, whatever it declares. */
 type ImportedNames = {
+  /** The export these names call. */
+  readonly exported: string;
   /** Bare names a call of which is a call of the export. */
   readonly bare: ReadonlySet<string>;
   /** Names a member of which is that export, reached through `import * as` or bound to the
@@ -463,27 +465,25 @@ type ImportedNames = {
   readonly namespaces: ReadonlySet<string>;
 };
 
-/** The path a relative module specifier resolves to from `sourceFile`, with no extension, which
- *  is how `importedNames` compares modules; undefined for any other specifier. */
-function relativeModule(
-  sourceFile: ts.SourceFile,
-  specifier: ts.Expression | undefined
-): string | undefined {
+/** The path a relative module specifier resolves to from the file it is written in, with no
+ *  extension, which is how `importedNames` compares modules; undefined for any other specifier. */
+function relativeModule(specifier: ts.Expression | undefined): string | undefined {
   if (specifier === undefined || !ts.isStringLiteralLike(specifier)) return undefined;
   if (!specifier.text.startsWith(".")) return undefined;
-  return resolve(dirname(sourceFile.fileName), specifier.text.replace(/\.ts$/, ""));
+  const from = dirname(specifier.getSourceFile().fileName);
+  return resolve(from, specifier.text.replace(/\.ts$/, ""));
 }
 
 /** The module `node` loads, where it is an `import()` or a `require` of a relative specifier,
  *  awaited or not. */
-function loadedModule(sourceFile: ts.SourceFile, node: ts.Expression): string | undefined {
+function loadedModule(node: ts.Expression): string | undefined {
   const inner = unwrapped(node);
   if (!ts.isCallExpression(inner)) return undefined;
   const loader = inner.expression;
   const loads =
     loader.kind === ts.SyntaxKind.ImportKeyword ||
     (ts.isIdentifier(loader) && loader.text === "require");
-  return loads ? relativeModule(sourceFile, inner.arguments.at(0)) : undefined;
+  return loads ? relativeModule(inner.arguments.at(0)) : undefined;
 }
 
 /** What `sourceFile` calls `exported` of `modulePath` by, read from its import declarations and
@@ -500,7 +500,7 @@ function importedNames(
   const namespaces = new Set<string>();
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
-    if (relativeModule(sourceFile, statement.moduleSpecifier) !== modulePath) continue;
+    if (relativeModule(statement.moduleSpecifier) !== modulePath) continue;
     const bindings = statement.importClause?.namedBindings;
     if (bindings === undefined) continue;
     if (ts.isNamespaceImport(bindings)) {
@@ -518,7 +518,7 @@ function importedNames(
     if (
       ts.isVariableDeclaration(node) &&
       node.initializer !== undefined &&
-      loadedModule(sourceFile, node.initializer) === modulePath
+      loadedModule(node.initializer) === modulePath
     ) {
       if (ts.isIdentifier(node.name)) namespaces.add(node.name.text);
       if (ts.isObjectBindingPattern(node.name)) {
@@ -534,17 +534,17 @@ function importedNames(
     ts.forEachChild(node, collect);
   };
   ts.forEachChild(sourceFile, collect);
-  return { bare, namespaces };
+  return { exported, bare, namespaces };
 }
 
-/** Whether `call` calls `exported` under the names the file imported it by: a bare name, or a
- *  member of a namespace. A function of the file's own that happens to share the export's name
- *  is no call of it. */
-function callsImport(call: ts.CallExpression, names: ImportedNames, exported: string): boolean {
+/** Whether `call` calls the export `names` stand for under the names the file imported it by: a
+ *  bare name, or a member of a namespace. A function of the file's own that happens to share the
+ *  export's name is no call of it. */
+function callsImport(call: ts.CallExpression, names: ImportedNames): boolean {
   const callee = call.expression;
   if (ts.isPropertyAccessExpression(callee)) {
     return (
-      callee.name.text === exported &&
+      callee.name.text === names.exported &&
       ts.isIdentifier(callee.expression) &&
       names.namespaces.has(callee.expression.text)
     );
@@ -772,7 +772,7 @@ type WaitingNames = {
  *  those. */
 function reachOf(call: ts.CallExpression, waiting: WaitingNames): Reach | undefined {
   for (const { exported, names, boundOf } of waiting.imports) {
-    if (callsImport(call, names, exported)) return { reached: exported, bound: boundOf(call) };
+    if (callsImport(call, names)) return { reached: exported, bound: boundOf(call) };
   }
   return ts.isIdentifier(call.expression) ? waiting.helpers.get(call.expression.text) : undefined;
 }
@@ -969,9 +969,7 @@ function waitsOf(
       continue;
     }
     const callee = `\`${node.expression.getText()}\``;
-    const direct = waiting.imports.some(({ exported, names }) =>
-      callsImport(node, names, exported)
-    );
+    const direct = waiting.imports.some(({ names }) => callsImport(node, names));
     named.add(direct ? callee : `${callee} (which waits for \`${reach.reached}\`)`);
   }
   return { waitsFor: [...named], bound: reachOfAll(waits)?.bound };
@@ -1042,15 +1040,18 @@ function limitsOfCall(
   return undefined;
 }
 
-/** The reason standing above a limit, read by `reasonEndingAbove` against `limitLine`.
+/** The reason standing above a limit, read by `reasonEndingAbove` against the line the limit
+ *  begins on.
  *
  * Where a comment above a limit is written down is whatever begins the limit's own line: the
  * limit itself where it stands on a line of its own, the property where the limit is a
  * `timeout:`, and the row's whole statement where the row is written on one line. So the run is
  * read from the limit and from each ancestor that begins on the limit's line, and nothing that
  * stands above an earlier line of the same statement is read at all. */
-function reasonAbove(sourceFile: ts.SourceFile, limit: ts.Expression, limitLine: number): string {
+function reasonAbove(limit: ts.Expression): string {
+  const sourceFile = limit.getSourceFile();
   const text = sourceFile.getFullText();
+  const limitLine = sourceFile.getLineAndCharacterOfPosition(limit.getStart(sourceFile)).line;
   const ranges = new Map<number, ts.CommentRange>();
   const read = (node: ts.Node): void => {
     for (const range of ts.getLeadingCommentRanges(text, node.getFullStart()) ?? []) {
@@ -1133,10 +1134,10 @@ export function limitsOfFiles(directory: string, files: readonly string[]): Wall
         kind === "file" ? { waitsFor: [], bound: undefined } : waitsOf(call, waiting);
       for (const limit of ofCall.limits) {
         const line = lineOf(limit);
-        const fromBounds = ts.isCallExpression(limit) && callsImport(limit, derived, boundsExport);
+        const fromBounds = ts.isCallExpression(limit) && callsImport(limit, derived);
         const stated: StatedLimit = {
           text: limit.getText(sourceFile),
-          reason: reasonAbove(sourceFile, limit, line),
+          reason: reasonAbove(limit),
           fromBounds,
           total: fromBounds && ts.isCallExpression(limit) ? totalOf(limit) : undefined,
         };

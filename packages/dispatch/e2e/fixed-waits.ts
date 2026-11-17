@@ -261,13 +261,11 @@ export function reasonEndingAbove(
 }
 
 /** The reason that stands above `call`: the comments before its statement, read by
- *  `reasonEndingAbove` against `line`, the line the call's first token stands on, counted from
- *  0. It is exported because `e2e/zero-wait-probes.ts` reads a probe's reason by this measure. */
-export function reasonAboveCall(
-  sourceFile: ts.SourceFile,
-  call: ts.CallExpression,
-  line: number
-): string {
+ *  `reasonEndingAbove` against the line the call's first token stands on. It is exported because
+ *  `e2e/zero-wait-probes.ts` reads a probe's reason by this measure. */
+export function reasonAboveCall(call: ts.CallExpression): string {
+  const sourceFile = call.getSourceFile();
+  const line = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line;
   const text = sourceFile.getFullText();
   const ranges = ts.getLeadingCommentRanges(text, statementOf(call).getFullStart()) ?? [];
   return reasonEndingAbove(sourceFile, ranges, line);
@@ -304,7 +302,7 @@ export function waitsOfFiles(directory: string, files: readonly string[]): Fixed
           file,
           line: callLine + 1,
           call: node.getText(sourceFile),
-          reason: reasonAboveCall(sourceFile, node, callLine),
+          reason: reasonAboveCall(node),
         });
       }
       ts.forEachChild(node, visit);

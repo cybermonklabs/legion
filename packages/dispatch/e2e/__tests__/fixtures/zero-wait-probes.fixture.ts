@@ -297,3 +297,55 @@ export async function plantedLimits(
 async function clickWhen(menu: Locator, shown: boolean): Promise<void> {
   if (shown) await menu.click();
 }
+
+// biome-ignore-start lint/suspicious/noVar: a `var` its loop's condition reads is planted here
+// biome-ignore-start lint/correctness/noInnerDeclarations: the planted `var` is a loop body's
+// biome-ignore-start lint/correctness/noInvalidUseBeforeDeclaration: the condition reads it first
+/** A name a loop's condition reads and a function declared below the loop assigns, which the loop
+ *  calls; and a `var` declared in a loop's body that the loop's condition reads on the next turn.
+ *  Both refused: a read anywhere in the name's scope counts, whatever the text writes first. */
+export async function plantedReadsAnywhere(menu: Locator): Promise<void> {
+  let seen = false;
+  while (!seen) await look();
+  async function look(): Promise<void> {
+    seen = await menu.isVisible();
+  }
+  while (!done) {
+    await menu.click();
+    var done: boolean | undefined = await menu.isChecked();
+  }
+}
+// biome-ignore-end lint/correctness/noInvalidUseBeforeDeclaration: the condition reads it first
+// biome-ignore-end lint/correctness/noInnerDeclarations: the planted `var` is a loop body's
+// biome-ignore-end lint/suspicious/noVar: a `var` its loop's condition reads is planted here
+
+// biome-ignore-start lint/complexity/noExtraBooleanCast: a name passed into `Boolean` is planted
+/** One name per way a position reads a name bound to an answer, in this order: passed into
+ *  `Boolean` and walked through a method called on it, which pass as the same answers written in
+ *  place do; and the `.length` an `if` compares and the left of an `&&` an `if` reads, which are
+ *  refused as the same answers written in place are. */
+export async function plantedBoundReads(
+  menu: Locator,
+  rows: Locator,
+  open: boolean
+): Promise<void> {
+  const shown = await menu.isVisible();
+  if (Boolean(shown)) await menu.click();
+  const items = await rows.all();
+  for (const item of items.slice(1)) await item.click();
+  const texts = await rows.allTextContents();
+  if (texts.length > 0) await menu.hover();
+  const checked = await menu.isChecked();
+  if (checked && open) await menu.uncheck();
+}
+// biome-ignore-end lint/complexity/noExtraBooleanCast: a name passed into `Boolean` is planted
+
+/** A name bound to an answer that an `if` reads only as the key of an element access, which
+ *  passes as the same answer used as a key in place does. */
+export async function plantedBoundKey(
+  menu: Locator,
+  handlers: Record<string, boolean>
+): Promise<void> {
+  const label = await menu.inputValue();
+  if (handlers[label]) await menu.click();
+}

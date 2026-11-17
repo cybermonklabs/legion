@@ -47,8 +47,8 @@
  * decide what runs next, and `conditionKind` enumerates them by the `SyntaxKind` of the node that
  * holds the value, so a reader checks them against the grammar in one place. The list is the
  * grammar's, not the forms found so far. A probe decides a path where its answer stands in one of
- * them, in place or by the climb below, or is bound to a name that one of them reads later. Each
- * is named in brackets as `DecidingProbe.position` names it:
+ * them, in place or by the climb below, or is bound to a name that one of them reads. Each is
+ * named in brackets as `DecidingProbe.position` names it:
  *
  * - the condition of an `if`, a `?:`, a `while`, a `do...while` or a `for` [`if`, `ternary`,
  *   `while`, `do-while`, `for`]. An `if` whose only branch is a `throw` is one too: a zero-wait
@@ -96,16 +96,21 @@
  * parameter's default, as in `async function open(menu: Locator, shown = menu.isVisible())`; a
  * pattern element's default; or the right side of an assignment of any operator (`=`, `+=`, `&&=`,
  * `||=`, `??=` and the rest) to a name or to an array or object pattern. A target that is a
- * property or an element binds no name. A position reads the name later where it stands:
+ * property or an element binds no name. A position reads the name where both of these hold:
  *
- * - in the binding's function, written after the binding; or, for an assignment, in a part of a
- *   loop of that function that runs on every turn - its condition, a `for`'s update, its body -
- *   where that part or another of the same loop holds the assignment, since a later turn reads
- *   what an earlier one assigned. The function of an assignment is the outermost one around it
- *   that declares the name, or the file where the file does or no function does, so a closure
- *   that assigns a name of the function around it is read against that function;
- * - in a function nested inside the binding's, wherever it is written, since a closure runs after
- *   the binding.
+ * - it stands in the name's scope: the function or the file that holds a declaration, or, for an
+ *   assignment, the outermost function around it that declares the name, or the file where the
+ *   file does or no function does, so a closure that assigns a name of the function around it
+ *   is read against that function; or in any function nested in that scope. It counts wherever
+ *   the scope writes it, above the binding or below it, because the check reads no order of
+ *   running: a later turn of a loop, a call of a function declared further down and a closure
+ *   called later each read the name after a binding written below them;
+ * - the name's value reaches the position as the answer written in the name's place would: the
+ *   climb, run from the reference, ends at that position. So `if (shown)`, `if (!shown)`,
+ *   `if (shown && open)`, `if (rows.length > 0)`, `for (const row of rows)`, `switch (label)`,
+ *   `shown ?? (await menu.click())` and `shown ||= await menu.click()` read the name, and
+ *   `if (Boolean(shown))`, `for (const row of rows.slice(1))` and `if (handlers[label])` do not,
+ *   for the reasons WHAT IT DOES NOT SEE gives for an answer written there.
  *
  * Such a probe's position is written `const shown -> ternary@42`: how the name is bound (`const`,
  * `let`, `var`, `using`, `param`, `default`, or the assignment's operator), the names read, and
@@ -143,11 +148,12 @@
  *   answer, as in `(await rows.all()).map(...)`, whose callback runs once per element, or
  *   `(await rows.all()).slice(1)` walked by a `for...of`; a `new` or a tagged template it is
  *   handed to; a `return`, a `yield` or a `throw` that hands it out, or an arrow's expression
- *   body; and a getter that a property read on it runs. A function that returns a probe is a
- *   wrapper whose calls are probes (WHAT A PROBE IS), but a wrapper that returns the answer
- *   through a variable - `const shown = await menu.isVisible(); return shown;` - a wrapper that
- *   is a method, a `let` or a `var`, and one that returns another wrapper's call are not
- *   collected;
+ *   body; and a getter that a property read on it runs. A name bound to the answer is read the
+ *   same way, so `if (Boolean(shown))` and `for (const row of rows.slice(1))` read no `shown` and
+ *   no `rows`. A function that returns a probe is a wrapper whose calls are probes (WHAT A PROBE
+ *   IS), but a wrapper that returns the answer through a variable - `const shown = await
+ *   menu.isVisible(); return shown;` - a wrapper that is a method, a `let` or a `var`, and one
+ *   that returns another wrapper's call are not collected;
  * - an answer kept in an object property or an array element: `state.shown = await
  *   menu.isVisible()`, `{ shown: await menu.isVisible() }`, `[await rows.count()]`, a spread into
  *   an array, and an answer used as the key that picks or names one, as in `handlers[await
@@ -162,12 +168,13 @@
  * through them; a reason or a rename answers each:
  *
  * - shadowing, and every other name read by its spelling rather than by its binding, since the
- *   scan models no scope: a function of one file named like a wrapper of another is read as that
- *   wrapper, a position that refers to an inner binding named like a name an answer is bound to is
- *   read as reading that name, and an assignment is read against the outermost function that
- *   declares its name;
- * - the order things run in, read from the text: a position written below a binding is read as
- *   running after it even where it cannot, as in the other branch of an `if`;
+ *   scan resolves no reference to its declaration: a function of one file named like a wrapper
+ *   of another is read as that wrapper, a position that refers to an inner binding named like a
+ *   name an answer is bound to is read as reading that name, and an assignment is read against
+ *   the outermost function that declares its name;
+ * - the order things run in, which the check does not read: every read in a name's scope counts,
+ *   whatever runs first, so a read that runs before the answer exists is refused too, as in an
+ *   `if` written above the binding that no loop and no call brings back to;
  * - a function passed to `expect.poll` by its name rather than written there, which is read as
  *   any function is.
  *
@@ -490,9 +497,11 @@ function chainRunsCode(link: ts.Node): boolean {
   }
 }
 
-/** `test.skip`, `test.fixme`, `test.slow` or `test.fail`, where `node` is the first argument of
- *  `call`, a call of one, and is no string, template or function. Nothing where it is not. */
-function testModifierKind(call: ts.CallExpression, node: ts.Node): string | undefined {
+/** `test.skip`, `test.fixme`, `test.slow` or `test.fail`, where `node` is the first argument of a
+ *  call of one and is no string, template or function. Nothing where it is not. */
+function testModifierKind(node: ts.Node): string | undefined {
+  const call = node.parent;
+  if (!ts.isCallExpression(call)) return undefined;
   const callee = call.expression;
   if (
     call.arguments[0] !== node ||
@@ -598,7 +607,7 @@ function conditionKind(node: ts.Node): string | undefined {
       if (link.expression === node && link.questionDotToken !== undefined && chainRunsCode(link)) {
         return "?.";
       }
-      return ts.isCallExpression(link) ? testModifierKind(link, node) : undefined;
+      return testModifierKind(node);
     }
     case ts.SyntaxKind.VariableDeclaration:
     case ts.SyntaxKind.Parameter:
@@ -660,12 +669,12 @@ function carrier(node: ts.Node): ts.Node | undefined {
   }
 }
 
-/** The nodes the climb of WHAT DECIDES A PATH passes from `probe`, `probe` first: up through each
+/** The nodes the climb of WHAT DECIDES A PATH passes from `start`, `start` first: up through each
  *  parent `carrier` names, to the first node `conditionKind` names, or else to the outermost node
- *  the value reaches. */
-function climb(probe: ts.Expression): ts.Node[] {
-  const path: ts.Node[] = [probe];
-  let node: ts.Node = probe;
+ *  the value reaches. `start` is a probe call, or a reference to a name bound to its answer. */
+function climb(start: ts.Expression): ts.Node[] {
+  const path: ts.Node[] = [start];
+  let node: ts.Node = start;
   while (conditionKind(node) === undefined) {
     const parent = carrier(node);
     if (parent === undefined) break;
@@ -716,26 +725,19 @@ function conditionsOf(sourceFile: ts.SourceFile): Condition[] {
   return conditions;
 }
 
-/** Every reference to one of `names` under `root` that begins at or after `after`, in the order
- *  the file writes them: an identifier spelled so, but a property's name. */
-function referencesAfter(
-  sourceFile: ts.SourceFile,
-  root: ts.Node,
-  names: readonly string[],
-  after: number
-): ts.Identifier[] {
+/** Every reference to one of `names` under `position` whose value reaches it, in the order the
+ *  file writes them: an identifier spelled so from which the climb ends at `position`, as it
+ *  would from an answer written in its place. A property's name, an argument, the receiver of a
+ *  method call and a key end the climb below `position`, and so do not count. */
+function readsOf(position: ts.Node, names: readonly string[]): ts.Identifier[] {
   const found: ts.Identifier[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && names.includes(node.text) && node.getStart(sourceFile) >= after) {
-      const parent = node.parent;
-      const propertyName =
-        (ts.isPropertyAccessExpression(parent) || ts.isPropertyAssignment(parent)) &&
-        parent.name === node;
-      if (!propertyName) found.push(node);
+    if (ts.isIdentifier(node) && names.includes(node.text) && climb(node).at(-1) === position) {
+      found.push(node);
     }
     ts.forEachChild(node, visit);
   };
-  visit(root);
+  visit(position);
   return found;
 }
 
@@ -845,87 +847,33 @@ function declares(scope: ts.Node, names: readonly string[]): boolean {
   return found;
 }
 
-/** The function an assignment at `node` to `names` writes into, read by spelling: the outermost
- *  function around it that declares one of them, or the file where the file declares one or no
- *  function does. The outermost, so a name declared again in between reads more positions rather
- *  than fewer. */
-function declaringScope(node: ts.Node, names: readonly string[]): ts.Node {
+/** The function or the file whose positions read a name `binding` binds, by spelling: for a
+ *  declaration, the one that holds it; for an assignment, the outermost function around it that
+ *  declares one of its names, or the file where the file declares one or no function does. The
+ *  outermost, so a name declared again in between reads more positions rather than fewer. */
+function scopeOf(binding: Binding): ts.Node {
+  if (!binding.assigns) return enclosingFunction(binding.node);
   let declaring: ts.Node | undefined;
-  for (let scope = enclosingFunction(node); ; scope = enclosingFunction(scope)) {
+  for (let scope = enclosingFunction(binding.node); ; scope = enclosingFunction(scope)) {
     if (ts.isSourceFile(scope)) {
-      return declaring === undefined || declares(scope, names) ? scope : declaring;
+      return declaring === undefined || declares(scope, binding.names) ? scope : declaring;
     }
-    if (declares(scope, names)) declaring = scope;
+    if (declares(scope, binding.names)) declaring = scope;
   }
 }
 
-/** The parts of the loop `node` runs on every turn: a `while`'s or a `do`'s condition and body, a
- *  `for`'s condition, update and body, and a `for...of`'s or a `for...in`'s body, whose iterable is
- *  read once. None where `node` is no loop. */
-function turnParts(node: ts.Node): ts.Node[] {
-  switch (node.kind) {
-    case ts.SyntaxKind.WhileStatement:
-    case ts.SyntaxKind.DoStatement: {
-      const loop = node as ts.WhileStatement | ts.DoStatement;
-      return [loop.expression, loop.statement];
-    }
-    case ts.SyntaxKind.ForStatement: {
-      const loop = node as ts.ForStatement;
-      return [loop.condition, loop.incrementor, loop.statement].filter(
-        (part) => part !== undefined
-      );
-    }
-    case ts.SyntaxKind.ForOfStatement:
-    case ts.SyntaxKind.ForInStatement:
-      return [(node as ts.ForOfStatement | ts.ForInStatement).statement];
-    default:
-      return [];
-  }
-}
-
-/** Whether `condition` runs again after `assignment` on a later turn of a loop of `condition`'s own
- *  function: a loop whose parts run on every turn hold them both. */
-function repeatsAfter(condition: ts.Node, assignment: ts.Node): boolean {
-  for (
-    let loop = condition.parent;
-    !isFunctionLike(loop) && !ts.isSourceFile(loop);
-    loop = loop.parent
-  ) {
-    const parts = turnParts(loop);
-    if (
-      parts.some((part) => condition.pos >= part.pos && condition.end <= part.end) &&
-      parts.some((part) => assignment.pos >= part.pos && assignment.end <= part.end)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** Where the positions of `conditions` read a name `binding` binds later, as
- *  `DecidingProbe.position` spells it: `const shown -> ternary@42`. Nothing where none does. A
- *  position reads it later where it stands in the binding's function, written after the binding
- *  or, for an assignment, run again on a later turn of a loop that holds it; or where it stands in
- *  a function nested in the binding's, wherever it is written, since a closure runs after it. */
-function bindingReads(
-  sourceFile: ts.SourceFile,
-  binding: Binding,
-  conditions: readonly Condition[]
-): string | undefined {
-  const scope = binding.assigns
-    ? declaringScope(binding.node, binding.names)
-    : enclosingFunction(binding.node);
+/** Where the positions of `conditions` read a name `binding` binds, as `DecidingProbe.position`
+ *  spells it: `const shown -> ternary@42`. Nothing where none does. A position reads it where it
+ *  stands in the binding's scope or in a function nested in it, written anywhere there, and holds
+ *  a reference to the name whose value reaches it, as `readsOf` reads one. */
+function bindingReads(binding: Binding, conditions: readonly Condition[]): string | undefined {
+  const sourceFile = binding.node.getSourceFile();
+  const scope = scopeOf(binding);
   const read = new Set<string>();
   const uses: string[] = [];
   for (const condition of conditions) {
-    let after = binding.node.getEnd();
-    if (condition.scope !== scope) {
-      if (!isNestedIn(condition.scope, scope)) continue;
-      after = 0;
-    } else if (binding.assigns && repeatsAfter(condition.expression, binding.node)) {
-      after = 0;
-    }
-    const references = referencesAfter(sourceFile, condition.expression, binding.names, after);
+    if (condition.scope !== scope && !isNestedIn(condition.scope, scope)) continue;
+    const references = readsOf(condition.expression, binding.names);
     if (references.length === 0) continue;
     for (const reference of references) read.add(reference.text);
     const line = sourceFile.getLineAndCharacterOfPosition(references[0].getStart(sourceFile)).line;
@@ -937,10 +885,9 @@ function bindingReads(
 }
 
 /** What `probe` decides, as `DecidingProbe.position` spells it, or nothing where it decides no
- *  path: the position the climb reaches, or else every binding it passes that a position reads
- *  later. `conditions` are its file's. */
+ *  path: the position the climb reaches, or else every binding it passes that a position reads.
+ *  `conditions` are its file's. */
 function positionOf(
-  sourceFile: ts.SourceFile,
   probe: ts.CallExpression,
   conditions: readonly Condition[]
 ): string | undefined {
@@ -950,7 +897,7 @@ function positionOf(
   const reads: string[] = [];
   for (const node of path) {
     const binding = bindingOf(node);
-    const read = binding === undefined ? undefined : bindingReads(sourceFile, binding, conditions);
+    const read = binding === undefined ? undefined : bindingReads(binding, conditions);
     if (read !== undefined) reads.push(read);
   }
   return reads.length === 0 ? undefined : reads.join("; ");
@@ -978,7 +925,7 @@ export function probesOfFiles(directory: string, files: readonly string[]): Deci
       if (skipped || !ts.isCallExpression(node)) return;
       const name = probeName(node, wrappers);
       if (name === undefined) return;
-      const position = positionOf(sourceFile, node, conditions);
+      const position = positionOf(node, conditions);
       if (position === undefined) return;
       const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
       probes.push({
@@ -987,7 +934,7 @@ export function probesOfFiles(directory: string, files: readonly string[]): Deci
         column: start.character,
         name,
         position,
-        reason: reasonAboveCall(sourceFile, node, start.line),
+        reason: reasonAboveCall(node),
       });
     });
   }

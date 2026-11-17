@@ -2269,8 +2269,13 @@ The guard reaches that place from the probe through whatever computes a value
 from the answer (`await`, parentheses, `as`, `!`, an operator, a template
 literal, `(await rows.all()).length`), and it refuses as well an answer bound to
 a name, by a declaration, a default, an assignment of any operator or a
-destructuring, that such a place reads later: below the binding, on a later turn
-of a loop that assigns it, or in a function nested in the binding's.
+destructuring, that such a place reads anywhere in the name's scope: the
+function that binds it, or for an assignment the one that declares the name,
+and every function nested in it, above the binding or below it, since the
+guard reads no order of running.
+A place reads the name where the name's value reaches it as an answer written
+there would: `if (shown)` and `if (rows.length > 0)` read it, and
+`if (Boolean(shown))` and `for (const row of rows.slice(1))` do not.
 It does not follow three kinds of data flow, which no syntactic check can: an
 answer passed into a function or returned from one (an argument, a method
 called on the answer such as `.map` or `.slice`, a `return`), an answer kept in
