@@ -4,7 +4,8 @@
  *  with `process.execPath`, an explicit `--seed`, `--rerun-each` and Bun's junit reporter. Then
  *  it hands what Bun left behind to the tool's pure functions. The directory is outside
  *  packages/dispatch, so the package's bunfig.toml does not reach that run. HOME is the same
- *  directory, so no global bunfig of the host reaches it either.
+ *  directory, so no global bunfig of the host reaches it either. One row runs the tool itself
+ *  there instead, on an `--out` the tool must refuse before it starts Bun.
  *
  *  On each rerun Bun 1.4.4 runs the test file's own top-level code again, so a counter declared
  *  there starts again at 0. A module the file imports keeps its state between reruns (measured
@@ -18,6 +19,7 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import {
@@ -33,6 +35,8 @@ import {
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const scratch = temporaryDirectories("unit-repeat");
+
+const tool = fileURLToPath(new URL("../tools/unit-repeat.ts", import.meta.url));
 
 const SEED = 4242;
 
@@ -423,4 +427,33 @@ test(
   },
   // The three runs of Bun, one after another, each a bounded child under the short bound.
   rowLimit("short", "short", "short")
+);
+
+test(
+  "an --out that names a file is refused as a bad command line, and the file is left as it was",
+  async () => {
+    // The lie: the tool throws on an --out that names a file and exits 1, the status of a run
+    // whose rows failed, although no test ran. Or it writes over the file it was given.
+    const directory = scratch();
+    const file = join(directory, "a-file");
+    const text = "this file is no directory\n";
+    await Bun.write(file, text);
+    const { code, output } = await spawnBun(directory, [
+      tool,
+      "--lane",
+      "web",
+      "--reruns",
+      "1",
+      "--seed",
+      "1",
+      "--out",
+      file,
+    ]);
+    expect(code).toBe(2);
+    expect(output).toContain(`unit-repeat: --out ${file} cannot be the output directory: EEXIST`);
+    expect(output).toContain("usage: bun run test:repeat --lane <web|harness>");
+    expect(output).not.toContain("seed=1 lane=web");
+    expect(await Bun.file(file).text()).toBe(text);
+  },
+  rowLimit("short")
 );

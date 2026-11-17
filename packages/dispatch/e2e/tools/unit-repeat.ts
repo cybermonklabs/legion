@@ -41,8 +41,10 @@
  *
  *  A run that read nothing is refused, not reported as clean. The exit status is 1 when a row
  *  failed, when Bun exited non-zero, when no testcase was read, or when a failure belongs to no
- *  row. It is 2 for a bad command line, and 0 otherwise. e2e/__tests__/unit-repeat.test.ts runs
- *  real Bun and checks the reader and the report on the files Bun writes.
+ *  row. It is 2 for a bad command line, and 0 otherwise. An `--out` that cannot be the output
+ *  directory - a file, a path under a file, a place the tool may not write - is a bad command
+ *  line too, refused before Bun starts. e2e/__tests__/unit-repeat.test.ts runs real Bun and
+ *  checks the reader and the report on the files Bun writes.
  */
 import {
   appendFileSync,
@@ -878,25 +880,40 @@ function readMeminfo(): MemorySample | undefined {
   return { memTotalKiB: Number(total[1]), memAvailableKiB: Number(available[1]) };
 }
 
-/** Runs the lane once with `options` and writes its report. Answers the exit status. `target` is
- *  the path the lane tests, its whole directory unless a caller names a narrower one: that is how
- *  a smoke run drives the real path over one file, in a pod where a whole lane may not run. */
+/** Prints `problem` and the usage on stderr, and answers the exit status of a bad command line. */
+function refuse(problem: string): 2 {
+  console.error(`unit-repeat: ${problem}\n${usage}`);
+  return 2;
+}
+
+/** Runs the lane once with `options` and writes its report. Answers the exit status: 2, with
+ *  nothing run, where `options.out` cannot be the output directory, as for any bad command line.
+ *  `target` is the path the lane tests, its whole directory unless a caller names a narrower one:
+ *  that is how a smoke run drives the real path over one file, in a pod where a whole lane may
+ *  not run. */
 export async function runLane(
   options: RepeatOptions,
   target: string = lanes[options.lane].target
-): Promise<0 | 1> {
+): Promise<0 | 1 | 2> {
   const { lane, reruns, seed } = options;
   const { script } = lanes[lane];
   const out = resolve(options.out);
-  mkdirSync(out, { recursive: true });
   const junitPath = join(out, "junit.xml");
   const logPath = join(out, "bun.log");
-  // A junit file an earlier run left here would be read as this run's.
-  rmSync(junitPath, { force: true });
+  // The tool's first writes to `out`, before it prints or starts anything: where one fails, `out`
+  // cannot be the output directory, and the command line that named it is refused.
+  let log: number;
+  try {
+    mkdirSync(out, { recursive: true });
+    // A junit file an earlier run left here would be read as this run's.
+    rmSync(junitPath, { force: true });
+    log = openSync(logPath, "w");
+  } catch (error) {
+    return refuse(`--out ${options.out} cannot be the output directory: ${errorText(error)}`);
+  }
   console.log(`seed=${seed} lane=${lane} reruns=${reruns}`);
   console.log(`running bun run ${script} ${target} in ${packageDirectory}; its output: ${logPath}`);
 
-  const log = openSync(logPath, "w");
   const started = performance.now();
   const child = Bun.spawn(
     [
@@ -957,10 +974,7 @@ export async function runLane(
 
 async function main(): Promise<number> {
   const parsed = parseArguments(process.argv.slice(2));
-  if ("problem" in parsed) {
-    console.error(`unit-repeat: ${parsed.problem}\n${usage}`);
-    return 2;
-  }
+  if ("problem" in parsed) return refuse(parsed.problem);
   return runLane(parsed.options);
 }
 
