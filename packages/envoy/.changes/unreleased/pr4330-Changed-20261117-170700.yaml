@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The Go broker client and agent-secrets-helper treat the broker''s `membership_held` refusal as one to retry: a person whom Dispatch holds until they sign in again keeps every credential, and the client trades again once they do.'
+time: 2026-11-17T17:07:00.05151209Z
+custom:
+    Issue: pr4330
