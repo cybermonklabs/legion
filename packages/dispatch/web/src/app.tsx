@@ -11,10 +11,13 @@ import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
+import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { answerDraftsSignedIn } from "./features/inbox/answer-drafts";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { replyDraftsSignedIn } from "./features/inbox/reply-drafts";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -676,10 +679,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           isNoIdentity(error) ? { ok: true as const } : Promise.reject(error)
         ),
   });
-  // The shell is not drawn again for another person: one signed in from another tab arrives here
-  // in place (`AuthGate`). A sign-out's refusal, and the Retry beside it, are the person's it was
-  // pressed for, so they go once someone else is signed in: under their name the refusal would
-  // say a false thing, and its Retry would sign them out (`useRefusalOfSubject`).
+  // A sign-out's refusal, and the Retry beside it, are the person's it was pressed for, so they go
+  // once someone else is signed in: under their name the refusal would say a false thing, and its
+  // Retry would sign them out (`useRefusalOfSubject`). Another person signed in from another tab
+  // is drawn a shell of their own (`AuthGate`), which unmounts this one; the check holds the
+  // refusal to its person in any render that still draws it for someone else.
   const signOutRefused = useRefusalOfSubject(signOut, (signingOut) => signingOut === login);
   // A page that goes while its sign-out is out says nothing of how it ended, because it does not
   // know: its `{gone}` leaves every other tab to read who is signed in and decide (`holderGone`).
@@ -1077,13 +1081,25 @@ export function AuthGate(): ReactNode {
   // from another tab - every write of another login is dropped and stops trying, and once no one
   // is (the session lapsed), every write stops trying and waits, kept, for the sign-in that
   // follows: the same person's takes them up again (`Writes.signedIn`). Every other tab of this
-  // browser is told to read who is signed in again, so it does the same.
+  // browser is told to read who is signed in again, so it does the same. A draft the person typed
+  // and has not sent is theirs too, in every draft store, which outlives the shell as the write
+  // store does: another person's sign-in forgets it, and a lapse keeps it (`DraftStore.signedIn`).
   const login = signedOut ? undefined : whoAmI.data?.login;
   const known = signedOut || whoAmI.data !== undefined;
+  // Whose shell is drawn. What the person typed into a field on screen is held by the field, not
+  // by a store, and the shell would otherwise stay mounted for someone signed in from another
+  // tab, showing them those words. So another person's shell is drawn only in the commit after
+  // the stores have let go of what the person before kept: the one before unmounts the shell and
+  // every field in it, and the shell drawn next reads nothing of theirs.
+  const [shellFor, setShellFor] = useState<string>();
   useEffect(() => {
     if (!known) return;
     writesOf(queryClient).signedIn(login);
+    unsentDraftsOf(queryClient).signedIn(login);
+    answerDraftsSignedIn(login);
+    replyDraftsSignedIn(login);
     signIns.signedIn(login ?? null);
+    if (login !== undefined) setShellFor(login);
   }, [known, login, queryClient]);
   useEffect(() => {
     const writes = writesOf(queryClient);
@@ -1109,7 +1125,11 @@ export function AuthGate(): ReactNode {
     return <SignInPage />;
   }
   if (whoAmI.data !== undefined) {
-    return <AuthenticatedApp user={whoAmI.data} />;
+    return shellFor === undefined || shellFor === whoAmI.data.login ? (
+      <AuthenticatedApp user={whoAmI.data} />
+    ) : (
+      <ShellSkeleton />
+    );
   }
   return <ConnectionErrorPage onRetry={() => void whoAmI.refetch()} />;
 }

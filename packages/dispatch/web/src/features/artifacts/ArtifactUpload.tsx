@@ -287,6 +287,9 @@ export interface DraftUpload<Draft = void> {
   /** The name of the last file Dispatch stored with no answer to give for it, so its reference
    *  could not be added to the draft; null otherwise. */
   madeUnanswered: string | null;
+  /** The draft the newest press was made for, which the refusal on screen is about and to which
+   *  Retry adds the file's text (`retry`); undefined before any press. */
+  refusedDraft: Draft | undefined;
   /** Uploads the last refused file again, to the owner it was sent to and for the draft it was
    *  pasted into. Where that refusal is one the reader stopped, the press behind it may have
    *  reached Dispatch, so this makes that press again, base and all: it goes under its key, and
@@ -384,6 +387,7 @@ export function useDraftUpload<Draft = void>(
     method: upload.method,
     paste: (event, owner, draft) => receive(event.clipboardData.files, owner, draft, event),
     pending,
+    refusedDraft: upload.variables?.draft,
     retry: () => {
       const last = upload.variables;
       if (last === undefined) {
@@ -411,8 +415,17 @@ export function useDraftUpload<Draft = void>(
 }
 
 /** `Uploading file…` while any of a draft's uploads is out, and a refused one's reason with its
- *  Retry, which makes a press the reader stopped again (`DraftUpload.retry`). */
-export function DraftUploadStatus<Draft>({ upload }: { upload: DraftUpload<Draft> }): ReactNode {
+ *  Retry, which makes a press the reader stopped again (`DraftUpload.retry`). A host that says
+ *  the refusal in words of its own leaves it out here (`showRefusal`): the composer does while the
+ *  draft the refused press went into lives at another owner than the one it shows, where a Retry
+ *  would add the file's reference to the wrong message. */
+export function DraftUploadStatus<Draft>({
+  showRefusal = true,
+  upload,
+}: {
+  showRefusal?: boolean;
+  upload: DraftUpload<Draft>;
+}): ReactNode {
   return (
     <>
       {upload.pending > 0 ? (
@@ -420,7 +433,7 @@ export function DraftUploadStatus<Draft>({ upload }: { upload: DraftUpload<Draft
           Uploading file…
         </p>
       ) : null}
-      {upload.isError ? (
+      {showRefusal && upload.isError ? (
         <QueryError
           message={stoppedNote(upload, "the upload", "stored") ?? uploadErrorMessage(upload.error)}
           onRetry={upload.retry}

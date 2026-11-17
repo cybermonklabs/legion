@@ -1,17 +1,29 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
-import { answerIssuePatches } from "./__tests__/send-answers";
+import { answerAgentStates, answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
+import type { Agent } from "./api/types";
 import { AuthGate } from "./app";
+import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
+import { answerDraft, setAnswerDraft } from "./features/inbox/answer-drafts";
+import { setReplyDraft, useReplyDraft } from "./features/inbox/reply-drafts";
 import {
   OTHER_TABS_ANSWER_MS,
   SIGN_OUT_SETTLE_MS,
@@ -23,13 +35,15 @@ import { plainWrite, writesOf } from "./features/writes/write-store";
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
 
-/** The app at `/`, its whoami answered by `whoAmI` and its sign-out by `logout`, with window's
- *  confirm answered by `confirm` and every question it asked recorded. */
+/** The app at `at` (`/` unless named), its whoami answered by `whoAmI` and its sign-out by
+ *  `logout`, with window's confirm answered by `confirm` and every question it asked recorded. */
 function renderApp({
+  at = "/",
   confirm = () => true,
   logout = async () => ({ ok: true as const }),
   whoAmI,
 }: {
+  at?: string;
   confirm?: () => boolean;
   logout?: () => Promise<{ ok: true }>;
   whoAmI: () => Promise<{ event_head: string; kind: "user"; login: string }>;
@@ -69,7 +83,7 @@ function renderApp({
   const logoutSpy = spyOn(api, "logout").mockImplementation(logout);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
-    <MemoryRouter initialEntries={["/"]}>
+    <MemoryRouter initialEntries={[at]}>
       <QueryClientProvider client={queryClient}>
         <AuthGate />
       </QueryClientProvider>
@@ -270,8 +284,8 @@ test("a sign-out the reader stopped does not say the person is still signed in",
   }
 });
 
-// The shell is not drawn again for another person: someone signed in from another tab arrives
-// here in place. A sign-out Dispatch refused is the person's it was pressed for, so once someone
+// Someone signed in from another tab arrives at this page, which draws them a shell of their own.
+// A sign-out Dispatch refused is the person's it was pressed for, so once someone
 // else is signed in its refusal - which would tell them they are still signed in, with every
 // change - and its Retry, which would sign them out, are gone.
 test("a sign-out refused for one person is gone, its Retry with it, once another signs in from another tab", async () => {
@@ -297,6 +311,108 @@ test("a sign-out refused for one person is gone, its Retry with it, once another
   } finally {
     tab.close();
     app.teardown();
+  }
+});
+
+// A draft is the person's who typed it, and every draft store outlives the shell, which someone
+// signed in from another tab arrives in, as the write store does. Once another person is signed
+// in, none of the drafts the person before typed and did not send is kept: a composer's, one it
+// keeps for another address, an ask's answer and an ask's reply (`DraftStore.signedIn`).
+test("another person signed in from another tab finds none of the drafts the person before kept", async () => {
+  let login = "alice";
+  const app = renderApp({ whoAmI: async () => ({ event_head: "0", kind: "user", login }) });
+  const tab = new BroadcastChannel("dispatch-sign-in");
+  const unsent = unsentDraftsOf(app.queryClient);
+  const draft = { body: "Alice's unsent reply", mentions: [], replacement: "" };
+  const reply = renderHook(() => useReplyDraft("ask-1"));
+  try {
+    await screen.findByText("Signed in as alice");
+    act(() => {
+      unsent.write("composer", draft);
+      unsent.writeAway("composer", null, {
+        draft,
+        owner: { issueKey: "CORE-1", kind: "issue" },
+        replyTo: null,
+      });
+      setAnswerDraft("ask-1", "Alice's unsent answer");
+      setReplyDraft("ask-1", "Alice's unsent ask reply");
+    });
+    expect(unsent.read("composer")).toEqual(draft);
+    expect(unsent.readAway("composer", null)?.draft).toEqual(draft);
+    expect(answerDraft("ask-1")).toBe("Alice's unsent answer");
+    expect(reply.result.current[0]).toBe("Alice's unsent ask reply");
+
+    login = "bob";
+    act(() => tab.postMessage("bob"));
+    await screen.findByText("Signed in as bob");
+    await waitFor(() => expect(unsent.read("composer")).toBeUndefined());
+    expect(unsent.readAway("composer", null)).toBeUndefined();
+    expect(answerDraft("ask-1")).toBe("");
+    expect(reply.result.current[0]).toBe("");
+  } finally {
+    reply.unmount();
+    tab.close();
+    app.teardown();
+  }
+});
+
+/** A running session the Agents page draws a row for, whose composer a test types into. */
+const planner: Agent = {
+  capabilities: ["aside", "btw"],
+  dir: "/workspaces/planner",
+  host: "build-host",
+  last_activity: new Date(Date.now() - 60_000).toISOString(),
+  last_seen: Date.now() - 30_000,
+  machine_id: "build-host",
+  open_asks: 0,
+  roles: ["planner"],
+  session_id: "planner-session",
+  state: "running",
+  title: "Planner",
+};
+
+// What the reader typed and has not sent is theirs alone. A field on screen holds it in the shell
+// itself, so another person signed in from another tab is drawn a shell of their own, once every
+// store has let go of what the person before kept (`AuthGate`): the first person's words are on
+// no screen of the second's.
+test("a composer's typed text is not shown to another person signed in from another tab", async () => {
+  const user = userEvent.setup();
+  let login = "alice";
+  const agentReads = [
+    spyOn(api, "listAgents").mockResolvedValue([planner]),
+    spyOn(api, "listAgentMessages").mockResolvedValue([]),
+    spyOn(api, "getMyAgentState").mockResolvedValue({}),
+  ];
+  answerAgentStates().mockImplementation(async () => ({ unread_replies: 0 }));
+  const app = renderApp({
+    at: "/agents",
+    whoAmI: async () => ({ event_head: "0", kind: "user", login }),
+  });
+  const tab = new BroadcastChannel("dispatch-sign-in");
+  const typed = "Alice's words for the planner";
+  try {
+    await screen.findByText("Signed in as alice");
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const row = (await within(region).findByRole("heading", { name: "Planner" })).closest(
+      "article"
+    );
+    if (row === null) throw new Error("the Planner's row is missing");
+    await user.click(within(row).getByRole("button", { name: "Planner" }));
+    const field = await within(row).findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Comment",
+    });
+    await user.click(field);
+    await user.paste(typed);
+    expect(field.value).toBe(typed);
+
+    login = "bob";
+    act(() => tab.postMessage("bob"));
+    await screen.findByText("Signed in as bob");
+    await waitFor(() => expect(screen.queryAllByDisplayValue(typed).length).toBe(0));
+  } finally {
+    tab.close();
+    app.teardown();
+    for (const read of agentReads) read.mockRestore();
   }
 });
 

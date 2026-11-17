@@ -1,4 +1,4 @@
-import { api, type WriteBounds } from "../../api/client";
+import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type {
   AnchorInput,
   AskOption,
@@ -238,22 +238,36 @@ export function sameAddress(sent: Address, next: Address): boolean {
   );
 }
 
-/** Where `address` sends a message, in the composer's words: as a reply, as a direct message, or
- *  `preposition` its issue or another document - `for CORE-1` where a draft was written, `to
- *  CORE-1` where a send went. */
+/** The owner Dispatch stores the files of a message for `owner` under: its issue, its document's
+ *  project, or, for a direct message, the agent's conversation. */
+export function artifactOwnerOf(owner: ComposerOwner): ArtifactOwner {
+  switch (owner.kind) {
+    case "issue":
+      return { issue: owner.issueKey };
+    case "artifact":
+      return { project: owner.project };
+    case "session":
+      return { session: owner.sessionId };
+  }
+}
+
+/** What a message is for, named by the owner its files go to (`artifactOwnerOf`), in the
+ *  composer's words: as a direct message, or `preposition` its issue or another document - `for
+ *  CORE-1` where a draft was written or a file pasted, `to CORE-1` where a send went. The
+ *  composer's words of a pasted file and of a draft's address are these alike. */
+export function ownerWords(owner: ArtifactOwner, preposition: "for" | "to"): string {
+  if ("issue" in owner) return `${preposition} ${owner.issue}`;
+  if ("session" in owner) return "as a direct message";
+  return `${preposition} another document`;
+}
+
+/** Where `address` sends a message, in the composer's words: as a reply, or where its owner is
+ *  (`ownerWords`). */
 export function addressWords(
   { owner, replyTo }: CarriedAddress,
   preposition: "for" | "to"
 ): string {
-  if (replyTo !== null) return "as a reply";
-  switch (owner.kind) {
-    case "issue":
-      return `${preposition} ${owner.issueKey}`;
-    case "artifact":
-      return `${preposition} another document`;
-    case "session":
-      return "as a direct message";
-  }
+  return replyTo === null ? ownerWords(artifactOwnerOf(owner), preposition) : "as a reply";
 }
 
 /**

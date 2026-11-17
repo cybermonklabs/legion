@@ -34,7 +34,7 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
-import { inboxWriteScope, inWriteScope } from "./write-scope";
+import { inboxWriteScope, inWriteScope, sameWriteScope } from "./write-scope";
 
 /** What the page says when the server refused the press and nothing was marked. */
 export const MARK_ALL_REFUSED_TEXT = "Nothing was marked read.";
@@ -196,14 +196,10 @@ export function useMarkAllRead({
     target: () => "inbox:read",
   });
   // A press belongs to the list it was made over, which is its narrowing - the four fields its
-  // body carries: what it marked or did not mark is said beside that list alone, and once the
-  // reader narrows the list another way the bar says nothing of a press they did not make there
-  // (`useRefusalOfSubject`).
-  const failed = useRefusalOfSubject(write, (input) =>
-    (["kind", "priority", "project", "urgency"] as const).every(
-      (field) => JSON.stringify(input[field]) === JSON.stringify(scope[field])
-    )
-  );
+  // body carries (`sameWriteScope`): what it marked or did not mark is said beside that list
+  // alone, and once the reader narrows the list another way the bar says nothing of a press they
+  // did not make there (`useRefusalOfSubject`).
+  const failed = useRefusalOfSubject(write, (input) => sameWriteScope(input, scope));
 
   return {
     failure: failed ? (write.error instanceof SendStoppedError ? "stopped" : "refused") : undefined,

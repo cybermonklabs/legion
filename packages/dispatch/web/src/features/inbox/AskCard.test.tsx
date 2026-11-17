@@ -339,7 +339,7 @@ for (const shape of ["inline", "collapsed"] as const) {
     const card = renderUnreadAsk({ markRead: false, thread: shape });
     try {
       await card.view.findByText("Reply reply-2");
-      expect(card.screen.observed()).toEqual([]);
+      expect(card.screen.observed().length).toBe(0);
       expect(card.mark).not.toHaveBeenCalled();
     } finally {
       card.cleanup();

@@ -2,7 +2,7 @@ import { hashKey, type MutationKey } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef } from "react";
 
 import { type HeldDraft, type HeldSend, useHeldSend, useHeldSends } from "./held-sends";
-import type { CarriedAddress, SentRequest } from "./send-request";
+import type { Address, CarriedAddress, SentRequest } from "./send-request";
 
 /** A composer's send, read and written through the held-send store (`held-sends.ts`). */
 export interface ComposerSend {
@@ -26,9 +26,9 @@ export interface ComposerSend {
   readonly stop: () => void;
   /** Keeps what the reader wrote over a refusal, for the composer that mounts next. */
   readonly keep: (draft: HeldDraft) => void;
-  /** Takes a refusal to where the reader moved the composer with its own controls
-   *  (`HeldSends.carry`). */
-  readonly carry: (to: CarriedAddress) => void;
+  /** Takes a refusal that lives at `from`, the address the composer showed, to where the reader
+   *  moved the composer with its own controls (`HeldSends.carry`). */
+  readonly carry: (from: Address, to: CarriedAddress) => void;
 }
 
 /**
@@ -65,7 +65,7 @@ export function useComposerSend(
     [id, store]
   );
   return {
-    carry: (to) => store.carry(key, to),
+    carry: (from, to) => store.carry(key, from, to),
     discard: () => store.discard(key),
     held,
     keep: (draft) => store.keep(key, draft),

@@ -1,22 +1,19 @@
-import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
 import type { Comment } from "../../api/types";
-import { heldSends } from "../conversation/held-sends";
-import type { SentRequest } from "../conversation/send-request";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -430,46 +427,8 @@ const refusedText = "Couldn't send — the server is down";
  *  confirmed it, and its Retry asks again under its own key. */
 const stoppedText = new SendStoppedError().message;
 
-/** Sends `body` as the thread's reply through the held-send store, as its composer's Send does,
- *  to a server that is down, and stops it once it is late, as the reader's Stop trying does: the
- *  write may have been delivered, and the store holds it stopped under its key, `stopped-send`.
- *  `createComment` answers its attempts. */
-async function stopReply(
-  queryClient: QueryClient,
-  createComment: Mock<typeof api.createComment>,
-  body: string
-): Promise<void> {
-  createComment.mockRejectedValue(
-    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
-  );
-  const request: SentRequest = {
-    anchor: undefined,
-    ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body, mentions: [], replacement: "" },
-    edit: undefined,
-    kind: "comment",
-    owner: { issueKey: "CORE-1", kind: "issue" },
-    plainDelivery: "steer",
-    replyTo: { actor: root.author, excerpt: "", id: root.id, parentKind: "comment" },
-    sendKey: "stopped-send",
-  };
-  jest.useFakeTimers();
-  try {
-    act(() => {
-      heldSends(queryClient).send(replyKey, request);
-    });
-    await stopTheLateWrite(queryClient);
-  } finally {
-    realClock();
-  }
-}
-
-/** How each kept draft is named in a row's title. */
-const keptWords = {
-  refused: "Dispatch refused",
-  stopped: "the reader stopped",
-  typed: "never sent",
-} as const;
+/** The thread's reply, as a stopped send answers it (`stopReplySend`). */
+const rootReply = { actor: root.author, excerpt: "", id: root.id, parentKind: "comment" } as const;
 
 // Cancel reply is the reader's own move, and a margin thread has no other composer to take the
 // reply to: the reply is kept under its own send name, the card says so until the reader goes on
@@ -478,14 +437,16 @@ const keptWords = {
 // a refusal's Retry then goes under a key of its own, and a stopped send's under the key it went
 // out under, at the address it went to.
 for (const kept of ["typed", "refused", "stopped"] as const) {
-  test(`Cancel reply keeps a margin reply ${keptWords[kept]}, the card says so, and its Reply brings it back`, async () => {
+  test(`Cancel reply keeps a margin reply ${heldDraftWords[kept]}, the card says so, and its Reply brings it back`, async () => {
     const user = userEvent.setup();
     const queryClient = new QueryClient({
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
     });
     const createComment = spyOn(api, "createComment");
-    const body = `Reply ${keptWords[kept]}, then Cancel reply`;
-    if (kept === "stopped") await stopReply(queryClient, createComment, body);
+    const body = `Reply ${heldDraftWords[kept]}, then Cancel reply`;
+    if (kept === "stopped") {
+      await stopReplySend(queryClient, createComment, replyKey, body, rootReply);
+    }
     createComment.mockResolvedValue({ ...reply, body, id: "reply-2" });
     if (kept === "refused") {
       createComment.mockRejectedValueOnce(
@@ -843,7 +804,7 @@ test("an expanded thread is marked read once its newest reply has been on screen
 test("a collapsed thread shows no reply and marks nothing", async () => {
   const card = renderUnreadCard(false);
   try {
-    expect(card.screen.observed()).toEqual([]);
+    expect(card.screen.observed().length).toBe(0);
     await dwellOn(card.screen, screen.getByTestId(`margin-comment-${root.id}`));
     expect(card.mark).not.toHaveBeenCalled();
   } finally {

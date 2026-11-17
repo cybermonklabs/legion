@@ -30,7 +30,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useHeldSend, useHeldSendsUnder } from "../conversation/held-sends";
-import { MentionComposer } from "../conversation/MentionComposer";
+import { KeptReply, MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
@@ -368,8 +368,7 @@ export function ThreadCard({
     !expanded && (heldReply?.status === "refused" || unsentReply) ? (
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
-          Your reply to the comment by <AgentName actor={root.author} inline /> is kept. Press{" "}
-          {reopenControl ?? "Reply"} to go on with it.
+          <KeptReply actor={root.author} press={reopenControl ?? "Reply"} />
         </p>
         {reopenControl === undefined ? (
           <button

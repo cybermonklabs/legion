@@ -273,5 +273,5 @@ test("every watch on the page shares one observer, and one ending leaves the res
     view.unmount();
     screen.restore();
   }
-  expect(screen.observed()).toEqual([]);
+  expect(screen.observed().length).toBe(0);
 });

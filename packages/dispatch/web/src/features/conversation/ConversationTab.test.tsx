@@ -6,7 +6,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { jump, realClock } from "../../__tests__/fake-clock";
+import { jump } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
   dwellOn,
@@ -16,7 +16,7 @@ import {
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
@@ -46,8 +46,6 @@ import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
-import { heldSends } from "./held-sends";
-import type { SentRequest } from "./send-request";
 import { threadReplySendKey } from "./usePhoneThread";
 
 const alice: Actor = { id: "alice", kind: "user" };
@@ -1810,46 +1808,12 @@ const stoppedText = new SendStoppedError().message;
 const threadComposerKey: MutationKey = ["conversation-composer", "CORE-1", "phone-thread"];
 const cardReplyKey = threadReplySendKey(["conversation-composer", "CORE-1"], "comment-a");
 
-/** Sends `body` as a reply to `Comment A` under `mutationKey` through the held-send store, as
- *  that composer's Send does, to a server that is down, and stops it once it is late, as the
- *  reader's Stop trying does: the write may have been delivered, and the store holds it stopped
- *  under its own key. `createComment` answers its attempts. */
-async function stopReplyToCommentA(
-  queryClient: QueryClient,
-  createComment: Mock<typeof api.createComment>,
-  mutationKey: MutationKey,
-  body: string
-): Promise<void> {
-  createComment.mockRejectedValue(
-    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
-  );
-  const request: SentRequest = {
-    anchor: undefined,
-    ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body, mentions: [], replacement: "" },
-    edit: undefined,
-    kind: "comment",
-    owner: { issueKey: "CORE-1", kind: "issue" },
-    plainDelivery: "steer",
-    replyTo: { actor: alice, excerpt: "Comment A", id: "comment-a", parentKind: "comment" },
-    sendKey: "stopped-send",
-  };
-  jest.useFakeTimers();
-  try {
-    act(() => {
-      heldSends(queryClient).send(mutationKey, request);
-    });
-    await stopTheLateWrite(queryClient);
-  } finally {
-    realClock();
-  }
-}
-
-/** How each held draft is named in a row's title. */
-const heldWords = {
-  refused: "Dispatch refused",
-  stopped: "the reader stopped",
-  typed: "never sent",
+/** The reply to `Comment A` a stopped send answers (`stopReplySend`). */
+const commentAReply = {
+  actor: alice,
+  excerpt: "Comment A",
+  id: "comment-a",
+  parentKind: "comment",
 } as const;
 
 // Back is a move of the host's, not one the reader makes with the composer's own controls, so it
@@ -1857,15 +1821,15 @@ const heldWords = {
 // that comment's Reply brings it back - its text, a refusal's note, and a stopped send's note
 // that it may have been delivered. Nothing is sent meanwhile.
 for (const held of ["typed", "refused", "stopped"] as const) {
-  test(`on a phone, a thread reply ${heldWords[held]} comes back with the comment's Reply after Back`, async () => {
+  test(`on a phone, a thread reply ${heldDraftWords[held]} comes back with the comment's Reply after Back`, async () => {
     const user = userEvent.setup();
     const createComment = spyOn(api, "createComment").mockRejectedValue(
       new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
     );
     const queryClient = newQueryClient();
-    const body = `Reply ${heldWords[held]}, then Back`;
+    const body = `Reply ${heldDraftWords[held]}, then Back`;
     if (held === "stopped") {
-      await stopReplyToCommentA(queryClient, createComment, threadComposerKey, body);
+      await stopReplySend(queryClient, createComment, threadComposerKey, body, commentAReply);
     }
     const phone = phoneOverCommentA(createComment, queryClient);
     const reply = async () => {
@@ -1908,15 +1872,15 @@ for (const held of ["typed", "refused", "stopped"] as const) {
 // host's move all the same, so the card's draft is held for its thread, and opening the thread
 // again brings it back, with a refusal's note or a stopped send's.
 for (const held of ["typed", "refused", "stopped"] as const) {
-  test(`on a phone, the thread card's own reply ${heldWords[held]} comes back in its thread after Back`, async () => {
+  test(`on a phone, the thread card's own reply ${heldDraftWords[held]} comes back in its thread after Back`, async () => {
     const user = userEvent.setup();
     const createComment = spyOn(api, "createComment").mockRejectedValue(
       new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
     );
     const queryClient = newQueryClient();
-    const body = `Card reply ${heldWords[held]}, then Back`;
+    const body = `Card reply ${heldDraftWords[held]}, then Back`;
     if (held === "stopped") {
-      await stopReplyToCommentA(queryClient, createComment, cardReplyKey, body);
+      await stopReplySend(queryClient, createComment, cardReplyKey, body, commentAReply);
     }
     const phone = phoneOverCommentA(createComment, queryClient);
     const openThread = async () => {

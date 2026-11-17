@@ -24,5 +24,9 @@ export const useReplyDraft = store.useDraft;
  *  (`AskReplyComposer`). */
 export const setReplyDraft = store.set;
 
+/** Who is signed in now: another person's sign-in forgets every reply draft, since each is the
+ *  person's who typed it (`DraftStore.signedIn`). */
+export const replyDraftsSignedIn = store.signedIn;
+
 /** Forgets every reply draft, for the unit-test preload. */
 export const resetReplyDrafts = store.reset;

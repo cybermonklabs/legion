@@ -4,7 +4,7 @@ import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/re
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { createRef, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
@@ -27,7 +27,7 @@ import {
   SendExpiredError,
   SendStoppedError,
 } from "../writes/keyed-write";
-import type { ComposerOwner, ReplyTarget } from "./composer-model";
+import type { ComposerOwner, DraftIntake, ReplyTarget } from "./composer-model";
 import { MentionComposer, reconcileMentions, stoppedRoleOptions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 
@@ -3035,13 +3035,13 @@ test("a closed suggestion composer shows only a send of its own still out, then 
   }
 });
 
-// An upload carries its target from the paste that starts it: a host that re-addresses the
-// composer in the paste's own task - before React re-renders - moves where the next upload goes,
-// never this one, and the reference names where the file went. That reference belongs to the
-// draft the file was pasted into, which a move of the host's leaves where it was: it waits, and
-// the composer says so, while the composer is on CORE-2, and joins the message once the composer
-// is back on CORE-1.
-test("a pick in the paste's own task cannot move the upload", async () => {
+// An upload carries its target from the paste that starts it: a host move that re-addresses the
+// composer in the paste's own task - before React re-renders, and with no count in `ownMoves` -
+// moves where the next upload goes, never this one, and the reference names where the file went.
+// That reference belongs to the draft the file was pasted into, which the host move leaves where
+// it was: it waits, and the composer says so, while the composer is on CORE-2, and joins the
+// message once the composer is back on CORE-1.
+test("a host move in the paste's own task cannot move the upload", async () => {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({
     artifact: { slug: "notes-md" } as never,
     version: {} as never,
@@ -3072,6 +3072,54 @@ test("a pick in the paste's own task cannot move the upload", async () => {
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
+  }
+});
+
+// A draft the reader carried here from another composer goes in the field only while this
+// composer holds nothing of its own (`DraftIntake`): a refusal it holds is a send of its own,
+// even once the reader has emptied the field over it, so the carried draft is turned down and
+// the field stays as the reader left it. The phone thread composer's Cancel reply puts its draft
+// away instead (`usePhoneThread`), and its refusal is never carried in over this one.
+test("a composer holding a refused send of its own takes no carried draft, even over an empty field", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValueOnce(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const user = userEvent.setup();
+  const intake = createRef<DraftIntake>();
+  const owner: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer intake={intake} onClose={() => {}} onSent={() => {}} owner={owner} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("Docked");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText("Couldn't send — the server is down");
+    await user.clear(field);
+    expect(field.value).toBe("");
+
+    let took: boolean | undefined;
+    act(() => {
+      took = intake.current?.take(
+        { body: "Carried", mentions: [], replacement: "" },
+        { owner, replyTo: null }
+      );
+    });
+    expect(took).toBe(false);
+    expect(field.value).toBe("");
+    expect(screen.getByText("Couldn't send — the server is down")).toBeTruthy();
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
   }
 });
 

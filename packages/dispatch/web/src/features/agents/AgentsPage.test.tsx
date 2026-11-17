@@ -4659,6 +4659,15 @@ test("a send alice left behind is not resumed for bob, and is dropped", async ()
   bob.whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login: "bob" });
   bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
   try {
+    // The sign-in check `renderAgents` started still answers alice after the data above names
+    // bob, and the page reads who is signed in again after that, so the shell is drawn for bob,
+    // then alice, then bob, each person a shell of their own (`AuthGate`). The page asserted on is
+    // the one drawn once the check has settled on bob, its card looked up there.
+    await waitFor(() => {
+      const check = bob.queryClient.getQueryState<{ login: string }>(["whoami"]);
+      expect(check?.fetchStatus).toBe("idle");
+      expect(check?.data?.login).toBe("bob");
+    });
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");

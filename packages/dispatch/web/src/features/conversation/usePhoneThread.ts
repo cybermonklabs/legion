@@ -2,9 +2,13 @@ import type { MutationKey } from "@tanstack/react-query";
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useSending } from "../../hooks/useSending";
-import type { ComposerOwner, ReplyTarget } from "./composer-model";
+import {
+  type ComposerOwner,
+  type DraftIntake,
+  hasUnsavedInput,
+  type ReplyTarget,
+} from "./composer-model";
 import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "./held-sends";
-import { type DraftIntake, hasUnsavedInput } from "./MentionComposer";
 import type { CarriedAddress, SentDraft } from "./send-request";
 
 /** The name every comment thread card's own reply send in a tab sits beneath. */
@@ -137,7 +141,9 @@ export function usePhoneThread({
       setReplyTo(null);
       return;
     }
-    if (store.get(sendKey) === undefined && dockedIntake.current?.take(draft, to) === true) {
+    // The docked composer takes the draft only while it holds nothing of its own, a send of its
+    // own included (`DraftIntake`), so the refusal carried after it is the only send there.
+    if (dockedIntake.current?.take(draft, to) === true) {
       store.carryInto(composerKey, sendKey, to);
       setReplyTo(null);
       return;

@@ -71,7 +71,9 @@ test("a file upload carries the token as the form's precondition field", async (
   expect((body as FormData).get("precondition")).toBe(JSON.stringify({ document: TOKEN }));
 });
 
-// The server reads an empty field as a token, so an upload naming none sends no field at all.
+// An upload naming no token sends no precondition field: the server answers an empty field as none,
+// and reads any other value as a token, refusing one that is not (multipartJSONField,
+// artifacts.go:353-357).
 test("an upload that names no token sends no precondition, in either shape", async () => {
   const text = recordingClient();
   await text.api.uploadArtifact(

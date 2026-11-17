@@ -47,6 +47,10 @@ export interface UnsentDrafts {
   /** Whether a draft is kept under `name`, re-rendering whenever that changes: a thread card
    *  whose reply composer is off the page says it keeps the reply's draft. */
   useKept(name: string): boolean;
+  /** Who is signed in now: another person's sign-in forgets every draft in both stores, the
+   *  drafts kept by address with them, since each is the person's who typed it
+   *  (`DraftStore.signedIn`). */
+  signedIn(login: string | undefined): void;
   /** Keeps `draft` under `name`, or, given none, forgets the draft there. */
   write(name: string, draft: SentDraft | undefined): void;
   /** The draft kept under `name` for the reply `replyTo` answers, or for none. */
@@ -67,8 +71,7 @@ const drafts = new WeakMap<QueryClient, UnsentDrafts>();
 /** The unsent drafts that live with the query client, as the held sends do (`heldSends`): a draft
  *  store holds text, so each draft is kept as its JSON, and the drafts a composer keeps by address
  *  as one JSON list under its send name, in a store of their own. */
-export function useUnsentDrafts(): UnsentDrafts {
-  const client = useQueryClient();
+export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
   let unsent = drafts.get(client);
   if (unsent === undefined) {
     const store = createDraftStore();
@@ -91,6 +94,10 @@ export function useUnsentDrafts(): UnsentDrafts {
         parseAway(awayStore.read(name)).find(
           (away) => (away.replyTo?.id ?? null) === (replyTo?.id ?? null)
         ),
+      signedIn: (login) => {
+        store.signedIn(login);
+        awayStore.signedIn(login);
+      },
       useAway,
       useKept,
       write: (name, draft) => store.set(name, draft === undefined ? "" : JSON.stringify(draft)),
@@ -106,4 +113,9 @@ export function useUnsentDrafts(): UnsentDrafts {
     drafts.set(client, unsent);
   }
   return unsent;
+}
+
+/** The unsent drafts of the query client this component renders under (`unsentDraftsOf`). */
+export function useUnsentDrafts(): UnsentDrafts {
+  return unsentDraftsOf(useQueryClient());
 }

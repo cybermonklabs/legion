@@ -91,7 +91,7 @@ import {
   useHeldSends,
   useHeldSendsUnder,
 } from "./held-sends";
-import { MentionComposer } from "./MentionComposer";
+import { KeptReply, MentionComposer } from "./MentionComposer";
 import { ReplyButton } from "./ReplyButton";
 import { ReplyTurn, ThreadReplies, TurnActions } from "./ReplyTurn";
 import type { CarriedBlockIds } from "./send-request";
@@ -1110,12 +1110,7 @@ export function ConversationTab({
   // A thread reply put away over the docked composer's own draft is out of sight, so the docked
   // composer says it is kept, whose comment it answers, and how to go on with it.
   const parkedNotice =
-    phone.parked && phone.replyTo !== null ? (
-      <>
-        Your reply to the comment by <AgentName actor={phone.replyTo.actor} inline /> is kept. Press
-        Reply on that comment to go on with it.
-      </>
-    ) : undefined;
+    phone.parked && phone.replyTo !== null ? <KeptReply actor={phone.replyTo.actor} /> : undefined;
   // The list is on the page only once all four reads answer: `loading` and `failed` both hide it
   // (the early returns below) and withhold `latestItemSeq`, so the two cannot drift apart. The
   // number is the newest activity's own millisecond, since the list is ordered by activity.

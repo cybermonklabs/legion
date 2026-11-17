@@ -27,6 +27,7 @@ import {
 } from "../../api/client";
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
+  Actor,
   Agent,
   AskOption,
   AskUrgency,
@@ -86,13 +87,15 @@ import {
   type TextEditRange,
   textareaValue,
 } from "./block-spans";
-import type {
-  AcceptedMention,
-  AnchorRefusal,
-  ComposerAnchor,
-  ComposerKind,
-  ComposerOwner,
-  ReplyTarget,
+import {
+  type AcceptedMention,
+  type AnchorRefusal,
+  type ComposerAnchor,
+  type ComposerKind,
+  type ComposerOwner,
+  type DraftIntake,
+  hasUnsavedInput,
+  type ReplyTarget,
 } from "./composer-model";
 import { MODE_LABELS, plainDelivery } from "./delivery";
 import type { HeldSend } from "./held-sends";
@@ -100,13 +103,14 @@ import { ReplyQuote } from "./ReplyQuote";
 import {
   type Address,
   addressWords,
-  type CarriedAddress,
+  artifactOwnerOf,
   carriedIdsOf,
   DELIVERY_COMMANDS,
   type DeliveryPlan,
   deliveryPlan,
   KEYED_SEND_LATE_TEXT,
   mentionText,
+  ownerWords,
   requestFor,
   type SaveCommentEdit,
   type SentDraft,
@@ -435,18 +439,6 @@ function replyPrefill(replyTo: ReplyTarget): Draft {
   };
 }
 
-export function hasUnsavedInput(
-  body: string,
-  replacement: string,
-  options: readonly Pick<AskOptionDraft, "description" | "label">[] = []
-): boolean {
-  return (
-    body.trim().length > 0 ||
-    replacement.trim().length > 0 ||
-    options.some((option) => option.label.trim().length > 0 || option.description.trim().length > 0)
-  );
-}
-
 /** Whether Send takes the draft now: nothing refuses it (`draftRefusal`, the one rule for what an
  *  empty draft is) and no save or upload it waits on is in flight. */
 export function canSubmitComposer(
@@ -523,20 +515,11 @@ function writtenElsewhere(held: SentRequest, standing: boolean): string {
   return `This message was written ${addressWords(held, "for")}. Go back to it to send it, or discard it.`;
 }
 
-/** Where a file was pasted, as the composer's sentences of its upload name it: `for CORE-1`. */
-function pastedWhere(owner: ArtifactOwner): string {
-  return "issue" in owner
-    ? `for ${owner.issue}`
-    : "session" in owner
-      ? "into a direct message"
-      : "for another document";
-}
-
 /** What a refused upload says while the composer addresses another owner than the one the draft
  *  its file was pasted into lives at: a Retry from here would add its reference to a message for
  *  somewhere else, so the Retry waits for the composer to be back there. */
 function pastedElsewhere(owner: ArtifactOwner): string {
-  return `This file was pasted ${pastedWhere(owner)}. Go back to it to try the upload again.`;
+  return `This file was pasted ${ownerWords(owner, "for")}. Go back to it to try the upload again.`;
 }
 
 /** What the composer says of files that landed into a draft living at another owner than the one
@@ -544,10 +527,33 @@ function pastedElsewhere(owner: ArtifactOwner): string {
  *  there. */
 function landedFor(owner: ArtifactOwner, files: number): string {
   return files === 1
-    ? `The file pasted ${pastedWhere(owner)} is uploaded. ` +
+    ? `The file pasted ${ownerWords(owner, "for")} is uploaded. ` +
         "Its reference joins the message when you go back to it."
-    : `The ${files} files pasted ${pastedWhere(owner)} are uploaded. ` +
+    : `The ${files} files pasted ${ownerWords(owner, "for")} are uploaded. ` +
         "Their references join the message when you go back to it.";
+}
+
+/** The sentence said of a reply the reader wrote and that is kept out of sight - by a composer of
+ *  a draft it keeps for another reply, by the docked composer of a thread reply put away over its
+ *  own draft, and by a closed thread card of its reply: whose comment or message it answers, by
+ *  its author, and the control that goes on with it, that comment's or message's Reply unless the
+ *  host names the control beside the sentence (`press`). */
+export function KeptReply({
+  actor,
+  parentKind = "comment",
+  press,
+}: {
+  readonly actor: Actor;
+  readonly parentKind?: ReplyTarget["parentKind"];
+  readonly press?: string;
+}): ReactNode {
+  const parent = parentKind === "message" ? "message" : "comment";
+  return (
+    <>
+      Your reply to the {parent} by <AgentName actor={actor} inline /> is kept. Press{" "}
+      {press ?? `Reply on that ${parent}`} to go on with it.
+    </>
+  );
 }
 
 /** What the composer says of a draft it keeps for another address than the one it shows
@@ -558,13 +564,7 @@ function keptAwayLine({ owner, replyTo }: AwayDraft): ReactNode {
   if (replyTo === null) {
     return `The message you wrote ${addressWords({ owner, replyTo }, "for")} is kept. Press Cancel reply to go on with it.`;
   }
-  const parent = replyTo.parentKind === "message" ? "message" : "comment";
-  return (
-    <>
-      Your reply to the {parent} by <AgentName actor={replyTo.actor} inline /> is kept. Press Reply
-      on that {parent} to go on with it.
-    </>
-  );
+  return <KeptReply actor={replyTo.actor} parentKind={replyTo.parentKind} />;
 }
 
 /** Whether an edit whose draft is `draft`, written over the comment's body `base`, waits beside
@@ -574,15 +574,6 @@ function keptAwayLine({ owner, replyTo }: AwayDraft): ReactNode {
  *  would save it leaves nothing to offer. */
 function changedUnder(draft: SentDraft, base: string | undefined, body: string): boolean {
   return base !== body && textareaValue(draft.body).trim() !== textareaValue(body).trim();
-}
-
-/** A composer's field as its host hands it a draft the reader carried there from another
- *  composer with that composer's own control (`intake`). */
-export interface DraftIntake {
-  /** Puts `draft`, which the reader carried to `to`, in the field, and says whether it did: a
-   *  composer takes it only while it shows `to`, and only while it holds nothing of its own - a
-   *  draft typed, or a send out or refused - which it never writes over. */
-  readonly take: (draft: SentDraft, to: CarriedAddress) => boolean;
 }
 
 interface MentionComposerProps {
@@ -1194,6 +1185,24 @@ export function MentionComposer({
     if (mutationKey === undefined) return;
     return registerComposer({ keepDraft: () => keepDraft.current(), mutationKey });
   }, [composerName, registerComposer]);
+  /** An anchored composer's Close, and Escape once no suggestion list, picker or reply takes it:
+   *  over a draft the reader has not sent - typed, or handed back by a refusal - it raises
+   *  `Discard draft?` rather than dropping what they wrote with nothing said, and it closes at once
+   *  over an empty field. */
+  const closeOrAsk = () => {
+    if (!hasUnsavedInput(body, replacement, askOptions) || confirmingDiscard) {
+      onClose();
+      return;
+    }
+    const active = document.activeElement;
+    lastFocusedField.current =
+      active instanceof HTMLElement && formRef.current?.contains(active) ? active : null;
+    setConfirmingDiscard(true);
+  };
+  // The Escape listener below reads it as it stands, as it reads `cancelReplyNow`, so it is not
+  // re-bound each render for it.
+  const closeOrAskNow = useRef(closeOrAsk);
+  closeOrAskNow.current = closeOrAsk;
   useEffect(() => {
     const form = formRef.current;
     if (form === null || dormant) return;
@@ -1215,27 +1224,15 @@ export function MentionComposer({
         return;
       }
       event.stopPropagation();
-      if (!hasUnsavedInput(body, replacement, askOptions) || confirmingDiscard) {
-        onClose();
-        return;
-      }
-      const active = document.activeElement;
-      lastFocusedField.current =
-        active instanceof HTMLElement && form.contains(active) ? active : null;
-      setConfirmingDiscard(true);
+      closeOrAskNow.current();
     };
     form.addEventListener("keydown", handleEscape);
     return () => form.removeEventListener("keydown", handleEscape);
   }, [
-    askOptions,
     autocomplete,
-    body,
-    confirmingDiscard,
     // A dormant composer renders no form; the one it renders when it wakes takes the listener.
     dormant,
-    onClose,
     referencePickerOpen,
-    replacement,
     replyTo,
   ]);
   // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
@@ -1266,14 +1263,7 @@ export function MentionComposer({
   );
   // Where a pasted or dropped file goes: the issue or the project document the draft is for, or,
   // for a direct message, the agent's conversation. An edit takes no files.
-  const uploadOwner: ArtifactOwner | undefined =
-    edit !== undefined
-      ? undefined
-      : owner.kind === "issue"
-        ? { issue: owner.issueKey }
-        : owner.kind === "artifact"
-          ? { project: owner.project }
-          : { session: owner.sessionId };
+  const uploadOwner = edit !== undefined ? undefined : artifactOwnerOf(owner);
   const uploadKey = uploadOwner === undefined ? undefined : JSON.stringify(uploadOwner);
   /** The draft a file pasted or dropped for `pastedFor` goes into: the one living there, or a new
    *  one. */
@@ -1311,12 +1301,14 @@ export function MentionComposer({
   // A file goes to the owner its paste or drop named, and a refused upload's Retry makes that
   // press again (`DraftUpload.retry`): to that owner, and for the draft it was pasted into, which
   // the reader's own moves have taken along. A host can move the composer to another owner in
-  // between, so the draft the newest press went into is kept, and while the composer addresses
-  // another owner than the one that draft lives at the refusal offers no Retry here: it says
-  // where the file was pasted, and its Retry is back once the composer is.
-  const [uploadedFor, setUploadedFor] = useState<number>();
+  // between, so the refusal is read with the draft its press went into (`refusedDraft`), and
+  // while the composer addresses another owner than the one that draft lives at the refusal
+  // offers no Retry here: it says where the file was pasted, and its Retry is back once the
+  // composer is.
   const refusedHome =
-    upload.isError && uploadedFor !== undefined ? draftHomes.get(uploadedFor) : undefined;
+    upload.isError && upload.refusedDraft !== undefined
+      ? draftHomes.get(upload.refusedDraft)
+      : undefined;
   const uploadElsewhere =
     refusedHome !== undefined && JSON.stringify(refusedHome) !== uploadKey
       ? refusedHome
@@ -1605,7 +1597,7 @@ export function MentionComposer({
         : undefined;
     const arrivesAtOwn = replyMoved && !sendOut && (refusalAt(address) || kept !== undefined);
     if (before.moves !== moves && !arrivesAtOwn) {
-      if (refusalAt(before.address)) outgoing.carry({ owner, replyTo });
+      outgoing.carry(before.address, { owner, replyTo });
       const left =
         before.uploadOwner === undefined ? undefined : JSON.stringify(before.uploadOwner);
       const to = uploadOwner;
@@ -1710,19 +1702,6 @@ export function MentionComposer({
     replaceDraft(changed);
     setChanged(undefined);
     if (awayName !== undefined) unsent.writeAway(awayName, replyTo, undefined);
-  };
-  /** An anchored composer's Close, which asks as Escape does: over a draft the reader has not
-   *  sent - typed, or handed back by a refusal - it raises `Discard draft?` rather than dropping
-   *  what they wrote with nothing said, and it closes at once over an empty field. */
-  const closeOrAsk = () => {
-    if (!hasUnsavedInput(body, replacement, askOptions) || confirmingDiscard) {
-      onClose();
-      return;
-    }
-    const active = document.activeElement;
-    lastFocusedField.current =
-      active instanceof HTMLElement && formRef.current?.contains(active) ? active : null;
-    setConfirmingDiscard(true);
   };
   const bodyLabel =
     edit !== undefined
@@ -1898,9 +1877,7 @@ export function MentionComposer({
               ? undefined
               : (event: DragEvent<HTMLTextAreaElement>) => {
                   if (event.dataTransfer.files.length === 0) return;
-                  const draft = draftAt(uploadOwner);
-                  setUploadedFor(draft);
-                  upload.drop(event, uploadOwner, draft);
+                  upload.drop(event, uploadOwner, draftAt(uploadOwner));
                 }
           }
           onInput={
@@ -1929,9 +1906,7 @@ export function MentionComposer({
               ? undefined
               : (event: ClipboardEvent<HTMLTextAreaElement>) => {
                   if (event.clipboardData.files.length === 0) return;
-                  const draft = draftAt(uploadOwner);
-                  setUploadedFor(draft);
-                  upload.paste(event, uploadOwner, draft);
+                  upload.paste(event, uploadOwner, draftAt(uploadOwner));
                 }
           }
           readOnly={changed !== undefined}
@@ -2182,9 +2157,7 @@ export function MentionComposer({
       {uploadOwner === undefined ? null : (
         // An upload refused for another owner is that owner's: its refusal shows here in words of
         // its own, with no Retry (`uploadElsewhere`), and the status shows the rest.
-        <DraftUploadStatus
-          upload={uploadElsewhere === undefined ? upload : { ...upload, isError: false }}
-        />
+        <DraftUploadStatus showRefusal={uploadElsewhere === undefined} upload={upload} />
       )}
       {uploadElsewhere === undefined ? null : (
         <QueryError message={pastedElsewhere(uploadElsewhere)} />

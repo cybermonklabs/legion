@@ -25,5 +25,9 @@ export const useAnswerDraft = store.useDraft;
  *  ask's form addresses once a host draws the form for another ask (`useAskAnswerForm`). */
 export const setAnswerDraft = store.set;
 
+/** Who is signed in now: another person's sign-in forgets every answer draft, since each is the
+ *  person's who typed it (`DraftStore.signedIn`). */
+export const answerDraftsSignedIn = store.signedIn;
+
 /** Forgets every answer draft, for the unit-test preload. */
 export const resetAnswerDrafts = store.reset;

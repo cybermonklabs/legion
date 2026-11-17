@@ -26,6 +26,7 @@ import {
 } from "../writes/write-store";
 import type { ReplyTarget } from "./composer-model";
 import {
+  type Address,
   type CarriedAddress,
   type CarriedBlockIds,
   requestFor,
@@ -540,34 +541,36 @@ export class HeldSends {
     }
   }
 
-  /** Carries the refused send under `mutationKey` to `to`, where the reader moved its composer
-   *  with a control of the composer's own - Cancel reply, an Agents row's issue pick: the draft
-   *  goes with that move, and its refusal with it, so its Retry and its next Send go from there.
-   *  A refusal Dispatch gave judged the send's key, so that Retry is a new write anyway. A send
-   *  the reader stopped may have been delivered where it went, so its key is used only there:
-   *  carried away, it keeps the request it went out as (`stoppedSend`) and the draft goes on
-   *  under a key nothing has gone out under, its refusal saying the first may have been
-   *  delivered (`SendMovedError`); carried back, it is that request again, under its own key. A
-   *  move of the host's carries nothing (`send`). */
-  carry(mutationKey: MutationKey, to: CarriedAddress): void {
+  /** Carries the refused send under `mutationKey` from `from` to `to`, where the reader moved its
+   *  composer with a control of the composer's own - Cancel reply, an Agents row's issue pick: the
+   *  draft goes with that move, and its refusal with it, so its Retry and its next Send go from
+   *  there. Only a refusal whose draft lives at `from`, the address the composer showed before
+   *  the move, goes along (`sameAddress`): one the host moved the composer off stays with the
+   *  address it was written for. A refusal Dispatch gave judged the send's key, so that Retry is
+   *  a new write anyway. A send the reader stopped may have been delivered where it went, so its
+   *  key is used only there: carried away, it keeps the request it went out as (`stoppedSend`)
+   *  and the draft goes on under a key nothing has gone out under, its refusal saying the first
+   *  may have been delivered (`SendMovedError`); carried back, it is that request again, under
+   *  its own key. A move of the host's carries nothing (`send`). */
+  carry(mutationKey: MutationKey, from: Address, to: CarriedAddress): void {
     const held = this.get(mutationKey);
-    if (held?.status !== "refused") return;
+    if (held?.status !== "refused" || !sameAddress(held.request, from)) return;
     this.#writes.amend(held.id, composerSend, (detail) => carriedTo(detail, held.refusal, to));
   }
 
   /** Carries the refused send under `mutationKey` to `to` as `carry` does, and into the composer
-   *  named `into`, and says whether it did: the reader's own move ended the composer the send was
-   *  made in - the phone thread composer's Cancel reply - and `into` is the one that shows `to`,
-   *  the docked composer at the issue's own address. A composer holds one draft, so a send `into`
-   *  holds already, out or refused, is never written over: the send stays where it is. */
-  carryInto(mutationKey: MutationKey, into: MutationKey, to: CarriedAddress): boolean {
+   *  named `into`: the reader's own move ended the composer the send was made in - the phone
+   *  thread composer's Cancel reply - and `into` is the one that shows `to`, the docked composer
+   *  at the issue's own address, which has taken the send's draft into its field. A composer
+   *  takes a carried draft only while it holds no send of its own, out or refused
+   *  (`DraftIntake`), so the send carried in is the only one under `into`. */
+  carryInto(mutationKey: MutationKey, into: MutationKey, to: CarriedAddress): void {
     const held = this.get(mutationKey);
-    if (held?.status !== "refused" || this.get(into) !== undefined) return false;
+    if (held?.status !== "refused") return;
     this.#writes.amend(held.id, composerSend, (detail) => ({
       ...carriedTo(detail, held.refusal, to),
       mutationKey: sendName(into),
     }));
-    return true;
   }
 
   /** Sends the refused send under `mutationKey` again as a press of its own. Every Retry but a

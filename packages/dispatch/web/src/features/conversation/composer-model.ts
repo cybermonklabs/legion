@@ -72,3 +72,35 @@ export interface AcceptedMention {
   readonly target: string;
   readonly text: string;
 }
+
+/** A composer's field as its host hands it a draft the reader carried there from another
+ *  composer with that composer's own control (`MentionComposer`'s `intake`). The draft and the
+ *  address are a send's own shapes (`send-request.ts`'s `SentDraft` and `CarriedAddress`), spelled
+ *  here from this module's types, since that module reads its types from this one. */
+export interface DraftIntake {
+  /** Puts `draft`, which the reader carried to `to`, in the field, and says whether it did: a
+   *  composer takes it only while it shows `to`, and only while it holds nothing of its own - a
+   *  draft typed, or a send out or refused - which it never writes over. */
+  readonly take: (
+    draft: {
+      readonly body: string;
+      readonly mentions: readonly AcceptedMention[];
+      readonly replacement: string;
+    },
+    to: { readonly owner: ComposerOwner; readonly replyTo: ReplyTarget | null }
+  ) => boolean;
+}
+
+/** Whether a draft holds anything the reader wrote: its text, a suggestion's replacement, or an
+ *  ask option's label or description. */
+export function hasUnsavedInput(
+  body: string,
+  replacement: string,
+  options: readonly { readonly description: string; readonly label: string }[] = []
+): boolean {
+  return (
+    body.trim().length > 0 ||
+    replacement.trim().length > 0 ||
+    options.some((option) => option.label.trim().length > 0 || option.description.trim().length > 0)
+  );
+}

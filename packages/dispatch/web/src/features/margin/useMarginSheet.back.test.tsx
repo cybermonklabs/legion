@@ -1,14 +1,11 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
-import { heldSends } from "../conversation/held-sends";
-import type { SentRequest } from "../conversation/send-request";
 import { buildIssuePath } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
@@ -61,45 +58,12 @@ async function returnToThread(user: UserEvent): Promise<HTMLElement> {
   return card.getAttribute("aria-expanded") === "true" ? card : openThread(user);
 }
 
-/** Sends `body` as the thread's reply through the held-send store, as its composer's Send does,
- *  to a server that is down, and stops it once it is late, as the reader's Stop trying does: the
- *  write may have been delivered, and the store holds it stopped under its own key.
- *  `createComment` answers its attempts. */
-async function stopThreadReply(
-  queryClient: QueryClient,
-  createComment: Mock<typeof api.createComment>,
-  body: string
-): Promise<void> {
-  createComment.mockRejectedValue(
-    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
-  );
-  const request: SentRequest = {
-    anchor: undefined,
-    ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body, mentions: [], replacement: "" },
-    edit: undefined,
-    kind: "comment",
-    owner: { issueKey: issue.key, kind: "issue" },
-    plainDelivery: "steer",
-    replyTo: { actor: comment.author, excerpt: "", id: comment.id, parentKind: "comment" },
-    sendKey: "stopped-send",
-  };
-  jest.useFakeTimers();
-  try {
-    act(() => {
-      heldSends(queryClient).send(marginReplySendKey(comment.id), request);
-    });
-    await stopTheLateWrite(queryClient);
-  } finally {
-    realClock();
-  }
-}
-
-/** How each held draft is named in a row's title. */
-const heldWords = {
-  refused: "Dispatch refused",
-  stopped: "the reader stopped",
-  typed: "never sent",
+/** The thread's reply, as a stopped send answers it (`stopReplySend`). */
+const threadReply = {
+  actor: comment.author,
+  excerpt: "",
+  id: comment.id,
+  parentKind: "comment",
 } as const;
 
 // A phone margin thread's Back is a move of the host's, not one the reader makes with the
@@ -107,7 +71,7 @@ const heldWords = {
 // thread, and opening the thread again brings it back - its text, a refusal's note, and a stopped
 // send's note that it may have been delivered. Nothing is sent meanwhile.
 for (const held of ["typed", "refused", "stopped"] as const) {
-  test(`on a phone, a margin thread's reply ${heldWords[held]} comes back in its thread after Back`, async () => {
+  test(`on a phone, a margin thread's reply ${heldDraftWords[held]} comes back in its thread after Back`, async () => {
     const user = userEvent.setup();
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -118,8 +82,16 @@ for (const held of ["typed", "refused", "stopped"] as const) {
     const createComment = spyOn(api, "createComment").mockRejectedValue(
       new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
     );
-    const body = `Reply ${heldWords[held]}, then Back`;
-    if (held === "stopped") await stopThreadReply(queryClient, createComment, body);
+    const body = `Reply ${heldDraftWords[held]}, then Back`;
+    if (held === "stopped") {
+      await stopReplySend(
+        queryClient,
+        createComment,
+        marginReplySendKey(comment.id),
+        body,
+        threadReply
+      );
+    }
     const restore = phoneMargin(queryClient);
 
     try {
