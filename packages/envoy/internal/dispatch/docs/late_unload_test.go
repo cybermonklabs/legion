@@ -34,9 +34,7 @@ import (
 // by the whole of the resident room's history, for as long as that room lives.
 func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.T) {
 	r := unloadAcrossAReload(t)
-	r.letFirstUnload()
-	r.awaitFirstClose()
-	r.awaitUnload("the first room")
+	r.releaseFirstRoom()
 	// What is left is the second room's load and its write.
 	if got := r.service.residentBytes.Load(); got != r.second {
 		t.Errorf("the resident bytes after the first room's late unload = %d, want the %d the second room counted with its write: that unload takes back the bytes of the load that ended", got, r.second)
@@ -47,15 +45,7 @@ func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.
 	// it owes the write loads the document into a room of its own (settlement.take), which the
 	// service retires as the departing browser's socket ends (retireSettlementRoom), so nothing is
 	// left counted, with no wait for ygo's idle sweep.
-	held, letDeparture := r.holdDeparture()
-	_ = r.socket.Close()
-	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
-		t.Fatalf("close the second room: %v", err)
-	}
-	r.awaitUnload("the second room")
-	letDeparture()
-	r.awaitSocketEnd("the second room's browser")
+	r.departLate()
 	r.requireLateSettlementLoadedARoom()
 	r.requireNothingCounted("once the late departure's settlement has ended")
 }
@@ -166,9 +156,7 @@ func TestAnEarlierRoomsUnloadLeavesTheMarkOfASettlementRoomStillLoading(t *testi
 	// The late departure's settlement loads a third room, held once its load hook has recorded it
 	// as the settlement's, and the first room's unload runs then.
 	letReady := r.awaitSettlementLoadHeld(letDeparture)
-	r.letFirstUnload()
-	r.awaitFirstClose()
-	r.awaitUnload("the first room")
+	r.releaseFirstRoom()
 	letReady()
 	r.awaitSocketEnd("the second room's browser")
 	r.requireLateSettlementLoadedARoom()
@@ -181,16 +169,8 @@ func TestAnEarlierRoomsUnloadLeavesTheMarkOfASettlementRoomStillLoading(t *testi
 // departing browser's socket ends.
 func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
 	r := unloadAcrossAReload(t)
-	r.letFirstUnload()
-	r.awaitFirstClose()
-	r.awaitUnload("the first room")
-	held, letDeparture := r.holdDeparture()
-	_ = r.socket.Close()
-	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
-		t.Fatalf("close the second room: %v", err)
-	}
-	r.awaitUnload("the second room")
+	r.releaseFirstRoom()
+	letDeparture := r.closeUnderHeldDeparture()
 
 	letReady := r.awaitSettlementLoadHeld(letDeparture)
 	r.service.retireSettlementRoom(r.room)
@@ -211,9 +191,7 @@ func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
 // left the room, ends it only once the second has met it or returned (afterRetireLeft).
 func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 	r := unloadAcrossAReload(t)
-	r.letFirstUnload()
-	r.awaitFirstClose()
-	r.awaitUnload("the first room")
+	r.releaseFirstRoom()
 
 	var entered atomic.Int32
 	secondIn, firstReserved := make(chan struct{}), make(chan struct{})
@@ -271,15 +249,7 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 			t.Error("the second retirement neither met the first's reservation nor returned")
 		}
 	}
-	held, letDeparture := r.holdDeparture()
-	_ = r.socket.Close()
-	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
-		t.Fatalf("close the second room: %v", err)
-	}
-	r.awaitUnload("the second room")
-	letDeparture()
-	r.awaitSocketEnd("the second room's browser")
+	r.departLate()
 	select {
 	case <-secondDone:
 	case <-time.After(roomWait(t)):
@@ -302,9 +272,7 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 // room another load put back under the name is no room the write forked from.
 func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
 	r := unloadAcrossAReload(t)
-	r.letFirstUnload()
-	r.awaitFirstClose()
-	r.awaitUnload("the first room")
+	r.releaseFirstRoom()
 
 	// The retirement holds once it has reserved the record (afterRetireReserved), and the writer
 	// opens then. The hold ends once the writer has forked from the room, which it does with the
@@ -370,15 +338,7 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 			t.Errorf("once ygo's close of the retiring room has returned, the writer that opened as it retired waited for the retirement: %v, and holds the writer slot: %v; want it waiting, with no slot, until the retirement ends its reservation", waited.Load(), writing)
 		}
 	}
-	held, letDeparture := r.holdDeparture()
-	_ = r.socket.Close()
-	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
-		t.Fatalf("close the second room: %v", err)
-	}
-	r.awaitUnload("the second room")
-	letDeparture()
-	r.awaitSocketEnd("the second room's browser")
+	r.departLate()
 	if !reserved.Load() {
 		t.Fatal("no retirement reserved the room the late departure's settlement loaded, so nothing here is tested")
 	}
@@ -413,9 +373,7 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 // settleRoomWithin does, holds the room's record while it runs.
 func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
 	r := unloadAcrossAReload(t)
-	r.letFirstUnload()
-	r.awaitFirstClose()
-	r.awaitUnload("the first room")
+	r.releaseFirstRoom()
 
 	// The retirement holds once it has reserved the record (afterRetireReserved): the document
 	// is made to owe a settlement, and one starts then. The hold ends once that settlement has
@@ -468,15 +426,7 @@ func TestASettlementStartingAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAw
 			t.Errorf("once ygo's close of the retiring room has returned, the settlement that started as it retired waited for the retirement: %v, and has taken its room and the document's lock (afterSettleLock): %v; want it waiting, with no room, until the retirement ends its reservation", waited.Load(), reachedLock.Load())
 		}
 	}
-	held, letDeparture := r.holdDeparture()
-	_ = r.socket.Close()
-	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
-		t.Fatalf("close the second room: %v", err)
-	}
-	r.awaitUnload("the second room")
-	letDeparture()
-	r.awaitSocketEnd("the second room's browser")
+	r.departLate()
 	if !reserved.Load() {
 		t.Fatal("no retirement reserved the room the late departure's settlement loaded, so nothing here is tested")
 	}
@@ -515,9 +465,7 @@ var errLateSettlementStopsShort = errors.New("the test stops the late departure'
 // room, and that end comes whatever the order the machine runs the two in.
 func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds(t *testing.T) {
 	r := unloadAcrossAReload(t)
-	r.letFirstUnload()
-	r.awaitFirstClose()
-	r.awaitUnload("the first room")
+	r.releaseFirstRoom()
 
 	// The retry is armed a settle delay after the late settlement stops short.
 	r.service.settle = 20 * time.Millisecond
@@ -540,15 +488,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 		}
 		return nil
 	}
-	held, letDeparture := r.holdDeparture()
-	_ = r.socket.Close()
-	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
-		t.Fatalf("close the second room: %v", err)
-	}
-	r.awaitUnload("the second room")
-	letDeparture()
-	r.awaitSocketEnd("the second room's browser")
+	r.departLate()
 	if got := versionWrites.Load(); got < 1 {
 		t.Fatal("the late departure's settlement never reached its version write, so nothing here is tested")
 	}
@@ -572,9 +512,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 // fixture's settle delay of an hour keeps it armed until the synchronous settlement takes it.
 func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesItsRetryOverEnds(t *testing.T) {
 	r := unloadAcrossAReload(t)
-	r.letFirstUnload()
-	r.awaitFirstClose()
-	r.awaitUnload("the first room")
+	r.releaseFirstRoom()
 
 	var versionWrites atomic.Int32
 	r.service.afterSettleVersionWrite = func(room string) error {
@@ -583,15 +521,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheSynchronousSettlementThatTakesI
 		}
 		return nil
 	}
-	held, letDeparture := r.holdDeparture()
-	_ = r.socket.Close()
-	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
-		t.Fatalf("close the second room: %v", err)
-	}
-	r.awaitUnload("the second room")
-	letDeparture()
-	r.awaitSocketEnd("the second room's browser")
+	r.departLate()
 	if got := versionWrites.Load(); got != 1 {
 		t.Fatalf("the late departure's settlement reached %d version writes, want the one it stopped short at; nothing here is tested", got)
 	}
@@ -832,15 +762,47 @@ func (r *reloadedRoom) awaitHeld(held <-chan struct{}, who string) {
 	}
 }
 
-// holdLateSettlementInItsRoom lets the first room's held unload go, and closes the second room
-// while its browser's departure is held (holdDeparture). It then lets the departure go and holds
-// the settlement the departure runs once that settlement's warm-up has loaded a room of its own,
-// the document's third load (afterSettleWarm). It answers that room and the release of the hold.
-func (r *reloadedRoom) holdLateSettlementInItsRoom() (settlementRoom *crdt.Doc, letSettle func()) {
+// releaseFirstRoom lets the first room's held unload go (unloadAcrossAReload), and waits for that
+// room's close to return and its unload to run.
+func (r *reloadedRoom) releaseFirstRoom() {
 	r.t.Helper()
 	r.letFirstUnload()
 	r.awaitFirstClose()
 	r.awaitUnload("the first room")
+}
+
+// closeUnderHeldDeparture closes the second room's browser's socket with its departure held
+// (holdDeparture), then closes the second room and waits for its unload, so the departure runs
+// after the room's close has returned, as ygo may run it. It answers the release of the held
+// departure.
+func (r *reloadedRoom) closeUnderHeldDeparture() func() {
+	r.t.Helper()
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+		r.t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+	return letDeparture
+}
+
+// departLate lets the second room's browser depart after the room's close has returned
+// (closeUnderHeldDeparture), and waits for that browser's socket to end.
+func (r *reloadedRoom) departLate() {
+	r.t.Helper()
+	r.closeUnderHeldDeparture()()
+	r.awaitSocketEnd("the second room's browser")
+}
+
+// holdLateSettlementInItsRoom lets the first room's held unload go (releaseFirstRoom), and closes
+// the second room while its browser's departure is held (closeUnderHeldDeparture). It then lets
+// the departure go and holds the settlement the departure runs once that settlement's warm-up has
+// loaded a room of its own, the document's third load (afterSettleWarm). It answers that room and
+// the release of the hold.
+func (r *reloadedRoom) holdLateSettlementInItsRoom() (settlementRoom *crdt.Doc, letSettle func()) {
+	r.t.Helper()
+	r.releaseFirstRoom()
 	warmed, goOn := make(chan struct{}), make(chan struct{})
 	var goOnce sync.Once
 	letSettle = func() { goOnce.Do(func() { close(goOn) }) }
@@ -853,13 +815,7 @@ func (r *reloadedRoom) holdLateSettlementInItsRoom() (settlementRoom *crdt.Doc, 
 		close(warmed)
 		<-goOn
 	}
-	held, letDeparture := r.holdDeparture()
-	_ = r.socket.Close()
-	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
-		r.t.Fatalf("close the second room: %v", err)
-	}
-	r.awaitUnload("the second room")
+	letDeparture := r.closeUnderHeldDeparture()
 	letDeparture()
 	select {
 	case <-warmed:
