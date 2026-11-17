@@ -5,8 +5,8 @@ import { join } from "node:path";
 import {
   type Agent,
   type Answer,
-  blockIds,
   compareFindings,
+  type DocumentRead,
   dispatchShim,
   environmentOf,
   type Fixture,
@@ -20,9 +20,9 @@ import {
   parseFindings,
   placesOf,
   type Root,
+  readingProblems,
   readPlan,
   specFormCalled,
-  termNames,
   withIssueKey,
 } from "../run";
 
@@ -361,55 +361,124 @@ describe("compareFindings", () => {
   });
 });
 
-// The form check reads a statement in two forms: a requirement block, and the entry line of the
-// how-to of The Spec. A run judges the reviewer at each node, so the fixtures' nodes are read in
-// both forms too.
-describe("blockIds", () => {
-  test("reads the id of a requirement block, a check block and an entry line", () => {
-    const markdown = [
-      ":::requirement{#door-closes}",
-      "The door closes after 60 seconds.",
-      ":::",
-      '::::check{#v-door-closes serves="dispatch://ACME-1/spec#b-door-closes"}',
-      "The door closes.",
-      "::::",
-      "- **The kiosk prints one receipt.** `kiosk-receipt` · under: `kiosk` · check: none",
-      "* **The kiosk beeps once.** `kiosk-beep` · under: `kiosk` · check: none",
-      "- **A term**: not a statement.",
-    ].join("\n");
-    expect(blockIds(markdown)).toEqual([
-      "door-closes",
-      "v-door-closes",
-      "kiosk-receipt",
-      "kiosk-beep",
+// Before any agent runs, the command reads what the application's own reader read in each
+// seeded document, and the evaluation reads no text of a fixture itself: it takes the ids of the
+// statements and the checks, and the names of the terms, from Dispatch. These reads are what
+// Dispatch answers for fixtures 13 and 14, whose texts a copy of the rules reads otherwise: a
+// heading `## **Terms**` is the heading Terms, and a requirement block or an entry line in a
+// block quote is a statement.
+describe("readingProblems", () => {
+  const answer = (
+    nodes: readonly string[],
+    definitions: readonly string[] = [],
+    terms: readonly string[] = ["door controller", "kiosk", "locker", "tenant"]
+  ): FormRead => ({
+    in_scope: true,
+    scope: "covered",
+    findings: [],
+    nodes: nodes.map((node) => ({ kind: "statement", node })),
+    definitions: definitions.map((term) => ({ term })),
+    terms: terms.map((term) => ({ term })),
+    unread: [],
+  });
+  const spec = (read: FormRead): DocumentRead[] => [{ document: "spec.md", read }];
+
+  test("passes fixture 13 when Dispatch reads its door alarm as a term of the request", () => {
+    const thirteen = fixture("13-markup-heading");
+    expect(readingProblems(thirteen, spec(answer(["door-alarm-start"], ["door alarm"])))).toEqual(
+      []
+    );
+    expect(readingProblems(thirteen, spec(answer(["door-alarm-start"])))).toEqual([
+      "13-markup-heading: the listed node terms door alarm is no term that the request defines",
     ]);
   });
-});
 
-// The form check reads a term of the request only on a term line under a heading Terms, outside
-// a code fence and outside a requirement or a check block: a line in that form inside such a
-// block is a second definition at most, and adds no term. A line inside another typed block, such
-// as an ask, is read as any other line.
-describe("termNames", () => {
-  test("reads no term line inside a requirement or a check block, nor in a code fence", () => {
-    const markdown = [
-      "## Terms",
-      "",
-      "- **chime**: A short sound that the kiosk makes for each key.",
-      ":::requirement{#kiosk-chime}",
-      "- **beep**: A sound of the kiosk.",
-      ":::",
-      '::::check{#v-chime serves="dispatch://ACME-1/spec#b-kiosk-chime"}',
-      "- **tone**: A sound of the kiosk.",
-      "::::",
-      "```text",
-      "- **buzz**: A sound of the kiosk.",
-      "```",
-      ':::ask{#ask-1 state="open"}',
-      "- **ring**: A sound of the kiosk.",
-      ":::",
-    ].join("\n");
-    expect(termNames(markdown)).toEqual(["chime", "ring"]);
+  test("passes fixture 14 when Dispatch reads its quoted blocks as statements", () => {
+    const fourteen = fixture("14-quoted-blocks");
+    expect(
+      readingProblems(fourteen, spec(answer(["door-close-60", "quoted-calm", "quoted-entry"])))
+    ).toEqual([]);
+    expect(readingProblems(fourteen, spec(answer(["door-close-60"])))).toEqual([
+      "14-quoted-blocks: principle quoted-calm is no text that Dispatch read",
+      "14-quoted-blocks: principle quoted-entry is no text that Dispatch read",
+    ]);
+  });
+
+  test("fails a planted undefined noun that the request or the list defines", () => {
+    const fifteen = fixture("15-code-fence");
+    const nodes = ["door-alarm-start", "door-close-60"];
+    expect(readingProblems(fifteen, spec(answer(nodes)))).toEqual([]);
+    const planted =
+      "15-code-fence: undefined-noun door-alarm-start door alarm is a term that the list or the request defines";
+    expect(readingProblems(fifteen, spec(answer(nodes, ["door alarm"])))).toEqual([planted]);
+    expect(
+      readingProblems(fifteen, spec(answer(nodes, [], ["door alarm", "Door  Alarm"])))
+    ).toEqual([planted]);
+  });
+
+  test("fails a planted other meaning, and a listed noun of a text, that no term defines", () => {
+    const four = fixture("4-other-meaning");
+    const nodes = ["session-in-ask", "person-session-ends"];
+    expect(readingProblems(four, spec(answer(nodes, [], ["session"])))).toEqual([]);
+    expect(readingProblems(four, spec(answer(nodes, [], [])))).toEqual([
+      "4-other-meaning: other-meaning person-session-ends session is no term of the list or of the request",
+    ]);
+    const three = fixture("3-defined-noun");
+    expect(
+      readingProblems(three, spec(answer(["daily-digest", "answer-closes-ask"], [], [])))
+    ).toEqual([
+      "3-defined-noun: the listed node daily-digest digest is no term of the list or of the request",
+    ]);
+  });
+
+  test("reads the texts of every document of the fixture, its Verification document among them", () => {
+    const six = fixture("6-split-checks");
+    const checks: FormRead = {
+      ...answer([]),
+      nodes: ["v-second-answer-409", "v-second-answer-agent", "v-summary-meaning"].map((node) => ({
+        kind: "claim",
+        node,
+      })),
+    };
+    const statements = answer(["second-answer-refused", "summary-says-what"]);
+    expect(
+      readingProblems(six, [
+        { document: "spec.md", read: statements },
+        { document: "verification.md", read: checks },
+      ])
+    ).toEqual([]);
+    expect(readingProblems(six, spec(statements))).toEqual([
+      "6-split-checks: agent-where-program v-second-answer-agent is no text that Dispatch read",
+      "6-split-checks: the listed node v-second-answer-409 is no text that Dispatch read",
+      "6-split-checks: the listed node v-summary-meaning is no text that Dispatch read",
+    ]);
+  });
+
+  test("fails an answer with no list, and one with an approved version that Dispatch cannot read", () => {
+    const fourteen = fixture("14-quoted-blocks");
+    const old: FormRead = {
+      in_scope: true,
+      scope: "covered",
+      findings: [],
+      nodes: null,
+      definitions: null,
+      terms: null,
+      unread: null,
+    };
+    expect(readingProblems(fourteen, spec(old))).toEqual([
+      "14-quoted-blocks spec.md: the answer names no nodes, definitions or terms",
+      "14-quoted-blocks: principle quoted-calm is no text that Dispatch read",
+      "14-quoted-blocks: principle quoted-entry is no text that Dispatch read",
+      "14-quoted-blocks: the listed node door-close-60 is no text that Dispatch read",
+    ]);
+    const line =
+      "Dispatch cannot read terms.md version 1 of ACME-3, an approved document under the root.";
+    expect(
+      readingProblems(
+        fourteen,
+        spec({ ...answer(["door-close-60", "quoted-calm", "quoted-entry"]), unread: [{ line }] })
+      )
+    ).toEqual([`14-quoted-blocks spec.md: ${line}`]);
   });
 });
 
@@ -444,6 +513,10 @@ describe("formProblems", () => {
     in_scope: inScope,
     scope: inScope ? "covered" : "no_root",
     findings: findings.map(([kind, node]) => ({ kind, node })),
+    nodes: [],
+    definitions: [],
+    terms: [],
+    unread: [],
   });
 
   test("passes a spec whose form check gives exactly the findings that its fixture declares", () => {
@@ -521,7 +594,12 @@ describe("the fixtures", () => {
   test("fixture 12 plants nothing, names only units of time beside its terms, and each of its statements must not be named", () => {
     const twelve = fixture("12-common-nouns");
     expect(twelve.planted).toEqual([]);
-    expect(twelve.mustNotName.map((item) => item.node)).toEqual(blockIds(twelve.specText));
+    expect(twelve.mustNotName.map((item) => item.node)).toEqual([
+      "inbox-wait-hours",
+      "ask-wait-minutes",
+      "summary-days",
+      "answer-seconds",
+    ]);
     for (const noun of ["hours", "minutes", "days", "seconds"]) {
       expect(twelve.specText, noun).toContain(` ${noun}`);
     }
@@ -546,77 +624,81 @@ describe("the fixtures", () => {
   test("the claim of v-kiosk-memory holds the last 100 pickup codes, as its statement does", () => {
     for (const id of ["7-check-faults", "8-check-shape-passing"]) {
       const text = fixture(id).specText;
-      expect(blockText(text, "kiosk-memory"), id).toContain("the last 100 pickup codes");
-      expect(blockText(text, "v-kiosk-memory"), id).toContain(
-        "The kiosk writes the last 100 pickup codes"
+      expect(text, id).toContain(
+        "The kiosk keeps the last 100 pickup codes that tenants typed in memory"
       );
+      expect(text, id).toContain("The kiosk writes the last 100 pickup codes");
     }
   });
 
   // The list defines the kiosk as the screen and the keypad, which print nothing, so fixture 9
   // gives the printing to the locker.
   test("fixture 9's voucher statement gives the printing to the locker, not to the kiosk", () => {
-    const statement = blockText(fixture("9-decided-findings").specText, "voucher-print");
-    expect(statement).toContain("The locker prints one voucher");
-    expect(statement).not.toContain("kiosk");
+    const text = fixture("9-decided-findings").specText;
+    expect(text).toContain(
+      "The locker prints one voucher for each parcel that it returns to its courier."
+    );
+    expect(text).not.toContain("kiosk prints");
   });
 
   // The Spec's own documents write each statement as an entry line, and its how-to puts the terms
   // under a heading Terms of any level. Fixture 10 is fixture 1 in that form, with a term of the
   // request under a heading of level three, so a reviewer that reads requirement blocks alone
-  // misses its principle, and one that reads `## Terms` alone names its own term.
+  // misses its principle, and one that reads `## Terms` alone names its own term. The command
+  // holds its nodes and its term to what Dispatch read (readingProblems).
   test("fixture 10 is fixture 1 as entry lines, with a term of its own under ### Terms", () => {
     const ten = fixture("10-entry-lines");
     expect(ten.specText).not.toContain(":::requirement");
-    expect(blockIds(ten.specText)).toEqual(["inbox-simple", "inbox-overdue-first"]);
     expect(ten.specText).toMatch(/^### Terms$/m);
-    expect(termNames(ten.specText)).toEqual(["overdue ask"]);
     expect(ten.specText).toContain(
       "- **The inbox is simple, and the person always knows what to do next.** `inbox-simple`"
     );
     expect(ten.planted).toEqual(fixture("1-principle").planted);
+    expect(ten.mustNotName).toEqual([
+      { node: "inbox-overdue-first" },
+      { node: "terms", subject: "overdue ask" },
+    ]);
   });
 
-  // The form check takes a heading for the heading Terms only when its text is Terms alone, and it
-  // reads no line of a quote. Fixture 13 defines its noun only under `## **Terms**`, a heading that
-  // reads as Terms in another form: the form check finds it (terms-heading), and it opens no
-  // terms, so to the program the noun has no definition. Fixture 14 quotes a principle as a
-  // requirement block and as an entry line, so to the program neither is a statement.
-  test("fixture 13 defines its noun only under a heading **Terms**, which the form check finds and which opens no terms", () => {
+  // Dispatch decides what a statement and a term are, and these two fixtures hold texts that a
+  // copy of its rules reads otherwise. Emphasis is no part of the text that a person reads, so
+  // `## **Terms**` is the heading Terms, and fixture 13's door alarm is a term of the request. A
+  // block in a block quote is a block, so fixture 14's quoted requirement and quoted entry line are
+  // statements, and each states a principle. The command refuses a run where Dispatch reads them
+  // otherwise (readingProblems).
+  test("fixture 13 defines its noun under ## **Terms**, which is the heading Terms", () => {
     const thirteen = fixture("13-markup-heading");
     expect(thirteen.specText).toMatch(/^## \*\*Terms\*\*$/m);
     expect(thirteen.specText).toContain("- **door alarm**: ");
-    expect(termNames(thirteen.specText)).toEqual([]);
-    expect(thirteen.form).toEqual([{ kind: "heading", node: '"## **Terms**"' }]);
-    expect(thirteen.planted).toEqual([
-      { kind: "undefined-noun", node: "door-alarm-start", subject: "door alarm" },
+    expect(thirteen.form).toEqual([]);
+    expect(thirteen.planted).toEqual([]);
+    expect(thirteen.mustNotName).toEqual([
+      { node: "door-alarm-start" },
+      { node: "terms", subject: "door alarm" },
     ]);
-    expect(termNames(rootTerms(thirteen.root))).not.toContain("door alarm");
+    expect(rootTerms(thirteen.root)).not.toContain("**door alarm**");
   });
 
-  test("fixture 14 quotes a requirement block and an entry line, which are no statements", () => {
+  test("fixture 14 quotes a requirement block and an entry line, which are statements of a principle", () => {
     const fourteen = fixture("14-quoted-blocks");
     expect(fourteen.specText).toMatch(/^> :::requirement\{#quoted-calm\}$/m);
     expect(fourteen.specText).toMatch(/^> - \*\*.+\*\* `quoted-entry` · under:/m);
-    expect(blockIds(fourteen.specText)).toEqual(["door-close-60"]);
-    expect(fourteen.planted).toEqual([]);
-    expect(fourteen.mustNotName.map((item) => item.node)).toEqual([
-      "door-close-60",
-      "quoted-calm",
-      "quoted-entry",
+    expect(fourteen.planted).toEqual([
+      { kind: "principle", node: "quoted-calm" },
+      { kind: "principle", node: "quoted-entry" },
     ]);
+    expect(fourteen.mustNotName).toEqual([{ node: "door-close-60" }]);
   });
 
-  // The form check reads nothing in a code fence, so fixture 15's definition of its noun, in a
-  // fence under `## Terms`, defines nothing to the program, and the noun has no definition.
+  // Dispatch reads nothing in a code fence, so fixture 15's definition of its noun, in a fence
+  // under `## Terms`, defines nothing, and the noun has no definition.
   test("fixture 15 defines its noun only in a code fence under its heading Terms", () => {
     const fifteen = fixture("15-code-fence");
     expect(fifteen.specText).toMatch(/^## Terms\n\n```text\n- \*\*door alarm\*\*: .+\n```$/m);
-    expect(termNames(fifteen.specText)).toEqual([]);
     expect(fifteen.planted).toEqual([
       { kind: "undefined-noun", node: "door-alarm-start", subject: "door alarm" },
     ]);
-    expect(termNames(rootTerms(fifteen.root))).not.toContain("door alarm");
+    expect(rootTerms(fifteen.root)).not.toContain("**door alarm**");
   });
 
   test("plant each of the seven kinds of the skill in some fixture", () => {
@@ -632,27 +714,35 @@ describe("the fixtures", () => {
     expect(holders.map((one) => one.id)).toEqual(["7-check-faults"]);
   });
 
+  // Fixture 8 is fixture 7 with lines taken out and none added or changed: its lines are fixture
+  // 7's in their order, and the lines taken out hold each of fixture 7's planted nodes.
   test("fixture 8 is fixture 7 without its three planted faults", () => {
     const seven = fixture("7-check-faults");
     const eight = fixture("8-check-shape-passing");
-    const planted = seven.planted.map((item) => item.node);
-    const kept = blockIds(seven.specText).filter((id) => !planted.includes(id));
-    expect(blockIds(eight.specText)).toEqual(kept);
-    for (const id of kept) {
-      expect(blockText(eight.specText, id), id).toBe(blockText(seven.specText, id));
+    const kept = eight.specText.split("\n");
+    const removed: string[] = [];
+    let next = 0;
+    for (const line of seven.specText.split("\n")) {
+      if (line === kept[next]) next += 1;
+      else removed.push(line);
+    }
+    expect(next).toBe(kept.length);
+    for (const item of seven.planted) {
+      expect(removed.join("\n"), item.node).toContain(`#${item.node}`);
+      expect(eight.specText, item.node).not.toContain(item.node);
     }
     expect(eight.planted).toEqual([]);
+    expect(eight.mustNotName).toEqual(seven.mustNotName);
   });
 
-  test("fixtures 9 and 13 declare the findings of the form check, and no other fixture declares one", () => {
+  test("fixture 9 alone declares the findings of the form check", () => {
     expect(fixture("9-decided-findings").form).toEqual([
       { kind: "statement", node: "night-quiet" },
       { kind: "definition", node: "parcel" },
     ]);
-    const declaring = ["9-decided-findings", "13-markup-heading"];
-    expect(plan.fixtures.filter((one) => one.form.length > 0).map((one) => one.id)).toEqual(
-      declaring
-    );
+    expect(plan.fixtures.filter((one) => one.form.length > 0).map((one) => one.id)).toEqual([
+      "9-decided-findings",
+    ]);
   });
 
   // The tester's scenario 7: a clean request, then an agent's edit that breaks the form and
@@ -661,7 +751,7 @@ describe("the fixtures", () => {
   // skill reads - lines alone can name the request's own term, and the run fails.
   test("fixture 9 is a clean request that an agent's edit breaks, with a term line inserted above its own", () => {
     const nine = fixture("9-decided-findings");
-    expect(termNames(nine.specText)).toEqual(["quiet hours"]);
+    expect(nine.mustNotName).toContainEqual({ node: "terms", subject: "quiet hours" });
     expect(nine.editOps).toEqual([
       {
         op: "replace",
@@ -674,48 +764,30 @@ describe("the fixtures", () => {
         markdown: "- **parcel**: A package that a courier puts in a compartment for one tenant.",
       },
     ]);
-    expect(blockText(nine.specText, "night-quiet")).toContain(nine.editOps[0]?.find ?? "-");
+    expect(nine.specText).toContain(nine.editOps[0]?.find ?? "-");
     for (const other of plan.fixtures.filter((one) => one.id !== "9-decided-findings")) {
       expect(other.editOps, other.id).toEqual([]);
     }
   });
 
-  test("each planted, listed and form node is in its fixture's text", () => {
+  // Each node, subject and finding that a fixture names is written in its documents. Whether
+  // Dispatch reads each one as a text or a term is the command's to check against its answers,
+  // before any agent runs (readingProblems), since only Dispatch reads the form.
+  test("each node, subject and finding that a fixture names is written in its documents", () => {
     for (const one of plan.fixtures) {
-      const ids = [...blockIds(one.specText), ...blockIds(one.verificationText ?? ""), "terms"];
-      for (const item of one.planted) {
-        expect(ids, `${one.id}: ${item.node}`).toContain(item.node);
+      const written = [
+        one.specText,
+        one.verificationText ?? "",
+        ...one.editOps.map((op) => op.markdown ?? op.with ?? ""),
+      ].join("\n");
+      for (const item of [...one.planted, ...one.mustNotName]) {
+        if (item.node !== "terms") expect(written, `${one.id}: ${item.node}`).toContain(item.node);
+        if (item.subject !== undefined) {
+          expect(written.toLowerCase(), `${one.id}: ${item.subject}`).toContain(item.subject);
+        }
       }
-      // A block in a quote is no statement to the form check, and fixture 14 lists two such
-      // nodes that the reviewer must not name, so a listed node may be a quoted one.
-      const quoted = blockIds(one.specText.replace(/^\s*>\s?/gm, ""));
-      for (const item of one.mustNotName) {
-        expect([...ids, ...quoted], `${one.id}: ${item.node}`).toContain(item.node);
-      }
-      const edited = [one.specText, ...one.editOps.map((op) => op.markdown ?? op.with ?? "")];
       for (const finding of one.form) {
-        if (finding.kind === "definition") {
-          expect(edited.join("\n"), `${one.id}: definition`).toContain(`**${finding.node}**: `);
-        } else if (finding.kind === "heading") {
-          // The form check names a heading by its line in quotes.
-          const line = JSON.parse(finding.node) as string;
-          expect(one.specText.split("\n"), `${one.id}: heading`).toContain(line);
-        } else {
-          expect(ids, `${one.id}: ${finding.kind} ${finding.node}`).toContain(finding.node);
-        }
-      }
-    }
-  });
-
-  test("each planted subject is in the text of its node", () => {
-    for (const one of plan.fixtures) {
-      for (const item of one.planted) {
-        if (item.subject === undefined) continue;
-        if (item.node === "terms") {
-          expect(termNames(one.specText), one.id).toContain(item.subject);
-        } else {
-          expect(blockText(one.specText, item.node).toLowerCase(), one.id).toContain(item.subject);
-        }
+        expect(written, `${one.id}: ${finding.kind} ${finding.node}`).toContain(finding.node);
       }
     }
   });
@@ -724,14 +796,14 @@ describe("the fixtures", () => {
     const two = fixture("2-undefined-noun");
     const three = fixture("3-defined-noun");
     expect(three.specText).toBe(two.specText);
-    expect(termNames(rootTerms(two.root))).not.toContain("digest");
-    expect(termNames(rootTerms(three.root))).toContain("digest");
+    expect(rootTerms(two.root)).not.toContain("**digest**");
+    expect(rootTerms(three.root)).toContain("- **digest**: ");
   });
 
   test("fixture 6 keeps every check in its Verification document, the planted one among them", () => {
     const six = fixture("6-split-checks");
     expect(six.specText).not.toContain(":::check");
-    expect(blockIds(six.verificationText ?? "")).toContain("v-second-answer-agent");
+    expect(six.verificationText ?? "").toContain(":::check{#v-second-answer-agent ");
   });
 
   test("a Verification document gets the key of its own issue in each serves", () => {
@@ -979,13 +1051,6 @@ describe("the exit status of a command that cannot run", () => {
     expect(code).toBe(2);
   }, 30_000);
 });
-
-/** The body of the block whose id is `node`. */
-function blockText(markdown: string, node: string): string {
-  const match = new RegExp(`^:::\\w+\\{#${node}[^\\n]*\\n([\\s\\S]*?)\\n:::`, "m").exec(markdown);
-  if (match === null) throw new Error(`no block ${node}`);
-  return match[1] ?? "";
-}
 
 /** The terms of the named root. */
 function rootTerms(name: string): string {
