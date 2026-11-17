@@ -254,15 +254,14 @@ describe("readDraw", () => {
     await expect(readDraw(list)).rejects.toThrow(`${list} holds finalTest trees that are no list`);
     const group = await withTrees([{ slice: "report", cases: [] }]);
     await expect(readDraw(group)).rejects.toThrow(`${group} finalTest tree 1 names no group`);
-    // A tree in no slice is written with a slice of null; one with no slice at all is no tree.
-    const missing = await withTrees([{ group: "tree:RES-0", cases: ["r-0-0"] }]);
-    await expect(readDraw(missing)).rejects.toThrow(
-      `${missing} finalTest tree tree:RES-0 names no slice a draw has`
-    );
-    const slice = await withTrees([{ group: "tree:RES-0", slice: "test", cases: ["r-0-0"] }]);
-    await expect(readDraw(slice)).rejects.toThrow(
-      `${slice} finalTest tree tree:RES-0 names no slice a draw has`
-    );
+    // A tree in no slice is written with a slice of null; one with no slice at all is no tree,
+    // and a claim draw puts every eligible tree in report, so one in fit is no such draw.
+    for (const slice of [undefined, "test", "fit"]) {
+      const path = await withTrees([{ group: "tree:RES-0", slice, cases: ["r-0-0"] }]);
+      await expect(readDraw(path)).rejects.toThrow(
+        `${path} finalTest tree tree:RES-0 names no slice, or another than report`
+      );
+    }
     const cases = await withTrees([{ group: "tree:RES-0", slice: "report", cases: "r-0-0" }]);
     await expect(readDraw(cases)).rejects.toThrow(
       `${cases} finalTest tree tree:RES-0 holds no list of cases`

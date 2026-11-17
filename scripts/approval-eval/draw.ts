@@ -42,7 +42,7 @@ import {
 } from "./never-decide";
 import { type RenderGuard, renderCase, renderChecked, renderDocument } from "./render";
 import { replayCase } from "./replay";
-import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
+import { RESERVE_TREE_CUT, RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
 import {
   changesAfterAskOf,
   idsInFiles,
@@ -393,13 +393,7 @@ function emptyDraw(seed: number, groupKey: string): Draw {
   };
 }
 
-/** The slices a group the reserve holds whole tries, in order: report, the final test, first. */
-const FINAL_TEST_ORDER: readonly SliceName[] = [
-  "report",
-  ...SLICES.filter((slice) => slice !== "report"),
-];
-
-/** The slices any other group of a draw under a read of the reserve tries: never report. */
+/** The slices any group that is not eligible tries, under a read of the reserve: never report. */
 const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !== "report");
 
 /**
@@ -410,11 +404,13 @@ const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !
  * Under `finalTest`, a draw over a registered read of the reserve, the groups are the issue trees
  * joined over near-duplicate evidence, and each carries its outcome under item 6, read over every
  * case of the corpus in it. A group whose outcome is `ask-before-cut` gives no case to any slice:
- * its cases are named in `finalTest.beforeCut`. Only an `eligible` group tries report, and it
- * tries report first; every other group skips it. The reserved cases that went to another slice
- * are named in `finalTest.heldOutsideReport`, each group's parent changes after its first ask
- * opened in `finalTest.parentChanges`, each near-duplicate join in `finalTest.nearDuplicates`,
- * and every eligible tree, with each of its cases and the slice it went to, in
+ * its cases are named in `finalTest.beforeCut`. An `eligible` group goes to report whole, whatever
+ * report's targets: the final test is every eligible tree, which item 8 lets only never-decide and
+ * the run's own (c) and (d) narrow, and the reserve is read once, so a tree sent elsewhere for
+ * want of room would be lost to it. Every other group skips report. The reserved cases that went
+ * to another slice are named in `finalTest.heldOutsideReport`, each group's parent changes after
+ * its first ask opened in `finalTest.parentChanges`, each near-duplicate join in
+ * `finalTest.nearDuplicates`, and every eligible tree, with each of its cases, in
  * `finalTest.trees`.
  *
  * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
@@ -514,15 +510,16 @@ export function drawSlices(
   const ordered = [...groups.values()].sort((one, other) => (one.key < other.key ? -1 : 1));
   let finalTestGroups = 0;
   const heldOutsideReport: string[] = [];
-  const sliceOfTree = new Map<string, SliceName>();
+  const inReport = new Set<string>();
   for (const group of shuffled(ordered, seed)) {
     draw.groupCount += 1;
     for (const kind of KINDS) if (group.counts[kind] > 0) draw.groups[kind] += 1;
     const eligible = finalTest !== null && outcomeOf(group.key) === "eligible";
     if (eligible) finalTestGroups += 1;
-    const order = finalTest === null ? SLICES : eligible ? FINAL_TEST_ORDER : DEVELOPMENT_ORDER;
-    let taken: SliceName = "reserve";
-    for (const slice of order) {
+    // An eligible group goes to report whole and past its targets: the final test is every
+    // eligible tree, and the reserve is read once.
+    let taken: SliceName = eligible ? "report" : "reserve";
+    for (const slice of eligible ? [] : finalTest === null ? SLICES : DEVELOPMENT_ORDER) {
       if (slice === "reserve") break;
       // A group holding both kinds goes where both still fit: one group, one slice, whole.
       const fits = KINDS.every(
@@ -534,7 +531,7 @@ export function drawSlices(
       }
     }
     for (const kind of KINDS) draw.counts[taken][kind] += group.counts[kind];
-    if (eligible) sliceOfTree.set(group.key, taken);
+    if (eligible) inReport.add(group.key);
     if (finalTest !== null && taken !== "report") {
       for (const drawCase of group.cases) {
         if (finalTest.holds(drawCase.row)) heldOutsideReport.push(drawCase.row.caseId);
@@ -580,7 +577,7 @@ export function drawSlices(
       if (outcome === "eligible") {
         trees.push({
           group: key,
-          slice: sliceOfTree.get(key) ?? null,
+          slice: inReport.has(key) ? "report" : null,
           cases: [...(casesOfKey.get(key) ?? [])].sort(),
         });
       }
@@ -860,6 +857,20 @@ function countsTable(draw: Draw): string {
   return lines.join("\n");
 }
 
+/**
+ * Why a draw that reads the reserve may not be made at `cut`, and null where it may: a cut later
+ * than the reserve's own leaves out of the draw every case answered before it, and an eligible
+ * tree can hold such a case, so its record and the claim's measure would miss requests of it.
+ */
+export function claimCutRefusal(cut: number): string | null {
+  if (cut <= Date.parse(RESERVE_TREE_CUT)) return null;
+  return (
+    "a draw that reads the reserve takes a --cut at or before the reserve's cut, " +
+    `${RESERVE_TREE_CUT}: a later cut leaves out of the final test's trees each request ` +
+    "answered before it"
+  );
+}
+
 async function draw(flags: Flags): Promise<number> {
   const reading = Boolean(readReferenceOf(process.env[RESERVE_VARIABLE]));
   if (reading && flags.seed === undefined) {
@@ -881,6 +892,9 @@ async function draw(flags: Flags): Promise<number> {
       `--scorer-records and --round-sessions are read only by a draw that reads the reserve\n\n${USAGE}`
     );
   }
+  // Before the corpus is read: the reserve is read once, so a claim draw stops before any read.
+  const refusal = reading ? claimCutRefusal(cutTime(flags.cut)) : null;
+  if (refusal !== null) throw new UsageError(`${refusal}\n\n${USAGE}`);
   const corpus = await readCorpus(flags.corpus);
   const directory = await outDirectory(flags.out);
   const cut = cutTime(flags.cut);
@@ -1012,11 +1026,10 @@ async function draw(flags: Flags): Promise<number> {
         `${drawn.finalTest.nearDuplicates.threshold})`
     );
     const trees = drawn.finalTest.trees;
-    const inReport = trees.filter((tree) => tree.slice === "report").length;
     const inNoSlice = trees.filter((tree) => tree.slice === null).length;
     console.log(
-      `  eligible trees in report  ${inReport}; in no slice  ${inNoSlice}; in another slice ` +
-        `${trees.length - inReport - inNoSlice}`
+      `  eligible trees in report  ${trees.length - inNoSlice}; in no slice, every case held ` +
+        `or left out  ${inNoSlice}`
     );
   }
   console.log("");

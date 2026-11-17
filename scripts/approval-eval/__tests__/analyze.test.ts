@@ -1252,10 +1252,14 @@ describe("the command over files it cannot read", () => {
  * The final test's trees over one arm whose fit slice fits a threshold of 1.0, as `fittedArm`'s
  * does. T1 holds two requests the arm decides and gets right; T2 one it gets right and one it gets
  * wrong; T3 one it split three to two on, under the threshold; T4 one the never-decide rule held,
- * so in no slice and with no row; T5 one in the fit slice, report having had no room for it; T6 a
- * question alone.
+ * so in no slice and with no row; T6 a question alone. `faulted` fit-split cases lose every one
+ * of their judgements, which leaves the threshold where it is.
  */
-function claimFixture(): { cases: CaseRow[]; rows: JudgementRow[]; trees: FinalTestTree[] } {
+function claimFixture(faulted = 0): {
+  cases: CaseRow[];
+  rows: JudgementRow[];
+  trees: FinalTestTree[];
+} {
   const cases: CaseRow[] = [];
   const rows: JudgementRow[] = [];
   const add = (
@@ -1263,13 +1267,17 @@ function claimFixture(): { cases: CaseRow[]; rows: JudgementRow[]; trees: FinalT
     slice: SliceName | null,
     chose: number,
     selected: string[],
-    kind: CaseKind = "approval"
+    kind: CaseKind = "approval",
+    lost = 0
   ): void => {
     cases.push(caseRow(caseId, { kind, selected, artifactId: `${caseId}-document` }));
-    if (slice !== null) rows.push(...fiveRows("bare-opus", caseId, chose, { slice, kind }));
+    if (slice === null) return;
+    rows.push(...fiveRows("bare-opus", caseId, chose, { slice, kind, faulted: lost }));
   };
   for (let index = 0; index < 45; index += 1) add(`fit-clean-${index}`, "fit", 5, [APPROVE]);
-  for (let index = 0; index < 15; index += 1) add(`fit-split-${index}`, "fit", 3, [APPROVE]);
+  for (let index = 0; index < 15; index += 1) {
+    add(`fit-split-${index}`, "fit", 3, [APPROVE], "approval", index < faulted ? 5 : 0);
+  }
   for (let index = 0; index < 5; index += 1) add(`fit-wrong-${index}`, "fit", 3, [CHANGES]);
   add("t1-a", "report", 5, [APPROVE]);
   add("t1-b", "report", 5, [APPROVE]);
@@ -1277,14 +1285,12 @@ function claimFixture(): { cases: CaseRow[]; rows: JudgementRow[]; trees: FinalT
   add("t2-b", "report", 5, [CHANGES]);
   add("t3-a", "report", 3, [APPROVE]);
   add("t4-a", null, 0, [APPROVE]);
-  add("t5-a", "fit", 5, [APPROVE]);
   add("t6-q", "report", 5, [APPROVE], "question");
   const trees: FinalTestTree[] = [
     { group: "tree:T1", slice: "report", cases: ["t1-a", "t1-b"] },
     { group: "tree:T2", slice: "report", cases: ["t2-a", "t2-b"] },
     { group: "tree:T3", slice: "report", cases: ["t3-a"] },
     { group: "tree:T4", slice: null, cases: ["t4-a"] },
-    { group: "tree:T5", slice: "fit", cases: ["t5-a"] },
     { group: "tree:T6", slice: "report", cases: ["t6-q"] },
   ];
   return { cases, rows, trees };
@@ -1313,16 +1319,19 @@ describe("the claim's measure, over the final test's trees", () => {
     const claim = analysisOf({ cases, rows, finalTestTrees: trees }).arms[0]?.claim;
     expect(claim?.threshold).toBe(1);
     expect(claim?.thresholdFrom).toBe("fitted");
-    expect(claim?.trees).toBe(6);
+    expect(claim?.trees).toBe(5);
     expect(claim?.withoutApproval).toBe(1);
-    expect(claim?.outsideFinalTest).toBe(1);
-    expect(claim?.read).toBe(5);
     // T1 and T2: four decided requests, but two trees, of which T2 disagrees once.
     expect(claim?.decided).toBe(2);
     expect(claim?.disagreeing).toBe(1);
-    // T3, under the threshold, T4, held, and T6, a question alone, decided no approval request,
-    // so all three are never-decide trees of the five read; T5 went to fit and is read by none.
-    expect(claim?.neverDecide).toEqual({ count: 3, share: 0.6 });
+    // T3, under the threshold, T4, held, and T6, a question alone, decided no approval request:
+    // three never-decide trees of the five, as item 8 counts them, and two of the four trees
+    // holding an approval request, the share to read beside the one decided on development data.
+    expect(claim?.neverDecide).toEqual({
+      count: 3,
+      share: 0.6,
+      withApproval: { count: 2, share: 0.5 },
+    });
     // One disagreeing tree of two: the bound solves 1 - p ^ 2 = 0.10.
     expect(claim?.bound).toBeCloseTo(Math.sqrt(0.9), 10);
     expect(claim?.withinRate).toBe(false);
@@ -1332,7 +1341,6 @@ describe("the claim's measure, over the final test's trees", () => {
       { group: "tree:T2", slice: "report", approvals: 2, decided: 2, disagreements: 1 },
       { group: "tree:T3", slice: "report", approvals: 1, decided: 0, disagreements: 0 },
       { group: "tree:T4", slice: null, approvals: 1, decided: 0, disagreements: 0 },
-      { group: "tree:T5", slice: "fit", approvals: 1, decided: 0, disagreements: 0 },
       { group: "tree:T6", slice: "report", approvals: 0, decided: 0, disagreements: 0 },
     ]);
   });
@@ -1346,7 +1354,11 @@ describe("the claim's measure, over the final test's trees", () => {
     // T3's split verdict now counts; T4, held, and T6, a question alone, still decided nothing.
     expect(claim?.decided).toBe(3);
     expect(claim?.disagreeing).toBe(1);
-    expect(claim?.neverDecide).toEqual({ count: 2, share: 0.4 });
+    expect(claim?.neverDecide).toEqual({
+      count: 2,
+      share: 0.4,
+      withApproval: { count: 1, share: 0.25 },
+    });
     // The arm's own report reading is unchanged by the claim's threshold.
     expect(named.arms[0]?.approval.fit.threshold).toBe(1);
   });
@@ -1364,12 +1376,14 @@ describe("the claim's measure, over the final test's trees", () => {
     expect(of44.withinRate).toBe(false);
   });
 
-  test("an arm missing too many judgements prints its bound, and the words beside it", () => {
+  test("an arm missing too many judgements prints its bound and does not read it against 0.05", () => {
     const { trees, readings, byCaseId } = decidedTrees(45);
-    const missing = "this arm is missing 12.0 percent of its judgements (330 of 375 answered)";
+    const missing = "no bound: this arm is missing 12.0 percent of its judgements";
     const claim = claimMeasureOf(trees, readings, byCaseId, 1, "fitted", missing);
     expect(claim.decided).toBe(45);
     expect(claim.bound).toBeCloseTo(0.049_881, 5);
+    // Lost judgements can turn a disagreeing tree into a never-decide one, so 0.0499 is no pass.
+    expect(claim.withinRate).toBeNull();
     expect(claim.missing).toBe(missing);
   });
 
@@ -1378,7 +1392,11 @@ describe("the claim's measure, over the final test's trees", () => {
     // An arm the fit slice fitted no threshold for decides nothing.
     const claim = claimMeasureOf(trees, readings, byCaseId, null, "fitted", null);
     expect(claim.decided).toBe(0);
-    expect(claim.neverDecide).toEqual({ count: 3, share: 1 });
+    expect(claim.neverDecide).toEqual({
+      count: 3,
+      share: 1,
+      withApproval: { count: 3, share: 1 },
+    });
     expect(claim.bound).toBe(1);
     expect(claim.withinRate).toBe(false);
   });
@@ -1399,5 +1417,49 @@ describe("the claim's measure, over the final test's trees", () => {
     const without = analysisOf({ cases, rows });
     expect(without.arms[0]?.claim).toBeNull();
     expect(renderReport(without).join("\n")).not.toContain("The claim's measure");
+  });
+
+  test("the report says an arm short of judgements is not read against 0.05, and why", () => {
+    const { cases, rows, trees } = claimFixture(4);
+    const analysis = analysisOf({ cases, rows, finalTestTrees: trees });
+    expect(analysis.arms[0]?.bounded).toBe(false);
+    const text = renderReport(analysis).join("\n");
+    expect(text).toContain("at most 0.949 | not read");
+    expect(text).toContain(
+      "bare-opus: no bound: this arm is missing 5.6 percent of its judgements (335 of 355 " +
+        "answered), and the plan gives no bound past 5 percent. Its bound above is printed"
+    );
+  });
+});
+
+describe("the command over a draw that recorded the final test's trees", () => {
+  test("reads the trees from draw.json and prints the claim's measure", async () => {
+    const { cases, rows, trees } = claimFixture();
+    const corpus = await scratch();
+    const round = await scratch();
+    await mkdir(join(corpus, "slices"), { recursive: true });
+    await writeFile(
+      join(corpus, "snapshot.json"),
+      `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+      "utf8"
+    );
+    await writeFile(
+      join(corpus, "corpus.jsonl"),
+      `${cases.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8"
+    );
+    const finalTest = { reference: "claim:test", trees };
+    await writeFile(join(corpus, "slices", "draw.json"), `${JSON.stringify({ finalTest })}\n`);
+    await writeFile(
+      join(round, "rows.jsonl"),
+      `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8"
+    );
+    const argv = ["--corpus", corpus, "--round", round, "--format", "json"];
+    const { printed } = await runReading(argv);
+    const claim = (JSON.parse(printed) as Analysis).arms[0]?.claim;
+    expect(claim?.trees).toBe(5);
+    expect(claim?.decided).toBe(2);
+    expect(claim?.disagreeing).toBe(1);
   });
 });

@@ -108,16 +108,17 @@ export interface DrawExcluded {
 
 /**
  * One tree item 6 leaves eligible, as a draw under a registered read records it: every case of
- * the corpus in it, and the slice its drawable cases went to, whole. The claim's measure is read
- * over these trees (the reserve's version 3, item 8), and a tree the draw put in no slice counts
- * there too: every case of it was held by the never-decide rule or left out, so the reviewer
- * decided nothing in it.
+ * the corpus in it, and whether its drawable cases went to report. A draw under a registered read
+ * puts every eligible tree in report whole, whatever report's targets, since item 8 lets only
+ * never-decide and the run's own (c) and (d) narrow the final test. The claim's measure is read
+ * over these trees, and a tree in no slice counts there too: every case of it was held by the
+ * never-decide rule or left out, so the reviewer decided nothing in it.
  */
 export interface FinalTestTree {
   /** The tree's group key, as `trees.ts` makes it. */
   group: string;
-  /** The slice its drawable cases went to, and null where it had no drawable case. */
-  slice: SliceName | null;
+  /** Report, where its drawable cases went, and null where it had no drawable case. */
+  slice: "report" | null;
   /** Every case of the corpus in the tree, held and left-out ones included, sorted. */
   cases: string[];
 }
@@ -397,10 +398,14 @@ function finalTestTreesAt(value: unknown, path: string): FinalTestTree[] | null 
     if (groups.has(group)) throw new CorpusError(`${path} names the finalTest tree ${group} twice`);
     groups.add(group);
     // A tree with no drawable case is written with a slice of null, so a missing slice is no
-    // tree a draw wrote, not a tree in no slice.
+    // tree a draw wrote, not a tree in no slice; and a draw under a registered read puts every
+    // eligible tree in report, so a tree in another slice is no such draw either.
     const slice = tree.slice;
-    if (slice !== null && !SLICES.includes(slice as SliceName)) {
-      throw new CorpusError(`${path} finalTest tree ${group} names no slice a draw has`);
+    if (slice !== null && slice !== "report") {
+      throw new CorpusError(
+        `${path} finalTest tree ${group} names no slice, or another than report, where a draw ` +
+          "under a registered read puts every eligible tree"
+      );
     }
     if (!Array.isArray(tree.cases)) {
       throw new CorpusError(`${path} finalTest tree ${group} holds no list of cases`);
@@ -419,7 +424,7 @@ function finalTestTreesAt(value: unknown, path: string): FinalTestTree[] | null 
       seen.set(caseId, group);
       return caseId;
     });
-    return { group, slice: slice as SliceName | null, cases };
+    return { group, slice, cases };
   });
 }
 

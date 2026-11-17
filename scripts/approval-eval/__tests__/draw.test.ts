@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { CaseKind, CaseRow } from "../build-corpus";
 import { CorpusError, UsageError } from "../corpus-io";
 import {
+  claimCutRefusal,
   type Draw,
   type DrawCase,
   DrawError,
@@ -417,21 +418,35 @@ describe("drawSlices under a read of the reserve", () => {
     expect(draw.finalTest?.heldOutsideReport.total).toBe(0);
   });
 
-  test("an eligible tree report has no room for goes to another slice and is named", () => {
+  test("report takes every eligible tree whole, past its targets", () => {
     const cases = reserved(90);
     const draw = drawSlices(cases, 7, source(cases));
-    expect(draw.counts.report.approval).toBe(249);
+    // 270 approval cases against report's 250: the final test is every eligible tree.
+    expect(draw.counts.report.approval).toBe(270);
     expect(draw.finalTest?.groups).toBe(90);
-    expect(draw.finalTest?.heldOutsideReport.total).toBe(21);
-    // The tree record says where each of the 90 went, so the claim's measure can leave the
-    // seven that report had no room for out of the trees it reads.
+    expect(draw.finalTest?.heldOutsideReport.total).toBe(0);
     const trees = draw.finalTest?.trees ?? [];
     expect(trees).toHaveLength(90);
-    const outside = trees.filter((tree) => tree.slice !== "report");
-    expect(outside).toHaveLength(7);
-    expect(outside.every((tree) => tree.slice !== null)).toBe(true);
-    expect(outside.flatMap((tree) => tree.cases).sort()).toEqual(
-      [...(draw.finalTest?.heldOutsideReport.cases ?? [])].sort()
+    expect(trees.every((tree) => tree.slice === "report")).toBe(true);
+  });
+
+  test("an eligible tree holding a question still reaches report when its question places are full", () => {
+    // Sixty trees, each one approval request and one question: report's targets hold 50
+    // questions, and the ten trees past them are the final test's all the same.
+    const cases = Array.from({ length: 60 }, (_, group) => [
+      drawCase(caseRow(`r-${group}-a`, "approval", `RES-${group}`)),
+      drawCase(caseRow(`r-${group}-q`, "question", `RES-${group}`)),
+    ]).flat();
+    const draw = drawSlices(cases, 7, source(cases));
+    expect(draw.counts.report).toEqual({ approval: 60, question: 60 });
+    expect(draw.finalTest?.trees.filter((tree) => tree.slice === "report")).toHaveLength(60);
+  });
+
+  test("a claim draw takes a cut at or before the reserve's, and refuses a later one", () => {
+    expect(claimCutRefusal(Date.parse("2026-11-16T00:00:00Z"))).toBeNull();
+    expect(claimCutRefusal(Date.parse("2026-11-01T00:00:00Z"))).toBeNull();
+    expect(claimCutRefusal(Date.parse("2026-11-18T00:00:00Z"))).toContain(
+      "takes a --cut at or before the reserve's cut, 2026-11-16T00:00:00Z"
     );
   });
 
