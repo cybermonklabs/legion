@@ -36,9 +36,14 @@ const (
 	// machine cures it; the next trade may.
 	FailureBrokerUnavailable
 	// FailureIdentityLapsed is a helper in identity mode (AGENT_SECRETS_MACHINE_IDENTITY) that
-	// holds no launcher credential: its trade loop trades this machine's identity for one on its
-	// own, so nobody is told to log in.
+	// holds no launcher credential while its trade loop runs: the loop trades this machine's
+	// identity for one on its own, so nobody is told to log in.
 	FailureIdentityLapsed
+	// FailureIdentityStopped is a helper in identity mode whose trade loop has stopped: the broker
+	// refused this machine's identity in a way no retry cures (a machine no entry lists, say), the
+	// helper's log names the refusal, and nothing trades again until the deployment is fixed and
+	// the helper restarts. No login cures it either.
+	FailureIdentityStopped
 	// FailureNoMachineLogin is a helper in machine-login mode that holds no live launcher
 	// credential, or one the broker refused: a machine login that a human approves cures it.
 	FailureNoMachineLogin
@@ -60,6 +65,8 @@ func Hint(f Failure) string {
 		return "run: " + MachineLoginCommand + ", and have a human approve it"
 	case FailureIdentityLapsed:
 		return "the helper's trade loop is trading this machine's identity for a new credential"
+	case FailureIdentityStopped:
+		return "the helper stopped trading this machine's identity, and its log names the broker's refusal; restart agent-secrets-helper once that is fixed"
 	default:
 		return ""
 	}

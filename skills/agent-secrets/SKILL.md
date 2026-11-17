@@ -293,7 +293,8 @@ source says why it had nothing:
 - **`this machine's agent-secrets-helper holds no credential at the secrets broker`.** The part after
   `the helper:` names the cure. `run: agent-secrets machine login`: the person logs the machine in,
   as `/legion/broker/guides/log-a-machine-in/` in the documentation site shows. `the helper's trade
-  loop is trading …`: the helper gets one itself; report it, and retry later.
+  loop is trading …`: the helper gets one itself; report it, and retry later. `the helper stopped
+  trading …`: the broker refused this machine for good; report it, since nothing here cures it.
 
 A stopped helper is not a missing one. Where the helper is installed, or `AGENT_SECRETS_HELPER_SOCK`
 names its socket, and the socket is gone, the command exits 1 with

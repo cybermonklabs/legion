@@ -836,7 +836,8 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
-	return Response{OK: true, Proof: compact, CredentialID: cred.id, MachineIdentity: s.Broker.Identity != nil}
+	return Response{OK: true, Proof: compact, CredentialID: cred.id,
+		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 }
 
 // operatorRoute reports whether method and url are one of the broker's four operator routes
@@ -953,7 +954,7 @@ func (s *Server) login(ctx context.Context) Response {
 func (s *Server) loginStatus() Response {
 	ls := s.Broker.LoginStatus()
 	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
-		MachineIdentity: s.Broker.Identity != nil}
+		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 	if !ls.CredentialExpiresAt.IsZero() {
 		resp.CredentialExpiresAt = ls.CredentialExpiresAt.UTC().Format(time.RFC3339)
 	}

@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -184,11 +186,15 @@ func TestTheTokenInHandServesEveryEnrolmentUntilItLapses(t *testing.T) {
 // TestARevokedSignInFallsBackToTheMachine: the broker refuses the trade once the person has
 // revoked the sign-in, which is a definite answer — that sign-in is over — so the authority
 // answers nothing, the caller enrols under the machine, and nothing asks again until somebody
-// signs in afresh.
+// signs in afresh. It logs the refusal once, in the broker's words with its code, and adds no
+// command of its own: the broker's words say what ends a refusal where a login does.
 func TestARevokedSignInFallsBackToTheMachine(t *testing.T) {
+	const refusal = "this sign-in was revoked"
 	rig := newSignInRig(t, func(int, url.Values) (int, map[string]any) {
-		return 400, map[string]any{"error": "invalid_grant", "error_description": "this sign-in was revoked"}
+		return 400, map[string]any{"error": "invalid_grant", "error_description": refusal}
 	})
+	logged := &logtest.Recorder{}
+	rig.authority.Log = slog.New(logged)
 	rig.signIn(t, "ada@example.com")
 	for i := range 3 {
 		authority, err := rig.authority.Current(context.Background())
@@ -198,6 +204,21 @@ func TestARevokedSignInFallsBackToTheMachine(t *testing.T) {
 	}
 	if n := len(rig.broker.Requests()); n != 1 {
 		t.Fatalf("a revoked sign-in was traded %d times; want once, the refusal remembered", n)
+	}
+	records := logged.Records()
+	if len(records) != 1 || records[0].Level != slog.LevelWarn ||
+		records[0].Message != "this machine's sign-in was refused; sessions enrol under this machine's own authority" {
+		t.Fatalf("the authority logged %v; want one WARN that the sign-in was refused", messagesOf(records))
+	}
+	attrs := map[string]string{}
+	records[0].Attrs(func(attr slog.Attr) bool { attrs[attr.Key] = attr.Value.String(); return true })
+	if attrs["person"] != "ada@example.com" || attrs["code"] != "invalid_grant" || !strings.Contains(attrs["error"], refusal) {
+		t.Errorf("the refused sign-in's line carries %v; want ada@example.com, invalid_grant and the broker's words %q", attrs, refusal)
+	}
+	for key, value := range attrs {
+		if strings.Contains(value, SignInCommand) || key == "command" {
+			t.Errorf("the refused sign-in's line carries %s=%q: it names a login the broker's words did not", key, value)
+		}
 	}
 }
 

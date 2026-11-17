@@ -161,6 +161,13 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		if first == nil {
 			t.Fatal("the helper listens with no credential, so this test proves nothing about keeping one")
 		}
+		// The helper answers a machine command's sign-launcher with its mode, so a command the
+		// broker refuses LAUNCHER_INVALID names the cure of identity mode.
+		served := serveBroker(t, b, "", b.Log)
+		if signed := served.call(t, Request{Op: "sign-launcher", Method: http.MethodGet, URL: f.srv.URL + "/v1/operator/machines"}); !signed.OK ||
+			!signed.MachineIdentity || signed.IdentityStopped || signed.CredentialID != first.id {
+			t.Fatalf("sign-launcher of a helper in identity mode answered %+v; want a proof for %s with machine_identity set and identity_stopped not", signed, first.id)
+		}
 
 		// The renewal comes round while the person is held: each trade is refused, and the loop
 		// trades again after each wait, the wait doubling.

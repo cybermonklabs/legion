@@ -64,13 +64,23 @@ func newLoggedRig(t *testing.T, statePath string, log *slog.Logger) *rig {
 	t.Helper()
 	f := newFakeBroker(t)
 	of := operatorFile(t, "ada@example.com")
-	r := &rig{fake: f}
+	r := serveBroker(t, &Broker{URL: f.srv.URL, OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}, statePath, log)
+	r.fake = f
+	return r
+}
+
+// serveBroker serves broker on a socket of the test's own, as cmd/agent-secrets-helper serves it,
+// with log as the Server's logger: newLoggedRig's helper, and that of a test that builds its Broker
+// itself (one in identity mode, say). The rig's fake is nil.
+func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logger) *rig {
+	t.Helper()
+	r := &rig{}
 	if statePath == "" {
 		statePath = filepath.Join(t.TempDir(), "sessions.json")
 	}
 	r.srv = &Server{
 		Registry: NewRegistry(statePath),
-		Broker:   &Broker{URL: f.srv.URL, OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log},
+		Broker:   broker,
 		Hostname: "testhost",
 		Log:      log,
 		MinRenew: 50 * time.Millisecond,

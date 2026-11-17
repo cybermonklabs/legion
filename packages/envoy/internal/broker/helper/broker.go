@@ -40,10 +40,14 @@ import (
 var errNoCredential = errors.New("no machine credential")
 
 // noCredentialFailure is the class of holding no launcher credential. In identity mode the trade
-// loop trades this machine's identity for one on its own; otherwise the helper never logs in by
-// itself, since a machine login is a human ceremony.
+// loop trades this machine's identity for one on its own, until a refusal no retry cures stops
+// it (identityStopped); otherwise the helper never logs in by itself, since a machine login is a
+// human ceremony.
 func (b *Broker) noCredentialFailure() brokerclient.Failure {
-	if b.Identity != nil {
+	switch {
+	case b.Identity != nil && b.identityStopped.Load():
+		return brokerclient.FailureIdentityStopped
+	case b.Identity != nil:
 		return brokerclient.FailureIdentityLapsed
 	}
 	return brokerclient.FailureNoMachineLogin
@@ -171,9 +175,13 @@ type Broker struct {
 	// never a proof, a token, a request object or key material. Nil logs nothing.
 	Log *slog.Logger
 
-	cred    atomic.Pointer[machineCredential]
-	loginMu sync.Mutex                 // one login at a time
-	login   atomic.Pointer[loginState] // most recent login: code, state
+	cred atomic.Pointer[machineCredential]
+	// identityStopped is set once startIdentity's trade loop has stopped on a refusal no retry
+	// cures: from then on nothing trades this machine's identity again until the helper restarts,
+	// so what it tells a session names that, and not a trade to wait for.
+	identityStopped atomic.Bool
+	loginMu         sync.Mutex                 // one login at a time
+	login           atomic.Pointer[loginState] // most recent login: code, state
 	// credMu is held by whatever changes the held login and its machine file together: a login's
 	// save and install, a start's install, and a refresh from its request to its save and swap, so
 	// a refresh never races a login's install. Every save of the machine file runs under it. Every
@@ -728,6 +736,7 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 			return nil
 		})
 		if err != nil {
+			b.identityStopped.Store(true)
 			b.logger().Error("the helper stopped trading this machine's identity; it enrols no session until this is fixed", "error", redact.Error(err, b.URL))
 		}
 		once.Do(func() { close(first) })
