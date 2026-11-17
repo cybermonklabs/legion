@@ -823,7 +823,7 @@ func refusedTypeValues(t *testing.T) []refusedTypeValue {
 		{policy.TypeGoogleLogin, "not an authorized_user credential", `{"type":"service_account","client_id":"client-id","client_secret":"` + leak + `","refresh_token":"refresh-not-a-secret"}`},
 		{policy.TypeGoogleLogin, "no refresh_token", `{"type":"authorized_user","client_id":"client-id","client_secret":"` + leak + `"}`},
 		{policy.TypeGoogleServiceAccount, "not a JSON object", leak},
-		{policy.TypeGoogleServiceAccount, "a person's address", `{"service_account":"` + leak + `@theorem.dev"}`},
+		{policy.TypeGoogleServiceAccount, "a person's address", `{"service_account":"` + leak + `@example.com"}`},
 		{policy.TypeAzureLogin, "not a JSON object", leak},
 		{policy.TypeAzureLogin, "no client_id", `{"tenant_id":"` + leak + `"}`},
 		{policy.TypeAzureLogin, "a tenant_id of white space", `{"tenant_id":" ","client_id":"` + leak + `"}`},
