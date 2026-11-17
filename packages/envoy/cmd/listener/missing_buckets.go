@@ -43,15 +43,15 @@ const missingBucketRepair = "make it with `envoy-infra buckets create`, with `--
 // bucketWaitInterval is how often a start that found a copied bucket missing asks again, and
 // missingBucketLogInterval how often it logs missingBucketLine while one stays missing: as often
 // as the self-health monitor checks a serving listener, so the alarm reads one cadence.
+// bucketCheckTimeout bounds each read of a bucket's stream, the known-session bucket's included: a
+// read the server refuses, as it refuses a user whose grant predates that bucket, gets no answer
+// at all and waits out the whole bound, once (awaitCopiedBuckets then reads it no more), and a
+// shorter bound for that bucket alone would hold the start for good on a hub slower than it, since
+// a read that fails with no refusal holds the turn.
 const (
 	bucketWaitInterval       = 2 * time.Second
 	missingBucketLogInterval = 30 * time.Second
 	bucketCheckTimeout       = 10 * time.Second
-	// knownBucketCheckTimeout is the read of the known-session bucket's stream: a user whose grant
-	// predates that bucket gets no answer at all, only the server's refusal, which nats.go does not
-	// hand the request, and a start must not wait bucketCheckTimeout on it (awaitCopiedBuckets lets
-	// that bucket's refused read through).
-	knownBucketCheckTimeout = time.Second
 )
 
 // knownBucketReadSubject is the request a read of the known-session bucket's stream sends
@@ -190,7 +190,7 @@ func listenerCopiedBuckets(ci bool) []string {
 // known-session bucket while that store cannot read it (session.KnownSessions.Unreadable), a hub
 // whose users were rendered before that bucket's grant (#2643). There the server refuses and drops
 // the read, so it can find the bucket neither present nor missing: it would cost the tick
-// knownBucketCheckTimeout and log, every tick, the connection's `envoy nats async error` ERROR for
+// bucketCheckTimeout and log, every tick, the connection's `envoy nats async error` ERROR for
 // the refused publish and checkCopiedBuckets' WARN for a failed read, ten times the store's own
 // retry. The start's wait lets that read through for the same reason (awaitCopiedBuckets). Once the
 // store opens the bucket, or finds it missing, the monitor reads it again.
@@ -238,19 +238,15 @@ func (r bucketReads) err() error {
 }
 
 // readBuckets asks the server for every bucket's stream at once, within bucketCheckTimeout each
-// (knownBucketCheckTimeout for the known-session bucket) and never past ctx, so the shutdown's
-// monitorCancel ends a tick's reads on a hub that does not answer and a stalled hub costs one
-// read's timeout, not one per bucket. The reads come back in the order of buckets.
+// and never past ctx, so the shutdown's monitorCancel ends a tick's reads on a hub that does not
+// answer and a stalled hub costs one read's timeout, not one per bucket. The reads come back in
+// the order of buckets.
 func readBuckets(ctx context.Context, js nats.JetStreamContext, buckets []string) bucketReads {
 	errs := make([]error, len(buckets))
 	var wg sync.WaitGroup
 	for i, bucket := range buckets {
-		timeout := bucketCheckTimeout
-		if bucket == bus.KnownSessionBucket {
-			timeout = knownBucketCheckTimeout
-		}
 		wg.Go(func() {
-			readCtx, cancel := context.WithTimeout(ctx, timeout)
+			readCtx, cancel := context.WithTimeout(ctx, bucketCheckTimeout)
 			defer cancel()
 			_, errs[i] = js.StreamInfo("KV_"+bucket, nats.Context(readCtx))
 		})
@@ -303,7 +299,7 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 //
 // The known-session bucket holds the start as every other bucket does, but for one case: a read of
 // it that fails holds the turn, as a failed read of any other bucket does, and is made again on the
-// next, so a read that waits out knownBucketCheckTimeout on a slow hub, or one the hub did not
+// next, so a read that waits out bucketCheckTimeout on a slow hub, or one the hub did not
 // answer, never lets the start go with the bucket missing. The one case is a read the server
 // refused: a hub whose users were rendered before that bucket's grant (#2643), and not applied
 // since, lets the listener read no part of it, and its store then opens it once the grant arrives

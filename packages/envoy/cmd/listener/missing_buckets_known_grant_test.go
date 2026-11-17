@@ -112,11 +112,11 @@ func refusedKnownReads(grant *testnats.NkeyGrant, cid uint64) int {
 // read, the listener's client records the refusal (bus.RefusedRequest), and the wait leaves the
 // bucket to its store from then on (awaitCopiedBuckets). Each read the server refuses is a
 // permissions violation and the connection's `envoy nats async error` ERROR, so a wait that read
-// it on every turn logged one each turn (a refused read waits out its second, then
-// bucketWaitInterval) for as long as the start was held: at 91c75f9e8d this test's wait made 3
-// refused reads in its 9 s. The wait is still the start's: it holds while the other buckets are
-// missing, and returns once they exist. The connection is a bus client's, as the listener's is,
-// since only a client records the refusals its connection is sent.
+// it on every turn logged one each turn (a refused read waits out bucketCheckTimeout, then
+// bucketWaitInterval) for as long as the start was held: at 91c75f9e8d, with a one-second bound
+// on that read, this test's wait made 3 refused reads in 9 s. The wait is still the start's: it
+// holds while the other buckets are missing, and returns once they exist. The connection is a bus
+// client's, as the listener's is, since only a client records the refusals its connection is sent.
 func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, grantBeforeKnownSessions()...)
@@ -142,8 +142,9 @@ func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- awaitCopiedBuckets(ctx, logger, conn, js, copied, missing) }()
 
-	// Four turns of the wait, with every bucket but the known-session one missing.
-	held := 4*bucketWaitInterval + time.Second
+	// The first turn, whose refused read waits out its whole bound, then four more, with every
+	// bucket but the known-session one missing.
+	held := bucketCheckTimeout + 4*bucketWaitInterval + time.Second
 	select {
 	case err := <-done:
 		t.Fatalf("the wait returned %v with %v missing, want it held", err, missing.list())
@@ -188,7 +189,7 @@ func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 // known-session one, and answers nothing for the wait's whole first turn, so every read of that
 // turn fails; then it answers, a turn finds the known-session bucket missing, and the start is held
 // until the operator creates it. Whether the thaw lands before the second turn's reads or after
-// them (the known-session read then waits out its second while the others are answered), a read
+// them (the known-session read then waits out its bound while the others are answered), a read
 // that failed holds its turn, so the outcome is the same either way; the order is forced, each way,
 // in TestAFailedKnownSessionReadHoldsTheStartsTurn. At 3dc1ad81d8 the first failed read dropped the
 // bucket whatever its cause, and the second turn, finding the others present, let the start go
@@ -238,7 +239,7 @@ func TestAStartTheHubDidNotAnswerAtFirstIsHeldForAMissingKnownSessionBucket(t *t
 	thawed = true
 
 	// The hub answers again: the next turn finds the known-session bucket missing and holds.
-	deadline := time.Now().Add(3 * (knownBucketCheckTimeout + bucketWaitInterval))
+	deadline := time.Now().Add(3 * (bucketCheckTimeout + bucketWaitInterval))
 	for !slices.Contains(missing.list(), bus.KnownSessionBucket) {
 		select {
 		case err := <-done:
@@ -246,14 +247,14 @@ func TestAStartTheHubDidNotAnswerAtFirstIsHeldForAMissingKnownSessionBucket(t *t
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the wait did not find %s missing within %s of the hub answering; missing = %v", bus.KnownSessionBucket, 3*(knownBucketCheckTimeout+bucketWaitInterval), missing.list())
+			t.Fatalf("the wait did not find %s missing within %s of the hub answering; missing = %v", bus.KnownSessionBucket, 3*(bucketCheckTimeout+bucketWaitInterval), missing.list())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	select {
 	case err := <-done:
 		t.Fatalf("the wait returned %v with %s missing, want it held", err, bus.KnownSessionBucket)
-	case <-time.After(2 * (knownBucketCheckTimeout + bucketWaitInterval)):
+	case <-time.After(2 * (bucketCheckTimeout + bucketWaitInterval)):
 	}
 
 	if _, err := bus.CreateCopiedBucket(conn, js, bus.KnownSessionBucket, 1); err != nil {
@@ -278,7 +279,14 @@ const (
 	// readUnanswered is a read the hub did not answer in time, which no refusal explains: a hub
 	// that answers nothing, or one slower than the read's bound.
 	readUnanswered
+	// readSlow is a read the hub answers present after slowRead, or one that ends with the read's
+	// own context first, as a real read does.
+	readSlow
 )
+
+// slowRead is how long a readSlow read takes: past the one-second bound the known-session read
+// had before, well inside bucketCheckTimeout.
+const slowRead = 2 * time.Second
 
 // scriptedJetStream answers each read of a bucket's stream (StreamInfo, the one call readBuckets
 // makes) by the script's outcome for the bucket's nth read, n counted per bucket from 1, and for a
@@ -292,7 +300,7 @@ type scriptedJetStream struct {
 	created map[string]bool
 }
 
-func (s *scriptedJetStream) StreamInfo(stream string, _ ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
+func (s *scriptedJetStream) StreamInfo(stream string, opts ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
 	bucket := strings.TrimPrefix(stream, "KV_")
 	s.mu.Lock()
 	s.reads[bucket]++
@@ -306,6 +314,19 @@ func (s *scriptedJetStream) StreamInfo(stream string, _ ...natsgo.JSOpt) (*natsg
 		return nil, natsgo.ErrStreamNotFound
 	case readUnanswered:
 		return nil, natsgo.ErrTimeout
+	case readSlow:
+		ctx := context.Background()
+		for _, opt := range opts {
+			if bounded, ok := opt.(natsgo.ContextOpt); ok {
+				ctx = bounded.Context
+			}
+		}
+		select {
+		case <-time.After(slowRead):
+			return &natsgo.StreamInfo{Config: natsgo.StreamConfig{Name: stream}}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	default:
 		return &natsgo.StreamInfo{Config: natsgo.StreamConfig{Name: stream}}, nil
 	}
@@ -317,6 +338,46 @@ func (s *scriptedJetStream) create(bucket string) {
 	s.created[bucket] = true
 }
 
+// A hub that is always slower than one second on the known-session bucket's read lets a start go
+// once every bucket reads present: every read takes the same bound, bucketCheckTimeout. Here every
+// read of that bucket takes slowRead and answers present, and the others answer at once. At
+// ee51690e89 that read alone was bounded at one second, and since round 4 a failed read with no
+// refusal holds the turn, so the start was held for good on such a hub.
+func TestAStartIsNotHeldByASlowKnownSessionRead(t *testing.T) {
+	t.Parallel()
+	client, err := bus.Connect([]string{testnats.URL(t)}, bus.WithName("slow-known-read"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js := &scriptedJetStream{reads: map[string]int{}, created: map[string]bool{}, script: func(bucket string, _ int) readOutcome {
+		if bucket == bus.KnownSessionBucket {
+			return readSlow
+		}
+		return readPresent
+	}}
+	missing := &missingBuckets{}
+	done := make(chan error, 1)
+	go func() {
+		done <- awaitCopiedBuckets(context.Background(), logging.NewWithWriter("test-machine", &cmdtest.LockedBuffer{}), client.Connection(), js, listenerCopiedBuckets(false), missing)
+	}()
+	within := 3*slowRead + 2*bucketWaitInterval
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the wait returned %v with every bucket present, want nil", err)
+		}
+	case <-time.After(within):
+		js.mu.Lock()
+		reads := js.reads[bus.KnownSessionBucket]
+		js.mu.Unlock()
+		t.Fatalf("the wait was still held %s into a start whose every bucket reads present, after %d reads of %s that each took %s: the read's bound is shorter than the hub", within, reads, bus.KnownSessionBucket, slowRead)
+	}
+	if names := missing.list(); len(names) != 0 {
+		t.Fatalf("missing = %v after a start whose every bucket reads present, want none", names)
+	}
+}
+
 // A read of the known-session bucket that fails with no refusal from the server holds the start's
 // turn, as a failed read of any other bucket does, so the start never goes on with that bucket
 // missing because a read of it was slow. Each case forces the order the real hub only sometimes
@@ -325,7 +386,7 @@ func (s *scriptedJetStream) create(bucket string) {
 // throughout until the test creates it, and the wait must not return before that.
 //
 // At eb20fc252c a failed read of that bucket held nothing whatever its cause, so the case where it
-// waits out its second while the hub answers the others (the late thaw a review injected into the
+// waits out its bound while the hub answers the others (the late thaw a review injected into the
 // real-hub test) returned at that turn with the bucket missing; at 3dc1ad81d8 the first failed read
 // dropped the bucket for good, so every case returned at the first turn the others read present.
 func TestAFailedKnownSessionReadHoldsTheStartsTurn(t *testing.T) {
