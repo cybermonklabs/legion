@@ -302,7 +302,7 @@ type Client struct {
 	stopMode        clientStopMode
 
 	reconnectHooksMu sync.Mutex
-	reconnectHooks   []func(*nats.Conn) error
+	reconnectHooks   []func(context.Context, *nats.Conn) error
 	// disconnectHooks run on each disconnect of the client's connection (AddDisconnectHook), under
 	// reconnectHooksMu as the reconnect hooks are.
 	disconnectHooks []func()
@@ -534,7 +534,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		c.AddReconnectHook(c.ensureStreamOn)
 		c.startKeeper(stream, opts.keptBuckets, opts.keepInterval)
 	} else {
-		readable = c.readDeployedSubjects(nc, firstStreamSubjectsRead)
+		readable = c.readDeployedSubjects(context.Background(), nc, firstStreamSubjectsRead)
 	}
 	if readable {
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
@@ -545,18 +545,24 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 // install makes nc the client's connection, with the JetStream context taken from it, once it has
 // ensured the client's stream on nc (ensureStream) when ensure is true. The ensure is told
 // whether nc's server caps a stream that sets no consumer cap at a default of its own, read from
-// the version nc answers (serverDefaultsAnUnsetCap). Installing it is a connection event
-// (ConnectionChanged). It is also where the client enters the registry of live clients
-// (registerClient), the constructor's own step: install runs only from the constructor and only
-// a client it returns gets this far, so a caller holding a connection can find the client that
-// owns it (clientOwning) for as long as that client is a caller's to use.
+// the version nc reports (ensureStreamReported), which waits out a reconnect, until the client
+// stops or natsversion.VersionWait passes, rather than decide on the empty version one answers:
+// install with ensure runs in the constructor's foreground start alone, never on nats.go's
+// callback goroutine (the background start installs with no ensure). Installing it is a
+// connection event (ConnectionChanged). It is also where the client enters the registry of live
+// clients (registerClient), the constructor's own step: install runs only from the constructor and
+// only a client it returns gets this far, so a caller holding a connection can find the client
+// that owns it (clientOwning) for as long as that client is a caller's to use.
 func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
 	}
 	if ensure {
-		if err := c.ensureStream(js, serverDefaultsAnUnsetCap(nc.ConnectedServerVersion())); err != nil {
+		ctx, cancel := c.untilStopped()
+		err := c.ensureStreamReported(ctx, nc, js)
+		cancel()
+		if err != nil {
 			return err
 		}
 	}
@@ -600,12 +606,19 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 
 // ensureStreamOn is an owning client's reconnect hook: it ensures the stream on conn after each
 // connection event, so a stream lost while the process runs is created again. It reads the
-// version off the connection nats.go hands it, so the ensure asks the server it writes to
-// whether a stream with no consumer cap is one that server caps (serverDefaultsAnUnsetCap).
-func (c *Client) ensureStreamOn(conn *nats.Conn) error {
+// version off the connection nats.go hands it, so the ensure asks the server it writes to whether
+// a stream with no consumer cap is one that server caps (ensureStreamReported), and it looks once
+// and waits for nothing: a connection that reports no version has dropped again, and a run of the
+// hooks that waited out that outage would keep the next reconnect's run behind it (rewatch). A
+// connection reports no version only when it is not CONNECTED, so the run that met it is
+// superseded (runSuperseded): it starts no recovery and leaves the hooks due, and the run the next
+// connection event brings makes the ensure again (afterReconnect, onReconnect, onClosed). Every
+// request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
+// connection that drops ends with it.
+func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStream(js, serverDefaultsAnUnsetCap(conn.ConnectedServerVersion()))
+		err = c.ensureStreamReported(lookOnce(), conn, requestsUnder(ctx, js))
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
@@ -613,15 +626,50 @@ func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 	return nil
 }
 
-// readDeployedSubjects reads the deployed stream's subjects on conn within timeout and keeps them
-// for DeployedStreamCaptures. A read that fails keeps what the client held. It reports false only
-// when the server refused the read under the NATS user's permissions: such a user cannot read them
-// later either, so the client keeps deciding by what it holds, and reads no more (subjectsRefused).
-func (c *Client) readDeployedSubjects(conn *nats.Conn, timeout time.Duration) bool {
+// ensureStreamReported ensures the stream through js with what conn's server reports it is
+// (connectedDefaultsAnUnsetCap), waiting for that report until ctx is done or
+// natsversion.VersionWait passes; a connection that reports none in that time ensures nothing and
+// answers the error.
+func (c *Client) ensureStreamReported(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext) error {
+	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, conn)
+	if err != nil {
+		return err
+	}
+	return c.ensureStream(js, defaultsAnUnsetCap)
+}
+
+// lookOnce is a context already done, for a read of the server version that must not wait: given
+// it, natsversion.ConnectedVersion answers at its first look.
+func lookOnce() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// untilStopped is a context that ends when the client stops (Close or Drain), for a wait that a
+// stop must not outlast; the caller cancels it when the wait is over.
+func (c *Client) untilStopped() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-c.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
+// readDeployedSubjects reads the deployed stream's subjects on conn within timeout, and within
+// ctx, and keeps them for DeployedStreamCaptures. A read that fails keeps what the client held. It
+// reports false only when the server refused the read under the NATS user's permissions: such a
+// user cannot read them later either, so the client keeps deciding by what it holds, and reads no
+// more (subjectsRefused).
+func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, timeout time.Duration) bool {
 	js, err := conn.JetStream(nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
-		if subjects, err = readStreamSubjects(js); err == nil {
+		if subjects, err = readStreamSubjects(requestsUnder(ctx, js)); err == nil {
 			c.deployedSubjects.Store(&subjects)
 			return true
 		}
@@ -638,12 +686,12 @@ func (c *Client) readDeployedSubjects(conn *nats.Conn, timeout time.Duration) bo
 
 // readDeployedSubjectsUntilRead is the reconnect hook of a client that connects in the background
 // and owns no stream: on its first connection, and on each later one until a read has succeeded, it
-// reads the deployed subjects within firstStreamSubjectsRead, as Connect's constructor does at
-// connect for a client that waits. A read that fails fails no hook: the client decides by what it
-// holds, as at connect, and followDeployedSubjects reads again.
-func (c *Client) readDeployedSubjectsUntilRead(conn *nats.Conn) error {
+// reads the deployed subjects within firstStreamSubjectsRead and the run's context, as Connect's
+// constructor does at connect for a client that waits. A read that fails fails no hook: the client
+// decides by what it holds, as at connect, and followDeployedSubjects reads again.
+func (c *Client) readDeployedSubjectsUntilRead(ctx context.Context, conn *nats.Conn) error {
 	if c.deployedSubjects.Load() == nil && !c.subjectsRefused.Load() {
-		c.readDeployedSubjects(conn, firstStreamSubjectsRead)
+		c.readDeployedSubjects(ctx, conn, firstStreamSubjectsRead)
 	}
 	return nil
 }
@@ -668,10 +716,18 @@ func (c *Client) followDeployedSubjects(every time.Duration) {
 		if !conn.IsConnected() {
 			continue
 		}
-		if c.subjectsRefused.Load() || !c.readDeployedSubjects(conn, streamSubjectsRead) {
+		if c.subjectsRefused.Load() || !c.followRead(conn) {
 			return
 		}
 	}
+}
+
+// followRead is one read of followDeployedSubjects, within streamSubjectsRead and until the client
+// stops.
+func (c *Client) followRead(conn *nats.Conn) bool {
+	ctx, cancel := c.untilStopped()
+	defer cancel()
+	return c.readDeployedSubjects(ctx, conn, streamSubjectsRead)
 }
 
 // startKeeperOnce is the reconnect hook of an owning client that connects in the background: it
@@ -682,10 +738,10 @@ func (c *Client) followDeployedSubjects(every time.Duration) {
 // first ensure: a pass that read the stream before the ensure's write and wrote after it would put
 // back a subject the ensure replaced, and no later ensure would remove it. A client stopped before
 // then never starts one.
-func (c *Client) startKeeperOnce(buckets []string, interval time.Duration) func(*nats.Conn) error {
+func (c *Client) startKeeperOnce(buckets []string, interval time.Duration) func(context.Context, *nats.Conn) error {
 	keeping := false
-	return func(conn *nats.Conn) error {
-		if err := c.ensureStreamOn(conn); err != nil {
+	return func(ctx context.Context, conn *nats.Conn) error {
+		if err := c.ensureStreamOn(ctx, conn); err != nil {
 			return err
 		}
 		if !keeping {

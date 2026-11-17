@@ -109,7 +109,7 @@ func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *polic
 	if err != nil {
 		return unread(fmt.Errorf("read the pod's requester: %w", err), false)
 	}
-	if decided, err := evaluate(set, names, requester, reason); err != nil || decided.state != "pending" || decided.approver != record.AnyoneApprover {
+	if decided, err := m.evaluate(set, names, requester, reason); err != nil || decided.state != "pending" || decided.approver != record.AnyoneApprover {
 		return ""
 	}
 	bounded, cancel := context.WithTimeout(ctx, assigneeBound)

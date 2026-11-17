@@ -163,7 +163,7 @@ func TestNilKnownSessionsAnswersNothingAndPanicsNowhere(t *testing.T) {
 	if err := known.TouchWithin(context.Background(), "ses_any"); err != nil {
 		t.Errorf("TouchWithin on a nil store = %v, want nil", err)
 	}
-	if err := known.Rewatch(nil); err != nil {
+	if err := known.Rewatch(context.Background(), nil); err != nil {
 		t.Errorf("Rewatch on a nil store = %v, want nil", err)
 	}
 	if err := known.WaitForCacheReady(context.Background()); err != nil {
@@ -425,7 +425,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 		}
 	}
 	filling.StopWatch()
-	raw, err := bus.OpenKeyValue(client.Conn, client.JS(), bus.KnownSessionBucket)
+	raw, err := bus.OpenKeyValue(context.Background(), client.Conn, client.JS(), bus.KnownSessionBucket)
 	if err != nil {
 		t.Fatalf("open the known-session bucket: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestAFailedMoveToARecoveredConnectionIsRepairedByTheStore(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if watchHandle(known) != before {
@@ -591,7 +591,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if !repairRunning(known) {
@@ -599,7 +599,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 	}
 
 	grant.Grant(t, knownBucketGrant()...)
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of the next connection event, once the cluster took this listener back: %v", err)
 	}
 	moved := watchHandle(known)
@@ -625,7 +625,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	known, conn, grant, logged := knownOverGrant(t, 5*time.Second, 5*time.Second)
 
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of an ordinary connection event: %v", err)
 	}
 	if strings.Contains(logged(), knownBackLine) {
@@ -633,7 +633,7 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	}
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a repair")
 	}
 	if strings.Contains(logged(), knownBackLine) {
@@ -641,7 +641,7 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	}
 
 	grant.Grant(t, knownBucketGrant()...)
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of the next connection event, once the cluster took this listener back: %v", err)
 	}
 	var back []string
@@ -669,10 +669,11 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 // (kvwatch.Watcher.Servable), and past it answers nothing: Opened is false, so a publish leaves its
 // counts out, and Get answers no record, so a send to a session with no entry answers 404, exactly
 // as on a listener with no bucket. Once the retry has moved the watcher and the moved watcher's
-// read has completed, the store answers again. The watcher's clock is the test's, so the bound is
-// passed without waiting it out.
+// read has completed, the store answers again. The watcher's clock is the test's, and it moves only
+// when the test moves it, so the bound is passed without waiting it out, and a failed move that
+// takes minutes on a busy machine does not pass it before the test asks the store inside it.
 func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
-	watcherClock := &clock{}
+	watcherClock := &heldClock{now: time.Now()}
 	known, conn, grant, logged := knownOverGrant(t, 200*time.Millisecond, time.Second, withKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
 	const stale = "ses_stale_store"
 	const topic = "notifications.team.stale-store"
@@ -684,7 +685,7 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	// bucket, and its stale episode begins at the disconnect.
 	grant.Grant(t, "nothing.this.store.uses")
 	known.Disconnected()
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a stale store")
 	}
 	if !known.Opened() {
@@ -713,9 +714,38 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	if _, ok := known.Get(stale); !ok {
 		t.Error("the repaired store answers no record of the session written before the failed move")
 	}
+	// Opened is the moved watcher's read completed, on the watcher's own goroutine, and the line
+	// saying the store is back is written by the retry once its move has returned (attemptRepair),
+	// so the two are not ordered: a count read when Opened turns true can find no line yet. The
+	// retry retires at an attempt after the one that wrote the line, both under repairMu, so its
+	// retirement is what the count waits for, and no attempt after it writes a second line.
+	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+		return !repairRunning(known)
+	})
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
 		t.Errorf("the repair logged %d lines saying the store is back, want one:\n%s", lines, logged())
 	}
+}
+
+// heldClock is a clock that moves only when the test advances it, as kvwatch's own tests hold
+// theirs: a stale bound measured on it is passed by the test's advance, never by how long the
+// steps before that advance took. The package's other clock (clock) follows the real time, which
+// a stale episode would then measure too.
+type heldClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *heldClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *heldClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
 }
 
 // A stop ends the retry wherever it is, and a store that stopped repairs nothing afterwards: its
@@ -725,7 +755,7 @@ func TestAStopEndsTheStoresRetry(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if watchHandle(known) != before {
@@ -843,7 +873,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The reconnect after the disconnect moves the watcher, and the move fails: the cluster
 	// refuses this listener again.
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 

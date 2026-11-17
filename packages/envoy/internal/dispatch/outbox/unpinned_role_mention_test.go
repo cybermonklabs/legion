@@ -79,7 +79,7 @@ func TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce(t *te
 	// Whatever the batch does with the event itself, the session the mention is about to reach
 	// must not have been sent a copy of this comment on its own topic.
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	subject := contracts.AgentSubject(holder)
+	subject := contracts.LegacyAgentSubject(holder)
 	if slices.Contains(reached, subject) {
 		t.Fatalf("the comment reached %s while its only mention's attempt was live and not yet pinned to that session; the mention is on its way to the same host, so this copy shows the comment twice (reached %v)",
 			subject, reached)
