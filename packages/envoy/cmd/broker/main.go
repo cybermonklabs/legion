@@ -526,6 +526,23 @@ func main() {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
 			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
 	}
+	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
+	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
+	// whose accounts takes a name the other holds, and the names the exchange's entries fix, which
+	// no pair takes. Both are set here, before srv.Serve below hands the store its first request,
+	// and nothing writes them after, so the handlers read them with no lock.
+	oauthStore.SessionPairs = sessionPairs(cfg.SessionAccountPairs)
+	oauthStore.Reserved = reservedSessions(exchangePolicy)
+	if len(cfg.SessionAccountPairs) == 0 {
+		slog.Info("session account pairs", "state", "off",
+			"detail", "BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds")
+	} else {
+		written := make([]string, len(cfg.SessionAccountPairs))
+		for i, pair := range cfg.SessionAccountPairs {
+			written[i] = pair[0] + "=" + pair[1]
+		}
+		slog.Info("session account pairs", "state", "on", "pairs", strings.Join(written, " "))
+	}
 	// verification_uri is Dispatch's machine-login page, where the person types the code. With
 	// no page (BROKER_MACHINE_LOGIN_URL unset) the provider composes no device grant at all:
 	// the broker mounts no device authorization route and its metadata document names no device
@@ -1168,6 +1185,31 @@ func googleExchangeAudience(cfg config.Config) string {
 		return ""
 	}
 	return cfg.GoogleOIDCAudience
+}
+
+// sessionPairs is BROKER_SESSION_ACCOUNT_PAIRS in the shape oauthstore.Store.SessionPairs takes:
+// each account's principal (exchange.AccountPrincipal, the spelling a pod's claim is held under)
+// mapped to the principal of every account it is paired with. Each pair is written both ways,
+// since either of its accounts takes a session name the other holds.
+func sessionPairs(pairs [][2]string) map[string][]string {
+	paired := make(map[string][]string, 2*len(pairs))
+	for _, pair := range pairs {
+		first, second := exchange.AccountPrincipal(pair[0]), exchange.AccountPrincipal(pair[1])
+		paired[first] = append(paired[first], second)
+		paired[second] = append(paired[second], first)
+	}
+	return paired
+}
+
+// reservedSessions is every session name the exchange's entries fix, mapped to the principal it
+// is fixed for, in the shape oauthstore.Store.Reserved takes: the names no pair takes, even one
+// another principal still holds as an ordinary claim.
+func reservedSessions(set *exchange.Set) map[string]string {
+	reserved := map[string]string{}
+	for _, reservation := range set.Reservations() {
+		reserved[reservation.Session] = reservation.Principal
+	}
+	return reserved
 }
 
 // serviceNames is every registered service, sorted and each once: BROKER_SERVICES' and

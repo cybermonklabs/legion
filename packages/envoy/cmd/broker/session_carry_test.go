@@ -50,6 +50,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
@@ -101,11 +102,7 @@ func TestASessionsGrantFollowsItToANewBox(t *testing.T) {
 	requireHealthy(t, broker.Addr)
 
 	ctx := context.Background()
-	db, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the broker's database: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close(ctx) })
+	db := openBrokerDatabase(t, databaseURL)
 
 	// Each subtest reads and writes through a rig of its own, holding that subtest's t: a
 	// failure a helper reports belongs to the arm that drove it.
@@ -302,6 +299,117 @@ func TestASessionsGrantFollowsItToANewBox(t *testing.T) {
 	})
 }
 
+// enrollmentTookName is the line the broker logs once an enrollment that took its session name
+// from the account paired with its own has committed.
+const enrollmentTookName = "broker: an enrollment took a session name from the account paired with its own"
+
+// TestAPairedAccountsPodEnrolsUnderItsPairsNameAndReadsItsGrant is the carry across
+// BROKER_SESSION_ACCOUNT_PAIRS, on the real binary and with no token exchange at all: a deployment
+// moves a role's pods from podAccount to pairedPodAccount, and the role's next pod enrols under the
+// session name the role's earlier pod enrolled under, holding the grant a person approved there.
+// One service login enrols both accounts' pods, BROKER_SERVICES binding both to its service. Each
+// arm is one broker on a database of its own, since a grant's approval chain names the URL of the
+// broker it was approved at and two brokers here have two. Without the setting, the moved
+// account's enrolment is refused 403 SESSION_HELD and takes nothing. With the pair, it is enrolled
+// and reads the same value from the same grant, the broker holds one grant and one request for the
+// name, both on the moved pod's enrollment, and it logs the take once, naming the name, the account
+// it took the name from, the account that took it and the enrollment. The pair is written moved
+// account first, the other way round from the exchange rows' (token_exchange_test.go), so between
+// them both of a pair's ways are read.
+//
+// It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
+func TestAPairedAccountsPodEnrolsUnderItsPairsNameAndReadsItsGrant(t *testing.T) {
+	// One issuer stands in for the cluster's ServiceAccount token issuer and for the approval
+	// page's provider, as approval_page_test.go's fixture has one serve both.
+	issuer := oidctest.New(t)
+	podKey := issuer.PublishKey(t, "pod-key")
+	brokertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
+	const (
+		podAudience      = "example-broker-pod"
+		service          = "example-service"
+		loginAccount     = "system:serviceaccount:example-system:example-service-login"
+		oldPod, movedPod = "pod-uid-old", "pod-uid-moved"
+	)
+	// The one secret the role's pod asks for: fleetPerson's own, so it waits for her approval.
+	stored := writeTempFile(t, "fake-secrets.json",
+		[]byte(`{"secrets": [`+fakeSecret("example/agent-secrets/person-secret", fleetPerson, personSecretValue)+`]}`))
+	binary := buildBroker(t)
+	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(podAccount), exchange.AccountPrincipal(pairedPodAccount)
+
+	// moving is one arm's broker and the state its move starts from: the service's launcher
+	// credential, the old account's pod enrolled under pairedSession, and the grant it holds.
+	type moving struct {
+		broker   *brokerProcess
+		rig      carryRig
+		pods     podBroker
+		launcher launcher
+		old      pod
+		grant    string
+	}
+	// start starts a broker with env on a database of its own and drives it to that state: the
+	// service logs in once, its credential enrols the old account's pod under the name, and that
+	// pod asks for fleetPerson's secret, which she approves on the broker's own page.
+	start := func(t *testing.T, env ...string) moving {
+		t.Helper()
+		databaseURL := storetest.URL(t)
+		broker := startBroker(t, brokerOptions{Binary: binary, Env: append([]string{
+			"BROKER_DATABASE_URL=" + databaseURL,
+			"BROKER_LISTEN_ADDR=127.0.0.1:0",
+			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+			"BROKER_FAKE_SECRETS_FILE=" + stored,
+			"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
+			"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
+			"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,
+			"BROKER_SERVICES=" + service + "=" + podAccount + " " + service + "=" + pairedPodAccount,
+			"BROKER_SIGNIN_ISSUER=" + issuer.URL(),
+		}, env...)})
+		broker.AwaitRecord(t, "session account pairs", nil)
+		base := "http://" + broker.Addr
+		m := moving{broker: broker,
+			rig:  carryRig{t: t, ctx: context.Background(), addr: broker.Addr, base: base, db: openBrokerDatabase(t, databaseURL), signIn: issuer},
+			pods: podBroker{t: t, base: base, issuer: issuer, key: podKey, audience: podAudience}}
+		m.launcher = m.pods.logIn(service, loginAccount)
+		m.old = m.pods.enrolledPodUnder(m.launcher, oldPod, podAccount, pairedSession)
+		m.grant = m.rig.grantedTo(m.old, pairedSession, personSecret, personSecretValue, fleetPerson)
+		return m
+	}
+
+	t.Run("without the pair the moved account's pod is refused the name and takes nothing", func(t *testing.T) {
+		m := start(t)
+		if _, status, answer := m.pods.enrolPodUnder(m.launcher, movedPod, pairedPodAccount, pairedSession); status != http.StatusForbidden || decodeError(t, answer).Code != "SESSION_HELD" {
+			t.Fatalf("the moved account's pod enrolling %s with no pair = %d %s, want 403 SESSION_HELD: an account no pair names is refused a name another account holds", pairedSession, status, bytes.TrimSpace(answer))
+		}
+		if held := m.rig.held(pairedSession); held.Requests != 1 || held.Grants != 1 || held.Grant != m.grant || held.GrantEnrollment != m.old.enrollmentID {
+			t.Fatalf("after the refusal the broker holds %+v for session %s, want one request and the one grant %s, still on the old pod's enrollment %s", held, pairedSession, m.grant, m.old.enrollmentID)
+		}
+		if holder := sessionNameHolder(t, m.rig.db, pairedSession); holder != oldPrincipal {
+			t.Fatalf("after the refusal the name %s is held by %q, want the old account %q still", pairedSession, holder, oldPrincipal)
+		}
+		if takes := recordsWith(m.broker.Log(), enrollmentTookName, nil); len(takes) != 0 {
+			t.Fatalf("the broker logged %v, want no take: its refusal took nothing", takes)
+		}
+	})
+
+	t.Run("with the pair the moved account's pod takes the name and the grant", func(t *testing.T) {
+		m := start(t, "BROKER_SESSION_ACCOUNT_PAIRS="+pairedPodAccount+"="+podAccount)
+		moved := m.pods.enrolledPodUnder(m.launcher, movedPod, pairedPodAccount, pairedSession)
+		m.rig.requireValue(moved, m.grant, personSecret, personSecretValue,
+			"a grant follows its session name to the pod of the account paired with the one it was approved under")
+		if held := m.rig.held(pairedSession); held.Requests != 1 || held.Grants != 1 || held.Grant != m.grant || held.GrantEnrollment != moved.enrollmentID {
+			t.Fatalf("after the move the broker holds %+v for session %s, want one request and the one grant %s, on the moved pod's enrollment %s: the moved pod takes the grant rather than %s being asked again",
+				held, pairedSession, m.grant, moved.enrollmentID, fleetPerson)
+		}
+		if holder := sessionNameHolder(t, m.rig.db, pairedSession); holder != movedPrincipal {
+			t.Fatalf("after the move the name %s is held by %q, want the moved account %q", pairedSession, holder, movedPrincipal)
+		}
+		take := map[string]any{"severity": "WARNING", "session": pairedSession, "from": oldPrincipal, "to": movedPrincipal, "enrollment": moved.enrollmentID}
+		m.broker.AwaitRecord(t, enrollmentTookName, take)
+		if takes := recordsWith(m.broker.Log(), enrollmentTookName, nil); len(takes) != 1 {
+			t.Fatalf("the broker logged %d %q lines, want the one take: %v", len(takes), enrollmentTookName, takes)
+		}
+	})
+}
+
 // box is one box as this test drives it: the launcher credential it holds and the key that proves
 // it. A machine's box holds the credential its token exchange minted against its identity key; a
 // person's box holds the one their sign-in minted against the box key `agent-secrets login` made.
@@ -393,13 +501,20 @@ func (r carryRig) enrol(launcherKey *ecdsa.PrivateKey, credentialID, runtimeID, 
 	return pod{runtimeID: runtimeID, key: key, enrollmentID: enrolled.EnrollmentID}
 }
 
-// grantOn is the state every arm starts from: a session of the name sessionID enrols on the box b,
-// asks for secret, waits (nobody but approver can answer), approver approves it on the broker's own
-// page, and the session reads the value back. It answers the session and the grant id it now holds.
+// grantOn is the state every arm starts from: a session of the name sessionID enrols on the box b
+// and is granted secret (grantedTo). It answers the session and the grant id it now holds.
 func (r carryRig) grantOn(b box, sessionID, runtimeID, secret, value, approver string) (pod, string) {
 	r.t.Helper()
-	pods := r.pods()
 	session := r.enrol(b.key, b.credential, runtimeID, sessionID)
+	return session, r.grantedTo(session, sessionID, secret, value, approver)
+}
+
+// grantedTo has session, enrolled under the name sessionID, ask for secret and wait (nobody but
+// approver can answer), has approver approve it on the broker's own page, and has the session read
+// the value back. It answers the grant id the session now holds.
+func (r carryRig) grantedTo(session pod, sessionID, secret, value, approver string) string {
+	r.t.Helper()
+	pods := r.pods()
 	asked := pods.ask(session, secret)
 	if asked.State != "pending" || asked.RecordID == nil || asked.GrantID != nil {
 		r.t.Fatalf("session %s asking for %s = %+v, want it pending with no grant on a record %s decides", sessionID, secret, asked, approver)
@@ -412,7 +527,49 @@ func (r carryRig) grantOn(b box, sessionID, runtimeID, secret, value, approver s
 	if got := pods.values(session, held.Grant)[secret]; got != value {
 		r.t.Fatalf("session %s read %s = %q from grant %s, want %q", sessionID, secret, got, held.Grant, value)
 	}
-	return session, held.Grant
+	return held.Grant
+}
+
+// enrolPodUnder has by's credential enrol the pod runtimeID, running as account, under the session
+// name sessionID, as the Legion daemon enrols a role's pod: the pod's projected token proves the
+// account, whose principal the name is held under (exchange.AccountPrincipal), and the name is the
+// one a grant follows. podBroker.enroll states no session name. It answers the broker's status
+// and body beside the pod, so a caller drives the refusal as well as the enrollment.
+func (b podBroker) enrolPodUnder(by launcher, runtimeID, account, sessionID string) (pod, int, []byte) {
+	b.t.Helper()
+	key := proofKey(b.t)
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	claims := b.issuer.Claims(account, b.audience)
+	claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": runtimeID}}
+	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, b.base+"/v1/enrollments", time.Now())
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	status, answer := b.post("/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.issuer.Mint(b.t, b.key, claims),
+		"session_id": sessionID,
+	})
+	var enrolled struct {
+		EnrollmentID string `json:"enrollment_id"`
+	}
+	if status == http.StatusCreated {
+		b.decode(answer, &enrolled)
+	}
+	return pod{runtimeID: runtimeID, key: key, enrollmentID: enrolled.EnrollmentID}, status, answer
+}
+
+// enrolledPodUnder is enrolPodUnder held to the answer a role's pod must get: 201 and an
+// enrollment its own key signs for, which is what every later secrets call presents.
+func (b podBroker) enrolledPodUnder(by launcher, runtimeID, account, sessionID string) pod {
+	b.t.Helper()
+	enrolled, status, answer := b.enrolPodUnder(by, runtimeID, account, sessionID)
+	if status != http.StatusCreated || enrolled.enrollmentID == "" {
+		b.t.Fatalf("enrolling the pod %s as %s under session %s = %d %s, want 201 with an enrollment_id", runtimeID, account, sessionID, status, bytes.TrimSpace(answer))
+	}
+	return enrolled
 }
 
 // readValues has p release grantID's values and answers what the broker said, refusal and all: the
@@ -512,4 +669,28 @@ func (r carryRig) held(session string) sessionHeld {
 	}
 	r.t.Logf("the broker holds %+v for session %s", held, session)
 	return held
+}
+
+// openBrokerDatabase is a handle of the test's own on the broker's database at databaseURL,
+// closed when t ends: what a row counts the broker's rows with.
+func openBrokerDatabase(t *testing.T, databaseURL string) *pgx.Conn {
+	t.Helper()
+	db, err := pgx.Connect(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("connect to the broker's database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close(context.Background()) })
+	return db
+}
+
+// sessionNameHolder is the principal the broker's one record of whose a session name is
+// (oauth_session_bindings) says holds session, "" for a name nobody holds.
+func sessionNameHolder(t *testing.T, db *pgx.Conn, session string) string {
+	t.Helper()
+	var principal string
+	if err := db.QueryRow(context.Background(), `select coalesce((select principal from oauth_session_bindings where session = $1), '')`,
+		session).Scan(&principal); err != nil {
+		t.Fatalf("read the holder of session name %s: %v", session, err)
+	}
+	return principal
 }
