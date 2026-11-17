@@ -2,7 +2,6 @@ package enroll
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -24,20 +23,14 @@ const (
 	carryPodAccount    = "system:serviceaccount:legion:worker"
 )
 
-// daemonLogins is the one token login each Service's daemon holds (daemonLogin).
-var daemonLogins sync.Map
-
-// daemonLogin is the token login a Legion daemon enrols its pods under, as it holds one: logged in
-// once per Service as carryDaemonAccount, whose pods (carryPodAccount) BROKER_SERVICES binds to its
-// service, and handed back on every later call, since the broker keeps one live credential per
-// account and a daemon enrols each pod's next generation under the login it already holds. A pod's
-// grants follow the pair of its account and this login's (carryPrincipal), so the carry of a pod
-// is measured under it.
+// daemonLogin is the token login a Legion daemon enrols its pods under: carryDaemonAccount logged
+// in, whose pods (carryPodAccount) BROKER_SERVICES binds to its service. It logs in again at each
+// call, as a daemon does at a restart or its login's expiry, and the broker keeps one live
+// credential per account bound to no pod, so each call moves that one row and answers the same
+// credential (IssueTokenLoginTx's upsert). A pod's grants follow the pair of its account and this
+// login's (carryPrincipal), so the carry of a pod is measured under it.
 func daemonLogin(t *testing.T, svc *Service) Credential {
 	t.Helper()
-	if cred, ok := daemonLogins.Load(svc); ok {
-		return cred.(Credential)
-	}
 	if svc.ServiceLogins == nil {
 		svc.ServiceLogins = map[string]string{}
 	}
@@ -46,9 +39,7 @@ func daemonLogin(t *testing.T, svc *Service) Credential {
 	}
 	svc.ServiceLogins[carryDaemonAccount] = "legion-daemon"
 	svc.ServicesByAccount[carryPodAccount] = "legion-daemon"
-	cred := podRig{svc: svc}.login(t, carryDaemonAccount, "")
-	daemonLogins.Store(svc, cred)
-	return cred
+	return podRig{svc: svc}.login(t, carryDaemonAccount, "")
 }
 
 // carryEnrollment enrols one named session of kind, under the credential that kind's launcher

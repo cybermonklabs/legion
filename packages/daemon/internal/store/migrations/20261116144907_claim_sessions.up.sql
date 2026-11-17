@@ -47,7 +47,7 @@
 -- Warn each it leaves as it was, being queued, launching uncertainly, failed or retired
 -- (internal/daemon's suspendSessionConflicts). An operator records the rightful holder by hand:
 --   update claim_sessions set claim = '<token>'
---     where project = '<project>' and kind = '<kind>' and name = '<name>';
+--     where project = '<project>' and kind = '<kind>' and name = '<name>' and claim = '';
 -- and gives every other claim the line's `claims` names a new session with `legion claims
 -- forget-session`, as its state allows: a suspended one is then resumed (`legion claims resume`), a
 -- queued one launches by itself, a failed one is retried (`legion claims retry`) unless it is the

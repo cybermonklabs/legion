@@ -22,7 +22,8 @@ body: |-
   an operator runs `legion claims forget-session` as its state allows, then resumes a suspended
   one, retries a failed one and leaves a retired one as it is, and for a name held for none records
   the rightful holder (`update claim_sessions set claim = '<token>' where project = '<project>' and
-  kind = '<kind>' and name = '<name>'`); docs/kubernetes.md gives the steps whole. A name only an
+  kind = '<kind>' and name = '<name>' and claim = ''`, which moves no name a claim already holds);
+  docs/kubernetes.md gives the steps whole. A name only an
   abandoned session records is logged at Warn and suspends nothing. A hold the store does not
   answer at a relaunch is tried again at the probe interval, charging nothing.
 time: 2026-11-16T15:28:23Z

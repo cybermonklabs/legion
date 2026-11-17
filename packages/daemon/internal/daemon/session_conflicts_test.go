@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,7 +169,7 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 	line := byName[twice]
 	claims, _ := line["claims"].([]any)
 	settle := "update claim_sessions set claim = '<token>' where project = '" + project +
-		"' and kind = 'session' and name = 'ses_twice''; update claim_sessions set claim = ''x''; --'"
+		"' and kind = 'session' and name = 'ses_twice''; update claim_sessions set claim = ''x''; --' and claim = ''"
 	if line["level"] != "ERROR" || line["kind"] != "session" || line["holder"] != "none" || len(claims) != 4 ||
 		claims[0] != string(first) || claims[1] != string(second) || claims[2] != string(busy) || claims[3] != string(queued) || line["settle"] != settle {
 		t.Errorf("the boot logged %v, want an error naming the session %q held for none, %s, %s, %s and %s, and the statement that settles it, %q",
@@ -187,6 +188,28 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 	if got := len(rt.CallsOf("Spawn")) + len(rt.CallsOf("Resume")); got != launches {
 		t.Errorf("the queued claim's launch reached the runtime %d times, want none: it was refused before anything started", got-launches)
 	}
+
+	// The statement the line gives, run as an operator runs it, records the rightful holder of a
+	// name held for none, and moves nothing once the name names a claim: a second run with another
+	// token answers UPDATE 0, so the first claim keeps the name its daemon was answered with.
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	logged, _ := line["settle"].(string)
+	for _, run := range []struct {
+		token claim.Token
+		moved int64
+	}{{first, 1}, {second, 0}} {
+		tag, err := st.Pool().Exec(context.Background(), strings.Replace(logged, "<token>", string(run.token), 1))
+		if err != nil || tag.RowsAffected() != run.moved {
+			t.Errorf("the settle statement run for %s moved %d rows (%v), want %d", run.token, tag.RowsAffected(), err, run.moved)
+		}
+	}
+	if holder, ok := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionID, twice); !ok || holder != first {
+		t.Errorf("after both runs of the settle statement %q is held for %q, want %s, the claim the first run recorded", twice, holder, first)
+	}
 }
 
 // A restored machine arms its timers as restore builds it, and a timer decides on its own
@@ -196,10 +219,12 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 // whose restored registration deadline relaunches it, and one idle. A transaction of the test holds
 // an uncommitted row of a third claim's name, the first the boot's backfill inserts (a file-id,
 // the kind it takes first, store.HoldRecordedSessions), so the backfill waits before it has
-// inserted any name of the other two; while it waits the registered claim's deadline is fired, if
-// one is armed, and its relaunch given time to reach the runtime, and then the row is let go. No
-// machine exists to fire, the backfill holds the session for no claim, both claims are suspended
-// by the operator's suspend, and nothing resumes the session.
+// inserted any name of the other two. Once PostgreSQL shows a statement of the boot waiting on
+// that row (pg_blocking_pids), the registered claim's deadline is fired if one is armed, its
+// relaunch given time to reach the runtime, and then the row is let go. No machine exists to fire,
+// the backfill holds the session for no claim, both claims are suspended by the operator's
+// suspend, and nothing resumes the session. A boot that never waits on the row fails the test,
+// since then it could not see the order it checks.
 //
 // The control: today's order, the hold after restore (start calling holdRecordedSessions after
 // restore). The deadline fires while the backfill waits, the relaunch holds the session for the
@@ -241,31 +266,54 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 		project, string(waiter)); err != nil {
 		t.Fatalf("hold the waiting claim's row uncommitted: %v", err)
 	}
+	var holderPID int
+	if err := row.QueryRow(ctx, `select pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatalf("read the holding transaction's backend: %v", err)
+	}
 
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
 	clock := &heldClock{}
 	o.clock = clock
 	deadline := cfg.WorkerBootTimeout * time.Duration(cfg.WorkerBootRegistrationDeadlineIntervals)
-	fired := make(chan int, 1)
+	type waited struct {
+		blocked bool
+		fired   int
+	}
+	result := make(chan waited, 1)
 	go func() {
-		// The boot waits on the row; fire the registered claim's deadline while it does, wait for
-		// what it launches to reach the runtime, then let the row go. Three seconds is past the few
-		// milliseconds restore takes, should it run first.
-		n := 0
-		for until := time.Now().Add(3 * time.Second); n == 0 && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
-			n = clock.fire(deadline)
+		// Wait for a statement of the boot to wait on the row: the backfill has reached its first
+		// name. Then fire the registered claim's deadline, wait for what it launches to reach the
+		// runtime, and let the row go.
+		var w waited
+		for until := time.Now().Add(time.Minute); !w.blocked && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
+			var waiting int
+			err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`, holderPID).Scan(&waiting)
+			w.blocked = err == nil && waiting > 0
 		}
-		for until := time.Now().Add(3 * time.Second); n > 0 && len(rt.CallsOf("Resume")) == 0 && time.Now().Before(until); {
-			time.Sleep(10 * time.Millisecond)
+		if w.blocked {
+			w.fired = clock.fire(deadline)
+			for until := time.Now().Add(3 * time.Second); w.fired > 0 && len(rt.CallsOf("Resume")) == 0 && time.Now().Before(until); {
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
 		_ = row.Rollback(ctx)
-		fired <- n
+		result <- w
 	}()
 	d := startDaemon(t, cfg, o)
-	whileWaiting := <-fired
+	w := <-result
+	if !w.blocked {
+		t.Fatal("no statement of the boot waited on the held row within a minute, so the test could not see whether a restored timer runs before the backfill")
+	}
+	whileWaiting := w.fired
 	t.Logf("deadlines fired while the backfill waited: %d; the runtime was asked Suspend %d, Resume %d and Spawn %d times; %s is %s",
 		whileWaiting, len(rt.CallsOf("Suspend")), len(rt.CallsOf("Resume")), len(rt.CallsOf("Spawn")), registered, d.claim(registered).State)
+	if whileWaiting != 0 {
+		t.Errorf("%d registration deadlines were armed while the backfill waited on its first name, want none: no machine may exist before the recorded names are held", whileWaiting)
+	}
+	if _, total := clock.armed(deadline); total < 1 {
+		t.Errorf("restore armed no registration deadline for %s, so the control that fires it could not reach the order this test checks", registered)
+	}
 
 	if resumes := rt.CallsOf("Resume"); len(resumes) != 0 {
 		t.Errorf("the boot resumed %d processes (a deadline fired %d times while the backfill waited), want none: %s's session is %s, which %s records too",

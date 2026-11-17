@@ -90,7 +90,7 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 		}
 		if c.Holder == "" {
 			line = append(line, "settle", "update claim_sessions set claim = '<token>' where project = "+supervise.SQLLiteral(s.plan.project)+
-				" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name))
+				" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''")
 		}
 		s.log.Error("supervise: a session name is recorded by claims that do not hold it; each of them this daemon supervises is suspended until an operator gives it a new session, or records it as the rightful holder of a name held for none, and resumes it", line...)
 		for _, token := range c.Claims {
