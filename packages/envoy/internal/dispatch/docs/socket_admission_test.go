@@ -637,8 +637,11 @@ func TestAnEarlierRoomsLateUnloadLeavesTheResidentRoomsBytesResident(t *testing.
 		t.Errorf("the resident bytes after the first room's late unload = %d, want the %d the second room counted with its write: that unload takes back the bytes of the load that ended", got, r.second)
 	}
 
-	// The second room's unload takes back what that load counted, and nothing is left.
+	// The second room's unload takes back what that load counted, and nothing is left. Its browser
+	// leaves first, so the settlement that departure owes the write runs on the resident room and
+	// loads no room after the close (awaitDeparture).
 	_ = r.socket.Close()
+	r.awaitDeparture("the second room's browser")
 	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
 		t.Fatalf("close the second room: %v", err)
 	}
@@ -680,6 +683,7 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 	// second room is closed by ygo's own CloseRoom, as ygo's idle sweep and a last browser's
 	// departure retire a room, taking no gate.
 	_ = r.socket.Close()
+	r.awaitDeparture("the second room's browser")
 	if err := r.service.srv.Server.CloseRoom(r.room, true); err != nil {
 		t.Fatalf("close the second room: %v", err)
 	}
@@ -694,6 +698,15 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 // second room has loaded and taken a write meanwhile (unloadAcrossAReload). first and second are
 // the resident bytes each load counted, and second is larger, so an unload that took back the
 // wrong load's bytes shows.
+//
+// departed reports each departure of a room's last browser once it has run. ygo calls OnLastPeer
+// (Service.settleLastPeer) on the browser's disconnect goroutine, and can do so after a close of
+// the room has returned (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:483-485). That
+// departure runs the settlement the document owes, and when no room of the document is resident,
+// the settlement's warm-up loads one (settlement.take): a load counted under the name as any load
+// is, and ended only by that room's own unload. So a test that requires nothing counted closes a
+// room only once its browser's departure has run; otherwise the settlement a departure runs after
+// the close counts a load the test never ends (INFRA-3904).
 type reloadedRoom struct {
 	t              *testing.T
 	service        *Service
@@ -703,6 +716,7 @@ type reloadedRoom struct {
 	letFirstUnload func()
 	closed         chan error
 	unloaded       chan struct{}
+	departed       chan struct{}
 }
 
 // unloadAcrossAReload loads a document's room, closes it, holds ygo's call of the room's unload,
@@ -711,8 +725,16 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	t.Helper()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
-	r := &reloadedRoom{t: t, service: service, room: createDocuments(t, database, 1)[0], closed: make(chan error, 1), unloaded: make(chan struct{}, 2)}
+	r := &reloadedRoom{t: t, service: service, room: createDocuments(t, database, 1)[0], closed: make(chan error, 1), unloaded: make(chan struct{}, 2), departed: make(chan struct{}, 2)}
+	settleLastPeer := service.srv.OnLastPeer
+	service.srv.OnLastPeer = func(ctx context.Context, room string) {
+		settleLastPeer(ctx, room)
+		if room == r.room {
+			r.departed <- struct{}{}
+		}
+	}
 	admitSocket(t, server.URL, r.room, "the socket that loads the first room").Close()
+	r.awaitDeparture("the first room's browser")
 	// The service holds this room alone, so the figure is the first room's load.
 	if r.first = service.residentBytes.Load(); r.first <= 0 {
 		t.Fatalf("the first room's load counted %d resident bytes, want the history it decoded; nothing here is tested", r.first)
@@ -763,6 +785,17 @@ func (r *reloadedRoom) awaitUnload(what string) {
 	case <-r.unloaded:
 	case <-time.After(roomWait(r.t)):
 		r.t.Fatalf("%s never reported its unload", what)
+	}
+}
+
+// awaitDeparture waits for the next departure of the room's last browser to have run, the
+// settlement it owes with it (reloadedRoom).
+func (r *reloadedRoom) awaitDeparture(who string) {
+	r.t.Helper()
+	select {
+	case <-r.departed:
+	case <-time.After(roomWait(r.t)):
+		r.t.Fatalf("%s never left the room", who)
 	}
 }
 
