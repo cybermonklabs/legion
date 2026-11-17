@@ -31,16 +31,28 @@
 // mark. Below the band, while it is off and once it has given a rise up, it reads no size and
 // keeps none: a pod that sits below its band pays for nothing but its readings.
 //
-// After a kill the guard reads the sizes at each interval too. The reading has fallen when it is
-// below the reading at the kill by any amount, or below the mark (fell). Fallen and still at or
-// above the mark, once the process has exited or the wait has passed, the guard ends the next in
-// the same order, so a pool of forked workers (make -j, a Lean build), whose shared pages no one
-// worker's kill frees, is ended one worker at a time. When the wait passes and the kill has not
-// lowered the reading at all, it ends the next in the order only while a process it may end grew
-// over the window and those processes hold the floor between them: a rise that is a protected
-// process's own, Oh My Pi's, costs at most one kill. Otherwise, and when no process may be ended,
-// the guard logs the sizes it saw and ends nothing more for that rise, until the reading has gone
-// below the mark; a stop that repeats is logged at most once a minute (stopRise).
+// After a kill the guard reads the sizes at each interval too, and waits only while the killed
+// process has not exited (its Handle's Exited), and no longer than the wait (INFRA-3531 R1 of spec
+// version 25). The reading has fallen when it is below the reading at the kill by any amount, or
+// below the mark (fell). The killed process the guard never ends or reports again: while it has
+// not exited it is left out of what the guard may end, of their sum against the floor and of the
+// growth since the kill (leaveOut). Once the process has exited or the wait has passed, the guard
+// decides at each reading. Fallen and still at or above the mark, it ends the next in the same
+// order, so a pool of forked workers (make -j, a Lean build), whose shared pages no one worker's
+// kill frees, is ended one worker at a time. Not fallen, it ends the next in the order at once, at
+// that reading, where a process it may end has grown since the previous kill of the rise and those
+// processes hold the floor between them. Growth since the kill decides this, not the window that
+// orders the processes: a process's size as of the kill is its size in the assessment the kill was
+// made on, or its first read after the kill for a process first read then, and it has grown once
+// its size is that plus growthNoise or more (atKill, grownSinceKill). So a process that grows in
+// steps wider than the window still counts, and six growers that together outrun what one kill
+// frees, which this issue's tester measured ending a 4 GiB pod while the guard waited the whole
+// wait, are ended one at each reading. Where neither holds, the guard ends nothing and decides
+// again at the next reading, until the wait has passed; then it gives the rise up with reason not
+// fallen, so a rise that is a protected process's own, Oh My Pi's, in which nothing it may end
+// grows, costs at most one kill. A rise given up, for that reason or because no process may be
+// ended, has the guard log the sizes it saw and end nothing more for that rise, until the reading
+// has gone below the mark; a stop that repeats is logged at most once a minute (stopRise).
 //
 // A process's size, by which the guard measures its growth and ranks it, is the sum of the
 // `Anonymous:` lines of its smaps, the `Rss:` of its shared mappings of memory-backed files (a
@@ -208,18 +220,22 @@ const (
 	// armed acts on the next reading at or above the mark, and reads the sizes of what it may end
 	// at each reading in the band below the mark.
 	armed phase = iota
-	// waiting has sent a kill and reads, and reads those sizes, until the reading falls or the
-	// wait passes.
+	// waiting has sent a kill and reads, and reads those sizes, while the killed process has not
+	// exited and the wait has not passed, and from then on decides at each reading whether to end
+	// the next (watch).
 	waiting
 	// stopped has given up on this rise, reads no size and acts on nothing until the reading is
 	// below the mark.
 	stopped
 )
 
-// afterKill is the kill a waiting guard watches: the process held, the reading at the kill, which
-// the reading must fall below (fell), and when the wait passes.
+// afterKill is the kill a waiting guard watches: the process held, whose exit ends the wait, the
+// same process by its pid and start time (killed), which the guard never ends again while it has
+// not exited (leaveOut), the reading at the kill, which the reading must fall below (fell), and
+// when the wait passes at the latest.
 type afterKill struct {
 	handle   Handle
+	killed   procKey
 	reading  uint64
 	deadline time.Time
 	exited   bool
@@ -238,7 +254,8 @@ type afterKill struct {
 // kill point measured (about 317 ms for the pool probe at 4 GiB, 1.9 s for a grower of 256 MiB a
 // second), and two or three readings at 100 ms; an interval above it leaves no earlier read in
 // the window, and the guard then ends the largest first. growthNoise is the least growth that
-// counts: a grower of 256 MiB a second grows about 25 MiB from one reading to the next.
+// counts, over the window and since a kill (grownSinceKill): a grower of 256 MiB a second grows
+// about 25 MiB from one reading to the next.
 const (
 	bandPercent  = 10
 	growthWindow = 300 * time.Millisecond
@@ -257,6 +274,14 @@ type procKey struct {
 type sizeRead struct {
 	at   time.Time
 	size uint64
+}
+
+// killSize is a process's size as of the previous kill of a rise, from which its growth since that
+// kill is measured (grownSinceKill), and the reading by the guard's clock it was last read at, by
+// which the guard drops a process it no longer reads.
+type killSize struct {
+	size uint64
+	seen time.Time
 }
 
 // window is one hour of readings, from the guard's start onward: each hour's line gives its own
@@ -360,6 +385,12 @@ type Guard struct {
 	// first, none older than growthWindow before it (keepSizes): the reads a process's growth is
 	// measured by. They are emptied wherever the guard reads no size (forgetSizes).
 	sizes map[procKey][]sizeRead
+	// atKill are the sizes, by process, as of the previous kill of the rise, from which growth
+	// since that kill is measured (grownSinceKill): the sizes of the assessment the kill was made
+	// on (act), and for a process first read after the kill, its first read after it. They are
+	// emptied when the wait after the kill ends (endWait), and their storage is kept from one kill
+	// to the next.
+	atKill map[procKey]killSize
 
 	scans    sync.WaitGroup
 	scanMu   sync.Mutex
@@ -397,6 +428,7 @@ func New(cfg Config) *Guard {
 		memfdLink:    memfdPrefix,
 		memfds:       map[memfdID]bool{},
 		sizes:        map[procKey][]sizeRead{},
+		atKill:       map[procKey]killSize{},
 		scanMemfds:   map[memfdID]bool{},
 	}
 	if g.logf == nil {
@@ -576,29 +608,41 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 	}
 }
 
-// watch decides on a reading at or above the mark while the guard waits after a kill, reading the
-// sizes of what it may end at each one, so that their growth is known when the wait passes. Once
-// the reading has fallen and the killed process has exited or the wait has passed, the kill freed
-// something and the pod is still at the mark: the guard ends the next in the order (act). It waits
-// for the exit while the wait lasts, because the reading can fall below the mark as the rest of
-// the process's memory goes. Once the wait has passed with no fall, the guard ends the next in the
-// order only while a process it may end grew over the window and those processes hold at least
-// the floor between them; otherwise it gives the rise up with reason not fallen, whichever of the
-// two failed, since the kill's freeing nothing is why it stops. So a rise that is a protected
-// process's own, which no kill lowers and in which nothing the guard may end grows, costs at most
-// one kill.
+// watch decides on a reading at or above the mark while the guard waits after a kill, by the rule
+// of INFRA-3531 R1 of spec version 25. It reads the sizes of what it may end at each reading, so
+// that their order and their growth since the kill (grownSinceKill) are known whenever it decides.
+// While the killed process has not exited it is left out of what the guard may end, of their sum
+// against the floor and of the growth since the kill (leaveOut): the guard has ended it, and never
+// ends or reports it again. While the killed process has not exited and the wait has not passed,
+// it ends nothing, because the reading can fall below the mark as the rest of the process's memory
+// goes. Once the process has exited or the wait has passed, it ends the next in the order (act),
+// at once, where the reading has fallen, since the kill freed something and the pod is still at
+// the mark, and where it has not fallen but a process it may end has grown since the kill and
+// those processes hold at least the floor between them, since a kill that frees less than one
+// interval's rise leaves the pod rising toward the kernel's kill point. Where neither holds it ends
+// nothing and decides again at the next reading, until the wait has passed; then it gives the rise
+// up with reason not fallen, whichever of the two failed, since the kill's freeing nothing is why
+// it stops. So a rise that is a protected process's own, which no kill lowers and in which nothing
+// the guard may end grows, costs at most one kill.
 func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 	w := &g.wait
 	w.exited = w.exited || w.handle.Exited()
 	w.fallen = w.fallen || fell(w.reading, reading, mark)
 	passed := !now.Before(w.deadline)
 	a, ok := g.assessAt(now)
+	if !ok {
+		return
+	}
+	if !w.exited {
+		a.leaveOut(w.killed)
+	}
+	// At every reading of the wait, so that a process first read after the kill has its first
+	// read kept.
+	grown := g.grownSinceKill(now, a.endable)
 	switch {
-	case !ok:
-	case w.fallen && (w.exited || passed):
-		g.endWait()
-		g.act(now, s, reading, limit, &a)
-	case passed && a.grown() && a.endableBytes >= share(limit, s.FloorPercent):
+	case !w.exited && !passed:
+		// The wait goes on.
+	case w.fallen || (grown && a.endableBytes >= share(limit, s.FloorPercent)):
 		g.endWait()
 		g.act(now, s, reading, limit, &a)
 	case passed:
@@ -636,8 +680,8 @@ func (g *Guard) assessAt(now time.Time) (assessment, bool) {
 // kill frees only the pages it wrote itself, far less than the size its smaps read, and a rule
 // that waited for that size would stop for the rise after the first worker of a pool that is
 // still filling the pod. A kill that lowers the reading by nothing freed nothing, and the guard
-// stops there, unless a process it may end still grows (watch), rather than end process after
-// process for memory no kill frees.
+// stops there, unless a process it may end has grown since the kill (watch), rather than end
+// process after process for memory no kill frees.
 func fell(atKill, reading, mark uint64) bool { return reading < atKill || reading < mark }
 
 // act ends the first process of a, the assessment of this reading, in the guard's order of ends
@@ -693,7 +737,9 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64, a *assessm
 		})
 	}
 	g.phase = waiting
-	g.wait = afterKill{handle: h, reading: reading, deadline: now.Add(s.Wait)}
+	killed := procKey{pid: target.PID, start: target.StartTime}
+	g.wait = afterKill{handle: h, killed: killed, reading: reading, deadline: now.Add(s.Wait)}
+	g.keepKillSizes(now, a.endable)
 }
 
 // killFailed acts on a kill that failed: a system with no way to hold or signal a process turns
@@ -745,15 +791,31 @@ type candidate struct {
 }
 
 // assessment is one scan as the guard acts on it: the processes it may end, in the order it ends
-// them (rank), and their sizes' sum.
+// them (rank), and their sizes' sum. leftOut is the pid of the process leaveOut took out of them,
+// 0 for none, and leftOutBytes its size.
 type assessment struct {
 	table        *Table
 	endable      []candidate
 	endableBytes uint64
+	leftOut      int
+	leftOutBytes uint64
 }
 
-// grown is whether a process of a grew over the window, which ranks it first (rank).
-func (a *assessment) grown() bool { return len(a.endable) > 0 && a.endable[0].growth > 0 }
+// leaveOut takes the process key out of a, the process the guard has killed and which has not
+// exited: out of the processes it may end, the order of the rest unchanged, so that the next it
+// ends is another; and out of their sum, so that the floor counts only what it may still end. A
+// process the guard has killed is so never killed or reported twice while it lingers. It is kept
+// as leftOut for the stopped line alone (stopRise).
+func (a *assessment) leaveOut(key procKey) {
+	for i, c := range a.endable {
+		if c.PID == key.pid && c.StartTime == key.start {
+			a.endableBytes -= c.size
+			a.endable = slices.Delete(a.endable, i, i+1)
+			a.leftOut, a.leftOutBytes = c.PID, c.size
+			return
+		}
+	}
+}
 
 // assess scans the processes, asks the classifier, and reads the size of each process it may
 // end: one that is not protected, not the guard's own and not unread. A process whose smaps
@@ -839,6 +901,47 @@ func (g *Guard) keepSizes(now time.Time, cs []candidate) bool {
 // in a row in the band, at the mark and after a kill.
 func (g *Guard) forgetSizes() { clear(g.sizes) }
 
+// keepKillSizes keeps the size of each of cs, the processes of the assessment a kill was made on,
+// read at now, as its size as of that kill (atKill), from which grownSinceKill measures its growth
+// until the next kill. The sizes of the kill before were emptied when its wait ended (endWait), so
+// those of one kill alone are kept, in the storage of the kills before.
+func (g *Guard) keepKillSizes(now time.Time, cs []candidate) {
+	for _, c := range cs {
+		g.atKill[procKey{pid: c.PID, start: c.StartTime}] = killSize{size: c.size, seen: now}
+	}
+}
+
+// grownSinceKill answers whether a process of cs, the processes the guard may end at the reading
+// taken at now, has grown since the previous kill of the rise: its size is its size as of the kill
+// (atKill) plus growthNoise or more. Growth since the kill, not over the window that orders the
+// processes, is what it measures, so a process that grows in steps wider than the window counts
+// as grown. A process with no size as of the kill, one first read after it, has that first read
+// kept as its size as of the kill, and has not grown at it: a fork reads its parent's shared pages
+// as its own. The sizes of each process cs does not hold, one that has ended or that the guard may
+// no longer end, are dropped, so those kept are bounded by the processes it may end, and a process
+// read before allocates nothing.
+func (g *Guard) grownSinceKill(now time.Time, cs []candidate) bool {
+	grew := false
+	for _, c := range cs {
+		key := procKey{pid: c.PID, start: c.StartTime}
+		k, known := g.atKill[key]
+		switch {
+		case !known:
+			k.size = c.size
+		case c.size >= k.size+growthNoise:
+			grew = true
+		}
+		k.seen = now
+		g.atKill[key] = k
+	}
+	for key, k := range g.atKill {
+		if !k.seen.Equal(now) {
+			delete(g.atKill, key)
+		}
+	}
+	return grew
+}
+
 // addHeldMemfds adds to the size of each process of cs, read under proc, the memfds it holds open
 // by a descriptor, each at its size or shmem, the pod's Shmem reading, whichever is less
 // (heldMemfdBytes), and ranks cs by those sizes (rank, on candidates whose growth is not yet
@@ -886,13 +989,15 @@ func (g *Guard) logUnread(t *Table) {
 }
 
 // stopRise gives up on this rise with one line that says where the reading's memory is: in the
-// processes the guard may end, at their sizes; in the protected ones and in the ones it could not
-// read, at their smaps sizes alone (smapsSize), since the line does not read their descriptors;
-// and the rest, which no process holds (tmpfs pages, which no kill frees) or only a descriptor of
-// a process the guard may not end holds (a memfd it has not mapped), or, negative, what the
-// processes' sizes count more than once (a page a parent and its forked child share). a is the
-// assessment the decision was made on, this reading's (act, watch). A guard that has given the
-// rise up reads no size until the reading is below the mark, and keeps none (forgetSizes).
+// processes the guard may end, at their sizes, the killed process that has not exited among them
+// (leaveOut), which no decision counts but which is of their kind and holds its memory still; in
+// the protected ones and in the ones it could not read, at their smaps sizes alone (smapsSize),
+// since the line does not read their descriptors; and the rest, which no process holds (tmpfs
+// pages, which no kill frees) or only a descriptor of a process the guard may not end holds (a
+// memfd it has not mapped), or, negative, what the processes' sizes count more than once (a page
+// a parent and its forked child share). a is the assessment the decision was made on, this
+// reading's (act, watch). A guard that has given the rise up reads no size until the reading is
+// below the mark, and keeps none (forgetSizes).
 //
 // A stop that repeats, as a reading that holds near the mark goes below it and back above it,
 // writes its line at most once in each stoppedEvery by the guard's clock: each stop in between is
@@ -909,9 +1014,12 @@ func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a 
 		return
 	}
 	var protected, unread uint64
-	counted := make(map[int]bool, len(a.endable))
+	counted := make(map[int]bool, len(a.endable)+1)
 	for _, c := range a.endable {
 		counted[c.PID] = true
+	}
+	if a.leftOut != 0 {
+		counted[a.leftOut] = true
 	}
 	pids := slices.Collect(maps.Keys(a.table.byPID))
 	for pid := range a.table.unread {
@@ -933,18 +1041,23 @@ func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a 
 			protected += size
 		}
 	}
-	unheld := int64(reading) - int64(a.endableBytes+protected+unread)
-	g.logf(stoppedLine, reason, reading, a.endableBytes, protected, unread, unheld, limit, g.stoppedLeftOut)
+	// The line says where the memory is, and a killed process that has not exited still holds
+	// its own: it counts in endable here, though every decision leaves it out (leaveOut).
+	endable := a.endableBytes + a.leftOutBytes
+	unheld := int64(reading) - int64(endable+protected+unread)
+	g.logf(stoppedLine, reason, reading, endable, protected, unread, unheld, limit, g.stoppedLeftOut)
 	g.stoppedAt, g.stoppedLeftOut = now, 0
 }
 
-// endWait lets go of the process a waiting guard holds.
+// endWait lets go of the process a waiting guard holds, and of the sizes as of its kill (atKill):
+// the wait ends at the next kill of the rise, which keeps its own, and when the rise ends.
 func (g *Guard) endWait() {
 	if g.phase != waiting {
 		return
 	}
 	_ = g.wait.handle.Close()
 	g.wait = afterKill{}
+	clear(g.atKill)
 	g.phase = armed
 }
 

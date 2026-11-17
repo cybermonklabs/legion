@@ -1417,7 +1417,7 @@ func TestMemoryGuardEndsTheNextInTheOrderAfterAFall(t *testing.T) {
 }
 
 // When the wait after a kill passes and the reading has not fallen, the guard ends the next in
-// the order only while a process it may end grew over the window and those processes hold the
+// the order only while a process it may end has grown since the kill and those processes hold the
 // floor between them; otherwise it gives the rise up with reason not fallen, either way. The first
 // kill, at the first reading, is of the largest, pid 302, a fork whose end frees nothing.
 func TestMemoryGuardAfterAWaitWithNoFallEndsTheNextOnlyWhileOneGrowsAndTheFloorHolds(t *testing.T) {
@@ -1470,9 +1470,9 @@ func TestMemoryGuardAfterAWaitWithNoFallEndsTheNextOnlyWhileOneGrowsAndTheFloorH
 // A rise that is a protected process's own, Oh My Pi's, beside two idle kernels that hold more
 // than the floor, each on its own too, costs one kernel: at the mark nothing the guard may end has
 // grown, so it ends the larger kernel. That kill lowers nothing the agent's growth does not make
-// up, and when the wait passes with no fall and nothing it may end growing over the window, the
-// guard gives the rise up with reason not fallen and never ends the other kernel, however far the
-// agent grows.
+// up, and when the wait passes with no fall and nothing it may end grown since the kill, the guard
+// gives the rise up with reason not fallen and never ends the other kernel, however far the agent
+// grows.
 func TestMemoryGuardEndsOneKernelForARiseThatIsAProtectedProcesssOwn(t *testing.T) {
 	pod := newFakePod(t)
 	omp := agent(2000 * mib)
@@ -1646,6 +1646,335 @@ func TestMemoryGuardCountsAGrowerWhoseStepsAreWiderThanTheWindowAsGrownSinceTheK
 	// The reading at which the wait has passed, pid 301's step now older than the window.
 	h.tickAfter(Defaults().Wait)
 	h.requireKilled(302, 301)
+}
+
+// After a kill whose process exits at once, a reading that has not fallen below the reading at the
+// kill, with nothing the guard may end grown since the kill, ends nothing and gives nothing up:
+// the guard decides again at each reading, and only at the reading at which the wait has passed
+// does it give the rise up, with reason not fallen (INFRA-3531 R1, spec version 25). Pid 302, the
+// largest, is a fork whose end frees nothing. The sizes as of the kill it keeps are those of the
+// processes it may end, and none once the rise is given up.
+func TestMemoryGuardEndsNothingAfterAnExitWithNoFallAndNothingGrownUntilTheWaitPassesAndThenStops(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(2*gib),
+		fakeProcess{pid: 301, ppid: 100, args: []string{"python3", "idle.py"}, anon: 300 * mib},
+		fakeProcess{pid: 302, ppid: 100, args: []string{"python3", "pool.py"}, anon: 900 * mib},
+		fakeProcess{pid: 303, ppid: 100, args: []string{"python3", "idle.py"}, anon: 200 * mib},
+	)
+	pod.setAnon(3600 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	h.requireKilled(302)
+	readings := int(Defaults().Wait / Defaults().Interval)
+	for i := 1; i < readings; i++ {
+		h.tick()
+		h.requireKilled(302)
+		if stopped := h.log.with("stopped"); len(stopped) != 0 {
+			t.Fatalf("at reading %d after the exit, before the wait passed, the guard gave the rise up: %q", i, stopped)
+		}
+		if len(h.g.atKill) != 2 {
+			t.Fatalf("at reading %d after the exit the guard keeps the sizes as of the kill of %d processes, want the 2 it may end", i, len(h.g.atKill))
+		}
+	}
+	h.tick()
+	h.requireKilled(302)
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d ", 3600*mib, 500*mib)
+	if stopped := h.log.with("stopped"); len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+		t.Fatalf("at the reading at which the wait passed the stopped lines are %q, want one starting %q", stopped, want)
+	}
+	if len(h.g.atKill) != 0 {
+		t.Fatalf("once the rise is given up the guard keeps the sizes as of the kill of %d processes, want none", len(h.g.atKill))
+	}
+}
+
+// A process first read after a kill, pid 310, forked after it, has that first read kept as its
+// size as of the kill: at that read it has not grown, however large, and it counts as grown once
+// its size is growthNoise past that first read, here after two steps of 600 KiB, neither of which
+// is growthNoise on its own (INFRA-3531 R1, spec version 25). Pid 302, the largest at the mark,
+// exits at its kill and frees nothing.
+func TestMemoryGuardCountsAProcessFirstReadAfterAKillAsGrownOncePastItsFirstRead(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(2*gib),
+		fakeProcess{pid: 302, ppid: 100, args: []string{"python3", "pool.py"}, anon: 900 * mib},
+		fakeProcess{pid: 303, ppid: 100, args: []string{"python3", "idle.py"}, anon: 200 * mib},
+	)
+	pod.setAnon(3600 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	h.requireKilled(302)
+	fresh := fakeProcess{pid: 310, ppid: 100, args: []string{"python3", "worker.py"}, anon: 400 * mib}
+	pod.add(fresh)
+	h.tick()
+	h.requireKilled(302)
+	pod.resize(&fresh, fresh.anon+600*kib)
+	h.tick()
+	h.requireKilled(302)
+	pod.resize(&fresh, fresh.anon+600*kib)
+	h.tick()
+	h.requireKilled(302, 310)
+	if stopped := h.log.with("stopped"); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up while pid 310 grew: %q", stopped)
+	}
+}
+
+// A killed process that has not exited when the wait passes is waited on no longer. At the reading
+// at which the wait has passed, the reading not fallen, the guard ends the next in the order where
+// a process it may end has grown since the kill, and otherwise gives the rise up with reason not
+// fallen (INFRA-3531 R1, spec version 25). Pid 302, which grew over the window at the mark, is
+// killed first and stays. Pid 301 grows 20 MiB at the first reading after the kill and no more:
+// the guard ends nothing while it waits for pid 302's exit, and when the wait has passed that step
+// is far older than the window, so it counts only as growth since the kill, and pid 301 is ended.
+// Pid 302, which has not exited, is none of what the guard may end, though its stopped line still
+// counts it in endable, since it still holds its memory.
+func TestMemoryGuardEndsAProcessGrownSinceTheKillOrStopsAtAWaitThatPassesBeforeTheExit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		grows bool
+		want  []int
+	}{
+		{"one grown since the kill", true, []int{302, 301}},
+		{"none grown since the kill", false, []int{302}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			fast := fakeProcess{pid: 302, ppid: 100, args: []string{"python3", "fast.py"}, anon: 300 * mib}
+			grower := fakeProcess{pid: 301, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib}
+			pod.add(agent(2*gib), fast, grower)
+			pod.setAnon(3400 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			// Pid 302's exit never comes.
+			h.signal.onKill = func(int) bool { return false }
+			h.run()
+			pod.resize(&fast, fast.anon+40*mib)
+			pod.setAnon(3600 * mib)
+			h.tick()
+			h.requireKilled(302)
+			readings := int(Defaults().Wait / Defaults().Interval)
+			for i := 1; i < readings; i++ {
+				if i == 1 && tc.grows {
+					pod.resize(&grower, grower.anon+20*mib)
+				}
+				h.tick()
+				h.requireKilled(302)
+			}
+			h.tick()
+			h.requireKilled(tc.want...)
+			stopped := h.log.with("stopped")
+			if tc.grows {
+				if len(stopped) != 0 {
+					t.Fatalf("the guard gave the rise up though pid 301 grew since the kill: %q", stopped)
+				}
+				return
+			}
+			want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d ", 3600*mib, 940*mib)
+			if len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+				t.Fatalf("the stopped lines are %q, want one starting %q", stopped, want)
+			}
+		})
+	}
+}
+
+// A process the guard has killed is never ended or reported again while it has not exited, even
+// where it is the largest and still first in the order when the wait passes: pid 302, a fork of
+// 900 MiB whose end frees nothing, never exits. While it lingers it is left out of what the guard
+// may end, of their sum against the floor and of the growth since the kill. Where pid 301 has
+// grown since the kill and pids 301 and 303 hold the floor, the guard ends pid 301 at the reading
+// at which the wait has passed. Where only pid 302 itself has grown, or pid 301 has but what the
+// guard may still end, without pid 303, is under the floor, it gives the rise up with reason not
+// fallen, and its stopped line counts pid 302, which still holds its memory, in endable and not in
+// what it protects.
+func TestMemoryGuardNeverEndsAKilledProcessAgainWhileItHasNotExited(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// grower is the pid that grows 20 MiB at the first reading after the kill, and idle
+		// whether pid 303 is there.
+		grower int
+		idle   bool
+		want   []int
+		// endable is what the stopped line counts in endable, pid 302 among them, 0 where the
+		// guard does not stop.
+		endable uint64
+	}{
+		{"another grown since the kill", 301, true, []int{302, 301}, 0},
+		{"only the killed process grown", 302, true, []int{302}, 920*mib + 500*mib},
+		{"another grown, under the floor without the killed process", 301, false, []int{302}, 900*mib + 320*mib},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			procs := map[int]*fakeProcess{
+				301: {pid: 301, ppid: 100, args: []string{"python3", "grow.py"}, anon: 300 * mib},
+				302: {pid: 302, ppid: 100, args: []string{"python3", "pool.py"}, anon: 900 * mib},
+			}
+			if tc.idle {
+				procs[303] = &fakeProcess{pid: 303, ppid: 100, args: []string{"python3", "idle.py"}, anon: 200 * mib}
+			}
+			pod.add(agent(2 * gib))
+			for _, fp := range procs {
+				pod.add(*fp)
+			}
+			pod.setAnon(3600 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			// Pid 302's exit never comes.
+			h.signal.onKill = func(int) bool { return false }
+			h.run()
+			h.requireKilled(302)
+			readings := int(Defaults().Wait / Defaults().Interval)
+			for i := 1; i < readings; i++ {
+				if i == 1 {
+					pod.resize(procs[tc.grower], procs[tc.grower].anon+20*mib)
+				}
+				h.tick()
+				h.requireKilled(302)
+			}
+			h.tick()
+			h.requireKilled(tc.want...)
+			if tried := h.signal.attempts(); !slices.Equal(tried, tc.want) {
+				t.Fatalf("the guard tried to kill %v, want %v, each once", tried, tc.want)
+			}
+			stopped := h.log.with("stopped")
+			if tc.endable == 0 {
+				if len(stopped) != 0 {
+					t.Fatalf("the guard gave the rise up though pid 301 grew since the kill: %q", stopped)
+				}
+				return
+			}
+			want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 ",
+				3600*mib, tc.endable, 2*gib)
+			if len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+				t.Fatalf("the stopped lines are %q, want one starting %q", stopped, want)
+			}
+		})
+	}
+}
+
+// Growth since a kill under growthNoise, 1 MiB, is none: after the kill of pid 302, which exits
+// and frees nothing, pid 301 grows 1020 KiB, and the guard ends nothing and, once the wait has
+// passed, gives the rise up with reason not fallen; 1 MiB larger, pid 301 is ended at once.
+func TestMemoryGuardCountsGrowthSinceAKillUnderOneMebibyteAsNone(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		growth uint64
+		want   []int
+	}{
+		{"1020 KiB", 1020 * kib, []int{302}},
+		{"1 MiB", mib, []int{302, 301}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			grower := fakeProcess{pid: 301, ppid: 100, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+			pod.add(
+				agent(2*gib),
+				grower,
+				fakeProcess{pid: 302, ppid: 100, args: []string{"python3", "pool.py"}, anon: 900 * mib},
+				fakeProcess{pid: 303, ppid: 100, args: []string{"python3", "idle.py"}, anon: 200 * mib},
+			)
+			pod.setAnon(3600 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			h.signal.onKill = exitFreeing(pod, 0)
+			h.run()
+			h.requireKilled(302)
+			pod.resize(&grower, grower.anon+tc.growth)
+			h.tick()
+			h.requireKilled(tc.want...)
+			if stopped := h.log.with("stopped"); len(stopped) != 0 {
+				t.Fatalf("the guard gave the rise up before the wait passed: %q", stopped)
+			}
+			if len(tc.want) == 2 {
+				return
+			}
+			h.tickAfter(Defaults().Wait)
+			h.requireKilled(tc.want...)
+			want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d ",
+				3600*mib, 500*mib+tc.growth)
+			if stopped := h.log.with("stopped"); len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+				t.Fatalf("the stopped lines are %q, want one starting %q", stopped, want)
+			}
+		})
+	}
+}
+
+// A rise that is a protected process's own still costs at most one kernel at the controller pod's
+// settings, though the guard decides at each reading once the killed kernel has exited: Oh My Pi
+// grows at every reading, the reading never falls, and neither kernel grows, so at none of the
+// readings of the controller's wait of 1 second does the guard end the other kernel or give up,
+// and at the reading at which the wait has passed it gives the rise up with reason not fallen and
+// ends nothing more, however far Oh My Pi grows.
+func TestMemoryGuardEndsOneKernelForAProtectedRiseThoughItDecidesAtEachReadingAfterTheExit(t *testing.T) {
+	pod := newFakePod(t)
+	omp := agent(2000 * mib)
+	pod.add(
+		omp,
+		fakeProcess{pid: 200, ppid: 100, args: []string{"python3", "-m", "kernel"}, anon: 600 * mib},
+		fakeProcess{pid: 201, ppid: 100, args: []string{"bun", "eval.js"}, anon: 500 * mib},
+	)
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	settings := ControllerDefaults()
+	h.g.Apply(&shimwire.LauncherMemoryGuard{
+		ActPercent: settings.ActPercent, FloorPercent: settings.FloorPercent,
+		WaitSeconds: int(settings.Wait / time.Second), IntervalMilliseconds: int(settings.Interval / time.Millisecond),
+	})
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	grow := func(by uint64) {
+		t.Helper()
+		pod.resize(&omp, omp.anon+by)
+		pod.setAnon(pod.anon + by)
+	}
+	for range 4 {
+		grow(100 * mib)
+		h.tick()
+	}
+	h.requireKilled(200)
+	readings := int(settings.Wait / settings.Interval)
+	for i := 1; i < readings; i++ {
+		grow(40 * mib)
+		h.tick()
+		h.requireKilled(200)
+		if stopped := h.log.with("stopped"); len(stopped) != 0 {
+			t.Fatalf("at reading %d after the kernel's exit, before the wait passed, the guard gave the rise up: %q", i, stopped)
+		}
+	}
+	grow(40 * mib)
+	h.tick()
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d ", 3900*mib, 500*mib)
+	for range 3 {
+		grow(10 * mib)
+		h.tick()
+	}
+	h.requireKilled(200)
+	if stopped := h.log.with("stopped"); len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+		t.Fatalf("the stopped lines are %q, want one starting %q", stopped, want)
+	}
+}
+
+// The sizes as of a kill keep their storage from one reading to the next: measuring the growth
+// since the kill of processes it has read since the kill allocates nothing, and keeps one size for
+// each of them.
+func TestMemoryGuardMeasuresGrowthSinceAKillAllocatingNothingForAProcessReadBefore(t *testing.T) {
+	h := newHarness(t, newFakePod(t), nil)
+	cs := make([]candidate, 50)
+	for i := range cs {
+		cs[i] = candidate{Process: &Process{PID: 1000 + i, StartTime: uint64(i)}, size: uint64(i) * mib}
+	}
+	now := testStart
+	h.g.keepKillSizes(now, cs)
+	allocs := testing.AllocsPerRun(100, func() {
+		now = now.Add(Defaults().Interval)
+		if h.g.grownSinceKill(now, cs) {
+			t.Fatal("a process whose size has not changed since the kill counts as grown")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("a reading's measure of growth since the kill allocates %v times, want none", allocs)
+	}
+	if len(h.g.atKill) != len(cs) {
+		t.Fatalf("the guard keeps the sizes as of the kill of %d processes, want %d", len(h.g.atKill), len(cs))
+	}
 }
 
 // At an interval above the window, 500 ms, no read has an earlier one within 300 ms of it: no

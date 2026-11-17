@@ -43,9 +43,10 @@ const (
 // reading the guard would end a process at, the processes it may end hold less than the floor
 // between them, or there are none. It is given up with reasonNotFallen where the wait after a
 // kill has passed with the reading not below the reading at the kill, and either no process the
-// guard may end grew over growthWindow or they hold less than the floor: the guard goes on after
-// a kill that lowered nothing only while one of them still grows, so a rise that is a protected
-// process's own, which no kill of the guard's lowers, ends at most one process before this reason.
+// guard may end has grown since that kill (grownSinceKill) or they hold less than the floor: the
+// guard goes on after a kill that lowered nothing only while one of them has grown since it
+// (INFRA-3531 R1 of spec version 25), so a rise that is a protected process's own, which no kill
+// of the guard's lowers, ends at most one process before this reason.
 const (
 	reasonNotFallen    = "not fallen"
 	reasonNothingToEnd = "nothing to end"
