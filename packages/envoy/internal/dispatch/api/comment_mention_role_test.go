@@ -215,13 +215,14 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 func TestASendThatWaitsAndFindsTheQueueFullGivesItsClaimBack(t *testing.T) {
 	lifetime, stop := context.WithCancel(context.Background())
 	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
 	var mu sync.Mutex
 	var sent []string
 	var gaveUp []mentionKey
 	sender := newMentionSender(lifetime, time.Hour,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.comment.ID == "first" {
-				close(started)
+				once.Do(func() { close(started) })
 				<-release
 				return item, true
 			}
@@ -247,17 +248,18 @@ func TestASendThatWaitsAndFindsTheQueueFullGivesItsClaimBack(t *testing.T) {
 		stop()
 		sender.wait()
 	})
-	enqueue := func(id string) mentionSend {
+	enqueue := func(id, issue string) mentionSend {
 		item := mentionSend{
-			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
+			comment: model.Comment{ID: id, IssueKey: new(issue)}, mention: ResolvedMention{Target: "session:s1"},
 			attempt: 1, claimed: time.Now(),
 		}
 		sender.enqueue(context.Background(), item)
 		return item
 	}
-	first := enqueue("first")
+	first := enqueue("first", "A-1")
 	<-started
-	enqueue("second")
+	// Another issue's mention of s1 takes the queue's one place, behind the send in flight.
+	enqueue("second", "B-1")
 	close(release)
 	waitUntil(t, 5*time.Second, "the send behind the refused one sent", func() bool {
 		mu.Lock()
