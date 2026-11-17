@@ -15,7 +15,10 @@ import (
 
 // runRegister registers every session of the sets through the listener's own route, as an agent's
 // plugin does: one POST /v1/interests/subscribe each, which writes the interest and, for a
-// self-subscribed session, the session record.
+// self-subscribed session, the session record. Each registration asks for the session consumer
+// the listener requires of every registration it takes (consumerFor in cmd/listener), with the
+// delivery the listener's own tests register with (cmd/listener/api_test.go): a registration with
+// none is refused 409 and writes neither record.
 func runRegister(args []string) error {
 	flags := flag.NewFlagSet("register", flag.ContinueOnError)
 	url := flags.String("url", "", "listener URL")
@@ -46,6 +49,7 @@ func runRegister(args []string) error {
 					Title:          sessionTitle(j.set.name, j.index, j.set.variant),
 					Topics:         topics(j.set, j.index, *role),
 					SelfSubscribed: true,
+					Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"},
 				})
 				resp, err := client.Post(*url+"/v1/interests/subscribe", "application/json", bytes.NewReader(body))
 				if err == nil {
