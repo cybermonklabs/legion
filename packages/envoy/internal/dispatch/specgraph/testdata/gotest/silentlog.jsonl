@@ -1,0 +1,22 @@
+{"Time":"2026-11-16T16:19:27.723689843Z","Action":"start","Package":"example.com/acme/gotest/silentlog"}
+{"Time":"2026-11-16T16:19:27.74159294Z","Action":"run","Package":"example.com/acme/gotest/silentlog","Test":"TestP1"}
+{"Time":"2026-11-16T16:19:27.74165588Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP1","Output":"=== RUN   TestP1\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.741672463Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP1","Output":"=== PAUSE TestP1\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.741674344Z","Action":"pause","Package":"example.com/acme/gotest/silentlog","Test":"TestP1"}
+{"Time":"2026-11-16T16:19:27.741679564Z","Action":"run","Package":"example.com/acme/gotest/silentlog","Test":"TestP2"}
+{"Time":"2026-11-16T16:19:27.741681816Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP2","Output":"=== RUN   TestP2\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.741684381Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP2","Output":"=== PAUSE TestP2\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.741685789Z","Action":"pause","Package":"example.com/acme/gotest/silentlog","Test":"TestP2"}
+{"Time":"2026-11-16T16:19:27.741687989Z","Action":"cont","Package":"example.com/acme/gotest/silentlog","Test":"TestP1"}
+{"Time":"2026-11-16T16:19:27.741689656Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP1","Output":"=== CONT  TestP1\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.741691568Z","Action":"cont","Package":"example.com/acme/gotest/silentlog","Test":"TestP2"}
+{"Time":"2026-11-16T16:19:27.741693138Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP2","Output":"=== CONT  TestP2\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.74169508Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP2","Output":"    silentlog_test.go:28: TestP2 logs\n"}
+{"Time":"2026-11-16T16:19:27.741698351Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP2","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:27.741706651Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP1","Output":"--- PASS: TestP1 (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.741711484Z","Action":"pass","Package":"example.com/acme/gotest/silentlog","Test":"TestP1","Elapsed":0}
+{"Time":"2026-11-16T16:19:27.741719132Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Test":"TestP2","Output":"--- PASS: TestP2 (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.741720783Z","Action":"pass","Package":"example.com/acme/gotest/silentlog","Test":"TestP2","Elapsed":0}
+{"Time":"2026-11-16T16:19:27.741722416Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:27.746906825Z","Action":"output","Package":"example.com/acme/gotest/silentlog","Output":"ok  \texample.com/acme/gotest/silentlog\t0.023s\n"}
+{"Time":"2026-11-16T16:19:27.74698197Z","Action":"pass","Package":"example.com/acme/gotest/silentlog","Elapsed":0.023}

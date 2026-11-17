@@ -10,7 +10,7 @@
 //    `CLAUDE_ENV_FILE`, which Claude Code sources into every later Bash command of the session,
 //    each unless an earlier SessionStart already wrote that line there. The `dispatch` command
 //    reads the file ENVOY_CONFIG_FILE names whenever DISPATCH_HOST is set. A subagent's Bash can
-//    lack what that file holds (anthropics/claude-code#46696); the `dispatch` command it runs then
+//    lack what that file holds (Claude Code issue 46696); the `dispatch` command it runs then
 //    takes host `claude` from `CLAUDE_CODE_CHILD_SESSION=1` and reads `CLAUDE_CONFIG_DIR` itself.
 //    The path is single-quoted (`singleQuoted`, whose doc gives what Claude Code's
 //    PowerShell bridge reads of that form). The command reads the session id from `CLAUDE_CODE_SESSION_ID`, which

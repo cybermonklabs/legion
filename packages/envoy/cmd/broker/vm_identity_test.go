@@ -1,7 +1,7 @@
 // vm_identity_test.go pins how the broker boots with Google identity tokens: the Google issuer's
 // key set is read, and named in one boot line, only when BROKER_GOOGLE_OIDC_AUDIENCE is set; the
-// machine services reach the policy loader; and an audience with no machine service refuses the
-// boot.
+// machine services reach the policy loader; and a Google audience with no Google caller, or a
+// person's device sign-in with no machine service, refuses the boot.
 package main
 
 import (
@@ -203,17 +203,34 @@ func TestThePolicyServesTheVMServicesSecrets(t *testing.T) {
 	}
 }
 
-// TestAGoogleAudienceWithNoVMServicesIsRefusedAtBoot drives the real binary: an audience with no
-// VM service to bind refuses the boot, naming both settings, before the broker reaches its
-// database or binds.
-func TestAGoogleAudienceWithNoVMServicesIsRefusedAtBoot(t *testing.T) {
+// TestDeviceSignInWithNoVMServicesIsRefusedAtBoot drives the real binary: a person's device
+// sign-in needs a VM service for the machine's actor token, even when a Google API caller uses
+// the same audience. The refusal comes before the broker reaches its database or binds.
+func TestDeviceSignInWithNoVMServicesIsRefusedAtBoot(t *testing.T) {
+	out := runRefusedBroker(t, buildBroker(t),
+		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
+		"BROKER_PUBLIC_URL=https://secrets.internal.example",
+		"BROKER_GOOGLE_OIDC_AUDIENCE=example-vm-audience",
+		"BROKER_SIGNIN_DEVICE_AUDIENCE=not-a-secret-device-client",
+		"BROKER_API_ACCOUNTS=listener=google:"+listenerVMAccount,
+	)
+	if !strings.Contains(out, "BROKER_SIGNIN_DEVICE_AUDIENCE needs BROKER_VM_SERVICES") {
+		t.Fatalf("broker refused, but not naming the device sign-in's missing VM services: %s", out)
+	}
+}
+
+// TestAGoogleAudienceWithNoGoogleCallerIsRefusedAtBoot drives the real binary: an audience that
+// neither a google: entry in BROKER_API_ACCOUNTS nor a VM service would ever present a token for
+// refuses the boot, naming the audience and both ways to give it a caller, before the broker
+// reaches its database or binds.
+func TestAGoogleAudienceWithNoGoogleCallerIsRefusedAtBoot(t *testing.T) {
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
 		"BROKER_GOOGLE_OIDC_AUDIENCE=example-vm-audience",
 	)
-	if !strings.Contains(out, "BROKER_GOOGLE_OIDC_AUDIENCE needs BROKER_VM_SERVICES") {
-		t.Fatalf("broker refused, but not naming the audience's missing VM services: %s", out)
+	if !strings.Contains(out, "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES") {
+		t.Fatalf("broker refused, but not naming the audience's missing Google caller: %s", out)
 	}
 }
 

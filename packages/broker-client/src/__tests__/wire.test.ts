@@ -55,6 +55,8 @@ interface CorpusExchange {
   /** The machine a person signed in on; absent from every trade a machine makes for itself. */
   readonly actor?: CorpusToken;
   readonly session: string;
+  /** The projects the client is configured with; absent from every trade that names none. */
+  readonly projects?: readonly string[];
   readonly form: Record<string, string>;
   readonly proof: {
     readonly header: Record<string, unknown>;
@@ -202,6 +204,8 @@ function resolvePlaceholder(exchange: CorpusExchange, value: string): [string, b
       return [exchange.actor?.token ?? "", true];
     case "${session}":
       return [exchange.session, true];
+    case "${projects}":
+      return [(exchange.projects ?? []).join(" "), true];
     default:
       return [value, false];
   }
@@ -319,6 +323,7 @@ test("the wire corpus holds this client", async () => {
       subject: await corpusSource(exchange.subject),
       ...(exchange.actor === undefined ? {} : { actor: await corpusSource(exchange.actor) }),
       session: exchange.session,
+      projects: exchange.projects,
       // The entry's own form says whether this trade declines the launcher credential, so the
       // one place the corpus states it is the form it asserts.
       launcherCredential:

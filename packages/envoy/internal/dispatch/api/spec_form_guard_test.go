@@ -22,9 +22,11 @@ import (
 
 // The route census of the form gate (spec_form.go) holds only while every way to a person's
 // approval passes one of its two call sites: an approval request opens or is handed back in
-// requestArtifactApproval, a person's review is written in writeApprovalReviews, and a reopen or
-// the repair pass opens a withdrawn request again in restoreIssueAsksTx. This test holds the code to
-// that census.
+// requestArtifactApproval, an approval in a person's name is judged in approvalDocuments, which
+// gives the documents that approval covers, and a reopen or the repair pass opens a withdrawn
+// request again in restoreIssueAsksTx. Each writer of an approval in a person's name asks
+// approvalDocuments: a person's review in writeApprovalReviews, and the carry of an approval in
+// carryBreaksForm, the gate that writeCarriedReview asks. This test holds the code to that census.
 
 // asksTable names asks as a statement may write it: bare, schema-qualified, quoted, or both, as
 // reviewTable names artifact_reviews.
@@ -159,13 +161,16 @@ var askOpeningWriterCensus = map[string]string{
 
 // approvalCallers is each call the gate's census rests on, by the functions that make it, one
 // entry for each call: the api package's calls, and the docs package's writer of a person's review,
-// the carry of an approval, beside its call of the form gate.
+// the carry of an approval, beside its call of the form gate. approvalDocuments is the one function
+// that gives the documents an approval in a person's name covers and judges each, so a person's
+// review and the carry's gate each call it, and nothing else judges such an approval.
 var approvalCallers = map[string][]string{
 	"openApprovalAsk":                         {"requestArtifactApproval"},
 	"renewApprovalAsk":                        {"requestArtifactApproval"},
 	"docs.WriteReview(docs.ReviewKindPerson)": {"writeApprovalReviews"},
-	"refuseSpecForm":                          {"requestArtifactApproval", "writeApprovalReviews"},
-	"specFormOf":                              {"carryBreaksForm", "getArtifactSpecForm", "refuseSpecForm", "restoreIssueAsksTx"},
+	"approvalDocuments":                       {"carryBreaksForm", "writeApprovalReviews"},
+	"refuseSpecForm":                          {"approvalDocuments", "requestArtifactApproval"},
+	"specFormOf":                              {"getArtifactSpecForm", "refuseSpecForm", "restoreIssueAsksTx"},
 	"docs: WriteReview(ReviewKindPerson)":     {"writeCarriedReview"},
 	"docs: gate":                              {"writeCarriedReview"},
 }
@@ -244,7 +249,7 @@ func approvalCallee(call *ast.CallExpr) string {
 		return ""
 	}
 	switch selector.Sel.Name {
-	case "openApprovalAsk", "renewApprovalAsk", "refuseSpecForm", "specFormOf":
+	case "openApprovalAsk", "renewApprovalAsk", "refuseSpecForm", "specFormOf", "approvalDocuments":
 		return selector.Sel.Name
 	case "WriteReview":
 		if qualifier, ok := selector.X.(*ast.Ident); !ok || qualifier.Name != "docs" {
@@ -288,8 +293,9 @@ func plantedSource(t *testing.T, code string) moduleSource {
 
 // Every statement of the module that opens an ask is one of the six writers of the census, and only
 // requestArtifactApproval opens or hands back an approval request, and only writeApprovalReviews
-// writes a person's review, each beside its call of the form gate. A scan that read nothing names
-// fewer than six and fails; each control plants one writer the census must name, or one the
+// writes a person's review, each beside its call of the form gate; a person's review and the carry
+// judge the documents of an approval by one function (approvalDocuments). A scan that read nothing
+// names fewer than six and fails; each control plants one writer the census must name, or one the
 // patterns must leave out, or a second caller that the caller part must refuse.
 func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 	sources := moduleSources(t)

@@ -58,9 +58,10 @@ func replaceFile(path, value string) error {
 	return nil
 }
 
-// WriteSecretFile writes value as SecretFilePath(stateDir, name), the file a process is handed as
-// variable's `_FILE` pointer, never the value, and returns its path: the Dispatch bearer every
-// pane reads, and `legion controller start`'s controller secret.
+// WriteSecretFile writes value as SecretFilePath(stateDir, name), a file a process is handed by
+// its path, never the value, and returns that path: the Dispatch bearer every pane reads through
+// its `_FILE` pointer, `legion controller start`'s controller secret, and a claim's system prompt
+// (WriteSystemPrompt). variable names the file in a failed write's error.
 func WriteSecretFile(stateDir, name, variable, value string) (string, error) {
 	path := SecretFilePath(stateDir, name)
 	if err := WriteSecretFiles(stateDir, []SecretFile{{Variable: variable, Path: path, Value: value}}); err != nil {

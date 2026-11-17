@@ -37,6 +37,9 @@ const (
 // and key, and its value.
 type fakeSecret struct {
 	annotations map[string]string
+	// labels are the secret's labels, which `agent-secrets secret create` sets one of
+	// (agent-secrets-create) and the broker reads none of.
+	labels map[string]string
 	// replicationKey is the key the secret's replication policy names; "" is Google's default.
 	replicationKey string
 	// versionKey is the key the latest version was encrypted with; "" is Google's default.
@@ -44,8 +47,8 @@ type fakeSecret struct {
 	// noVersion is a secret with no version at all.
 	noVersion bool
 	state     secretmanagerpb.SecretVersion_State
-	// expires, when set, is the secret's expire_time.
-	expires time.Time
+	// expires, when set, is the secret's expire_time, and created its create_time.
+	expires, created time.Time
 	// denyVersion makes GetSecretVersion on the secret answer PERMISSION_DENIED, as for a secret
 	// outside the namespace the broker's condition grants it.
 	denyVersion bool
@@ -124,12 +127,15 @@ func (f *fakeSecretManager) ListSecrets(_ context.Context, req *secretmanagerpb.
 }
 
 func (f *fakeSecretManager) secretProto(name string, s *fakeSecret) *secretmanagerpb.Secret {
-	p := &secretmanagerpb.Secret{Name: name, Annotations: s.annotations}
+	p := &secretmanagerpb.Secret{Name: name, Annotations: s.annotations, Labels: s.labels}
 	auto := &secretmanagerpb.Replication_Automatic{}
 	if s.replicationKey != "" {
 		auto.CustomerManagedEncryption = &secretmanagerpb.CustomerManagedEncryption{KmsKeyName: s.replicationKey}
 	}
 	p.Replication = &secretmanagerpb.Replication{Replication: &secretmanagerpb.Replication_Automatic_{Automatic: auto}}
+	if !s.created.IsZero() {
+		p.CreateTime = timestamppb.New(s.created)
+	}
 	if !s.expires.IsZero() {
 		p.Expiration = &secretmanagerpb.Secret_ExpireTime{ExpireTime: timestamppb.New(s.expires)}
 	}
@@ -256,12 +262,15 @@ func servedSecret(value string) *fakeSecret {
 	}
 }
 
+// noVersionCreated is when the fake's no-version secret was created, as its create_time names it.
+var noVersionCreated = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+
 func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
 		fakePrefix + "served":      servedSecret("v1"),
 		fakePrefix + "default-key": {annotations: map[string]string{"owner": "shared", "tier": "agent"}, state: secretmanagerpb.SecretVersion_ENABLED, value: []byte("v")},
 		fakePrefix + "disabled":    {annotations: map[string]string{"owner": "shared", "tier": "agent"}, replicationKey: fakeKey, versionKey: fakeKey, state: secretmanagerpb.SecretVersion_DISABLED, value: []byte("v")},
-		fakePrefix + "no-version":  {annotations: map[string]string{"owner": "shared", "tier": "agent"}, replicationKey: fakeKey, noVersion: true},
+		fakePrefix + "no-version":  {annotations: map[string]string{"owner": "shared", "tier": "agent"}, replicationKey: fakeKey, noVersion: true, created: noVersionCreated},
 		fakePrefix + "expiring":    {annotations: map[string]string{"owner": "shared", "tier": "agent"}, replicationKey: fakeKey, versionKey: fakeKey, state: secretmanagerpb.SecretVersion_ENABLED, expires: time.Now().Add(30 * 24 * time.Hour), value: []byte("v")},
 		fakePrefix + "expired":     {annotations: map[string]string{"owner": "shared", "tier": "agent"}, replicationKey: fakeKey, versionKey: fakeKey, state: secretmanagerpb.SecretVersion_ENABLED, expires: time.Now().Add(-time.Minute), value: []byte("v")},
 		fakePrefix + "no-tags":     {replicationKey: fakeKey, versionKey: fakeKey, state: secretmanagerpb.SecretVersion_ENABLED, value: []byte("v")},
@@ -301,8 +310,11 @@ func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 	if ls := byID[fakePrefix+"disabled"]; !onKey(ls) || ls.HasCurrentValue {
 		t.Fatalf("disabled = %+v; want on the key with no current value", ls)
 	}
-	if ls := byID[fakePrefix+"no-version"]; !onKey(ls) || ls.HasCurrentValue {
-		t.Fatalf("no-version = %+v; want on the key (its replication policy's) with no current value", ls)
+	if ls := byID[fakePrefix+"no-version"]; !onKey(ls) || ls.HasCurrentValue || !ls.Created.Equal(noVersionCreated) {
+		t.Fatalf("no-version = %+v; want on the key (its replication policy's) with no current value, created %s", ls, noVersionCreated)
+	}
+	if ls := byID[fakePrefix+"default-key"]; !ls.Created.IsZero() {
+		t.Fatalf("default-key = %+v; want no creation time, the fake naming none", ls)
 	}
 	for _, name := range []string{"expiring", "expired"} {
 		if ls, listed := byID[fakePrefix+name]; listed {
@@ -311,6 +323,66 @@ func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 	}
 	if ls := byID[fakePrefix+"no-tags"]; len(ls.Tags) != 0 || ls.Tags == nil {
 		t.Fatalf("no-tags = %+v; want an empty, non-nil tag map", ls)
+	}
+}
+
+// TestGCPListAndDescribeReadNoLabel: the broker reads a secret's tags from its annotations alone,
+// so the label `agent-secrets secret create` leaves on a secret it made (agent-secrets-create,
+// a random value of that create's) reaches neither List's nor Describe's tags: the secret lists
+// and describes with exactly its annotations as tags, and is served as the same secret without it.
+func TestGCPListAndDescribeReadNoLabel(t *testing.T) {
+	labelled := servedSecret("v1")
+	labelled.labels = map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}
+	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
+		fakePrefix + "labelled": labelled,
+		fakePrefix + "plain":    servedSecret("v1"),
+	}}
+	store := NewGCP(startFake(t, f), fakeKey)
+	ctx := context.Background()
+	listings, err := store.List(ctx, fakePrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	described, err := store.Describe(ctx, fakePrefix+"labelled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Listing{}
+	for _, ls := range listings {
+		byID[ls.ID] = ls
+	}
+	plain := byID[fakePrefix+"plain"]
+	for how, ls := range map[string]Listing{"listed": byID[fakePrefix+"labelled"], "described": described} {
+		if !maps.Equal(ls.Tags, labelled.annotations) || ls.HasCurrentValue != plain.HasCurrentValue || ls.Version != plain.Version || ls.Unfilled {
+			t.Errorf("the labelled secret %s as %+v; want exactly its annotations %v as tags, served as the same secret without the label (%+v)", how, ls, labelled.annotations, plain)
+		}
+	}
+}
+
+// TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion: a listing is Unfilled - a secret
+// `agent-secrets secret create` made and has not yet given a value - only where the secret carries
+// the create label and holds no version at all: one without the label, or with a version (a
+// disabled one included), is not, however young.
+func TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion(t *testing.T) {
+	label := map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}
+	tags := map[string]string{"owner": "shared", "tier": "agent"}
+	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
+		fakePrefix + "labelled-empty":    {annotations: tags, labels: label, replicationKey: fakeKey, noVersion: true, created: noVersionCreated},
+		fakePrefix + "unlabelled-empty":  {annotations: tags, replicationKey: fakeKey, noVersion: true, created: noVersionCreated},
+		fakePrefix + "labelled-disabled": {annotations: tags, labels: label, replicationKey: fakeKey, versionKey: fakeKey, state: secretmanagerpb.SecretVersion_DISABLED, value: []byte("v"), created: noVersionCreated},
+	}}
+	store := NewGCP(startFake(t, f), fakeKey)
+	listings, err := store.List(context.Background(), fakePrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ls := range listings {
+		if want := ls.ID == fakePrefix+"labelled-empty"; ls.Unfilled != want || ls.HasCurrentValue {
+			t.Errorf("%s: Unfilled %t, current value %t; want Unfilled %t and no current value", ls.ID, ls.Unfilled, ls.HasCurrentValue, want)
+		}
+	}
+	if len(listings) != 3 {
+		t.Fatalf("listed %d secrets, want 3", len(listings))
 	}
 }
 

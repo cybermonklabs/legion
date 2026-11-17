@@ -369,6 +369,7 @@ var idRoutes = map[string]idRoute{
 	"DELETE /api/v1/delivery/session-groups/{id}":   {Reason: "a Delivery session group id"},
 	"GET /api/v1/going/requests/{id}/stream":        {Reason: "a going request's run id, which the route reads for its own author alone and answers for itself"},
 	"GET /api/v1/handoffs/{id}":                     {Reason: "a handoff id: one phase's record on an issue"},
+	"GET /api/v1/near-copy-checks/{id}":             {Reason: "a near-copy check id: one answer of the near-copy gate"},
 	"POST /api/v1/machine-logins/{id}/revoke":       {Reason: "a machine login id"},
 	"POST /api/v1/signins/{id}/revoke":              {Reason: "a sign-in id at the secrets broker"},
 	"PATCH /api/v1/priorities/{id}":                 {Reason: "a priority id, a slug of its own and no uuid at all"},
@@ -448,10 +449,15 @@ type routeScopeSet []string
 // token, a project-scoped session's token and a broker-issued token that names a service and no
 // person hold neither.
 //
+// The scope `read` a read-only token holds is no value of this map: a scope here is one the
+// caller must hold, and no person holds that one. The routes such a token may call are a list of
+// their own, readScopeRoutes below, which its own gate reads (refuseReadOnlyToken).
+//
 // A route that takes an id written short needs no scope of its own for it: the prefix layer
-// (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so
-// the row's scopes are the first thing a request is held to and a credential that holds none is
-// refused before any id is read - and it only rewrites the path value, so a short id reaches
+// (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so a
+// credential that holds none of the row's scopes is refused before any id is read, and the one
+// check a request meets ahead of the row's scopes is whether a read-only token may call the row
+// at all (refuseReadOnlyToken) - and it only rewrites the path value, so a short id reaches
 // exactly the scopes the whole id reaches, and a row that needs none with a whole id needs none
 // with a prefix.
 var routeScopes = map[string]routeScopeSet{
@@ -520,6 +526,27 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
 }
 
+// readScopeRoutes is every route a read-only token may call, by "<method> <pattern>": a token the
+// secrets broker minted from a read entry, which holds the scope read alone and names a service
+// and a session and no person and no project (model.Credential.ReadOnly). Every other row of the
+// table, and GET /ws/live beside it, answers such a token 403 READ_ONLY_TOKEN before anything
+// else the route does (refuseReadOnlyToken), so a route added later stays closed to it until it
+// is listed here.
+//
+// A route is listed only when, for such a caller, it writes nothing but the row that records its
+// DPoP proof as spent (store.DPoPProofs) and caches Dispatch rebuilds from what it already holds:
+// the display trees a read with Dispatch-Trees: 1 stores (displayTreeReader.storeOf) and the
+// stored listener roster (route_roster). TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches
+// holds the route listed today to that.
+//
+// It is a list beside the table and not a value of routeScopes: a scope there is one the caller
+// must hold, and no person holds read, so the list says what a credential that holds read alone
+// may still call rather than what a route requires. For the same reason the route index (GET
+// /api/v1), the OpenAPI document and the reference generated from it do not carry it. routes()
+// stamps it onto the row (apiRoute.ReadScope), and register refuses to mount a table whose list
+// names anything but a GET row it mounts (readRoutesNotMountedAsGET).
+var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture"}
+
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
 // deployment leaves it out.
@@ -547,6 +574,23 @@ func scopedRoutesNotMounted() []string {
 	return routesNotMounted(maps.Keys(routeScopes))
 }
 
+// readRoutesNotMountedAsGET names every route of names that is not a GET row of the table,
+// sorted: one no row holds (routesNotMounted) and one whose method is not GET. register refuses
+// to mount a read list that names either (readScopeRoutes). A name no row holds opens nothing
+// while the list reads as though it opened a route - a row renamed or deleted and its entry left
+// behind - and a POST, PUT, PATCH or DELETE row is a write, which a read-only token is minted
+// never to make. The walk is over the table with its test hooks in, as routesNotMounted's is.
+func readRoutesNotMountedAsGET(names []string) []string {
+	refused := routesNotMounted(slices.Values(names))
+	for _, name := range names {
+		if method, _, _ := strings.Cut(name, " "); method != http.MethodGet && !slices.Contains(refused, name) {
+			refused = append(refused, name)
+		}
+	}
+	sort.Strings(refused)
+	return refused
+}
+
 // routeRow is a row as the table writes it: the five columns every route has, written as a
 // positional literal, which is why the write class is not among them (writeClasses).
 type routeRow struct {
@@ -558,16 +602,19 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses and the OAuth scopes it stamps from routeScopes. Register mounts the table and
-// GET /api/v1 lists it, so the two can never disagree about what the server serves. Every
-// mutating row carries a Scope, and a GET row carries none (project_scope.go); OAuthScopes is
-// empty on every row any authenticated caller may reach; the row's own five columns are read
-// through it by promotion. What the route takes and answers is routeShapes', which only the
-// OpenAPI emitter reads, so no row carries it.
+// writeClasses, the OAuth scopes it stamps from routeScopes, and whether a read-only token may
+// call it, which it stamps from readScopeRoutes. Register mounts the table and GET /api/v1 lists
+// it, so the two can never disagree about what the server serves. Every mutating row carries a
+// Scope, and a GET row carries none (project_scope.go); OAuthScopes is empty on every row any
+// authenticated caller may reach; ReadScope is true on the rows the read list names and on no
+// other, and only the read-only gate reads it (refuseReadOnlyToken), never the route index or the
+// OpenAPI document; the row's own five columns are read through it by promotion. What the route
+// takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
 	OAuthScopes routeScopeSet
+	ReadScope   bool
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -702,6 +749,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodGet, "/api/v1/search/coverage", authAny, "Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total.", s.searchCoverage},
 		{http.MethodGet, goingCataloguePath, authAny, "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.", s.getGoingCatalogue},
 		{http.MethodGet, "/api/v1/related-checks", authAny, "Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered.", s.getRelatedChecks},
+		{http.MethodGet, "/api/v1/near-copy-checks", authAny, fmt.Sprintf("List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to %d, default %d), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most %d, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to %s, and tried once more in the background for up to %s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged.", nearCopyChecksPageMax, nearCopyChecksPageMax, duplicateCandidateLimit, nearCopyRecordTimeout, relatedRecordRetryTimeout), s.getNearCopyChecks},
+		{http.MethodGet, "/api/v1/near-copy-checks/{id}", authAny, "One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid.", s.getNearCopyCheck},
 		{http.MethodPost, "/api/v1/going/requests", authAny, fmt.Sprintf("Ask a question of what Dispatch holds {words, project}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the %s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most %d characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 %s and records nothing: no reader of that run could ever be served it. With no model configured the run is recorded all the same and its stream carries the error frame %s, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.", contracts.GoingRunWindow, contracts.GoingWordsMax, codeGoingAskerNamesNobody, contracts.GoingErrorNoModelConfigured), s.createGoingRequest},
 		{http.MethodGet, "/api/v1/going/requests/{id}/stream", authAny, fmt.Sprintf("One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (%s, %s, %s, %s, %s, %s, %s) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on %s or %s. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error %s, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 %s, so an id tells a caller nothing it did not already know.", contracts.GoingEventText, contracts.GoingEventItem, contracts.GoingEventCut, contracts.GoingEventChanged, contracts.GoingEventNone, contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive, codeGoingRequestNotFound), s.streamGoingAnswer},
 		{http.MethodGet, "/api/v1/going/capability", authAny, "Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included.", s.getGoingCapability},
@@ -755,8 +804,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPost, "/api/v1/artifacts/{id}/reviews", authAny, "Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. A request for changes is never refused.", s.createArtifactReview},
 		{http.MethodPost, "/api/v1/artifacts/{id}/versions/{number}/reviews", authAny, "Approve or request changes on one version of a document {state, reason?}: {number} is the version the caller read, and the route requires it. The review is recorded only when {number} is the version it would record, the document's latest settled version or, with an approval ask open, the version that ask names for the document; any other is 409 REVIEW_VERSION_MOVED, naming the version the review would record, with nothing written, and a {number} that is not a whole number of 1 or more is 400 INVALID_REVIEW. With an approval ask open the review answers it, preserving its thread, and reviews every document the ask named, each at the version the ask names. This is the route a client sends when the version is a guard: a build without it answers no route, rather than recording the review without the guard. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. A request for changes is never refused.", s.createArtifactVersionReview},
 		{http.MethodPost, "/api/v1/artifacts/{id}/plan-reviews", authAny, "Record a plan review's approval of a plan version: {version}, on an issue's plan.md alone (409 NOT_PLAN_DOCUMENT otherwise). A plan is never sent to a person for approval, so POST /api/v1/artifacts/{id}/approval-requests refuses it with 409 PLAN_APPROVED_BY_REVIEW; a later plan version makes this approval stale, as a spec's goes stale.", s.createArtifactPlanReview},
-		{http.MethodPost, "/api/v1/artifacts/{id}/approval-requests", authAny, "Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. A request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec (DISPATCH_SPEC_ROOTS). A second definition of a term of the root's list of terms breaks it too. The refusal names each text and its rule. spec_form says what Dispatch read in a covered document.", s.requestArtifactApproval},
-		{http.MethodGet, "/api/v1/artifacts/{id}/spec-form", authAny, "Read the form of The Spec in one version of a document, with no side effect: ?version=N, or the latest settled version. The answer names the scope, the root, the part the document plays, the count of each kind of text and each finding. It also names the list of terms of the root. The scope is covered, list, no_root, root, outside or not_spec. It lists the findings of a document out of scope too. refuses_approval says if Dispatch refuses an approval request or an approval of that version. A version that the document does not have is 404 VERSION_NOT_FOUND.", s.getArtifactSpecForm},
+		{http.MethodPost, "/api/v1/artifacts/{id}/approval-requests", authAny, "Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. A request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec (DISPATCH_SPEC_ROOTS). A second definition of a term of the root's list of terms breaks it too. The refusal names each text and its rule. A version that the request names and the parser refuses is a finding of its document (rule unreadable). spec_form says what Dispatch read in a covered document, and its unread names each approved document under the root whose approved version Dispatch cannot read, so that no rule compared its texts.", s.requestArtifactApproval},
+		{http.MethodGet, "/api/v1/artifacts/{id}/spec-form", authAny, "Read the form of The Spec in one version of a document, with no side effect: ?version=N, or the latest settled version. The answer names the scope, the root, the part the document plays, the count of each kind of text and each finding. It also names the list of terms of the root. The scope is covered, list, no_root, root, outside or not_spec. It lists the findings of a document out of scope too. refuses_approval says if Dispatch refuses an approval request or an approval of that version. unread names each approved document under the root whose approved version Dispatch cannot read, so that no rule compared its texts. A version that the document does not have is 404 VERSION_NOT_FOUND.", s.getArtifactSpecForm},
 		{http.MethodGet, "/api/v1/artifacts/{id}/blocks", authAny, "A document's blocks with markdown ranges, tokens, reference counts and each block's embedding, where meaning search stands on it (embedded, pending, or none while no window covers it); a typed block carries attributes, its type's attributes in declaration order as its opening line writes them ({name, value, kind}, the value unescaped and unquoted and the kind the one the block schema declares it, so a reader follows a block[] value as the pointers it holds and reads every other kind as text), and a table block lists its rows and cells by the indexes delete_row and delete_column take.", s.getArtifactBlocks},
 		{http.MethodGet, "/api/v1/artifacts/{id}/blocks/{block_id}", authAny, "Where one block stands in a document: its path from the top-level block down (type, id, child index), and for a table block, row or cell the table's id, the row index (0 is the header), the cell's column index, the text of the header cell drawn above it and the row's cells; 404 TARGET_NOT_FOUND for an id the live document does not hold.", s.getArtifactBlockPath},
 		{http.MethodPost, "/api/v1/artifacts/{id}/blocks/{block_id}/keep", authAny, "Record that the caller agrees with the decision that block opens, as the text they read it at: {text_sha256}, the decision's own text_sha256 from GET /api/v1/issues/{key}/decisions. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. The block must be the heading block of a decision of an issue's decisions.md outside `## Replaced`: any other block is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody.", s.keepDecision},
@@ -825,7 +874,7 @@ func (s *server) routes() []apiRoute {
 	routes := make([]apiRoute, len(rows))
 	for index, row := range rows {
 		name := row.Method + " " + row.Pattern
-		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name]}
+		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], slices.Contains(readScopeRoutes, name)}
 	}
 	return routes
 }

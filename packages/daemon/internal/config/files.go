@@ -147,10 +147,10 @@ func ReadDeploymentInstructions(instructionsPath string) ([]byte, error) {
 
 // MaterializeDeploymentInstructions reads the operator's instructions file and writes
 // `# Deployment instructions (<legionID>)`, a blank line, and its contents verbatim to
-// `<stateDir>/deployment-instructions.md`, returning that path — the file every pane's one
-// `--append-system-prompt` word ends with, `$(cat <this file>)`, so a pane gets exactly what boot
-// read and never the operator's own path, which may change underneath a running daemon. legionID
-// is `project` as the operator wrote it.
+// `<stateDir>/deployment-instructions.md`, returning that path — the file every launch's composed
+// system prompt ends with (runtime.ComposePrompt), so a role gets exactly what boot read and never
+// the operator's own path, which may change underneath a running daemon. legionID is `project` as
+// the operator wrote it.
 //
 // A file ReadDeploymentInstructions refuses writes nothing.
 func MaterializeDeploymentInstructions(instructionsPath, stateDir, legionID string) (string, error) {

@@ -29,11 +29,12 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 		Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 }
 
-// The reviewer's approval moves the issue to accepting and nothing else: the board already reads
-// needs_review, so no status is written; the tree's architect is already live, so no worker is
-// started and no claim is minted (a start row is what mints one); the reviewer's phase-finished is
-// the architect's cue to accept.
-func TestAnApprovalMovesTheIssueToAcceptingAndStartsNobody(t *testing.T) {
+// R2: the reviewer's approval moves the issue into accepting and starts nobody, though accepting
+// is a phase phase.RoleFor answers the architect for. The board already reads needs_review, so no
+// status is written; the tree's architect is already live, so no worker is started, no architect
+// phases row is written and no entry is raised (a start is what raises one); the reviewer's
+// phase-finished is the architect's cue to accept.
+func TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1", HandoffVersion: 1, Summary: "looks right"})
@@ -54,6 +55,14 @@ func TestAnApprovalMovesTheIssueToAcceptingAndStartsNobody(t *testing.T) {
 	}
 	if kind != "phase-finished" || role != string(claim.RoleReviewer) || from != string(phase.Reviewing) || summary != "looks right" {
 		t.Fatalf("notice = %s %s %s %q, want the reviewer's phase-finished for reviewing with its summary", kind, role, from, summary)
+	}
+	var architectRows int
+	if err := pool.QueryRow(context.Background(),
+		"select count(*) from phases where issue = 'LEGION-208' and role = $1", string(claim.RoleArchitect)).Scan(&architectRows); err != nil {
+		t.Fatalf("read the architect's phase rows: %v", err)
+	}
+	if architectRows != 0 {
+		t.Fatalf("the move into accepting wrote %d architect phase rows, want none: nothing starts the architect, so nothing raises its entry", architectRows)
 	}
 }
 
@@ -185,6 +194,37 @@ func TestAPlannersBackwardMoveFromAcceptingIsRefused(t *testing.T) {
 		t.Fatalf("implementer pass = %d, want none", pass)
 	}
 	assertOutboxKinds(t, pool, []string{})
+}
+
+// R2: a backward move asked while the issue stands at admitted is refused whoever asks for it,
+// the architect included, and moves, starts and counts nothing. Admitted is the architect's own
+// phase (phase.RoleFor), so the guard's reading of which role runs the phase (backwardRefusal)
+// would let the architect's move through, but that reading is never reached there: admitted is
+// no phase of the working line (phase.Order), so no backward row serves a move out of it, and
+// the refusal names that missing row for both roles.
+func TestArchitectUnchangedByABackwardMoveFromAdmitted(t *testing.T) {
+	for _, requester := range []claim.Role{claim.RoleArchitect, claim.RolePlanner} {
+		t.Run(string(requester), func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
+			result, err := intake.ApplyFact(context.Background(), pool, "api", string(requester)+"-backward",
+				intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: phase.Planning, Reason: "replan"},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+			if err != nil || refusalCode(result) != "BACKWARD_REFUSED" {
+				t.Fatalf("the %s's move = %+v, %v; want BACKWARD_REFUSED", requester, result.Refusal, err)
+			}
+			if !strings.Contains(result.Refusal.Message, "no backward row of admitted") {
+				t.Fatalf("the %s's move was refused with %q, want the refusal of a move no backward row serves", requester, result.Refusal.Message)
+			}
+			assertPhase(t, pool, phase.Admitted)
+			var rows int
+			if err := pool.QueryRow(context.Background(), "select count(*) from phases where issue = 'LEGION-208'").Scan(&rows); err != nil || rows != 0 {
+				t.Fatalf("phase rows = %d, %v; want none: a refused move counts no pass", rows, err)
+			}
+			assertOutboxKinds(t, pool, []string{})
+		})
+	}
 }
 
 // A backward move onto accepting from a later phase writes needs_review, the status the board shows

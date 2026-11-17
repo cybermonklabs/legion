@@ -62,6 +62,10 @@ type LocalSecret struct {
 	// deletions, DescribeSecret answers DeletedAt as its DeletedDate, and every other call but
 	// RestoreSecret is refused.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	// CreatedAt, when set, is when the secret was created, which ListSecrets and DescribeSecret
+	// answer as its CreatedDate. Unset, they answer none, which the policy reads as a secret whose
+	// age it cannot tell (secrets.Listing.Created).
+	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 
 // localFile is BROKER_FAKE_SECRETS_FILE's shape.
@@ -235,7 +239,7 @@ func (l *Local) ListSecrets(_ context.Context, in *secretsmanager.ListSecretsInp
 		}
 		out.SecretList = append(out.SecretList, types.SecretListEntry{
 			Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), KmsKeyId: s.kmsKeyID(),
-			Tags: s.awsTags(), SecretVersionsToStages: l.versionsToStages(s), DeletedDate: s.DeletedAt,
+			Tags: s.awsTags(), SecretVersionsToStages: l.versionsToStages(s), DeletedDate: s.DeletedAt, CreatedDate: s.CreatedAt,
 		})
 	}
 	return out, nil
@@ -253,7 +257,7 @@ func (l *Local) DescribeSecret(_ context.Context, in *secretsmanager.DescribeSec
 	}
 	return &secretsmanager.DescribeSecretOutput{
 		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), KmsKeyId: s.kmsKeyID(),
-		Tags: s.awsTags(), VersionIdsToStages: l.versionsToStages(s), DeletedDate: s.DeletedAt,
+		Tags: s.awsTags(), VersionIdsToStages: l.versionsToStages(s), DeletedDate: s.DeletedAt, CreatedDate: s.CreatedAt,
 	}, nil
 }
 

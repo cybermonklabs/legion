@@ -61,7 +61,8 @@ const (
 	StateIdle ClaimState = "idle"
 	// StateSuspended: the process was stopped and the session kept; the claim resumes on demand.
 	StateSuspended ClaimState = "suspended"
-	// StateFailed: a budget ran out. Nothing relaunches the claim on its own.
+	// StateFailed: a budget ran out, or a launch was refused in a way no try changes (a system
+	// prompt past the start frame, promptRefused). Nothing relaunches the claim on its own.
 	StateFailed ClaimState = "failed"
 	// StateRetired: the claim is over — stopped by the operator, or ended by its agent.
 	StateRetired ClaimState = "retired"
@@ -178,6 +179,24 @@ type Claim struct {
 	// worker's turn. Zero is a claim that has retired no confirmed task of an entry, which every
 	// claim of a daemon upgraded in place is until its role's next start.
 	ServedEntry int64
+	// Handshake is the handshake between the daemon and this claim's worker over the last phase
+	// entry the claim was queued a task of: that entry, the issue generation the task was of, when
+	// a task of that entry was first queued to the claim and when a turn of its worker first
+	// confirmed one (EntryHandshake). It outlasts the task it was read from, which the end of the
+	// confirming turn retires, so it is what the state reads an issue's two times from
+	// (api.Issue.EntryQueuedAt and EntryConfirmedAt), and for a tree's own root it is its
+	// architect's in every phase the root stands in. The zero value names no entry, which every
+	// claim of a daemon upgraded in place is until its role's next start: the two times read as
+	// absent there. Four decisions write it, each beside GivenEntry or the delivery it records:
+	// queue and EntryGiven, where the claim is given an entry's work; confirm, where a turn
+	// confirms a task of that entry; and the take-back of that confirmation where it was never
+	// shown to be the worker's — a refusal or a busy answer (takeBackPending, refused), or a
+	// let-go that cut off a turn that confirmed the task while its prompt's send was in flight or
+	// a prompt of it still waited on its result (interrupted, confirmationInDoubt) — which clears
+	// the handshake's own. A queue of another entry replaces it, and nothing else clears it: a
+	// retirement, a turn's end, a hold and a let-go's take-back of a confirmation a turn of the
+	// task did take, its prompt's result come or no send or prompt of it outstanding, each leave it.
+	Handshake EntryHandshake
 	// ServingCheckLook is the production check look of the last confirmed delivery this claim
 	// retired, the look side of ServingGeneration: what ServingCheck answers with once no delivery
 	// backs the worker's turn. The zero value is a claim that has retired no confirmed task of a
@@ -449,6 +468,63 @@ type Claim struct {
 	ActivityBackground     bool
 	ActivityKinds          []string
 	ActivityNextReminderAt time.Time
+}
+
+// EntryHandshake is the handshake between the daemon and a claim's worker over one phase entry:
+// the entry, the issue generation the entry's task was of (Delivery.Generation), when a task of
+// that entry was first queued to the claim (the first such Delivery.QueuedAt) and when a turn of
+// the claim's worker first confirmed a task of it (the first such Delivery.ConfirmedAt). The zero
+// value names no entry, and a zero ConfirmedAt is an entry no turn has confirmed a task of.
+type EntryHandshake struct {
+	Entry       int64
+	Generation  uint64
+	QueuedAt    time.Time
+	ConfirmedAt time.Time
+}
+
+// queued is h once a task of entry, of generation's run, was queued to the claim at the moment at.
+// Where h already names that entry of that run it stands as it is: a second task of one entry is
+// a sweep's re-send after an unconfirmed retirement put the entry back (retirePending), or a held
+// phase's retry (RequestDeliver.ResendEntry), and the entry was still first queued, and perhaps
+// confirmed, when h says. Any other entry replaces h with that entry, queued at and confirmed by
+// no turn yet.
+func (h EntryHandshake) queued(entry int64, generation uint64, at time.Time) EntryHandshake {
+	if h.Entry == entry && h.Generation == generation {
+		return h
+	}
+	return EntryHandshake{Entry: entry, Generation: generation, QueuedAt: at}
+}
+
+// confirmed is h once a turn confirmed the task d: the first confirmation of a task of h's entry
+// and run is recorded at d.ConfirmedAt. Every other confirmation leaves h as it stands: a later
+// one of the same entry, which a task a death took back and sent again makes, and one of a task of
+// another entry or of no entry, a wake's or an operator's, which is no part of this handshake.
+func (h EntryHandshake) confirmed(d Delivery) EntryHandshake {
+	if d.Entry == 0 || d.Entry != h.Entry || d.Generation != h.Generation ||
+		d.ConfirmedAt.IsZero() || !h.ConfirmedAt.IsZero() {
+		return h
+	}
+	h.ConfirmedAt = d.ConfirmedAt
+	return h
+}
+
+// unconfirmed is h once the daemon took back the confirmation of the task d, and whether that
+// changed h: a refusal or a busy answer said the turn that confirmed it was not d's, so the worker
+// never took it, or a let-go cut that turn off before anything said whose it was (interrupted,
+// confirmationInDoubt), so nothing says the worker took it. Where that confirmation is the one h
+// recorded — d is of h's entry and run, and its ConfirmedAt is h's — h is unconfirmed again, the
+// task's next real confirmation is recorded in its place, and the answer is true. Any other
+// take-back leaves h as it stands and answers false: one of a task of another entry or of no
+// entry, and one of a later confirmation of h's entry, after the first one stood. The bool is
+// what its callers read to know whether the claim's write must carry the handshake, rather than
+// comparing two handshakes that hold times.
+func (h EntryHandshake) unconfirmed(d Delivery) (EntryHandshake, bool) {
+	if d.Entry == 0 || d.Entry != h.Entry || d.Generation != h.Generation ||
+		d.ConfirmedAt.IsZero() || !d.ConfirmedAt.Equal(h.ConfirmedAt) {
+		return h, false
+	}
+	h.ConfirmedAt = time.Time{}
+	return h, true
 }
 
 // StepRecord is the claim's record of its agent's last step: the last call the agent made, when
@@ -772,7 +848,9 @@ type Deps struct {
 	// next runs — which can be after a park, a hand back to `todo` or a linger, generations later.
 	// Such a task names a person's decisions, which its own confirmation tells (daemon's
 	// settleKept, the claim store's putDelivery), so it is held rather than dropped: false keeps it
-	// pending, unsent and uncharged, and the start of the root's next run sends it (queue). It is
+	// pending, unsent and uncharged, and the start of the root's next run sends it (StartedBy,
+	// queue) — unless that start's own task supersedes it (supersedes), which retires it unsent
+	// and leaves the decisions it names for the catch-up that follows. It is
 	// asked only about a root architect's task of a run — never a phase worker's, never a task of
 	// no run such as an operator's or a production check's. nil sends every delivery.
 	RootHears func(ctx context.Context, c Claim, d Delivery) (bool, error)
@@ -1544,14 +1622,26 @@ func (c Claim) ReleasedLaunch() bool {
 // Deps.RootHears): this start is the root running again, so the held task goes now, before the
 // start's own work — including when that start carries no task of its own to deliver, where
 // nothing else would ask.
-func (m *Machine) StartedBy(ctx context.Context, row int64) error {
+//
+// The one held task it does not send is one the start's own task supersedes (task, the request
+// the start delivers once the claim is brought back, nil for a start that carries none;
+// supersedes): a tree's root architect's task of an earlier run, or of a lower entry of the same
+// run, that carries an entry of its own and that nothing of is in the agent's hands. Sent here,
+// it would be the re-admitted architect's first prompt — a task saying what was true of a run
+// that is over (dispatch://INFRA-2614 R3) — and the start's own task, the one the transition that
+// raised the newer entry wrote (R4), would wait behind its turn. The start's delivery retires it
+// unsent instead (queue), which releases the decisions it names for the catch-up that follows to
+// tell. A start of no entry supersedes nothing, and a held task of no entry, a wake's
+// (workflow's wakeRow) among them, is superseded by nothing, so either way a held task is sent
+// at the start as before.
+func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver) error {
 	m.mu.Lock()
 	defer m.unlock()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
 	}
 	if row <= m.claim.LastStartRow {
-		return m.sendPending(ctx)
+		return m.releaseHeld(ctx, row, task)
 	}
 	m.claim.LastStartRow = row
 	if m.held != nil {
@@ -1560,6 +1650,18 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 	}
 	if err := m.persist(ctx); err != nil {
 		return err
+	}
+	return m.releaseHeld(ctx, row, task)
+}
+
+// releaseHeld is StartedBy's send of the pending task, which it skips for a task the start's own
+// task supersedes (supersedes, the one rule queue applies when that task arrives).
+func (m *Machine) releaseHeld(ctx context.Context, row int64, task *RequestDeliver) error {
+	if p := m.claim.Pending; p != nil && task != nil && m.supersedes(*p, *task) {
+		m.log.Info("supervise: the start's own task supersedes the held task, so the held task is not sent; the start's delivery retires it",
+			"row", row, "held", p.ID, "heldGeneration", p.Generation, "heldEntry", p.Entry,
+			"generation", task.Generation, "entry", task.Entry)
+		return nil
 	}
 	return m.sendPending(ctx)
 }
@@ -1571,6 +1673,11 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 // difference the admission pass reads between the entry a role's phases row names
 // (record.PhaseRow.Entry) and the entry its claim was given has to close here rather than
 // through a second task of the same entry.
+//
+// The handshake is written with the number (Claim.Handshake), from the task the claim holds where
+// that task carries entry: its queued time is when that entry's work was first queued, and its
+// confirmed time, where a turn has confirmed it, when the worker took it. A claim holding no task
+// of entry has no handshake of it to record and keeps the one it holds.
 //
 // A claim already at or above entry is left alone and written nothing: the number only rises, so
 // a row run again after the claim was given a later entry's work cannot take it back.
@@ -1585,6 +1692,9 @@ func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
 		return nil
 	}
 	m.claim.GivenEntry = entry
+	if p := m.claim.Pending; p != nil && p.Entry == entry {
+		m.claim.Handshake = m.claim.Handshake.queued(entry, p.Generation, p.QueuedAt).confirmed(*p)
+	}
 	return m.persist(ctx)
 }
 
@@ -2141,7 +2251,10 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // first, so it is the one waited out. The boot token's hash is persisted before the process
 // starts, so the shim's first hello resolves. A launch the runtime or the spec refuses is a launch
 // failure and is tried again after the backoff (backOff), waiting out the same process, until the
-// budget runs out; only a start that succeeds forgets it. A launch that fails stops the process it
+// budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
+// (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
+// nothing, and a start the session store could not answer is charged nothing and tried again
+// (startWaitsForStore). A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
@@ -2295,22 +2408,48 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
+		var tooLarge *runtime.PromptTooLarge
+		if errors.As(err, &tooLarge) {
+			return m.promptRefused(ctx, starting, err)
+		}
 		err = errors.Join(err, m.stopPrevious(starting))
 		m.claim.Budgets.LaunchFailures++
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
-			// The refusal is this claim's own cause only where nothing else is already being
-			// relaunched after: a claim that died and whose relaunch the runtime then refused
-			// reads died (Claim.PendingCause).
-			cause := m.claim.PendingCause
-			if cause == "" {
-				cause = CauseLaunchRefused
-			}
-			return errors.Join(err, m.fail(ctx, cause, fmt.Sprintf("launch failures ran out: %v", err)))
+			return m.failLaunch(ctx, err, fmt.Sprintf("launch failures ran out: %v", err))
 		}
 		charged = true
 	}
+}
+
+// promptRefused is a start the runtime refused because the role's composed system prompt is larger
+// than the one bound that still applies to it (runtime.PromptTooLarge): the start frame a pod's
+// launcher reads, which the sandbox runtime measures before anything starts. Nothing was
+// started, and every later try would compose the same text from the same files and be refused
+// the same way until the deployment changes them, which takes a restart of the daemon. So it is
+// charged no launch failure and not tried again: the claim fails at once, under the cause the
+// charged path at its limit would name (launchNow), with the refusal's sentence — the role, the
+// prompt's size and the limit — as its failure and as LastStartFailure, which read_state serves as
+// the claim view's `failure.detail` and `lastStartFailure`. The process the launch let go is
+// stopped first, as every refused start's is.
+func (m *Machine) promptRefused(ctx, starting context.Context, refusal error) error {
+	err := errors.Join(refusal, m.stopPrevious(starting))
+	m.log.Error("supervise: the role's system prompt is too large to launch; failing the claim, charging no launch failure",
+		"generation", m.claim.Generation, "error", err, "launchFailures", m.claim.Budgets.LaunchFailures)
+	return m.failLaunch(ctx, err, fmt.Sprintf("launch refused, charged no launch failure: %v", refusal))
+}
+
+// failLaunch fails the claim over a launch the runtime refused, with err, the refusal and what
+// stopping the process it let go answered, and detail, the claim's failure sentence. The refusal
+// is this claim's own cause only where nothing else is already being relaunched after: a claim
+// that died and whose relaunch the runtime then refused reads died (Claim.PendingCause).
+func (m *Machine) failLaunch(ctx context.Context, err error, detail string) error {
+	cause := m.claim.PendingCause
+	if cause == "" {
+		cause = CauseLaunchRefused
+	}
+	return errors.Join(err, m.fail(ctx, cause, detail))
 }
 
 // startable is the context the tries of one launch run on: the caller's, which a suspension can

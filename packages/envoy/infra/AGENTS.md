@@ -394,6 +394,16 @@ holds, a static user listed in `auth_users` reaches no callout and keeps its gra
 and no credential are refused, a session `noAuthUser` is reached with no callout request, and,
 as the control that `auth_users` must be derived, a static user edited out of it is sent to the
 callout and refused.
+`core/nats_ping_live_test.go`, on the same image, checks the rendered ping lines. In
+`TestAHungReplicaLeavesTheCalloutsQueueGroup`, two replicas of a test auth service answer in one
+queue group, replica A behind a proxy that stops reading: the server drops A from `/connz` within
+81 s of the hang, and the next 20 clients are all admitted. Its control,
+`TestWithoutThePingLinesAHungReplicaKeepsItsPlace`, runs under nats-server's defaults: A is still
+listed at 81 s, and clients are refused at 2 s. In
+`TestAClientThatStallsFifteenSecondsStaysConnected`, a keyed client behind a proxy that stops
+reading for 15 s keeps its server connection. Its control,
+`TestWithThreeSecondPingsAStalledClientIsClosed`, sets `ping_interval` to 3 s, and the server
+closes the same client as stale.
 `core/nats_callout_timeout_live_test.go`, on the same image, holds the rendered block to its
 answer budget: a nats.go client is admitted when the auth service answers 0.5 s before the
 rendered authorization timeout (nats-server's default 2 s, since the block sets none) and at
@@ -402,8 +412,8 @@ rendered authorization timeout (nats-server's default 2 s, since the block sets 
 a nats.go client still waiting on the callout.
 `gcp/clusteredhub_callout_live_test.go` carries the tag too and starts no container: it reloads the
 clustered hub's rendered `auth.conf` on the nats-server v2.15.1 the test binary links in, which
-takes a grant change and refuses any change of the callout's lines, the reason the hub's pods carry
-the `envoy-infra.sjawhar.dev/auth-callout` annotation.
+takes a grant change and refuses any change of the `auth_callout` block, one reason the hub's pods
+carry the `envoy-infra.sjawhar.dev/auth-callout` annotation.
 
 `gcp/clusteredhub_live_test.go` carries the `natslive` tag too, but starts no container and needs
 no Docker: it installs each tool it runs with `go install`, into a temporary `GOBIN` with
@@ -427,9 +437,19 @@ acknowledged message exactly once across a SIGKILL of its leader; the exporter, 
 chart's arguments, serves one `nats_stream_last_seq` series per server holding a copy; the real
 reloader, run with the chart's arguments, applies a users change with no server restart and no
 client reconnect; and every server's reload refuses a session-user change
-(`config reload not supported for NoAuthUser`), which takes effect only on a restart. Installing
-the tools takes minutes on a cold module cache, which is why CI runs the `natslive` packages with
-`-timeout 30m`. To run them alone, from `packages/envoy/infra`:
+(`config reload not supported for NoAuthUser`), which takes effect only on a restart.
+`TestClusteredNatsHubRoutesKeepTheirPingBesideACallout` (`gcp/clusteredhub_ping_live_test.go`)
+renders the hub with a callout through helm and checks that `nats.conf`'s cluster block holds
+`ping_interval` "30s" and `ping_max` 2. It runs two servers on the rendered configuration, with the
+route through a `testnats.Proxy` started with `testnats.ProxyRate` at 400,000 B/s, and publishes
+40 MB on A to a subscriber on B, which takes about 100 s to drain. Each bound has its own clock.
+The pinned row counts from the burst's start: the route is not closed as stale within 60 s of it,
+because routes keep their 30 s ping, and at least 12 MB of the burst has crossed the route by
+then, so the row fails when the route closed early for another reason or the burst never crossed
+it. Its control, the same `nats.conf` without the pin, counts from the moment A has queued all of
+the burst: the route is closed as stale within 60.5 s of that moment, by the top-level 20 s ping.
+Installing the tools takes minutes on a cold module cache, which is why CI runs the `natslive`
+packages with `-timeout 30m`. To run them alone, from `packages/envoy/infra`:
 
 ```sh
 go test -count=1 -tags natslive -run 'TestClusteredNatsHub(Chart|Cluster)' -v -timeout 20m ./gcp/

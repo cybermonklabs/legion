@@ -2,13 +2,13 @@ package tmux
 
 import (
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // innerCommand is the OMP command the shim runs: the launch prefix and invocation, `--model
-// @default`, `--resume` on the recorded session file when resuming, RPC mode, and the prompt word
-// (runtime-tmux.ts:414-431).
+// @default`, `--resume` on the recorded session file when resuming, RPC mode
+// (runtime-tmux.ts:414-431), and `--append-system-prompt` on promptFile, which Oh My Pi reads and
+// appends to its own system prompt.
 //
 // `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
 // for the `default` model role, which the settings of the profile the pane launches under set -
@@ -18,12 +18,12 @@ import (
 // a later launch without the flag would read it again. A settings set with no `default` role is
 // not refused here: Oh My Pi launches silently on a built-in model instead
 // (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
-func innerCommand(prefix []string, invocation, resumeSessionFile string, parts runtime.PromptParts) string {
+func innerCommand(prefix []string, invocation, resumeSessionFile, promptFile string) string {
 	resume := ""
 	if resumeSessionFile != "" {
 		resume = " --resume=" + shellprefix.Word(resumeSessionFile)
 	}
-	return omplaunch.WithPrefix(prefix, invocation) + " --model @default" + resume + " --mode rpc " + omplaunch.SystemPromptArgument(parts)
+	return omplaunch.WithPrefix(prefix, invocation) + " --model @default" + resume + " --mode rpc " + omplaunch.SystemPromptArgument(promptFile)
 }
 
 // shimShellCommand is the pane's shell command: PATH exported first, then the workspace, then
@@ -37,8 +37,8 @@ func innerCommand(prefix []string, invocation, resumeSessionFile string, parts r
 // one is replaced from the client if there is one"), so a `-e PATH=…` never reaches a pane
 // (LEGION-91, runtime-tmux.ts:603-618). An empty path exports nothing.
 //
-// The inner command is spliced in unquoted on purpose: the pane's shell expands its `$(cat …)`
-// prompt word and word-splits the rest, so the shim receives OMP's argv, not one string. The pane
+// The inner command is spliced in unquoted on purpose: its words are already quoted for the pane's
+// shell, which word-splits them, so the shim receives OMP's argv, not one string. The pane
 // marks its own window before it starts the shim: a crash after new-window created the pane but
 // before the daemon received its report leaves an ownership marker the next daemon can reap.
 func shimShellCommand(socket, path, workspace, legion, streamAddress, bootTokenFile, providerEnvDir, inner string) string {

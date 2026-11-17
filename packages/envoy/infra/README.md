@@ -181,11 +181,14 @@ pods one at a time instead, each through an annotation on the pod template, sinc
 refuses to reload them: a change of `sessionUser` (a changed `no_auth_user`); a change of the
 file store's limit, `maxFileStoreGb` given or derived (a lower `max_file_store` is refused, and a
 refused reload blocks every later one, a `users` change's included, until the server restarts);
-and, while `authCallout` is set, a change of the callout's lines, which a change of `authCallout`
-or of the keys in `users`, a user added or removed among them, makes (`auth_users` lists every
-user's key). The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's
-ConfigMap `<n>-config`, so Pulumi applies it only once the ConfigMap holding the new `nats.conf`
-and `auth.conf` is applied, and every restarted pod starts on them.
+and, while `authCallout` is set, a change of the callout's lines (`core.Authorization.CalloutLines()`:
+the `auth_callout` block and the ping lines), which a change of `authCallout` or of the keys in
+`users`, a user added or removed among them, makes (`auth_users` lists every user's key).
+[A reload, not a replacement](docs/nats-hub.md#a-reload-not-a-replacement) says why a change of
+the ping lines, which nats-server would reload, rolls the pods too. The StatefulSet carries
+`config.kubernetes.io/depends-on` naming the chart's ConfigMap `<n>-config`, so Pulumi applies it
+only once the ConfigMap holding the new `nats.conf` and `auth.conf` is applied, and every restarted
+pod starts on them.
 
 ### Inputs
 
@@ -208,7 +211,7 @@ and `auth.conf` is applied, and every restarted pod starts on them.
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub has `tailnet`, whose listener is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). A change to it, or to the keys of `users` while it is set, rolls the hub pods (`envoy-infra.sjawhar.dev/auth-callout`), since nats-server refuses to reload one; a change of a user's grant alone does not. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to. |
 | `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. |
@@ -1161,7 +1164,12 @@ server starts and says so.
 Every image must be pinned by SHA-256 digest. Verify an `envoyImage` digest from
 `ghcr.io/cybermonklabs/legion/envoy` before pinning it, with the `gh attestation verify` command
 [Running Dispatch](https://cybermonklabs.github.io/legion/dispatch/running-dispatch/) gives. The
-component refuses invalid hostnames, tailnet DNS names, tags, image references, sign-in domains,
+component refuses invalid hostnames, and holds `hostname` to the rule the `outsideOrigin`
+paragraph above states for each label of that origin's host, since the front door puts
+`<hostname>.<tailnetDnsName>` on a certificate. It refuses a hostname that breaks that rule in
+every mode, so a stack in the cluster-only mode or the sandbox keeps a hostname a front door can
+later serve, and before any resource registers. The component also refuses invalid tailnet DNS
+names, tags, image references, sign-in domains,
 namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemory`,
 `appEphemeralStorage` or `proxyEphemeralStorage` outside
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
@@ -3034,9 +3042,84 @@ TypeScript client the plugins use (nats.js 2.29.3) waits that PING out: on nats-
 was admitted on answers at 1.0 s and 1.8 s under the default timeout and at 3.5 s under 5 s, while
 nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s. So the 1.5 s budget is the Go
 client's. Without a callout the text is byte for byte what it was before callouts existed. With a
-`noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key. For three
-keyed users, a pending `example-pending` and `noAuthUser` `example-fallback`, `core`'s tests pin
-this text:
+`noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key.
+
+With a callout, the text then ends with three top-level lines, after the authorization block and
+after `no_auth_user`. Without a callout, none of them is rendered.
+
+```text
+# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s
+ping_interval: "20s"
+ping_max: 2
+```
+
+A replica of the auth service that hangs keeps its place in the callout's queue group until the
+server closes its connection, and each client the server sends to it meanwhile is refused.
+nats-server v2.15.1 closes it from the connection's ping timer (server/client.go
+`processPingTimer`, `:5943-6001`), which fires every `ping_interval`. For a client, the server
+skips the PING if it read messages, subscriptions or a client PING within the interval
+(`:5970-5978`, `:1684-1688`, `:2814-2818`); a PONG does not count. It also sends a PING until it has
+measured the client's round trip, and once an hour after that (`:5966`, `const.go:224`). The tick
+closes the connection as "Stale Connection" when one more PING would exceed `ping_max`
+(`:5983-5993`), and the replica's queue subscription goes with it. So a hung replica leaves the
+queue group 40 to 80 s after it hangs: after 2 to 3 intervals if it sent nothing in the interval
+before, after 3 to 4 if it sent data up to the hang. Under nats-server's defaults (`ping_interval`
+2 minutes, `ping_max` 2: `const.go:120-123`) it is 4 to 8 minutes. `core/nats_ping_live_test.go`
+measures it on the hub's image, with the control that under the defaults the hung replica keeps its
+place and clients are refused. The ping is the hub's backstop for a replica that stops reading its
+connection, because its process froze or its node lost its network. dispatch://INFRA-840 must give
+the auth service a liveness probe that restarts a replica whose process stops answering, which acts
+in seconds. A liveness probe does nothing when a replica's node loses its network: then only these
+lines act, in 40 to 80 s. The lines do not catch a replica whose request handler deadlocks while its
+process runs, since nats.go answers a PING from its read loop (nats.go v1.53.1 `processPing`, called
+at `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
+group: a queue subscriber leaves the group only when the service itself unsubscribes or closes its
+connection, so INFRA-840's service must do that when its handler stops answering.
+
+The two options apply to every client connection on the server. A client whose event loop blocks,
+or whose link stalls, keeps its connection through any stall shorter than 40 s, and is closed as
+stale after one longer than 40 to 80 s; under the defaults, 4 to 8 minutes (the same test file
+keeps a client through a 15 s stall). envoy-client's own 10 s `Bun.spawnSync` block
+(`packages/envoy-client/src/envoy-config.ts:332-372`) is survived. A client that sends nothing for
+a whole 20 s interval while the server's queue to it takes more than about 40 to 60 s to drain is
+closed as stale 40 to 60 s in, where under the defaults the server kept it 4 to 6 minutes; no hub
+client is known to read that slowly. All in-cluster sessions reach
+the hub through one bridge pod, so a stall of that pod longer than 40 s closes every idle session
+at once. Each reconnects. Core messages published in the gap are lost. The relay redelivers from
+its acknowledgement floor. While a session is away, a `connected_only` send is refused with 409.
+
+Three clients ping the server every 1 s: the Legion daemon, on every connection its `Connect` opens
+(`packages/daemon/internal/natsauth/natsauth.go`, `detectSilentCuts`), and Dispatch's server and the
+session listener's stream connection, through `bus.WithSilentCutDetection`
+(`packages/envoy/internal/bus/nats.go`), which Dispatch sets in `serverBus`
+(`packages/envoy/cmd/dispatch/main.go`) and the listener in `listenerStreamOptions`
+(`packages/envoy/cmd/listener/main.go`). The TypeScript plugins ping every 10 s
+(`packages/envoy-client/src/nats-connection.ts`, `NATS_PING_INTERVAL_MS`). Each client PING sets
+the server's `lastIn`, so while these connections are up the server skips the 20 s PING. The 1 s
+ping is opt-in: the listener's role-lane connection (`bus.ConnectRoleLane`, opened in the
+listener's `main.go`) and session-consumer connection (`bus.ConnectSessionConsumers`, opened in
+`connectSessionDelivery`, `packages/envoy/cmd/listener/session_delivery.go`) and other Go clients
+keep nats.go's 2-minute default, so the server pings each of them when it is idle for a whole
+interval: `envoy-mcp` (`main` in `packages/envoy/cmd/mcp/main.go`), `natstail` (`tail` in
+`packages/envoy/cmd/natstail/main.go`) and Dispatch's `redeliver-webhooks` (`redeliverWebhooks` in
+`packages/envoy/cmd/dispatch/redeliver.go`). Apart from that, the server pings every client
+once an hour to measure the round trip (`client.go:5966`, `const.go:224`). An idle client
+exchanges a PING and a PONG every 20 s instead of every 2 minutes: about 600 B/s of payload for
+1,000 idle clients.
+Each PING and each PONG travels in its own TCP segment with 40 to 52 B of headers, plus the PONG's
+ACK, and over the tailnet WireGuard adds about 60 B per packet. On the wire that is about 14 to 29
+times the payload: about 8 to 17 KB/s. The first PING to a new client stays at 2 s
+(`client.go:7128-7142`, `server.go:60` `firstClientPingInterval`), so the answer budget above is
+unchanged.
+
+`core.Authorization.CalloutLines()` is every line the callout adds: the `auth_callout` block and
+the ping lines, or `""` without a callout. `gcp:ClusteredNatsHub` rolls its pods when that text
+changes, and beside a callout it keeps its routes' own ping at 30 s, since the top-level
+`ping_interval` also governs routes (see the hub's [reload](docs/nats-hub.md#a-reload-not-a-replacement)
+and [routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)).
+
+For three keyed users, a pending `example-pending` and `noAuthUser` `example-fallback`, `core`'s
+tests pin this text:
 
 ```text
 # Rendered by envoy-infra from placeholder inputs.

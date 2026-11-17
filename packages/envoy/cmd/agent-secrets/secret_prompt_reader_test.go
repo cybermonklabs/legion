@@ -62,12 +62,42 @@ func TestPromptReaderFeed(t *testing.T) {
 		{
 			name:  "a key inside a paste is a control byte",
 			steps: []feedStep{{in: "\x1b[200~paste\x1atail\r\x1b[201~", done: true}},
-			err:   promptControlByteError(0x1a),
+			err:   promptControlByteError{c: 0x1a, textBefore: true, textAfter: true},
 		},
 		{
 			name:  "a key inside a paste split across reads is a control byte",
 			steps: []feedStep{{in: "\x1b[200~paste\x03"}, {in: "tail\r\x1b[201~", done: true}},
-			err:   promptControlByteError(0x03),
+			err:   promptControlByteError{c: 0x03, textBefore: true, textAfter: true},
+		},
+		{
+			name:  "a Tab at the end of a typed line is a control byte at the value's end",
+			steps: []feedStep{{in: "sk-key\t\r", done: true}},
+			err:   promptControlByteError{c: '\t', textBefore: true},
+		},
+		{
+			name:  "a Tab at the start of a typed line is a control byte at the value's start",
+			steps: []feedStep{{in: "\tsk-key\r", done: true}},
+			err:   promptControlByteError{c: '\t', textAfter: true},
+		},
+		{
+			name:  "a Tab a paste ends with is a control byte at the value's end",
+			steps: []feedStep{{in: "\x1b[200~sk-key\t\x1b[201~"}, {in: "\r", done: true}},
+			err:   promptControlByteError{c: '\t', textBefore: true},
+		},
+		{
+			name:  "a Tab alone is the whole value",
+			steps: []feedStep{{in: "\t\r", done: true}},
+			err:   promptControlByteError{c: '\t'},
+		},
+		{
+			name:  "an Escape between two characters is a control byte inside the value",
+			steps: []feedStep{{in: "ab\x1bcd\r", done: true}},
+			err:   promptControlByteError{c: 0x1b, textBefore: true, textAfter: true},
+		},
+		{
+			name:  "the first control byte is the one named, the second only text after it",
+			steps: []feedStep{{in: "\x01\x02\r", done: true}},
+			err:   promptControlByteError{c: 0x01, textAfter: true},
 		},
 		{
 			name:  "a pasted line ends at the paste's close",
@@ -119,7 +149,7 @@ func TestPromptReaderFeed(t *testing.T) {
 		{
 			name:    "a paste with no closing mark stays open",
 			steps:   []feedStep{{in: "\x1b[200~open\x03\x1a\x1c"}},
-			err:     promptControlByteError(0x03),
+			err:     promptControlByteError{c: 0x03, textBefore: true, textAfter: true},
 			inPaste: true,
 		},
 	} {

@@ -1167,6 +1167,13 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets: at least one secret NAME is required")
 		return exitUsageError
 	}
+	// The command is looked up before the broker is asked anything: a command that is not on
+	// PATH could never run, and a request for it would wait on an approver all the same.
+	path, err := exec.LookPath(command[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
+		return 1
+	}
 
 	base, _, signer, err := sessionContext()
 	if err != nil {
@@ -1288,11 +1295,6 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	path, err := exec.LookPath(command[0])
-	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
-		return 1
-	}
 	// The one line the injected command's own output is preceded by: which names this process
 	// puts in its environment, and that this CLI's broker and a store of which kind gave them,
 	// never a value. A reader of the command's log can tell these values from another secrets

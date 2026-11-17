@@ -187,20 +187,32 @@ The server asks the broker what the token is (RFC 7662 introspection on `/v1/oau
 No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
-A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service the machine holding it belongs to, and `actor` in the body does not decide that session:
+A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
+A read-only token names no project either.
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, or it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-A websocket re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
+
+A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
+It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
+`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
+Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
+That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
+The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
+The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`.
 
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
@@ -237,10 +249,12 @@ The sign-in check refuses every write by a credential that names a service and n
 It stands in front of every mutating route whatever its class, and outermost of the three, so such a caller is told it may make no write at all rather than which project the write it tried belongs to.
 Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because Dispatch records a write under the person who made it and this credential names none.
 A broker token that does name a person, and every other credential, reaches the handler as before.
+A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
 The project and session checks are a no-op for a credential that carries no project and proves no session
 — a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, and an access token the broker scoped to a person rather than to one project.
 That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
+A read-only token carries no project either, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -3156,7 +3170,8 @@ A text whose picked terms number fewer than `duplicateMinTerms` (3), or that hol
 a share of one or two terms is 1.0 against any issue that holds them.
 Such a text is judged by equality instead (`duplicateEqualLexemesQuery`):
 the gate refuses an open issue of the project, outside the new issue's ancestors, whose title lexemes and whose primary document's lexemes are exactly the new title's and the new spec's as Dispatch would store it, and it names nothing else.
-A candidate at or above `duplicateRefuseScore` refuses the create;
+A candidate at or above `duplicateRefuseScore` refuses the create once the refusal's row in `near_copy_checks` is known to be written;
+when that row cannot be written, the create goes in unchecked and its `201` names the candidate in `advice.suggestions.near_copy_check` (below);
 the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
 Both bars are set by `TestNearCopyRefusalReplay` over a frozen export of a project's history (`scripts/near-copy-replay.sh`), and a change to the term picker or to the scoring statement invalidates that calibration.
 A candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
@@ -3165,6 +3180,13 @@ one bound, because two would have a read of 700 ms refuse an unforced create whi
 A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`:
 the create went in without the near-copy check an unforced create otherwise meets.
 A forced one also records `forced` with an empty `past` on its `issue.created` event, which is how the weekly audit tells it from an override.
+
+Each answer the gate gives a create is one row of `near_copy_checks` (`api/near_copy_checks.go`), read through `GET /api/v1/near-copy-checks` and `GET /api/v1/near-copy-checks/{id}`:
+`refused`, `forced`, `nudged`, `passed` or `not_made`, with the reason a check was not made (`bound`, `failed` or `unrecorded`), the candidates it read with their scores, and, for a refused create alone, the spec it refused.
+A refusal is answered only once its row is known to be written, so every `409 POSSIBLE_DUPLICATE` has its row;
+otherwise the refusal refuses nothing, and the create goes in as `not_made`, reason `unrecorded`, its row written in its own transaction under the id the refusal used, so it replaces a refused row whose insert landed unseen.
+Every other create's row is written after the commit, bounded to one second (`nearCopyRecordTimeout`), and tried once more in the background for up to 30 s (`retryRecord`) when a timeout or a lock stopped it, as a `related_checks` row is;
+a row that still cannot be written is logged, and the create stands.
 
 `POST /api/v1/issues`, `POST /api/v1/issues/{key}/asks` and `POST /api/v1/artifacts/{id}/asks` run the related-item check once the write has committed, and so does each decision block a document edit (`POST /api/v1/artifacts/{id}/edits`) adds, on the block's question (the check replaced LEGION-550's 300 ms keyword suggestions).
 The check never refuses the write, but the response waits for it, at most 5 s (`relatedCheckAllowance`);
@@ -3971,6 +3993,18 @@ Each item below names a path with its method and identity, then its purpose.
   another is `400 INVALID_QUERY`) when given:
   `{project, source_kind, from, to}` echo the filters (null when absent), then `total`, `by_source_kind`, `by_outcome`, `by_search` (a check not made counted under `not_made`), `by_reason`, `completed` (found or none), `skipped_for_time` (reason `timeout`), `other_project_offers` (the ask creates of the window that offered at least one answered question of another project, read from `write_suggestions`), and `keyword_ms` and `total_ms`, each `{count, p50, p95, max, over_300ms}` over the checks holding that time (`model.RelatedChecksReport`).
 
+- `/api/v1/near-copy-checks?project=&from=&to=&after=&limit=` (GET; cookie, trusted header, or bearer)
+
+  List one project's near-copy gate answers (`near_copy_checks`, [Search](#search)) within `[from, to)` (RFC3339, each optional; `from` not before `to` is `400 INVALID_QUERY`), oldest first, at most `limit` (1 to 1,000, default 1,000) after the row `after` names:
+  `{project, from, to, checks, next_after}` (`model.NearCopyChecksPage`), each row with no spec.
+  `project` is required (`400 INVALID_PROJECT` when it is not a key), and an `after` that is no row of the project is `400 INVALID_QUERY`.
+  A window should end some time before now: a row written in its create's transaction holds that transaction's start as `created_at` and is seen only once it commits, so a reader that pages up to now and resumes with `after` can miss it.
+
+- `/api/v1/near-copy-checks/{id}` (GET; cookie, trusted header, or bearer)
+
+  One near-copy gate answer (`model.NearCopyCheck`), with `spec` on a refused row alone;
+  `404 NEAR_COPY_CHECK_NOT_FOUND` when there is none, `400 NEAR_COPY_CHECK_ID_INPUT` for an id that is not a uuid.
+
 - `/api/v1/issues/{key}/references?versions=` (GET; cookie, trusted header, or bearer)
 
   Read the issue's eight-hop artifact reference closure; a reference to a block reaches the block's document while a current version holds the block.
@@ -4034,7 +4068,9 @@ Each item below names a path with its method and identity, then its purpose.
   `repo` (`owner/name`) is the issue's own repository and must be mapped to its project:
   `400 INVALID_ISSUE` when it is not `owner/name`, `400 REPO_NOT_MAPPED` when it is not mapped.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
-  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true; external references skip the check.
+  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
+  a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
+  External references skip the check.
   A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
   A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
@@ -4514,7 +4550,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Read the form of The Spec in one version of a document, with no side effect.
   The version is `?version=N`, or else the latest settled version, which an approval request would name.
-  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, terms, refuses_approval}`.
+  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, terms, unread, refuses_approval}`.
   `scope` is `covered` or `list` when the document is in scope.
   `no_root` means that the setting names no root, and `root` is a document of a root other than its `terms.md`.
   `outside` means that no named root holds the issue, or that the document has no issue.
@@ -4677,17 +4713,46 @@ No other document of a root is covered, and an issue that is a root inside anoth
 With no request open, these are the documents that the request names.
 With a request open, they are the documents that the open request names.
 These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
-A hard finding of ASD-STE100 also breaks it.
+Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
+The reviewer of R25 reads each text for what these rules cannot refuse.
+
+- Which texts Dispatch judges: a statement, the claim and the procedure of a check, the purpose of a component and the definition of a term.
+  A statement is a `requirement` block or an entry line, and a check is a `check` block with its `run` and its `negative_control`.
+  A component is a heading of a component or an interface with the paragraph under it.
+  It is also a row of the components table, by its Name and Purpose cells.
+  A term is a term line under a heading `Terms`.
+  Dispatch judges no other prose of a document, such as a paragraph outside a block, another heading, another table or the title of a callout.
+  The reviewer of R25 reads the page for that prose.
+
+- How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
+  A block in a code block or in a table cell is no block.
+  Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
+  A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule.
+  The rules that count sentences and words, and `ste-lint`, read code in code font, as `ste-lint` reads it.
+  The rules of links, of records and of people read the words as the page shows them, with no mark of code font.
+  So code font hides no name or link, also when it holds the whole name or a part of it.
+  These rules also read each address and title of a link or an image.
+  An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
+  A footnote that a text refers to is part of that text, so its sentences count and each rule reads it.
+  A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
+  A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
 
 - How the rules count sentences: a sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
   A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
   So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
   A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
-  An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word, and none of its stops ends a sentence, also the last one before a space.
+  An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word.
+  None of its stops ends a sentence, also the last one before a space.
+  So when a sentence ends with such an initialism, the rules count it and the next sentence as one: write the initialism in full there.
   Nothing in code font ends a sentence.
   A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
   Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
+  An address that the words show, such as `https://example.com/Web.Config`, is one word, so no stop in it breaks this rule.
+  A stop after the address ends the sentence.
   A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
+  `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
+  Put the stop after the closing quote, as in `answers "done". Then`, and both programs count two sentences.
+  Code font works only when at most 25 words stay outside it, because nothing in code font ends a sentence or counts as a word.
   An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
   A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
   So write the steps with words.
@@ -4696,41 +4761,99 @@ A hard finding of ASD-STE100 also breaks it.
 A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 
 - How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
+  The host of that address is `github.com` or `www.github.com` in any case, and a host that only ends in `github.com` is another host.
   `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
   A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
+  So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
   The finding of each rule lists the forms that it reads.
+  A person's name is the name of one person who signed in: the parts of that person's email, in order, each with a capital letter.
+  A name has two parts or more, and each part has three letters or more, so the person `ada@example.com` has no name that the rules read.
+  So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
+  Parts of the emails of two people are no name.
+  A part that is a word of an approved component name or term is no part of a name.
+  An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
+  A word that starts with `@` is the handle of a person, also in code font, so write a name of the system without `@`.
+  The rules also read the name of a term (kind `term`).
 
 A definition of a term has one sentence, and a term has one definition.
+A footnote of a definition is part of it, so the sentences of the footnote count.
+The finding of such a definition names the footnote.
+It tells the writer to put what the footnote says in the one sentence, or to remove the footnote.
 An abbreviation with a stop before a space, such as `vs.`, `approx.` or `etc.`, ends a sentence.
 So a definition that holds one has two sentences and breaks the form: write the word out, such as `against` for `vs.`.
-A term line is `- **<term>**: <definition>` under a heading `Terms`, at any level.
-Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
-Its finding names the line.
-A heading that reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
-Such a heading has the text `terms` in another case, with emphasis marks or with a last colon, such as `## TERMS`, `## **Terms**` or `## Terms:`.
-A line of the term-line form is a definition under each heading, under no heading and in a typed block, outside a code fence.
-Only a line under `Terms` adds a term to the list.
-Such a line in another place breaks the form (rule `term-second-definition`, kind `term_line`) when it names a term of the list.
-It also breaks the form when another line of that form in the document names the same term.
-So Dispatch also refuses a list item in prose that has the form of a term line and names a term of the list.
-Its finding tells the writer to change the form of the line when the line is no definition.
-A line of that form inside a decision block is a definition too, so an answer that writes one writes a definition.
+A definition is a term line: `- **<term>**: <definition>` under a heading `Terms`, at any level.
+The list of terms holds these definitions, and no approval adds a second definition of a listed term.
+Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
+So a decision block under that heading breaks the form at its question line.
+A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
+The finding names the line by its text, and it says where a decision block goes.
+A heading whose text reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
+Such a heading reads as `terms` in another case or with a last colon, such as `## TERMS` or `## Terms:`.
+Emphasis is no part of the text that a person reads, so `## **Terms**` is the heading `Terms`.
+A line of the term-line form in another place is no definition, and it adds no term to the list.
+That is a list item under another heading or under none, also in a block quote, a list item, a callout or a decision block.
+A list item in a footnote is one too, because a footnote stands in no part of `Terms`.
+A line in a code block or in a table cell is no such line.
+A reader takes such a line for a second definition when it names a defined term.
+So it breaks the form (rule `term-second-definition`, kind `term_line`) when a definition defines its name.
+That definition is a term of the list, or a term line under `Terms` of any document of the request, its own document included.
+The order of the documents in a request changes no answer.
+Its finding names the definition.
+It tells the writer to change the form of the line.
+If the line is a definition, it tells the writer to use the definition there or to change it.
+Two such lines of one name that no definition defines are prose, and they break nothing.
+This refusal helps an honest writer, and it has a limit.
+Dispatch refuses no such line while no definition defines its name, and it cannot see a later request.
+So a later definition of that name under `Terms` is approved, and the document with the line is refused at its next request.
+No program refuses a definition in prose, so the reviewer reads each statement for a term that it uses with another meaning.
+The name of a term is its bold text as the page shows it, so code font makes no second name: `` `lease` `` and `lease` are one term.
 After NFKC_Casefold, the name of a term holds only the letters a to z, the digits 0 to 9, spaces and hyphens.
-A name with another character breaks the form (rule `term-name`), and the finding names each such character with its code point.
-So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>` and `limit's wait`, and a full-width letter or a ligature folds to its plain letters.
+It holds at least one letter or digit.
+A name with another character, or with no letter and no digit, breaks the form (rule `term-name`).
+The finding names each such character with its code point.
+So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>`, `limit's wait` and an empty name.
+A full-width letter or a ligature folds to its plain letters.
+
+- When Dispatch cannot read a version: a browser edit through the socket of a document can store a version that today's parser refuses.
+  An earlier release can store one too.
+  Settlement stores the markdown of the editor's tree, and it does not read that markdown back.
+  An example is a footnote that the editor moves into a callout in a list item.
+  A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
+  So the agent's request, the person's Approve on the page and `dispatch spec-form` each show that finding and its way out.
+  Another approved document under the root whose latest approved version Dispatch cannot read refuses nothing.
+  Each answer names it in `unread`, one line for each.
+  A document that holds a definition is the exception, because no rule can compare the definition with the terms of that version.
+  Dispatch refuses its request with one finding of kind `document` and rule `unreadable` that names that approved document and its version.
+  No rule compares the texts of that version, so its component names are no nouns of the system.
+  Its terms are no part of the list either, and its line in `unread` says that the list can lack them.
+  The way out of both is a new version of that document, and for the approved document its approval.
+  Under a root, Dispatch refuses the approval of such a version.
+  So such an approved version comes from an approval outside a root or from an earlier release.
+  The page shows the `unread` lines only in a refusal, because the header and the cards of a request do not read the form.
+  When two such approved documents hold definitions, each one refuses the new version of the other that holds a definition.
+  So write the new version of one of them first with no definition, and the finding says so.
+  When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.
+  So the definition of another document can govern the term then, and no person approved that change.
+  The list reads no older version, so such a version refuses no request, and a new version changes nothing of it.
+  Each answer names that version in `unread`, with a line that says that it changes the order alone.
 
 The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
 Dispatch reads the latest version of each that a person approved, and leaves out the documents that it judges.
 Dispatch compares the names of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run of spaces as one space.
 That form removes the characters that show nothing, such as a zero-width space or a soft hyphen.
 The list holds one definition of each term.
-The root's `terms.md` comes first, then each other document in the order in which it joined the list.
-A document joins the list at the later of its first approval and the move that last brought its issue under the root.
+The root's `terms.md` comes first.
+Of the definitions of one term in other documents, the list holds the one that joined it first, and each definition has its own time.
+A definition joins the list at the later of two events.
+The first is the move that last brought its issue under the root.
+The second is the first approval of the earliest approved version of its document from which each later approved version holds the term.
+So a term that a later version adds joins at the approval of that version.
+A definition that a later version changes keeps its time.
 Dispatch reads that move from the events of the issues, which each release of Dispatch writes for each move.
 So the release that made a move changes no order, and a rollback to an earlier release changes none.
 The setting decides which issues are roots at each move, also at a move from before the setting named that root.
 Dispatch orders these by its events.
-Two documents that joined at one move come in the order of their first approvals.
+Two definitions that joined at one move come in the order of their approvals.
 So a move into the root or inside it changes no definition that the list holds.
 An approval from before the setting named the root changes none either.
 The read of the other document names the definition that the list holds as a finding.
@@ -4745,6 +4868,7 @@ A move into the root takes that lock before it writes its event.
 So two approvals under one root take turns, and the second one that defines a term of the first gets `409 SPEC_FORM`.
 While an earlier release serves beside this one, its move takes no lock.
 So its move and an approval at one time can join the list in either order.
+An earlier release also judges no approval, so an approval that it takes during a roll can put a second definition under the root.
 
 A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
 `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
@@ -4753,12 +4877,17 @@ A person's approval of a covered document gets the same refusal through three ro
 These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
 That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
 A request for changes is never refused.
-When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms}`.
-`texts` counts each kind of text that Dispatch read in the documents it judged.
+When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
+`texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
+A refusal writes each `unread` line before its last line.
 `terms` counts the terms of the root's list.
 A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
-A carry of an approval to a new version passes the same gate.
-So Dispatch carries no approval to a version whose text breaks the form, and the person's own Approve then gets the refusal.
+A carry of an approval to a new version passes the same gate, and it judges the same documents as the person's own Approve.
+These are the carried version and each other document of the open request, at the version that the request names.
+So Dispatch carries no approval to a version whose text breaks the form.
+It answers no request that names a document whose text breaks the form either.
+The person's own Approve then gets the refusal.
+A document service that has no gate, such as the one that a backfill command builds, carries no approval.
 An approval given outside a root was never judged, and it stays when its issue moves under the root.
 `GET /api/v1/artifacts/{id}/spec-form` shows the findings and the list of terms with no side effect.
 

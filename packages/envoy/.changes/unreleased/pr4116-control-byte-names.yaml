@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The value prompt's refusal of a control byte names the byte as well as its number (a Tab, an
+  Escape, a NUL, Ctrl-A, ...) and says where it came: at the start of the value, at the end, inside
+  it, or as the whole value. A Tab at the start or the end adds that a paste often adds one there,
+  as a copy out of a web page's table does. The value is still refused whole, never trimmed and
+  never stored, and the refusal says to enter it again without the byte, or to pipe it in where
+  the byte is part of the value, naming the command that does: `the control byte 0x09 cannot be
+  typed at the prompt: a Tab at the end of the value, where a paste often adds one. Nothing was
+  stored, and the value was not trimmed: enter it again without the Tab, or, if the Tab is part of
+  it, pipe the value in: agent-secrets secret create NAME ... < FILE`.

@@ -5,9 +5,11 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,14 +20,14 @@ import (
 // wireIntrospection is the route's answer as a caller reads it: RFC 7662's active flag and, for a
 // live token, the claims the broker knows.
 type wireIntrospection struct {
-	Active     bool   `json:"active"`
-	Session    string `json:"session"`
-	Person     string `json:"person"`
-	Project    string `json:"project"`
-	Scope      string `json:"scope"`
-	ExpiresAt  int64  `json:"exp"`
-	ClientID   string `json:"client_id"`
-	Thumbprint string `json:"jkt"`
+	Active     bool     `json:"active"`
+	Session    string   `json:"session"`
+	Person     string   `json:"person"`
+	Projects   []string `json:"projects"`
+	Scope      string   `json:"scope"`
+	ExpiresAt  int64    `json:"exp"`
+	ClientID   string   `json:"client_id"`
+	Thumbprint string   `json:"jkt"`
 }
 
 // introspect posts token to the introspection route as the listed caller does, answering the
@@ -75,7 +77,7 @@ func TestIntrospectionAnswersALiveTokenAndAnUnknownOne(t *testing.T) {
 	if status != http.StatusOK || answer.Active {
 		t.Fatalf("introspecting an unknown token = %d %+v, want 200 and not active", status, answer)
 	}
-	if answer != (wireIntrospection{}) {
+	if !reflect.DeepEqual(answer, wireIntrospection{}) {
 		t.Fatalf("an unknown token's answer = %+v, want nothing but active false", answer)
 	}
 }
@@ -89,7 +91,7 @@ func TestIntrospectionAnswersARevokedTokenAsNotLive(t *testing.T) {
 		t.Fatalf("revoke = %d: %s", status, body)
 	}
 	status, answer := introspect(t, rig, tok.AccessToken, rig.UIToken)
-	if status != http.StatusOK || answer != (wireIntrospection{}) {
+	if status != http.StatusOK || !reflect.DeepEqual(answer, wireIntrospection{}) {
 		t.Fatalf("introspecting a revoked token = %d %+v, want 200 and nothing but active false", status, answer)
 	}
 }
@@ -124,6 +126,39 @@ func TestIntrospectionAnswersAStorageOutage503(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusServiceUnavailable || refusal.Code != "DATABASE_UNAVAILABLE" {
 		t.Fatalf("introspecting a live token with the store closed = %d %+v, want 503 DATABASE_UNAVAILABLE, not a confident negative", response.StatusCode, refusal)
+	}
+}
+
+// TestIntrospectionAnswersAMalformedStoredClaimAsSuch: a token row whose stored projects claim is
+// not its string is no outage, so it is not answered 503 DATABASE_UNAVAILABLE, which would point
+// an operator at the database: it is answered 500 STORED_CLAIM_MALFORMED, naming the launcher
+// credential whose token it is.
+func TestIntrospectionAnswersAMalformedStoredClaimAsSuch(t *testing.T) {
+	rig := brokertest.NewRig(t)
+	_, tok, credentialID := approvedLogin(t, rig)
+	tag, err := rig.Store.Pool.Exec(context.Background(), `update oauth_access_tokens
+		set request = jsonb_set(request, '{session,extra,projects}', '["ACME"]') where credential_id = $1`, credentialID)
+	if err != nil || tag.RowsAffected() == 0 {
+		t.Fatalf("rewrite the token's row: %v, %d rows", err, tag.RowsAffected())
+	}
+	form := url.Values{"token": {tok.AccessToken}}
+	request, err := http.NewRequest(http.MethodPost, rig.URL+"/v1/oauth/introspect", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Authorization", "Bearer "+rig.UIToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST /v1/oauth/introspect: %v", err)
+	}
+	defer response.Body.Close()
+	var refusal wireError
+	if err := json.NewDecoder(response.Body).Decode(&refusal); err != nil {
+		t.Fatalf("decode the answer: %v", err)
+	}
+	if response.StatusCode != http.StatusInternalServerError || refusal.Code != "STORED_CLAIM_MALFORMED" || !strings.Contains(refusal.Error, credentialID) {
+		t.Fatalf("introspecting a token whose stored projects claim is a list = %d %+v, want 500 STORED_CLAIM_MALFORMED naming the credential %s", response.StatusCode, refusal, credentialID)
 	}
 }
 
