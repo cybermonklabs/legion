@@ -338,11 +338,21 @@ async function expectMadeTitles(
       continue;
     }
     for (const each of await scope.locator(selector(link)).all()) {
-      const shown = (await each.textContent()) ?? "";
-      const opening = shown.endsWith("…") ? shown.slice(0, -1) : shown;
-      expect(title.startsWith(opening) && (shown === title || shown.endsWith("…")), {
-        message: `${rowName(item)}: ${link} reads ${JSON.stringify(shown)}, not ${JSON.stringify(title)}`,
-      }).toBe(true);
+      // A reference is drawn before its target's title reaches it, so what it reads is polled
+      // until it is the title or the title's opening. The poll answers the title for either,
+      // and otherwise what the reference shows, which is what a failure prints.
+      await expect
+        .poll(
+          async () => {
+            const shown = (await each.textContent()) ?? "";
+            const opening = shown.endsWith("…") ? shown.slice(0, -1) : shown;
+            return title.startsWith(opening) && (shown === title || shown.endsWith("…"))
+              ? title
+              : shown;
+          },
+          { message: `${rowName(item)}: ${link} reads as its title or the title's opening` }
+        )
+        .toBe(title);
     }
   }
 }

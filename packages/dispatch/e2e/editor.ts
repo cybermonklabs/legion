@@ -320,19 +320,6 @@ export function needsYouCards(page: Page): Locator {
   return page.locator('[data-margin-section="needs-you"]');
 }
 
-export async function replyInThread(page: Page, rootId: string, body: string): Promise<void> {
-  const card = threadCard(page, rootId);
-  if ((await card.getAttribute("aria-expanded")) !== "true") {
-    await card.getByRole("button").click();
-  }
-  const phoneThread = page.getByRole("dialog", { name: "Thread" });
-  const thread = (await phoneThread.count()) === 0 ? card : phoneThread;
-  const composer = thread.getByRole("form", { name: "Comment composer" });
-  const reply = composer.getByRole("textbox", { name: "Reply" });
-  await reply.fill(body);
-  await reply.press("Control+Enter");
-  await expect(composer.getByRole("textbox", { name: "Reply" })).toHaveValue("");
-}
 /** Document sockets the page has opened since the call, open or closed: every document's, or with
  *  `documentId` that document's alone, for a page that holds another document beside it. */
 export function countDocumentSockets(page: Page, documentId?: string): () => number {

@@ -15,6 +15,7 @@ import {
 import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { sql } from "./psql";
+import { settledState } from "./settled";
 import { expect, test } from "./test";
 
 // @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
@@ -255,10 +256,17 @@ test("an answered decision keeps its backlink control and still moves with a lat
   await expect(card.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible(live);
 
   const note = card.getByRole("button", { name: "Add a note or answer in your own words" });
-  if ((await note.count()) > 0) {
+  const answer = card.getByLabel("Your answer");
+  // A compact card folds its answer box behind that disclosure, so the row opens it only where
+  // the card drew it folded. The box is read first, since the disclosure stays once it is open.
+  const answerBox = await settledState("the decision's answer box", [
+    ["shown", answer],
+    ["folded", note],
+  ]);
+  if (answerBox === "folded") {
     await note.click();
   }
-  await card.getByLabel("Your answer").fill("Ship it.");
+  await answer.fill("Ship it.");
   await card.getByRole("button", { exact: true, name: "Answer" }).click();
   await expect(card).toContainText("Ship it.", live);
   // The answer response is the one ask shape that carries no count: the control the reader was

@@ -9,6 +9,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
+import { settledState } from "./settled";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -93,7 +94,13 @@ test("an Agents row send refused while the reader is on the Inbox is there on th
     await refused;
     await openFromSidebar(page, "Agents");
     const planner = row.getByRole("button", { exact: true, name: "Planner" });
-    if ((await planner.getAttribute("aria-expanded")) !== "true") await planner.click();
+    // The page draws the row open or folded, so it reads which once the row has drawn, and opens
+    // it only where it came back folded.
+    const fold = await settledState("the Planner row", [
+      ["open", row.getByRole("button", { exact: true, expanded: true, name: "Planner" })],
+      ["folded", row.getByRole("button", { exact: true, expanded: false, name: "Planner" })],
+    ]);
+    if (fold === "folded") await planner.click();
     await expect(row.getByText(`Couldn't send — ${MESSAGE_REFUSED.error}`)).toBeVisible();
     await expect(field).toHaveValue("Status please");
   } finally {

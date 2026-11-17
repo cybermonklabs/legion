@@ -25,6 +25,7 @@ import {
   unreadThreadRows,
 } from "./inbox-threads";
 import { refusePosts, WRITE_REFUSED } from "./sends";
+import { settledState } from "./settled";
 import { type BrowserContext, expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -166,10 +167,17 @@ async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
 /** Picks one choice of the **View** menu's **Show** section and shuts the menu again. */
 async function chooseShow(page: Page, label: string): Promise<void> {
   const menu = page.getByRole("menu", { name: "View" });
-  if ((await menu.count()) === 0) await page.locator("[data-inbox-view]").click();
+  const trigger = page.locator("[data-inbox-view]");
+  // The trigger says whether the menu is open, and is read once the bar has drawn it: a page
+  // still loading draws neither the menu nor its trigger.
+  const states = [
+    ["open", page.locator('[data-inbox-view][aria-expanded="true"]')],
+    ["shut", page.locator('[data-inbox-view][aria-expanded="false"]')],
+  ] as const;
+  if ((await settledState("the View menu", states)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await menu.count()) !== 0) await page.locator("[data-inbox-view]").click();
+  if ((await settledState("the View menu", states)) === "open") await trigger.click();
   await expect(menu).toHaveCount(0);
 }
 
