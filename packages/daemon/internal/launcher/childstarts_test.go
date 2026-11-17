@@ -84,21 +84,24 @@ var heldStarts = map[string]heldStart{
 // rules of its own for callbacks. A call the standard library makes through a function value or an
 // interface is not followed, since what the standard library calls back is only what it was
 // handed; instead, every function value, closure and method set that walked code outside the
-// standard library hands out is walked as though it were called, and so is every function stored,
-// anywhere in the program, into a package variable walked code reads. Without the first rule a
-// callback inside sync.Once or fmt reaches every function of the same signature in the program;
-// without the second, a start handed to the standard library (a goroutine's body, a
-// context.AfterFunc callback, an http.Handler) would go unread.
+// standard library hands out is walked as though it were called, and so is every function a store
+// anywhere in the program writes into a package variable, or a field or element of one, that
+// walked code reads (storedFunctions). Without the first rule a callback inside sync.Once or fmt
+// reaches every function of the same signature in the program; without the second, a start handed
+// to the standard library (a goroutine's body, a context.AfterFunc callback, an io.Writer given to
+// fmt) would go unread.
 //
 // It cannot pass by reading nothing, nor with a rule of its own broken: its control plants starts
 // the launcher would reach, and must see each named (plantedStarts): a bare cmd.Run in
 // newCheckInstall; one in a package variable's function that newCheckInstall hands to
 // context.AfterFunc; procgroup.NoReaper given to the workspace restore in place of the guard's
 // starter; the install's run of the check as it was before the guard took it (a bare cmd.Run in
-// leakguard.verifyServed); a closure only sync.Once.Do calls; and a start made through each other
+// leakguard.verifyServed); a closure only sync.Once.Do calls; a start made through each other
 // shape Go gives it: a method value called, a method value handed to a helper, to errgroup.Go and
 // to sync.OnceValue, a method expression, and a method promoted from an embedded *exec.Cmd and
-// called through an interface.
+// called through an interface; a writer only fmt calls; a method value stored in a package
+// variable; and functions an init stores into a package variable's field and element. And a
+// command only formatted, which starts nothing, must stay unnamed.
 func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testing.T) {
 	t.Run("this tree", func(t *testing.T) {
 		sites := map[string][]processStart{}
@@ -155,6 +158,10 @@ func TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt(t *testin
 			{"a method value handed to sync.OnceValue", launcherPackage + ".plantedOnceValue"},
 			{"a method expression", launcherPackage + ".plantedMethodExpression"},
 			{"a method promoted from an embedded *exec.Cmd, called through an interface", launcherPackage + ".plantedPromoted"},
+			{"a writer handed to fmt.Fprint as an io.Writer", "(" + launcherPackage + ".plantedWriter).Write"},
+			{"a method value stored in a package variable", launcherPackage + ".plantedStoredBound"},
+			{"a function stored into a package variable's field in an init", launcherPackage + ".init#1$1"},
+			{"a function stored into a package variable's element in an init", launcherPackage + ".init#1$2"},
 		} {
 			// Every start the walk answers is a process start, a promoted method's wrapper
 			// included, whose own name is its receiver's, so a row is matched by its caller.
@@ -197,6 +204,9 @@ func plantedStarts() {
 	plantedMethodExpression()
 	plantedPromoted()
 	plantedFormatted()
+	plantedInterfaceHanded()
+	plantedStoredBound()
+	plantedFieldStored()
 }
 
 func plantedFormatted() { _ = fmt.Sprint(exec.Command("/bin/true")) }
@@ -233,6 +243,34 @@ type plantedEmbedded struct{ *exec.Cmd }
 func plantedPromoted() {
 	var runner interface{ Run() error } = plantedEmbedded{exec.Command("/bin/true")}
 	_ = runner.Run()
+}
+
+type plantedWriter struct{}
+
+func (plantedWriter) Write(p []byte) (int, error) {
+	_ = exec.Command("/bin/true").Run()
+	return len(p), nil
+}
+
+func plantedInterfaceHanded() { fmt.Fprint(plantedWriter{}, "x") }
+
+var plantedBound = exec.Command("/bin/true").Run
+
+func plantedStoredBound() { _ = sync.OnceValue(plantedBound)() }
+
+var plantedTable struct{ onStart func() }
+
+var plantedArray [1]func()
+
+func init() {
+	plantedTable.onStart = func() { _ = exec.Command("/bin/true").Run() }
+	plantedArray[0] = func() { _ = exec.Command("/bin/false").Run() }
+}
+
+func plantedFieldStored() {
+	var once, again sync.Once
+	once.Do(plantedTable.onStart)
+	again.Do(plantedArray[0])
 }
 `
 
@@ -342,9 +380,11 @@ func launcherProcessStarts(t *testing.T, overlay map[string][]byte) []processSta
 	return slices.CompactFunc(starts, func(a, b processStart) bool { return a.String() == b.String() })
 }
 
-// storedFunctions is every function value stored, anywhere in the program, into a package
-// variable or a field or element of one (a package variable's initializer is such a store, in its
-// package's init), by that variable.
+// storedFunctions is every function value and closure that a Store anywhere in the program writes
+// directly into a package variable, or into a field or element of one (a package variable's
+// initializer is such a store, in its package's init), by that variable. A function that reaches a
+// package variable another way is not here: in a map or struct literal, through a pointer to the
+// variable, inside a struct stored whole, put into an interface first, or sent on a channel.
 func storedFunctions(functions map[*ssa.Function]bool) map[*ssa.Global][]*ssa.Function {
 	stored := map[*ssa.Global][]*ssa.Function{}
 	for fn := range functions {
@@ -510,12 +550,13 @@ func standardLibrary(fn *ssa.Function) bool {
 	return !strings.Contains(first, ".")
 }
 
-// siteOf is where pos is, as a path relative to the module and a line.
+// siteOf is where pos is, as a path relative to the module, a line and a column, so two starts on
+// one line are two call sites.
 func siteOf(fset *token.FileSet, pos token.Pos) string {
 	position := fset.Position(pos)
 	file := position.Filename
 	if i := strings.Index(file, "/packages/daemon/"); i >= 0 {
 		file = file[i+len("/packages/daemon/"):]
 	}
-	return file + ":" + strconv.Itoa(position.Line)
+	return file + ":" + strconv.Itoa(position.Line) + ":" + strconv.Itoa(position.Column)
 }
