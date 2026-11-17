@@ -62,7 +62,7 @@ func TestAMissingBucketDoesNotHideAnotherFailureFromHealthz(t *testing.T) {
 	if err := client.JS().DeleteKeyValue(bus.SessionBucket); err != nil {
 		t.Fatalf("delete the session bucket: %v", err)
 	}
-	checkCopiedBuckets(logging.NewWithWriter("test-machine", &cmdtest.LockedBuffer{}), client.JS(), listenerCopiedBuckets(false), missing)
+	checkCopiedBuckets(context.Background(), logging.NewWithWriter("test-machine", &cmdtest.LockedBuffer{}), client.JS(), listenerCopiedBuckets(false), missing)
 	if code, body := get(); code != http.StatusOK || body["status"] != "degraded" || !strings.Contains(body["error"].(string), bus.SessionBucket) {
 		t.Fatalf("/healthz with the session bucket missing and every other check passing = %d %v, want 200 degraded naming %s", code, body, bus.SessionBucket)
 	}

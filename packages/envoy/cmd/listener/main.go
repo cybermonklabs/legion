@@ -1837,7 +1837,7 @@ func main() {
 				// bucket is gone is left out of the checks and the rebuild (bucketMissing), and
 				// logs missingBucketLine for the alarm while it stays gone. A read that fails
 				// keeps that bucket's last result (checkCopiedBuckets).
-				checkCopiedBuckets(logger, client.JS(), listenerCopiedBuckets(ciStore != nil), missing)
+				checkCopiedBuckets(monitorCtx, logger, client.JS(), listenerCopiedBuckets(ciStore != nil), missing)
 				if err := checkSelfHealth(caches, probeDurable); err != nil {
 					return err
 				}

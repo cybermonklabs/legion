@@ -163,19 +163,28 @@ func (r bucketReads) err() error {
 	return errors.Join(errs...)
 }
 
-// readBuckets asks the server for each bucket's stream, within bucketCheckTimeout each
-// (knownBucketCheckTimeout for the known-session bucket).
-func readBuckets(js nats.JetStreamContext, buckets []string) bucketReads {
-	reads := bucketReads{unread: map[string]error{}}
-	for _, bucket := range buckets {
+// readBuckets asks the server for every bucket's stream at once, within bucketCheckTimeout each
+// (knownBucketCheckTimeout for the known-session bucket) and never past ctx, so the shutdown's
+// monitorCancel ends a tick's reads on a hub that does not answer and a stalled hub costs one
+// read's timeout, not one per bucket. The reads come back in the order of buckets.
+func readBuckets(ctx context.Context, js nats.JetStreamContext, buckets []string) bucketReads {
+	errs := make([]error, len(buckets))
+	var wg sync.WaitGroup
+	for i, bucket := range buckets {
 		timeout := bucketCheckTimeout
 		if bucket == bus.KnownSessionBucket {
 			timeout = knownBucketCheckTimeout
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		_, err := js.StreamInfo("KV_"+bucket, nats.Context(ctx))
-		cancel()
-		switch {
+		wg.Go(func() {
+			readCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			_, errs[i] = js.StreamInfo("KV_"+bucket, nats.Context(readCtx))
+		})
+	}
+	wg.Wait()
+	reads := bucketReads{unread: map[string]error{}}
+	for i, bucket := range buckets {
+		switch err := errs[i]; {
 		case err == nil:
 			reads.present = append(reads.present, bucket)
 		case errors.Is(err, nats.ErrStreamNotFound):
@@ -190,9 +199,12 @@ func readBuckets(js nats.JetStreamContext, buckets []string) bucketReads {
 // checkCopiedBuckets is the self-health monitor's read of the copied buckets, each tick: it reads
 // every bucket, applies the reads to missing, and logs missingBucketLine for every bucket missing
 // holds - one this read could not read included, so the alarm keeps firing until a read finds the
-// bucket present.
-func checkCopiedBuckets(logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) {
-	reads := readBuckets(js, buckets)
+// bucket present. A tick ctx ended (the shutdown) says nothing and logs nothing.
+func checkCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) {
+	reads := readBuckets(ctx, js, buckets)
+	if ctx.Err() != nil {
+		return
+	}
 	missing.observe(reads)
 	logMissingBuckets(logger, missing.list())
 	if err := reads.err(); err != nil {
@@ -223,7 +235,10 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
 	var logged time.Time
 	for {
-		reads := readBuckets(js, buckets)
+		reads := readBuckets(ctx, js, buckets)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		missing.observe(reads)
 		if _, ungranted := reads.unread[bus.KnownSessionBucket]; ungranted {
 			delete(reads.unread, bus.KnownSessionBucket)
