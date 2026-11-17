@@ -850,18 +850,19 @@ func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 // post-sweep low point: anchored there, the ordinary growth from the low point back to the high
 // mark would read as a five-point deterioration and wake the architect on every cycle.
 func (t *trimmer) riseAt(start float64) {
-	switch floor := min(t.lastStart, start); {
+	prev := t.lastStart
+	t.lastStart = start
+	switch floor := min(prev, start); {
 	case !t.anchored:
 		t.anchor, t.anchored = start, true
 	case floor >= t.anchor+volumeRisePoints:
 		anchor := t.anchor
 		t.episode, t.raisedBy, t.anchor = t.episode+1, shimwire.VolumeEpisodeRise, floor
 		t.logf(volumeTrimLog+"episode %d (%s): the floor of the last two reported sweep starts, %.1f%% and %.1f%%, is %.1f%%, %.1f points above the %.1f%% the last episode was anchored at, where %.0f points raise a new episode",
-			t.episode, t.raisedBy, t.lastStart, start, floor, floor-anchor, anchor, volumeRisePoints)
+			t.episode, t.raisedBy, prev, start, floor, floor-anchor, anchor, volumeRisePoints)
 	case t.raisedBy != shimwire.VolumeEpisodeRise:
 		t.anchor = min(t.anchor, start)
 	}
-	t.lastStart = start
 }
 
 // faultRow is a kind of the trimmer's work, which counts its own row of recovered panics toward

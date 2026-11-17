@@ -142,6 +142,128 @@ func TestThreeReadingPanicsInARowSwitchTheTrimmerOffApartFromTheSweepRow(t *test
 	}
 }
 
+// A panic of a sweep's work leaves the readings' work to follow it (fault, doing), so a reading
+// that panics after a report whose send panicked adds to the reading row and not to the sweep
+// row: R1 as the architect's comment ccc812fc on INFRA-2009 words it, "A panic in a reading adds
+// to the reading row". tick sets nothing before its reading (flush, intervalReading), so that
+// reading's panic is counted in the row the fault before it left in force. The case's one sweep
+// frees nothing and pauses, the send of its report panics, and the first two readings of its
+// pause panic too: the trimmer counts the first panic in the sweep row and the other two in the
+// reading row, and stays on. The negative control is a copy of fault that leaves doing as the
+// panic found it, under which the two reading panics are the second and the third of the sweep
+// row and switch the trimmer off.
+func TestTwoReadingPanicsAfterAReportsPanicAreCountedInTheReadingRow(t *testing.T) {
+	const fell = "the connection fell over sending the report"
+	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing, reports and pauses
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	// The sweep's reading is the first, and the first two of its pause, the second and the third, panic.
+	f.setOnRead(func(call int) {
+		if call == 2 || call == 3 {
+			panic(fmt.Sprintf("the volume reader fell over on call %d", call))
+		}
+	})
+	tr := f.trimmer()
+	tr.send = func(report shimwire.LauncherVolumeReport) error {
+		if !report.SwitchedOff {
+			panic(fell)
+		}
+		return f.send(report)
+	}
+	_, done := f.start(tr)
+
+	for at, row := range []string{"(1 in a row of sweeps and reports)", "(1 in a row of readings)", "(2 in a row of readings)"} {
+		f.tick("recovered a panic")
+		if f.logged(row) != 1 {
+			t.Fatalf("after panic %d the trimmer wrote %q, want it counted %s: a reading's panic after the report's adds to the reading row",
+				at+1, f.linesWritten(), row)
+		}
+		if f.logged("off for the life of this launcher process") != 0 {
+			t.Fatalf("the trimmer switched itself off at panic %d, want it on: neither row holds three", at+1)
+		}
+	}
+	f.tick("no sweep for another") // the third reading of the pause, which runs to its end
+	select {
+	case <-done:
+		t.Fatal("the trimmer's loop returned, want it still reading the volume")
+	default:
+	}
+	if sent := len(f.reports()); sent != 0 {
+		t.Errorf("the trimmer sent %d reports, want none: its one report panicked and it never switched itself off", sent)
+	}
+}
+
+// The same holds where every fault's line panics, which only the logger can raise. fault counts
+// the panic before it writes its line, so it never reaches the end where it puts the readings'
+// work back (fault), and run puts it back once that line's panic reaches it, before it starts the
+// loop again from the wait for settings (run). The case's one sweep frees nothing and pauses, the
+// send of its report panics, and the logger writes each fault line and then panics: tick's
+// handler counts the report's panic as the first of the sweep row, run counts its line's as the
+// second, drops the panic of its own line and starts the loop again. The first reading of the
+// pause then panics, and it and its line's panic are the first and the second of the reading row;
+// the loop starts again and reads the volume at its next tick, in the pause. The negative control
+// is a copy of run that does not put the readings' work back, under which the reading's panic and
+// its line's are the third and the fourth of the sweep row and switch the trimmer off.
+func TestAReadingPanicAfterAReportsPanicCountsInTheReadingRowThoughEveryFaultLinePanics(t *testing.T) {
+	const fell = "the connection fell over sending the report"
+	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing, reports and pauses
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	// The sweep's reading is the first, and the first of its pause, the second, panics.
+	f.setOnRead(func(call int) {
+		if call == 2 {
+			panic(fmt.Sprintf("the volume reader fell over on call %d", call))
+		}
+	})
+	tr := f.trimmer()
+	tr.send = func(report shimwire.LauncherVolumeReport) error {
+		if !report.SwitchedOff {
+			panic(fell)
+		}
+		return f.send(report)
+	}
+	// The logger writes each fault line before it panics, so the case reads the row each panic
+	// was counted in.
+	tr.logf = func(format string, args ...any) {
+		f.log(format, args...)
+		if strings.Contains(format, "recovered a panic") {
+			panic("the log fell over writing the line of a fault")
+		}
+	}
+	_, done := f.start(tr)
+	testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+
+	f.tick("started:") // the report's panic and its line's, after which the loop starts again
+	for _, row := range []string{"(1 in a row of sweeps and reports)", "(2 in a row of sweeps and reports)"} {
+		if f.logged(row) != 1 {
+			t.Fatalf("after the report's panic the trimmer wrote %q, want it or its line's panic counted %s", f.linesWritten(), row)
+		}
+	}
+
+	f.tick("recovered a panic") // the reading's panic, then its line's
+	testwait.Eventually(t, "the loop to start again or the trimmer to switch itself off", func() bool {
+		return f.logged("started:") == 3 || f.logged("off for the life of this launcher process") != 0
+	})
+	for _, row := range []string{"(1 in a row of readings)", "(2 in a row of readings)"} {
+		if f.logged(row) != 1 {
+			t.Fatalf("after the reading's panic the trimmer wrote %q, want it or its line's panic counted %s: run puts the readings' work back after a fault whose line panicked",
+				f.linesWritten(), row)
+		}
+	}
+	if f.logged("off for the life of this launcher process") != 0 {
+		t.Fatalf("the trimmer switched itself off, want its loop started again from the wait for settings: neither row holds three")
+	}
+	f.tick("no sweep for another") // the next reading, the pause's, which runs to its end
+	select {
+	case <-done:
+		t.Fatal("the trimmer's loop returned, want it still reading the volume")
+	default:
+	}
+	if sent := len(f.reports()); sent != 0 {
+		t.Errorf("the trimmer sent %d reports, want none: its one report panicked and it never switched itself off", sent)
+	}
+}
+
 // A sweep the settings stopped ends the sweep row as a sweep run to its end with its report does
 // (tick): it ran without a fault, and it makes no report. The case's first two sweeps free
 // nothing and pause, and the send of each one's report panics, which puts the sweep row at two;
@@ -388,6 +510,52 @@ func TestAReportedSweepWhoseFirstLineAfterItPanicsHasBeenReadForARise(t *testing
 	assertRises(t, f, "the floor of the last two reported sweep starts, 91.0% and 92.0%, is 91.0%, 5.0 points above the 86.0%")
 	if faults := f.reports()[1].Faults; len(faults) != 1 || !strings.HasPrefix(faults[0], fell) {
 		t.Errorf("the report carries the faults %q, want the panic of the second sweep's line", faults)
+	}
+}
+
+// A reported sweep's start is recorded before the line of the rise it raises (riseAt), so a rise
+// whose line panics, which only the logger can raise, leaves that sweep's start the first of the
+// two the next rise reads, as the texts that define a reported sweep say of every line about it.
+// The sweeps start at 86%, 91%, 97%, 97% and 97%, and the rise line of the third panics, once:
+// the 86% anchors episode 1, the 91% pairs with the third sweep's 97% for a floor of 91%, which
+// raises episode 2 and anchors it there, and the fourth sweep's 97% pairs with the third's for a
+// floor of 97%, six points above, which raises episode 3; the fifth raises nothing. At 339f0681
+// riseAt recorded the start only after that line, so its panic left the 91% in the third's place:
+// the fourth sweep paired with the 91% and raised nothing, and the rise came one reported sweep
+// late, at the fifth.
+func TestARiseWhoseLinePanicsHasRecordedItsStartForTheNextRise(t *testing.T) {
+	const fell = "the log fell over writing the line of a rise"
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing and takes no reading of its own
+	f.useVolume(script(86, 91, 97, 97, 97))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	var fallen atomic.Bool
+	tr.logf = func(format string, args ...any) {
+		if strings.Contains(format, "the floor of the last two reported sweep starts") && fallen.CompareAndSwap(false, true) {
+			panic(fell)
+		}
+		f.log(format, args...)
+	}
+	set := *trimSettings()
+	for sweep := range 5 {
+		tr.pause = 0 // the pause after a sweep that freed nothing (tick), which would hold off the next sweep
+		if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+			t.Fatalf("sweep %d ended the trimmer (%v), want it passed over at worst", sweep+1, ending)
+		}
+	}
+	if faults := f.logged("recovered a panic"); faults != 1 || !strings.Contains(strings.Join(f.linesWritten(), "\n"), fell) {
+		t.Fatalf("the trimmer wrote %q, want the rise line of the third sweep fallen over and recovered", f.linesWritten())
+	}
+
+	assertReportEpisodes(t, f, []reportEpisode{
+		{1, shimwire.VolumeEpisodeFirst}, // from 86%: anchors episode 1 at 86%
+		{1, shimwire.VolumeEpisodeFirst}, // from 91%, after the 86%: a floor of 86%, no rise
+		{3, shimwire.VolumeEpisodeRise},  // from 97%, after the 97% whose rise line panicked: a floor of 97%, the next rise
+		{3, shimwire.VolumeEpisodeRise},  // from 97%, after the 97%: a floor of 97%, no rise
+	})
+	assertRises(t, f, "the floor of the last two reported sweep starts, 97.0% and 97.0%, is 97.0%, 6.0 points above the 91.0%")
+	if faults := f.reports()[2].Faults; len(faults) != 1 || !strings.HasPrefix(faults[0], fell) {
+		t.Errorf("the report carries the faults %q, want the panic of the third sweep's rise line", faults)
 	}
 }
 
