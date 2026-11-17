@@ -20,6 +20,10 @@
 //   - Hosts, for each --host, through ssh (or --ssh, a program taking ssh's arguments): no process
 //     on the host is named envoy-listener (or envoy-dispatch). An unreachable host blocks, and so
 //     does a query that did not run to its end or enumerated no process at all.
+//   - This machine, with --this-machine: the same query, run here through sh with no ssh, read and
+//     judged as a host's. In a container it reads the processes the container's PID namespace
+//     holds, so it proves the machine only where the container shares the machine's (docker's
+//     --pid host, compose's pid: host); the single-node compose file runs it so.
 //   - The census, for each --connz (a hub server's monitoring URL): no connection named as a
 //     writer's is open. It can only add a blocker: an empty census proves no process absent.
 //
@@ -125,7 +129,7 @@ func Grant() (publish, subscribe []string) {
 // TestBestEffort...). A break-glass create takes no proof, and its run needs no writer stopped
 // (breakGlassCreate), so the warning and its instruction are not its to print.
 const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it four ways:
-  - an omitted host or dev box: only the --kube-context and --host you name are checked;
+  - an omitted host or dev box: only the --kube-context, --host and --this-machine you name are checked;
   - a renamed binary: a host is checked by process name (envoy-listener, listener, dispatch, ...);
   - a writer that starts between the final scan and the create: nothing holds writers out;
   - an unheld restore: check holds nothing through a later nats stream restore.
@@ -145,7 +149,9 @@ The writers are every envoy-listener of the deployment, and every envoy-dispatch
 bucket is among the buckets. The proof is required before anything changes:
   --kube-context CTX   a Kubernetes context to check, repeatable ("" is kubectl's current one)
   --host TARGET        a machine to query through ssh, repeatable
-  --ssh PROGRAM        the program run as ssh (default ssh), such as a wrapper over SSM
+  --this-machine       the machine the command runs on, queried here with no ssh; in a container
+                       it sees the machine's processes only with the machine's PID namespace
+                       (docker --pid host, compose pid: host)
   --connz URL          a hub server's monitoring URL whose connections to read, repeatable
   --first-deployment   also require that the server holds no notification stream and no bucket
 
@@ -189,6 +195,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	replicas := 0
 	flags.Var((*stringList)(&f.kubeContexts), "kube-context", "a Kubernetes context to check")
 	flags.Var((*stringList)(&f.hosts), "host", "a machine to query through ssh")
+	flags.BoolVar(&f.thisMachine, "this-machine", false, "the machine the command runs on, queried with no ssh")
 	flags.StringVar(&f.ssh, "ssh", "ssh", "the program run as ssh")
 	flags.Var((*stringList)(&f.connz), "connz", "a hub server's monitoring URL")
 	flags.BoolVar(&f.firstDeployment, "first-deployment", false, "the server has never served a listener")
@@ -254,8 +261,8 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	if breakGlass {
 		return breakGlassCreate(stdout, stderr, natsURL, operator, buckets, replicas)
 	}
-	if len(f.kubeContexts) == 0 && len(f.hosts) == 0 {
-		fmt.Fprintln(stderr, "envoy-infra buckets: name every place a writer of the deployment runs: --kube-context for each cluster and --host for each machine; --first-deployment proves no writer absent and needs them too")
+	if len(f.kubeContexts) == 0 && len(f.hosts) == 0 && !f.thisMachine {
+		fmt.Fprintln(stderr, "envoy-infra buckets: name every place a writer of the deployment runs: --kube-context for each cluster, --host for each machine and --this-machine for the one the command runs on; --first-deployment proves no writer absent and needs them too")
 		return 2
 	}
 	f.run, f.http = run, client
@@ -343,7 +350,7 @@ func breakGlassUsage(flags *flag.FlagSet, action string, breakGlass bool, operat
 	var proof []string
 	flags.Visit(func(set *flag.Flag) {
 		switch set.Name {
-		case "kube-context", "host", "ssh", "connz", "first-deployment":
+		case "kube-context", "host", "this-machine", "ssh", "connz", "first-deployment":
 			proof = append(proof, "--"+set.Name)
 		}
 	})
@@ -421,8 +428,10 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 
 // fence is the proof that no writer of the buckets runs.
 type fence struct {
-	kubeContexts    []string
-	hosts           []string
+	kubeContexts []string
+	hosts        []string
+	// thisMachine queries the machine the command runs on, through sh rather than ssh.
+	thisMachine     bool
 	ssh             string
 	connz           []string
 	firstDeployment bool
@@ -487,6 +496,9 @@ func (f fence) prove(ctx context.Context, out io.Writer, js nats.JetStreamContex
 	}
 	for _, host := range f.hosts {
 		blockers = append(blockers, f.proveHost(ctx, out, host)...)
+	}
+	if f.thisMachine {
+		blockers = append(blockers, f.proveThisMachine(ctx, out)...)
 	}
 	for _, monitor := range f.connz {
 		blockers = append(blockers, f.census(ctx, out, monitor)...)
@@ -656,28 +668,44 @@ func hostQuery(names []string) string {
 		strings.Join(names, "|") + `) echo "${d#/proc/} $c";; esac; done; echo "processes=$n"; echo ` + hostQueryDone
 }
 
-// proveHost proves that no writer process runs on host: the query ran to its end, read at least
-// one process, and found none named as a writer.
+// proveHost proves that no writer process runs on host, through ssh: the query ran to its end, read
+// at least one process, and found none named as a writer (processBlockers).
 func (f fence) proveHost(ctx context.Context, out io.Writer, host string) []string {
-	names := f.writerProcesses()
-	raw, err := f.call(ctx, f.ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, hostQuery(names))
+	raw, err := f.call(ctx, f.ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, hostQuery(f.writerProcesses()))
 	if err != nil {
 		return []string{fmt.Sprintf("host %s: unreachable or the query failed: %v", host, err)}
 	}
+	return f.processBlockers(out, "host "+host, raw)
+}
+
+// proveThisMachine proves that no writer process runs on the machine the command runs on: the host
+// query, run here through sh, judged as a host's (processBlockers). In a container it reads only
+// the PID namespace the container holds, which is the machine's with docker's --pid host.
+func (f fence) proveThisMachine(ctx context.Context, out io.Writer) []string {
+	raw, err := f.call(ctx, "sh", "-c", hostQuery(f.writerProcesses()))
+	if err != nil {
+		return []string{fmt.Sprintf("this machine: the query failed: %v", err)}
+	}
+	return f.processBlockers(out, "this machine", raw)
+}
+
+// processBlockers judges raw, what the host query printed on place: it blocks unless the query ran
+// to its end and read at least one process, and on each process named as a writer.
+func (f fence) processBlockers(out io.Writer, place string, raw []byte) []string {
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) < 2 || lines[len(lines)-1] != hostQueryDone {
-		return []string{fmt.Sprintf("host %s: the query did not run to its end: %q", host, string(raw))}
+		return []string{fmt.Sprintf("%s: the query did not run to its end: %q", place, string(raw))}
 	}
 	count, err := strconv.Atoi(strings.TrimPrefix(lines[len(lines)-2], "processes="))
 	if err != nil || count == 0 {
-		return []string{fmt.Sprintf("host %s: the query read no process at all, so it proves nothing: %q", host, string(raw))}
+		return []string{fmt.Sprintf("%s: the query read no process at all, so it proves nothing: %q", place, string(raw))}
 	}
 	var blockers []string
 	for _, line := range lines[:len(lines)-2] {
-		blockers = append(blockers, fmt.Sprintf("host %s: process %s runs", host, line))
+		blockers = append(blockers, fmt.Sprintf("%s: process %s runs", place, line))
 	}
 	if len(blockers) == 0 {
-		fmt.Fprintf(out, "proven: host %s: none of its %d processes is %s\n", host, count, strings.Join(names, " or "))
+		fmt.Fprintf(out, "proven: %s: none of its %d processes is %s\n", place, count, strings.Join(f.writerProcesses(), " or "))
 	}
 	return blockers
 }

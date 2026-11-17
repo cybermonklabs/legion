@@ -25,8 +25,9 @@ import (
 )
 
 // world is what the fake kubectl and ssh answer: the pods the API lists, each node's runtime list
-// (or the error reading it), and each host query's output. hostAnswers is consumed in order, so a
-// test can make the second proof differ from the first.
+// (or the error reading it), and each host query's output, this machine's (--this-machine, run
+// through sh) under the key here. hostAnswers is consumed in order, so a test can make the second
+// proof differ from the first.
 type world struct {
 	pods        string
 	nodes       string
@@ -41,6 +42,9 @@ type world struct {
 }
 
 const noPods = `{"items":[]}`
+
+// here is the key of world's answers to the host query --this-machine runs through sh.
+const here = "this machine"
 
 func clean(processes int) string {
 	return fmt.Sprintf("processes=%d\n%s\n", processes, hostQueryDone)
@@ -75,6 +79,9 @@ func (w *world) run(ctx context.Context, name string, args ...string) ([]byte, e
 		return nil, fmt.Errorf("unexpected kubectl %v", args)
 	}
 	host := args[len(args)-2]
+	if name == "sh" && len(args) == 2 && args[0] == "-c" {
+		host = here
+	}
 	if err := w.hostErr[host]; err != nil {
 		return nil, err
 	}
@@ -306,7 +313,8 @@ func TestFirstDeploymentCreatesEveryBucketOnlyOnAServerNoWriterReached(t *testin
 // No inventory is a usage error, with --first-deployment as without it: an empty server is no
 // proof that no writer runs (a hub on a new disk is empty while its old clients still run), so
 // nothing would be proven. At 7b262c2e0a --first-deployment alone was accepted and created the
-// buckets with no writer proof.
+// buckets with no writer proof. --this-machine alone is an inventory, of the machine the command
+// runs on; at 1160350af8 it was no flag at all.
 func TestTheCommandNeedsAnInventory(t *testing.T) {
 	for _, args := range [][]string{{"create", "--nats", "nats://127.0.0.1:1"}, {"create", "--nats", "nats://127.0.0.1:1", "--first-deployment"}} {
 		code, _, stderr := runCommand(t, &world{}, nil, args...)
@@ -317,6 +325,71 @@ func TestTheCommandNeedsAnInventory(t *testing.T) {
 	code, _, stderr := runCommand(t, &world{}, nil, "recreate", "--nats", "nats://127.0.0.1:1", "--host", "box-1", "--bucket", "legion_agents")
 	if code != 2 || !strings.Contains(stderr, "legion_agents is no bucket a listener copies") {
 		t.Fatalf("recreate of a bucket no listener copies = %d: %s", code, stderr)
+	}
+	// --this-machine names a place: the run goes on to connect, and fails there, at a closed port.
+	code, _, stderr = runCommand(t, &world{}, nil, "create", "--nats", "nats://127.0.0.1:1", "--this-machine")
+	if code != 1 || !strings.Contains(stderr, "connect to nats://127.0.0.1:1") {
+		t.Fatalf("create --this-machine = %d, want past the inventory check and refused at the connect: %s", code, stderr)
+	}
+}
+
+// --this-machine queries the machine the command runs on with no ssh: the host query, run through
+// sh -c, judged as a host's. It refuses while a writer process runs, naming it under "this
+// machine", passes on a machine where none runs, and blocks on a query that failed, did not run to
+// its end or read no process. No ssh is run. The session bucket alone is named, so the writers are
+// the listener's names alone. At 1160350af8 there was no such flag, and every case is a usage error.
+func TestThisMachineIsQueriedHereWithNoSSH(t *testing.T) {
+	uri, _ := server(t)
+	query := "sh -c " + hostQuery(fence{}.writerProcesses())
+	for _, c := range []struct {
+		name    string
+		answer  string
+		err     error
+		code    int
+		printed string
+	}{
+		{"a writer runs", "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n", nil, 1, "blocked: this machine: process 4242 envoy-listener runs"},
+		{"no writer runs", clean(180), nil, 0, "proven: this machine: none of its 180 processes is envoy-listener or envoy-listener-* or listener"},
+		{"the query failed", "", errors.New("sh: exit status 2"), 1, "blocked: this machine: the query failed: sh: exit status 2"},
+		{"the query cut short", "processes=12\n", nil, 1, "blocked: this machine: the query did not run to its end"},
+		{"the query read no process", clean(0), nil, 1, "blocked: this machine: the query read no process at all"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := &world{hostAnswers: map[string][]string{here: {c.answer}}}
+			if c.err != nil {
+				w.hostErr = map[string]error{here: c.err}
+			}
+			code, stdout, stderr := runCommand(t, w, nil, "check", "--nats", uri, "--this-machine", "--bucket", bus.SessionBucket)
+			if code != c.code || !strings.Contains(stdout+stderr, c.printed) {
+				t.Fatalf("check --this-machine = %d, want %d printing %q\n%s%s", code, c.code, c.printed, stdout, stderr)
+			}
+			if !slices.Equal(w.calls, []string{query}) {
+				t.Fatalf("check --this-machine ran %q, want the host query through sh alone: %q", w.calls, query)
+			}
+		})
+	}
+}
+
+// --this-machine runs the real host query here: it refuses while a real stand-in named
+// envoy-listener runs, naming its pid, and passes once the stand-in has ended. The query is the
+// one --host sends (TestTheHostQuerySeesARealWriterProcessUnderEachOfItsNamesUntilItEnds), and only
+// the stand-in's own line is judged, since this machine may run writers of its own. At 1160350af8
+// the flag did not exist and the run was a usage error.
+func TestThisMachineRefusesARealWriterProcessUntilItEnds(t *testing.T) {
+	uri, _ := server(t)
+	writer := startStandIn(t, "envoy-listener")
+	judged := ownProcesses(func() []*exec.Cmd { return []*exec.Cmd{writer} })
+	var stdout, stderr bytes.Buffer
+	code := command(context.Background(), []string{"check", "--nats", uri, "--this-machine"}, &stdout, &stderr, judged, http.DefaultClient)
+	if want := fmt.Sprintf("this machine: process %d envoy-listener runs", writer.Process.Pid); code != 1 || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("check --this-machine while the stand-in runs = %d, want refused naming %q\n%s%s", code, want, stdout.String(), stderr.String())
+	}
+	_ = writer.Process.Kill()
+	_ = writer.Wait()
+	stdout.Reset()
+	stderr.Reset()
+	if code := command(context.Background(), []string{"check", "--nats", uri, "--this-machine"}, &stdout, &stderr, judged, http.DefaultClient); code != 0 || !strings.Contains(stdout.String(), "proven: this machine: none of its") {
+		t.Fatalf("check --this-machine once the stand-in ended = %d, want proven\n%s%s", code, stdout.String(), stderr.String())
 	}
 }
 

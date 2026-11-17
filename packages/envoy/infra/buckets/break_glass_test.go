@@ -179,6 +179,7 @@ func TestBreakGlassIsRefusedWhereItIsMisused(t *testing.T) {
 		{[]string{"recreate", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket}, "--break-glass is create's alone"},
 		{[]string{"check", "--break-glass", "--operator", "op"}, "--break-glass is create's alone"},
 		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--host", "box-1"}, "so --host would check nothing"},
+		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--this-machine"}, "so --this-machine would check nothing"},
 		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--kube-context", "prod", "--connz", "http://hub:8222"}, "so --connz and --kube-context would check nothing"},
 		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--first-deployment"}, "so --first-deployment would check nothing"},
 		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--ssh", "ssm-ssh"}, "so --ssh would check nothing"},
