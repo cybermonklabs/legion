@@ -87,6 +87,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	resume := taken[len(taken)-1]
 	awaitAcked(t, rig.consumers, sessionID, resume)
 
+	awaitSessionConsumerStored(t, client.Conn, sessionID)
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
 	// The deregistration deletes the consumer off its own goroutine (deleteAfterAnswer), which

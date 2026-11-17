@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/reearth/ygo/crdt"
+	"github.com/yuin/goldmark/ast"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
@@ -287,6 +288,29 @@ func TestOrdinaryNestedInlineMarksReadAndRenderUnchanged(t *testing.T) {
 		if written != markdown {
 			t.Fatalf("%q wrote back as %q", markdown, written)
 		}
+	}
+}
+
+// The openers of a run of `[` that their closers turn back into text join the text after them
+// (mergeTrailingText), so the heavy bodies' run of 15,000 `[` and as many `]` reads as one text up
+// to its last `]`. That `]` is the line's last segment, which goldmark appends as a text of its own
+// whatever comes before it (parser/parser.go:1262-1271 at v1.8.6). Each opener used to stay a text
+// of its own, 15,001 texts in all, and goldmark walked all of them for every one of the last
+// thousand closers, checking each label for a link inside it. This counts the nodes rather than
+// timing the parse, so it holds on any machine.
+func TestARunOfBracketsTheirClosersTurnBackIntoTextIsOneText(t *testing.T) {
+	source := []byte(strings.Repeat("[", 15_000) + strings.Repeat("]", 15_000))
+	pc, _ := readContext(false, NewWriteBudget(), 0, false)
+	root := readSource(blockReader.md.Parser(), source, pc)
+	paragraph := root.FirstChild()
+	if paragraph == nil || paragraph.Kind() != ast.KindParagraph || paragraph.NextSibling() != nil {
+		t.Fatalf("the run read as %v, want one paragraph", root.FirstChild())
+	}
+	run, isText := paragraph.FirstChild().(*ast.Text)
+	last, lastIsText := paragraph.LastChild().(*ast.Text)
+	if count := paragraph.ChildCount(); count != 2 || !isText || !lastIsText ||
+		run.Segment.Start != 0 || run.Segment.Stop != last.Segment.Start || last.Segment.Stop != len(source) {
+		t.Fatalf("the run's paragraph holds %d inline nodes, want a text of every character but the last `]` and the line's last text", count)
 	}
 }
 

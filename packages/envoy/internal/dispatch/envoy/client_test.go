@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -193,9 +194,9 @@ func TestSessionsReportsUnavailableListener(t *testing.T) {
 		t.Fatalf("500: err = %v, want ErrUnavailable", err)
 	}
 
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
-	if _, err := New(closed.URL).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
+	// A port the test holds and nothing listens on: every dial to it is refused.
+	closed := "http://" + testport.Refused(t)
+	if _, err := New(closed).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("refused: err = %v, want ErrUnavailable", err)
 	}
 }
@@ -650,10 +651,9 @@ func TestSessionSeparatesNoRecordFromNoAnswer(t *testing.T) {
 // A listener that cannot be reached at all says nothing about the session either, so it is the
 // same "ask again" a 503 is - never grounds to call the session gone.
 func TestSessionReportsAnUnreachableListenerAsUnavailable(t *testing.T) {
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 
-	if _, err := New(closed.URL).Session(context.Background(), "s1"); !errors.Is(err, ErrUnavailable) {
+	if _, err := New(closed).Session(context.Background(), "s1"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("refused: err = %v, want ErrUnavailable", err)
 	} else if errors.Is(err, ErrNotFound) {
 		t.Fatalf("refused: err = %v, want it not to read as a missing session", err)
@@ -968,10 +968,9 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 		}
 		listener.Close()
 	}
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		if _, err := call(New(closed.URL)); !errors.Is(err, ErrUnavailable) {
+		if _, err := call(New(closed)); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("%s on an unreachable listener: %v, want ErrUnavailable", name, err)
 		}
 	}
@@ -997,10 +996,9 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			return err
 		},
 	}
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		err := call(New(closed.URL))
+		err := call(New(closed))
 		if !errors.Is(err, ErrUnreachable) || !errors.Is(err, ErrUnavailable) ||
 			!strings.HasPrefix(err.Error(), "envoy listener unavailable: ") {
 			t.Errorf("%s refused: err = %v, want ErrUnreachable and ErrUnavailable with ErrUnavailable's text", name, err)

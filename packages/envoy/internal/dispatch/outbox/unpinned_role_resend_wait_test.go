@@ -120,8 +120,7 @@ func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
 	dueNow(t, rig.database, first.ID)
 	dueNow(t, rig.database, second.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-	order := keysOf(claimant.received())
+	order := keysOf(claimant.receivedNow(t, rig.client))
 	want := []string{fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)}
 	t.Logf("claimant order %v", order)
 	if !slices.Equal(order, want) {
