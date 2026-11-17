@@ -54,18 +54,32 @@ type podEnrolment struct {
 	account, podUID, slot, claim, session string
 }
 
-// enrolPodWith enrols the role process p describes under launcher, with the pod's projected token.
+// enrolPodWith enrols the role process p describes under launcher, with the pod's projected token,
+// failing t on anything but 201.
 func (ts *testServer) enrolPodWith(t *testing.T, launcher launcherLogin, p podEnrolment) enrolled {
+	t.Helper()
+	status, body, e := ts.postPodEnrolment(t, launcher, p)
+	if status != http.StatusCreated {
+		t.Fatalf("enrol pod %s slot %q of claim %q under session %s = %d %s, want 201", p.podUID, p.slot, p.claim, p.session, status, body)
+	}
+	return e
+}
+
+// postPodEnrolment has launcher enrol the role process p describes, with the pod's projected
+// token, and answers the broker's status and body beside the enrollment: its key, and on a 201 the
+// id the broker named. It is enrolPodWith for a caller that drives a refusal as well.
+func (ts *testServer) postPodEnrolment(t *testing.T, launcher launcherLogin, p podEnrolment) (int, []byte, enrolled) {
 	t.Helper()
 	key := newSigningKey(t)
 	status, body := ts.launcher(t, launcher.key, launcher.id, http.MethodPost, "/v1/enrollments", map[string]any{
 		"kind": "pod", "runtime_id": p.podUID, "slot": p.slot, "thumbprint": thumbprintOf(t, key),
 		"pod_token": ts.podToken(t, p.account, p.podUID), "session_id": p.session, "claim": p.claim,
 	})
-	if status != http.StatusCreated {
-		t.Fatalf("enrol pod %s slot %q of claim %q under session %s = %d %s, want 201", p.podUID, p.slot, p.claim, p.session, status, body)
+	e := enrolled{key: key}
+	if status == http.StatusCreated {
+		e.id = decode[wireEnrolled](t, body).EnrollmentID
 	}
-	return enrolled{id: decode[wireEnrolled](t, body).EnrollmentID, key: key}
+	return status, body, e
 }
 
 // enrolSession enrols a session on a machine under launcher, naming session ("" for none).

@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"authelia.com/provider/oauth2"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -101,10 +99,7 @@ func TestASessionNameIsHeldByThePrincipalThatClaimedIt(t *testing.T) {
 			}
 		})
 	}
-	var held time.Time
-	if err := pool.QueryRow(ctx, `select expires_at from oauth_session_bindings where session = 'implementer-g1'`).Scan(&held); err != nil {
-		t.Fatalf("read the claim: %v", err)
-	}
+	_, held, _ := heldBy(t, pool, "implementer-g1")
 	if want := hour.Add(oauthstore.SessionRetention); held.Before(want.Add(-time.Second)) {
 		t.Errorf("the claim runs out at %s, want SessionRetention past the expiry of the token it was made for, %s", held, want)
 	}
@@ -159,15 +154,8 @@ func TestTheNamesTheConfigurationFixesAreHeldForTheirEntries(t *testing.T) {
 	if err := s.Sweep(ctx); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	held := func(session string) (principal string, forever bool) {
-		t.Helper()
-		if err := pool.QueryRow(ctx, `select principal, expires_at = 'infinity' from oauth_session_bindings where session = $1`, session).Scan(&principal, &forever); err != nil {
-			t.Fatalf("read the claim on %s: %v", session, err)
-		}
-		return principal, forever
-	}
 	for session, want := range first {
-		if principal, forever := held(session); principal != want || !forever {
+		if principal, _, forever := heldBy(t, pool, session); principal != want || !forever {
 			t.Errorf("after its principal's claims and a sweep, %s is held by %q for ever: %t; want %q with no expiry", session, principal, forever, want)
 		}
 	}
@@ -182,12 +170,9 @@ func TestTheNamesTheConfigurationFixesAreHeldForTheirEntries(t *testing.T) {
 	if want := map[string]string{"legion-daemon:ACME": daemonPrincipal}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("ReserveSessions(the next configuration) left %v with their holders, want %v", left, want)
 	}
-	if principal, forever := held("ci-release"); principal != workflowPrincipal || forever {
+	principal, runsOut, forever := heldBy(t, pool, "ci-release")
+	if principal != workflowPrincipal || forever {
 		t.Errorf("the name the configuration stopped fixing is held by %q for ever: %t; want %q under the ordinary retention", principal, forever, workflowPrincipal)
-	}
-	var runsOut time.Time
-	if err := pool.QueryRow(ctx, `select expires_at from oauth_session_bindings where session = 'ci-release'`).Scan(&runsOut); err != nil {
-		t.Fatalf("read the released claim: %v", err)
 	}
 	if want := time.Now().Add(oauthstore.SessionRetention); runsOut.Before(want.Add(-time.Minute)) || runsOut.After(want.Add(time.Minute)) {
 		t.Errorf("the released claim runs out at %s, want SessionRetention from now, about %s", runsOut, want)
@@ -208,10 +193,10 @@ func TestTheNamesTheConfigurationFixesAreHeldForTheirEntries(t *testing.T) {
 	if want := map[string]string{"legion-daemon:ACME": otherPrincipal}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("ReserveSessions(the first configuration, again) left %v with their holders, want %v", left, want)
 	}
-	if principal, forever := held("legion-daemon:ACME"); principal != otherPrincipal || !forever {
+	if principal, _, forever := heldBy(t, pool, "legion-daemon:ACME"); principal != otherPrincipal || !forever {
 		t.Errorf("after an older configuration reserved again, the re-pointed name is held by %q for ever: %t; want %q with no expiry", principal, forever, otherPrincipal)
 	}
-	if principal, forever := held("ci-release"); principal != workflowPrincipal || !forever {
+	if principal, _, forever := heldBy(t, pool, "ci-release"); principal != workflowPrincipal || !forever {
 		t.Errorf("the workflow's name, which the older configuration fixes for it, is held by %q for ever: %t; want %q with no expiry", principal, forever, workflowPrincipal)
 	}
 	if _, err := s.BindSession(ctx, "legion-daemon:ACME", daemonPrincipal, false, hour); !errors.Is(err, oauthstore.ErrSessionHeld) {
@@ -433,16 +418,8 @@ func TestTwoClaimsRacingForAPairsNameEndWithOneHolder(t *testing.T) {
 			if !errors.Is(err, c.err) || taken != c.taken {
 				t.Fatalf("BindSession(%q, %q), waiting behind the project account's claim = %q, %v, want %q, %v", c.session, c.second, taken, err, c.taken, c.err)
 			}
-			rows, err := pool.Query(ctx, `select principal from oauth_session_bindings where session = $1`, c.session)
-			if err != nil {
-				t.Fatalf("read the claims on %s: %v", c.session, err)
-			}
-			holders, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			if err != nil {
-				t.Fatalf("read the claims on %s: %v", c.session, err)
-			}
-			if want := []string{c.holder}; !slices.Equal(holders, want) {
-				t.Errorf("after the race, %s is held by %q, want %q alone", c.session, holders, want)
+			if holder, _, _ := heldBy(t, pool, c.session); holder != c.holder {
+				t.Errorf("after the race, %s is held by %q, want %q", c.session, holder, c.holder)
 			}
 		})
 	}

@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -114,11 +112,7 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	broker := podBroker{t: t, base: front.url, issuer: issuer, key: podKey, audience: podAudience}
 
 	ctx := context.Background()
-	db, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the brokers' database: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close(ctx) })
+	db := connectToBroker(t, databaseURL)
 	// leaseOf answers an enrollment's lease_expires_at and the database's now(), so every
 	// comparison of the two is on Postgres's clock, the one the broker's liveness reads.
 	leaseOf := func(enrollmentID string) (expires, now time.Time) {
@@ -181,20 +175,20 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	fetch("before the outage")
 
 	t.Log("--- the revoked pod: enrolled, then ended by its launcher")
-	revoked := broker.enroll(launcher, "revoked-pod", podAccount)
+	revoked := broker.enroll(launcher, "revoked-pod", podAccount, "")
 	if status := deleteEnrollment(t, front.url, launcher, revoked.enrollmentID); status != http.StatusNoContent {
 		t.Fatalf("the launcher's DELETE of the revoked pod's enrollment = %d, want 204", status)
 	}
 
 	t.Log("--- the lapsed pod: enrolled, its lease set in the past, then ended by the sweeper of a broker serving")
-	lapsed := broker.enroll(launcher, "lapsed-pod", podAccount)
+	lapsed := broker.enroll(launcher, "lapsed-pod", podAccount, "")
 	if _, err := db.Exec(ctx, `update enrollments set lease_expires_at = now() - interval '1 second' where id = $1`, lapsed.enrollmentID); err != nil {
 		t.Fatalf("set the lapsed pod's lease in the past: %v", err)
 	}
 	first.AwaitRecord(t, "broker sweeper: ended an enrollment whose lease lapsed", map[string]any{"enrollment_id": lapsed.enrollmentID})
 
 	t.Log("--- the mismatch pod: enrolled, and served its secret once")
-	mismatch := broker.enroll(launcher, "mismatch-pod", podAccount)
+	mismatch := broker.enroll(launcher, "mismatch-pod", podAccount, "")
 	reply := broker.ask(mismatch, secretName)
 	if reply.State != "granted" || reply.GrantID == nil {
 		t.Fatalf("the mismatch pod's request = %+v, want granted with a grant", reply)

@@ -121,19 +121,10 @@ func TestAPairedAccountsEnrollmentTakesTheNameAndWhatItCarries(t *testing.T) {
 		return replaced{ts: ts, daemon: daemon, grant: grant, waiting: waiting}
 	}
 	// enrolNext has the daemon enrol the role's next pod, a pod of otherAccount, under the session
-	// name, and answers the broker's status and body beside the enrollment it names on a 201.
+	// name, and answers the broker's status and body beside the enrollment (postPodEnrolment).
 	enrolNext := func(t *testing.T, r replaced) (int, []byte, enrolled) {
 		t.Helper()
-		key, podUID := newSigningKey(t), uuid.NewString()
-		status, body := r.ts.launcher(t, r.daemon.key, r.daemon.id, http.MethodPost, "/v1/enrollments", map[string]any{
-			"kind": "pod", "runtime_id": podUID, "thumbprint": thumbprintOf(t, key),
-			"pod_token": r.ts.podToken(t, otherAccount, podUID), "session_id": session,
-		})
-		next := enrolled{key: key}
-		if status == http.StatusCreated {
-			next.id = decode[wireEnrolled](t, body).EnrollmentID
-		}
-		return status, body, next
+		return r.ts.postPodEnrolment(t, r.daemon, podEnrolment{account: otherAccount, podUID: uuid.NewString(), session: session})
 	}
 
 	t.Run("unpaired, the next pod is refused the name", func(t *testing.T) {
