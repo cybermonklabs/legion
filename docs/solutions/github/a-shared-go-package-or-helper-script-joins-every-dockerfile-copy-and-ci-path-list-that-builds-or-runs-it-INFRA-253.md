@@ -33,9 +33,12 @@ Extends docs/solutions/github/a-worker-image-path-filter-covers-the-code-the-ini
   Check every Go job's filter, not only those whose binary reaches the new package: an import
   another pull request added earlier can be missing from any of them.
 - A package `go list -deps ./cmd/legion` in `packages/daemon` names is source of the `legion`
-  binary too: it goes into `LEGION_VERSION_ARGS` in `release.yaml`, or a change to it releases no
-  `legion`. When `go list -deps` of the daemon-pane.go program names it too, it goes into the
-  `pi_legion` filter of `envoy-and-contracts.yaml`, whose daemon-pane test compiles that program.
+  binary too, and a change to it must release one. Nobody lists it by hand any more:
+  `release.yaml`'s `LEGION_GO_INPUTS` is a block that `.github/scripts/check-legion-version-inputs.sh
+  write` writes from that listing, and the ci-filters job fails a pull request whose block lacks a
+  package the binary links. When `go list -deps` of the daemon-pane.go program names it
+  too, it goes into the `pi_legion` filter of `envoy-and-contracts.yaml`, whose daemon-pane test
+  compiles that program.
 - A script a job runs (a helper the harness execs) goes into the job's filter and into the
   workflow's own `on.push.paths` and `on.pull_request.paths`: a filter never fires for a workflow
   its trigger never started.
@@ -66,3 +69,10 @@ Extends docs/solutions/github/a-worker-image-path-filter-covers-the-code-the-ini
   the Dispatch filters lacked. A review then matched each compiled file, test files included,
   against every Go job's filter and found `broker_multiprocess` lacked `internal/redact` too
   (#2441: `cmd/broker` and `internal/broker/config` import it).
+- The hand-kept `LEGION_VERSION_ARGS` fell behind again: at main 4055c4a523 it named 14 of the 17
+  envoy packages `go list -deps ./cmd/legion` names, and lacked `internal/ctxlock`,
+  `internal/dispatch/bytelru` and `internal/fold`, so the list gave way to the
+  generated block and the check. The same check found `release-envoy-listener.yaml`'s
+  `LEGION_ENVOY_VERSION_ARGS` lacked `go.work`, `go.work.sum` and `packages/daemon/go.mod` and
+  `go.sum`, which the archives built under the root `go.work` read, and now holds that list to
+  cover what go names for them.

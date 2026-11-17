@@ -38,6 +38,12 @@ on:
       - "scripts/assemble-third-party-notices.sh"
       - ".github/go-release-targets.json"
       - ".github/agent-secrets-client-targets.json"
+      # The workspace the archives build under, which LEGION_ENVOY_VERSION_ARGS below names for
+      # the reason given there: the image reads none of these four, the archives' builds do.
+      - "go.work"
+      - "go.work.sum"
+      - "packages/daemon/go.mod"
+      - "packages/daemon/go.sum"
   workflow_dispatch:
     inputs:
       # "Confirm the version" in release_publish sets it when its run lost its version to another
@@ -94,7 +100,15 @@ env:
   # version) and release_publish (which confirms it, --expect, inside the concurrency group):
   # every notices script changes an artifact this release publishes, and the target lists decide
   # the archives, so they take a patch release; packages/envoy/infra is excluded, since
-  # release-envoy-infra.yaml releases it and nothing published here compiles it in.
+  # release-envoy-infra.yaml releases it and nothing published here compiles it in. The archives
+  # the build and release_build jobs compile on the runner build in packages/envoy under the root
+  # go.work, whose version selection reads packages/daemon's go.mod beside packages/envoy's: so
+  # go.work, go.work.sum and the daemon module's go.mod and go.sum can change what the archives
+  # link, and a change to one of them must release. The image does not build under go.work
+  # (packages/envoy/docker/Dockerfile copies packages/envoy's module files alone), so none of the
+  # four is an input of it. .github/scripts/check-legion-version-inputs.sh, in the ci-filters job,
+  # fails a pull request whose paths here miss a package or a module file go names for the
+  # archives.
   LEGION_ENVOY_VERSION_ARGS: >-
     --patch-path scripts/third-party-notices.ts --patch-path scripts/go-third-party-notices.sh
     --patch-path scripts/assemble-third-party-notices.sh --patch-path .github/go-release-targets.json
@@ -102,6 +116,7 @@ env:
     -- :(exclude)packages/envoy/infra packages/envoy/ packages/contracts/ scripts/third-party-notices.ts
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh
     .github/go-release-targets.json .github/agent-secrets-client-targets.json
+    go.work go.work.sum packages/daemon/go.mod packages/daemon/go.sum
 
 
   # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
@@ -495,7 +510,12 @@ jobs:
       # tags are read. release-push.sh version releases again a tag an earlier attempt pushed for
       # this commit (`tagged`, which refuses a tag that is not legion-envoy-vX.Y.Z) and otherwise
       # bumps from the newest legion-envoy-v* tag. $LEGION_ENVOY_VERSION_ARGS is expanded unquoted
-      # on purpose: it is the argument list, split on its spaces.
+      # on purpose: it is the argument list, split on its spaces. .github/scripts/check-legion-
+      # version-inputs.sh fails a pull request whose job here, or release_publish up to its
+      # "Confirm the version", is not pinned to what .github/scripts/release_version_inputs.py
+      # names: the step's run: and env: exactly, every step before it one the module lists (an edit
+      # of "Determine latest" or "Advance latest image" is an edit there too), the workflow's env:
+      # variables on its list, and no job env:, container: or defaults beyond bash.
       - name: Determine next version
         id: version
         run: |
@@ -653,6 +673,10 @@ jobs:
     # No cache is restored in a job that holds a credential.
     cache-mode: none
     steps:
+      # Every step from here to "Confirm the version" is pinned, uses:, with:, run: and env:, in
+      # .github/scripts/release_version_inputs.py's STEPS_BEFORE_VERSION_STEPS: an edit of one is
+      # an edit there too, and a new step before the confirm step a new entry there.
+      #
       # For release-push.sh and the tag, with every tag. No credential is left in the checkout: the
       # deploy key reaches the "Tag release" step alone.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -822,7 +846,8 @@ jobs:
       # never its change: this file's header, above `concurrency:`, says why, and is the one copy
       # of that reasoning. The run started here is a workflow_dispatch, a concurrency group of
       # its own, which no newer push replaces while it waits.
-      # $LEGION_ENVOY_VERSION_ARGS is expanded unquoted on purpose, as in release_build.
+      # $LEGION_ENVOY_VERSION_ARGS is expanded unquoted on purpose, as in release_build, and this
+      # job is pinned up to this step as release_build is.
       - name: Confirm the version
         id: confirm
         if: needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'

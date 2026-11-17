@@ -145,9 +145,10 @@ case "$#:${1:-}" in
 esac
 
 # The pairs (ci_ts_programs.py), the path model (workflow_paths.py) and the engine this borrows
-# the changes job's filters and the block helpers from (ci_filter_coverage.py) sit beside this
-# script in the repository it checks. PYTHONDONTWRITEBYTECODE keeps the imports from leaving a
-# __pycache__ in the tree.
+# the changes job's filters and the block helpers from (ci_filter_coverage.py), with the module
+# that engine imports for its go commands (go_offline.py), sit beside this script in the
+# repository it checks. PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in
+# the tree.
 TS_FILTERS_MODE="${1:-check}" PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
 import json
 import os

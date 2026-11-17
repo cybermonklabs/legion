@@ -349,10 +349,12 @@ reaches by relative path are what the check is told, not what it finds: it prove
 cover them, not that they are complete, and a new file under a glob a filter names only in part
 runs the check only when the change also touches one of its triggers. A Go job's own closure and
 a Bun job's typecheck program are the two halves it does find, from `go list` and from
-`check-ts-filters.sh`. It runs go with
-`GOPROXY=off` over an empty module cache, so it downloads nothing and gives the same answer on a
-cold runner as on a warm machine; third-party packages fail to load, which loses no first-party
-package. Run it locally from anywhere: `.github/scripts/check-ci-filters.sh`.
+`check-ts-filters.sh`. It runs go offline over an empty module cache, through
+`.github/scripts/go_offline.py`: `GOPROXY=off`, and `GONOPROXY=none` and `GOENV=off`, without
+which an inherited `GOPRIVATE` or a `go env -w` value still reaches past it. So it downloads
+nothing and gives the same answer on a cold runner as on a warm machine; third-party packages fail
+to load, which loses no first-party package. Run it locally from anywhere:
+`.github/scripts/check-ci-filters.sh`.
 
 ## Caches: no job of the router writes one
 

@@ -11,18 +11,19 @@ name: CodeQL
 # while default setup owns a repository's code scanning. That is history: a red check here now is
 # an ordinary failure, read in its own log.
 #
-# What is analysed, and why those languages (counted over the tracked tree):
-#   * go - 2,658 .go files in the two modules go.work binds, packages/daemon and packages/envoy;
-#   * javascript-typescript - 1,068 .ts, 304 .tsx and 4 .js files under packages/, docs/site and
-#     scripts/; CodeQL analyses both languages under this one name;
-#   * python - 8 .py files: the CI checks' engine (.github/scripts/ci_filter_coverage.py,
-#     ci_job_reads.py, ci_images.py, workflow_paths.py), two e2e helpers under scripts/e2e/lib and
-#     two media scripts under docs/site/media. Few, but each one runs in CI or in a release path;
-#   * actions - every workflow under .github/workflows and the 11 composite `action.yml` files,
-#     which run with this repository's tokens.
-# The repository's shell scripts (179 .sh) and SQL migrations (403 .sql) have no CodeQL language,
-# so no analysis here covers them. Build modes are the starter workflow's: `autobuild` for go,
-# which CodeQL has no `none` mode for, and `none` for the three others.
+# What is analysed, and why those languages:
+#   * go - the two modules go.work binds, packages/daemon and packages/envoy;
+#   * javascript-typescript - the .ts, .tsx and .js files under packages/, docs/site and scripts/;
+#     CodeQL analyses both languages under this one name;
+#   * python - the CI checks under .github/scripts (the filter engine ci_filter_coverage.py and the
+#     modules it imports among them), the e2e helpers under scripts/e2e/lib, and the operator and
+#     measurement scripts under scripts/, packages/envoy/scripts and docs/site/media. The checks
+#     run in CI or in a release path;
+#   * actions - every workflow under .github/workflows and every composite `action.yml`, which run
+#     with this repository's tokens.
+# The repository's shell scripts and SQL migrations have no CodeQL language, so no analysis here
+# covers them. Build modes are the starter workflow's: `autobuild` for go, which CodeQL has no
+# `none` mode for, and `none` for the three others.
 #
 # Every pull request starts an analysis, documentation-only ones included, and that is why this
 # trigger carries no `paths-ignore`. The code-scanning rule on the ruleset of `main` holds a pull

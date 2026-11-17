@@ -53,6 +53,7 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
+import release_version_inputs
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, go_skips_dir, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 
@@ -838,6 +839,18 @@ def go_notices_runs():
                               started_by, INFRA, ["./cmd/..."], mode="build",
                               env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
     return out
+
+
+def version_input_runs():
+    """Every go list check-legion-version-inputs.sh runs: the listings of
+    release_version_inputs.py, the one plan that check runs, over the target lists it reads."""
+    why = at("ci-filters", VERSION_INPUTS_STEP)
+    listings = (release_version_inputs.legion_listings(targets(GO_TARGETS, "legion"))
+                + release_version_inputs.legion_envoy_listings(targets(GO_TARGETS, "envoy"),
+                                                               targets(CLIENT_TARGETS, "agent-secrets-client")))
+    return [run(listing.workdir, list(listing.packages), f"{why}: go list -deps {listing.label}", mode="build",
+                step=VERSION_INPUTS_STEP, text=VERSION_INPUTS, env=listing.env)
+            for listing in listings]
 
 
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks'
@@ -1778,6 +1791,8 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+VERSION_INPUTS_STEP = "Check the legion and legion-envoy releases' version inputs against what go links"
+VERSION_INPUTS = ".github/scripts/check-legion-version-inputs.sh"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
@@ -1816,6 +1831,15 @@ SESSIONS_STEP = "Test the session message-wait script"
 # scripts/priorities-seed-check.test.sh, which is not among them, carries its own helpers.
 SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
+# How check-ci-filters.sh and check-legion-version-inputs.sh run go, and the stand-in go both of
+# their harnesses read that environment with.
+GO_OFFLINE = f"{SCRIPTS}/go_offline.py"
+GO_OFFLINE_STAND_IN = f"{SCRIPTS}/go-offline-test-lib.sh"
+# The shell scanner check-release-credentials.sh reads a run: with.
+SHELL_COMMANDS = f"{SCRIPTS}/shell_commands.py"
+# The release listings and version steps check-legion-version-inputs.sh holds the two release lines
+# to; version_input_runs() turns the listings into Runs.
+RELEASE_PLAN = f"{SCRIPTS}/release_version_inputs.py"
 
 
 def harness(filter, step, harness_script, subjects, lib=True):
@@ -1947,6 +1971,8 @@ SCRIPT_TEST_GATES = [
     harness("check_release_credentials_test", "Test the release credential check",
             f"{SCRIPTS}/check-release-credentials.test.sh", [
         (f"{SCRIPTS}/check-release-credentials.sh", "the script under test"),
+        (SHELL_COMMANDS, "the shell scanner the script imports, symlinked into every fixture "
+                         "(check-release-credentials.test.sh:41)"),
     ]),
     harness("repo_paths_test", "Test the repository path derivation", f"{SCRIPTS}/repo-paths.test.sh", [
         (f"{SCRIPTS}/repo-paths.sh", "the script under test"),
@@ -2028,23 +2054,45 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:76-78)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:79-81)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2241 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2695-2717 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (GO_OFFLINE, "the module the engine runs go through, linked in beside it"),
+        (GO_OFFLINE_STAND_IN, "check-ci-filters.test.sh:55 sources the stand-in go and the proxy recorder procedure its "
+                              "last two cases read the engine's go commands with"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2244 imports this table to derive the plain step's -run lists"),
+        (RELEASE_PLAN, "ci_job_reads.py, which check-ci-filters.test.sh:2244 imports, imports it"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2698-2721 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+    ]),
+    harness("check_legion_version_inputs_test", "Test the legion version input check",
+            f"{SCRIPTS}/check-legion-version-inputs.test.sh", [
+        (f"{SCRIPTS}/check-legion-version-inputs-fixtures.sh",
+         "check-legion-version-inputs.test.sh:32 sources the fixture library every case is built with"),
+        (f"{SCRIPTS}/check-legion-version-inputs-run-cases.sh",
+         "check-legion-version-inputs.test.sh:447 sources the cases of needs:, if:, triggers and push paths"),
+        (VERSION_INPUTS, "the script under test, which the fixture library symlinks into every fixture "
+                         "(check-legion-version-inputs-fixtures.sh:165-167)"),
+        (GO_OFFLINE, "the module the script runs go through, linked in beside it"),
+        (RELEASE_PLAN, "the release listings and pinned steps the script reads, linked in beside it, and which "
+                       "check-legion-version-inputs-fixtures.sh's step() builds each fixture's jobs from"),
+        (f"{SCRIPTS}/release_push_paths.py", "the push-path rule the script imports, linked in beside it"),
+        (f"{SCRIPTS}/workflow_paths.py", "the path model that rule reads a push path's glob with, linked in beside it"),
+        (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:29 sources the stand-in go and the proxy recorder "
+                              "procedure its last two cases read the script's go commands with"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:49-50)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:50-51)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
+        (GO_OFFLINE, "the module that engine imports for its go commands, linked in beside it"),
     ]),
     harness("go_test_step_expansion_test", "Test the go test step expansion",
             f"{SCRIPTS}/go-test-step-expansion.test.sh", [
         (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:38)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
+        (GO_OFFLINE, "the module that engine imports for its go commands"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its last case reads this file's own go test line, the wrapper one"),
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its last case reads this file's own go test line, the GODEBUG one"),
     ]),
@@ -3072,7 +3120,11 @@ GATES = [
     # This check itself: it lists every module's packages (vet mode: each package directory, its
     # dependencies' and the test files, without the files tests read), reads the target lists
     # the runs above expand, reads every workflow of .github/workflows, and is its own script,
-    # engine, data, rules and path model.
+    # engine, data, rules and path model. The job's second step, the legion version-input check,
+    # lists ./cmd/legion once per legion release target, as release.yaml's Build legion step
+    # compiles it, and the legion-envoy archives' programs as release-envoy-listener.yaml builds
+    # them (version_input_runs), and reads both workflows' version arguments, release.yaml's block
+    # and its version step.
     gate("ci_filters", "ci-filters", runs=[
         run(DAEMON, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the daemon module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
@@ -3080,17 +3132,28 @@ GATES = [
             text=".github/scripts/check-ci-filters.sh"),
         run(INFRA, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the envoy-infra module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
+        *version_input_runs(),
     ], reads=reads(
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
         (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+        (VERSION_INPUTS, at("ci-filters", VERSION_INPUTS_STEP)),
+        (".github/workflows/release.yaml", f"{VERSION_INPUTS} holds its LEGION_GO_INPUTS block to what go names beyond "
+                                           "LEGION_VERSION_ARGS's paths, and legion_build's version step to passing it"),
+        (".github/workflows/release-envoy-listener.yaml", f"{VERSION_INPUTS} holds its LEGION_ENVOY_VERSION_ARGS to "
+                                                          "cover what go names for the archives it builds"),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
-        (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
+        (".github/scripts/release_push_paths.py", f"{VERSION_INPUTS} imports its push-path rule from it"),
+        (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and release_push_paths.py "
+                                              "reads a push path's glob with it"),
+        (GO_OFFLINE, f"ci_filter_coverage.py and {VERSION_INPUTS} run every go command through it"),
+        (RELEASE_PLAN, f"{VERSION_INPUTS} runs its listings and holds each version step to its text, and "
+                       "ci_job_reads.py imports it for version_input_runs"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
-        (GO_TARGETS, "ci_job_reads.py expands the notices and pack runs over it"),
-        (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),
+        (GO_TARGETS, f"ci_job_reads.py expands the notices and pack runs over it, and {VERSION_INPUTS} its listings"),
+        (CLIENT_TARGETS, f"ci_job_reads.py expands the notices runs over it, and {VERSION_INPUTS} its agent-secrets listings"),
         (INFRA_TARGETS, "ci_job_reads.py expands the notices runs over it"),
         (DOCS_SITE, "ci_filter_coverage.py looks the docs gate's step citations up in it"),
         (BROWSER_SITE, "ci_filter_coverage.py looks the dispatch_browser gate's step citations up in it"),

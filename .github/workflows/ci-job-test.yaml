@@ -228,6 +228,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_ci_filters_test: check-ci-filters.test.sh and what it tests."
         type: string
         required: true
+      check_legion_version_inputs_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_legion_version_inputs_test:
+          check-legion-version-inputs.test.sh and what it tests.
+        type: string
+        required: true
       check_ts_filters_test:
         description: "ci.yaml's needs.changes.outputs.check_ts_filters_test: check-ts-filters.test.sh and what it tests."
         type: string
@@ -528,9 +534,10 @@ jobs:
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
-      # the CI-filter check's go list over a scratch module and the build-tag lister, none of
-      # which that entry is filled for. The daemon's go.mod is still the one Go pin of this
-      # repository's three modules that a job without one of its own reads.
+      # the go list of the legion version input check's and the CI-filter check's fixtures over
+      # scratch modules, and the build-tag lister, none of which that entry is filled for. The
+      # daemon's go.mod is still the one Go pin of this repository's three modules that a job
+      # without one of its own reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -540,6 +547,11 @@ jobs:
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
         run: bun test scripts/e2e/lib
+
+      # After setup-go: its fixtures run go list over a scratch workspace of two modules.
+      - name: Test the legion version input check
+        if: inputs.changes-result != 'success' || inputs.check_legion_version_inputs_test == 'true'
+        run: .github/scripts/check-legion-version-inputs.test.sh
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check

@@ -937,7 +937,12 @@ check_k10b() {
 	printf 'module github.com/sjawhar/envoy\n\ngo 1.25.0\n' >"$scratch/go.mod"
 	printf 'package judge\n\nimport _ "github.com/anthropics/anthropic-sdk-go"\n' >"$scratch/judge/scratch_provider.go"
 	local control_imports control_found=""
-	control_imports="$(cd "$scratch" && GOWORK=off GOFLAGS=-mod=mod GOPROXY=off go list -e -f '{{join .Imports "\n"}}' ./judge 2>"$WORK_DIR/scratch.err")"
+	# Offline, as .github/scripts/go_offline.py runs its go commands and for its reasons: GOPROXY=off
+	# alone is not, since a GONOPROXY or GOPRIVATE the machine sets that matches
+	# github.com/anthropics puts a direct fetch before "off" and -mod=mod then goes looking for the
+	# SDK; GONOPROXY=none matches no module. GOENV=off keeps a `go env -w` value out of the listing,
+	# which an empty variable does not. The import is listed whether or not the SDK resolves.
+	control_imports="$(cd "$scratch" && GOWORK=off GOFLAGS=-mod=mod GOPROXY=off GONOPROXY=none GOENV=off go list -e -f '{{join .Imports "\n"}}' ./judge 2>"$WORK_DIR/scratch.err")"
 	printf '%s\n' "$control_imports" >"$WORK_DIR/control-imports.txt"
 	for sdk in $sdks; do
 		grep -qF "$sdk" "$WORK_DIR/control-imports.txt" && control_found="$control_found $sdk"

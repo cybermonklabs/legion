@@ -34,10 +34,11 @@
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
-# (ci_filter_coverage.py), the rules of ci.yaml it runs
-# (ci_workflow_rules.py) and the path model they import (workflow_paths.py) into it, so the code
-# under test is the code CI runs. It needs go and a
-# python3 with PyYAML.
+# (ci_filter_coverage.py), the rules of ci.yaml it runs (ci_workflow_rules.py), the path model
+# they import (workflow_paths.py) and the module its go commands run through (go_offline.py) into
+# it, so the code under test is the code CI runs. Its last two cases hold that module's go
+# commands to its environment, with the stand-in go of go-offline-test-lib.sh, and to no network
+# request, with that file's proxy recorder and its control. It needs go and a python3 with PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
 # CI runs it in ci.yaml's test job.
@@ -46,10 +47,12 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'proxy_recorders_stop; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+# shellcheck source=.github/scripts/go-offline-test-lib.sh
+source "$script_dir/go-offline-test-lib.sh"
 
 # fixture <name>: a tree that passes. The app job runs `go test ./cmd/app ./lib`, whose closure is
 # cmd/app and lib (cmd/app imports lib); lib's test reads fixtures/data.json through `..`, which
@@ -73,7 +76,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_offline.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -2718,5 +2721,40 @@ PY
 )
 check "the guide's list and the label's gates are the same set" \
   "$(is "$mismatch" "")"
+
+# The environment go_offline.py runs every go command of the engine in, seen by a stand-in go
+# (go-offline-test-lib.sh): the header's "a cold runner gives the answer a warm machine does" holds
+# only while it does.
+echo "case: every go command runs offline over an empty module cache"
+root=$(fixture offline)
+go_spy "$work/spy-offline"
+set +e
+out=$(PATH="$work/spy-offline/shim:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+status=$?
+set -e
+check "passes" "$(is "$status" 0)"
+check "every go command ran with GOPROXY=off, GONOPROXY=none and GOENV=off over an empty cache of its own" \
+  "$(is "$(go_spy_verdict "$work/spy-offline")" offline)"
+
+# GOPROXY=off is not offline while a GONOPROXY or GOPRIVATE the machine sets matches a module:
+# go fetches it directly first. Here the module requires a third-party one, with its go.sum lines,
+# that the empty cache lacks, cmd/app imports it, and the machine's settings match it; a proxy
+# recorder stands in for the network, and go-offline-test-lib.sh's network_control is its own
+# control. The check's own verdict is not this case's (the fixture's filters name no go.sum); that
+# the engine listed the app's closure is.
+echo "case: an inherited GONOPROXY sends no go command of the engine to the network"
+root=$(fixture network)
+printf 'module example.com/m\n\ngo 1.21\n\nrequire %s v1.0.0\n' "$GO_OFFLINE_VENDOR" > "$root/mod/go.mod"
+go_offline_vendor_sums "$root/mod/go.sum"
+printf 'package main\n\nimport _ "%s"\n' "$GO_OFFLINE_VENDOR" > "$root/mod/cmd/app/vendor.go"
+network_recorder "$work/network"
+check "the recorder sees a go list under GOPROXY=off alone try example.org" \
+  "$(network_control "$work/network" "$root/mod" ./cmd/app)"
+set +e
+out=$("${GO_OFFLINE_INHERITED[@]}" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+status=$?
+set -e
+check "the engine listed the app's closure" "$(contains "$out" '^report: app: ')"
+check "no go command of the engine tried the network" "$(is "$(network_requests "$work/network")" 0)"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

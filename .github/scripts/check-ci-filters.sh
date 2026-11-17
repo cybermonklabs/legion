@@ -362,7 +362,9 @@
 # who deliberately hides a command or a flag where this check does not read is the review's to
 # catch.
 #
-# The go commands run with GOPROXY=off over an empty module cache: nothing is downloaded, no
+# The go commands run with GOPROXY=off over an empty module cache, and with GONOPROXY=none and
+# GOENV=off, without which an inherited GOPRIVATE or a `go env -w` still reaches past it
+# (go_offline.py says how): nothing is downloaded, no
 # go.work.sum is rewritten, and a cold runner gives the answer a warm machine does. Third-party
 # packages then fail to load, which loses no first-party package, since none of them imports
 # one: no module outside this repository requires one of its modules (`go mod graph`), and all
@@ -378,7 +380,9 @@
 # go was go1.27.1 against this repository's go1.27.3). CI never sees it, since setup-go installs
 # the pinned version. The engine therefore resolves the toolchain first, once per module
 # directory and under this machine's own GOMODCACHE and GOPROXY (`go env GOROOT`), and runs
-# every go command with that toolchain's own binary under GOTOOLCHAIN=local.
+# every go command with that toolchain's own binary under GOTOOLCHAIN=local. Both halves are
+# .github/scripts/go_offline.py's, which check-legion-version-inputs.sh runs its go commands
+# through too.
 #
 # EXCLUDED leaves worker_image to check-image-trigger-paths.sh, which proves it covers every file
 # its image build reads. envoy_smoke is a gate whose image inputs are that check's: this one holds
@@ -427,8 +431,8 @@ export CI_FILTERS_MODE="${1:-check}"
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py), the rules that read no filter
 # and no go command (ci_workflow_rules.py: rules 10 to 14 above, the workspace one
 # given that data's WORKSPACES by main() rather than importing the data itself, the merge-group
-# one reading .github/workflows itself) and the path
-# model (workflow_paths.py) sit beside this script in the repository it checks. The engine is
+# one reading .github/workflows itself), the path model (workflow_paths.py) and the way its go
+# commands run (go_offline.py) sit beside this script in the repository it checks. The engine is
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes.
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.

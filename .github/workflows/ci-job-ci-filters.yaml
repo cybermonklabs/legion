@@ -44,6 +44,18 @@ jobs:
       - name: Check every CI filter matches every file its job reads
         run: .github/scripts/check-ci-filters.sh
 
+      # release.yaml's LEGION_GO_INPUTS decides, with LEGION_VERSION_ARGS, whether a commit
+      # releases a new `legion`, and release-envoy-listener.yaml's LEGION_ENVOY_VERSION_ARGS
+      # whether one releases a new legion-envoy: a path their binaries' builds read that those
+      # leave out changes what ships and releases nothing. This job has the Go and the filter
+      # (every Go file, module file and workflow) the check needs, so a change that moves what
+      # those builds read fails here until the paths name it. `!cancelled()`: the check reads
+      # none of what the filter check above decides, so it runs when that one fails too, and a
+      # run that fails shows both verdicts rather than the first.
+      - name: Check the legion and legion-envoy releases' version inputs against what go links
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-legion-version-inputs.sh
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

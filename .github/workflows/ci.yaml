@@ -333,6 +333,7 @@ jobs:
       disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
       priorities_seed_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.priorities_seed_check_test }}
       check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
+      check_legion_version_inputs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_legion_version_inputs_test }}
       check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_step_expansion_test }}
       # Selected like any other job now that no run of this workflow is a push to main.
@@ -1435,6 +1436,8 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-release-credentials.test.sh'
               - '.github/scripts/check-release-credentials.sh'
+              # The shell scanner the script imports, symlinked into every fixture.
+              - '.github/scripts/shell_commands.py'
             repo_paths_test: &repo_paths_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1559,35 +1562,60 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-filters.test.sh'
-              # :75-76 symlink the script and the three modules it runs on into every fixture.
+              # :79-81 symlink the script and the four modules it runs on into every fixture.
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
-              # :2172 imports the table to derive the plain step's -run lists, and :2579 holds
+              - '.github/scripts/go_offline.py'
+              # :55 sources the stand-in go and the proxy recorder procedure its last two cases
+              # read the go commands with.
+              - '.github/scripts/go-offline-test-lib.sh'
+              # :2244 imports the table to derive the plain step's -run lists, and :2698-2721 holds
               # the guide's slow-suite list to the jobs the full-ci label gates.
               - '.github/scripts/ci_job_reads.py'
+              # ci_job_reads.py imports it.
+              - '.github/scripts/release_version_inputs.py'
               - 'AGENTS.md'
+            check_legion_version_inputs_test: &check_legion_version_inputs_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-legion-version-inputs.test.sh'
+              # The fixture library and the case file it sources; the script under test and the
+              # modules it imports, which that library symlinks into every fixture; and the
+              # stand-in go and proxy recorder procedure its last two cases read with.
+              - '.github/scripts/check-legion-version-inputs-fixtures.sh'
+              - '.github/scripts/check-legion-version-inputs-run-cases.sh'
+              - '.github/scripts/check-legion-version-inputs.sh'
+              - '.github/scripts/go_offline.py'
+              - '.github/scripts/release_push_paths.py'
+              - '.github/scripts/release_version_inputs.py'
+              - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/go-offline-test-lib.sh'
             check_ts_filters_test: &check_ts_filters_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ts-filters.test.sh'
-              # :47 symlinks the script, the engine it borrows the changes job's filters from
-              # and the path model both import into every fixture.
+              # :50-51 symlink the script, the engine it borrows the changes job's filters from,
+              # the path model both import and the module the engine runs go through into every
+              # fixture.
               - '.github/scripts/check-ts-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/go_offline.py'
             go_test_step_expansion_test: &go_test_step_expansion_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
               # :38 loads the script by path, and the script imports the engine, which imports
-              # the path model.
+              # the path model and the module it runs go through.
               - '.github/scripts/go-test-step-expansion.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/go_offline.py'
               # Its last case reads the two step lines the reader exists for, out of the files
               # that hold them.
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
@@ -1664,6 +1692,7 @@ jobs:
               - *disk_watch_test
               - *priorities_seed_check_test
               - *check_ci_filters_test
+              - *check_legion_version_inputs_test
               - *check_ts_filters_test
               - *go_test_step_expansion_test
               # The guide-layout step's own files, for that same reason: its gate is
@@ -4377,7 +4406,10 @@ jobs:
             # reads: every file whose change can move a Go closure (Go code anywhere, the modules'
             # embedded files and testdata, every module and workspace file, the target lists the go
             # commands expand over), every workflow file, and the check's own script, engine, data,
-            # rules and path model.
+            # rules and path model. The job's second check, check-legion-version-inputs.sh, reads
+            # release.yaml and release-envoy-listener.yaml, the closures of cmd/legion and of the
+            # legion-envoy archives' programs, their module files and the two target lists, all of
+            # which the patterns below already match, and its own script.
             ci_filters:
               # The directory rather than the four workflows the check names one by one (this
               # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
@@ -4387,9 +4419,13 @@ jobs:
               # select.
               - '.github/workflows/**'
               - '.github/scripts/check-ci-filters.sh'
+              - '.github/scripts/check-legion-version-inputs.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_job_reads.py'
               - '.github/scripts/ci_workflow_rules.py'
+              - '.github/scripts/go_offline.py'
+              - '.github/scripts/release_push_paths.py'
+              - '.github/scripts/release_version_inputs.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/go-release-targets.json'
               - '.github/agent-secrets-client-targets.json'
@@ -4769,6 +4805,7 @@ jobs:
       disk_watch_test: ${{ needs.changes.outputs.disk_watch_test }}
       priorities_seed_check_test: ${{ needs.changes.outputs.priorities_seed_check_test }}
       check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
+      check_legion_version_inputs_test: ${{ needs.changes.outputs.check_legion_version_inputs_test }}
       check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
 
@@ -5471,8 +5508,9 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
-  # with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-  # module cache, so the job needs Go but downloads no module and restores no cache.
+  # with go list (.github/scripts/check-ci-filters.sh). go list runs offline over an empty module
+  # cache (.github/scripts/go_offline.py: GOPROXY=off, GONOPROXY=none, GOENV=off), so the job needs
+  # Go but downloads no module and restores no cache.
   ci-filters:
     needs: changes
     if: needs.changes.outputs.ci_filters == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
