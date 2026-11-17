@@ -36,8 +36,9 @@
 // way when its stat, read again, shows it gone or exited, since it may have exited in between.
 //
 // What it may end is its caller's to say (Classifier): the launcher protects Legion's own
-// processes and the agents', and INFRA-3531's controller pod protects its own. The package
-// protects only its own process.
+// processes and the agents', in an issue pod's container and, as process 1 of the controller's
+// container, in the controller's pod (INFRA-3531), whose every process it reports as the
+// controller's. The package protects only its own process.
 package memoryguard
 
 import (

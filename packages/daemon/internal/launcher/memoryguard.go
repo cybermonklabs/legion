@@ -20,14 +20,15 @@ import (
 var newMemoryGuard = memoryguard.New
 
 // containerInit is whether this launcher is its container's first process, PID 1 of the
-// container's PID namespace, the one rule that also starts the orphan reaper (Run). The pod's
+// container's PID namespace, the one rule that also starts the orphan reaper (Run). Either form's
 // classifier holds only there: PID 1 sees every process of the container and owns each one no
-// role-init does, the test database's postmaster is reparented to it, and a process under no
-// role-init is no role's. A launcher run anywhere else (a test of cmd/legion, a launcher run by
-// hand) shares its /proc with processes the classifier knows nothing of, and would end them. The
-// clone's git lock sweep runs behind the same rule (serveGitLockSweep), since a pass removes a
-// lock no process it sees holds open. It is a package variable so that a test of the guard or of
-// the sweep can stand its test process in for PID 1.
+// role-init does (in the controller's pod, every one), the test database's postmaster is
+// reparented to it, and a process under no role-init is no issue pod role's. A launcher run
+// anywhere else (a test of cmd/legion, a launcher run by hand) shares its /proc with processes the
+// classifier knows nothing of, and would end them. The clone's git lock sweep runs behind the same
+// rule (serveGitLockSweep), since a pass removes a lock no process it sees holds open. It is a
+// package variable so that a test of the guard or of the sweep can stand its test process in for
+// PID 1.
 var containerInit = func() bool { return os.Getpid() == 1 }
 
 // maxWaitingMemoryKills is the most reports of the guard's kills a role keeps while no connection
@@ -36,42 +37,57 @@ var containerInit = func() bool { return os.Getpid() == 1 }
 // report would have told the role.
 const maxWaitingMemoryKills = 32
 
-// serveMemoryGuard runs the issue pod's one memory guard (INFRA-3557) and each role's sender of
-// that guard's kill reports until ctx ends, and answers a channel closed once all of them have
-// returned, so Run can wait for it as it waits for the test database's ticker (serveTestPG). The
-// controller's pod runs none: Run's single-role branch returns before this is reached.
+// serveMemoryGuard runs the pod's one memory guard and each role's sender of that guard's kill
+// reports until ctx ends, and answers a channel closed once all of them have returned, so Run can
+// wait for it as it waits for the test database's ticker (serveTestPG). Both of the launcher's
+// forms run one, each with the classifier and the line writer of its form. An issue pod's
+// (INFRA-3557) knows each process's role by the role-init above it (podClassifier), and its lines
+// are the launcher's own, behind no role's prefix (roleLog.linef), because it watches every role's
+// processes and the launcher's together. The controller pod's (INFRA-3531) has one role, which
+// owns every process of the container (controllerClassifier), and its lines are that role's own
+// (manager.logf): the container's log, where no line carries a prefix.
 //
 // The guard runs only where the launcher is the container's first process (containerInit). Any
-// other launcher logs one line and runs none: no manager then holds a guard, so serve hands no
-// settings on and no report is ever queued.
+// other launcher logs one line, through its form's writer, and runs none: no manager then holds a
+// guard, so serve hands no settings on and no report is ever queued.
 //
 // The guard runs at memoryguard's defaults from the start, before any role connects, so the pod is
 // guarded while the daemon is away, and each role's acknowledgement then hands it the daemon's
-// settings (serve). Its lines are the launcher's own, behind no role's prefix (roleLog.linef),
-// because it watches every role's processes and the launcher's together. A kill of a process in a
-// role is reported to that role's manager, which sends it on that role's connection
-// (queueMemoryKill); a kill of a process in no role has the guard's own line and nothing else.
+// settings (serve). A kill of a process in a role is reported to that role's manager, which sends
+// it on that role's connection (queueMemoryKill). In an issue pod a kill of a process in no role
+// has the guard's own line and nothing else; in the controller's pod every process is the
+// controller's, so every kill is reported to its one manager.
 func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
+	controller := cfg.RolesDir == ""
+	logf := managers[0].logf
+	if !controller {
+		logf = managers[0].log.linef
+	}
 	if !containerInit() {
-		managers[0].log.linef("launcher: memory guard: off reason=the launcher is pid %d, not the container's first process, so it neither sees nor owns every process of the container",
+		logf("launcher: memory guard: off reason=the launcher is pid %d, not the container's first process, so it neither sees nor owns every process of the container",
 			os.Getpid())
 		close(done)
 		return done
 	}
-	byRole := make(map[string]*manager, len(managers))
-	for _, m := range managers {
-		byRole[m.role] = m
-	}
-	guard := newMemoryGuard(memoryguard.Config{
-		Classify: newPodClassifier(cfg.RolesDir, managers, pids).classify,
-		Sink: func(k memoryguard.Kill) {
+	var classify memoryguard.Classifier
+	var sink func(memoryguard.Kill)
+	if controller {
+		classify = newControllerClassifier(managers[0], pids).classify
+		sink = func(k memoryguard.Kill) { managers[0].queueMemoryKill(k.LauncherMemoryKill) }
+	} else {
+		byRole := make(map[string]*manager, len(managers))
+		for _, m := range managers {
+			byRole[m.role] = m
+		}
+		classify = newPodClassifier(cfg.RolesDir, managers, pids).classify
+		sink = func(k memoryguard.Kill) {
 			if m := byRole[k.Role]; m != nil {
 				m.queueMemoryKill(k.LauncherMemoryKill)
 			}
-		},
-		Logf: managers[0].log.linef,
-	})
+		}
+	}
+	guard := newMemoryGuard(memoryguard.Config{Classify: classify, Sink: sink, Logf: logf})
 	var running sync.WaitGroup
 	for _, m := range managers {
 		m.memoryGuard = guard
@@ -95,7 +111,8 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 }
 
 // The arguments the classifier knows Legion's and the agents' own processes by. Each is matched
-// only at the place in the tree its process holds (podClassifier.classify), never on its own.
+// only at the place in the tree its process holds (podClassifier.classify,
+// controllerClassifier.classify), never on its own.
 const (
 	// shimArgument is a role's shim, `legion worker-shim`.
 	shimArgument = "worker-shim"
@@ -194,18 +211,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 			whole = append(whole, p.PID)
 		}
 	}
-	for seen := map[int]bool{}; len(whole) > 0; {
-		pid := whole[0]
-		whole = whole[1:]
-		if seen[pid] {
-			continue
-		}
-		seen[pid] = true
-		protected[pid] = true
-		for _, child := range t.Children(pid) {
-			whole = append(whole, child.PID)
-		}
-	}
+	protectTrees(t, whole, protected)
 
 	byInit := make(map[int]string, len(inits))
 	byNamespace := make(map[string]string, len(inits))
@@ -225,7 +231,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		}
 		protected[shim.PID] = true
 		for _, agent := range t.Children(shim.PID) {
-			c.protectAgent(t, agent, protected)
+			protectAgent(t, agent, protected)
 		}
 	}
 
@@ -243,14 +249,102 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 	return classes
 }
 
-// protectAgent spares agent, a direct child of a role's shim, and what runs under it that is the
-// agent's own rather than its work: under a Claude Code bridge, `claude` and its MCP server; under
-// Oh My Pi, every helper reached from the agent through a chain of helpers, since a helper starts
-// helpers of its own (the daemon broker starts the LSP multiplexer). What a helper runs that is no
-// helper (the multiplexer's gopls), the eval kernel wherever it runs with all it starts, and a
-// helper's name under the agent's command, which no chain of helpers reaches, stay the agent's
-// work.
-func (c *podClassifier) protectAgent(t *memoryguard.Table, agent *memoryguard.Process, protected map[int]bool) {
+// protectTrees spares each of roots and every process under it. It takes each pid once: the scan
+// reads one process at a time, so a pid reused between two reads can make the parent links a loop.
+func protectTrees(t *memoryguard.Table, roots []int, protected map[int]bool) {
+	for seen := map[int]bool{}; len(roots) > 0; {
+		pid := roots[0]
+		roots = roots[1:]
+		if seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		protected[pid] = true
+		for _, child := range t.Children(pid) {
+			roots = append(roots, child.PID)
+		}
+	}
+}
+
+// controllerClassifier is the controller pod's memoryguard.Classifier (INFRA-3531): which
+// processes the guard must spare, and whose role each process is. The controller's pod has no
+// role-init: the launcher is PID 1 of the controller's container, and its generation is the shim
+// itself, started in the container's own namespaces (manager.command). A process is known by its
+// place in the tree first and by its executable and arguments second, as podClassifier knows one,
+// so a program that copies the name or the arguments of a protected one anywhere else in the tree
+// (an `omp` copy or a helper's argument under another executable below the agent, a `worker-shim`
+// that is not the manager's generation) is not spared for it.
+//
+// It spares the launcher itself; each process the launcher holds (pidGuard: the restore's jj and
+// git) with its descendants; the shim, the manager's running generation, only while that process
+// is this binary run as `worker-shim`, since the manager keeps its generation's pid until its wait
+// is done with it, and once the shim is reaped the kernel may give that pid to another process;
+// and every direct child of the shim with what is the agent's own under it (protectAgent): the
+// agent before and after its start wrapper execs it, Oh My Pi's helpers but its eval kernel, and
+// the secrets renewer and its keygen, which are Legion's own by construction, since a command the
+// agent runs is the agent's child and never the shim's.
+//
+// Every process of the container is the controller's, protected or not: no other role runs
+// there, so a kill of an orphan the launcher adopted as PID 1, or of a process a `kubectl exec`
+// started under no shim, is reported to the controller as a kill of its agent's command is, and
+// every line of the guard's names the manager's role.
+//
+// It keeps nothing a scan changes: the shim's pid is read under the manager's lock and the
+// launcher's own children under the pid guard's lock, at each scan, so the guard's loop and its
+// hourly scan may ask it at the same time.
+type controllerClassifier struct {
+	// launcher is this process, and exe its executable as /proc/self/exe reads it, once: the shim
+	// is this same binary.
+	launcher int
+	exe      string
+	manager  *manager
+	pids     *pidGuard
+}
+
+// newControllerClassifier is the classifier of the controller's pod, whose one role m serves and
+// whose launcher holds pids.
+func newControllerClassifier(m *manager, pids *pidGuard) *controllerClassifier {
+	exe, _ := os.Readlink("/proc/self/exe")
+	return &controllerClassifier{launcher: os.Getpid(), exe: exe, manager: m, pids: pids}
+}
+
+// classify is the classifier itself (memoryguard.Classifier).
+func (c *controllerClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class {
+	c.pids.mu.Lock()
+	held := c.pids.held()
+	c.pids.mu.Unlock()
+	shimPID := 0
+	c.manager.mu.Lock()
+	if c.manager.child != nil {
+		shimPID = c.manager.child.pid
+	}
+	c.manager.mu.Unlock()
+
+	protected := map[int]bool{c.launcher: true}
+	protectTrees(t, held, protected)
+	if shim, ok := t.Get(shimPID); ok && c.exe != "" && shim.Exe == c.exe && argument(shim, 1) == shimArgument {
+		protected[shim.PID] = true
+		for _, agent := range t.Children(shim.PID) {
+			protectAgent(t, agent, protected)
+		}
+	}
+
+	processes := t.Processes()
+	classes := make(map[int]memoryguard.Class, len(processes))
+	for _, p := range processes {
+		classes[p.PID] = memoryguard.Class{Role: c.manager.role, Protected: protected[p.PID]}
+	}
+	return classes
+}
+
+// protectAgent spares agent, a direct child of the shim (a role's in an issue pod, the one
+// generation in the controller's), and what runs under it that is the agent's own rather than its
+// work: under a Claude Code bridge, `claude` and its MCP server; under Oh My Pi, every helper
+// reached from the agent through a chain of helpers, since a helper starts helpers of its own (the
+// daemon broker starts the LSP multiplexer). What a helper runs that is no helper (the
+// multiplexer's gopls), the eval kernel wherever it runs with all it starts, and a helper's name
+// under the agent's command, which no chain of helpers reaches, stay the agent's work.
+func protectAgent(t *memoryguard.Table, agent *memoryguard.Process, protected map[int]bool) {
 	protected[agent.PID] = true
 	if argument(agent, 1) == claudeBridgeArgument {
 		for _, p := range t.Children(agent.PID) {

@@ -128,7 +128,15 @@ func Run(ctx context.Context, cfg Config) error {
 		go reapOrphans(ctx, exits, managers, pids)
 	}
 	if cfg.RolesDir == "" {
-		return managers[0].serveUntil(ctx, address)
+		// The controller pod's memory guard (INFRA-3531), before the role's first connection, so
+		// the container is guarded while the daemon is away; only a launcher that is the
+		// container's first process runs one, as only that one runs the reaper above, and any
+		// other logs a line instead (serveMemoryGuard). Run returns once its loop has, as the roles
+		// form's below does.
+		memory := serveMemoryGuard(ctx, cfg, managers, pids)
+		err := managers[0].serveUntil(ctx, address)
+		<-memory
+		return err
 	}
 	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is an
 	// issue pod's roles container: the single-role form returned above is the project
@@ -491,9 +499,9 @@ type manager struct {
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
 	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
-	// container shares: each connection's acknowledgement hands it the daemon's settings
-	// (serve). It is nil in the controller's pod and in a launcher that is not its container's
-	// first process, which run none (serveMemoryGuard).
+	// container shares and the controller pod's one manager holds alone: each connection's
+	// acknowledgement hands it the daemon's settings (serve). It is nil in a launcher that is not
+	// its container's first process, which runs none (serveMemoryGuard).
 	memoryGuard *memoryguard.Guard
 	// memoryKills are the guard's reports of this role's processes it ended that no connection
 	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter

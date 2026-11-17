@@ -23,6 +23,15 @@ var helperChildVariables = []string{
 	roleInitEnv, roleProbeEnv,
 }
 
+// mainHelpers are this package's helper children that no test can re-enter: one started as the
+// controller's shim (`<test binary> worker-shim …`) or as Oh My Pi's eval kernel (`<a copy>
+// __omp_worker_js_eval_process`) takes the arguments of the process it stands for, and its first
+// argument is no -test flag, so m.Run would refuse it or run every test of the package. Each is
+// keyed by its LEGION_ marker, and TestMain runs the one whose marker is set before anything else
+// and exits; the file whose helper it is registers it, as roleinit_test.go registers its markers
+// in helperChildVariables.
+var mainHelpers = map[string]func(){}
+
 // TestMain takes out of the process every variable that could lead git or jj to a workspace,
 // remote or credential not the test's own (fixtureenv.Guard). The tests here run both: a released
 // workspace's bundle is restored by this package's own code, in process, with the real git and jj
@@ -42,6 +51,12 @@ var helperChildVariables = []string{
 // would connect to and query the store every agent of the deployment reads and writes. Each test
 // here that needs a session database names its own (testdb.DSNFile).
 func TestMain(m *testing.M) {
+	for name, helper := range mainHelpers {
+		if os.Getenv(name) != "" {
+			helper()
+			os.Exit(0)
+		}
+	}
 	for _, name := range helperChildVariables {
 		if os.Getenv(name) != "" {
 			os.Exit(m.Run())
