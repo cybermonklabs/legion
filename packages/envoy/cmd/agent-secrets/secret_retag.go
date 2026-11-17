@@ -69,7 +69,7 @@ var errTagsRestored = errors.New("the tags are restored to what this retag read;
 func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	const form = "secret retag"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
-	flags, profile := secretFlags(form, stderr)
+	flags := secretFlags(form, stderr)
 	newOwner := flags.String("owner", "", "the new owner: me (the email of the person your AWS or Google sign-in names), shared, or a person's email")
 	newTier := flags.String("tier", "", "the new tier: agent or human")
 	newKind := flags.String("kind", "", strings.Join(policy.Kinds, ", ")+" or none")
@@ -156,7 +156,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, err := openSession(context.Background(), *profile)
+	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
