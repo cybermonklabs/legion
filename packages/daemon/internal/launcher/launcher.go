@@ -180,8 +180,8 @@ func Run(ctx context.Context, cfg Config) error {
 	// (serveVolumeTrim). It is built before any role starts, as the test database is, and its
 	// loop is waited on with the roles below, so Run returns with nothing of the launcher's
 	// still running. Only a launcher that is the container's first process builds one, as only
-	// that one runs the memory guard and the lock sweep above, and any other logs a line
-	// instead.
+	// that one runs the memory guard, or in a microVM pod the guest watch in its place, and the
+	// lock sweep above, and any other logs a line instead.
 	trim := serveVolumeTrim(ctx, managers[0], pids)
 	var running sync.WaitGroup
 	for _, m := range managers {

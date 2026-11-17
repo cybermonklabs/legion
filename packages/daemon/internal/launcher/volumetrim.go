@@ -557,10 +557,11 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // carried into the next report, and three in a row stop the trimmer until the launcher process
 // restarts (fault, run), which no other ending of the four does. A row is ended only by a tick
 // whose sweep, and its report where it makes one, runs to its end; a tick that only reads the
-// volume, in a pause or below the high mark, neither ends it nor adds to it (fault). A panic
-// leaves restart as the settings of this tick set it, so a tick that changed interval_seconds and
-// then panicked still has the interval clock made again at the new period. The rest of the
-// goroutine, this recovery's own handler included, is run's to contain (run).
+// volume, in a pause or below the high mark, neither ends it nor adds to it unless it panics,
+// and a panic in any tick adds to it (fault). A panic leaves restart as the settings of this tick
+// set it, so a tick that changed interval_seconds and then panicked still has the interval clock
+// made again at the new period. The rest of the goroutine, this recovery's own handler included,
+// is run's to contain (run).
 func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim) (restart bool, ending trimEnding) {
 	defer func() {
 		recovered := recover()
@@ -795,12 +796,14 @@ func (t *trimmer) riseAt(start float64) {
 // the trimmer off and makes its last report (switchOff), outside any deferred handler. It counts
 // the panic before it writes its line, so a panic of the line leaves the fault counted (run).
 //
-// The row counts the ticks that do the trimmer's work. Every panic of that work adds to it, one
-// tick recovered and one run contained alike, and only a tick whose sweep, and its report where it
-// makes one, runs to its end ends it (tick). A tick that only reads the volume, in a pause or
-// below the high mark, does neither, so a trimmer whose every report panics, with the pause after
-// each sweep, switches itself off at its third panic instead of faulting for the life of the pod
-// with nothing beyond its log to show for it.
+// The row counts every recovered panic since the last tick whose sweep, and its report where it
+// makes one, ran to its end, which alone ends it (tick): a panic tick recovered and one run
+// contained alike, a panic in a tick that only reads the volume among them. A tick that only reads
+// the volume, in a pause or below the high mark, and does not panic neither ends the row nor adds
+// to it, so a trimmer whose every report panics, with the pause after each sweep, switches itself
+// off at its third panic instead of faulting for the life of the pod with nothing beyond its log
+// to show for it; and a volume that stays below the high mark, so that no sweep ends a row, is
+// switched off by its third panic however far apart the three come.
 //
 // Only the newest shimwire.VolumeReportFaults stacks are kept, and what they displace is
 // counted (keepNewestFaults).
