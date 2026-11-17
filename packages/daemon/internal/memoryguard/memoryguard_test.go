@@ -3715,6 +3715,35 @@ func TestMemoryGuardCountsUnreadAndNeverEndsALiveProcessWhoseExeIsMissing(t *tes
 	}
 }
 
+// A process whose stat reads Z is named in the stopped line by its pid alone, and adds nothing to
+// its unread sum, even where its own smaps reads a size (INFRA-3531 R3 of spec version 30): the
+// memory of a process whose main thread has exited is its live threads', which the leader's smaps
+// does not show the same under every kernel. Pid 975's stat reads Z with two threads, its exe does
+// not read, as gVisor answers EACCES, and its smaps reads 300 MiB. Beside the agent, what the guard
+// may end holds 200 MiB, under the floor: at the mark it gives the rise up, ends nothing, and its
+// line reads unread=0 and unread_processes=975.
+func TestMemoryGuardNamesAZombieLeaderWithThreadsLeftByItsPidAloneThoughItsSmapsReadsASize(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(2 * gib))
+	for i := range 5 {
+		pod.add(fakeProcess{pid: 500 + i, ppid: 100, args: []string{"sleep", "600"}, anon: 40 * mib})
+	}
+	pod.add(fakeProcess{pid: 975, ppid: 100, args: []string{"python3", "threads.py"}, anon: 300 * mib, zombie: true, threads: 2, unreadableExe: true})
+	pod.setAnon(3500 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.run()
+	h.requireKilled()
+	if unread := h.log.with("unread"); len(unread) != 1 || !strings.HasPrefix(unread[0], "launcher: memory guard: unread pid=975 reason=read the exe: ") {
+		t.Fatalf("the unread lines are %q, want one for pid 975", unread)
+	}
+	endable := 200 * mib
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0 unread_processes=975",
+		3500*mib, endable, 2*gib, 3500*mib-endable-2*gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
 // A zombie with no thread left holds no memory, and a missing exe of it leaves it out of the scan as
 // before: pid 980's stat reads Z with one thread and its exe is missing. The guard ends pid 981,
 // logs no unread line, and the stopped line of the next rise names no process it could not read.
