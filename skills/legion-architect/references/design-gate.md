@@ -151,8 +151,9 @@ The ordering, which this rule needs and does not change:
   what is built changes, and then you request approval again.
 - Where the `Design gate steps` sentence of your `Legion addressing` line says `none`, nobody approves
   the spec. Make the picture, put it in the spec for whoever builds it, and ask nobody.
-- The surfaces this tree's children build are yours. Their pictures go in the root spec, and a
-  sub-architect that finds a surface the root spec never drew tells the root architect.
+- The surfaces this tree's children build are the root architect's. Their pictures go in the root
+  spec. A sub-architect that finds a surface the root spec never drew tells the architect above
+  it, and each architect above sends it up the tree to the root architect.
 
 ## Which steps are gated
 
@@ -380,8 +381,8 @@ Summary, the requirements, the checks, the scope and every settled decision unch
 is the record and the tree carries on; otherwise change the root spec and request approval again.
 
 Later children and re-scoping open children toward the same requirements need no spec edit and no
-new approval. A child issue's spec is never gated, and its architect writes the child's own
-Verification document.
+new approval. A child issue's spec is never gated, and its parent's review stands in its place
+(`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec").
 
 ## A decision block for a read no pod can make
 
@@ -395,4 +396,6 @@ operator's deployment grants pods. Read the pod's own environment (for example `
 When the evidence is not reachable, do not have another running session read it for this tree and
 fold the result into the spec, because that hides the gap from the next tree that hits it. Write
 the missing capability as its own decision block to the human (which external system, which read or
-write, why the spec needs it), and leave it open until the human resolves it.
+write, why the spec needs it), and leave it open until the human resolves it. A child's own
+architect writes no decision block: it sends the missing capability to the architect above it with
+`envoy_publish`, and the root architect writes the block in the root spec.

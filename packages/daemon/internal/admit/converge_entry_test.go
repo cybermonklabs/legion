@@ -135,7 +135,7 @@ func convergeRows() []convergeRow {
 			name: "a child's own sub-architect", root: "LEGION-944", key: "LEGION-945", stands: phase.Accepting,
 			flipRoot: "LEGION-946", flipKey: "LEGION-947", flip: func(r *convergeRow) { r.stands, r.started = phase.Testing, true },
 			claimed: true, state: supervise.StateWorking, given: seededEntry - 1,
-			why: "this row changes the phase alone, to one a phase worker works: the member is no tree root, so its own sub-architect claim is the one claim the architect's reach leaves out (workflow.ArchitectAtWork), since no daemon start creates one",
+			why: "this row changes the phase alone, to one a phase worker works: the member is no tree root, so its own sub-architect claim is the one claim the architect's reach leaves out (workflow.ArchitectAtWork), since its start carries no task and raises no entry",
 		},
 		{
 			name: "an issue at work holding no slot", root: "LEGION-950", key: "LEGION-951", stands: phase.Testing,

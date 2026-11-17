@@ -254,7 +254,12 @@ key directory or a helper session, 1 otherwise, asking nothing of the network. `
 identity --source` walks the chain, registering nothing, and prints the source a command would
 use (`key-dir: <dir>`, `sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in
 <dir>`, or `machine: ` and the identity it would trade), then `helper: <socket>` whenever the
-helper answered and is not that source; with none it prints the refusal above and exits 1.
+helper answered and is not that source; with none it prints the refusal above and exits 1. Each
+`helper: <socket>` line ends with the release of the helper process that answered, as that process
+reports it (`(agent-secrets-helper <release>)`), not the release installed on disk, which differs
+after an upgrade until the helper restarts. A helper from before that report answers
+`unknown op version`, and the line ends `(a helper from before this release; its binary is
+/proc/<pid>/exe)`, naming the process on the socket.
 
 ## Machine login
 
