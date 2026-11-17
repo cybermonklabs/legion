@@ -234,17 +234,21 @@ export function holdingTarget(port = 0) {
  *  empty), the seconds to wait before the last part, whether the list is then held open with
  *  nothing more until the script exits (any word for yes, empty for no), the paths of sleep and
  *  mkfifo, the named pipe's path, the path the wrapper creates once the script exits, then the
- *  shell and the script. Before a last part it writes a comment line of 131072 spaces, twice the
- *  64 KiB a new pipe holds on Linux, under gVisor and on macOS, so that write returns only once the
- *  script has read past the first part. The writer of a named pipe is stopped once the script
- *  exits, in case the script stopped before it opened the pipe, and a held list's writer stops
- *  once the test process, the wrapper's parent, has gone. */
+ *  shell and the script. Before a last part it writes 128 comment lines of 1024 bytes, 128 KiB,
+ *  twice the 64 KiB a new pipe holds on 4 KiB-page Linux, under gVisor and on macOS, so those
+ *  writes return only once the script has read past the first part; lines of 1 KiB, since the
+ *  script splits the list one line at a time and a long line costs it seconds. The writer of a
+ *  named pipe is stopped once the script exits, in case the script stopped before it opened the
+ *  pipe, and a held list's writer stops once the test process, the wrapper's parent, has gone. */
 const listFeeder = [
   "via=$1 first=$2 later=$3 pause=$4 hold=$5 sleep=$6 mkfifo=$7 fifo=$8 ended=$9",
   "shift 9",
   "feed() {",
   '  printf "%s" "$first"',
-  '  [ -z "$later" ] || { printf "#%*s\\n" 131072 ""; "$sleep" "$pause"; printf "%s" "$later"; }',
+  '  [ -z "$later" ] || {',
+  '    n=0; while [ "$n" -lt 128 ]; do printf "#%*s\\n" 1022 ""; n=$((n + 1)); done',
+  '    "$sleep" "$pause"; printf "%s" "$later"',
+  "  }",
   '  [ -z "$hold" ] || until [ -e "$ended" ]; do kill -0 "$PPID" 2>/dev/null || exit 70; "$sleep" 0.05; done',
   "}",
   "case $via in",

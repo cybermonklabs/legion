@@ -8,7 +8,8 @@
  *  `drive` sends it TMOUT seconds after a write that returns only once the script is reading.
  *  bash's read, timed from its own start, has then timed out if TMOUT still holds, and it says so
  *  even when the line is already in the pipe when it next runs (on Linux and under gVisor alike).
- *  So a script that keeps TMOUT fails every row that sets one, however late this host runs it.
+ *  So a script that keeps TMOUT fails every row whose TMOUT this host's bash takes as a read
+ *  timeout (bash 3.2 ignores a fractional one), however late this host runs it.
  *  A TMOUT the script cannot unset is `outside-path-reach-input.test.ts`'s, and
  *  `outside-path-reach-fixtures.ts` holds the fixtures and says how they work.
  */
