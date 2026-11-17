@@ -29,16 +29,20 @@ type MintRequest struct {
 
 	// Check asks the minter whether it could serve this request, without serving it; only the
 	// github-app minter reads it. A check of a narrowing that names repositories or read-only
-	// mints exactly what a release would mint, by the same calls in the same order, and releases
-	// no token: it revokes every token GitHub answers it with as soon as GitHub answers, holding
-	// none past that moment, and answers Minted{} with the error the release would have answered,
-	// nil where the release would have succeeded. A check of a narrowing to its owner alone mints
-	// nothing: it lists the App's installations and answers from that list alone, the refusal of
-	// an account with no installation or nil, since GitHub's answer to a token request with no
-	// access_tokens body can refuse the App but never the narrowing (GitHubApp.Mint). So a
-	// caller learns the verdict before it spends anything on the release itself. Check without
-	// GitHubNarrowing is a programming error: there is nothing to find out about a release the
-	// broker already makes owner-wide, and the minter refuses it before it asks GitHub anything.
+	// mints exactly what a release would mint, by the same calls in the same order but for a
+	// token request whose answer was lost, which it sends once where a release sends it again, so
+	// such an answer leaves at most that one token live at GitHub. It releases no token: it
+	// revokes every token GitHub answers it with as soon as GitHub answers, holding none past that
+	// moment, among them a token whose answer it cannot use (cut off, past its cap, undecodable,
+	// with no expiry) wherever the part that arrived names it, and answers Minted{} with the error
+	// the release would have answered, nil where the release would have succeeded. A check of a
+	// narrowing to its owner alone mints nothing: it lists the App's installations and answers
+	// from that list alone, the refusal of an account with no installation or nil, since GitHub's
+	// answer to a token request with no access_tokens body can refuse the App but never the
+	// narrowing (GitHubApp.Mint). So a caller learns the verdict before it spends anything on the
+	// release itself. Check without GitHubNarrowing is a programming error: there is nothing to
+	// find out about a release the broker already makes owner-wide, and the minter refuses it
+	// before it asks GitHub anything.
 	Check bool
 }
 
@@ -77,7 +81,7 @@ type GitHubNarrowing struct {
 // access_tokens body takes 500, but its answer carries a full repository object for each one,
 // about 5 KB, and the minter reads that answer to a cap sized for this many
 // (accessTokensResponseLimit): a token GitHub minted whose answer the minter cannot read whole
-// cannot be released or revoked.
+// cannot be released, and is revoked only where the part it read names the token.
 const MaxNarrowedRepositories = 100
 
 // The classes of a minter's failure. Every error a minter returns wraps exactly one, so the

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The broker's check of a GitHub App narrowing before the approval request no longer leaves a token
+  live at GitHub that nobody holds. GitHub mints the token when it answers a token request `201`, so
+  an answer cut off part of the way, past the minter's cap, undecodable or without an expiry now has
+  the token the part that arrived names revoked at GitHub, for a check and a failed release alike,
+  and an answer whose part does not name the token is logged as a token nothing can revoke. A check
+  sends a token request whose answer was lost once rather than again, so a lost answer leaves at
+  most that one token, which lapses within its hour; a release still sends it again.

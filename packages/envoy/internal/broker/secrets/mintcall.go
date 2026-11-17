@@ -59,6 +59,9 @@ type mintTransportError struct {
 	what, who, class string
 	// read is a failure reading the body of an answer that had begun.
 	read bool
+	// status is the status that answer came with, for a read that failed; 0 where no answer
+	// arrived (answeredStatus).
+	status int
 }
 
 func (e *mintTransportError) Error() string {
@@ -69,6 +72,37 @@ func (e *mintTransportError) Error() string {
 }
 
 func (e *mintTransportError) Unwrap() error { return ErrMintUpstream }
+
+// mintOversizeError is an answer past the call's cap, with the status it came with
+// (answeredStatus). It wraps ErrMintUpstream and is never retried (classify).
+type mintOversizeError struct {
+	what, who string
+	limit     int64
+	status    int
+}
+
+func (e *mintOversizeError) Error() string {
+	return fmt.Sprintf("%s: %s: %s answered more than %d bytes", ErrMintUpstream, e.what, e.who, e.limit)
+}
+
+func (e *mintOversizeError) Unwrap() error { return ErrMintUpstream }
+
+// answeredStatus is the status of an answer whose body the call could not use whole: one whose
+// read failed part of the way, or one past the call's cap. It is 0 for every other error, and for
+// a call that got no answer at all. A call whose wanted status means the upstream made something,
+// as GitHub's 201 to a token request means a live token, reads it to learn that the upstream made
+// it although the answer did not hand it over whole (GitHubApp.installationToken).
+func answeredStatus(err error) int {
+	var transport *mintTransportError
+	var oversize *mintOversizeError
+	switch {
+	case errors.As(err, &transport):
+		return transport.status
+	case errors.As(err, &oversize):
+		return oversize.status
+	}
+	return 0
+}
 
 // rateLimited reports whether response, whose body is body, says it is a rate limit, without
 // quoting either: a 429; GitHub's X-RateLimit-Remaining of 0, which its primary rate limit's 403
@@ -103,14 +137,19 @@ func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Durat
 // its answer, attempting it again as mint's Retry allows: classify decides which failures are
 // retried, and mintRetry.again how long the call waits first and whether it may. Each attempt is
 // counted, and resends the request's body from GetBody; a request whose body cannot be read again
-// gets one attempt. what names the call and who the upstream in its errors. No error quotes the
-// request, the answer or the transport's own text: Go's HTTP client quotes a malformed status
-// line, and a status line or body can echo the credential the request carried, so a failed call
-// is named by its class alone (transportFailure). A status other than want is a *mintStatusError,
-// returned with the body, so a caller can read the upstream's own reason from it; every other
-// failure wraps ErrMintUpstream. The error of a failed call is its last attempt's, and carries
-// the number of attempts made (MintAttempts).
-func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what, who string, want int, limit int64) ([]byte, error) {
+// gets one attempt. resendLost is whether an attempt that got no answer it could read (a
+// *mintTransportError) is sent again at all: such an attempt may have reached the upstream and
+// been served, so a call that mints something nobody will use, as a check's token request does
+// (GitHubApp.installationToken), sends it once rather than have the upstream make it again. what
+// names the call and who the upstream in its errors. No error quotes the request, the answer or
+// the transport's own text: Go's HTTP client quotes a malformed status line, and a status line or
+// body can echo the credential the request carried, so a failed call is named by its class alone
+// (transportFailure). A status other than want is a *mintStatusError, returned with the body, so a
+// caller can read the upstream's own reason from it; an answer whose body was read in part, or
+// past limit, is returned with as much of it as was read, so a caller can find what the upstream
+// made in it; every other failure wraps ErrMintUpstream. The error of a failed call is its last
+// attempt's, and carries the number of attempts made (MintAttempts).
+func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what, who string, want int, limit int64, resendLost bool) ([]byte, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -123,7 +162,9 @@ func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what,
 		if err == nil {
 			return body, nil
 		}
-		if !retry || !resendable || !mint.again(ctx, attempt, err) {
+		var transport *mintTransportError
+		lost := errors.As(err, &transport)
+		if !retry || !resendable || lost && !resendLost || !mint.again(ctx, attempt, err) {
 			return body, &attemptsError{err: err, attempts: attempt}
 		}
 	}
@@ -150,10 +191,10 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), read: true}
+		return body, &mintTransportError{what: what, who: who, class: transportFailure(request.Context(), err), read: true, status: response.StatusCode}
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("%w: %s: %s answered more than %d bytes", ErrMintUpstream, what, who, limit)
+		return body[:limit], &mintOversizeError{what: what, who: who, limit: limit, status: response.StatusCode}
 	}
 	if response.StatusCode != want {
 		limited := rateLimited(response, body)
