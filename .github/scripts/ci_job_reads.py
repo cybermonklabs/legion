@@ -793,7 +793,7 @@ RULES = {
         run(DAEMON, ["./internal/notify", "./internal/controller"],
             "listenerwire/clients_test.go:28,30 wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)",
             mode="build"),
-        *[Read(path, "listenerwire/clients_test.go:46 lists the load-test package's Go files and :56 parses each, "
+        *[Read(path, "listenerwire/clients_test.go:100 lists the load-test package's Go files and :110 parses each, "
                      "test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)")
           for path in files_but_tests(f"{ENVOY}/loadtest")]],
     # --- envoy-infra
@@ -1402,10 +1402,10 @@ LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 # The unit step runs the module less five things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
 # checks, which the text-check job runs, and the architecture-note and spec-file packages and
-# listenerwire, which envoy-go-checks runs. Its `grep -Ev` is `/integration`, then the text checks,
-# then those packages and listenerwire, each the package alone, then, in the lane's own order,
-# each package in the form go list's import paths need - a tree matching the package and
-# everything under it, any other the package alone.
+# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs. Its
+# `grep -Ev` is `/integration`, then the text checks, then those packages, each the package alone,
+# then, in the lane's own order, each package in the form go list's import paths need - a tree
+# matching the package and everything under it, any other the package alone.
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
@@ -2630,14 +2630,15 @@ GATES = [
         ]),
         # The module but the race lane's packages, internal/integration, which the integration
         # step tests, the text checks, which the text-check job runs, and the architecture-note and
-        # spec-file packages and listenerwire, which envoy-go-checks runs. The Run names the
-        # packages the step's own `grep -Ev` keeps (packages_kept over UNIT_TEST_PATTERN), so it is
-        # read from the pattern the step runs rather than claimed beside it. A Run saying more would
-        # credit this job with tests other jobs run: the race lane's are envoy-go-race's,
-        # envoy-go-race-api's and envoy-go-race-docs', the text checks are the text-check job's,
-        # those packages and listenerwire are envoy-go-checks', and the closure of ./... would put
-        # their test files and the files only those tests read on this job's filter, so a change
-        # to one of them would start a job that does not run the test it touches.
+        # spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which
+        # envoy-go-checks runs. The Run names the packages the step's own `grep -Ev` keeps
+        # (packages_kept over UNIT_TEST_PATTERN), so it is read from the pattern the step runs
+        # rather than claimed beside it. A Run saying more would credit this job with tests other
+        # jobs run: the race lane's are envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs',
+        # the text checks are the text-check job's, those packages are envoy-go-checks', and the
+        # closure of ./... would put their test files and the files only those tests read on this
+        # job's filter, so a change to one of them would start a job that does not run the test it
+        # touches.
         # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
         # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
         # so a second run here asks nothing and can only pass, and
@@ -2676,8 +2677,9 @@ GATES = [
         # packages, tests, testdata and all, built from the list the unit step's `grep -Ev` leaves
         # them out by.
         step_run("envoy-go-checks", NOTE_AND_SPEC_STEP, NOTE_AND_SPEC_TEXT, ENVOY, NOTE_AND_SPEC_PKGS),
-        # listenerwire's tests, its clients test's type check of the daemon's listener clients
-        # among them, built from the list the unit step's `grep -Ev` leaves them out by.
+        # LISTENERWIRE_PACKAGES' tests (listenerwire's, its clients test's type check of the daemon's
+        # listener clients among them, and internal/wirecheck's), built from the list the unit
+        # step's `grep -Ev` leaves them out by.
         step_run("envoy-go-checks", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole

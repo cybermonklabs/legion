@@ -74,17 +74,19 @@ func (c *Client) Unsubscribe(ctx context.Context, release listenerwire.Unsubscri
 	return answer.Removed, nil
 }
 
+// SessionsRoute is the listener's session-list route, which Sessions reads and the stack check's
+// refusals name.
+const SessionsRoute = "/v1/sessions"
+
 // Sessions reads GET /v1/sessions and answers its status and up to 1 MiB of its body, decoding
 // nothing: the stack check asks only whether the listener answers its token and refuses another.
 func (c *Client) Sessions(ctx context.Context) (int, []byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+"/v1/sessions", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+SessionsRoute, nil)
 	if err != nil {
 		return 0, nil, err
 	}
 	request.Header.Set("Accept", "application/json")
-	if c.Token != "" {
-		request.Header.Set("Authorization", "Bearer "+c.Token)
-	}
+	c.authorize(request)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
 		return 0, nil, err
@@ -106,7 +108,7 @@ func (c *Client) post(ctx context.Context, path string, body any) ([]byte, error
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.Token)
+	c.authorize(request)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
 		return nil, err
@@ -117,6 +119,14 @@ func (c *Client) post(ctx context.Context, path string, body any) ([]byte, error
 		return answer, &Refusal{URL: c.URL + path, Status: response.StatusCode, Body: answer}
 	}
 	return answer, nil
+}
+
+// authorize sets the request's bearer when the client holds one, and no Authorization header when
+// it holds none: every call of the client goes through it, so each route sends the same.
+func (c *Client) authorize(request *http.Request) {
+	if c.Token != "" {
+		request.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 }
 
 // truncate is b cut to its first 300 bytes, marked as cut, as the harness's log lines cut an

@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,15 +34,68 @@ func TestListenerClientsUseListenerwire(t *testing.T) {
 	}
 }
 
-// listenerRoutePrefixes begin every route of the listener's HTTP API.
-var listenerRoutePrefixes = []string{"/v1/messages", "/v1/interests", "/v1/sessions", "/v1/registry", "/v1/roles", "/v1/legion"}
+// namesListenerRoute reports whether s, a string literal's value, names a route of the listener's
+// API, which the listener mounts whole at /v1 of its base URL (cmd/listener/main.go, v1Handler): a
+// /v1 path segment at the start of s, after a format verb that stands for the base ("%s/v1/..."),
+// or after a URL's scheme and host with no path between ("http://host:port/v1/..."), and the
+// "v1" segment a path join takes on its own. A /v1 after a path segment is another API's version
+// (Dispatch's /api/v1, the metadata server's /computeMetadata/v1), which the harness also calls.
+func namesListenerRoute(s string) bool {
+	if s == "v1" || strings.HasPrefix(s, "v1/") {
+		return true
+	}
+	for i := strings.Index(s, "/v1"); i >= 0; {
+		end := i + len("/v1")
+		if end == len(s) || strings.ContainsRune("/?#", rune(s[end])) {
+			if before := s[:i]; before == "" || formatVerbAtEnd.MatchString(before) || baseURLOnly.MatchString(before) {
+				return true
+			}
+		}
+		next := strings.Index(s[end:], "/v1")
+		if next < 0 {
+			break
+		}
+		i = end + next
+	}
+	return false
+}
+
+var (
+	formatVerbAtEnd = regexp.MustCompile(`%[a-z]$`)
+	baseURLOnly     = regexp.MustCompile(`^[a-z][a-z0-9+.-]*://[^/]*$`)
+)
+
+func TestTheRouteGuardNamesEveryFormOfAListenerRoute(t *testing.T) {
+	for value, want := range map[string]bool{
+		"/v1":                                true,
+		"/v1/":                               true,
+		"/v1/sessions":                       true,
+		"/v1/a-route-added-later":            true,
+		"%s/v1/interests/subscribe":          true,
+		"GET %s/v1/sessions answered %d":     true,
+		"http://127.0.0.1:8080/v1/sessions":  true,
+		"https://listener.example/v1?x=1":    true,
+		"v1":                                 true,
+		"v1/sessions":                        true,
+		"/api/v1/issues":                     false,
+		"GET %s/api/v1/projects answered %d": false,
+		"http://metadata.example/computeMetadata/v1/instance": false,
+		"/v10/sessions": false,
+		"v12":           false,
+	} {
+		if got := namesListenerRoute(value); got != want {
+			t.Errorf("namesListenerRoute(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
 
 // The load-test harness's main package also calls Dispatch, NATS and Cloud SQL with bodies of its
 // own, so wirecheck cannot read it whole; its calls to the listener go through its listener client,
 // which TestListenerClientsUseListenerwire reads. This holds the rest of the package to that: no
-// string literal of its source names a listener route, so a call of its own to the listener has no
-// route to send to. A package whose source this read finds no file of has read nothing and fails
-// as UNKNOWN.
+// string literal of its source names a listener route in any form namesListenerRoute reads, so a
+// call of its own to the listener has no route to send to. It reads literals, so a route built
+// from no literal at all, which nothing in the package writes, is outside it. A package whose
+// source this read finds no file of has read nothing and fails as UNKNOWN.
 func TestTheLoadTestCallsTheListenerOnlyThroughItsClient(t *testing.T) {
 	out, err := exec.Command("go", "list", "-f", "{{.Dir}}{{range .GoFiles}} {{.}}{{end}}", "../loadtest").Output()
 	if err != nil {
@@ -63,14 +117,9 @@ func TestTheLoadTestCallsTheListenerOnlyThroughItsClient(t *testing.T) {
 				return true
 			}
 			value, err := strconv.Unquote(literal.Value)
-			if err != nil {
-				return true
-			}
-			for _, prefix := range listenerRoutePrefixes {
-				if strings.HasPrefix(value, prefix) {
-					position := fset.Position(literal.Pos())
-					t.Errorf("loadtest/%s:%d names the listener route %q: call the listener through loadtest/listenerclient", name, position.Line, value)
-				}
+			if err == nil && namesListenerRoute(value) {
+				position := fset.Position(literal.Pos())
+				t.Errorf("loadtest/%s:%d names the listener route %q: call the listener through loadtest/listenerclient", name, position.Line, value)
 			}
 			return true
 		})
