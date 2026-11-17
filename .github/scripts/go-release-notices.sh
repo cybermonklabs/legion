@@ -5,7 +5,7 @@
 #
 # Two jobs run it, and that is why it is one script: ci.yaml's lint job (its notices step), on
 # every pull request and merge group the go_notices filter selects, and
-# .github/workflows/ci-caches.yaml's daemon job, on a push to main, to fill the go-notices cache
+# .github/workflows/ci-caches.yaml's notices job, on a push to main, to fill the go-notices cache
 # entry lint restores. The fill must build exactly what lint builds, or the entry warms nothing
 # and lint rebuilds it cold on every run with nothing failing, which is what two copies of these
 # loops drift into the moment a target list or a command changes.

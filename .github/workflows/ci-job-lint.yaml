@@ -209,7 +209,7 @@ jobs:
       # notices script changed), and whenever `changes` did not succeed.
       #
       # The loops are in .github/scripts/go-release-notices.sh, which
-      # .github/workflows/ci-caches.yaml's daemon job runs too, to fill the go-notices entry this
+      # .github/workflows/ci-caches.yaml's notices job runs too, to fill the go-notices entry this
       # step restores: one script, so the fill cannot warm anything but what this step builds.
       - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
         if: inputs.changes-result != 'success' || inputs.go_notices == 'true'

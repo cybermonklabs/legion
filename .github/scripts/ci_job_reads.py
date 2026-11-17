@@ -813,7 +813,7 @@ NOTICES_STEP = "Check every Go release archive's third-party notices can be writ
 def go_notices_runs():
     """Every go command .github/scripts/go-release-notices.sh starts, one per release target of
     each list it reads. The lines are the script's, not the step's: lint's notices step runs the
-    script, and ci-caches.yaml's daemon job runs the same one to fill the cache lint restores."""
+    script, and ci-caches.yaml's notices job runs the same one to fill the cache lint restores."""
     started_by = at("lint", NOTICES_STEP)
     out = []
     for target in targets(GO_TARGETS, "legion"):
