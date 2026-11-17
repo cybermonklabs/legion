@@ -272,55 +272,63 @@ func TestTheCommandNeedsAnInventory(t *testing.T) {
 	}
 }
 
-// The host query itself, run on this machine, sees a real process named envoy-listener, by its
-// pid, and no longer once it has ended: the instrument the fence trusts can fail. Other listeners
-// may run on the machine, so only the started process's own line is judged.
-func TestTheHostQuerySeesARealListenerProcessUntilItEnds(t *testing.T) {
+// The host query, run on this machine, sees a real process under every name this repository runs a
+// writer as - the listener as envoy-listener, as listener (`go run`, dev-stack.sh, e2e-refill.sh)
+// and as the held-port wrapper, Dispatch as envoy-dispatch, dispatch and a two-build dispatch-<x> -
+// by its pid, and no longer once it has ended: the instrument the fence trusts can fail. The
+// command, through an ssh that runs the query here, refuses while each runs and names it. Other
+// writers may run on the machine, so only each started process's own line is judged.
+//
+// At 7b262c2e0a the query knew only envoy-listener and envoy-dispatch, and the listener and
+// dispatch cases fail.
+func TestTheHostQuerySeesARealWriterProcessUnderEachOfItsNamesUntilItEnds(t *testing.T) {
 	sleep, err := exec.LookPath("sleep")
 	if err != nil {
-		t.Skip("no sleep binary to run as envoy-listener")
+		t.Fatalf("no sleep binary to run as a stand-in writer: %v", err)
 	}
-	binary := filepath.Join(t.TempDir(), "envoy-listener")
 	raw, err := os.ReadFile(sleep)
 	if err != nil {
 		t.Fatalf("read sleep: %v", err)
 	}
-	if err := os.WriteFile(binary, raw, 0o755); err != nil {
-		t.Fatalf("write the stand-in listener: %v", err)
-	}
-	process := exec.Command(binary, "300")
-	if err := process.Start(); err != nil {
-		t.Fatalf("start the stand-in listener: %v", err)
-	}
-	t.Cleanup(func() { _ = process.Process.Kill(); _ = process.Wait() })
-	line := strconv.Itoa(process.Process.Pid) + " envoy-listener"
-	query := func() string {
-		out, err := exec.Command("sh", "-c", hostQuery([]string{"envoy-listener"})).Output()
-		if err != nil {
-			t.Fatalf("run the host query: %v", err)
-		}
-		return string(out)
-	}
-	if out := query(); !strings.Contains(out, line+"\n") || !strings.HasSuffix(strings.TrimSpace(out), hostQueryDone) {
-		t.Fatalf("the host query did not list the running stand-in %q:\n%s", line, out)
-	}
-
-	// The command, through an ssh that runs the query here, refuses while it runs and names it.
 	ssh := filepath.Join(t.TempDir(), "local-ssh")
 	if err := os.WriteFile(ssh, []byte("#!/bin/sh\nfor last; do :; done\nexec sh -c \"$last\"\n"), 0o755); err != nil {
 		t.Fatalf("write the local ssh: %v", err)
 	}
 	uri, _ := server(t)
-	var stdout, stderr bytes.Buffer
-	code := command(context.Background(), []string{"check", "--nats", uri, "--host", "this-machine", "--ssh", ssh}, &stdout, &stderr, execRunner, http.DefaultClient)
-	if code != 1 || !strings.Contains(stderr.String(), "host this-machine: process "+line+" runs") {
-		t.Fatalf("check while the stand-in runs = %d\n%s%s", code, stdout.String(), stderr.String())
-	}
-
-	_ = process.Process.Kill()
-	_ = process.Wait()
-	if out := query(); strings.Contains(out, line+"\n") {
-		t.Fatalf("the host query still lists the ended stand-in %q:\n%s", line, out)
+	for _, name := range []string{"envoy-listener", "listener", "envoy-listener-heldport", "envoy-dispatch", "dispatch", "dispatch-e2e"} {
+		t.Run(name, func(t *testing.T) {
+			binary := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(binary, raw, 0o755); err != nil {
+				t.Fatalf("write the stand-in: %v", err)
+			}
+			process := exec.Command(binary, "300")
+			if err := process.Start(); err != nil {
+				t.Fatalf("start the stand-in: %v", err)
+			}
+			t.Cleanup(func() { _ = process.Process.Kill(); _ = process.Wait() })
+			comm := name[:min(len(name), 15)]
+			line := strconv.Itoa(process.Process.Pid) + " " + comm
+			query := func() string {
+				out, err := exec.Command("sh", "-c", hostQuery(fence{dispatch: true}.writerProcesses())).Output()
+				if err != nil {
+					t.Fatalf("run the host query: %v", err)
+				}
+				return string(out)
+			}
+			if out := query(); !strings.Contains(out, line+"\n") || !strings.HasSuffix(strings.TrimSpace(out), hostQueryDone) {
+				t.Fatalf("the host query did not list the running stand-in %q:\n%s", line, out)
+			}
+			var stdout, stderr bytes.Buffer
+			code := command(context.Background(), []string{"check", "--nats", uri, "--host", "this-machine", "--ssh", ssh}, &stdout, &stderr, execRunner, http.DefaultClient)
+			if code != 1 || !strings.Contains(stderr.String(), "host this-machine: process "+line+" runs") {
+				t.Fatalf("check while the stand-in runs = %d\n%s%s", code, stdout.String(), stderr.String())
+			}
+			_ = process.Process.Kill()
+			_ = process.Wait()
+			if out := query(); strings.Contains(out, line+"\n") {
+				t.Fatalf("the host query still lists the ended stand-in %q:\n%s", line, out)
+			}
+		})
 	}
 }
 

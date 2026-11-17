@@ -251,12 +251,19 @@ func (f fence) writerContainers() []string {
 	return names
 }
 
-// writerProcesses are the executables a writer runs as on a machine (docker/Dockerfile installs
-// both under these names, and the plugins run envoy-listener).
+// writerProcesses are the names a writer's process runs as on a machine (its /proc/<pid>/comm, the
+// executable's name cut to 15 bytes), as shell case patterns: every name this repository builds or
+// runs the listener as - envoy-listener (docker/Dockerfile, the plugins, every e2e script),
+// listener (`go run ./cmd/listener`, scripts/dev-stack.sh, scripts/e2e-refill.sh) and the held-port
+// wrapper's envoy-listener-heldport, whose comm is cut to envoy-listener- - and, when the CI state
+// bucket is among the buckets, every name it runs Dispatch as: envoy-dispatch, dispatch, and the
+// dispatch-<build> names of the e2e scripts' two-build comparisons (dispatch-e2e, dispatch-head,
+// dispatch-base). A binary renamed to anything else is not recognised; that is one of the ways a
+// writer gets past this proof (bestEffortWarning).
 func (f fence) writerProcesses() []string {
-	names := []string{"envoy-listener"}
+	names := []string{"envoy-listener", "envoy-listener-*", "listener"}
 	if f.dispatch {
-		names = append(names, "envoy-dispatch")
+		names = append(names, "envoy-dispatch", "dispatch", "dispatch-*")
 	}
 	return names
 }
