@@ -141,9 +141,9 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 			holder, forwards)
 	}
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	if slices.Contains(reached, contracts.AgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
+	if slices.Contains(reached, contracts.LegacyAgentSubject(holder)) || slices.Contains(reached, contracts.RoleTopicPrefix+routed) {
 		t.Fatalf("the comment reached %v, want neither the route %s nor %s among them: both copies wait for the comment's two unpinned mentions",
-			reached, route, contracts.AgentSubject(holder))
+			reached, route, contracts.LegacyAgentSubject(holder))
 	}
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while two unpinned mentions of the comment are live", at)

@@ -1,6 +1,7 @@
 package bus_test
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -104,7 +105,7 @@ func TestADrainedSubscriptionIsNotBoundAgainByAReconnect(t *testing.T) {
 			defer client.Close()
 			consumer := releaseDurable(t, client, "released")
 			hooked := make(chan struct{}, 8)
-			client.AddReconnectHook(func(*natsgo.Conn) error {
+			client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 				hooked <- struct{}{}
 				return nil
 			})
@@ -167,7 +168,7 @@ func TestDrainSubscriptionEndsWhatARestoreBoundAfterTheSubscriptionEnded(t *test
 	defer client.Close()
 	consumer := releaseDurable(t, client, "released")
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -226,7 +227,7 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 	defer direct.Close()
 	consumer := releaseDurable(t, direct, "released")
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -305,7 +306,7 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 	defer direct.Close()
 	consumer := releaseDurable(t, direct, "released")
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -496,7 +497,7 @@ func TestAFailedSubscriptionReleasedIsNotBoundByAReconnect(t *testing.T) {
 			}
 			defer client.Close()
 			hooked := make(chan struct{}, 8)
-			client.AddReconnectHook(func(*natsgo.Conn) error {
+			client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 				hooked <- struct{}{}
 				return nil
 			})
@@ -552,7 +553,7 @@ func TestReleaseFailedUnsubscribesWhatARestoreBound(t *testing.T) {
 	}
 	defer client.Close()
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})
@@ -641,7 +642,7 @@ func TestDrainSubscriptionDrainsTheHandleARestoreBound(t *testing.T) {
 	defer client.Close()
 	consumer := releaseDurable(t, client, "drained")
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})

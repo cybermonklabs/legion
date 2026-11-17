@@ -165,7 +165,7 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	authorSubject := contracts.AgentSubject(author)
+	authorSubject := contracts.LegacyAgentSubject(author)
 	if !slices.Contains(reached, authorSubject) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of this comment names the thread root's author, and the hold an unpinned mention puts on the role's holder delays no other session's copy",
 			reached, authorSubject)
@@ -176,9 +176,9 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key",
 			author, copies, comment.ID)
 	}
-	if slices.Contains(reached, contracts.AgentSubject(holder)) {
+	if slices.Contains(reached, contracts.LegacyAgentSubject(holder)) {
 		t.Fatalf("the comment reached %v, want %s not among them: that session holds the role the comment mentions, and its mention is on its way to the same host",
-			reached, contracts.AgentSubject(holder))
+			reached, contracts.LegacyAgentSubject(holder))
 	}
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing", holder, got, target)

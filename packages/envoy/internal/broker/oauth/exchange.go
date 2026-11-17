@@ -1198,17 +1198,46 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // decide because a refusal raised through the library's store hook arrives as invalid_request,
 // and this one is invalid_grant: the subject token is sound and it is the broker's state that
 // refuses it, exactly as a session name another principal holds is.
+//
+// Its error_description begins oauthwire.PodSessionNotRegistered and a colon, in place of the
+// library's stock invalid_grant text, because unlike every other invalid_grant a later trade can
+// cure it: a pod's trade can reach the broker before its registration does (its daemon registers
+// at the claim, a session's watch at the pod's creation, and either registrar can be down for
+// minutes), so both clients read these words as a refusal to trade again on rather than a final
+// one.
+//
+// A registration that names a key (the thumbprint the registrar sent, which the Legion daemon
+// sends for each role's own agent-secrets key) admits only an exchange whose DPoP proof is of that
+// key, and refuses one proved with another invalid_grant, naming the session. The roles of one
+// issue pod read one exchange token and are registered for one pod uid, so this is what keeps a
+// role holding the pod's token and a key of its own from trading for a sibling role's session. A
+// registration that names none is the pod's, as a session watch registers a session pod's one
+// session.
+//
+// That refusal is the one trade here that is the attack the key exists to stop, so it logs a WARN
+// line of its own naming the principal, the pod, the session, the key the registration is bound to
+// and the key the trade proved: writeError logs only a server error, and without the line the
+// refusal reads in the log as an expired grant or a registration not yet written does.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil
 	}
 	name, _ := session.Extra[ClaimSession].(string)
-	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name)
-	if err != nil {
+	presented := session.GetDPoPJWKThumbprint()
+	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name, presented)
+	var bound *oauthstore.PodSessionBoundError
+	switch {
+	case errors.As(err, &bound):
+		slog.Warn("broker: the token exchange refused a pod's trade proved with a key other than the one its registration for the session is bound to",
+			"principal", session.Principal, "pod", session.Instance, "session", name,
+			"bound_thumbprint", bound.Bound, "presented_thumbprint", presented)
+		return oauth2.ErrInvalidGrant.WithHintf("Refused: this pod's registration for session '%s' is bound to another key; a role trades only for its own session.", name)
+	case err != nil:
 		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
 	if !registered {
-		return oauth2.ErrInvalidGrant.WithHintf("No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", name)
+		return oauth2.ErrInvalidGrant.WithDescription(oauthwire.PodSessionNotRegistered+":").
+			WithHintf("No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", name)
 	}
 	return nil
 }

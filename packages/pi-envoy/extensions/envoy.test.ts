@@ -29,7 +29,8 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
-  dispatchIssueSubject,
+  canonicalTopic,
+  legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
@@ -551,6 +552,7 @@ restoreEnvironment([
   "ENVOY_MACHINE_ID",
   "AGENTBOX_HOST",
   "ENVOY_TMUX_PLACE_CACHE_MS",
+  "ENVOY_SESSION_ROLE",
 ]);
 // The directory this process was started in. A row that chdirs elsewhere is put back in
 // `afterEach`, which a row aborted at Bun's own timeout reaches where its own `finally` does not.
@@ -600,12 +602,17 @@ let configDirectory = "";
 // cannot be static, as the entry reads `@oh-my-pi/pi-coding-agent` and so must load below the
 // stand-ins for it; it carries a query of its own so no row's instance is this one; and it sits
 // below the `original*` captures because loading the entry sets `PATH`, `DISPATCH_HOST` and
-// `ENVOY_CONFIG_FILE` as every row's own load does, which `afterEach` puts back to what was
-// captured. Loading it here writes those three names whether or not a row of this file runs, so
-// the capture below puts them back as soon as the entry is loaded; every row's own load writes
-// them again.
-const restoreEntryLoad = captureEnvironment(["PATH", "DISPATCH_HOST", "ENVOY_CONFIG_FILE"]);
-const { resetNatsConnectForTests, setNatsConnectForTests } = await import(
+// `ENVOY_CONFIG_FILE` and takes `ENVOY_SESSION_ROLE` out, as every row's own load does, which
+// `afterEach` puts back to what was captured. Loading it here changes those four names whether or
+// not a row of this file runs, so the capture below puts them back as soon as the entry is loaded;
+// every row's own load changes them again.
+const restoreEntryLoad = captureEnvironment([
+  "PATH",
+  "DISPATCH_HOST",
+  "ENVOY_CONFIG_FILE",
+  "ENVOY_SESSION_ROLE",
+]);
+const { resetNatsConnectForTests, resetSessionRoleForTests, setNatsConnectForTests } = await import(
   "./envoy.ts?nats-stand-in"
 );
 restoreEntryLoad();
@@ -635,6 +642,11 @@ beforeEach(() => {
   delete process.env.DISPATCH_TOKEN;
   delete process.env.DISPATCH_TOKEN_FILE;
   delete process.env.ENVOY_MACHINE_ID;
+  // The role a session pod's launch names, which every pass of an instance created under it
+  // claims: a suite run inside a session pod must not claim that pod's role for every fixture.
+  // A load takes the variable into a slot every later load reads, so the slot goes too.
+  delete process.env.ENVOY_SESSION_ROLE;
+  resetSessionRoleForTests();
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;
@@ -1467,6 +1479,68 @@ function roleClaimRecord(role: string, session: string): unknown {
  *  `previous_session_id`): every claim names the process making it (INFRA-783). */
 function roleClaimBody(session: string, role: string, rest: Record<string, unknown> = {}): unknown {
   return { session_id: session, role, ...rest, client_instance_id: ANY_CLIENT_INSTANCE };
+}
+
+/**
+ * A fresh session in a session pod whose launch named `sessionRole` in `ENVOY_SESSION_ROLE`
+ * (agent-infra's sessions workload); with no `sessionRole` the environment is left as it is. Every
+ * registration and every role claim the listener is sent lands in `seen`, in the order sent; a
+ * role lookup names `sessionID` as the holder. `heartbeat` runs one heartbeat pass and lets it
+ * settle, and `records` reads the role claim records the session's transcript holds.
+ */
+async function bootSessionPod(query: string, sessionID: string, sessionRole?: string) {
+  if (sessionRole !== undefined) process.env.ENVOY_SESSION_ROLE = sessionRole;
+  const seen: unknown[] = [];
+  let registrations = 0;
+  globalThis.fetch = async (input, init) => {
+    const { pathname } = new URL(input.toString());
+    const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+    if (pathname === "/v1/interests/subscribe") {
+      registrations += 1;
+      seen.push({ registered: body.session_id });
+    }
+    if (pathname === "/v1/roles/set") {
+      seen.push({ claimed: body });
+      return response({
+        session_id: body.session_id,
+        machine_id: "test",
+        dir: "/tmp/envoy-omp-test",
+        topics: [`notifications.role.${body.role}`],
+      });
+    }
+    if (pathname.startsWith("/v1/roles/")) {
+      return response({
+        role: pathname.slice("/v1/roles/".length),
+        holder: sessionID,
+        last_seen: 1,
+      });
+    }
+    return responseWithRegistration(input, init, {});
+  };
+  // Each caller's own query loads an instance of its own, so the specifier cannot be static.
+  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const fixture = createPi();
+  const intervals: (() => void)[] = [];
+  const base = sessionContext(sessionID);
+  const context: SessionContext = {
+    ...base,
+    sessionManager: { ...base.sessionManager, getBranch: () => fixture.entries },
+    setInterval: (callback) => intervals.push(callback),
+  };
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  return {
+    seen,
+    fixture,
+    records: () => fixture.entries.filter((entry) => entry.customType === "envoy-role-claim"),
+    heartbeat: async () => {
+      const before = registrations;
+      intervals[0]?.();
+      await until(() => registrations > before, "the heartbeat's registration");
+      await settle();
+    },
+    shutdown: () => fixture.handlers.get("session_shutdown")?.({}, context),
+  };
 }
 
 function responseWithRegistration(
@@ -2645,7 +2719,8 @@ describe("envoy OMP extension", () => {
       lazySessionID: true,
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
-    expect(process.env.DISPATCH_SESSION_ID).toBeUndefined();
+    // A session with no id names none: the variable is "", which every reader takes as unset.
+    expect(process.env.DISPATCH_SESSION_ID).toBe("");
     procmgr.refreshShellConfigCache();
 
     await session.userTurn();
@@ -4196,6 +4271,74 @@ describe("envoy OMP extension", () => {
     expect(roleClaims).toEqual([{ session_id: "ses_omp", role: "legion-controller" }]);
   });
 
+  // The listener's record keeps a claimed role's lane in the form it writes it,
+  // `notifications.role.<role>`, whichever form the claim named (packages/envoy/cmd/listener,
+  // `roleSetHandler`), and a resumed session reads the role it should hold off its record by
+  // cutting that lane's prefix (`desiredRole`). So the role it claims again is the role itself. The
+  // second row is the control the first leans on: a record rewritten to the new form,
+  // `notifications.role.INFRA.<role>`, reads to this very comparison as a role named
+  // `INFRA.<role>`, so a store that rewrote it would show here.
+  for (const { name, rewrite, claimed } of [
+    {
+      name: "as the listener wrote it",
+      rewrite: false,
+      claimed: "legion-infra-controller",
+    },
+    {
+      name: "rewritten to the new form",
+      rewrite: true,
+      claimed: "INFRA.legion-infra-controller",
+    },
+  ]) {
+    test(`a resumed session reads its role off a record that keeps the lane ${name}`, async () => {
+      const lane = "notifications.role.legion-infra-controller";
+      expect(canonicalTopic(lane).canonical).toBe(
+        "notifications.role.INFRA.legion-infra-controller"
+      );
+      const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
+      globalThis.fetch = async (input, init) => {
+        const url = new URL(input.toString());
+        if (url.pathname === "/v1/interests/ses_omp") {
+          return response({
+            session_id: "ses_omp",
+            machine_id: "test",
+            dir: "/tmp",
+            topics: [
+              "notifications.agent.ses_omp",
+              rewrite ? canonicalTopic(lane).canonical : lane,
+            ],
+          });
+        }
+        if (url.pathname === "/v1/roles/set") {
+          const body = JSON.parse(init?.body?.toString() ?? "{}");
+          roleClaims.push({ session_id: body.session_id, role: body.role });
+          return response({
+            session_id: body.session_id,
+            machine_id: "test",
+            dir: "/tmp",
+            topics: [`notifications.role.${body.role}`],
+          });
+        }
+        return responseWithRegistration(input, init, {});
+      };
+      // A fresh module per row, as every test here loads one: the extension keeps its state in
+      // module scope, so a static import would carry one row's hold into the next.
+      const { default: envoyExtension } = await import(
+        `./envoy.ts?old-form-role-record-${rewrite ? "rewritten" : "kept"}`
+      );
+      const fixture = createPi();
+
+      envoyExtension(fixture.pi);
+      const resumed = {
+        ...sessionContext(),
+        sessionManager: { ...sessionContext().sessionManager, getBranch: () => [{}] },
+      };
+      await fixture.handlers.get("session_start")?.({}, resumed);
+
+      expect(roleClaims).toEqual([{ session_id: "ses_omp", role: claimed }]);
+    });
+  }
+
   test("a session rebind moves a held role from the dead id to the new one", async () => {
     const roleClaims: { readonly session_id: string; readonly role: string }[] = [];
     globalThis.fetch = async (input, init) => {
@@ -4529,6 +4672,70 @@ describe("envoy OMP extension", () => {
       sessionContext("ses_dispatch_env_new")
     );
     expect(process.env.DISPATCH_SESSION_ID).toBe("ses_dispatch_env_new");
+  });
+
+  // A session with no id yet (a fresh TUI's) names no session for the `dispatch` command, even in
+  // a process started from another session's shell, which inherits that session's id. A delete
+  // would reach `process.env` alone: the C environment the process started with keeps the value,
+  // and a child Oh My Pi starts in a PTY begins from it with the variables built from `Bun.env`
+  // laid over it, so the child would act as the other session. "" lies over the value there, and
+  // every reader takes "" as unset. The process here starts with the variable, loads the entry
+  // (with the host package stood in by the role takeover smoke's preload), runs its session_start
+  // for a session with no id, and starts `env` the PTY's way: `env K=V … env`.
+  test("a session with no id hands a PTY child no inherited DISPATCH_SESSION_ID", () => {
+    const marker = "dispatch-session-report ";
+    const script = `
+      const { createStandInHost } = await import(${JSON.stringify(join(import.meta.dir, "..", "test", "stand-in-host.ts"))});
+      const { default: envoyExtension } = await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
+      const { handlers, pi } = createStandInHost();
+      envoyExtension(pi);
+      await handlers.get("session_start")?.({}, {
+        cwd: process.cwd(),
+        hasUI: true,
+        sessionManager: {
+          getSessionId: () => "",
+          getSessionName: () => undefined,
+          getBranch: () => [],
+          getEntries: () => [],
+          getSessionFile: () => undefined,
+          ensureOnDisk: async () => undefined,
+        },
+        setInterval: () => undefined,
+        setTimeout: () => undefined,
+        ui: { notify: () => undefined, onTerminalInput: () => () => undefined, getEditorText: () => "" },
+      });
+      const overrides = Object.entries(process.env)
+        .filter(([, value]) => value !== undefined)
+        .map(([name, value]) => name + "=" + value);
+      const line = Bun.spawnSync(["env", ...overrides, "env"])
+        .stdout.toString()
+        .split("\\n")
+        .find((entry) => entry.startsWith("DISPATCH_SESSION_ID="));
+      console.log(${JSON.stringify(marker)} + JSON.stringify({
+        processEnv: process.env.DISPATCH_SESSION_ID ?? null,
+        pty: line === undefined ? null : line.slice("DISPATCH_SESSION_ID=".length),
+      }));
+      process.exit(0);
+    `;
+    const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
+    const { ENVOY_URL: _url, ENVOY_NATS_URL: _nats, ...rest } = process.env;
+    const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
+      cwd: import.meta.dir,
+      env: { ...rest, DISPATCH_SESSION_ID: "parent-session" },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 30_000,
+    });
+    const report = run.stdout
+      .toString()
+      .split("\n")
+      .find((line) => line.startsWith(marker));
+    if (run.exitCode !== 0 || report === undefined) {
+      throw new Error(
+        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
+      );
+    }
+    expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
   });
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
@@ -11225,6 +11432,127 @@ console.log(JSON.stringify(args));
       self_subscribed: true,
       topics: ["notifications.agent.ses_role_heartbeat"],
     });
+  });
+
+  // A session pod's launch names the Envoy role its session holds (`ENVOY_SESSION_ROLE`), and the
+  // session claims it itself, under its own credential, at its first registration and at every
+  // one a heartbeat makes after it. Each claim is outright, so a role an evicted pod's session
+  // still holds comes to the live one at once. Only the first writes a transcript record: each
+  // later one is a claim the newest record already names. Without the variable a fresh session
+  // claims nothing.
+  test("claims ENVOY_SESSION_ROLE for its own session", async () => {
+    const pod = await bootSessionPod("session-role", "ses_pod", "fan-cloud");
+    await pod.heartbeat();
+    await pod.heartbeat();
+    await pod.shutdown();
+    const registered = { registered: "ses_pod" };
+    const claimed = { claimed: roleClaimBody("ses_pod", "fan-cloud") };
+    expect(pod.seen).toEqual([registered, claimed, registered, claimed, registered, claimed]);
+    expect(pod.records()).toEqual([roleClaimRecord("fan-cloud", "ses_pod")]);
+
+    delete process.env.ENVOY_SESSION_ROLE;
+    resetSessionRoleForTests();
+    const unset = await bootSessionPod("session-role-unset", "ses_pod_unset");
+    await unset.heartbeat();
+    await unset.heartbeat();
+    await unset.shutdown();
+    const unsetRegistered = { registered: "ses_pod_unset" };
+    expect(unset.seen).toEqual([unsetRegistered, unsetRegistered, unsetRegistered]);
+    expect(unset.records()).toEqual([]);
+  });
+
+  // The launch's role is the session's until the session records another: a move the model makes
+  // with envoy_role_set is the session's newest record, and no heartbeat undoes it.
+  test("a session that moves off its ENVOY_SESSION_ROLE keeps the role it moved to", async () => {
+    const pod = await bootSessionPod("session-role-moved", "ses_pod_moved", "fan-cloud");
+    const roleTool = pod.fixture.tools.find((tool) => tool.name === "envoy_role_set");
+    if (roleTool === undefined) throw new Error("envoy_role_set was not registered");
+    await roleTool.execute("", { role: "librarian" });
+    await pod.heartbeat();
+    await pod.shutdown();
+    const registered = { registered: "ses_pod_moved" };
+    expect(pod.seen).toEqual([
+      registered,
+      { claimed: roleClaimBody("ses_pod_moved", "fan-cloud") },
+      { claimed: roleClaimBody("ses_pod_moved", "librarian") },
+      registered,
+    ]);
+  });
+
+  // The variable is the launch's word to this process alone: an `omp` an agent starts inside the
+  // pod must not get its value, or that session would take the pod's role from the pod's session
+  // at each of its registrations. The load leaves it set to "", which names no role, so every
+  // environment built from this process's carries "" over whatever the process started with.
+  // Every extension instance of the process still reads the role: a second one, loaded after the
+  // first took it out of the environment, claims it too.
+  test("no process the session starts gets the ENVOY_SESSION_ROLE value, and every instance of the process claims it", async () => {
+    const first = await bootSessionPod("session-role-first", "ses_pod_first", "fan-cloud");
+    expect(first.seen).toEqual([
+      { registered: "ses_pod_first" },
+      { claimed: roleClaimBody("ses_pod_first", "fan-cloud") },
+    ]);
+    expect(process.env.ENVOY_SESSION_ROLE).toBe("");
+
+    // Handed the live environment, as Oh My Pi's shell is (`procmgr.refreshShellConfigCache`
+    // captures `Bun.env`). What a child does with the environment the process started with is the
+    // next test's: this process set the variable after it started.
+    const child = Bun.spawnSync(["env"], { env: process.env, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode).toBe(0);
+    const inherited = child.stdout
+      .toString()
+      .split("\n")
+      .filter((line) => line.startsWith("ENVOY_SESSION_ROLE="));
+    expect(inherited).toEqual(["ENVOY_SESSION_ROLE="]);
+
+    const second = await bootSessionPod("session-role-second", "ses_pod_second");
+    expect(second.seen).toEqual([
+      { registered: "ses_pod_second" },
+      { claimed: roleClaimBody("ses_pod_second", "fan-cloud") },
+    ]);
+    await first.shutdown();
+    await second.shutdown();
+  });
+
+  // A deleted variable stays in the C environment the process started with, and a child Oh My Pi
+  // starts in a PTY (its bash tool's `pty: true`) begins from that environment, with the variables
+  // built from `Bun.env` laid over it. So the load must leave "" over it rather than nothing. The
+  // process here starts with the variable, as a session pod's `omp` does, loads the entry (with
+  // the host package stood in by the role takeover smoke's preload), and starts `env` the PTY's
+  // way: `env K=V … env`, its own environment being the inherited one.
+  test("a process started with ENVOY_SESSION_ROLE hands a child built over its native environment no role", () => {
+    const marker = "session-role-report ";
+    const script = `
+      await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
+      const overrides = Object.entries(process.env)
+        .filter(([, value]) => value !== undefined)
+        .map(([name, value]) => name + "=" + value);
+      const line = Bun.spawnSync(["env", ...overrides, "env"])
+        .stdout.toString()
+        .split("\\n")
+        .find((entry) => entry.startsWith("ENVOY_SESSION_ROLE="));
+      console.log(${JSON.stringify(marker)} + JSON.stringify({
+        processEnv: process.env.ENVOY_SESSION_ROLE ?? null,
+        pty: line === undefined ? null : line.slice("ENVOY_SESSION_ROLE=".length),
+      }));
+    `;
+    const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
+    const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
+      cwd: import.meta.dir,
+      env: { ...process.env, ENVOY_SESSION_ROLE: "fan-cloud" },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 30_000,
+    });
+    const report = run.stdout
+      .toString()
+      .split("\n")
+      .find((line) => line.startsWith(marker));
+    if (run.exitCode !== 0 || report === undefined) {
+      throw new Error(
+        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
+      );
+    }
+    expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
   });
 
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {
@@ -19384,7 +19712,7 @@ console.log(JSON.stringify(args));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("subscription tool was not registered");
 
-    const topic = dispatchIssueSubject("LEGION-1", ">");
+    const topic = legacyDispatchIssueSubject("LEGION-1", ">");
     await subscribeTool.execute("", { topics: [topic] });
     expect(await followedTopics(fixture.tools, context)).toContain(topic);
 
@@ -19430,7 +19758,7 @@ console.log(JSON.stringify(args));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("subscription tool was not registered");
 
-    const topic = dispatchIssueSubject("LEGION-1", ">");
+    const topic = legacyDispatchIssueSubject("LEGION-1", ">");
     await subscribeTool.execute("", { topics: [topic] });
     expect(await followedTopics(fixture.tools, context)).toContain(topic);
 
@@ -20806,7 +21134,7 @@ describe("consumer delivery", () => {
   });
 
   test("the session file carries the follows map only when it changes, and either shape restores", async () => {
-    const issueTopic = dispatchIssueSubject("INFRA-7", ">");
+    const issueTopic = legacyDispatchIssueSubject("INFRA-7", ">");
 
     const first = await bootConsumer("consumer-follows-a");
     await first.follow(issueTopic);
@@ -20855,7 +21183,7 @@ describe("consumer delivery", () => {
   // is the control: it shows the ledger does write its state here when the host is on this
   // session (dispatch://INFRA-812).
   test("appends no ledger state of this session to the conversation the host moved to", async () => {
-    const kept = dispatchIssueSubject("INFRA-812", ">");
+    const kept = legacyDispatchIssueSubject("INFRA-812", ">");
     let live = SESSION;
     const session = await bootConsumer("consumer-state-not-carried", {
       hostSessionID: () => live,
@@ -20888,7 +21216,7 @@ describe("consumer delivery", () => {
   // subscription added back on any followed topic fails here.
   test("holds exactly its relay subject and its agent-stream control subject, and no other", async () => {
     const session = await bootConsumer("consumer-subscription-set");
-    await session.follow(dispatchIssueSubject("INFRA-771", ">"));
+    await session.follow(legacyDispatchIssueSubject("INFRA-771", ">"));
     await session.follow("notifications.team.alpha");
     await settle();
     await session.tick();
@@ -21246,8 +21574,8 @@ describe("consumer delivery", () => {
   });
 
   test("a relayed subscription removal registers the session again without the topic, and stops taking its frames", async () => {
-    const issueTopic = dispatchIssueSubject("INFRA-9", ">");
-    const issueSubject = dispatchIssueSubject("INFRA-9", "issue.updated");
+    const issueTopic = legacyDispatchIssueSubject("INFRA-9", ">");
+    const issueSubject = legacyDispatchIssueSubject("INFRA-9", "issue.updated");
     const session = await bootConsumer("consumer-removal");
     await session.follow(issueTopic);
     await settle();
@@ -21448,8 +21776,8 @@ describe("consumer delivery", () => {
     const WHOLE = `${CARRIED}\n\nThe second paragraph, past where the event stopped.`;
     /** The topic the session follows, and the subject the comment event is published on: the
      *  frame reaches the session as its own consumer's relay of that subject. */
-    const CUT_TOPIC = dispatchIssueSubject("INFRA-370", ">");
-    const CUT_SUBJECT = dispatchIssueSubject("INFRA-370", "comment.created");
+    const CUT_TOPIC = legacyDispatchIssueSubject("INFRA-370", ">");
+    const CUT_SUBJECT = legacyDispatchIssueSubject("INFRA-370", "comment.created");
 
     /** The payload the event carries: the comment row with its body cut (`body_truncated`), or,
      *  for `omitted`, the stand-in a bus refusal leaves behind - the row's short top-level fields

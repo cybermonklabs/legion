@@ -65,7 +65,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		t.Fatalf("register %s: %v", ordinary, err)
 	}
 	if _, err := registry.Upsert(store.Interest{SessionID: ordinary, MachineID: "test-machine", Dir: "/test/ordinary"},
-		[]string{contracts.AgentSubject(ordinary), topic}); err != nil {
+		[]string{contracts.LegacyAgentSubject(ordinary), topic}); err != nil {
 		t.Fatalf("write %s's interest record: %v", ordinary, err)
 	}
 	if _, err := registry.SetRole(ordinary, "test-machine", "reviewer", false); err != nil {
@@ -134,7 +134,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 	if len(rows) != len(listed) {
 		t.Fatalf("GET /v1/sessions listed %d rows, want %d", len(rows), len(listed))
 	}
-	if row := byID[ordinary]; !slices.Equal(row.Topics, []string{contracts.AgentSubject(ordinary), topic}) || !slices.Equal(row.Roles, []string{"reviewer"}) {
+	if row := byID[ordinary]; !slices.Equal(row.Topics, []string{contracts.LegacyAgentSubject(ordinary), topic}) || !slices.Equal(row.Roles, []string{"reviewer"}) {
 		t.Fatalf("GET /v1/sessions row for %s = %+v, want its topics and the role reviewer", ordinary, row)
 	}
 	for _, id := range []string{readableLegacy, unreadableLegacy, invalidKey} {
