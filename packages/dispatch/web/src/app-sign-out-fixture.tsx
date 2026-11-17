@@ -12,19 +12,22 @@ import type { UnsentChange } from "./features/shell/sign-in-channel";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
 /** The app, alice's writes and the other tabs of this browser, as the sign-out rows drive them:
- *  `app-sign-out.test.tsx` and `app-sign-out.other-tab.test.tsx`. */
+ *  `app-sign-out.test.tsx`, `app-sign-out.other-tab.test.tsx` and the sign-in draft matrix. */
 
 /** The app at `at` (`/` unless named), its whoami answered by `whoAmI` and its sign-out by
- *  `logout`, with window's confirm answered by `confirm` and every question it asked recorded. */
+ *  `logout`, with window's confirm answered by `confirm` and every question it asked recorded.
+ *  It runs on `queryClient`, or, unless one is named, on TanStack's own client retrying nothing. */
 export function renderApp({
   at = "/",
   confirm = () => true,
   logout = async () => ({ ok: true as const }),
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
   whoAmI,
 }: {
   at?: string;
   confirm?: () => boolean;
   logout?: () => Promise<{ ok: true }>;
+  queryClient?: QueryClient;
   whoAmI: () => Promise<{ event_head: string; kind: "user"; login: string }>;
 }) {
   const sockets = installFakeLiveSockets();
@@ -60,7 +63,6 @@ export function renderApp({
     new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
   );
   const logoutSpy = spyOn(api, "logout").mockImplementation(logout);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={[at]}>
       <QueryClientProvider client={queryClient}>
