@@ -57,10 +57,10 @@ const podNoticeTopic = "notifications.team.pod-notice"
 // session that states another instance changes nothing, and a hand-back from that other instance
 // frees nothing. The process that adopted the claim goes on renewing it.
 //
-// A hand-back with no client_instance_id - the body every current client's unsubscribe sends,
-// here naming the role's lane alone and beside another subject, as a client of an older build or
-// any caller that leaves the instance out would - marks a pod's claim that names no process and
-// frees nothing; such a claim is then adopted by no registration.
+// A hand-back with no client_instance_id naming the role's lane - which no current client sends
+// for a role lane, but a client of an older build or any caller that leaves the instance out
+// does - here naming the lane alone and beside another subject, marks a pod's claim that names no
+// process and frees nothing; such a claim is then adopted by no registration.
 // Control: the same bodies mark a claim that names a process, as they did before.
 func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
 	const (
