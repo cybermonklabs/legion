@@ -303,6 +303,26 @@ func SendWire`, 1)
 	}
 }
 
+// The exemption reads where a marshalled string goes, not where it ends up: once it goes into a
+// field of a wire type's value it is taken as a payload, whatever is done with that field
+// afterwards. So a body put into a listenerwire field and read back out to be sent whole is no
+// finding. Following each field to the request would mean tracing every value a wire body's field
+// flows to; the check does not, and this pins that it does not, so a change to it is a decision
+// rather than a surprise.
+func TestCheckTakesAStringInAWireFieldAsAPayloadWhateverFollows(t *testing.T) {
+	source := strings.Replace(sendFixture, `return post(ctx, url, body)
+}
+
+func SendWire`, `held := wire.Body{Payload: string(body)}
+	return post(ctx, url, []byte(held.Payload))
+}
+
+func SendWire`, 1)
+	if findings := check(t, source, "fixture/fixture.post"); len(findings) != 0 {
+		t.Fatalf("findings = %v, want none: a string in a wire type's field is a payload, whatever is done with the field after", findings)
+	}
+}
+
 const answerFixture = `package fixture
 
 import (

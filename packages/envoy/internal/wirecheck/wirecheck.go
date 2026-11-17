@@ -74,9 +74,9 @@ var requestBuilders = map[string]bool{
 // the answer bytes it was handed. In a party call, each value given to encoding/json's Marshal,
 // MarshalIndent, Unmarshal, (*Decoder).Decode or (*Encoder).Encode is judged, but a Marshal or
 // MarshalIndent whose result is used only converted to a string that goes into a field of a wire
-// type's value is not: that is a payload carried inside a body, not a body. The same string sent
-// any other way, as the request body itself or through a map or a struct of the client's own, is
-// judged.
+// type's value is not: that string is taken as a payload carried inside a body, whatever is done
+// with that field afterwards. A marshal used any other way, sent as the request body itself or put
+// into a map or a struct of the client's own, is judged.
 //
 // A transport helper is a function of pkgs that hands one of its own parameters of type any to one
 // of those JSON calls, directly or through another transport helper. The argument a caller gives
