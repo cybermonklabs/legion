@@ -72,6 +72,82 @@ func TestALoadedBacklogsDrainIsWeighedAgainstTheDocumentBound(t *testing.T) {
 	}
 }
 
+// Parked content that swaps is weighed as it parks. The room's parked content was charged an
+// apply's content only where the apply left the queue holding more structs than it found
+// (roomApplies.noteParked), so an update that released one parked struct and parked one of its
+// own left the queue's count where it was and was charged nothing. That is a swap, and swaps
+// repeat: eight browsers each park one character behind one they keep back, and then each of
+// eight frames sends one of those characters, releasing that browser's parked struct, and parks
+// 900 KiB of a browser of its own behind a character the room never receives. Each swap leaves
+// eight structs parked, the figure the drain is weighed on stays at the eight bytes the first
+// frame parked, and one update filling every gap lands all eight frames at once. Charged on every
+// apply that leaves the queue holding anything, the room's parked content reads the first
+// frame's 900 KiB, the second swap is weighed against the drain it can release and refused at
+// the byte bound, and the fill lands one frame and stays under the bound.
+func TestParkedContentThatSwapsDrainsNoRoomPastTheDocumentBound(t *testing.T) {
+	const swaps, each = 8, 900 << 10
+	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
+	defer runtime.KeepAlive(replica)
+	// publish re-renders the room and publishes its size, as the room's update observer does
+	// after each apply that commits.
+	publish := func() int {
+		markdown, err := renderDocument(room)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replica.publishSize(&markdown)
+		return len(markdown)
+	}
+	// Every browser copies the room before any frame is sent, so no frame carries another's.
+	var small, swapping, fills [][]byte
+	for range swaps {
+		keeper, into := peerDocument(t, room)
+		keeper.Transact(func(txn *crdt.Transaction) { into.Insert(txn, 0, "a", nil) })
+		kept := crdt.EncodeStateAsUpdateV1(keeper, room.StateVector())
+		held := keeper.StateVector()
+		keeper.Transact(func(txn *crdt.Transaction) { into.Insert(txn, 1, "t", nil) })
+		small = append(small, crdt.EncodeStateAsUpdateV1(keeper, held))
+
+		parker, at := peerDocument(t, room)
+		parker.Transact(func(txn *crdt.Transaction) { at.Insert(txn, 0, "a", nil) })
+		fills = append(fills, crdt.EncodeStateAsUpdateV1(parker, room.StateVector()))
+		held = parker.StateVector()
+		parker.Transact(func(txn *crdt.Transaction) { at.Insert(txn, 1, strings.Repeat("p", each), nil) })
+		swap, err := crdt.MergeUpdatesV1(kept, crdt.EncodeStateAsUpdateV1(parker, held))
+		if err != nil {
+			t.Fatal(err)
+		}
+		swapping = append(swapping, swap)
+	}
+	parks, err := crdt.MergeUpdatesV1(small...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err, called := weighInto(service, room, parks); err != nil || !called {
+		t.Fatalf("the frame parking one character for each of %d browsers was answered %v (apply ran %t), want it admitted", swaps, err, called)
+	}
+	t.Logf("one %d-byte frame parks %d structs; the room's parked content reads %d bytes, rendering %d",
+		len(parks), room.PendingStats().Items, service.roomWeighingOf(room).applies().parkedBytes(), publish())
+	for i, swap := range swapping {
+		found := room.PendingStats().Items
+		err, called := weighInto(service, room, swap)
+		t.Logf("swap %d: %d bytes, hook=%v, apply ran %t; parked structs %d -> %d; parked content read %d bytes; rendering %d bytes",
+			i+1, len(swap), err, called, found, room.PendingStats().Items, service.roomWeighingOf(room).applies().parkedBytes(), publish())
+	}
+	fill, err := crdt.MergeUpdatesV1(fills...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err, called := weighInto(service, room, fill)
+	rendered := publish()
+	t.Logf("one %d-byte fill of every gap: hook=%v, apply ran %t; parked structs %d; rendering %d bytes (document bound %d, creep cap %d)",
+		len(fill), err, called, room.PendingStats().Items, rendered, pmdoc.MaxDocumentBytes, pmdoc.MaxDocumentBytes+maxPeerByteCreep)
+	if rendered > pmdoc.MaxDocumentBytes+maxPeerByteCreep {
+		t.Fatalf("one browser's swaps of parked content, then one fill, left the room rendering %d bytes, past the %d the document bound and its creep allow",
+			rendered, pmdoc.MaxDocumentBytes+maxPeerByteCreep)
+	}
+}
+
 // gcStructsOfClientsOfTheirOwn is a frame of n GC structs, each of a client of its own from first
 // at its client's clock 0, so each integrates and the state's delete set gains a range for each:
 // structs that carry no content for ygo's byte count to see (crdt.ApplyBudget.Bytes).

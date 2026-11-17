@@ -1024,28 +1024,37 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 
 // noteParked charges what an apply of the hook's left parked in the room to the room's parked
 // content, the figure the document bound weighs a drain against (parkedContent, parkedBytes).
-// before is what the queue held as the hook read it, after what it holds now, and content what
-// the apply's report counted of the content it added.
+// after is what the queue holds once the apply has returned, and content what the apply's report
+// counted of the content it added.
 //
-// An apply that left the queue holding more items than it found parked something of its own, and
-// is charged the whole of its content for it: ygo counts what an apply parks and what it
-// integrates in one figure (crdt.ApplyReport.Bytes), so an apply that did both is charged for
-// both, which is the safe side of a bound and is what an update that parks and integrates at
-// once costs the rendering at most. An apply that left the queue empty drained it, and what was
+// An apply that left the queue holding anything may have parked something of its own, and is
+// charged the whole of its content for it. ygo says what a queue holds and not which apply put
+// it there (crdt.Doc.PendingStats), and counts what an apply parks and what it integrates in one
+// figure (crdt.ApplyReport.Bytes), so no reading tells a park from an integrate, and no count
+// tells a swap from an apply that left the queue alone. Charging only an apply that left the
+// queue holding more structs than it found charged a swap nothing: an update that released one
+// parked struct and parked 900 KiB of its own left eight parked where it found eight, eight such
+// swaps parked 7,372,800 bytes on a charge of eight, and one fill then left the room rendering
+// 7,372,848 bytes (TestParkedContentThatSwapsDrainsNoRoomPastTheDocumentBound). Charging every
+// apply that leaves the queue holding anything is the safe side of the bound, and what it costs
+// is an over-count in a room whose queue stays full while its browsers type, since their
+// keystrokes are charged as parked though they integrate: the drain an update into that room can
+// release is then weighed as larger than it is, and an update that cannot release one is weighed
+// as before (drainWouldRender). An apply that left the queue empty drained it, and what was
 // parked is now rendered and weighed by the room's own measurement, so the charge goes back to
-// nothing. Anything else - a queue that fell without emptying, a drain of part of it - keeps the
-// figure, which stands above what the room still holds parked until the queue empties.
+// nothing. The figure otherwise stands above what the room still holds parked until the queue
+// empties.
 //
 // It adds what the hook's own applies park to what the room parked as it was listed: a room
 // loaded already holding a backlog - the stored state carries what parked, and every load parks
 // it again (storeParked) - starts at the bytes that backlog takes of its state
 // (parkedStructBytes, newRoomApplies), so the first drain after such a load is weighed on them.
-func (a *roomApplies) noteParked(before, after crdt.PendingStats, content int64) {
+func (a *roomApplies) noteParked(after crdt.PendingStats, content int64) {
 	switch {
 	case a == nil:
 	case after.Items == 0:
 		a.parkedContent.Store(0)
-	case after.Items > before.Items && content > 0:
+	case content > 0:
 		a.parkedContent.Add(content)
 	}
 }
@@ -1294,7 +1303,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 		// What the apply left parked is the room's from here, and what it drained is the
 		// room's rendering, which its update observer measures afresh (noteParked). A refused
 		// apply left the queue as it was and is charged nothing.
-		weighing.applies().noteParked(parked, info.Doc.PendingStats(), content)
+		weighing.applies().noteParked(info.Doc.PendingStats(), content)
 		return nil
 	}
 	return s.refusedByApply(info, weighing, allowance, scanning, err)
