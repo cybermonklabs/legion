@@ -1510,6 +1510,144 @@ func TestMemoryGuardEndsOneKernelForARiseThatIsAProtectedProcesssOwn(t *testing.
 	}
 }
 
+// protpoolReading is one reading of the tester's protpool probe at 4 GiB, in hundredths of a
+// percent of the limit, and how long after the reading before it the guard took it.
+type protpoolReading struct {
+	hundredths uint64
+	after      time.Duration
+}
+
+// The tester's protpool probe of 2026-11-17 under gVisor at 4 GiB, replayed with its recorded
+// readings (dispatch://INFRA-3531/artifact/tester-evidence-a97e6a44-2026-11-17-tar-gz, logs3,
+// infra-3531-t-adv-4g-protpool-sxs4j): the agent, protected as Oh My Pi is, holds 60% of the limit,
+// and six growers rise about 1.5 GiB a second together. The first kill, at the first reading at
+// the mark, 85.54%, freed less than the rise of the next interval, so the readings went on rising,
+// 86.19%, 86.55%, 89.68% and 92.87%, and the host ended the pod at about 97% while the guard still
+// waited. Here each killed grower exits at its kill and the readings are the recorded ones. Once
+// a killed process has exited and the reading has not fallen below the reading at the kill, the
+// guard ends the next in the order at the next reading, while a process it may end has grown since
+// that kill and those processes hold the floor (INFRA-3531 R1, spec version 25): a grower at each
+// of the four readings after the first kill, and no stopped line. While the killed grower has not
+// exited, the guard waits for it, up to its wait, and ends nothing more.
+func TestMemoryGuardEndsAGrowerAtEachReadingAfterAnExitWhileTheReadingStillRises(t *testing.T) {
+	const agentBytes = podLimit / 100 * 60
+	first := protpoolReading{7535, 0}
+	toTheMark := []protpoolReading{{7935, 203 * time.Millisecond}, {8193, 117 * time.Millisecond},
+		{8194, 105 * time.Millisecond}, {8554, 104 * time.Millisecond}}
+	afterTheKill := []protpoolReading{{8619, 298 * time.Millisecond}, {8655, 105 * time.Millisecond},
+		{8968, 105 * time.Millisecond}, {9287, 105 * time.Millisecond}}
+	for _, tc := range []struct {
+		name   string
+		exits  bool
+		killed int
+	}{
+		{"each killed grower exits", true, 1 + len(afterTheKill)},
+		{"the killed grower has not exited", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(agent(agentBytes))
+			growers := map[int]*fakeProcess{}
+			for i := range 6 {
+				pid := 800 + i
+				growers[pid] = &fakeProcess{pid: pid, ppid: 100, start: uint64(6000 + i), args: []string{"python3", "-c", "grow"}}
+			}
+			// The pod at a reading: the agent, and the growers left sharing the rest, each one MiB apart.
+			at := func(r protpoolReading) {
+				t.Helper()
+				reading := podLimit / 10000 * r.hundredths
+				share := (reading - agentBytes) / uint64(len(growers))
+				for pid, g := range growers {
+					pod.resize(g, share+uint64(pid-800)*mib)
+				}
+				pod.setAnon(reading)
+			}
+			at(first)
+			h := newHarness(t, pod, protect("tester", 100))
+			h.signal.onKill = func(pid int) bool {
+				if !tc.exits {
+					return false
+				}
+				delete(growers, pid)
+				pod.remove(pid)
+				return true
+			}
+			h.run()
+			for _, r := range toTheMark {
+				at(r)
+				h.tickAfter(r.after - Defaults().Interval)
+			}
+			if kills := h.signal.kills(); len(kills) != 1 {
+				t.Fatalf("at the first reading at the mark the guard killed %v, want one grower; the log:\n%s", kills, strings.Join(h.log.all(), "\n"))
+			}
+			for _, r := range afterTheKill {
+				at(r)
+				h.tickAfter(r.after - Defaults().Interval)
+			}
+			kills := h.signal.kills()
+			if len(kills) != tc.killed {
+				t.Fatalf("over the four readings after the first kill the guard killed %v, want %d kills in all; the log:\n%s",
+					kills, tc.killed, strings.Join(h.log.all(), "\n"))
+			}
+			seen := map[int]bool{}
+			for _, pid := range kills {
+				if pid < 800 || pid > 805 || seen[pid] {
+					t.Fatalf("the guard killed %v, want each a different grower", kills)
+				}
+				seen[pid] = true
+			}
+			if stopped := h.log.with("stopped"); len(stopped) != 0 {
+				t.Fatalf("the guard gave the rise up while growers grew: %q", stopped)
+			}
+		})
+	}
+}
+
+// A grower whose steps are wider than the ordering window still counts as grown since the
+// previous kill (INFRA-3531 R1, spec version 25). At the reading at the mark, which the agent's
+// own growth reaches, pid 301's last step of 64 MiB is 300 ms old, so over the window nothing grew
+// and the guard ends the largest, pid 302, a fork whose end frees nothing. It exits. At the next
+// reading pid 301 steps again and the reading has not fallen, and the guard ends it; it never
+// gives the rise up while pid 301 runs, though by the time the wait has passed that step too is
+// older than the window.
+func TestMemoryGuardCountsAGrowerWhoseStepsAreWiderThanTheWindowAsGrownSinceTheKill(t *testing.T) {
+	pod := newFakePod(t)
+	omp := agent(2 * gib)
+	grower := fakeProcess{pid: 301, ppid: 100, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	pod.add(omp, grower, fakeProcess{pid: 302, ppid: 100, args: []string{"python3", "pool.py"}, anon: 900 * mib})
+	reading := func() uint64 { return omp.anon + 900*mib + grower.anon }
+	pod.setAnon(reading())
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = func(pid int) bool {
+		pod.remove(pid)
+		return true
+	}
+	h.run()
+	// Readings 1 to 8: pid 301 steps at readings 1 and 5; at reading 8 the agent takes the pod
+	// past the mark, 300 ms after pid 301's last step.
+	for i := 1; i <= 8; i++ {
+		if i == 1 || i == 5 {
+			pod.resize(&grower, grower.anon+64*mib)
+		}
+		if i == 8 {
+			pod.resize(&omp, omp.anon+200*mib)
+		}
+		pod.setAnon(reading())
+		h.tick()
+	}
+	h.requireKilled(302)
+	// Pid 302's end frees nothing: the reading stays where pid 301's next step leaves it.
+	pod.resize(&grower, grower.anon+64*mib)
+	pod.setAnon(reading())
+	h.tick()
+	if stopped := h.log.with("stopped"); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up while pid 301 ran: %q", stopped)
+	}
+	// The reading at which the wait has passed, pid 301's step now older than the window.
+	h.tickAfter(Defaults().Wait)
+	h.requireKilled(302, 301)
+}
+
 // At an interval above the window, 500 ms, no read has an earlier one within 300 ms of it: no
 // process counts as grown, and the guard ends the largest first, though pid 300 grew 50 MiB at
 // each reading.
