@@ -96,7 +96,8 @@ Each item below names a task and where its code is, then notes on it.
   a whole number from 1 to 5 (`bus.MaxReplicas`, which aws:WebhookListener's rendering also refuses above), default 1;
   0, a negative number, more than 5 or a word refuses startup naming the variable.
   The stream and every bucket Envoy opens (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `legion_agents`, `envoy_ci_state`, `envoy_dpop_proofs`, `envoy_webhook_redelivery`) are created at it, and one found with fewer copies is raised to it by the owning program's keeper every 30 seconds, and at start as well for every one but `envoy_known_sessions`:
-  a listener's start opens an existing `envoy_known_sessions` as it finds it and creates the bucket only when it is missing (`openKnownBucket`, `internal/session/known.go`), so the keeper alone raises that bucket's copies.
+  a listener's start opens an existing `envoy_known_sessions` as it finds it (`openKnownBucket`, `internal/session/known.go`), so the keeper alone raises that bucket's copies.
+  The five buckets a listener copies (`bus.CopiedBuckets`) are created by the operator's `envoy-infra buckets` alone, never by a listener (next bullet); the others are created by the program that opens them.
   More than 1 needs a clustered NATS.
   `ENVOY_STREAM_MAX_BYTES`: a positive whole number of bytes, the stream's byte limit, past which a full stream refuses new publishes (`DiscardNew`;
   the retryable `bus.ErrStreamFull`) and keeps every stored message until it is 72 hours old.
@@ -111,6 +112,18 @@ Each item below names a task and where its code is, then notes on it.
   a clustered deployment sets both alike in every envoy-listener and in the Dispatch server.
   A server's refusal of a create or raise stops the listener's start naming the setting and its value, while Dispatch's server, which reconciles in the background, keeps serving with the refusal logged;
   a bucket raise's refusal also names the bucket (`refusedSettings`, `raiseReplicas`)
+
+- **No listener creates a bucket it copies** (dispatch://INFRA-4094):
+  `cmd/listener/missing_buckets.go`, `internal/bus/kv.go` (`OpenExistingKeyValue`, `ErrBucketMissing`), `internal/bus/stream.go` (`CopiedBuckets`, `CopiedBucketConfig`), `infra/buckets/`
+
+  A write a bucket's stream acknowledged is lost when the bucket is deleted and created again, and the listener that made it answered its caller that it landed: the ack names the stream and its sequence, never the bucket's incarnation (Prove4238's case b, ten of ten on NATS 2.15.1).
+  So no bucket a listener copies (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`, `envoy_ci_state`) may be created while a writer of it runs, and the listener creates none: its stores open them with `store.WithExistingBuckets`, `session.WithExistingSessionBucket`, `session.WithExistingKnownSessionBucket` and `cistore.WithExistingBucket` (`bus.OpenExistingKeyValue`, which answers `bus.ErrBucketMissing`); without the option a store still creates its bucket, for a test's own server.
+  A start waits for every copied bucket before it opens a store (`awaitCopiedBuckets`), behind its starting gates, which answer every route 503, while `/healthz` answers 200 `"degraded"` naming them under `"missing_buckets"`.
+  A running listener whose bucket is deleted keeps serving its last copy for reads, answers every write that needs the bucket the bus-unavailable 503, and names it on `/healthz`; the self-health monitor reads every copied bucket's stream each tick, leaves a cache whose bucket is missing out of its checks and its rebuild (`listenerCache.bucketMissing`), and takes a missing bucket for no failure a rebuild or a restart repairs (`bucketsMissingError`).
+  Each check logs the ERROR `listener KV bucket is missing` with the bucket, every 30 seconds while it stays missing, which the AWS listener's `bucket-missing` alarm pages on, and the gauge `envoy_kv_buckets_missing` counts the buckets missing.
+  The operator creates a deployment's buckets, and recreates one, with `envoy-infra buckets` (`packages/envoy/infra/README.md`), which refuses while any writer runs: every listener, and every envoy-dispatch for `envoy_ci_state`, proven ended by a Kubernetes runtime check of every node and an ssh query of every machine, with a `/connz` census that only adds blockers.
+  The three ways a bucket is replaced go through it: an operator's delete (`recreate`, never `nats kv rm`), a hub on a new disk (`create`), and a restore from a backup (`check` before `nats stream restore`); a first deployment runs `create --first-deployment` before any listener starts.
+  `ENVOY_THROWAWAY_NATS=1` makes a listener create the buckets it finds missing at its start, for a test's or a dev rig's server alone: every test and script in this repository that starts a listener on a server of its own sets it, and nothing envoy-infra renders does.
 
 - **Stream consumer cap**:
   `internal/bus/stream.go` (`streamMaxConsumers`, `serverDefaultsAnUnsetCap`, `ownedStream`, `refusedSettings`), `internal/bus/keeper.go`
@@ -4122,7 +4135,7 @@ A read-only broker token carries no project either, but none of the three checks
   one `STREAM.INFO` per watcher, so 1.5 a second for a listener with all three), holds a record delivered on a confirmation of the stream older than 4 s (`streamConfirmMaxAge`) for the read of the stream already in flight, or for one of its own when none is and none ended within the probe interval, so a slow or failing `STREAM.INFO` holds delivery back by one read at most, and reads the stream before a read completes.
   Reads that keep failing for longer than the stale bound stop the copy following, and the watcher reads its bucket again once the stream answers (WARN `<cache> could not read its bucket's stream for longer than its stale bound; ...`).
   A new stream stops the copy following and starts the read of the new bucket at once, in a new epoch (INFO `<cache> bucket was recreated under its watcher; ...`, then the read's own `<cache> bucket was recreated; ...`);
-  a missing one stops the copy following until the bucket is created again (`<cache> bucket was deleted under its watcher; ...`).
+  a missing one stops the copy following until the bucket is created again (`<cache> bucket was deleted under its watcher; ...`), which only the operator's `envoy-infra buckets` does once every writer has ended (no listener creates a bucket it copies, above).
   Each store's `Ping`, which the self-health probe runs, is the fallback (`kvwatch.Watcher.Check`):
   it records a terminal watcher error for a stream other than the one the watcher reads, so the next tick rebuilds the watcher.
 
@@ -4249,8 +4262,8 @@ A read-only broker token carries no project either, but none of the three checks
   that failure, transient or terminal, keeps the count, and the terminal line names its error.
   An unbound durable is read twice before it counts, a confirming read a quarter-second after the first, since the rebuild unsubscribes the live handle before it binds and a single stale answer taken during another rebuild would cost this listener a working subscription;
   the rebuild binds the durable again and reports success only once the server itself reports this listener bound (`awaitDurableBound`), rather than once the subscribe call returned, so a rebind that never binds fails the rebuild instead of clearing the count.
-  A listener bucket deleted and not recreated (the interest, session, CI or role bucket) fails every rebuild, because a rebuild opens a bucket and never creates one, so it ends in a restart, and the next start creates the bucket again;
-  a missing bucket counts as terminal, and the role bucket's role claim watcher ending with it is a stopped watcher besides (`store.Registry.WatchErr`).
+  A listener bucket deleted and not recreated (the interest, session, CI or role bucket) is no failure the monitor counts: no rebuild opens a missing bucket and no restart creates one (no listener creates a bucket it copies, above), so the monitor reads each copied bucket's stream itself every tick, leaves a cache whose bucket is missing out of its checks and its rebuild, and reports the bucket (`bucketsMissingError`) without a rebuild or a restart;
+  a stream missing that is no copied bucket's is terminal still.
   The other is a client that reads as not connected (RECONNECTING or CLOSED) for twenty consecutive probes, ten minutes at the production thirty-second interval:
   a rebuild never runs while disconnected, since there is nothing live to rebuild against, and nats.go's own in-place reconnect (the reconnect bullet above) has no bound of its own, so without this the listener can sit disconnected indefinitely over a transport that never truly comes back (a tunnel that keeps accepting local connections without forwarding them anywhere, say), with nothing asking its runtime for a fresh process.
   The two counts are independent: a failure the first count tolerates while connected (an unclassified JetStream timeout) never advances the second, and the reverse holds too, so neither bound is reached by mixing the other's failures in.

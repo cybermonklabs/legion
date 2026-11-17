@@ -13,20 +13,57 @@ Pulumi language needs only the Pulumi CLI:
 | `envoy-infra:gcp:ClusteredNatsHub` | NATS with JetStream as three servers on a GKE cluster, one per zone, through the `nats` Helm chart, with an optional tailnet entry whose hosts forward the tailnet's connections to NATS and to Envoy's session listener, which the hub runs as a workload of its own: see [gcp:ClusteredNatsHub](#gcpclusterednatshub). |
 | `envoy-infra:gcp:Dispatch` | Dispatch on GKE Autopilot, with Cloud SQL, served over a tailnet and, only to the namespaces `allowedNamespaces` names, inside its own cluster; inside that cluster alone with the tailnet inputs unset, or the cluster alone with `clusterOnly`: see [gcp:Dispatch](#gcpdispatch). |
 
-The listener creates the `ENVOY_NOTIFICATIONS` stream and its key-value buckets itself when it
-starts, so it needs only a NATS server with JetStream to reach. It creates them at the deployment's
-replica count, `ENVOY_NATS_REPLICAS` (1 to 5, default 1), and raises one it finds with fewer
-copies, at start and every 30 seconds after. The copies stay at that count only when every Envoy
-program of the deployment carries the same value, so a clustered deployment sets it in every
-listener and in the Dispatch server: JetStream's stream update has no compare-and-swap, and a
-start with a lower or unset value can put the old copies back until the next pass raises them.
-More than 1 needs a clustered NATS: a single server, which is what `aws:NatsService` and
+The listener creates the `ENVOY_NOTIFICATIONS` stream itself when it starts, at the deployment's
+replica count, `ENVOY_NATS_REPLICAS` (1 to 5, default 1), and raises the stream and each bucket
+it finds with fewer copies, at start and every 30 seconds after. The copies stay at that count only
+when every Envoy program of the deployment carries the same value, so a clustered deployment sets
+it in every listener and in the Dispatch server: JetStream's stream update has no compare-and-swap,
+and a start with a lower or unset value can put the old copies back until the next pass raises
+them. More than 1 needs a clustered NATS: a single server, which is what `aws:NatsService` and
 `gcp:NatsHub` deploy, refuses it, and the listener's start then stops with an error naming
 `ENVOY_NATS_REPLICAS`.
 
+No listener creates the key-value buckets it keeps a copy of: `envoy_interests`, `envoy_roles`,
+`envoy_sessions`, `envoy_known_sessions` and `envoy_ci_state`. A bucket deleted and created again
+while a listener runs loses every write the deleted bucket acknowledged, and the listener told its
+caller each of them landed (dispatch://INFRA-4094). So the operator creates them with
+[`envoy-infra buckets`](#envoy-infra-buckets), the one command that does, and it refuses while any
+writer of them runs. A listener that finds one missing fails closed: a start waits for the bucket
+with every route answering 503, a running listener answers 503 to every write that needs it, and
+`/healthz` answers 200 `"degraded"` naming it under `"missing_buckets"`. Every check, every 30
+seconds, logs the ERROR `listener KV bucket is missing` with the bucket's name, which the AWS
+listener's `bucket-missing` alarm pages on, and the listener's `envoy_kv_buckets_missing` gauge
+counts the buckets missing. A deployment's buckets therefore come from the operator:
+
+- **A first deployment** runs `envoy-infra buckets create --nats <url> --first-deployment` once
+  the NATS server is up and before any listener or envoy-dispatch starts. The command refuses a
+  server that holds the `ENVOY_NOTIFICATIONS` stream or any of the buckets: every listener and
+  envoy-dispatch create that stream at their first connect, so its absence proves none has run
+  against the server.
+- **Deleting a bucket under running listeners does not empty it for them:** each keeps serving
+  its last copy for reads, answers every write that needs the bucket 503, and never brings the
+  bucket back. To empty a bucket, or to replace one, stop every listener of the deployment first
+  (and every envoy-dispatch, for `envoy_ci_state`, which it writes too), then run `envoy-infra
+  buckets recreate --bucket <name>` with the inventory it proves ended
+  ([`envoy-infra buckets`](#envoy-infra-buckets)), then start them again. Never delete one with
+  `nats kv rm` or `nats stream rm`.
+- **A hub whose storage is replaced** (`gcp:NatsHub` on a new disk, a new `hostname` or `zone`,
+  [docs/nats-hub.md](docs/nats-hub.md#updating-a-hub)) comes up with no bucket: stop every
+  listener and envoy-dispatch that reaches it before its clients reconnect, then run `envoy-infra
+  buckets create` with the inventory, then start them.
+- **A clustered hub restored from a backup** (`nats stream restore`) recreates each bucket from
+  its snapshot: stop every listener and envoy-dispatch first, run `envoy-infra buckets check` with
+  the inventory, restore while it holds, then start them.
+
+A listener on a NATS server a test or a dev rig started for one run takes `ENVOY_THROWAWAY_NATS=1`
+and creates the buckets it finds missing at its start. Nothing this module renders sets it, and no
+deployment may: a listener restarted while a bucket is missing would create it under the writers
+of the deleted one.
+
 The command, `envoy-infra`, writes a NATS user's nkey seed into a secret store and checks the seed
-stored there ([NATS seeds](#nats-seeds)), and prints what the AWS components register for a program
-that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)).
+stored there ([NATS seeds](#nats-seeds)), prints what the AWS components register for a program
+that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)), and creates and
+recreates the buckets a listener copies ([`envoy-infra buckets`](#envoy-infra-buckets)).
 
 ## Install
 
@@ -2170,8 +2207,10 @@ delivery NATS can never take, answered 422), `<N>-reconnect-hooks-stalled` (a KV
 has not succeeded for a minute after a NATS reconnect, so the listener's caches serve what they
 last held and `/healthz` answers 200 `degraded`), `<N>-stream-subject-dropped` (a start that
 dropped another deployment's overlapping stream subject), `<N>-durable-refused` (a start that
-refused its durable consumer) and `<N>-subscribe-exhausted` (a start that gave up binding its
-durable subscription). `<N>-publish-failure` and `<N>-webhook-refused` count a GitHub delivery's
+refused its durable consumer), `<N>-subscribe-exhausted` (a start that gave up binding its
+durable subscription) and `<N>-bucket-missing` (a KV bucket the listener copies is missing, logged
+every 30 seconds while it stays missing, so the alarm holds until the operator recreates it with
+[`envoy-infra buckets`](#envoy-infra-buckets)). `<N>-publish-failure` and `<N>-webhook-refused` count a GitHub delivery's
 first failure or refusal in each listener task: a later one of the same delivery, such as each of
 the redeliveries Dispatch's sweep asks for over 72 hours, is logged
 `redelivery <delivery>: <action> refused` (or `failed`), which no filter counts, so one delivery
@@ -2593,6 +2632,55 @@ the one output format. The listener's first filter, for a listener named `exampl
   "metricNamespace": "example/EnvoyListener"
 }
 ```
+
+## `envoy-infra buckets`
+
+`envoy-infra buckets` creates the key-value buckets a listener copies, and recreates one, once it
+has proven that no writer of them runs: every envoy-listener of the deployment, and every
+envoy-dispatch when `envoy_ci_state` is among the buckets.
+
+```sh
+NATS_NKEY_SEED_FILE=operator.seed envoy-infra buckets create --nats nats://<hub>:4222 \
+  --kube-context <cluster> --host <machine> --connz http://<hub>:8222
+NATS_NKEY_SEED_FILE=operator.seed envoy-infra buckets recreate --bucket envoy_sessions \
+  --nats nats://<hub>:4222 --kube-context <cluster> --host <machine>
+NATS_NKEY_SEED_FILE=operator.seed envoy-infra buckets check --nats nats://<hub>:4222 --host <machine>
+```
+
+`create` creates every copied bucket that is missing (or each `--bucket`), with its configuration
+(file storage, `ENVOY_NATS_REPLICAS` copies or `--replicas`, and the session bucket's 5 minutes,
+the known sessions' 30 days and the CI state's 7 days of age), and leaves a bucket that exists as
+it is. `recreate` deletes each `--bucket`, proves again that no writer runs, since one started
+between the proof and the delete may have written to the deleted bucket, and only then creates it;
+a second proof that fails leaves the bucket deleted, and the operator stops that writer and runs
+`create`. `check` takes the proof and changes nothing, for a step another tool makes, such as a
+`nats stream restore`. The NATS user must be one that may create and delete the buckets' streams,
+such as an operator's user granted `>`; no listener's set may be used for it.
+
+The proof is the process-end evidence of dispatch://INFRA-4015's plan, never a count of
+connections alone. It needs an inventory of every place a writer runs, and refuses with exit 2
+without one:
+
+- `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context): no
+  pod the API lists, in any namespace, runs a container named `listener` or `envoy-listener` (or
+  `envoy-dispatch`) that has not terminated, and no node's kubelet runtime list
+  (`/api/v1/nodes/<node>/proxy/runningpods/`) holds one, since a pod deleted with `--force` keeps
+  its containers running after the API forgets it. A node whose runtime list does not answer
+  blocks, and so does an empty node list.
+- `--host <target>`, once for each machine, through `ssh -o BatchMode=yes` (`--ssh <program>`
+  names another program taking ssh's arguments, such as a wrapper over SSM): no process on the
+  machine is named `envoy-listener` (or `envoy-dispatch`), read from each `/proc/<pid>/comm`. An
+  unreachable machine blocks, and so does a query that did not run to its end or read no process.
+  A dev box whose listener connects to the hub is such a machine.
+- `--connz <url>`, a hub server's monitoring URL, adds to the proof: each page of its
+  `/connz?auth=true` is read, and an open connection named `envoy-listener`, `envoy-role-lane` or
+  `envoy-session-consumers` (or `dispatch`) blocks. An empty census proves nothing absent: a
+  frozen process holds no connection.
+- `--first-deployment`, instead of an inventory: the server holds no `ENVOY_NOTIFICATIONS` stream
+  and none of the buckets, so no listener or envoy-dispatch has connected to it.
+
+Each blocker is printed with what it found, the command exits 1, and nothing changes. A proof that
+holds prints what it read: the nodes and machines it checked and how many processes it read.
 
 ## NATS seeds
 
