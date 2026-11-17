@@ -1341,6 +1341,9 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 	key := cfg.Project + "-3"
 	var once sync.Once
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemon(t, w, r, workflowDispatchToken) {
+			return
+		}
 		if servedBootCall(t, w, r, cfg.Project) {
 			return
 		}
@@ -1518,6 +1521,9 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 	cfg := workflowConfig(t, natsURL)
 	var requests atomic.Int64
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemon(t, w, r, workflowDispatchToken) {
+			return
+		}
 		if servedBootCall(t, w, r, cfg.Project) {
 			return
 		}
@@ -1559,6 +1565,9 @@ func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 	refusals := int64(appMintRetry.Attempts + 2)
 	var reads atomic.Int64
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemon(t, w, r, workflowDispatchToken) {
+			return
+		}
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects" && reads.Add(1) <= refusals {
 			http.Error(w, "no healthy upstream", http.StatusServiceUnavailable)
 			return
@@ -1586,13 +1595,48 @@ func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 	}
 }
 
-// workflowConfig is a Stage 3 configuration over natsURL and a Dispatch that lists no issues.
+// workflowDispatchToken is the bearer the daemon of workflowConfig presents to Dispatch.
+const workflowDispatchToken = "dispatch-test-token"
+
+// workflowConfig is a Stage 3 configuration over natsURL and a Dispatch that lists no issues
+// (workflowDispatch).
 func workflowConfig(t *testing.T, natsURL string) config.Config {
 	t.Helper()
+	return workflowConfigOn(t, natsURL, workflowDispatch)
+}
+
+// workflowConfigOn is workflowConfig over the Dispatch board that board starts for the
+// configuration's project, and no other: a test with a board of its own starts no second one that
+// nothing reads.
+func workflowConfigOn(t *testing.T, natsURL string, board func(t *testing.T, project string) string) config.Config {
+	t.Helper()
 	cfg := testConfig(t)
+	// Boot reads this process's environment, so the real gh is named here: the first gh on a
+	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_GH_PATH", executable)
+	cfg.DispatchURL = board(t, cfg.Project)
+	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
+	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(workflowDispatchToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write Dispatch token: %v", err)
+	}
+	cfg.Projects = map[string]config.Project{cfg.Project: {}}
+	cfg.NatsURLs = []string{natsURL}
+	return cfg
+}
+
+// workflowDispatch is workflowConfig's board: the calls every boot makes (servedBootCall) and an
+// empty listing of issues, and any other call of the daemon's fails the test. A request without
+// the daemon's bearer is another process's (fromTheDaemon) and fails nothing.
+func workflowDispatch(t *testing.T, project string) string {
+	t.Helper()
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case servedBootCall(t, w, r, cfg.Project):
+		case !fromTheDaemon(t, w, r, workflowDispatchToken):
+		case servedBootCall(t, w, r, project):
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			w.Header().Set("Content-Type", "application/json")
 			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
@@ -1603,21 +1647,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 		}
 	}))
 	t.Cleanup(dispatchServer.Close)
-	// Boot reads this process's environment, so the real gh is named here: the first gh on a
-	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LEGION_GH_PATH", executable)
-	cfg.DispatchURL = dispatchServer.URL
-	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
-	if err := os.WriteFile(cfg.DispatchTokenFile, []byte("dispatch-test-token\n"), 0o600); err != nil {
-		t.Fatalf("write Dispatch token: %v", err)
-	}
-	cfg.Projects = map[string]config.Project{cfg.Project: {}}
-	cfg.NatsURLs = []string{natsURL}
-	return cfg
+	return dispatchServer.URL
 }
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
@@ -1629,6 +1659,10 @@ func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	}
 	return js
 }
+
+// workflowAppToken is the GitHub App token of each lease a workflowTokenRecorder's Token mints
+// (ReadToken's lease carries it with "-read" after it).
+const workflowAppToken = "workflow-test-token"
 
 type workflowTokenRecorder struct {
 	mu    sync.Mutex
@@ -1644,7 +1678,7 @@ func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _
 	defer r.mu.Unlock()
 	r.roles = append(r.roles, role)
 	// Each App has its own bot login, as a real token manager's leases do.
-	return appauth.Lease{Token: "workflow-test-token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: "legion-" + string(role) + "[bot]"}}, nil
+	return appauth.Lease{Token: workflowAppToken, ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: "legion-" + string(role) + "[bot]"}}, nil
 }
 
 // AppLogin answers each App's own bot login, as its lease names it.

@@ -30,7 +30,8 @@ const (
 // every read, with its reviews as none; its list of open pull requests as empty; and the
 // repository, and any other a launch reads, with main its default branch. Anything else is answered
 // 404 and logged, so a read the test did not foresee is named in its output rather than reaching
-// github.com.
+// github.com. A request without the daemon's App token (workflowAppToken) is another process's: it
+// is answered 404 and logged (fromTheDaemon), and it takes no hold and counts as no read.
 type dequeueGitHub struct {
 	url   string
 	mu    sync.Mutex
@@ -55,6 +56,9 @@ func newDequeueGitHub(t *testing.T) *dequeueGitHub {
 	t.Helper()
 	g := &dequeueGitHub{pulls: map[int]*dequeuePull{}}
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemon(t, w, r, workflowAppToken) {
+			return
+		}
 		g.wait(r)
 		if r.Method == http.MethodGet && g.answered(w, r.URL.Path) {
 			return

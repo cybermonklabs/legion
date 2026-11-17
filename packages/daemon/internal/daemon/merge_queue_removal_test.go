@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -414,9 +415,8 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 	pool := isolatedOutboxPool(t)
 	recordOutboxWrites(t, pool)
 	natsURL := workflowNATS(t)
-	cfg := workflowConfig(t, natsURL)
+	cfg := workflowConfigOn(t, natsURL, startedAgainDispatch)
 	cfg.PostgresDSN = pool.Config().ConnString()
-	cfg.DispatchURL = startedAgainDispatch(t, cfg.Project)
 	// Room for every case's tree, so the cap holds no issue of the record back.
 	cfg.AdmissionCap = 20
 	project, err := claim.ProjectToken(cfg.Project)
@@ -425,7 +425,7 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 	}
 	rig := &dequeueRig{cfg: cfg, project: project, pool: pool, records: record.NewStore(), js: workflowJetStream(t, natsURL),
 		github: newDequeueGitHub(t), rt: fake.NewRuntime(), logs: &syncBuffer{}, engine: startedAgainEngine(cfg)}
-	rig.listener, rig.cfg.EnvoyURL = newDequeueListener(t)
+	rig.listener = newDequeueListener(t, &rig.cfg)
 	rig.rt.InPod = true
 	rig.o = fakeRuntime(rig.rt, &built{})
 	rig.o.workflowTokens = &workflowTokenRecorder{}
@@ -917,14 +917,27 @@ type dequeueListener struct {
 	refusals map[string]int
 }
 
-// newDequeueListener starts the listener and returns it with its URL, which the daemon's
-// configuration names as Envoy's.
-func newDequeueListener(t *testing.T) (*dequeueListener, string) {
+// dequeueEnvoyToken is the bearer the daemon of newDequeueRig presents to its Envoy listener.
+const dequeueEnvoyToken = "envoy-test-token"
+
+// newDequeueListener starts the listener and names it in cfg as Envoy's, with dequeueEnvoyToken as
+// the bearer the daemon presents to it. A request without that bearer is another process's: it is
+// answered 404 and logged (fromTheDaemon), and the listener records nothing of it.
+func newDequeueListener(t *testing.T, cfg *config.Config) *dequeueListener {
 	t.Helper()
 	l := &dequeueListener{notices: newNoticeListener(), held: map[string]bool{}, refusals: map[string]int{}}
-	server := httptest.NewServer(l)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fromTheDaemon(t, w, r, dequeueEnvoyToken) {
+			l.ServeHTTP(w, r)
+		}
+	}))
 	t.Cleanup(server.Close)
-	return l, server.URL
+	cfg.EnvoyURL = server.URL
+	cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
+	if err := os.WriteFile(cfg.EnvoyTokenFile, []byte(dequeueEnvoyToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write the Envoy token: %v", err)
+	}
+	return l
 }
 
 // unheld makes the listener answer every publish to topic as it answers one to a role no live
