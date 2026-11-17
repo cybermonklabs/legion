@@ -701,19 +701,17 @@ function landedMove(client: QueryClient, watch: Watch, move: BoardMove): void {
   confirmLanding(client, null, sets, at);
 }
 
-/** Stamps again, as sent now, each read of a project's list that waited for the project's board
- *  moves (`waiting`) once none of them is left unanswered: its request goes out now
- *  (`boardMovesSettled` in `projectIssuesQuery`), after each move's landing or refusal was kept
- *  (`ended`, `landedMove`), so it is newer than all of them, and no hold of an older value is
+/** Stamps again, as sent now (`sent`), each read of a project's list that waited for the
+ *  project's board moves (`waiting`) once none of them is left unanswered: its request goes out
+ *  now (`boardMovesSettled` in `projectIssuesQuery`), after each move's landing or refusal was
+ *  kept (`ended`, `landedMove`), so it is newer than all of them, and no hold of an older value is
  *  left on it (`holdReads`). A retry of the read that starts while a move is out waits again,
  *  and is noted again as it starts (`sent`). */
 function sendWaiting(client: QueryClient, watch: Watch): void {
   for (const [query, project] of watch.waiting) {
     if (moving(client, project)) continue;
-    watch.waiting.delete(query);
-    if (query.state.fetchStatus === "idle") continue;
-    sentAt.set(query, ++clock);
-    watch.held.delete(query.queryHash);
+    if (query.state.fetchStatus === "idle") watch.waiting.delete(query);
+    else sent(client, watch, query);
   }
 }
 
