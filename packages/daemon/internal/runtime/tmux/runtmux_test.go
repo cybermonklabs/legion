@@ -79,6 +79,20 @@ func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
 	}
 }
 
+// A kill of a pane whose process was never recorded that its timeout ended says so, rather than
+// that tmux exited -1 with nothing on stderr.
+func TestKillUnrecordedNamesItsTimeoutNotAnExit(t *testing.T) {
+	r := &Runtime{socket: "legion-test", run: func(context.Context, []string) (result, error) {
+		return result{exitCode: -1, timedOut: 10 * time.Second}, nil
+	}}
+
+	err := r.killUnrecorded(context.Background(), paneReport{pane: "%1", pid: 42})
+
+	if want := "kill pane %1, whose process pid 42 was never recorded: tmux timed out after 10s"; err == nil || err.Error() != want {
+		t.Errorf("killUnrecorded = %v, want %q", err, want)
+	}
+}
+
 // fakeTmuxClient writes an executable that runs body under sh in place of a tmux client.
 func fakeTmuxClient(t *testing.T, dir, body string) string {
 	t.Helper()

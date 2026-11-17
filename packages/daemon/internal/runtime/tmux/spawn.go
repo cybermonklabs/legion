@@ -739,7 +739,7 @@ func (r *Runtime) killUnrecorded(ctx context.Context, report paneReport) error {
 		return nil
 	}
 	if err == nil {
-		err = fmt.Errorf("tmux exited %d: %s", res.exitCode, strings.TrimSpace(res.stderr))
+		err = fmt.Errorf("tmux%s", exited(res))
 	}
 	return fmt.Errorf("kill pane %s, whose process pid %d was never recorded: %w", report.pane, report.pid, err)
 }

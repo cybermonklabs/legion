@@ -324,10 +324,6 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// could not be run rather than as the timeout it is.
 	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
 	if runErr := procgroup.Err(err); runErr != nil && !result.TimedOut {
-		// Every caller propagates the error and not the Result, so the stderr goes under the error.
-		if report := strings.TrimSpace(result.Stderr); report != "" {
-			runErr = fmt.Errorf("%w\n%s", runErr, report)
-		}
 		return result, runErr
 	}
 	result.ExitCode = child.ProcessState.ExitCode()
@@ -746,19 +742,30 @@ func runCheckedInWithin(ctx context.Context, run Runner, ws Workspace, timeout t
 	return checkedResult(argv, result, err)
 }
 
-// checkedResult is the checked runners' shared answer: a process that could not
-// start, exited non-zero, or outlived its budget is an error naming the command. A clean exit
-// whose I/O draining outlived WaitDelay (exec.ErrWaitDelay) is not this: execRunner.Run already
-// reads that as the process's own true ExitCode, so it passes through the same as any other
-// answer.
+// checkedResult is the checked runners' shared answer: a process that could not start, that a
+// signal ended, that exited non-zero, or that outlived its budget is an error naming the command
+// (runFailure, commandFailure). A clean exit whose I/O draining outlived WaitDelay
+// (exec.ErrWaitDelay) is not this: execRunner.Run already reads that as the process's own true
+// ExitCode, so it passes through the same as any other answer.
 func checkedResult(argv []string, result Result, err error) (Result, error) {
 	if err != nil {
-		return Result{}, fmt.Errorf("run %s: %w", strings.Join(argv, " "), err)
+		return Result{}, runFailure(argv, result, err)
 	}
 	if result.ExitCode != 0 || result.TimedOut {
 		return Result{}, commandFailure(argv, result)
 	}
 	return result, nil
+}
+
+// runFailure is a run that answered no status of its own, as an error naming the command: `run
+// <argv>: <err>`, and beneath it the stderr the command wrote when a signal ended it, which may
+// say why it was failing. The runner leaves that stderr out of its own error, so a caller whose
+// command can echo a credential scrubs result.Stderr before it reaches here (transferWithRetries).
+func runFailure(argv []string, result Result, err error) error {
+	if report := strings.TrimSpace(result.Stderr); report != "" && procgroup.Ended(err).Signal != "" {
+		return fmt.Errorf("run %s: %w\n%s", strings.Join(argv, " "), err, report)
+	}
+	return fmt.Errorf("run %s: %w", strings.Join(argv, " "), err)
 }
 
 func commandFailure(argv []string, result Result) error {
@@ -854,12 +861,16 @@ func ConfigureRepositoryCredential(ctx context.Context, run Runner, cloneDir str
 		{"credential.useHttpPath", "true"},
 	} {
 		// `git config --get-all` exits 1 for a key the clone never set, which is as stale as an old
-		// helper; a run that failed to start is an error. Each read runs in the clone itself, the
-		// directory --git-dir names the repository of: the daemon runs this over a clone it has
-		// just provisioned or found, so it is there.
-		result, err := runCommand(ctx, run, []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}, nil, cloneDir)
+		// helper; a run that failed to start, or that its budget ended before it answered, is an
+		// error. Each read runs in the clone itself, the directory --git-dir names the repository
+		// of: the daemon runs this over a clone it has just provisioned or found, so it is there.
+		argv := []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}
+		result, err := runCommand(ctx, run, argv, nil, cloneDir)
 		if err != nil {
 			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, err)
+		}
+		if result.TimedOut {
+			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, commandFailure(argv, result))
 		}
 		values := strings.Split(strings.TrimRight(result.Stdout, "\n"), "\n")
 		if result.ExitCode != 0 || values[len(values)-1] != check.want {
@@ -927,7 +938,7 @@ func removeRepositoryIdentity(ctx context.Context, run Runner, cloneDir string) 
 		}
 		removed, err := runCommand(ctx, run, unset, nil, cloneDir)
 		if err != nil {
-			return fmt.Errorf("run %s: %w", strings.Join(unset, " "), err)
+			return runFailure(unset, removed, err)
 		}
 		if removed.ExitCode == 0 {
 			continue

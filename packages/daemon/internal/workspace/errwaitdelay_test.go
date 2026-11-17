@@ -180,9 +180,10 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 
 // A git or jj a signal ended after it said why it was failing (the memory guard's kill, another
 // drain's SIGTERM) keeps that report: RunCommand's error names the signal and carries the stderr
-// and the stale-lock note, as a failed exit's does, and execRunner's error carries the stderr,
-// since its callers propagate the error and not the Result. Without the report, the save's and the
-// restore's notices would say only `signal: killed`.
+// and the stale-lock note, as a failed exit's does, and so does a checked run's (runFailure). The
+// runner's own error does not carry it: a transfer scrubs its token from the Result's stderr
+// before checkedResult reads it (TestFetchScrubsTheTokenFromATransferASignalEnded). Without the
+// report, the save's and the restore's notices would say only `signal: killed`.
 func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
 	dir := t.TempDir()
 	lock := filepath.Join(dir, "index.lock")
@@ -197,15 +198,52 @@ func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
 			t.Errorf("RunCommand = %v, want the signal, then what the command said, then the stale-lock note", err)
 		}
 	})
-	t.Run("execRunner", func(t *testing.T) {
+	t.Run("RunChecked", func(t *testing.T) {
 		fakeGit := filepath.Join(t.TempDir(), "git")
 		if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\n"+strings.ReplaceAll(script, "$1", lock)+"\n"), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
-		_, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute})
-		if err == nil || err.Error() != "signal: killed\n"+said {
-			t.Errorf("Run = %v, want the signal and what the command said beneath it", err)
+		if _, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute}); err == nil || err.Error() != "signal: killed" {
+			t.Errorf("Run = %v, want the signal alone: the runner's error carries no stderr a caller has not scrubbed", err)
+		}
+		if _, err := RunChecked(context.Background(), run, []string{"git"}, nil, dir); err == nil || err.Error() != "run git: signal: killed\n"+said {
+			t.Errorf("RunChecked = %v, want the signal and what the command said beneath it", err)
+		}
+	})
+}
+
+// timesOut answers every command a runner is given with an empty success, but a command argv
+// starts with, which it answers as one its budget ended: TimedOut, and the -1 exit a kill leaves.
+type timesOut struct{ argv []string }
+
+func (r timesOut) Timeout() time.Duration { return time.Minute }
+
+func (r timesOut) Run(_ context.Context, command Command) (Result, error) {
+	if commandWith(command.Argv, r.argv...) {
+		return Result{ExitCode: -1, TimedOut: true}, nil
+	}
+	return Result{}, nil
+}
+
+// A read its budget ended answered nothing, so its -1 exit is no answer: the shared clone's
+// rev-parse of the default branch was read as "the feed lacks the branch", which left the branch
+// untracked, and the credential read as a stale key, which rewrote the clone's helpers. Each is now
+// refused as the timeout it is.
+func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
+	t.Run("the feed clone's rev-parse of the default branch", func(t *testing.T) {
+		dir := t.TempDir()
+		steps := cloneSteps{clock: WallClock{}, deadline: time.Now().Add(time.Hour), dir: dir}
+		err := feedClone(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/clone/.git", "rev-parse"}}, steps, dir+"/clone", "https://github.com/acme/widgets", "main", remote{feed: dir + "/feed"})
+		if err == nil || !strings.HasPrefix(err.Error(), "command timed out: git --git-dir="+dir+"/clone/.git rev-parse --verify --quiet refs/remotes/origin/main") {
+			t.Errorf("feedClone with its rev-parse timed out = %v, want the timeout refused", err)
+		}
+	})
+	t.Run("the shared clone's credential read", func(t *testing.T) {
+		dir := t.TempDir()
+		rewrote, err := ConfigureRepositoryCredential(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/.git", "config", "--get-all"}}, dir)
+		if err == nil || rewrote || !strings.HasPrefix(err.Error(), "read the shared clone's credential.helper: command timed out: ") {
+			t.Errorf("ConfigureRepositoryCredential with its read timed out = %t, %v; want no rewrite and the timeout refused", rewrote, err)
 		}
 	})
 }
