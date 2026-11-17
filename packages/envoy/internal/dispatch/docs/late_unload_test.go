@@ -174,6 +174,98 @@ func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
 	r.requireNothingCounted("once the late departure's settlement has ended")
 }
 
+// Two retirements of the room a late departure's settlement loaded, inside the room at once - as
+// when several browsers' sockets end after a forced close - still retire it. The first to take
+// the room's close gate has its close refused, since the second is inside the room too
+// (websocket.ErrRoomInUse); the room keeps its mark, and the second, which meets the first's
+// reservation once it has the gate, waits for it to end and then closes the room. Here the
+// departing browser's socket end is the first, and the test runs the second: it enters the room
+// while the first is in it (retireEntered), takes the gate only once the first has reserved the
+// record (afterRetireReserved), and meets that reservation still held, since the first, having
+// left the room, ends it only once the second has met it or returned (afterRetireLeft).
+func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
+	r := unloadAcrossAReload(t)
+	r.letFirstUnload()
+	r.awaitFirstClose()
+	r.awaitUnload("the first room")
+
+	var entered atomic.Int32
+	secondIn, firstReserved := make(chan struct{}), make(chan struct{})
+	var reserveOnce sync.Once
+	letSecond := func() { reserveOnce.Do(func() { close(firstReserved) }) }
+	t.Cleanup(letSecond)
+	secondDone, secondWaits := make(chan struct{}), make(chan struct{}, 1)
+	r.service.retireEntered = func(room string) {
+		if room != r.room {
+			return
+		}
+		switch entered.Add(1) {
+		case 1:
+			// The first retirement, inside the room: the second enters it too before the first
+			// goes on to the gate.
+			go func() {
+				defer close(secondDone)
+				r.service.retireSettlementRoom(r.room)
+			}()
+			select {
+			case <-secondIn:
+			case <-time.After(roomWait(t)):
+				t.Error("the second retirement never entered the room, so nothing here is tested")
+			}
+		case 2:
+			// The second, inside the room: it takes the gate only after the first has reserved.
+			close(secondIn)
+			select {
+			case <-firstReserved:
+			case <-time.After(roomWait(t)):
+				t.Error("the first retirement never reserved the room's record")
+			}
+		}
+	}
+	var reservations atomic.Int32
+	r.service.afterRetireReserved = func(room string) {
+		if room == r.room && reservations.Add(1) == 1 {
+			letSecond()
+		}
+	}
+	r.service.awaitingRetirement = func(room string) {
+		if room == r.room {
+			signal(secondWaits)
+		}
+	}
+	var lefts atomic.Int32
+	r.service.afterRetireLeft = func(room string) {
+		if room != r.room || lefts.Add(1) != 1 {
+			return
+		}
+		select {
+		case <-secondWaits:
+		case <-secondDone:
+		case <-time.After(roomWait(t)):
+			t.Error("the second retirement neither met the first's reservation nor returned")
+		}
+	}
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+	letDeparture()
+	r.awaitSocketEnd("the second room's browser")
+	select {
+	case <-secondDone:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the second retirement never returned")
+	}
+	if got := entered.Load(); got != 2 {
+		t.Fatalf("%d retirements entered the room, want the two this test runs at once; nothing here is tested", got)
+	}
+	r.requireLateSettlementLoadedARoom()
+	r.requireNothingCounted("once both retirements have returned")
+}
+
 // A writer that opens on the document while the room a late departure's settlement loaded retires -
 // past the retirement's last look at the room's record, before ygo's close of the room - takes up
 // no room the close then takes away: it waits for the close to return (awaitRetirement) and forks

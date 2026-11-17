@@ -40,8 +40,11 @@ import (
 // close is ygo's CloseRoomWithin without force, which checks again, under its own locks and where
 // it takes the room out of its map, that no peer is on the room and no other caller inside it
 // (roomServer.retireInstance): a browser joining, or a caller entering the room, is ygo's to keep
-// it for. A room that retired between the first look and the Apply is loaded again by the Apply,
-// carrying the same mark, and retired the same way.
+// it for. Two retirements inside the room at once, as when several browsers' sockets end after a
+// forced close, refuse the first one's close (websocket.ErrRoomInUse): the room keeps its mark,
+// and the second waits for the first's reservation to end, by which time the first has left the
+// room, and closes it then (reserveRetirement). A room that retired between the first look and the
+// Apply is loaded again by the Apply, carrying the same mark, and retired the same way.
 func (s *Service) retireSettlementRoom(room string) {
 	if s.stopping.Load() {
 		return
@@ -68,6 +71,9 @@ func (s *Service) retireSettlementRoom(room string) {
 	var retireErr error
 	ctx := withSettlementLoad(withOwnerVerified(WithoutRecoveryWait(context.Background())))
 	err := s.srv.Apply(ctx, room, func(held *crdt.Doc, _ func(func(*crdt.Transaction))) {
+		if s.retireEntered != nil {
+			s.retireEntered(room)
+		}
 		_, retireErr = s.srv.retireInstance(room, held, func() bool {
 			if reserved = s.reserveRetirement(room, held); reserved != nil && s.afterRetireReserved != nil {
 				s.afterRetireReserved(room)
@@ -76,6 +82,9 @@ func (s *Service) retireSettlementRoom(room string) {
 		})
 	})
 	if reserved != nil {
+		if s.afterRetireLeft != nil {
+			s.afterRetireLeft(room)
+		}
 		s.endRetirement(room, reserved)
 	}
 	if err == nil || errors.Is(err, websocket.ErrNoChanges) {
@@ -88,20 +97,34 @@ func (s *Service) retireSettlementRoom(room string) {
 
 // reserveRetirement takes a retirement's reservation on room's record (roomState.retiring) when
 // held is still the room a late departure's settlement loaded and nothing holds the record
-// (unusedLocked), forgetting the room as the settlement's, and answers that record; it answers
-// nil, and takes nothing, when held is not to retire (retireSettlementRoom).
+// (unusedLocked), and answers that record; it answers nil, and takes nothing, when held is not to
+// retire (retireSettlementRoom). It keeps the room's mark: ygo may still refuse the close, while
+// another caller is inside the room, and the mark is what the next retirement closes the room by;
+// once the close has taken the room, the room's unload forgets the mark (releaseUnloadedRoom).
+// Another retirement's reservation it waits out (awaitRetirement) rather than reads as a holder:
+// that retirement leaves the room (its Server.Apply returns) before it ends its reservation, so
+// once the reservation ends this retirement's close finds no other retirement inside the room.
+// The wait holds the room's close gate, which the other retirement let go of once its close
+// returned, and no lock of the record's.
 func (s *Service) reserveRetirement(room string, held *crdt.Doc) *roomState {
-	state := s.lockExistingState(room)
-	if state == nil {
-		return nil
+	for {
+		state := s.lockExistingState(room)
+		if state == nil {
+			return nil
+		}
+		if retiring := state.retiring; retiring != nil {
+			s.unlockState(room, state)
+			_ = s.awaitRetirement(context.Background(), room, retiring)
+			continue
+		}
+		if state.warmed == nil || state.warmed.doc != held || !s.unusedLocked(state) {
+			s.unlockState(room, state)
+			return nil
+		}
+		state.retiring = make(chan struct{})
+		s.unlockState(room, state)
+		return state
 	}
-	defer s.unlockState(room, state)
-	if state.warmed == nil || state.warmed.doc != held || !s.unusedLocked(state) {
-		return nil
-	}
-	state.warmed = nil
-	state.retiring = make(chan struct{})
-	return state
 }
 
 // endRetirement ends the reservation a retirement took on state, room's record
@@ -116,13 +139,15 @@ func (s *Service) endRetirement(room string, state *roomState) {
 	close(retiring)
 }
 
-// awaitRetirement waits, holding no lock of the service's, for retiring, a retirement's
+// awaitRetirement waits, holding no lock of the record's, for retiring, a retirement's
 // reservation on room's record (roomState.retiring), to end, or for ctx to end, which it answers.
-// Its callers, a writer taking the writer slot (openLiveWrite) and a settlement taking the room
-// (settleRoomWithin), then look at the record again. A writer waits holding its document's owner
-// row and no lock of the document's own, which takes the owner row first (lockDocumentRoom): the
-// close it waits for takes no owner row, and its compaction leaves the document's lock to a later
-// one when another holder has it (servicePersistenceAdapter.Compact).
+// Its callers, a writer taking the writer slot (openLiveWrite), a settlement taking the room
+// (settleRoomWithin) and another retirement (reserveRetirement), then look at the record again. A
+// writer waits holding its document's owner row and no lock of the document's own, which takes the
+// owner row first (lockDocumentRoom): the close it waits for takes no owner row, and its
+// compaction leaves the document's lock to a later one when another holder has it
+// (servicePersistenceAdapter.Compact). A retirement waits holding the room's close gate, which no
+// step from the other retirement's close to the end of its reservation takes.
 func (s *Service) awaitRetirement(ctx context.Context, room string, retiring <-chan struct{}) error {
 	if s.awaitingRetirement != nil {
 		s.awaitingRetirement(room)

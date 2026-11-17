@@ -122,15 +122,18 @@ type roomState struct {
 	// warm-up's load, or the load the retire of that room made. It is retired once nothing holds
 	// the record (retireSettlementRoom). It is forgotten when a browser joins the room or a writer
 	// takes the record's writer slot, which take the room up (takeUpSettlementRoom, openLiveWrite),
-	// when it is retired, and once its load's count has ended, which only that room's leaving
-	// ygo's map allows (warmedRoom), so it keeps no retired room alive and is kept for a room
+	// and once its load's count has ended, which only that room's leaving ygo's map allows
+	// (warmedRoom): a retirement's close ends it by the room's unload, and a close ygo refused
+	// leaves it for the next retirement. So it keeps no retired room alive and is kept for a room
 	// still loading.
 	warmed *warmedRoom
 	// retiring is the reservation a retirement of that room holds on the record from its last look
 	// at the record until ygo's close of the room has returned (reserveRetirement, endRetirement),
-	// closed as it ends. A writer taking the writer slot and a settlement taking the room wait for
-	// it (awaitRetirement), so neither takes up a room the close then takes away: each goes on with
-	// the room once the close was refused, or with no room once it closed. It holds the record
+	// closed as it ends. A writer taking the writer slot, a settlement taking the room and another
+	// retirement wait for it (awaitRetirement). So no writer or settlement takes up a room the close
+	// then takes away, and a retirement whose close the other's presence in the room refused is
+	// followed by one that closes the room once the other has left it. Each goes on with the room
+	// once the close was refused, or with no room once it closed. It holds the record
 	// (unusedLocked), so it is ended on the record it was taken on.
 	retiring       chan struct{}
 	settleFailures int
