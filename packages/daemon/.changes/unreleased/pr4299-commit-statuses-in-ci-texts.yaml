@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+    The daemon reads the `statuses` field of a CI settlement and keeps the commit statuses of the
+    checked head in a new column of `pull_requests` (migration `20261117112334`). Its CI message
+    and the notice of a head that GitHub will not merge name each status with its state, after the
+    check runs, and the task of a role that a settlement wakes names each failed status. A failed
+    status moves no issue. A settlement whose `statuses` field the daemon cannot read keeps the
+    statuses it already holds for that head, and the rest of the settlement applies as before.
+time: 2026-11-17T12:46:29Z
+custom:
+    Issue: pr4299

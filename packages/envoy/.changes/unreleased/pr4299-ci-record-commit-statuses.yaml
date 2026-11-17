@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+    Dispatch's CI reconcile reads the commit statuses of each open pull request head where its
+    App's token holds Commit statuses, through the GraphQL heads query and through
+    `GET /repos/{owner}/{repo}/commits/{ref}/status` on the REST fallback. The CI record keeps the
+    newest success, failure or error status of each context as an entry of its own kind, and each
+    settlement names them in a new `statuses` field. A new context or a changed state settles the
+    head again. A refused status read costs the head its statuses alone. At the record's size
+    bound a status gives way to the check runs, with a warning. The listener drops GitHub's
+    `status` webhook event, which names no pull request.
+time: 2026-11-17T12:46:31Z
+custom:
+    Issue: pr4299
