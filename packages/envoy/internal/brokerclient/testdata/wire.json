@@ -380,7 +380,7 @@
     },
     {
       "name": "Dispatch holds the person a sign-in names",
-      "about": "The broker answers membership_held to a trade that names a person whom Dispatch holds until they sign in again: Google refused their Dispatch sign-in, or could not be reached for 24 hours. A hold revokes nothing, and the person's next Dispatch sign-in, or Google answering again, ends it, so it is not a refusal a client stops on (expect.permanent is false): each client keeps the identity it trades, a person's sign-in on the machine included, and trades again, and the first trade after the release is served with no new sign-in, machine login or approval.",
+      "about": "The broker answers membership_held to a trade that names a person whom Dispatch holds until they sign in again: Google refused their Dispatch sign-in, or no refresh has confirmed them for 24 hours. A hold revokes nothing, and the person's next Dispatch sign-in, or the next refresh that confirms them, ends it, so it is not a refusal a client stops on (expect.permanent is false): each client keeps the identity it trades, a person's sign-in on the machine included, and trades again, and the first trade after the release is served with no new sign-in, machine login or approval.",
       "subject": {
         "kind": "person-device-sign-in",
         "token": "person.google.identity.token",
@@ -409,13 +409,13 @@
         "status": 400,
         "body": {
           "error": "membership_held",
-          "error_description": "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Google can be reached again"
+          "error_description": "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
         }
       },
       "expect": {
         "outcome": "refuse",
         "permanent": false,
-        "error_contains": "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Google can be reached again"
+        "error_contains": "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
       }
     },
     {

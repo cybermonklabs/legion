@@ -2,7 +2,7 @@
 //
 // What the client does when the broker answers that Dispatch holds the person a credential
 // names: the token endpoint's `membership_held`. A hold is not a revocation. It ends at the
-// person's next Dispatch sign-in, or when Google can be reached again, and the identity the
+// person's next Dispatch sign-in, or the next refresh that confirms them, and the identity the
 // client trades is the one the broker serves again then, with no new credential. So the refusal
 // is not final: the client keeps its token source and trades again.
 
@@ -14,7 +14,7 @@ import { accepted, refusalOf, stubBroker } from "./stub";
 
 /** The broker's description of its `membership_held` refusal, with the person's login in it. */
 const HELD =
-  "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Google can be reached again";
+  "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again";
 
 test("membership_held is not a final refusal", async () => {
   const refused = new BrokerRefusedError(400, "membership_held", HELD, "ada@example.com's sign-in");

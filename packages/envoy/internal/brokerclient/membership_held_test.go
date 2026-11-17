@@ -2,7 +2,7 @@
 //
 // What the client does when the broker answers that Dispatch holds the person a credential
 // names: the token endpoint's `membership_held`. A hold is not a revocation. It ends at the
-// person's next Dispatch sign-in, or when Google can be reached again, and the credential the
+// person's next Dispatch sign-in, or the next refresh that confirms them, and the credential the
 // client holds is the one the broker serves again then, with no new login. So the refusal is one
 // a later trade cures: the renewal loop goes on trading, and a person's sign-in on this machine
 // is not remembered as refused.
@@ -19,7 +19,7 @@ import (
 
 // heldDescription is the broker's description of its membership_held refusal, with the person's
 // login in it.
-const heldDescription = "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Google can be reached again"
+const heldDescription = "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
 
 // TestMembershipHeldIsNotPermanent: the broker's `membership_held` is not a refusal the client
 // stops on, and the wire corpus both clients replay says the same of it.

@@ -175,10 +175,10 @@ export class BrokerRefusedError extends Error {
    * succeeds.
    *
    * `membership_held`: Dispatch holds the person this identity names, because Google refused
-   * their Dispatch sign-in or could not be reached for 24 hours. A hold revokes nothing, and the
-   * person's next Dispatch sign-in, or Google answering again, ends it, so the identity this
-   * client trades is served again then with no new credential. A client that dropped it would
-   * need a restart after every hold.
+   * their Dispatch sign-in, or no refresh has confirmed them for 24 hours. A hold revokes nothing,
+   * and the person's next Dispatch sign-in, or the next refresh that confirms them, ends it, so
+   * the identity this client trades is served again then with no new credential. A client that
+   * dropped it would need a restart after every hold.
    */
   get permanent(): boolean {
     return (
@@ -428,10 +428,10 @@ export class BrokerTokenClient {
    * drop the token in hand and throw, so no caller writes with no identity or with one the broker
    * or the issuer has ended.
    *
-   * A person whom Dispatch holds is restored by their next Dispatch sign-in, with no new
-   * credential, so the token source is kept and traded again: like the other four, the refusal
-   * answers the token in hand while it is live, and with nothing live in hand it is thrown and
-   * the next call trades afresh.
+   * A person whom Dispatch holds is restored by their next Dispatch sign-in, or the next refresh
+   * that confirms them, with no new credential, so the token source is kept and traded again:
+   * like the other four, the refusal answers the token in hand while it is live, and with
+   * nothing live in hand it is thrown and the next call trades afresh.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;

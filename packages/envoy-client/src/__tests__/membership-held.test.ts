@@ -1,10 +1,10 @@
 // packages/envoy-client/src/__tests__/membership-held.test.ts
 //
 // What a session's broker credential keeps while Dispatch holds the person it names. A hold is
-// not a revocation: it ends at the person's next Dispatch sign-in, or when Google can be reached
-// again, and the credential the session holds is the one the broker and Dispatch serve again
-// then. So the broker's `membership_held` refusal of a person's trade is not remembered as a
-// final refusal of their sign-in, and Dispatch's `401 MEMBERSHIP_HELD` to a broker token marks
+// not a revocation: it ends at the person's next Dispatch sign-in, or the next refresh that
+// confirms them, and the credential the session holds is the one the broker and Dispatch serve
+// again then. So the broker's `membership_held` refusal of a person's trade is not remembered as
+// a final refusal of their sign-in, and Dispatch's `401 MEMBERSHIP_HELD` to a broker token marks
 // nothing stale.
 
 import { afterEach, expect, spyOn, test } from "bun:test";
@@ -30,7 +30,7 @@ const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
 
 /** The broker's description of its `membership_held` refusal of a trade naming {@link PERSON}. */
-const HELD = `${PERSON}'s credentials are held by Dispatch; they work again when ${PERSON} signs in to Dispatch, or when Google can be reached again`;
+const HELD = `${PERSON}'s credentials are held by Dispatch; they work again when ${PERSON} signs in to Dispatch, or when Dispatch can confirm ${PERSON} with Google again`;
 
 /** A broker that refuses every trade `membership_held` while `held.now` is set, and otherwise
  *  mints a token good for ten minutes, numbering each. */
@@ -148,8 +148,7 @@ test("membership_held marks no credential stale", async () => {
     Response.json(
       {
         code: "MEMBERSHIP_HELD",
-        error:
-          "this token's person is held by Dispatch; it works again when they sign in to Dispatch, or when Google can be reached again",
+        error: HELD,
       },
       { status: 401 }
     )

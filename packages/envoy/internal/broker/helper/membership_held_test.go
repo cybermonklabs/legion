@@ -2,13 +2,13 @@
 //go:build linux
 
 // What the helper keeps while Dispatch holds the person its credential names. A hold is not a
-// revocation: it ends at the person's next Dispatch sign-in, or when Google can be reached again,
-// and the broker then serves the credential the helper already holds. So the helper drops nothing
-// because of it. In machine-login mode the broker refuses the launcher routes 403 MEMBERSHIP_HELD
-// and still answers the refresh grant, so the login stays and its expiry moves on. In identity
-// mode the trade itself is refused `membership_held`: the trade loop goes on trading with its
-// backoff, the one-hour credential lapses at its expiry as it does every hour, and the first
-// trade after the release brings one back.
+// revocation: it ends at the person's next Dispatch sign-in, or the next refresh that confirms
+// them, and the broker then serves the credential the helper already holds. So the helper drops
+// nothing because of it. In machine-login mode the broker refuses the launcher routes 403
+// MEMBERSHIP_HELD and still answers the refresh grant, so the login stays and its expiry moves
+// on. In identity mode the trade itself is refused `membership_held`: the trade loop goes on
+// trading with its backoff, the one-hour credential lapses at its expiry as it does every hour,
+// and the first trade after the release brings one back.
 //
 // Like identitywake_test.go's, these drive Broker's launcher calls against an httptest server
 // directly: no unix socket and no pidfd.
@@ -35,7 +35,7 @@ import (
 const heldPerson = "ada@example.com"
 
 // heldDescription is the token endpoint's description of its membership_held refusal.
-const heldDescription = heldPerson + "'s credentials are held by Dispatch; they work again when " + heldPerson + " signs in to Dispatch, or when Google can be reached again"
+const heldDescription = heldPerson + "'s credentials are held by Dispatch; they work again when " + heldPerson + " signs in to Dispatch, or when Dispatch can confirm " + heldPerson + " with Google again"
 
 // TestMembershipHeldHelperKeepsItsLogin: the helper discards no credential because Dispatch holds
 // its person, in either mode, and is served again after the release with no new login.
