@@ -575,14 +575,15 @@ test("a later review round reads from the commit its task names, and the pair re
   expect(scopedToTheRange).toEqual([]);
 });
 
-// The daemon writes its ` Last reviewed commit: <sha>.` sentence just before a reviewer task's last
-// sentence, the entry's (the daemon's namingTheReviewRound), and the task's own text, a retry's
-// reason or a title, can hold the same words earlier. So each text that tells the reviewer which
-// commit its task names says which sentence is the daemon's, once: the daemon part, the role part
-// and the core part of the reviewer's prompt, and the merge gate as the plugin ships it.
+// The daemon's two sentences are always the last two of a reviewer's task in reviewing, the
+// commit's and then the entry's, each naming `none` where the row holds no value for it (the
+// daemon's namingTheReviewRound), and the task's own text, a retry's reason or a title, can hold
+// the same words earlier. So each text that tells the reviewer which commit its task names says
+// which sentence is the daemon's and what `none` means, once: the daemon part, the role part and
+// the core part of the reviewer's prompt, and the merge gate as the plugin ships it.
 test("each reviewer text says the daemon's commit sentence stands just before the task's last sentence", () => {
   countedOncePerFile(
-    "The daemon's own `Last reviewed commit:` sentence stands just before the task's last sentence, its `Review entry: <n>.`: a sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's, and a task with no such sentence just before its last one names no commit.",
+    "The daemon's own `Last reviewed commit:` sentence always stands just before the task's last sentence, its `Review entry:` sentence, and names a commit or `none`: `none` means no deciding review of yours is recorded for the round, and you read the whole change. A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's. The last sentence names `none` too where the daemon gives the task no entry, and no review of that task moves the commit.",
     [
       "packages/daemon/internal/prompts/go/reviewer.md",
       "packages/daemon/internal/prompts/roles/reviewer.md",

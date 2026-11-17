@@ -88,7 +88,7 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 		t.Fatalf("after the late approval the reviewer's row reads the reviewed commit %q, want none: the approval was submitted before the re-admission cleared the generation", got)
 	}
 	promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewEntryPartOf(reviewerRow(t, pool).Entry)
+	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(reviewerRow(t, pool).Entry)
 	if task := reviewerRow(t, pool).EntryTask; task != want {
 		t.Fatalf("the promoted reviewer's first task = %q, want %q: the first review of the new generation reads the whole change", task, want)
 	}
@@ -145,8 +145,8 @@ func TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit(t *t
 			backToReviewing(t, apply, 3)
 			task := reviewerRow(t, pool).EntryTask
 			readsReviewingTask(t, "the next round", task, 3)
-			if tc.want == "" && strings.Contains(task, ReviewedCommitLabel) {
-				t.Fatalf("the next round's task = %q, want no reviewed commit: no review of the new generation's reviewer decided", task)
+			if tc.want == "" && !endsNamingNoCommit(task, reviewerRow(t, pool).Entry) {
+				t.Fatalf("the next round's task = %q, want it to end naming no reviewed commit, `none`: no review of the new generation's reviewer decided", task)
 			}
 			if tc.want != "" && !strings.Contains(task, reviewedPartOf(tc.want)) {
 				t.Fatalf("the next round's task = %q, want it to name %s, the head the promoted reviewer's own review read", task, tc.want)
@@ -178,8 +178,8 @@ func TestAReviewOfTheRoundBeforeAReadmissionMovesNoCommitWhateverTimeGitHubGives
 	}
 	promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
 	promoted := reviewerRow(t, pool)
-	if promoted.Entry != old.Entry+1 || strings.Contains(promoted.EntryTask, ReviewedCommitLabel) {
-		t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d and no reviewed commit", promoted.Entry, promoted.EntryTask, old.Entry+1)
+	if promoted.Entry != old.Entry+1 || !endsNamingNoCommit(promoted.EntryTask, promoted.Entry) {
+		t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d and a task naming no reviewed commit, `none`", promoted.Entry, promoted.EntryTask, old.Entry+1)
 	}
 	late := reviewAt(t, pool, 2, "approved", headOne, entered.Add(4*time.Hour))
 	late.Body = reviewBodyOfEntry("the review", "ses-reviewer", headOne, old.Entry)
@@ -199,8 +199,8 @@ func TestAReviewOfTheRoundBeforeAReadmissionMovesNoCommitWhateverTimeGitHubGives
 	backToReviewing(t, apply, 3)
 	task := reviewerRow(t, pool).EntryTask
 	readsReviewingTask(t, "the next round", task, 3)
-	if strings.Contains(task, ReviewedCommitLabel) {
-		t.Fatalf("the next round's task = %q, want no reviewed commit: no review of the new generation's reviewer decided", task)
+	if !endsNamingNoCommit(task, reviewerRow(t, pool).Entry) {
+		t.Fatalf("the next round's task = %q, want it to end naming no reviewed commit, `none`: no review of the new generation's reviewer decided", task)
 	}
 }
 

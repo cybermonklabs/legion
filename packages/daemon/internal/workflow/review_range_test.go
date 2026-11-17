@@ -305,6 +305,13 @@ func reviewedPartOf(head string) string {
 	return " " + ReviewedCommitLabel + ": " + head + "."
 }
 
+// endsNamingNoCommit says whether task ends with the daemon's sentence naming no commit,
+// reviewedPartOf("none"), and then the sentence of entry, and names the commit's label nowhere
+// else: the task of a round whose reviewer's row holds no reviewed commit.
+func endsNamingNoCommit(task string, entry int64) bool {
+	return strings.HasSuffix(task, reviewedPartOf("none")+reviewEntryPartOf(entry)) && strings.Count(task, ReviewedCommitLabel) == 1
+}
+
 // readsReviewingTask fails the test unless task is the reviewing task of the round whose tester
 // handed off version version: an assertion of what a round's task lacks is only worth something
 // once it has read that round's task, since a row a round never reached still holds the task of
@@ -400,8 +407,8 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	pool, _, apply := reviewRoundOne(t)
 	first := reviewerRow(t, pool)
 	readsReviewingTask(t, "round 1", first.EntryTask, 1)
-	if strings.Contains(first.EntryTask, ReviewedCommitLabel) {
-		t.Fatalf("round 1's task = %q, want no reviewed commit: no review came before it", first.EntryTask)
+	if !endsNamingNoCommit(first.EntryTask, first.Entry) {
+		t.Fatalf("round 1's task = %q, want it to end naming no reviewed commit, `none`, then its entry: no review came before it", first.EntryTask)
 	}
 
 	// The reviewer requests changes at headOne; the implementer completes at a new commit and the
@@ -668,7 +675,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
-		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewEntryPartOf(before.Entry+1)
+		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
 		if after.Entry != before.Entry+1 || after.EntryTask != want {
 			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
 		}
@@ -688,8 +695,8 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			t.Fatalf("the rerun's reviewer is on entry %d, want one above %d: its first round started", after.Entry, before.Entry)
 		}
 		readsReviewingTask(t, "the rerun's first round", after.EntryTask, 9)
-		if strings.Contains(after.EntryTask, ReviewedCommitLabel) {
-			t.Fatalf("the rerun's first review task = %q, want no reviewed commit: the rerun cleared the generation", after.EntryTask)
+		if !endsNamingNoCommit(after.EntryTask, after.Entry) {
+			t.Fatalf("the rerun's first review task = %q, want it to end naming no reviewed commit, `none`: the rerun cleared the generation", after.EntryTask)
 		}
 	})
 	t.Run("an adoption into another tree", func(t *testing.T) {
@@ -710,8 +717,8 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			t.Fatalf("the adopted reviewer is on entry %d, want one above %d: its first round started", after.Entry, before.Entry)
 		}
 		readsReviewingTask(t, "the adoption's first round", after.EntryTask, 9)
-		if strings.Contains(after.EntryTask, ReviewedCommitLabel) {
-			t.Fatalf("the adoption's first review task = %q, want no reviewed commit: the adoption cleared the generation", after.EntryTask)
+		if !endsNamingNoCommit(after.EntryTask, after.Entry) {
+			t.Fatalf("the adoption's first review task = %q, want it to end naming no reviewed commit, `none`: the adoption cleared the generation", after.EntryTask)
 		}
 	})
 }
@@ -743,9 +750,8 @@ func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
 				t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 			}
 			readsReviewingTask(t, "round 2", second.EntryTask, 2)
-			named := strings.Contains(second.EntryTask, ReviewedCommitLabel)
-			if tc.removed && named {
-				t.Fatalf("round 2's task = %q, want no reviewed commit: the record of round 1's review was removed", second.EntryTask)
+			if tc.removed && !endsNamingNoCommit(second.EntryTask, second.Entry) {
+				t.Fatalf("round 2's task = %q, want it to end naming no reviewed commit, `none`: the record of round 1's review was removed", second.EntryTask)
 			}
 			if !tc.removed && !strings.Contains(second.EntryTask, reviewedPartOf(headOne)) {
 				t.Fatalf("round 2's task = %q, want it to name %s, the commit round 1's review read", second.EntryTask, headOne)

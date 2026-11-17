@@ -4,7 +4,7 @@
 // the reviewer with in its second review round holds ` Last reviewed commit: <sha>.`, the head the
 // reviewer's own deciding review of the first round read, a review whose footer names the entry of
 // that round (record.PhaseRow.ReviewedHead, which workflow's review writes and workflow's
-// namingTheReviewRound names), and the task of the first round names no commit.
+// namingTheReviewRound names), and the task of the first round names `none` in that sentence.
 // scripts/e2e/review-range.sh builds this driver with `-tags e2e` and owns the nats-server and the
 // PostgreSQL it runs against.
 //
@@ -32,7 +32,7 @@
 //
 // Each check reads the reviewer's task of its round, and first holds that it is that task: it says
 // `Phase: reviewing.` and names the tester's handoff of that round by its version. Without that, a
-// check of an absence would pass on a task of another round.
+// check of a task naming no commit would pass on a task of another round.
 package daemon
 
 import (
@@ -127,13 +127,23 @@ func (r *reviewRangeLive) newIssue(name, title string, number int) *reviewRangeI
 }
 
 // Check round-1-names-no-commit. The walked issue reaches reviewing, and the task the daemon prompts
-// the reviewer with names no reviewed commit.
+// the reviewer with names no reviewed commit: ` Last reviewed commit: none.` (namesNoCommit).
 func (r *reviewRangeLive) roundOneNamesNoCommit() {
 	task := r.roundOne(r.walked)
-	if strings.Contains(task, workflow.ReviewedCommitLabel) {
-		r.t.Fatalf("the reviewer's task of round 1 = %q, want no %q in it: no review of this generation has read a commit yet", task, workflow.ReviewedCommitLabel)
+	r.namesNoCommit("the reviewer's task of round 1", task)
+	r.note("the task names ` %s: none.` just before its entry", workflow.ReviewedCommitLabel)
+}
+
+// namesNoCommit fails the proof unless task, the reviewer's task named what, ends with the
+// daemon's sentence naming no commit, ` Last reviewed commit: none.`, and then the entry's, and
+// names the commit's label nowhere else: no review of this generation's reviewer has read a commit
+// yet, or its record was cleared.
+func (r *reviewRangeLive) namesNoCommit(what, task string) {
+	r.t.Helper()
+	want := " " + workflow.ReviewedCommitLabel + ": none. " + workflow.ReviewEntryLabel + ": " + strconv.FormatInt(r.entryNamedIn(task), 10) + "."
+	if !strings.HasSuffix(task, want) || strings.Count(task, workflow.ReviewedCommitLabel) != 1 {
+		r.t.Fatalf("%s = %q, want it to end with %q and to name %q once: its record holds no reviewed commit", what, task, want, workflow.ReviewedCommitLabel)
 	}
-	r.note("the task names no %q", workflow.ReviewedCommitLabel)
 }
 
 // Check round-2-names-the-commit-of-round-1. The reviewer requests changes at the walked issue's
@@ -152,16 +162,15 @@ func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 
 // Check control-no-record-no-commit. The control issue walks the same first round and review, and
 // its reviewer's phases row holds the commit that review read; then the commit is cleared from that
-// row in the daemon's database, and the task of round 2 names no reviewed commit. The check before
-// it is this run with the clear left out. The read before the clear is what lets the control fail
-// on a first review that recorded nothing: PostgreSQL counts a row the clear matches even when it
-// already holds the empty string, so the clear's one row says nothing of what the row held.
+// row in the daemon's database, and the task of round 2 names no reviewed commit, `none`. The check
+// before it is this run with the clear left out. The read before the clear is what lets the
+// control fail on a first review that recorded nothing: PostgreSQL counts a row the clear matches
+// even when it already holds the empty string, so the clear's one row says nothing of what the row
+// held.
 func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	issue := r.control
 	task := r.roundOne(issue)
-	if strings.Contains(task, workflow.ReviewedCommitLabel) {
-		r.t.Fatalf("the control's reviewer task of round 1 = %q, want no %q in it", task, workflow.ReviewedCommitLabel)
-	}
+	r.namesNoCommit("the control's reviewer task of round 1", task)
 	r.requestChanges(issue)
 	if got := r.reviewedHead(issue.key); got != issue.first {
 		r.t.Fatalf("phases.reviewed_head of %s's reviewer before the clear = %q, want %s, the head its review of round 1 read", issue.key, got, issue.first)
@@ -175,10 +184,8 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	}
 	r.note("cleared phases.reviewed_head of %s's reviewer; it now reads \"\"", issue.key)
 	task = r.roundTwo(issue)
-	if strings.Contains(task, workflow.ReviewedCommitLabel) {
-		r.t.Fatalf("the control's reviewer task of round 2 = %q, want no %q in it: its record holds no reviewed commit", task, workflow.ReviewedCommitLabel)
-	}
-	r.note("the task names no %q", workflow.ReviewedCommitLabel)
+	r.namesNoCommit("the control's reviewer task of round 2", task)
+	r.note("the task names ` %s: none.` just before its entry", workflow.ReviewedCommitLabel)
 }
 
 // Check other-session-records-no-commit. The third issue walks the same first round; then the
@@ -193,9 +200,7 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 func (r *reviewRangeLive) otherSessionRecordsNoCommit() {
 	issue := r.other
 	task := r.roundOne(issue)
-	if strings.Contains(task, workflow.ReviewedCommitLabel) {
-		r.t.Fatalf("the other issue's reviewer task of round 1 = %q, want no %q in it", task, workflow.ReviewedCommitLabel)
-	}
+	r.namesNoCommit("the other issue's reviewer task of round 1", task)
 	// The review differs from the reviewer's own in its session alone: it names the entry the
 	// reviewer's task named, so the session is what sets it aside.
 	other := "ses_" + issue.name + "_controller"

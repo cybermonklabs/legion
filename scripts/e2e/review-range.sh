@@ -15,7 +15,7 @@
 # check prints `== <name>`, what it observed and `ok <name>`; the first that fails ends the run
 # non-zero, naming it:
 #   - round-1-names-no-commit: an issue the tester passes reaches reviewing, and the reviewer's
-#     task holds no `Last reviewed commit`;
+#     task ends with ` Last reviewed commit: none.` and then its ` Review entry: <n>.`;
 #   - round-2-names-the-commit-of-round-1: the reviewer requests changes at the pull request's head
 #     X, its footer naming the session its claim registered and the entry its task ended with
 #     (` Review entry: <n>.`, read from the task the daemon delivered, as an agent reads it); the
@@ -23,9 +23,9 @@
 #     holds ` Last reviewed commit: X.`;
 #   - control-no-record-no-commit: on a second issue, after the same first round and review, the
 #     driver reads that phases.reviewed_head of the reviewer's row holds the head the review read,
-#     clears it in the daemon's database, and the reviewer's task of round 2 holds no
-#     `Last reviewed commit`. The check before it is the same run with the clear left out, so the
-#     control can fail;
+#     clears it in the daemon's database, and the reviewer's task of round 2 ends with
+#     ` Last reviewed commit: none.` and its entry. The check before it is the same run with the
+#     clear left out, so the control can fail;
 #   - other-session-records-no-commit: on a third issue, after the same first round, the review
 #     App's request for changes at the head comes from a session the reviewer's claim did not
 #     register, naming the entry the reviewer's task named; the daemon sets it aside, so the issue
