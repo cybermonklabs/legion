@@ -16,8 +16,8 @@ import {
   fakeDispatch,
   holdingTarget,
   lineFor,
+  probingRow,
   reachFixtures,
-  row,
   verdict,
   withoutTools,
 } from "./outside-path-reach-fixtures";
@@ -50,7 +50,7 @@ const cases: Case[] = [
 
 describe.concurrent("outside-path-reach.sh under an inherited TMOUT", () => {
   for (const { tmout, via, path, hub: kind } of cases) {
-    row(withoutTools)(
+    probingRow(withoutTools)(
       `reads the whole list through ${via}, its second line 2 s late, with ` +
         `${tmout === undefined ? "no TMOUT" : `TMOUT=${tmout}`}, the ${path} PATH and a ${kind} hub`,
       async () => {
