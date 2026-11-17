@@ -1642,7 +1642,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
 // first. A role whose pod an idle release took is not brought back to be asked: its topic has no
-// holder, and the round ends at its bound whether or not the role answers.
+// holder, so its ask is lost as every ask that reached no session is (below), the sweep asks the
+// claim again once its agent is ready again, and the round ends at its bound whether or not the
+// role answers.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a
@@ -1650,10 +1652,16 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // records the row's round: the round ended, another round replaced it, or this daemon no longer
 // supervises the claim. A role is never asked about a round that is not its own.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line. Every other
-// failure of the publish keeps the ordinary retry, as phaseEnded's does: a holder that did not
-// confirm in time, one that does not advertise the delivery mode, and a forward the listener's
-// own NATS grant denies can each go through on a later attempt.
+// A topic with no live holder (notify.ErrNoHolder) is logged on one line, and the ask is lost,
+// not given: no session read it. So the claim's ask mark of this round is taken back
+// (updateAskLost) and the row ends, and the sweep's next reading of the round asks the claim
+// again (askRound). The round waits for every claim it asks until its bound, and a claim the ask
+// never reached has nothing to answer: a fresh session that has not claimed its topic yet is the
+// ordinary case, and a mark left standing over its lost ask held BET-1291's and BET-690's rounds
+// for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failure of the publish keeps
+// the ordinary retry, as phaseEnded's does: a holder that did not confirm in time, one that does
+// not advertise the delivery mode, and a forward the listener's own NATS grant denies can each
+// go through on a later attempt.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -1677,8 +1685,38 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	if err != nil {
 		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
 	}
-	if published {
-		r.log.Info("outbox update ask published to the role topic", fields...)
+	if !published {
+		return r.updateAskLost(ctx, token, row, payload)
+	}
+	r.log.Info("outbox update ask published to the role topic", fields...)
+	return nil
+}
+
+// updateAskLost takes back the ask mark of the row's round on the claim of the row's role, whose
+// ask reached no session (supervise's Machine.PodUpdateAskLost), so the sweep asks that claim
+// again. Only the mark of the row's own round is taken back: a claim whose round changed since
+// the publish keeps the mark of the round it is in now, and a claim this daemon no longer
+// supervises has nothing to take back.
+//
+// The take-back is written under the machine's lock, which a decision in flight holds — a Sandbox
+// relaunch holds it for minutes while the runtime waits out the pod — and this lane runs one row
+// at a time, so a take-back that waited for the lock would hold every phase-ended message, hook
+// prompt and ask of every issue behind that one decision. So a machine that is deciding now
+// (Machine.Deciding, which waits on nothing) is a wait: the row is kept and its mark stands, and
+// the row's next attempt publishes the ask again, which either reaches the session the decision
+// brought up or takes the mark back then. A take-back the store refuses is returned as the row's
+// failure, and the retry does the same.
+func (r *outbox) updateAskLost(ctx context.Context, token claim.Token, row record.OutboxRow, payload record.UpdateAsk) error {
+	machine, found := r.supervisor.Machine(token)
+	if !found {
+		return nil
+	}
+	if deciding := machine.Deciding(); deciding != nil {
+		return wait.Errorf("the ask of round %s for %s reached no session, and its %s's machine is deciding %T; the row publishes the ask again at its next attempt",
+			payload.Round, row.Issue, payload.Role, deciding)
+	}
+	if _, err := machine.PodUpdateAskLost(ctx, payload.Round); err != nil {
+		return fmt.Errorf("take back the ask of round %s for %s from its %s, which no session read: %w", payload.Round, row.Issue, payload.Role, err)
 	}
 	return nil
 }

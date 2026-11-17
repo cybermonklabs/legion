@@ -2700,9 +2700,10 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 //
 // The machine asks the role nothing. The sweep publishes the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk) and
-// marks the publish on the claim (Machine.PodUpdateAsked). A claim whose process is suspended or
-// released is not revived for the ask: the round ends at its bound whether or not the role
-// answers.
+// marks the publish on the claim (Machine.PodUpdateAsked); an ask that reached no session takes
+// its mark back, so a later sweep asks again (Machine.PodUpdateAskLost). A claim whose process is
+// suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
+// once its agent is ready again, and the round ends at its bound whether or not the role answers.
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an

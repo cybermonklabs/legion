@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A pod update round asks a role again when its ask reached no session. Before, the daemon marked
+  a role asked when it queued the ask, and an ask that found no live session on the role's Envoy
+  topic ended with the line `outbox update ask finished undelivered: no live session holds the
+  role` and left that mark. So the role was never asked again, and the round waited for its answer
+  until `pod_update_grace_minutes`, with every role that had answered held from its next task. A
+  fresh session that has not claimed its topic yet is the usual case: on 2026-11-17 one planner
+  and one reviewer on BET held their rounds this way for about 12 and 6 hours. Now such an ask
+  takes the mark back, and the next sweep that finds the role ready asks it again. An ask that
+  reached a session is still the only ask the role gets in that round.

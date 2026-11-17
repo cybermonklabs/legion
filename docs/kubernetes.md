@@ -5752,13 +5752,13 @@ Every claim of the issue that has a session and has not retired is asked, since 
 The daemon publishes one message to each such role's own Envoy topic, the architect's included (`askRound`, `record.UpdateAsk`):
 it names the drift, the round's own id and the moment the round ends, it says that only the role's own push keeps its work, and it asks the role to push its work to the issue branch and answer `ready_for_update` with that id.
 The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
-Each role that has not answered is asked at most once per round, which its claim records (the `update_tasked_at` column), and nothing asks it again.
+Each role that has not answered is asked once per round by an ask that reaches its session, which its claim records (the `update_tasked_at` column); an ask that finds no live session on the role's topic takes that mark back, and the next sweep that finds the role ready asks it again.
 The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
 A claim that is queued, launching, registered but not ready, or suspended has no live session on its role's topic, so the sweep asks it nothing and writes no mark on it.
 The first sweep after its agent is ready asks it.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
 A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
-A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered.
+A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
 A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.

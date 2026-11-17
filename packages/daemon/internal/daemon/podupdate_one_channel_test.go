@@ -3,7 +3,9 @@ package daemon
 // The update round's ask reaches each role on one channel: the sweep publishes it once per claim
 // per round, as a role-message outbox row (record.UpdateAsk) to that claim's own Envoy topic, and
 // no claim is queued or sent a task for the round (dispatch://INFRA-2981 R1, verification's
-// c-one-channel). These cases drive the pod-update rig of podupdate_test.go.
+// c-one-channel). "Once" counts the asks that reached a session: an ask whose topic had no live
+// holder is asked again (podupdate_undelivered_ask_test.go). These cases drive the pod-update rig
+// of podupdate_test.go.
 
 import (
 	"encoding/json"

@@ -363,6 +363,96 @@ func TestPodUpdateAskedMarksTheRoundsAskOnce(t *testing.T) {
 	})
 }
 
+// An ask that reached no session is lost, not given (dispatch://INFRA-4109 R4, dispatch://INFRA-4131
+// R4), so the outbox takes its mark back (PodUpdateAskLost) and the sweep asks the claim again. The
+// take-back is the mark's own round's alone: it clears the mark of the round it names, durably,
+// and leaves the claim unasked for the sweep's next mark; it takes nothing from a round the claim
+// is not in, so a round that replaced the lost ask's round keeps its own mark; and a write the
+// store refuses puts the mark back and returns the store's error, so the outbox keeps the row.
+func TestPodUpdateAskLostTakesBackTheMarkOfItsOwnRoundAlone(t *testing.T) {
+	t.Run("the claim's own round, durably, and the sweep marks again", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); err != nil || !asked {
+			t.Fatalf("the sweep's mark = %t, %v; want it made", asked, err)
+		}
+
+		if lost, err := h.m.PodUpdateAskLost(h.ctx, PodRound(testOtherPod)); err != nil || lost {
+			t.Fatalf("the take-back of a round the claim is not in = %t, %v; want it refused", lost, err)
+		}
+		if c := h.claim(); c.UpdateTaskedAt == nil {
+			t.Fatalf("UpdateTaskedAt = nil after the refused take-back, want the mark kept")
+		}
+
+		if lost, err := h.m.PodUpdateAskLost(h.ctx, testRound); err != nil || !lost {
+			t.Fatalf("the take-back of the claim's own round = %t, %v; want it made", lost, err)
+		}
+		if c := h.claim(); c.UpdateRound != testRound || c.UpdateTaskedAt != nil {
+			t.Fatalf("the claim after the take-back = round %q asked at %v, want the round kept and no mark", c.UpdateRound, c.UpdateTaskedAt)
+		}
+		if stored := h.store.load(h.token); stored.UpdateRound != testRound || stored.UpdateTaskedAt != nil {
+			t.Fatalf("the stored claim = round %q asked at %v, want no mark: the sweep reads the claims the store holds",
+				stored.UpdateRound, stored.UpdateTaskedAt)
+		}
+		if lost, err := h.m.PodUpdateAskLost(h.ctx, testRound); err != nil || lost {
+			t.Fatalf("a second take-back = %t, %v; want nothing to take back", lost, err)
+		}
+
+		h.advance(time.Minute)
+		if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); err != nil || !asked {
+			t.Fatalf("the next sweep's mark = %t, %v; want it made", asked, err)
+		}
+		h.wantPrompts(0)
+	})
+
+	t.Run("a round that replaced the lost ask's round keeps its own mark", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); err != nil || !asked {
+			t.Fatalf("the first round's mark = %t, %v; want it made", asked, err)
+		}
+		replacing := PodRound(testOtherPod)
+		h.openUpdate(replacing, testReasons)
+		h.advance(time.Minute)
+		if asked, err := h.m.PodUpdateAsked(h.ctx, replacing); err != nil || !asked {
+			t.Fatalf("the replacing round's mark = %t, %v; want it made", asked, err)
+		}
+		at := h.clock.Now()
+
+		if lost, err := h.m.PodUpdateAskLost(h.ctx, testRound); err != nil || lost {
+			t.Fatalf("the take-back of the replaced round's ask = %t, %v; want it refused", lost, err)
+		}
+		if c := h.claim(); c.UpdateRound != replacing || c.UpdateTaskedAt == nil || !c.UpdateTaskedAt.Equal(at) {
+			t.Fatalf("the claim = round %q asked at %v, want round %q still asked at %v", c.UpdateRound, c.UpdateTaskedAt, replacing, at)
+		}
+	})
+
+	t.Run("a write the store refuses puts the mark back", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateReady)
+		h.openUpdate(testRound, testReasons)
+		if asked, err := h.m.PodUpdateAsked(h.ctx, testRound); err != nil || !asked {
+			t.Fatalf("the sweep's mark = %t, %v; want it made", asked, err)
+		}
+		at := h.clock.Now()
+
+		h.store.fail("PutClaim", errBoom)
+		if lost, err := h.m.PodUpdateAskLost(h.ctx, testRound); !errors.Is(err, errBoom) || lost {
+			t.Fatalf("the take-back over a failing write = %t, %v; want it refused with the store's error", lost, err)
+		}
+		h.store.fail("PutClaim", nil)
+		if c := h.claim(); c.UpdateTaskedAt == nil || !c.UpdateTaskedAt.Equal(at) {
+			t.Fatalf("UpdateTaskedAt = %v after the failed write, want the mark at %v put back", c.UpdateTaskedAt, at)
+		}
+
+		if lost, err := h.m.PodUpdateAskLost(h.ctx, testRound); err != nil || !lost {
+			t.Fatalf("the row's next attempt = %t, %v; want the mark taken back", lost, err)
+		}
+	})
+}
+
 // An ask an older daemon queued as a task for the round the claim is still in is dropped and
 // never sent (dispatch://INFRA-2981 R1: no update task is sent for a round). That daemon queued
 // it while the claim was in a turn, so the end of that turn was where that daemon sent it, and

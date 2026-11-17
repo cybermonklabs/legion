@@ -1028,14 +1028,15 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 	s.endPodUpdates(told, round)
 }
 
-// openPodUpdate opens the round, or keeps it open, and asks each role of it once. Every claim that
-// blocks the round is posted PodUpdateOpen at every tick while the round runs: the event is
-// idempotent, and it is what records the round on the claim (supervise's openPodUpdate), with its
-// reasons and its clock fixed at the post that opens it.
+// openPodUpdate opens the round, or keeps it open, and asks each role of it once: one ask that
+// reaches the role's session, since an ask that reached none is asked again (askRound). Every
+// claim that blocks the round is posted PodUpdateOpen at every tick while the round runs: the
+// event is idempotent, and it is what records the round on the claim (supervise's openPodUpdate),
+// with its reasons and its clock fixed at the post that opens it.
 //
 // The ask is the sweep's own, published on the reading that finds the round recorded
 // (askRound). The post is asynchronous (supervisor.post), so the tick that opens a round asks
-// nothing, and a later tick asks each claim whose record shows this round and no publish mark,
+// nothing, and a later tick asks each claim whose record shows this round and no ask mark,
 // once its session is ready to take the ask. A claim that left the round's pod and a failed
 // claim are asked nothing.
 //
@@ -1166,6 +1167,16 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // leaves that claim unmarked, and the next tick asks it a second time, which costs one message
 // rather than an ask never published.
 //
+// The mark stands for an ask in flight or one that reached a session, so "once" counts the asks
+// that reached a session (dispatch://INFRA-4109 R4, dispatch://INFRA-4131 R4). An ask whose role
+// topic no live session held when the outbox published it (notify.ErrNoHolder) is lost, not
+// given: the outbox takes the mark back (updateAsk, Machine.PodUpdateAskLost), and the next
+// sweep that finds the claim ready asks it again. The round waits for every claim it asks until
+// its bound, so a claim marked over an ask it never read would hold the round, and every
+// answered worker's next task, to that bound for an answer nobody asked it for. The cost is one
+// row and one log line a sweep at most for a ready claim whose session does not hold its topic,
+// for as long as that lasts, and the bound ends that as it ends every wait of the round.
+//
 // A claim whose machine is deciding something now (Machine.Deciding, which waits on nothing) is
 // asked at a later tick. The mark is written under the machine's lock, and the decision in flight
 // can be a Sandbox relaunch that holds that lock for minutes: a mark made over it would hold the
@@ -1177,11 +1188,11 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // A claim whose agent has not said it is ready (supervise.SaidReady) is asked at a later tick
 // too, and is not marked. Such a claim is queued, launching, registered but not ready, or
 // suspended, and no live session of it holds the role's topic, so the publish would end at
-// notify.ErrNoHolder. Marked all the same, the claim would never be asked: a relaunch of it
-// could then run a turn that the round cuts at its bound, with no ask before it. The first tick
-// after the agent says it is ready asks it, once. A ready session claims its topic inside its
-// first turn or at the first-turn bound (supervise.SaidReady), so an ask in that short window can
-// still end at notify.ErrNoHolder.
+// notify.ErrNoHolder at every sweep: a row and a log line a minute for a claim that may stay
+// suspended until its round's bound. The first tick after the agent says it is ready asks it. A
+// ready session claims its topic inside its first turn or at the first-turn bound
+// (supervise.SaidReady), so an ask in that short window can still end at notify.ErrNoHolder, and
+// the claim is then asked again at a later sweep, as above.
 //
 // The ask states the round's bound (roundBound). A round no claim of group records the opening
 // of has no bound to state, and its ask would state a wrong end, so the sweep logs an error and
@@ -1239,11 +1250,13 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 }
 
 // unaskedClaims is every claim the round asks (askedClaims) whose own record shows this round,
-// no answer to it and no publish mark (supervise.Claim.UpdateTaskedAt). A claim that has not
-// recorded the round yet is asked at the tick after its post lands, so the mark and the round it
-// marks are one claim's record (supervise's Machine.PodUpdateAsked). A claim that left the
-// round's pod is asked nothing (supervise's Claim.LeftPodRound): the ask names work that died
-// with that pod, and no process the claim runs now holds any of it.
+// no answer to it and no ask mark (supervise.Claim.UpdateTaskedAt): none was enqueued, or the one
+// enqueued reached no session and the outbox took its mark back (supervise's
+// Machine.PodUpdateAskLost). A claim that has not recorded the round yet is asked at the tick
+// after its post lands, so the mark and the round it marks are one claim's record (supervise's
+// Machine.PodUpdateAsked). A claim that left the round's pod is asked nothing (supervise's
+// Claim.LeftPodRound): the ask names work that died with that pod, and no process the claim runs
+// now holds any of it.
 func unaskedClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var asking []supervise.Claim
 	for _, c := range askedClaims(group) {

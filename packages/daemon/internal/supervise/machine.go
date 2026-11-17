@@ -420,9 +420,10 @@ type Claim struct {
 	UpdateReasons string
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
 	// UpdateTaskedAt is when the daemon's sweep enqueued the round's ask to this claim's role
-	// (record.UpdateAsk, Machine.PodUpdateAsked), nil until it has: the mark that makes the
-	// sweep publish one ask per claim per round. UpdateSignalledAt is when the worker answered
-	// ready_for_update, nil until it has.
+	// (record.UpdateAsk, Machine.PodUpdateAsked), nil until it has and nil again once that ask
+	// reached no session (Machine.PodUpdateAskLost): the mark that makes the sweep publish one
+	// ask that reaches the role per claim per round. UpdateSignalledAt is when the worker
+	// answered ready_for_update, nil until it has.
 	UpdateOpenedAt    *time.Time
 	UpdateTaskedAt    *time.Time
 	UpdateSignalledAt *time.Time
@@ -1608,7 +1609,9 @@ func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error)
 // PodUpdateAsked marks that the daemon's sweep enqueued this claim's ask of its open update round
 // (record.UpdateAsk), so the sweep publishes one ask per claim per round however many ticks find
 // the round open (internal/daemon's openPodUpdate). It is no event, as PodUpdateTold is none: the
-// sweep is what decides the ask goes, and the mark is bookkeeping of that decision.
+// sweep is what decides the ask goes, and the mark is bookkeeping of that decision. "One ask"
+// counts the asks that reached a session: the mark stands while the ask is in flight and after
+// it is delivered, and the outbox takes it back for an ask that reached none (PodUpdateAskLost).
 //
 // It stamps nothing and reports false when the claim is no longer in round — the round ended, or
 // another opened — or when this round's ask is already marked: both are decisions already taken,
@@ -1617,6 +1620,34 @@ func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error)
 // for the notice.
 func (m *Machine) PodUpdateAsked(ctx context.Context, round string) (bool, error) {
 	return m.markRound(ctx, round, &m.claim.UpdateTaskedAt)
+}
+
+// PodUpdateAskLost takes back this claim's ask mark of round (PodUpdateAsked) when the outbox
+// found that the ask reached no session: no live session held the role's topic when the ask was
+// published (internal/daemon's updateAsk, notify.ErrNoHolder). Such an ask is lost, not given, so
+// the claim is unasked again and the sweep's next reading of the round asks it again
+// (internal/daemon's askRound, unaskedClaims): the round waits for this claim's answer, and a
+// claim that was never told of the round cannot give one (dispatch://INFRA-4109 R4,
+// dispatch://INFRA-4131 R4). It is no event, as PodUpdateAsked is none: the outbox's finding is
+// bookkeeping of the sweep's decision to ask.
+//
+// It takes nothing back and reports false when the claim is no longer in round — the round ended,
+// or another replaced it, and the mark the claim holds then is that round's own — or when no mark
+// stands. A write the store refuses puts the mark back and is returned with false, so the outbox
+// keeps the row, and the row's next attempt publishes the ask again.
+func (m *Machine) PodUpdateAskLost(ctx context.Context, round string) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	asked := m.claim.UpdateTaskedAt
+	if m.claim.UpdateRound != round || asked == nil {
+		return false, nil
+	}
+	m.claim.UpdateTaskedAt = nil
+	if err := m.putClaim(ctx); err != nil {
+		m.claim.UpdateTaskedAt = asked
+		return false, err
+	}
+	return true, nil
 }
 
 // markRound stamps mark, one of this claim's own update-round marks, at the clock, for round
@@ -1976,10 +2007,11 @@ func (m *Machine) stoppingProcess() func() {
 // every locked section that can change the wake, the credit or the intent ends in unlock, and a
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
-// comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold, PodUpdateAsked), StartedBy,
-// ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
-// compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
-// added later has to keep, rather than this list of the sections there are now.
+// comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold, PodUpdateAsked),
+// PodUpdateAskLost, StartedBy, ReadProcess and Retree; the sections that take mu without it are
+// Claim, OnDurableState, Wait, compaction and the two goroutine tails in delivery.go and
+// secrets.go. It is that rule a section added later has to keep, rather than this list of the
+// sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.publish()
