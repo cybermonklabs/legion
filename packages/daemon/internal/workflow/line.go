@@ -210,6 +210,36 @@ func (w Walk) returnTarget(from phase.Phase) (phase.Phase, bool) {
 	return "", false
 }
 
+// returnStep is the phase of step n of w's task, the step that the report of the failed step
+// standing at failed names as the one its task returns to (R7, returnTo), or why that report is
+// refused, which changes nothing: an issue with no plan rows has no step to name, a place past the
+// task's last step names no step of it, and the failed step itself or a later one is not earlier
+// (the spec's words: a report that names a step of another task, or a step that is not earlier).
+// The sentences take the route's shape for a returnTo it refuses before the workflow reads one
+// (api's INVALID_RETURN_TO). A failed phase that is no step of the task's line is an error: the
+// route takes returnTo only on the tester's fail, whose phase a task without a tester step never
+// enters.
+func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Phase, string, error) {
+	if !w.Stored {
+		return "", fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded",
+			n, issue.Key), nil
+	}
+	at, ok := w.PlaceOf(failed)
+	if !ok || at.Kind != record.PlaceStep {
+		return "", "", fmt.Errorf("judge returnTo %d of %s: the failed phase %s is no step of the line %v of its task %s", n, issue.Key, failed, w.Line, w.Task)
+	}
+	role := w.Steps[at.Position-1].Role
+	switch {
+	case n > len(w.Steps):
+		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has steps 1 to %d, so it names no step of the task whose step %d (%s) failed; send the fail again naming an earlier step of that task, or without returnTo; nothing was recorded",
+			n, w.Task, issue.Key, len(w.Steps), at.Position, role), nil
+	case n >= at.Position:
+		return "", fmt.Sprintf("returnTo is %d, and step %d (%s) of task %s of %s is not before step %d (%s), the step that failed; send the fail again naming an earlier step, or without returnTo; nothing was recorded",
+			n, n, w.Steps[n-1].Role, w.Task, issue.Key, at.Position, role), nil
+	}
+	return w.steps()[n-1], "", nil
+}
+
 // table is the table of w's line: Table for a run with no plan rows, which is TableOf(phase.Order)
 // built once, and the table of the task's line otherwise.
 func (w Walk) table() []Row {

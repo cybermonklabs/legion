@@ -839,6 +839,24 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the %s's completion of phase %s", fact.Role, reported)), nil
 	}
+	// A failed step's report can name the earlier step of its task that the task returns to (R7,
+	// returnTo). The step it names is judged here, before anything is written, so a refusal
+	// records nothing, its handoff record among it, and the agent reports again (returnStep).
+	var returnTo phase.Phase
+	if fact.ReturnTo > 0 {
+		w, err := e.walk(ctx, tx, *issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		target, why, err := returnStep(*issue, w, reported, fact.ReturnTo)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if why != "" {
+			return refused("RETURN_REFUSED", why), nil
+		}
+		returnTo = target
+	}
 	row, err := e.phaseRow(ctx, tx, fact.Issue, fact.Role)
 	if err != nil {
 		return intake.Result{}, err
@@ -894,7 +912,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, e.implementationReady(ctx, tx, *issue, row, pr)
 	case phase.Testing:
 		if fact.Verdict == "fail" {
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterFailed, "", row, pr, "")
+			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterFailed, returnTo, row, pr, "")
 		}
 		if fact.Verdict == "pass" {
 			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterPassed, "", row, pr, "")
