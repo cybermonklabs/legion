@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1570,15 +1571,15 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *tes
 // name and the attribution's candidates — and in a connection-level outage those are the reads
 // that fail first; the head row of a new pull request is lost whichever step lost it, since no
 // reconcile pass offers a row that was never written. So ErrHeadNotStored marks every failure
-// of that path that making the same attempt again may get past (markHeadNotStored).
+// of that path (markHeadNotStored).
 //
-// The one failure it leaves unmarked is here too, since what the sentinel is worth is in the
-// line it draws. A repository name that is not `owner/repo` never reaches markHeadNotStored at
-// all: recordPullRequestHead checks the canonical name for itself, before any read of GitHub
-// (checkPullRequestKey), and returns that failure bare, which is the line this case covers; every
-// redelivery of the envelope carries the same name. A rate limit is marked, and keeps GitHub's wait
+// A canonical name that names no pull request GitHub can have is marked too, though no redelivery
+// mends it: the envelope's own name was checked before this runs (pullRequestNamed), so deliver
+// owes the read under that name, and the reconcile reads it once an operator corrects the stored
+// rename target. Left bare, it ended the envelope with nothing owed (acceptance of
+// cybermonklabs/legion#4209 at 3a21edb2c9, D1). A rate limit is marked, and keeps GitHub's wait
 // inside the mark, so the line deliver logs as it owes the read names the limit.
-func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(t *testing.T) {
+func TestEveryFailureOfTheReadsBeforeAHeadWriteIsMarked(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
 	in := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil)
@@ -1596,17 +1597,15 @@ func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(
 			err, ErrHeadNotStored)
 	}
 
-	malformed := map[string]string{
-		"kind": "pr", "action": "opened", "repo": "widgets", "number": "9103",
-		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "widgets",
+	const old = "acme/legacy-9103"
+	renameRepository(t, ctx, pool, old, "acme/"+strings.Repeat("x", 101))
+	renamed := map[string]string{
+		"kind": "pr", "action": "opened", "repo": old, "number": "9103",
+		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": old,
 	}
-	_, err := in.recordPullRequestHead(ctx, malformed, 9103)
-	switch {
-	case err == nil:
-		t.Fatal("recording a head under a repository name that is not owner/repo = nil, want that name's error")
-	case errors.Is(err, ErrHeadNotStored):
-		t.Fatalf("the split recordPullRequestHead makes for itself was marked %v, want it left bare: the next delivery of the envelope carries the same name",
-			ErrHeadNotStored)
+	if _, err := in.recordPullRequestHead(ctx, renamed, 9103); !errors.Is(err, ErrHeadNotStored) {
+		t.Fatalf("recording a head of %s, whose stored rename target names no pull request GitHub can have, = %v, want it marked %v so deliver owes the read under %s",
+			old, err, ErrHeadNotStored, old)
 	}
 
 	limited := &githubapp.RateLimitError{Status: http.StatusForbidden, Wait: time.Minute}

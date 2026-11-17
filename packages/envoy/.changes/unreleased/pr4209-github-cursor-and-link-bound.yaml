@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The pull request search's errors show GitHub's page cursor to the 512 characters and the size
+    GitHub's other text is shown to, and the webhook delivery listing follows no next page link
+    longer than 2,048 bytes and shows a longer one to that bound, so no log line carries up to 1 MiB
+    of either.
+time: 2026-11-17T12:53:33.000000000Z
+custom:
+    Issue: pr4209

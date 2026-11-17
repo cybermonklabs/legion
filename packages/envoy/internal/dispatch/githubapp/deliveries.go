@@ -390,8 +390,15 @@ func CheckResponse(status int, header http.Header, body []byte) error {
 	return &StatusError{Status: status, Body: string(body)}
 }
 
+// nextLinkMaxBytes is the longest next page link nextLink follows. GitHub's links of the deliveries
+// listing are about a hundred bytes. A link is GitHub's text, and once followed it is the target of
+// the next request and of each error that names that request, so a longer one is refused and shown
+// as ShownBody shows GitHub's text.
+const nextLinkMaxBytes = 2048
+
 // nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the
-// client's API origin: the next page is fetched with the App's JWT.
+// client's API origin, since the next page is fetched with the App's JWT, and one longer than
+// nextLinkMaxBytes.
 func nextLink(header, base string) (string, error) {
 	for _, part := range strings.Split(header, ",") {
 		segments := strings.Split(part, ";")
@@ -408,6 +415,9 @@ func nextLink(header, base string) (string, error) {
 			continue
 		}
 		target := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(segments[0]), "<"), ">")
+		if len(target) > nextLinkMaxBytes {
+			return "", fmt.Errorf("next page link %q is longer than %d bytes", ShownBody(target), nextLinkMaxBytes)
+		}
 		parsed, err := url.Parse(target)
 		if err != nil {
 			return "", fmt.Errorf("parse next page link %q: %w", target, err)
