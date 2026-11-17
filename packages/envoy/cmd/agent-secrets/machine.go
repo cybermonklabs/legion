@@ -148,10 +148,11 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 	return 1
 }
 
-// credentialExpiry is login-status's line about when the held launcher credential lapses: the
-// machine login renews itself while the helper's refresh reaches the broker, so the time is when
-// it lapses only if no refresh does. A credential past its expiry is followed by the hint of
-// failure, the class of the helper's mode (helper.Response.NoCredentialFailure).
+// credentialExpiry is login-status's line about when the held launcher credential lapses. Both of
+// its sentences about what comes next are the class's (brokerclient.Lapse while the credential is
+// live, brokerclient.Hint once it is past its expiry), failure being the helper's class
+// (helper.Response.NoCredentialFailure): the machine login renews itself, the trade loop renews
+// the credential, or, once the loop has stopped, nothing does.
 func credentialExpiry(expiresAt string, now time.Time, failure brokerclient.Failure) string {
 	if expiresAt == "" {
 		return "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"
@@ -164,7 +165,7 @@ func credentialExpiry(expiresAt string, now time.Time, failure brokerclient.Fail
 	if left <= 0 {
 		return fmt.Sprintf("the launcher credential expired at %s; %s", expiresAt, brokerclient.Hint(failure))
 	}
-	return fmt.Sprintf("the machine login renews itself; without a refresh it lapses at %s (in %s)", expiresAt, roughDuration(left))
+	return brokerclient.Lapse(failure, expiresAt, roughDuration(left))
 }
 
 // roughDuration is d to the minute, with days: 6d23h59m, 3h5m, 0m.

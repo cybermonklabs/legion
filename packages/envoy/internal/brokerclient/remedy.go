@@ -7,9 +7,10 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
-// Failure is the class of a failure that a person on this machine may be told how to cure. A
-// caller names the class; Hint alone turns it into words, so no message can tell a person to run
-// a login that would not cure its failure.
+// Failure is the class of a failure, or of a state, that a person on this machine may be told the
+// cure or the course of. A caller names the class; Hint and Lapse alone turn it into words, so no
+// message can tell a person to run a login that would not cure its failure, or promise a renewal
+// that nothing makes.
 type Failure int
 
 const (
@@ -66,7 +67,7 @@ func Hint(f Failure) string {
 	case FailureIdentityLapsed:
 		return "the helper's trade loop is trading this machine's identity for a new credential"
 	case FailureIdentityStopped:
-		return "the helper stopped trading this machine's identity, and its log names the broker's refusal; restart agent-secrets-helper once that is fixed"
+		return "the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"
 	default:
 		return ""
 	}
@@ -80,6 +81,23 @@ func WithHint(err error, f Failure) error {
 		return err
 	}
 	return fmt.Errorf("%w; %s", err, hint)
+}
+
+// Lapse is the sentence about a launcher credential still live, which lapses at at, in left (a
+// rounded duration as the caller prints it), under the helper whose class is f: what renews it,
+// or, once the helper's trade loop has stopped, that nothing does, and the hint for that. Only
+// FailureNoMachineLogin, FailureIdentityLapsed and FailureIdentityStopped describe a helper that
+// holds a credential; any other class reads as machine-login mode, the mode a helper from before
+// these classes reports.
+func Lapse(f Failure, at, left string) string {
+	switch f {
+	case FailureIdentityLapsed:
+		return fmt.Sprintf("the helper's trade loop renews the launcher credential; without a trade it lapses at %s (in %s)", at, left)
+	case FailureIdentityStopped:
+		return fmt.Sprintf("nothing renews the launcher credential, which lapses at %s (in %s), and no session enrols after that; %s", at, left, Hint(f))
+	default:
+		return fmt.Sprintf("the machine login renews itself; without a refresh it lapses at %s (in %s)", at, left)
+	}
 }
 
 // TradeFailure is the class of a failed trade of a person's sign-in: FailureHeld for a person
