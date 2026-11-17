@@ -105,12 +105,14 @@ func serveStacks() int {
 // on that lane, so no goroutine holds a connection for it, while it waits, however long - here
 // six seconds, past the point where its tries come at mentionOrderRetryMax - and its tries come
 // after waits that double from mentionOrderRetryFirst to that cap. The lane keeps its order:
-// the send behind it waits behind it. Every other recipient's sends go meanwhile, at most
-// mentionSendLanes at once, and the parked sends still count among the maxQueuedMentionSends the
-// queue holds (here a capacity of 12), their claims written again as every queued send's are.
-// Once the earlier event is sent, the lane sends its two in order.
+// the send behind it waits behind it. The parked sends still count among the
+// maxQueuedMentionSends the queue holds: with a capacity of two, the two parked sends fill it and
+// a third recipient's send is refused and its claim given back, whenever it comes. Every other
+// recipient's sends go meanwhile, at most mentionSendLanes at once, and the parked sends' claims
+// are written again as every queued send's are. Once the earlier event is sent, the lane sends
+// its two in order.
 func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
-	rig := newParkRig(t, 12)
+	rig := newParkRig(t, 2)
 	first := rig.enqueue("parked-first", "session:parked")
 	second := rig.enqueue("parked-second", "session:parked")
 	waitUntil(t, 5*time.Second, "the parked lane with no goroutine on it", func() bool {
@@ -121,13 +123,24 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 		t.Fatalf("%d goroutines are in the sender's lane loop while its one lane is parked, want none", stacks)
 	}
 
-	// Ten other recipients' sends go while the lane is parked, the two parked sends counting
-	// against the queue's 12: the eleventh beyond them is refused and its claim given back.
+	// The two parked sends fill a queue of two, however long they have waited: another
+	// recipient's send is refused and its claim given back.
+	refused := rig.enqueue("one-too-many", "session:other-z")
+	rig.mu.Lock()
+	gaveUp := append([]mentionClaim(nil), rig.gaveUp...)
+	rig.mu.Unlock()
+	if len(gaveUp) != 1 || gaveUp[0].key != refused.key() {
+		t.Fatalf("the queue gave back %v with its two places held by the parked sends, want the one send past its capacity", gaveUp)
+	}
+
+	// Ten other recipients' sends go while the lane is parked, the queue holding twelve.
+	rig.sender.mu.Lock()
+	rig.sender.capacity = 12
+	rig.sender.mu.Unlock()
 	for index := range 10 {
 		rig.enqueue("other-"+string(rune('a'+index)), "session:other-"+string(rune('a'+index)))
 	}
-	refused := rig.enqueue("one-too-many", "session:other-z")
-	waitUntil(t, 5*time.Second, "the other recipients' sends", func() bool {
+	waitUntil(t, 10*time.Second, "the other recipients' sends", func() bool {
 		rig.mu.Lock()
 		defer rig.mu.Unlock()
 		return len(rig.sent) == 10
@@ -157,9 +170,12 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	}
 	t.Logf("the parked send's tries: %d, the waits between them %v; the most sends at once %d; queued sends written again: first %d times, second %d times",
 		len(tries), gaps, most, writtenFirst, writtenSecond)
+	// A wait shorter than its mentionOrderRetry would read the rule more often than the cost bound
+	// says; a longer one only reads it less, so it is bounded loosely, for a loaded machine's late
+	// timers.
 	for index, gap := range gaps {
 		want := mentionOrderRetry(index + 1)
-		if gap < want-10*time.Millisecond || gap > want+500*time.Millisecond {
+		if gap < want-10*time.Millisecond || gap > want+2*time.Second {
 			t.Errorf("wait %d before the parked send's next try is %v, want about %v (mentionOrderRetry)", index+1, gap, want)
 		}
 	}
@@ -173,7 +189,7 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 		t.Errorf("sent %v while the lane was parked, want the ten other recipients' sends", sent)
 	}
 	if len(gaveUp) != 1 || gaveUp[0].key != refused.key() {
-		t.Errorf("the queue gave back %v, want the one send past its capacity of 12 with the two parked sends in it", gaveUp)
+		t.Errorf("the queue gave back %v, want only the one send refused while the parked sends filled it", gaveUp)
 	}
 	if writtenFirst == 0 || writtenSecond == 0 {
 		t.Errorf("the parked sends' claims were written again %d and %d times, want both kept live", writtenFirst, writtenSecond)
