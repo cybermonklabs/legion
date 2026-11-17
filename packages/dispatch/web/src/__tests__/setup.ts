@@ -203,7 +203,9 @@ afterEach(() => {
 });
 
 // The network report is the file's last `afterEach`: it throws for a row that reached the
-// network, and Bun runs no `afterEach` registered after one that throws. Placed earlier, it
-// would leave the next row the drafts, outstanding answers, writes, pin states and reachability
-// the resets above clear, and the fake clock.
+// network, and Bun 1.4.4 runs none of a row's `afterEach` hooks that would run after one that
+// throws. Placed earlier, it would leave the next row the drafts, outstanding answers, writes,
+// pin states and reachability the resets above clear, and the fake clock. A test file's own
+// `afterEach` hooks run before this preload's, so the report skips none of them, and one of them
+// that throws skips every hook here.
 afterEach(reportReachedNetwork);
