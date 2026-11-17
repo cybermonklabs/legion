@@ -500,7 +500,10 @@ test("while a facet pick waits for its snapshot, the header and freshness keep t
   expect(row.querySelector('[data-source="dispatch"]')?.textContent).toMatch(
     /^Dispatch \d+ s ago$/
   );
-  serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
+  // The snapshot's answer lands a few microtasks after the frame: inside `act`, before the row ends.
+  await act(async () => {
+    serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
+  });
 });
 
 test("the list sorts by its headers and a row opens the PR's details", async () => {

@@ -866,7 +866,11 @@ test("a refusal no document binds for ends at the wait's bound, telling the read
       return { markId: "m-2", placement: null, quote: MARK_ANCHOR.quote };
     },
   });
-  const createComment = spyOn(api, "createComment").mockRejectedValue(ANCHOR_MISSING);
+  // The refusal is held until the press is out, then given inside `act`: on a held clock Testing
+  // Library's wait after a press drains no further than its own zero-delay timer, so a refusal
+  // already given when the press lands would update the composer outside `act`.
+  const refusal = Promise.withResolvers<never>();
+  const createComment = spyOn(api, "createComment").mockReturnValue(refusal.promise);
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const view = renderMarginCompose(bridge, "comment", true);
@@ -877,6 +881,9 @@ test("a refusal no document binds for ends at the wait's bound, telling the read
     await user.click(within(composer).getByLabelText("Comment"));
     await user.paste("Please revise.");
     await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await act(async () => {
+      refusal.reject(ANCHOR_MISSING);
+    });
     expect(createComment).toHaveBeenCalledTimes(1);
     expect(within(composer).queryByText(/is not open/)).toBeNull();
 
