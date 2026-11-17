@@ -2410,6 +2410,52 @@ func TestMemoryGuardCountsAGrowerWhoseStepsAreWiderThanTheWindowAsGrownSinceTheK
 	h.requireKilled(302, 301)
 }
 
+// The tester's latepool probe of 2026-11-17 under gVisor at 4 GiB, replayed with its recorded
+// readings (dispatch://INFRA-3531/artifact/tester-evidence-e3a1923c-2026-11-17-tar-gz, logs4,
+// infra-3531-t-adv-4g-latepool-gk8ht): a parent and three children it forked share a block of 56%
+// of the limit, each reporting the block as its own, beside the agent's quarter, and hold the pod
+// in the band below the mark, at 84.17%. Six growers then start, and the next reading, the first at
+// the mark, is 88.37%. None of them has an earlier read, and over the window nothing grew. At
+// e3a1923c98d7 the guard ended a sleeping fork there, whose end freed nothing, and its next readings
+// rose to 96.82%, 2.4 MiB below the pod's measured kill point. Where nothing grew over the window,
+// the largest process with no earlier read, one started since the reading before, comes first
+// (INFRA-3531 R1, spec version 27): the guard ends a grower at the first reading at the mark.
+func TestMemoryGuardEndsAFreshGrowerAtTheMarkBeforeASleepingForkOfASharedBlock(t *testing.T) {
+	block := podLimit / 100 * 56
+	pod := newFakePod(t)
+	pod.add(
+		agent(podLimit/4),
+		fakeProcess{pid: 700, ppid: 100, start: 5000, args: []string{"python3", "latepool.py"}, anon: block},
+		fakeProcess{pid: 701, ppid: 700, start: 5100, args: []string{"python3", "latepool.py"}, anon: block},
+		fakeProcess{pid: 702, ppid: 700, start: 5200, args: []string{"python3", "latepool.py"}, anon: block},
+		fakeProcess{pid: 703, ppid: 700, start: 5300, args: []string{"python3", "latepool.py"}, anon: block},
+	)
+	at := func(hundredths uint64) { pod.setAnon(podLimit / 10000 * hundredths) }
+	at(7676)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	for _, hundredths := range []uint64{8013, 8375, 8375, 8375, 8417, 8417, 8417, 8417, 8417} {
+		at(hundredths)
+		h.tick()
+	}
+	if kills := h.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; the log:\n%s", kills, strings.Join(h.log.all(), "\n"))
+	}
+	// Six growers start, each a python3 child of the parent holding its first allocation, and the
+	// reading is at the mark: 172 MiB of rise among them.
+	for i, size := range []uint64{20, 24, 28, 30, 34, 36} {
+		pod.add(fakeProcess{pid: 800 + i, ppid: 700, start: uint64(6000 + i), args: []string{"python3", "-c", "grow"}, anon: size * mib})
+	}
+	at(8837)
+	h.tick()
+	kills := h.signal.kills()
+	if len(kills) != 1 || kills[0] < 800 || kills[0] > 805 {
+		t.Fatalf("at the first reading at the mark the guard killed %v, want one of the fresh growers 800 to 805 and no fork of the block; the log:\n%s",
+			kills, strings.Join(h.log.all(), "\n"))
+	}
+}
+
 // After a kill, the next in the order is the one that grew the most since that kill where nothing
 // grew over the window (INFRA-3531 R1 of spec version 26): a throttled pod's readings come more
 // than the window apart, so the window holds one read of each process and shows no growth. A
