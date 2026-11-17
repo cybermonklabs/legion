@@ -2152,6 +2152,11 @@ package api
 // measurement made at 146's commit (858e9644), at #4241's and at this change's merge with it:
 // `legionSettings` is still that `z.looseObject`, nothing types `projects` or `experiments` under
 // it, and no plugin source names `roles` there.
+// `settings.runtime.kubernetes.agent_secrets.exchange_audience`, which main's #4153 (8a4dbb9f)
+// added the same way, is read loosely and recorded at every contract on the same measurement,
+// made at #4153's commit and at this change's merge with it: nothing types `runtime`,
+// `kubernetes` or `agent_secrets` under that `z.looseObject`, and no plugin source names
+// `exchange_audience`.
 // Contract 137 is served with no code of its own here: it moved no key path, no value and no
 // request field, and changed no answer's status or meaning (its flag is on the launcher's command
 // line, which the image probe holds, entry 137 above), so a caller at 137 is served what a caller

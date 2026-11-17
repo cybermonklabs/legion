@@ -148,6 +148,7 @@ var settingsEmitted = map[string]string{
 	"AgentSecretsConfig.URL":                         "runtime.kubernetes.agent_secrets.url",
 	"AgentSecretsConfig.Audience":                    "runtime.kubernetes.agent_secrets.audience",
 	"AgentSecretsConfig.TokenExpirySeconds":          "runtime.kubernetes.agent_secrets.token_expiry_seconds",
+	"AgentSecretsConfig.ExchangeAudience":            "runtime.kubernetes.agent_secrets.exchange_audience",
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
@@ -820,4 +821,31 @@ func nullKeys(document any, prefix string) []string {
 		}
 	}
 	return keys
+}
+
+// runtime.kubernetes.agent_secrets.exchange_audience reaches the settings as the block's
+// exchange_audience where the file sets it, an audience and no credential, and is absent where it
+// does not, so a deployment that never set it reads byte for byte as before the key existed.
+func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
+	for name, tc := range map[string]struct{ audience, want string }{
+		"set":   {"legion-broker-exchange", `"exchange_audience":"legion-broker-exchange"`},
+		"unset": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := settingsFixtureConfig(t)
+			cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = tc.audience
+			encoded, err := json.Marshal(SettingsOf(cfg).Runtime.Kubernetes.AgentSecrets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const before = `{"url":"https://agent-secrets.internal.example","audience":"fixture-broker-audience","token_expiry_seconds":1800`
+			want := before + "}"
+			if tc.want != "" {
+				want = before + "," + tc.want + "}"
+			}
+			if string(encoded) != want {
+				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
+	}
 }

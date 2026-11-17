@@ -914,7 +914,8 @@
         "agent_secrets": {
           "url": "https://agent-secrets.internal.example",
           "audience": "fixture-broker-audience",
-          "token_expiry_seconds": 1800
+          "token_expiry_seconds": 1800,
+          "exchange_audience": "fixture-exchange-audience"
         },
         "plugins": {
           "pi_legion": "10.4.0",

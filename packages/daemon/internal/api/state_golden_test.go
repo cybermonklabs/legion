@@ -152,6 +152,7 @@ runtime:
       token_file: /var/run/secrets/agent-secrets/token
       audience: fixture-broker-audience
       token_expiry_seconds: 1800
+      exchange_audience: fixture-exchange-audience
     plugins:
       pi_legion: 10.4.0
       pi_envoy: https://legion:fixture-plugin-password@plugins.internal.example/pi-envoy-10.4.0.tgz?token=fixture-plugin-token
