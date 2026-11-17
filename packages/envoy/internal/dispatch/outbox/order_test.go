@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holding returns an outbox on deps whose instance holds the publisher hold's row for the next
@@ -320,6 +321,13 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
+	// Each event is marked published once the stream acknowledged its forward to S, and S is
+	// handed the same message on its own connection, which can arrive just after that
+	// acknowledgement on a busy machine (awaitReceived): S is read once it has taken all three.
+	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		got := taken()
+		return slices.Contains(got, first.ID) && slices.Contains(got, second.ID) && slices.Contains(got, third.ID)
+	})
 	var order []int64
 	for _, got := range taken() {
 		if !slices.Contains(order, got) {

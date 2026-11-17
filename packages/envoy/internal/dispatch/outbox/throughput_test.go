@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // busyPoolSize is the shared pool's size in the busy case. A full pool is what the case needs, of
@@ -630,6 +631,14 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					if ownerSubjects != issues {
 						t.Fatalf("the stream holds %d issue subjects, want %d", ownerSubjects, issues)
 					}
+					// Each event is marked published once the stream acknowledged its sends, and the
+					// holder is handed its forward on a connection of its own, which can take the
+					// last of them just after that acknowledgement on a busy machine
+					// (awaitReceived): the holder is read once it has taken one per routed event.
+					routed := load.routed(count)
+					testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+						return len(rig.roleArrivals()) >= routed
+					})
 					roles := rig.roleArrivals()
 					arrivals := map[string][]int64{}
 					for _, id := range roles {
@@ -644,8 +653,8 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					if want := load.stream(count) + load.routed(count); len(all) != want {
 						t.Fatalf("the stream holds %d messages, want %d", len(all), want)
 					}
-					if want := load.routed(count); len(roles) != want {
-						t.Fatalf("the role's holder received %d forwards, want one per routed event: %d", len(roles), want)
+					if len(roles) != routed {
+						t.Fatalf("the role's holder received %d forwards, want one per routed event: %d", len(roles), routed)
 					}
 				})
 			}

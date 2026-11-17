@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleHolder is the session heldRoles names as every role's holder.
@@ -356,6 +357,22 @@ func (recv *receiver) received() []contracts.Envelope {
 	recv.mu.Lock()
 	defer recv.mu.Unlock()
 	return append([]contracts.Envelope(nil), recv.forwards...)
+}
+
+// awaitReceived is every copy recv has taken, read once it has taken n of them or once the shared
+// bound has passed with fewer (testwait.Holds), so the caller judges what arrived with its own
+// failure text. A scan or fallback pass returns once the stream has acknowledged each copy it
+// sent to a session's agent subject: a role forward's request and a session copy's publish both
+// answer with the stream's PubAck (roleForward.forward, bus's window.PublishAsync). The session's
+// own subscription is handed the same message on its own connection, which can arrive just after
+// that acknowledgement on a busy machine (handedNow): read the moment the outbox returns, a copy
+// it sent can still be missing. A copy past the n-th that is still on its way is not waited for.
+func (recv *receiver) awaitReceived(t *testing.T, n int) []contracts.Envelope {
+	t.Helper()
+	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		return len(recv.received()) >= n
+	})
+	return recv.received()
 }
 
 // storedCopies is how many messages the stream holds on the subjects filter matches.
@@ -1116,7 +1133,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 		t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by the one pass",
 			held.attempts, held.settled, held.published, holder)
 	}
-	forwards := recv.received()
+	forwards := recv.awaitReceived(t, 1)
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %d copies, want the held one: %+v", holder, len(forwards), forwards)
 	}
@@ -1222,7 +1239,7 @@ func TestARoleCopyToTheHolderWhoseOwnMentionFailedCarriesTheMentionsKey(t *testi
 
 	holding(t, deps).scan(ctx, unfenced{})
 
-	forwards := recv.received()
+	forwards := recv.awaitReceived(t, 1)
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %d copies, want the route's one copy: %+v", holder, len(forwards), forwards)
 	}
@@ -1745,7 +1762,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 			t.Fatalf("the comment was not published once the holder's mention settled: attempt_count %d, publish_error %v",
 				attempts, failure)
 		}
-		forwards := recv.received()
+		forwards := recv.awaitReceived(t, 1)
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the role route's once its own mention settled: %+v", holder, len(forwards), forwards)
 		}
@@ -1761,7 +1778,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 
 		holding(t, deps).scan(ctx, unfenced{})
 
-		forwards := recv.received()
+		forwards := recv.awaitReceived(t, 1)
 		if len(forwards) != 1 {
 			attempts, failure, _ := eventState(t, rig.database, event.ID)
 			t.Fatalf("%s was sent %d copies though its own mention is pending past model.DeliveryClaimLapse = %v, want the role route's: attempt_count %d, publish_error %v",
@@ -1925,11 +1942,17 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 				event.ID, event.Type, attempts, failure, destinations)
 		}
 	}
+	// The edit's copies ride the holder's one chain behind the comment's and go out on the
+	// outbox's one connection after them, so once the holder has taken an edit's copy it has
+	// taken every copy sent before it (awaitReceived).
+	editID := fmt.Sprintf("dispatch-%d", edit.ID)
+	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		return slices.ContainsFunc(recv.received(), func(item contracts.Envelope) bool { return item.EventID == editID })
+	})
 	var order []string
 	for _, item := range recv.received() {
 		order = append(order, item.EventID)
 	}
-	editID := fmt.Sprintf("dispatch-%d", edit.ID)
 	seenEdit := false
 	for _, id := range order {
 		if id == editID {
@@ -2155,7 +2178,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 			t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by the one pass",
 				held.attempts, held.settled, held.published, second)
 		}
-		forwards := recv.received()
+		forwards := recv.awaitReceived(t, 1)
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the held one: %+v", second, len(forwards), forwards)
 		}
@@ -2417,7 +2440,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 			t.Fatalf("once the holder's mention had settled the held copy is attempts=%d settled=%v published=%v, want it forwarded to %s by that pass",
 				settled.attempts, settled.settled, settled.published, second)
 		}
-		forwards := recv.received()
+		forwards := recv.awaitReceived(t, 1)
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies, want the held one once its own mention settled: %+v", second, len(forwards), forwards)
 		}
@@ -2435,7 +2458,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		row := readHeldCopy(t, rig.database, commentID, roleTopic)
-		forwards := recv.received()
+		forwards := recv.awaitReceived(t, 1)
 		if len(forwards) != 1 {
 			t.Fatalf("%s was sent %d copies though its own mention is pending past model.DeliveryClaimLapse = %v, want the held one: the held copy is attempts=%d settled=%v published=%v",
 				second, len(forwards), model.DeliveryClaimLapse, row.attempts, row.settled, row.published)

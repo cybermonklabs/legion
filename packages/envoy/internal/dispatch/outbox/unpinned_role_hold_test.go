@@ -107,7 +107,7 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	forwards := recv.received()
+	forwards := recv.awaitReceived(t, 1)
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %+v once its mention settled, want the route's one forward", holder, forwards)
 	}

@@ -664,7 +664,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 			t.Fatalf("%s was not published: attempt_count %d, publish_error %v", event.key, attempts, failure)
 		}
 	}
-	received := recv.received()
+	received := recv.awaitReceived(t, 2)
 	if len(received) != 2 || received[0].EventID != firstKey || received[1].EventID != secondKey {
 		t.Fatalf("the holder received %d forwards (%v) in the scan that kept both copies, want %s and then %s: the second copy is the one the batch's own handover record frees",
 			len(received), eventIDs(received), firstKey, secondKey)
@@ -740,7 +740,7 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 			t.Fatalf("%s was not published: attempt_count %d, publish_error %v", event.key, attempts, failure)
 		}
 	}
-	if taken := toFirstHolder.received(); len(taken) != 1 || taken[0].EventID != firstKey {
+	if taken := toFirstHolder.awaitReceived(t, 1); len(taken) != 1 || taken[0].EventID != firstKey {
 		t.Fatalf("the session that claimed the role under the first keep received %v, want %s alone: the handover behind that keep is the one that reached it",
 			eventIDs(taken), firstKey)
 	}
