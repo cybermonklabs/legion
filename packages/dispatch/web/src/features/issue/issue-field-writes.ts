@@ -10,6 +10,7 @@ import {
 import { issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { boardMoveMutationKey } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { Issue, IssuePriority } from "../../api/types";
 import type { BoardMoveVariables } from "../project/board-moves";
 import { type Shape, shape } from "../writes/write-storage";
@@ -142,11 +143,12 @@ function showEverywhere(client: QueryClient, showings: readonly Showing[]): void
  *  board move not yet answered that sets one, each with what it sets; each query whose read out
  *  is older than the value Dispatch last confirmed for a field shown on it, as a landing of a
  *  write of the field or a put back left it (`holdReads`), by hash, with what to put back over
- *  the answer of that read; the moment of the last landing with no answer on each issue's line
- *  (`ended`), which a board move that landed so takes as its own (`landedMove`); each read of a
- *  project's list sent while a board move of the project was unanswered, which waits for the
- *  project's moves before its request goes out (`projectIssuesQuery`), with that project
- *  (`sendWaiting`); and the store whose writes these are. */
+ *  the answer of that read; the moment of the last landing with no answer on the line of each
+ *  issue a board move of which is out (`ended`), which that move takes as its own where it
+ *  landed so (`landedMove`); each read of a project's list whose attempt started while a board
+ *  move of the project was unanswered, which waits for the project's moves before its request
+ *  goes out (`projectIssuesQuery`), with that project (`sendWaiting`); and the store whose
+ *  writes these are. */
 interface Watch {
   readonly followed: Map<number, readonly IssueFieldPick[]>;
   readonly held: Map<string, Map<string, Showing>>;
@@ -242,8 +244,9 @@ function listedProject(queryKey: QueryKey): string | undefined {
   return typeof project === "string" ? project : undefined;
 }
 
-/** Whether a board move on `project` is unanswered: a read of the project's lists sent now waits
- *  for every such move before its request goes out (`boardMovesSettled` in `projectIssuesQuery`). */
+/** Whether a board move on `project` is unanswered: an attempt of a read of the project's lists
+ *  that starts now waits for every such move before its request goes out (`boardMovesSettled` in
+ *  `projectIssuesQuery`). */
 function moving(client: QueryClient, project: string): boolean {
   return client.isMutating({ mutationKey: boardMoveMutationKey(project) }) > 0;
 }
@@ -344,11 +347,13 @@ function newestPicks(client: QueryClient, watch: Watch, issueKey?: string): Show
 }
 
 /** The moments of the client's answers, in one order: each read's request, stamped as it is sent
- *  (`sentAt`) for as long as the client's watch lives, whether a pick is live then or not - a read
- *  of a project's list that waits for the project's board moves stamped again as its request goes
- *  out once they are answered (`sendWaiting`) - and each landing of a write, as its answer arrives,
- *  before anything the landing starts is sent (`confirmLanding`). A read sent before the watch
- *  began has no stamp: it counts as sent before every landing, as it was. */
+ *  (`sent`) for as long as the client's watch lives, whether a pick is live then or not - each
+ *  attempt of the read, its first and each retry, where the client tells each attempt
+ *  (`DispatchQueryClient`), and else the read's first, as its fetch begins; a read of a project's
+ *  list that waits for the project's board moves stamped again as its request goes out once they
+ *  are answered (`sendWaiting`) - and each landing of a write, as its answer arrives, before
+ *  anything the landing starts is sent (`confirmLanding`). A read sent before the watch began has
+ *  no stamp: it counts as sent before every landing, as it was. */
 let clock = 0;
 const sentAt = new WeakMap<Query, number>();
 
@@ -554,16 +559,28 @@ function putBack(
   readAgain(client, of.issueKey);
 }
 
-/** What one change of the client's cache does. Each read is stamped as it is sent (`sentAt`) - a
- *  read of a project's list sent while a board move of the project is unanswered is noted as one
- *  that waits (`waiting`) - and the answer of each read of a cache a pick shows on is kept as
- *  Dispatch gave it (`keepAnswer`), whether a pick is live or not; a query the client lets go of
- *  takes its answer and its hold with it. While the watch shows a field or holds a read: an answer
- *  of a read, or a merge of another write's answer, on such a cache has each field a pick of
- *  which is live shown again over it as the newest live write of that field; an answer of a read
- *  older than the value a landing or a put back left for a field shown on it (`holdReads`) has
- *  that value shown again over it, and ends its hold, as a new read of that query, its failure or
- *  its cancelling does. */
+/** Stamps the read of `query` as sent now (`sentAt`): an attempt of it starts, its first or a
+ *  retry, and its request goes out - but for a read of a project's list while a board move of
+ *  the project is unanswered, which is noted as one that waits (`waiting`), and whose request
+ *  goes out once the moves are answered (`sendWaiting`). A hold of an older value on the query
+ *  ends: its next answer is this request's (`holdReads`). */
+function sent(client: QueryClient, watch: Watch, query: Query): void {
+  sentAt.set(query, ++clock);
+  const project = listedProject(query.queryKey);
+  if (project !== undefined && moving(client, project)) watch.waiting.set(query, project);
+  else watch.waiting.delete(query);
+  watch.held.delete(query.queryHash);
+}
+
+/** What one change of the client's cache does. A read is stamped as its fetch begins (`sent`)
+ *  where the client does not tell each attempt of it, and the answer of each read of a cache a
+ *  pick shows on is kept as Dispatch gave it (`keepAnswer`), whether a pick is live or not; a
+ *  query the client lets go of takes its answer and its hold with it. While the watch shows a
+ *  field or holds a read: an answer of a read, or a merge of another write's answer, on such a
+ *  cache has each field a pick of which is live shown again over it as the newest live write of
+ *  that field; an answer of a read older than the value a landing or a put back left for a field
+ *  shown on it (`holdReads`) has that value shown again over it, and ends its hold, as its
+ *  failure, its cancelling or a new request of that query (`sent`) does. */
 function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEvent): void {
   if (writing) return;
   const { query } = event;
@@ -575,11 +592,10 @@ function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEven
   }
   if (event.type !== "updated") return;
   const { action } = event;
-  if (action.type === "fetch") {
-    sentAt.set(query, ++clock);
-    const project = listedProject(query.queryKey);
-    if (project !== undefined && moving(client, project)) watch.waiting.set(query, project);
-    else watch.waiting.delete(query);
+  // A client that tells each attempt of a read has it stamped then (`begin`); any other tells
+  // only the first, as the read's fetch begins.
+  if (action.type === "fetch" && !(client instanceof DispatchQueryClient)) {
+    sent(client, watch, query);
   }
   const fetched = action.type === "success" && action.manual !== true;
   const drawn = action.type === "success" && cacheOf(query.queryKey) !== undefined;
@@ -587,13 +603,10 @@ function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEven
   if (watch.held.size === 0 && !watching(watch)) return;
   // A read cancelled (`cancelQueries`) is given up: the query takes back the state it had before
   // the read, idle, and the read's answer never lands. Its hold ends here only to free it: the
-  // query's next read, sent from idle, ends it as it is sent (`fetch`), before any answer lands.
+  // query's next read ends it as its request goes out (`sent`), before any answer lands.
   const givenUp = action.type === "setState" && query.state.fetchStatus === "idle";
   const held = watch.held.get(query.queryHash);
-  if (
-    held !== undefined &&
-    (fetched || givenUp || action.type === "fetch" || action.type === "error")
-  ) {
+  if (held !== undefined && (fetched || givenUp || action.type === "error")) {
     watch.held.delete(query.queryHash);
   }
   if (!drawn) return;
@@ -636,10 +649,10 @@ function follow(client: QueryClient, watch: Watch): void {
  *  write off the line of the issue it names (`issue:<KEY>`), and each field the watch followed it
  *  for is what Dispatch last confirmed for the field, which shows unless a newer live write of it
  *  does, and where none does, over the answer of each read out then as well (`holdReads`); the
- *  moment of a landing with no answer on an issue's line is noted for a board move's mutation,
- *  which settles a moment later (`landedMove`). Refused, discarded or stopped, each such field
- *  shows as its newest live write, or else as Dispatch last confirmed it, over each older read out
- *  then as well, and the issue is read again (`putBack`). */
+ *  moment of a landing with no answer on the line of an issue a board move of which is out is
+ *  noted for the move's mutation, which settles a moment later (`landedMove`). Refused,
+ *  discarded or stopped, each such field shows as its newest live write, or else as Dispatch last
+ *  confirmed it, over each older read out then as well, and the issue is read again (`putBack`). */
 function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
   const followed = watch.followed.get(outcome.write.id) ?? [];
   watch.followed.delete(outcome.write.id);
@@ -650,8 +663,12 @@ function ended(client: QueryClient, watch: Watch, outcome: WriteOutcome): void {
   if (outcome.write.kind === KIND) return;
   const at = ++clock;
   const { target } = outcome.write;
-  if (outcome.answer === null && target?.startsWith("issue:") === true) {
-    watch.unanswered.set(target, at);
+  if (outcome.answer === null && target !== undefined) {
+    const moved = pendingMoves(client).some((move) => {
+      const change = moveChange(move);
+      return change !== undefined && target === `issue:${change.issueKey}`;
+    });
+    if (moved) watch.unanswered.set(target, at);
   }
   // A landing is as new as its answer's arrival, which is the order Dispatch stored the writes
   // in only on the issue's line, which sends one at a time: the answer of a write off it - a
@@ -688,7 +705,8 @@ function landedMove(client: QueryClient, watch: Watch, move: BoardMove): void {
  *  moves (`waiting`) once none of them is left unanswered: its request goes out now
  *  (`boardMovesSettled` in `projectIssuesQuery`), after each move's landing or refusal was kept
  *  (`ended`, `landedMove`), so it is newer than all of them, and no hold of an older value is
- *  left on it (`holdReads`). */
+ *  left on it (`holdReads`). A retry of the read that starts while a move is out waits again,
+ *  and is noted again as it starts (`sent`). */
 function sendWaiting(client: QueryClient, watch: Watch): void {
   for (const [query, project] of watch.waiting) {
     if (moving(client, project)) continue;
@@ -700,18 +718,19 @@ function sendWaiting(client: QueryClient, watch: Watch): void {
 }
 
 /** Begins the watch of `client`, whose store `writes` is, where it has none, for as long as the
- *  client lives: of its cache - each read's request and answer, and what each answer does to the
- *  picks shown (`answered`); of its store, since a write of another kind that sets a field a pick
- *  shows can join the issue's line after the surface that made it has written its own cache, and
- *  of what becomes of each write - what its landing told, and each field it was followed for
- *  (`ended`); and of its board moves, each change of which shows the newest write of each field
- *  again, each landing with no answer of which stored each field it set (`landedMove`), and the
- *  last of a project's answered sends each read of its lists that waited for them
- *  (`sendWaiting`). Its listeners hear every change of the app, so while the watch shows no field
- *  and holds no read each one returns at once - but for the cache's, which still stamps a read
- *  sent and keeps an answer given, the store's outcomes, which still keep what a landing told,
- *  and the board moves', which still keep a move's landing with no answer and stamp a waiting
- *  read as it goes out. */
+ *  client lives: of each attempt of a read, where the client tells each (`DispatchQueryClient`),
+ *  which stamps it (`sent`); of its cache - each read's request and answer, and what each answer
+ *  does to the picks shown (`answered`); of its store, since a write of another kind that sets a
+ *  field a pick shows can join the issue's line after the surface that made it has written its
+ *  own cache, and of what becomes of each write - what its landing told, and each field it was
+ *  followed for (`ended`); and of its board moves, each change of which shows the newest write of
+ *  each field again, each landing with no answer of which stored each field it set
+ *  (`landedMove`), and the last of a project's answered sends each read of its lists that waited
+ *  for them (`sendWaiting`). Its listeners hear every change of the app, so while the watch
+ *  shows no field and holds no read each one returns at once - but for the attempts', which still
+ *  stamp a read sent, the cache's, which still keeps an answer given, the store's outcomes, which
+ *  still keep what a landing told, and the board moves', which still keep a move's landing with
+ *  no answer and stamp a waiting read as it goes out. */
 function begin(client: QueryClient, writes: Writes): Watch {
   const begun = watches.get(client);
   if (begun !== undefined) return begun;
@@ -726,6 +745,12 @@ function begin(client: QueryClient, writes: Writes): Watch {
   };
   watches.set(client, watch);
   client.getQueryCache().subscribe((event) => answered(client, watch, event));
+  if (client instanceof DispatchQueryClient) {
+    client.onAttempt((queryHash) => {
+      const query = client.getQueryCache().get(queryHash);
+      if (query !== undefined) sent(client, watch, query);
+    });
+  }
   writes.subscribe(() => {
     if (!watching(watch)) return;
     if (!writing) showEverywhere(client, newestPicks(client, watch));

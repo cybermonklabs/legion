@@ -1,8 +1,13 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryObserver } from "@tanstack/react-query";
+import { QueryObserver, skipToken } from "@tanstack/react-query";
 
 import { ApiError, createApiClient, isRetryableQueryError } from "./client";
-import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./query-client";
+import {
+  DispatchQueryClient,
+  QUERY_RETRY_DELAY_MS,
+  queryRetry,
+  queryRetryDelay,
+} from "./query-client";
 
 /**
  * A server for one read whose every request is answered by the test: `answer()` lands the oldest
@@ -107,6 +112,83 @@ test("an invalidation of an idle read fetches it at once", async () => {
     expect(queryClient.getQueryData<string>(["projects"])).toBe("after");
   } finally {
     unsubscribe();
+  }
+});
+
+test("each attempt of a read tells the attempt listeners its query's hash once, and the read answers what its function returned", async () => {
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: 1, retryDelay: QUERY_RETRY_DELAY_MS } },
+  });
+  const told: string[] = [];
+  const stop = queryClient.onAttempt((queryHash) => told.push(queryHash));
+  const answer = { projects: ["CORE"] };
+  const asked: unknown[] = [];
+  // The first attempt is refused, and the retry answers.
+  const observer = new QueryObserver(queryClient, {
+    queryFn: async ({ queryKey }) => {
+      asked.push(queryKey);
+      if (asked.length === 1) throw new ApiError(503, { error: "service unavailable" });
+      return answer;
+    },
+    queryKey: ["projects"],
+  });
+  jest.useFakeTimers();
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    const hash = '["projects"]';
+    expect(queryClient.getQueryCache().find({ queryKey: ["projects"] })?.queryHash).toBe(hash);
+    expect(told).toEqual([hash]);
+    expect(observer.getCurrentResult().failureCount).toBe(1);
+
+    jest.advanceTimersByTime(QUERY_RETRY_DELAY_MS);
+    await settle();
+    expect(asked).toEqual([["projects"], ["projects"]]);
+    expect(told).toEqual([hash, hash]);
+    expect(observer.getCurrentResult().data).toBe(answer);
+
+    // A query that does not run, and one with no function of its own, are left as they are.
+    const skipped = queryClient.defaultQueryOptions({ queryFn: skipToken, queryKey: ["skipped"] });
+    expect(skipped.queryFn).toBe(skipToken);
+    expect(skipped.enabled).toBe(false);
+    expect(queryClient.defaultQueryOptions({ queryKey: ["bare"] }).queryFn).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+    unsubscribe();
+    stop();
+    queryClient.clear();
+  }
+});
+
+test("an attempt listener that throws fails no read: the read answers, and the other listeners are told", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const told: string[] = [];
+  const thrown: unknown[] = [];
+  const failure = new Error("listener");
+  const stopFirst = queryClient.onAttempt(() => {
+    throw failure;
+  });
+  const stopSecond = queryClient.onAttempt((queryHash) => told.push(queryHash));
+  const microtask = spyOn(globalThis, "queueMicrotask").mockImplementation((callback) => {
+    try {
+      callback();
+    } catch (error) {
+      thrown.push(error);
+    }
+  });
+  try {
+    const answer = await queryClient.fetchQuery({
+      queryFn: async () => "answered",
+      queryKey: ["projects"],
+    });
+    expect(answer).toBe("answered");
+    expect(told).toEqual(['["projects"]']);
+    expect(thrown).toEqual([failure]);
+  } finally {
+    microtask.mockRestore();
+    stopFirst();
+    stopSecond();
+    queryClient.clear();
   }
 });
 

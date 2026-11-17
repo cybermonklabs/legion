@@ -1,5 +1,5 @@
 import { expect, jest, mock, spyOn, test } from "bun:test";
-import { QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { focusManager, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   act,
   type RenderResult,
@@ -3562,6 +3562,246 @@ test("a refused pick puts back the priority a read of the board that waited for 
 });
 
 const unavailable = () => new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+
+// R3: a read is as new as its request, and each retry of a read sends a request of its own,
+// which TanStack makes within the read's one fetch. CORE-1 shows P3. The issue is read again
+// while a save of its status from its header is out, and Dispatch refuses the read with a 503
+// while the page is hidden, so the read's retry waits until the page is shown (TanStack goes on
+// with a retry only on a page that shows). Dispatch answers the save with P1, another person
+// then sets P2, and the page is shown: the retry goes out and answers P2. P0 is picked and
+// refused: until the re-read answers, every surface shows P2, the retry's answer - never the P1
+// of the save, which landed before the retry went out.
+test("a refused pick puts back the priority a read's retry answered, not the older answer of a save that landed before the retry went out", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const pick = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => save.promise)
+    .mockImplementationOnce(() => pick.promise);
+  const client = signedInHolding(
+    [detailKey, { ...details, priority: 3 }],
+    [listKey, [{ ...summary, priority: 3 }]],
+    [inboxKey, [{ ...inboxRow, priority: 3 }]]
+  );
+  client.setQueryDefaults(detailKey, { retry: 1, retryDelay: 0 });
+  const reads = dispatchReads();
+  reads.store(3);
+  // The issue's first read from now on is refused; every one after it answers.
+  const refusal = Promise.withResolvers<IssueDetails>();
+  let detailReads = 0;
+  const refusedOnce: Reads = {
+    ...reads,
+    detail: () => {
+      detailReads += 1;
+      return detailReads === 1 ? refusal.promise : reads.detail();
+    },
+  };
+  const view = renderIn(
+    client,
+    <>
+      <Surfaces reads={refusedOnce} />
+      <CachedPriority reads={refusedOnce} />
+    </>
+  );
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) => {
+    const { detail, inbox, list } = shownPriorities();
+    seen.push(`${step}: detail ${detail} list ${list} inbox ${inbox}`);
+  };
+  try {
+    saveStatus(client);
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
+    // The issue is read again, as an event of it has it, and the page is hidden.
+    let read = Promise.resolve();
+    act(() => {
+      read = client.refetchQueries({ queryKey: detailKey });
+    });
+    await waitFor(() => expect(detailReads).toBe(1));
+    focusManager.setFocused(false);
+    await act(async () => {
+      refusal.reject(unavailable());
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(client.getQueryState(detailKey)?.fetchStatus).toBe("paused"));
+    // Dispatch answers the save at P1, and another person sets P2 before the retry goes out.
+    await act(async () => {
+      save.resolve({ ...issue, priority: 1, status: "done" });
+      await save.promise;
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    reads.store(2);
+    await act(async () => {
+      focusManager.setFocused(true);
+      await read;
+    });
+    expect(detailReads).toBe(2);
+    see("the status save landed at P1, then the read's retry went out and answered P2");
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+    see("P0 picked");
+    // The reads the refusal starts are held until what it put back is checked.
+    const answerReads = reads.hold();
+
+    await act(async () => {
+      pick.reject(closed());
+      await pick.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P0 refused, before the re-read answers");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the re-read answers");
+
+    expect(seen).toEqual([
+      "the status save landed at P1, then the read's retry went out and answered P2: detail P2 list P3 inbox P3",
+      "P0 picked: detail P0 list P0 inbox P0",
+      "P0 refused, before the re-read answers: detail P2 list P2 inbox P2",
+      "the re-read answers: detail P2 list P2 inbox P2",
+    ]);
+  } finally {
+    focusManager.setFocused(undefined);
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+/** The key of CORE's open issues, as the issues table reads them. */
+const openKey = projectIssuesQuery(issue.project, [], true).queryKey;
+
+/** CORE's open issues as the issues table reads them (`projectIssuesQuery` with `open`, whose
+ *  read waits until every board move on the project is answered), showing CORE-1's priority. */
+function OpenIssues(): ReactNode {
+  const open = useQuery({
+    ...projectIssuesQuery(issue.project, [], true),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  return (
+    <p data-testid="open-priority">P{open.data?.find((row) => row.key === issue.key)?.priority}</p>
+  );
+}
+
+// R3 for a read of a project's list that waits for the project's board moves and is retried:
+// each attempt of it waits for the moves unanswered as it starts, and its request goes out once
+// they are answered, so each attempt is as new as its own request. The issue and CORE's open
+// issues are read at P3. The card is dragged to the P1 lane, and the open issues are read again
+// while the drag is out, which waits; Dispatch answers the drag at P1, and the read goes out and
+// is refused with a 503 while the page is hidden, so its retry waits until the page is shown. The
+// card is dragged again meanwhile, to the P0 lane, and the retry, which starts as the page is
+// shown, waits for that drag in turn. Dispatch answers it at P0, another person then sets P2, and
+// the retry goes out and answers P2. P1 is picked and refused: until the re-read answers, the
+// issue and the open issues show P2, the retry's answer - never the second drag's P0.
+test("a refused pick puts back the priority a retried read of the open issues answered after it waited for a later drag, not that drag's older answer", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const pick = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise)
+    .mockImplementationOnce(() => pick.promise);
+  const client = signedInHolding();
+  // The board the card is dragged on, which no surface reads.
+  client.setQueryData(listKey, [{ ...summary, priority: 3 }]);
+  client.setQueryDefaults(openKey, { retry: 1, retryDelay: 0 });
+  const reads = dispatchReads();
+  reads.store(3);
+  const listIssues = spyOn(api, "listIssues").mockImplementation(reads.list);
+  const view = renderIn(
+    client,
+    <>
+      <CachedPriority reads={reads} />
+      <OpenIssues />
+    </>
+  );
+  const board = renderHook(() => useBoardMoves(issue.project), {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+  const user = userEvent.setup();
+  const seen: string[] = [];
+  const see = (step: string) => {
+    const open = screen.getByTestId("open-priority").textContent;
+    seen.push(`${step}: detail P${cachedPriorities(client).detail} open ${open}`);
+  };
+  try {
+    await waitFor(() => expect(screen.getByTestId("open-priority")).toHaveTextContent("P3"));
+    await waitFor(() => expect(prioritySelects()).toHaveLength(1));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    act(() => {
+      void board.result.current.moveCardToLane(issue.key, "todo", 1, 0);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
+    // The open issues are read again while the drag is out, as an event of the project has it:
+    // the read waits for the drag, and Dispatch refuses its request.
+    const refusal = Promise.withResolvers<IssueSummary[]>();
+    listIssues.mockImplementationOnce(() => refusal.promise);
+    act(() => {
+      void client.invalidateQueries({ queryKey: openKey });
+    });
+    await act(async () => {
+      first.resolve({ ...issue, priority: 1 });
+      await first.promise;
+    });
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await waitFor(() => expect(listIssues).toHaveBeenCalledTimes(2));
+    focusManager.setFocused(false);
+    await act(async () => {
+      refusal.reject(unavailable());
+      await refusal.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(client.getQueryState(openKey)?.fetchStatus).toBe("paused"));
+    act(() => {
+      void board.result.current.moveCardToLane(issue.key, "todo", 0, 0);
+    });
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+    // The page is shown: the retry starts, and waits for the second drag.
+    await act(async () => focusManager.setFocused(true));
+    await waitFor(() => expect(client.getQueryState(openKey)?.fetchStatus).toBe("fetching"));
+    expect(listIssues).toHaveBeenCalledTimes(2);
+    // Dispatch answers the second drag at P0, and another person sets P2 before the retry goes
+    // out; its answer is held until the read of the open issues after the drag has gone out too.
+    const answerRetry = reads.hold();
+    reads.store(2);
+    await act(async () => {
+      second.resolve({ ...issue, priority: 0 });
+      await second.promise;
+    });
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await waitFor(() => expect(listIssues).toHaveBeenCalledTimes(3));
+    const answerReads = reads.hold();
+    await act(async () => answerRetry());
+    await waitFor(() => expect(screen.getByTestId("open-priority")).toHaveTextContent("P2"));
+    see(
+      "the card dragged to P1, then to P0, the open issues' retry that waited for the second drag at P2"
+    );
+    await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "1");
+    await waitFor(() => expect(bodies(patchIssue)).toHaveLength(3));
+    see("P1 picked");
+
+    await act(async () => {
+      pick.reject(closed());
+      await pick.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    see("P1 refused, before the re-read answers");
+    await act(async () => answerReads());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    see("the re-read answers");
+
+    expect(seen).toEqual([
+      "the card dragged to P1, then to P0, the open issues' retry that waited for the second drag at P2: detail P3 open P2",
+      "P1 picked: detail P1 open P1",
+      "P1 refused, before the re-read answers: detail P2 open P2",
+      "the re-read answers: detail P2 open P2",
+    ]);
+  } finally {
+    focusManager.setFocused(undefined);
+    board.unmount();
+    view.unmount();
+    listIssues.mockRestore();
+    patchIssue.mockRestore();
+  }
+});
 
 // R2 and R3 for a pick past its deadline: a pick Dispatch has not answered within it is late and
 // still being tried, so it is live. P0 is answered 503 at every try, and P2, picked after it,
