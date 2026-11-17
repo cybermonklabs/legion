@@ -146,10 +146,38 @@ class Sample:
     tests: str
 
     def line(self) -> str:
-        sizes = f"VmRSS {self.rss_kb} kB in {self.comm}"
+        sizes = f"VmRSS {self.rss_kb} kB in {printable(self.comm)}"
         if self.hwm_kb is not None:
             sizes += f", VmHWM {self.hwm_kb} kB"
         return f"race memory: at {self.seconds:.1f} s, {sizes}; tests running: {self.tests}"
+
+
+# The short escapes Python's own string literals use, for the controls a log most often meets.
+SHORT_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def printable(name: str) -> str:
+    r"""A process's name as it is printed: every character str.isprintable() refuses written as an
+    escape (\r, \x1b, \x85, \u202e), and every other character as it is.
+
+    The name is whatever its process gave itself, and the kernel escapes only "\n" and "\\" in it
+    (tree_statuses), so a carriage return, an escape sequence or a direction override reaches the
+    Actions log as it is unless it is escaped here. A backslash the name holds is already "\\\\" in
+    the kernel's text, so an escape written here cannot pass for one the name spelled out.
+    """
+    out = []
+    for char in name:
+        if char.isprintable():
+            out.append(char)
+        elif char in SHORT_ESCAPES:
+            out.append(SHORT_ESCAPES[char])
+        elif ord(char) < 0x100:
+            out.append(f"\\x{ord(char):02x}")
+        elif ord(char) < 0x10000:
+            out.append(f"\\u{ord(char):04x}")
+        else:
+            out.append(f"\\U{ord(char):08x}")
+    return "".join(out)
 
 
 def summarize(statuses: list[str], seconds: float, tests: str) -> Sample | None:

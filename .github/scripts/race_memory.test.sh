@@ -178,6 +178,25 @@ check "its decision line gives the peak and the highest sample it came from" \
 check "its decision line leaves the between-samples warning off a VmRSS peak" \
   "$(is "$(contains "$rss" 'may belong to another moment')" false)"
 
+echo "case: a sampled name's control characters are printed escaped"
+# The kernel leaves every byte of a name but "\n" and "\\" as it is (race_memory.tree_statuses),
+# so a name can hold a carriage return, an escape sequence or a C1 control. The Name line here is
+# read through summarize, and the sample is printed both with a name read from a status text and
+# with one that holds a newline, which no status text can.
+escaped=$(peak '
+import race_memory
+walk = race_memory.summarize(["Name:\ta\rb\x1b[31m\x85\u202ec\nPPid:\t1\nVmRSS:\t    7 kB\n"], 0.0, "none")
+print(walk.line())
+print(race_memory.Sample(seconds=0.0, rss_kb=7, hwm_kb=None, comm="x\ny\tz", tests="none").line())
+')
+check "the read name prints escaped" \
+  "$(contains "$escaped" '^race memory: at 0\.0 s, VmRSS 7 kB in a\\rb\\x1b\[31m\\x85\\u202ec; tests running: none$')"
+check "a newline and a tab in a name print escaped" \
+  "$(contains "$escaped" '^race memory: at 0\.0 s, VmRSS 7 kB in x\\ny\\tz; tests running: none$')"
+check "the two samples are two lines" "$(is "$(wc -l <<<"$escaped")" 2)"
+check "no raw carriage return, escape or C1 control" \
+  "$(is "$(LC_ALL=C grep -c $'[\r\x1b]\\|\xc2\x85' <<<"$escaped")" 0)"
+
 echo "case: a -json stream's output reaches the log"
 stream='
 import json, sys
