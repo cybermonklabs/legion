@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -136,12 +137,11 @@ func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 // reviewer whose summary dropped it writes no entry. Only the last sentence of a task is the
 // daemon's (reviewround.Sentences): a task's own text can quote `Review entry: 2.` above it, and a
 // task can end with `Review entry: none.`, which does not change the entry of the round. So the
-// sentence kept is the newest last sentence of a task that names a number. Each instruction before
-// this one would keep another sentence in one transcript: a true entry 3, then a task that quotes
-// `Review entry: 2.` and ends `Review entry: none.`. The newest sentence that starts with the label
-// is the `none`, and the newest such sentence that names a number is the quoted 2; the sentence to
-// keep is `Review entry: 3.`. The bound it is asked within is the operation's own ten minutes, not
-// the RPC timeout.
+// instructions name the entry in exactly one sentence, and that sentence and the one before it are
+// the rule: take the last sentence of each task, then keep the newest of those that names a
+// number. After a true entry 3, then a task that quotes `Review entry: 2.` and ends `Review entry:
+// none.`, that rule keeps `Review entry: 3.`. The bound it is asked within is the operation's own
+// ten minutes, not the RPC timeout.
 func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := readyImplementer(t, h)
@@ -159,22 +159,23 @@ func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	if !strings.Contains(asked[0].CustomInstructions, "Write the summary as text.") {
 		t.Errorf("the compaction's instructions are %q, want them to ask for a text summary", asked[0].CustomInstructions)
 	}
-	transcript := "a true entry 3, then a task that quotes \"" + reviewround.EntryLabel + ": 2.\" and ends \"" + reviewround.EntryLabel + ": none.\""
-	keepsTheEntry := "Find the last sentence of each task you were given. " +
-		"Of these sentences, keep word for word the newest that starts \"" + reviewround.EntryLabel + ":\" and names a number."
-	if !strings.Contains(asked[0].CustomInstructions, keepsTheEntry) {
-		t.Errorf("the compaction's instructions are %q, want them to say %q: after %s, the sentence kept is \"%s: 3.\"",
-			asked[0].CustomInstructions, keepsTheEntry, transcript, reviewround.EntryLabel)
-	}
-	// The two instructions before this one: the first keeps the `none`, the second the quoted 2.
-	for _, old := range []string{
-		"Keep word for word the newest sentence that starts \"" + reviewround.EntryLabel + ":\" in the tasks you were given.",
-		"Keep word for word the newest sentence in the tasks you were given that starts \"" + reviewround.EntryLabel + ":\" and names a number.",
-	} {
-		if strings.Contains(asked[0].CustomInstructions, old) {
-			t.Errorf("the compaction's instructions still say %q: after %s, it keeps a sentence other than \"%s: 3.\"",
-				old, transcript, reviewround.EntryLabel)
+	// The sentences of the instructions, in order, and the ones among them that name the entry.
+	sentences := strings.SplitAfter(asked[0].CustomInstructions, ". ")
+	var naming []int
+	for i := range sentences {
+		sentences[i] = strings.TrimSpace(sentences[i])
+		if strings.Contains(sentences[i], reviewround.EntryLabel) {
+			naming = append(naming, i)
 		}
+	}
+	rule := []string{
+		"Find the last sentence of each task you were given.",
+		"Of these sentences, keep word for word the newest that starts \"" + reviewround.EntryLabel + ":\" and names a number.",
+	}
+	if len(naming) != 1 || naming[0] == 0 || !slices.Equal(sentences[naming[0]-1:naming[0]+1], rule) {
+		t.Errorf("the compaction's instructions are %q, want them to name %q in exactly one sentence, which with the one before it is %q: "+
+			"after a true entry 3, then a task that quotes \"%s: 2.\" and ends \"%s: none.\", the sentence kept is \"%s: 3.\"",
+			asked[0].CustomInstructions, reviewround.EntryLabel, rule, reviewround.EntryLabel, reviewround.EntryLabel, reviewround.EntryLabel)
 	}
 	if asked[0].Bound != runtime.CompactTimeout {
 		t.Errorf("the compaction was bounded at %s, want the operation's own %s", asked[0].Bound, runtime.CompactTimeout)

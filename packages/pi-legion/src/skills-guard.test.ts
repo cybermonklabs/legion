@@ -608,13 +608,17 @@ test("each reviewer text says the last two sentences of each task are always the
 // one. A wake's task ends with the round's entry as each task of the round does, so the skill's
 // item on a released pod says so. The entry is a JSON string, so that a placeholder left in it
 // cannot make the footer invalid JSON, which would lose its session and its head too; each file
-// says why. The daemon's prompts carry the same footer, and their daemon part gives the rule whole;
-// prompts_test.go pins the composed reviewer prompt.
+// says why. Each file says which sentence the entry is read from exactly once, in the sentence
+// pinned here, so no second wording of that rule stands beside it. The daemon's prompts carry the
+// same footer, and their daemon part gives the rule whole; prompts_test.go pins the composed
+// reviewer prompt.
 test("the reviewer's review footer names the entry of its round", () => {
   const worker = collapsed(path.join(staged, "legion-worker", "SKILL.md"));
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
   const withEntry =
     '`<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>","entry":"<entry>"} -->`';
+  // The words that say which sentence the entry is read from, in both files.
+  const entryRule = "the number of the newest `Review entry: <n>.` sentence";
   const gaps = [
     ...[
       withEntry,
@@ -635,12 +639,19 @@ test("the reviewer's review footer names the entry of its round", () => {
     ]
       .filter((sentence) => !mergeGate.includes(sentence))
       .map((s) => `merge-gate.md lacks: ${s}`),
-    ...['"head":"<the head you reviewed>"} -->`),', "sentence that a task or a wake of your session gave you"]
+    ...['"head":"<the head you reviewed>"} -->`),']
       .filter((sentence) => mergeGate.includes(sentence))
       .map((s) => `merge-gate.md says: ${s}`),
-    ...["sentence that a task or a wake of its session gave it"]
-      .filter((sentence) => worker.includes(sentence))
-      .map((s) => `legion-worker/SKILL.md says: ${s}`),
+    ...[
+      ["legion-worker/SKILL.md", worker],
+      ["merge-gate.md", mergeGate],
+    ]
+      .map(([file, text]) => [file, text.split(entryRule).length - 1] as const)
+      .filter(([, times]) => times !== 1)
+      .map(
+        ([file, times]) =>
+          `${file} says "${entryRule}" ${times} times, want once: in the sentence pinned above`
+      ),
   ];
   expect(gaps).toEqual([]);
 });

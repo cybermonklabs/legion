@@ -662,8 +662,10 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 // the session named one), and that a review with no entry, or another one, still decides the round.
 // The entry is a JSON string, `"entry":"<entry>"`, and the prompt says why: a placeholder left
 // unquoted makes the footer invalid JSON, which loses its session and its head too, so the review
-// is set aside, while a quoted value that is no number costs the entry alone. The footer with no
-// entry is gone. This shows the text is loaded, never that a reviewer follows it.
+// is set aside, while a quoted value that is no number costs the entry alone. The prompt says which
+// sentence the entry is read from in exactly the two places pinned, the role part's and the daemon
+// part's, so no third wording of that rule stands beside them. The footer with no entry is gone.
+// This shows the text is loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -690,14 +692,16 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
 		}
 	}
-	for _, retired := range []struct{ phrase, why string }{
-		{`"phase":"review","head":"<the head you reviewed>"} -->`, "a footer with no entry"},
-		{`\"phase\":\"review\",\"head\":\"<head-sha>\"} -->`, "a footer with no entry"},
-		{"the newest `Review entry: <n>.` sentence that a task or a wake of this session gave you",
-			"an entry read from any sentence of a task, where a task's own text can quote `Review entry: 2.` above the daemon's last sentence"},
+	if rule := "the number of the newest `Review entry: <n>.` sentence"; strings.Count(text, rule) != 2 {
+		t.Errorf("the composed reviewer prompt says %q %d times, want twice: the role part's sentence and the daemon part's, each pinned above, "+
+			"which read the entry from the last sentence of a task", rule, strings.Count(text, rule))
+	}
+	for _, retired := range []string{
+		`"phase":"review","head":"<the head you reviewed>"} -->`,
+		`\"phase\":\"review\",\"head\":\"<head-sha>\"} -->`,
 	} {
-		if strings.Contains(text, retired.phrase) {
-			t.Errorf("the composed reviewer prompt still says %q, %s", retired.phrase, retired.why)
+		if strings.Contains(text, retired) {
+			t.Errorf("the composed reviewer prompt still says %q, a footer with no entry", retired)
 		}
 	}
 }
