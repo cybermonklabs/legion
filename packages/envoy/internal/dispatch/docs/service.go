@@ -359,6 +359,14 @@ type Service struct {
 	// at 849c00dd - left a load counted for good, and the either-order test held here fails on
 	// that order.
 	beforeUnloadEndsLoad func(room string)
+	// afterRetireReserved runs once a retirement of the room a late departure's settlement loaded
+	// has taken its reservation on the room's record (reserveRetirement), before ygo's close of the
+	// room. Nil outside tests; tests use it to open a write in that window.
+	afterRetireReserved func(room string)
+	// awaitingRetirement runs as a writer or a settlement finds a retirement's reservation on the
+	// room's record and is about to wait for it (awaitRetirement). Nil outside tests; tests use it to
+	// see the wait.
+	awaitingRetirement func(room string)
 	// bootstrapping runs as a room's load hook decodes state, the stored state its load read, into
 	// the room's document (bootstrapLoadedState). Nil outside tests; tests use it to count the
 	// decodes a room's load makes and to see which state each decodes.

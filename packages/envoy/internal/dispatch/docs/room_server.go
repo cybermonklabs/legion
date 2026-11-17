@@ -166,7 +166,9 @@ func (r *roomServer) closeInstance(room string, doc *crdt.Doc) (bool, error) {
 // retired it: ygo's CloseRoomWithin without force. Its caller runs it inside its own Server.Apply on
 // room, holding off ygo's idle sweep as closeInstance's caller does, and it holds the close gate as
 // closeInstance does, so no other close the service makes, and no repair, comes between unadopted's
-// look at the room's record and ygo's lookup of the room by name. Without force ygo closes nothing
+// look at the room's record and ygo's lookup of the room by name; the writers and settlements that
+// take up a room without entering it are held off by the reservation unadopted takes on the record
+// as it answers true (Service.reserveRetirement). Without force ygo closes nothing
 // while a peer is on the room (websocket.ErrRoomHasPeers) or another caller is inside it
 // (websocket.ErrRoomInUse), and checks both again under its own locks where it takes the room out of
 // its map, as its idle sweep does (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:609-627

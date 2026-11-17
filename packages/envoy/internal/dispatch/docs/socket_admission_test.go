@@ -771,6 +771,95 @@ func TestARetirementLeavesTheMarkOfASettlementRoomStillLoading(t *testing.T) {
 	r.requireNothingCounted("once the late departure's settlement has ended")
 }
 
+// A writer that opens on the document while the room a late departure's settlement loaded retires -
+// past the retirement's last look at the room's record, before ygo's close of the room - takes up
+// no room the close then takes away: it waits for the close to return (awaitRetirement) and forks
+// from what is there then, so its write is published into the room it forked from, or forks from
+// the store where no room is. A writer is inside no Apply on the room while it holds the writer
+// slot, so ygo's own checks before its close cannot see it.
+func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t *testing.T) {
+	r := unloadAcrossAReload(t)
+	r.letFirstUnload()
+	r.awaitFirstClose()
+	r.awaitUnload("the first room")
+
+	// The retirement holds once it has reserved the record (afterRetireReserved), and the writer
+	// opens then. The hold ends once the writer has forked from the room, which it does with the
+	// writer slot taken (afterForkRead), or once it waits for the retirement (awaitingRetirement).
+	forked, waiting := make(chan struct{}, 1), make(chan struct{}, 1)
+	signal := func(c chan struct{}) {
+		select {
+		case c <- struct{}{}:
+		default:
+		}
+	}
+	r.service.afterForkRead = func(room string) {
+		if room == r.room {
+			signal(forked)
+		}
+	}
+	r.service.awaitingRetirement = func(room string) {
+		if room == r.room {
+			signal(waiting)
+		}
+	}
+	type publish struct{ cold, resident bool }
+	publishes := make(chan publish, 1)
+	r.service.checkRendering = func(at string, write *liveWrite) {
+		if at == "publish" && write.artifactID == r.room {
+			select {
+			case publishes <- publish{cold: write.cold, resident: r.service.srv.GetDoc(r.room) != nil}:
+			default:
+			}
+		}
+	}
+	wrote := make(chan error, 1)
+	var reserved atomic.Bool
+	r.service.afterRetireReserved = func(room string) {
+		if room != r.room || reserved.Swap(true) {
+			return
+		}
+		go func() {
+			_, err := joinedReplaceText(r.service, r.room, "A write that opens as the settlement's room retires.\n", model.Actor{Kind: "user", ID: "alice"})
+			wrote <- err
+		}()
+		select {
+		case <-forked:
+		case <-waiting:
+		case <-time.After(roomWait(t)):
+			t.Error("the writer neither forked from the retiring room nor waited for its retirement")
+		}
+	}
+	held, letDeparture := r.holdDeparture()
+	_ = r.socket.Close()
+	r.awaitHeld(held, "the second room's browser")
+	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+		t.Fatalf("close the second room: %v", err)
+	}
+	r.awaitUnload("the second room")
+	letDeparture()
+	r.awaitSocketEnd("the second room's browser")
+	if !reserved.Load() {
+		t.Fatal("no retirement reserved the room the late departure's settlement loaded, so nothing here is tested")
+	}
+	select {
+	case err := <-wrote:
+		if err != nil {
+			t.Fatalf("the write that opened as the room retired: %v", err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("the write that opened as the room retired never returned")
+	}
+	select {
+	case got := <-publishes:
+		if !got.cold && !got.resident {
+			t.Error("the write forked from the room the late departure's settlement loaded and found no room to publish into: the retirement closed the room under the writer holding it")
+		}
+	default:
+		t.Fatal("the write that opened as the room retired published nothing, so nothing here is tested")
+	}
+}
+
 // Two rooms of one document that have both left ygo's map can report their unloads in either
 // order, and an unload that has begun may wait while a later room of the document loads and
 // unloads in full. Whatever the order, each unload ends one of the loads counted under the name,

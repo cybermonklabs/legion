@@ -125,7 +125,14 @@ type roomState struct {
 	// when it is retired, and once its load's count has ended, which only that room's leaving
 	// ygo's map allows (warmedRoom), so it keeps no retired room alive and is kept for a room
 	// still loading.
-	warmed         *warmedRoom
+	warmed *warmedRoom
+	// retiring is the reservation a retirement of that room holds on the record from its last look
+	// at the record until ygo's close of the room has returned (reserveRetirement, endRetirement),
+	// closed as it ends. A writer taking the writer slot and a settlement taking the room wait for
+	// it (awaitRetirement), so neither takes up a room the close then takes away: each goes on with
+	// the room once the close was refused, or with no room once it closed. It holds the record
+	// (unusedLocked), so it is ended on the record it was taken on.
+	retiring       chan struct{}
 	settleFailures int
 	// settling counts the settlements running on this state (settleRoomWithin), which hold it
 	// across their database work.
@@ -396,13 +403,13 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 // open writer, a running or armed settlement, a latest edit source no settlement has read, a
 // failure being recovered from (whose eviction forgets the state itself, evictRoom), a connected
 // browser, a document socket's admission (admitting), an update the room's persistence has not
-// taken or appended, a commit's parked bytes not yet stored, and an in-flight credit whose append
-// has not landed. Its caller holds state.mu.
+// taken or appended, a commit's parked bytes not yet stored, an in-flight credit whose append has
+// not landed, and a retirement's reservation (retiring). Its caller holds state.mu.
 func (s *Service) unusedLocked(state *roomState) bool {
 	return state.liveWriter == nil && state.settling == 0 && !s.isSettleTimerArmed(state.settle) &&
 		!state.unsettled && state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
 		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0 &&
-		len(state.parked) == 0
+		len(state.parked) == 0 && state.retiring == nil
 }
 
 // parkedBytes is one commit's parked bytes and the cursor of the room instance that took them.

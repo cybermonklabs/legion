@@ -187,6 +187,16 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		s.beforeSettleStart(room)
 	}
 	state := s.lockState(room)
+	// A retirement that has reserved the record (roomState.retiring) is closing a room no one
+	// holds: the settlement takes the room once that close has returned - the same room where ygo
+	// refused the close, a fresh load of it where it closed.
+	for retiring := state.retiring; retiring != nil; retiring = state.retiring {
+		s.unlockState(room, state)
+		if err := s.awaitRetirement(parent, room, retiring); err != nil {
+			return settle.stoppedShort(err)
+		}
+		state = s.lockState(room)
+	}
 	if s.stopping.Load() || state.failed != nil || state.roomGeneration != generation {
 		s.unlockState(room, state)
 		return settleOutcome{}
@@ -330,11 +340,16 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 // browser registered, a socket being admitted, an open writer, a settlement running or armed, an
 // update not yet stored - first here and again with the room's close gate held, from inside an
 // Apply on the room. A room something holds stays the settlement's: another settlement, or a
-// retry armed for this one, retires it as it ends. The close is ygo's CloseRoomWithin without
-// force, which checks again, under its own locks and where it takes the room out of its map, that
-// no peer is on the room and no other caller inside it (roomServer.retireInstance). A room that
-// retired between the first look and the Apply is loaded again by the Apply, carrying the same
-// mark, and retired the same way.
+// retry armed for this one, retires it as it ends. The second look takes a reservation on the
+// record (reserveRetirement), which a writer or a settlement that would take the room up from then
+// on waits for (awaitRetirement), and which ends once ygo's close has returned (endRetirement): the
+// close cannot be made under the record's lock, which ygo's flush and the room's unload take, so
+// the reservation is what keeps those holders off the room between the look and the close. The
+// close is ygo's CloseRoomWithin without force, which checks again, under its own locks and where
+// it takes the room out of its map, that no peer is on the room and no other caller inside it
+// (roomServer.retireInstance): a browser joining, or a caller entering the room, is ygo's to keep
+// it for. A room that retired between the first look and the Apply is loaded again by the Apply,
+// carrying the same mark, and retired the same way.
 func (s *Service) retireSettlementRoom(room string) {
 	if s.stopping.Load() {
 		return
@@ -357,11 +372,20 @@ func (s *Service) retireSettlementRoom(room string) {
 	if warmed == nil || !unused {
 		return
 	}
+	var reserved *roomState
 	var retireErr error
 	ctx := withSettlementLoad(withOwnerVerified(WithoutRecoveryWait(context.Background())))
 	err := s.srv.Apply(ctx, room, func(held *crdt.Doc, _ func(func(*crdt.Transaction))) {
-		_, retireErr = s.srv.retireInstance(room, held, func() bool { return s.takeUnusedWarmed(room, held) })
+		_, retireErr = s.srv.retireInstance(room, held, func() bool {
+			if reserved = s.reserveRetirement(room, held); reserved != nil && s.afterRetireReserved != nil {
+				s.afterRetireReserved(room)
+			}
+			return reserved != nil
+		})
 	})
+	if reserved != nil {
+		s.endRetirement(room, reserved)
+	}
 	if err == nil || errors.Is(err, websocket.ErrNoChanges) {
 		err = retireErr
 	}
@@ -370,20 +394,53 @@ func (s *Service) retireSettlementRoom(room string) {
 	}
 }
 
-// takeUnusedWarmed is whether held is still the room a settlement loaded for itself and nothing
-// holds room's record (unusedLocked), forgetting the room as the settlement's when it is
-// (retireSettlementRoom).
-func (s *Service) takeUnusedWarmed(room string, held *crdt.Doc) bool {
+// reserveRetirement takes a retirement's reservation on room's record (roomState.retiring) when
+// held is still the room a late departure's settlement loaded and nothing holds the record
+// (unusedLocked), forgetting the room as the settlement's, and answers that record; it answers
+// nil, and takes nothing, when held is not to retire (retireSettlementRoom).
+func (s *Service) reserveRetirement(room string, held *crdt.Doc) *roomState {
 	state := s.lockExistingState(room)
 	if state == nil {
-		return false
+		return nil
 	}
 	defer s.unlockState(room, state)
 	if state.warmed == nil || state.warmed.doc != held || !s.unusedLocked(state) {
-		return false
+		return nil
 	}
 	state.warmed = nil
-	return true
+	state.retiring = make(chan struct{})
+	return state
+}
+
+// endRetirement ends the reservation a retirement took on state, room's record
+// (reserveRetirement), once ygo's close of the room has returned: the writers and settlements
+// waiting for it go on (awaitRetirement). The reservation held the record, so this is the record
+// it was taken on.
+func (s *Service) endRetirement(room string, state *roomState) {
+	state.mu.Lock()
+	retiring := state.retiring
+	state.retiring = nil
+	s.unlockState(room, state)
+	close(retiring)
+}
+
+// awaitRetirement waits, holding no lock of the service's, for retiring, a retirement's
+// reservation on room's record (roomState.retiring), to end, or for ctx to end, which it answers.
+// Its callers, a writer taking the writer slot (openLiveWrite) and a settlement taking the room
+// (settleRoomWithin), then look at the record again. A writer waits holding its document's owner
+// row and no lock of the document's own, which takes the owner row first (lockDocumentRoom): the
+// close it waits for takes no owner row, and its compaction leaves the document's lock to a later
+// one when another holder has it (servicePersistenceAdapter.Compact).
+func (s *Service) awaitRetirement(ctx context.Context, room string, retiring <-chan struct{}) error {
+	if s.awaitingRetirement != nil {
+		s.awaitingRetirement(room)
+	}
+	select {
+	case <-retiring:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // takeUpSettlementRoom is ygo's OnFirstPeer: a browser has joined the room, which is no longer a
