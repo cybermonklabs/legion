@@ -1,8 +1,8 @@
 package delivery
 
 // What a `pull_request` envelope may write: GitHub's own answer about the pull request it names,
-// and nothing the envelope itself carries (dispatch://INFRA-3992). With no delivery settings, as
-// the deployment that change was made for holds none.
+// and nothing the envelope itself carries. With no delivery settings, as the deployment that
+// change was made for holds none.
 
 import (
 	"context"
@@ -385,8 +385,7 @@ func TestARateLimitedPullRequestReadWritesNoRowAndIsAHeadNotStored(t *testing.T)
 // A GitHub outage loses no pull request's head: the intake owes each failed read and
 // acknowledges its envelope, and once GitHub answers again the reconcile's next pass writes the
 // head of a pull request that opened during the outage, and of one that was pushed during it,
-// with no later event of either (acceptance of cybermonklabs/legion#4209, round 2, defect 3; R1,
-// R2 and R4 of dispatch://INFRA-3992).
+// with no later event of either (acceptance of cybermonklabs/legion#4209, round 2, defect 3).
 //
 // Taken from the acceptance tester's TestAcceptAGitHubOutageLongerThanTheCapLosesNoHead, with
 // three changes. The step after the outage runs one reconcile pass, since the fix is that the
@@ -537,8 +536,8 @@ func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *t
 // link and a push the issue lists the pull request at the pushed head (HeadsAttributedTo, what
 // the results route compares each check with). #302 is the control: the same pull request with
 // no link is listed nowhere. At origin/main 7e33d96621 no head row was stored for either, so the
-// issue listed nothing and every check read "Compared with nothing" (three live cases of
-// dispatch://INFRA-4141; the probe of its planner: "head rows: #301 0, #302 0"). Each envelope
+// issue listed nothing and every check read "Compared with nothing" (three live cases; the probe
+// of the planner of the next change: "head rows: #301 0, #302 0"). Each envelope
 // goes through Intake.deliver with the settings production holds: none.
 func TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliverySettings(t *testing.T) {
 	fastPageRetries(t)

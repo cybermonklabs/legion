@@ -1,9 +1,8 @@
 -- 20261116163242_pull_request_heads_github_read.up.sql
 --
 -- Which pull_request_heads rows hold GitHub's own answer to a read of the pull request, so that
--- only such a row's time can stop a read of GitHub or win against GitHub's answer
--- (dispatch://INFRA-3992, R2: the head and the state of a pull request come from a read of
--- GitHub).
+-- only such a row's time can stop a read of GitHub or win against GitHub's answer (the head and
+-- the state of a pull request come from a read of GitHub).
 --
 --   github_read_at  when a read of GitHub wrote the row's head_sha, state and event_at, with
 --                   event_at GitHub's own updated_at for the pull request; null where no read of
@@ -25,7 +24,7 @@
 -- shows the time a head was learned by, and delivery.BaseBranchMergedFor orders merged rows by
 -- it). This release also raises delivery.AttributionRuleVersion to 3, so the reconcile reads
 -- each stored merged row from GitHub once more, at most delivery.RejudgedHeadsPerPass a pass;
--- an open row is read every five minutes already.
+-- an open row is read again by the first pass that reaches it once its last read is five minutes old.
 --
 -- The release before still serves beside this one while the roll lasts, and it can write a row
 -- from an envelope after this migration ran. Its insert names its columns, so a row it inserts

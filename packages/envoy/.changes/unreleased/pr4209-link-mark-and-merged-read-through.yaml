@@ -1,0 +1,24 @@
+kind: Fixed
+body: |-
+    A write of an issue's links (`PATCH /api/v1/issues/{key}` with `external_links`) marks the stored
+    head row of each pull request whose own URL it adds or removes, in its own transaction, and the
+    first reconcile pass that reaches the marked row reads it from GitHub and attributes it with the
+    links as they stand, a merged row included. A merged row was read by no pass once the current
+    rule had judged it, so a link written after the merge was never followed. A head write in flight
+    while the link is written leaves the row marked (the new column `pull_request_heads.link_mark`),
+    and the head write takes the issue rows it moves the row between before the head row, in the
+    order the link write takes them, so neither waits on the other in a cycle.
+
+    The read of an issue's results reads GitHub for a result's commit that a merged pull request of
+    another issue, or of none, heads, at most once a commit every 5 minutes, so a tie made after the
+    merge (a link to a GitHub issue the pull request's body cites, a new parent, a changed repository
+    mapping, a link moved to the issue) is followed there, as it was while no head row was stored
+    for such a commit; only a commit an open pull request heads is left to the reconcile.
+
+    The intake's settle of a read owed before its read and its head write wait on a lock at most
+    5 s, as the owe of a read does, so a lock of `pull_request_reads_owed` holds a delivery for
+    seconds and not for its minute. The warning of an owed read under a stored rename target that
+    is no `owner/name` shows the target to 140 characters.
+time: 2026-11-17T19:20:11.000000000Z
+custom:
+    Issue: pr4209

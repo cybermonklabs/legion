@@ -1,10 +1,9 @@
 package delivery
 
 // What ends an owed refusal, and what a pass spends on refusals, read through the reconcile's own
-// pass (review and second reader of cybermonklabs/legion#4209 at ceeec40f46, D1 and N6; R4 of
-// dispatch://INFRA-3992: "One answer of GitHub can show that a repository is readable and that it
-// holds no such pull request. That answer is a read that succeeded, and Dispatch keeps nothing for
-// that number.").
+// pass (review and second reader of cybermonklabs/legion#4209 at ceeec40f46, D1 and N6): one
+// answer of GitHub can show that a repository is readable and that it holds no such pull request,
+// and that answer is a read that succeeded, after which Dispatch keeps nothing for that number.
 
 import (
 	"strings"

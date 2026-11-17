@@ -1,6 +1,6 @@
 package delivery
 
-// The invariant of the owed reads (dispatch://INFRA-3992, R3 and R4), over random interleavings
+// The invariant of the owed reads, over random interleavings
 // of the writers of one pull request: no final state holds an older head or state than the one
 // GitHub answered last. The writers are the real code: the intake's handling of an event, whose
 // read of GitHub succeeds or fails; the reconcile's pass; the release before's write of an

@@ -41,7 +41,7 @@ import (
 //
 // A row a read of GitHub wrote is marked (github_read_at), and only a marked row's time stops a
 // read of GitHub or wins against GitHub's answer (headReadCovers, upsertHeadRow): a release
-// before dispatch://INFRA-3992 wrote rows from an envelope's fields, and it writes them still
+// before this one wrote rows from an envelope's fields, and it writes them still
 // while it serves beside this build.
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
@@ -70,17 +70,26 @@ type PullRequestHead struct {
 	URL                 string
 	EventAt             *time.Time
 	CheckedAt           *time.Time
-	// GitHubReadAt is when the read of GitHub whose answer HeadSHA, State and EventAt are began,
-	// taken before its request went out, with EventAt GitHub's updated_at; nil where they are no
-	// answer of GitHub's, and only headRow sets it, so the zero value is the careful one. A row a
-	// write of that kind stores is marked (github_read_at), and only a marked row's time stops a
-	// read of GitHub or wins against GitHub's answer (headReadCovers, upsertHeadRow); of two
-	// answers of one updated_at second, the one whose read began later is the newer (the trigger
-	// pull_request_heads_older_read, as 20261117114124 replaces it). A release before
-	// dispatch://INFRA-3992 wrote a row's head, state and updated_at from a `pull_request`
-	// envelope, whose fields a caller sets, and it can still write one while it serves beside
-	// this build.
+	// GitHubReadAt is the reader's clock as the read of GitHub whose answer HeadSHA, State and
+	// EventAt are began, taken before its request went out, with EventAt GitHub's updated_at; nil
+	// where they are no answer of GitHub's, and only headRow sets it, so the zero value is the
+	// careful one. A row a write of that kind stores is marked (github_read_at), and only a marked
+	// row's time stops a read of GitHub or wins against GitHub's answer (headReadCovers,
+	// upsertHeadRow). It orders nothing: GitHubReadOrder does. A release before this one wrote a
+	// row's head, state and updated_at from a `pull_request` envelope, whose fields a caller sets,
+	// and it can still write one while it serves beside this build.
 	GitHubReadAt *time.Time
+	// GitHubReadOrder is the place that read took in the order of every read of GitHub (startRead),
+	// set where GitHubReadAt is: of two answers of one updated_at second, the one whose read took
+	// the later place is the newer (the trigger pull_request_heads_older_read, as 20261117172917
+	// replaces it).
+	GitHubReadOrder *int64
+	// LinkMark is the row's link_mark as the attribution of this write read it, before it read
+	// the links (attributeHead, linkMarkOf): how many writes of a link to this pull request had
+	// marked the row then (MarkHeadsLinked). A write whose LinkMark is not the row's link_mark
+	// judged the issue from links a later write changed, so it leaves the row unread
+	// (upsertHeadRow). Nil where the row had no mark or no row was stored.
+	LinkMark *int64
 	// MergeCommitSHA is the commit GitHub made when this pull request merged. It is set only
 	// for a merged pull request, and only by a writer that read it; one that did not read it
 	// leaves it empty, which asks for nothing. It is written to no column of
@@ -93,7 +102,7 @@ type PullRequestHead struct {
 // where GitHub says it merged, closed where GitHub's `state` is closed, and open otherwise. It
 // reads GitHub's `state`, never an event's action: GitHub sends `labeled`, `edited`, `assigned`
 // and other actions for a closed pull request too, and a row stored open from one of those would
-// make the head of a pull request that will never merge a basis again (dispatch://INFRA-3992).
+// make the head of a pull request that will never merge a basis again.
 func PullRequestHeadState(state string, merged bool) string {
 	if merged {
 		return "merged"
@@ -130,8 +139,8 @@ func markHeadNotStored(err error) error {
 // errNoRowHolds marks a pull request's head row that holds a value no row of pull_request_heads,
 // or of what the same write makes, holds (checkHeadRow). It is ErrHeadNotStored: no read of GitHub
 // that gives such a value is a read that succeeded, so the pull request stays owed a read, at the
-// intake as at the reconcile, and a later read whose answer the row holds writes the head (R4 of
-// dispatch://INFRA-3992: "No age of a failure and no count of tries ends that"). It is made before
+// intake as at the reconcile, and a later read whose answer the row holds writes the head: no age
+// of a failure and no count of tries ends that. It is made before
 // any statement, so it is never a failure of the database read as the values' own.
 var errNoRowHolds = fmt.Errorf("%w: a value no row holds", ErrHeadNotStored)
 
@@ -198,7 +207,7 @@ func checkHeadRow(head PullRequestHead) error {
 //
 // That rule trusts only a stored time a read of GitHub wrote (GitHubReadAt, the column
 // github_read_at). GitHub's answer applies over a row that holds no such mark, whatever time the
-// row holds: a release before dispatch://INFRA-3992 stored an envelope's updated_at, which a
+// row holds: a release before this one stored an envelope's updated_at, which a
 // caller sets, and a time an hour ahead would otherwise refuse every answer of GitHub's until
 // GitHub's own clock passed it — for a closed or merged pull request, never. That release still
 // writes rows while it serves beside this build, and its statement names no github_read_at, so a
@@ -312,7 +321,7 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 	}()
 	var left *string
 	if records {
-		if left, err = headIssueBefore(ctx, tx, head.Repo, head.Number); err != nil {
+		if left, err = headIssueBefore(ctx, tx, broker, head); err != nil {
 			return err
 		}
 	}
@@ -407,19 +416,73 @@ func appendAttributionChange(
 // headIssueBefore is the issue the stored row credits the pull request to, read for no key
 // update so that no other writer moves it between this read and the write that follows: the
 // "from" of the move, and nil where no row is stored yet or the row credits nobody.
-func headIssueBefore(ctx context.Context, tx pgx.Tx, repoFull string, number int) (*string, error) {
-	var issue *string
-	err := tx.QueryRow(ctx, `
-		select issue_key from pull_request_heads where repo = $1 and number = $2 for no key update
-	`, repoFull, number).Scan(&issue)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+//
+// It takes the issue rows a move of the row appends its events to (appendAttributionChange)
+// before the row itself, in the broker's order (events.Broker.LockOwners): a write of an issue's
+// links holds the issue's row and then marks the head rows of the pull requests it links or
+// unlinks (api's patchIssue, MarkHeadsLinked), so a head write that took the head row first and
+// the issue's row for its event after waited on that write while it waited on the head write, and
+// PostgreSQL ended one of the two (SQLSTATE 40P01). The row's issue is read first with no lock,
+// the issues of a move from it to head's issue are locked, and the row is read again under its
+// lock. Where another writer moved the row in between, that attempt's locks are let go (a
+// savepoint) and the next attempt takes the issues of the row as it stands; a row moved at every
+// attempt is a head not stored, which the caller owes or reads again. A write that moves nothing
+// locks no issue row.
+func headIssueBefore(ctx context.Context, tx pgx.Tx, broker *events.Broker, head PullRequestHead) (*string, error) {
+	read := func(q interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	}, lock string) (*string, error) {
+		var issue *string
+		err := q.QueryRow(ctx, `select issue_key from pull_request_heads where repo = $1 and number = $2 `+lock,
+			head.Repo, head.Number).Scan(&issue)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: read the issue of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+		}
+		return issue, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("%w: read the issue of %s#%d: %w", ErrHeadNotStored, repoFull, number, err)
+	for range headIssueLockAttempts {
+		seen, err := read(tx, "")
+		if err != nil {
+			return nil, err
+		}
+		attempt, err := tx.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%w: lock the issues of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+		}
+		if !sameIssue(seen, head.IssueKey) {
+			var owners []model.Event
+			for _, issue := range []*string{seen, head.IssueKey} {
+				if issue != nil {
+					owners = append(owners, model.Event{IssueKey: issue})
+				}
+			}
+			if err := broker.LockOwners(ctx, attempt, owners...); err != nil {
+				_ = attempt.Rollback(ctx)
+				return nil, fmt.Errorf("%w: lock the issues of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+			}
+		}
+		locked, err := read(attempt, "for no key update")
+		if err != nil {
+			_ = attempt.Rollback(ctx)
+			return nil, err
+		}
+		if sameIssue(locked, seen) {
+			if err := attempt.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("%w: lock the issues of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+			}
+			return locked, nil
+		}
+		if err := attempt.Rollback(ctx); err != nil {
+			return nil, fmt.Errorf("%w: lock the issues of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+		}
 	}
-	return issue, nil
+	return nil, fmt.Errorf("%w: the issue of %s#%d changed at each of %d reads while its write took its locks",
+		ErrHeadNotStored, head.Repo, head.Number, headIssueLockAttempts)
 }
+
+// headIssueLockAttempts bounds how many times headIssueBefore reads the row's issue and locks
+// it: the first, and one more for a row another writer moved in between.
+const headIssueLockAttempts = 2
 
 // sameIssue reports whether two attributions name one issue, with nil "credited to nobody": the
 // test that decides whether a write moved the row at all.
@@ -450,13 +513,14 @@ const headWriteRollback = 2 * time.Second
 // statement writes nothing and reports no error. Only an applied write can have moved the row's
 // attribution, so that is what UpsertPullRequestHead tests before it appends an event.
 //
-// github_read_at is when the read of GitHub whose answer the write carries began
-// (PullRequestHead.GitHubReadAt), taken by its reader before the request went out, and null for a
-// write that is no answer of GitHub's: a mark, and the order of two answers of one second. Every
-// read of this build begins at a moment of its own, so a write of this build changes it, and the
-// trigger that tells a write of the release before from this build's own reads a value that did
-// not change as a write that named none. Two reads of one row that begin in one microsecond are
-// the one exception, and it errs the safe way: the row loses its mark and is read again.
+// github_read_at is the reader's clock as the read of GitHub whose answer the write carries began
+// (PullRequestHead.GitHubReadAt), and null for a write that is no answer of GitHub's: a mark, and
+// the time a reader sees. Every read of this build begins at a moment of its own, so a write of
+// this build changes it, and the trigger that tells a write of the release before from this
+// build's own reads a value that did not change as a write that named none. Two reads of one row
+// that begin in one microsecond are the one exception, and it errs the safe way: the row loses its
+// mark and is read again. github_read_order is that read's place in the order of every read of
+// GitHub (PullRequestHead.GitHubReadOrder, startRead), and null where github_read_at is.
 //
 // A write of GitHub's answer wins over a row no read of GitHub wrote, whatever the two times
 // (the guard's last arm): a stored time a caller set must never refuse GitHub. But that row may
@@ -466,16 +530,20 @@ const headWriteRollback = 2 * time.Second
 // pull_request_heads_older_read records, inside this statement, that the pull request is owed a
 // read of kind failure: the reconcile's next pass reads it before any refusal and whatever its
 // state, a closed or merged row included, and writes GitHub's answer then, which is newer than
-// both (dispatch://INFRA-3992, R3).
+// both.
 //
 // GitHub's updated_at is whole seconds, so the order two answers of one second arrive in says
 // nothing of which is the newer: a read that began first and was answered slowly would land its
 // older head over the newer one (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D2). The
-// order the reads began in does: an answer of the stored second whose read began before the
-// stored row's read replaces nothing, and the same trigger (as 20261117114124 replaces it) skips
-// that update, which every writer's head goes through, the intake's, the reconcile's and a
-// result's read-through alike. No order decides it for certain: a read that began later can still
-// be answered with the older state, where its request reached GitHub first. So two answers of one
+// order the reads took their places in does: an answer of the stored second whose read took an
+// earlier place than the stored row's read replaces nothing, and the same trigger (as
+// 20261117172917 replaces it) skips that update, which every writer's head goes through, the
+// intake's, the reconcile's and a result's read-through alike. The place is a value of one
+// sequence, and not a clock of the process that read, whose clock may be behind another's or step
+// back (the deep audit of cybermonklabs/legion#4209 at ac562e9837, finding 2). No order decides
+// it for certain: a read that took the later place can still be answered with the older state,
+// where its request reached GitHub first, or where its first request failed and a later try was
+// answered (readGitHubPage). So two answers of one
 // second that differ in a fact GitHub answers (the head, its branch, the base, the state, the
 // title or the URL; not the attribution, which is this build's judgement of them) owe a read
 // whichever of them the row keeps, and the next read writes what GitHub holds then. The rule and
@@ -484,13 +552,20 @@ const headWriteRollback = 2 * time.Second
 // compares with the row the update replaces (OLD), which nothing else in the statement sees: a
 // CTE reads the statement's snapshot, and a CTE's `for update` skips a row the statement's own
 // update has changed.
+//
+// A write leaves the row unread (checked_at null) where the row's link_mark is not the one its
+// attribution read before it read the links (PullRequestHead.LinkMark): a write of a link to
+// this pull request committed after that read, so the issue the write carries was judged from
+// links that no longer stand, and the first reconcile pass that reaches the row judges it again
+// (MarkHeadsLinked). The mark is a count on the row the write lands on, compared in the statement
+// that holds that row's lock, so no order of the two commits loses it.
 func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-			title, url, event_at, checked_at, attribution_rule, github_read_at
+			title, url, event_at, checked_at, attribution_rule, github_read_at, github_read_order
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15, $16)
 		on conflict (repo, number) do update set
 			head_sha = excluded.head_sha,
 			head_ref = excluded.head_ref,
@@ -503,10 +578,12 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 			title = excluded.title,
 			url = excluded.url,
 			event_at = coalesce(excluded.event_at, pull_request_heads.event_at),
-			checked_at = coalesce(excluded.checked_at, pull_request_heads.checked_at),
+			checked_at = case when pull_request_heads.link_mark is distinct from $17::bigint then null
+				else coalesce(excluded.checked_at, pull_request_heads.checked_at) end,
 			attribution_rule = case when excluded.checked_at is null
 				then pull_request_heads.attribution_rule else excluded.attribution_rule end,
-			github_read_at = excluded.github_read_at
+			github_read_at = excluded.github_read_at,
+			github_read_order = excluded.github_read_order
 		where excluded.event_at is null
 		   or pull_request_heads.event_at is null
 		   or excluded.event_at >= pull_request_heads.event_at
@@ -514,7 +591,8 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 	`,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
-		head.AttributionComplete, AttributionRuleVersion, head.GitHubReadAt,
+		head.AttributionComplete, AttributionRuleVersion, head.GitHubReadAt, head.GitHubReadOrder,
+		head.LinkMark,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
@@ -657,12 +735,25 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 	return head, true, nil
 }
 
-// HeadStoredAt reports whether sha is the head of an open or merged pull request stored for
-// repoFull, whatever issue it is attributed to: whether Dispatch holds a pull request at that
-// commit that its own passes keep reading. It is a weaker question than HeadAttributedTo's and
-// it is asked for another purpose — the results read asks it before it reads GitHub for a commit,
-// since a commit such a row already heads is one the reconcile re-reads and a read from there
-// repairs nothing (api/results_comparison.go, comparisonReader.readThroughHead).
+// OpenHeadAt reports whether sha is the head of an open pull request stored for repoFull,
+// whatever issue the row is attributed to. The results read asks it before it reads GitHub for a
+// commit (api/results_comparison.go, comparisonReader.readThroughHead), since a read from there
+// repairs nothing an open row needs.
+//
+// An open row is the reconcile's: the first pass that reaches it once PullRequestHeadStaleAfter
+// has passed since its last read reads it again (ListStalePullRequestHeads) and attributes it with
+// Dispatch's links, issues, parents and mappings as they stand then. It is left to that pass
+// whatever issue it credits because a child's result on a parent's check heads the child's open
+// row, credited to the child, and a read of GitHub for it would be made once a
+// CommitPullReadStaleAfter for each such commit, for as long as the parent's results are read.
+//
+// A merged row is no such answer. Nothing but its next event, a raised AttributionRuleVersion and
+// a write of a link to its own URL (MarkHeadsLinked) reads it again, so a tie made after its last
+// read (a link to a GitHub issue the pull request's body cites, a new parent, a changed repository
+// mapping, a link moved to another issue) is followed only by a read, and the results read makes
+// it, once a CommitPullReadStaleAfter for each commit, as it did for every such commit while no
+// row was stored for it. A merged row attributed to the check's own issue is a basis of the
+// check, and a result at a basis is not read through (comparisonReader.learn).
 //
 // A closed-unmerged row is counted for nothing, as HeadAttributedTo counts it for nothing: it
 // is no basis a result stands at, the reconcile keeps no such row in its passes
@@ -680,12 +771,12 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 // `(lower(repo), head_sha)` for that reason: pull_request_heads_issue_head is partial on
 // `issue_key is not null` and keyed on the issue, so it serves no lookup by repository and head
 // commit.
-func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (bool, error) {
+func OpenHeadAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (bool, error) {
 	var found bool
 	if err := pool.QueryRow(ctx, `
 		select exists (
 			select 1 from pull_request_heads
-			where lower(repo) = lower($1) and head_sha = $2 and state in ('open', 'merged')
+			where lower(repo) = lower($1) and head_sha = $2 and state = 'open'
 		)
 	`, repoFull, sha).Scan(&found); err != nil {
 		return false, fmt.Errorf("read the stored pull request heads of %s at %s: %w", repoFull, sha, err)
@@ -751,8 +842,10 @@ const (
 
 // ListStalePullRequestHeads is at most limit rows for the reconcile to read again, the longest
 // unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter (a row
-// never read first), every merged row credited to nobody that no read has reached, and every
-// merged row a rule older than this build's judged (AttributionRuleVersion).
+// never read first), every merged row that no read has reached since it was written or marked
+// (checked_at null: credited to nobody, written by a read that could not read every source, or
+// marked by a write of a link to it, MarkHeadsLinked), and every merged row a rule older than this
+// build's judged (AttributionRuleVersion).
 //
 // A merged row is revisited at all because nothing else ever revisits one. An open row comes
 // round every five minutes; a merged row is written once more at most, by an envelope or a
@@ -783,12 +876,13 @@ const (
 // null` half of the uncredited term keeps that bound: without it every merged row credited to
 // nobody would come back every pass for ever.
 //
-// The arm is written as `(issue_key is null and checked_at is null) or attribution_rule < $3`
-// rather than the conjunction it is equal to — `(issue_key is null or attribution_rule < $3)
-// and (checked_at is null or attribution_rule < $3)` — because the two terms are what the two
-// partial indexes hold (pull_request_heads_merged_unread and pull_request_heads_merged_rule,
-// 20261111060005): written this way the planner takes a bitmap of each and ors them, and
-// written the other way it reads every row of the table. Both forms select the same rows.
+// The arm is written as `checked_at is null or attribution_rule < $3` over the merged rows,
+// rather than one condition, because the two terms are what the two partial indexes hold
+// (pull_request_heads_merged_unread, as 20261117172917 builds it, and
+// pull_request_heads_merged_rule, 20261111060005): written this way the planner takes a bitmap of
+// each and ors them. The first term takes a merged row credited to an issue too since
+// 20261117172917, since a link written to its pull request after its last read leaves the row
+// unread (MarkHeadsLinked), and the issue the row credits is what that link can change.
 //
 // The rule half is read in a pass of its own, bounded by RejudgedHeadsPerPass, and the rest of
 // limit goes to the rows a reader meets now: the open rows, whose head decides a live result,
@@ -803,7 +897,7 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 	heads, err := listStaleHeads(ctx, pool, `
 		select repo, number from pull_request_heads
 		where (state = 'open' and (checked_at is null or checked_at < $1))
-		   or (state = 'merged' and issue_key is null and checked_at is null)
+		   or (state = 'merged' and checked_at is null)
 		order by checked_at nulls first, repo, number
 		limit $2
 	`, now.Add(-PullRequestHeadStaleAfter), limit)
@@ -824,6 +918,70 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 		return nil, err
 	}
 	return append(heads, rejudged...), nil
+}
+
+// MarkHeadsLinked marks each stored head row of the pull requests whose URL is one of urls
+// unread (checked_at null) and counts the mark on the row (link_mark), in tx, the transaction of
+// the write that added or removed those links of an issue (issue_external_links). A link to a pull
+// request's own URL is the first source of its attribution (attribution.go), and it changes with
+// no event of the pull request. A merged row is read again only while it is unread or a newer rule
+// has not judged it (ListStalePullRequestHeads), so without the mark a link written once the pull
+// request merged left the row with the issue the merge's read gave it for as long as the row
+// stood. The first reconcile pass that reaches a marked row reads it from GitHub, the unread rows
+// first by (repository, number), PullRequestHeadBatch rows a pass, and attributes it with the
+// links as they stand then.
+//
+// The count is what a head write in flight compares: its attribution read link_mark before it
+// read the links (linkMarkOf), and its upsert leaves the row unread where the count has moved
+// since (upsertHeadRow), so a write that judged from links this write changed does not stamp the
+// row read again, whichever of the two commits first.
+//
+// The mark owes no read (pull_request_reads_owed): the head is not in doubt, only its issue, and
+// the row's head, state and mark of a read of GitHub stay as they are, so neither trigger of the
+// table owes anything for it. A URL that is no stored pull request's marks nothing; a link to a
+// GitHub issue the pull request's body cites, an issue named later, a new parent and a changed
+// repository mapping change an attribution too, but a head row stores none of them, so those are
+// followed at the pass that reaches the open row, at the pull request's next event, or at a
+// results read of a commit the row heads (api's comparisonReader.readThroughHead). The URLs are
+// compared lowercased, as the attribution compares them, over every row of the table, which holds
+// a row per pull request Dispatch has seen.
+//
+// The rows are locked in (repository, number) order, after the issue rows the caller's
+// transaction holds: a head write that moves a row takes those issue rows before the head row too
+// (headIssueBefore), so the two writes never wait on each other in a cycle.
+func MarkHeadsLinked(ctx context.Context, tx refs.Execer, urls []string) error {
+	if len(urls) == 0 {
+		return nil
+	}
+	lowered := make([]string, len(urls))
+	for i, url := range urls {
+		lowered[i] = strings.ToLower(url)
+	}
+	if _, err := tx.Exec(ctx, `
+		update pull_request_heads h set checked_at = null, link_mark = coalesce(h.link_mark, 0) + 1
+		from (
+			select repo, number from pull_request_heads
+			where lower(url) = any($1::text[])
+			order by repo, number
+			for no key update
+		) linked
+		where h.repo = linked.repo and h.number = linked.number
+	`, lowered); err != nil {
+		return fmt.Errorf("mark the heads of the linked pull requests unread: %w", err)
+	}
+	return nil
+}
+
+// linkMarkOf is the link_mark of repoFull's pull request number's stored row (MarkHeadsLinked),
+// nil where the row has none or no row is stored: what a head write's attribution reads before it
+// reads the links (attributeHead).
+func linkMarkOf(ctx context.Context, pool *store.Pool, repoFull string, number int) (*int64, error) {
+	var mark *int64
+	err := pool.QueryRow(ctx, `select link_mark from pull_request_heads where repo = $1 and number = $2`, repoFull, number).Scan(&mark)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("read the link mark of %s#%d: %w", repoFull, number, err)
+	}
+	return mark, nil
 }
 
 // RejudgedHeadsPerPass is how many merged rows one reconcile pass offers under the rule-version
@@ -891,6 +1049,9 @@ type headAttributionResult struct {
 	messages []string
 	ownHead  bool
 	complete bool
+	// linkMark is the link_mark of the row the write lands on, read before the links were
+	// (linkMarkOf), which the write carries as PullRequestHead.LinkMark.
+	linkMark *int64
 }
 
 // headAttribution resolves the issue a pull request belongs to from what GitHub said about it,
@@ -971,8 +1132,17 @@ func headAttribution(ctx context.Context, pool *store.Pool, facts attributionFac
 // the row unstamped where the caller can, for the reconcile to read again. A rate limit is
 // returned rather than swallowed, so no caller persists a weaker attribution and then stamps
 // the row read.
-func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
-	attributed, err := headAttribution(ctx, pool, facts, headRepo)
+//
+// The row's link mark is read first, before any statement reads the links (linkMarkOf), and the
+// answer carries it, so the write that follows can tell whether a write of a link committed after
+// the links were read (upsertHeadRow).
+func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (attributed headAttributionResult, err error) {
+	mark, err := linkMarkOf(ctx, pool, facts.Repo, number)
+	if err != nil {
+		return headAttributionResult{source: string(sourceNone)}, err
+	}
+	defer func() { attributed.linkMark = mark }()
+	attributed, err = headAttribution(ctx, pool, facts, headRepo)
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
 		return attributed, err
 	}
@@ -1001,21 +1171,45 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 // The rule that judged it is the write's own (UpsertPullRequestHead binds
 // AttributionRuleVersion). The list form of a pull request carries merged_at but not merged, so
 // a merge is read from whichever of the two GitHub sent. The row is marked a read of GitHub that
-// began at readBegan (GitHubReadAt) where GitHub's answer carried its updated_at, since the mark
-// says the row's time is GitHub's own; each reader takes readBegan before its request goes out.
-func headRow(repoFull string, payload pullRequestPayload, attributed headAttributionResult, checkedAt *time.Time, readBegan time.Time) PullRequestHead {
-	var readAt *time.Time
-	if payload.UpdatedAt != nil {
-		readAt = &readBegan
-	}
-	return PullRequestHead{
+// took its start read (GitHubReadAt and GitHubReadOrder) where GitHub's answer carried its
+// updated_at, since the mark says the row's time is GitHub's own; each reader takes read before
+// its request goes out (startRead).
+func headRow(repoFull string, payload pullRequestPayload, attributed headAttributionResult, checkedAt *time.Time, read readStart) PullRequestHead {
+	row := PullRequestHead{
 		Repo: repoFull, Number: payload.Number, HeadSHA: payload.Head.SHA, HeadRef: payload.Head.Ref,
 		BaseRef: payload.Base.Ref, State: PullRequestHeadState(payload.State, payload.Merged || payload.MergedAt != nil),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload.Title, URL: payload.HTMLURL,
-		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, GitHubReadAt: readAt,
+		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, LinkMark: attributed.linkMark,
 		MergeCommitSHA: mergeCommitOf(payload),
 	}
+	if payload.UpdatedAt != nil {
+		row.GitHubReadAt, row.GitHubReadOrder = &read.at, &read.order
+	}
+	return row
+}
+
+// readStart is a read of GitHub's place in the order of every read of GitHub, and the reader's
+// clock as it took it: the two values of a head row the read writes (headRow).
+type readStart struct {
+	at    time.Time
+	order int64
+}
+
+// startRead takes a read of GitHub's place, just before its request goes out: one statement, a
+// value of the sequence the owed reads' revisions come from, which only rises, so every read of
+// every process takes one place in one order whatever any process's clock says (the trigger
+// pull_request_heads_older_read, as 20261117172917 replaces it). A read whose place cannot be
+// taken does not start: its error is the database's, which each reader answers as a failure of
+// the database before a head write (ErrHeadNotStored at the intake, a failed read at the
+// reconcile, and no head at a result's read-through).
+func startRead(ctx context.Context, pool *store.Pool) (readStart, error) {
+	var read readStart
+	if err := pool.QueryRow(ctx, `select nextval('pull_request_reads_owed_revision_seq')`).Scan(&read.order); err != nil {
+		return readStart{}, fmt.Errorf("take the place of a read of GitHub: %w", err)
+	}
+	read.at = time.Now()
+	return read, nil
 }
 
 // headRepositoryOf is the repository a pull request's head branch lives in, as GitHub's answer
@@ -1097,7 +1291,10 @@ func RefreshPullRequestHead(
 		}
 		return nil, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
 	}
-	began := time.Now()
+	began, err := startRead(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
 	if err != nil {
 		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
@@ -1176,7 +1373,10 @@ func ReadThroughCommitPulls(
 	if err != nil {
 		return 0, false, err
 	}
-	began := time.Now()
+	began, err := startRead(ctx, pool)
+	if err != nil {
+		return 0, false, err
+	}
 	pulls, err := fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
 	if err != nil {
 		return 0, false, err
@@ -1218,7 +1418,7 @@ func ReadThroughCommitPulls(
 // a closed pull request as open again and a pass at its head stood. And an envelope on a
 // `notifications.github.` subject is not proof GitHub sent it: any Envoy /v1 bearer can publish
 // one, which is why handleWorkflowEnvelope reads its run from GitHub too, and a head a caller
-// set would be what a `before_merge` pass is judged against (dispatch://INFRA-3992).
+// set would be what a `before_merge` pass is judged against.
 //
 // A pull request GitHub does not know (404 or 410) and a repository the App cannot read write
 // no row: there is no answer of GitHub's to write, and nothing an envelope says is one. Both
@@ -1282,7 +1482,10 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		}
 		return headRead{}, markHeadNotStored(fmt.Errorf("mint installation token for %s PR #%d: %w", repoFull, number, err))
 	}
-	began := time.Now()
+	began, err := startRead(ctx, in.pool)
+	if err != nil {
+		return headRead{}, markHeadNotStored(err)
+	}
 	pull, err := fetchPullRequestPayload(ctx, in.github, token, owner, repo, number)
 	if err != nil {
 		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
@@ -1302,20 +1505,42 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		checkedAt = &now
 	}
 	read := headRead{pull: &pull, token: token, messages: attributed.messages}
-	if err := upsertHeadUnderCanonicalName(ctx, in.pool, in.events,
-		headRow(repoFull, pull, attributed, checkedAt, began), given); err != nil {
+	if err := in.writeHead(ctx, headRow(repoFull, pull, attributed, checkedAt, began), given); err != nil {
 		return read, err
 	}
 	// The head is GitHub's answer now, so the read owed before this read began, by an earlier
 	// delivery of this envelope or any other writer, is settled. A failure to delete it costs the
-	// reconcile one read, and no more.
+	// reconcile one read, and no more. The delete waits on a lock of pull_request_reads_owed no
+	// longer than the owe beside it does (owedReadWriteTimeout), so a migration of that table holds
+	// the delivery, and one of the slots its repository shares, for seconds and not for the
+	// message's whole deadline (the review of cybermonklabs/legion#4209 at ac562e9837, N1).
 	if owed != nil {
-		if err := settleOwedRead(ctx, in.pool, repoFull, number, *owed); err != nil {
+		settling, cancel := owedTableBound(ctx)
+		err := settleOwedRead(settling, in.pool, repoFull, number, *owed)
+		cancel()
+		if err != nil {
 			logging.FromContext(ctx).Warn("dispatch delivery: delete the read owed before this read; the reconcile reads the pull request once more",
 				"repo", repoFull, "number", number, "error", err)
 		}
 	}
 	return read, nil
+}
+
+// writeHead is the intake's write of the head row GitHub answered (upsertHeadUnderCanonicalName),
+// bounded as the owe beside it is (owedTableBound). The write can wait on a lock of
+// pull_request_reads_owed: its trigger owes a read where two answers of one GitHub second differ,
+// or where the write replaces a newer row no read of GitHub wrote (pull_request_heads_older_read).
+// A write that moves the row to another issue also waits on the issue rows a write of an issue's
+// links holds (headIssueBefore). A write that waits past the bound is a head not stored, so
+// Intake.deliver owes the read, or hands the envelope back while that owe cannot be written
+// either, and the bus keeps the event until the database takes one; on the message's own deadline
+// it held a delivery, and one of the slots its repository shares, for that whole minute. The
+// reconcile's and a result's writes of a head hold no slot of the intake and keep their callers'
+// deadlines.
+func (in *Intake) writeHead(ctx context.Context, head PullRequestHead, storedUnder string) error {
+	writing, cancel := owedTableBound(ctx)
+	defer cancel()
+	return upsertHeadUnderCanonicalName(writing, in.pool, in.events, head, storedUnder)
 }
 
 // oweRefusedRead records that repoFull's pull request number is owed a read of kind refusal
@@ -1352,7 +1577,7 @@ type headRead struct {
 // own updated_at on it is a later second than the event's, so GitHub gave it after the event's
 // change. An answer of the event's own second covers nothing: GitHub's updated_at is whole
 // seconds, and that answer may be one GitHub gave before the event's change. A row no read of
-// GitHub wrote covers nothing, whatever time it holds: a release before dispatch://INFRA-3992
+// GitHub wrote covers nothing, whatever time it holds: a release before this one
 // stored an envelope's updated_at, which a caller sets, and one an hour ahead would otherwise
 // spare the read of every later event of that pull request. Neither does a row with no
 // updated_at, a missing row, nor an event with no time.

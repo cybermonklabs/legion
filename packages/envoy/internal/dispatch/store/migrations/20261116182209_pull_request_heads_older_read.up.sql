@@ -1,8 +1,8 @@
 -- 20261116182209_pull_request_heads_older_read.up.sql
 --
--- A write whose facts no read of GitHub has the last word on leaves the pull request owed a read
--- (dispatch://INFRA-3992, R2: the head and the state of a pull request come from a read of GitHub;
--- R3: an older event does not replace a newer head).
+-- A write whose facts no read of GitHub has the last word on leaves the pull request owed a read:
+-- the head and the state of a pull request come from a read of GitHub, and an older event does
+-- not replace a newer head.
 --
 -- A write of GitHub's answer wins over a pull_request_heads row with no github_read_at, whatever
 -- the two times (delivery.upsertHeadRow, the guard's last arm), since a time no read of GitHub

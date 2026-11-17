@@ -1,8 +1,8 @@
 package delivery
 
-// No time value proves what a read of GitHub covers (dispatch://INFRA-3992, R3: "An older event
-// does not replace a newer head"; R4: "Dispatch keeps which pull request changed until a read
-// succeeds"). A read deletes an owed read only at the revision it read before it read GitHub, and
+// No time value proves what a read of GitHub covers: an older event does not replace a newer head,
+// and Dispatch keeps which pull request changed until a read succeeds. A read deletes an owed read
+// only at the revision it read before it read GitHub, and
 // an answer of the same GitHub second as the stored one covers no event and owes a read where its
 // facts differ. Each test below is one reviewer's reproduction of cybermonklabs/legion#4209 at
 // 57443e201d, under a name of its own, with its control.
@@ -360,7 +360,7 @@ func TestASnapshotThatLandsAfterANewerAnswerOfItsSecondIsReadAgain(t *testing.T)
 // An answer whose read of GitHub started before the stored row's read never replaces that row
 // where the two carry the same updated_at second: GitHub's updated_at is whole seconds, so the
 // order the answers arrive in cannot tell which is the newer, and a read that started later holds
-// the later state (R3 of dispatch://INFRA-3992: "An older event does not replace a newer head").
+// the later state: an older event does not replace a newer head.
 // The slow read is each of the three writers of a head row in turn: the intake, the reconcile's
 // refresh, and the read a result starts (ReadThroughCommitPulls). Its read takes GitHub's answer
 // at head A; GitHub then moves the pull request to head B in the same second, and the answer is

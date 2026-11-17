@@ -4,7 +4,7 @@
 // redelivery or a reconcile re-reading the same fact is a no-op, not a duplicate. A GitHub call
 // that fails here is logged and the message is still acked, because the reconcile that runs
 // every five minutes is the actual catch-up mechanism ("a missed event appears by the next
-// five-minute reconcile", LEGION-567). The one failure that mechanism does not cover by itself
+// five-minute reconcile"). The one failure that mechanism does not cover by itself
 // is a pull request's head row the envelope's read of GitHub could not write, since the passes
 // read the rows that exist: that delivery records the pull request as owed a read, which the
 // reconcile's next pass makes, and the envelope is acknowledged once that record is written; an
@@ -220,7 +220,7 @@ var errMalformedPayload = errors.New("malformed envelope payload")
 // since the repository a row is keyed by is its canonical name, which comes from repo_projects and
 // not from the envelope. GitHub has no such pull request and no delivery of the envelope can get
 // past it, so deliver acknowledges it at its first delivery and logs one line, and it owes no
-// read. Any caller of Envoy's /v1 publish route can send one (dispatch://INFRA-3911).
+// read. Any caller of Envoy's /v1 publish route can send one.
 var errNoPullRequestNamed = errors.New("the envelope names no pull request GitHub can have")
 
 // githubRepositoryName is the full name of a repository GitHub can have: an owner of 1 to 39
@@ -294,9 +294,8 @@ func decodePullRequestNamed(raw string) (repo string, number int, err error) {
 // upsert, for one, is transient: PostgreSQL raises one while a unique index of the table is built
 // or rebuilt concurrently (the page on INSERT, `ON CONFLICT`; review of cybermonklabs/legion#4209
 // at ef5112db43, B5). So every failure of the statement is the database not taking the record
-// now, and deliver hands the envelope back until it does, as R4 of dispatch://INFRA-3992 says:
-// "While Dispatch's database cannot take that record, the bus keeps the event, for as long as the
-// bus keeps events."
+// now, and deliver hands the envelope back until it does: while Dispatch's database cannot take
+// that record, the bus keeps the event, for as long as the bus keeps events.
 func recordRefused(err error) bool {
 	return errors.Is(err, errNoPullRequestNamed) || errors.Is(err, errMalformedPayload)
 }
@@ -430,7 +429,7 @@ func consumerGenerationMetadata() map[string]string {
 // The other message it may not acknowledge is one whose pull request's head row could not be
 // stored (ErrHeadNotStored, handlePullRequestEnvelope): the reconcile's passes over the stored
 // rows do not catch that up, because they read the rows that exist (ListStalePullRequestHeads),
-// and R1 and R2 of dispatch://INFRA-3992 make GitHub's answer the only source of a head. So that
+// and GitHub's answer is the only source of a head. So that
 // delivery records that the envelope's pull request is owed a read of GitHub
 // (owePullRequestRead), which the reconcile's next pass makes and makes again every pass until
 // GitHub answers (Reconcile.readOwedPullRequests). The record names the pull request and nothing
@@ -959,11 +958,14 @@ func mapJobConclusion(raw *string) *DeliveryJobConclusion {
 	}
 }
 
-// splitRepo splits "owner/repo" into its two segments.
+// splitRepo splits "owner/repo" into its two segments. Its error names repoFull to 140
+// characters, as the name rule's own refusal does (checkPullRequestKey): repoFull can be a stored
+// rename target of any length, which the reconcile reads again, and logs, every pass while it
+// stands.
 func splitRepo(repoFull string) (owner, repo string, err error) {
 	parts := strings.SplitN(repoFull, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("malformed repository %q: want owner/repo", repoFull)
+		return "", "", fmt.Errorf("malformed repository %.140q: want owner/repo", repoFull)
 	}
 	return parts[0], parts[1], nil
 }

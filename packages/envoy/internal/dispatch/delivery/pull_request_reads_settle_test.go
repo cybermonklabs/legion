@@ -32,8 +32,8 @@ func (s settleWaitTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data
 func (settleWaitTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // The read an older answer's own write owes outlives the intake's delete of the reads an earlier
-// delivery owed, however long that delete waits for its connection (R3 of dispatch://INFRA-3992:
-// "An older event does not replace a newer head"; the review of cybermonklabs/legion#4209 at
+// delivery owed, however long that delete waits for its connection (an older event does not
+// replace a newer head; the review of cybermonklabs/legion#4209 at
 // 3e60f25910, D1). During a roll the release before stores GitHub's newer answer, closed, from an
 // envelope; this build's slower read lands GitHub's older answer, open, over it, and the trigger
 // pull_request_heads_older_read owes the pull request a read in that same write. The delete then

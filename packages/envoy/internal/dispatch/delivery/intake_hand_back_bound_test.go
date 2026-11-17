@@ -5,15 +5,17 @@ package delivery
 // only the envelope that is the one record of its change, and acknowledges every other it
 // handled: one whose read is owed (pull_request_reads_kept_test.go), and one no delivery can get
 // past (acceptance of cybermonklabs/legion#4209, round 3, defect 5). Any caller of Envoy's /v1
-// publish route can send an envelope (dispatch://INFRA-3911).
+// publish route can send an envelope.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // An envelope no delivery can get past is final at its first delivery: the intake acknowledges
@@ -166,8 +169,8 @@ func randomName(n int) string {
 // A GitHub answer that no head row can hold (errNoRowHolds, checkHeadRow) is a head not stored,
 // at the intake as at the reconcile: the intake owes the pull request a read and acknowledges the
 // envelope once that is written, and the reconcile keeps the read owed and reads it again every
-// pass, as R4 of dispatch://INFRA-3992 keeps every read that failed ("No age of a failure and no
-// count of tries ends that"). GitHub answers the pull request with a title that holds a NUL byte,
+// pass: no age of a failure and no count of tries ends a read that failed. GitHub answers the
+// pull request with a title that holds a NUL byte,
 // which no text column holds. At def907052c the intake acknowledged such an envelope with one
 // ERROR line and owed nothing, while the reconcile kept the same answer owed (review of
 // cybermonklabs/legion#4209 at def907052c, N1).
@@ -235,7 +238,7 @@ func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 // build before the settings route held it to the name rule stored, or direct SQL) is a head not
 // stored, owed a read under the name the envelope gave, since no canonical name can be formed for
 // it, and the reconcile reads it once an operator corrects the target: no path of the intake ends
-// an envelope with nothing owed while its head is not stored (R1 and R4 of dispatch://INFRA-3992).
+// an envelope with nothing owed while its head is not stored.
 // #4243 has no row; #4241 has one, stored under the old name before the target went bad, and its
 // event moves its head. While the target stands, a pass reads both and both stay owed; after the
 // correction, one pass writes both heads under the new name. At 3a21edb2c9 the intake acknowledged
@@ -394,15 +397,19 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 }
 
 // The owe of a read GitHub refused waits on a lock no longer than the statements beside it do
-// (owedReadWriteTimeout, which owePullRequestRead itself sets), so a lock of
-// pull_request_reads_owed holds a delivery, and one of the intakeMaxAckPending slots its repository
-// shares, for seconds and not for the message's whole deadline; the delivery then hands the
-// envelope back, and the hand-back line names GitHub's refusal and the record's failure. Another
-// session holds the table in ACCESS EXCLUSIVE mode, the intake runs on its own pool with no
-// lock_timeout, and the message's deadline is ten minutes, so a delivery whose owe waits on that
-// deadline writes no hand-back line in the minute the test waits. At 3a21edb2c9 the owe of the
-// refused read ran on the message's context and waited out a 60 s lock, where the other
-// statements fail after 5 s (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, its last note).
+// (owedTableBound), so a lock of pull_request_reads_owed holds a delivery, and one of the
+// intakeMaxAckPending slots its repository shares, for seconds and not for the message's whole
+// deadline; the delivery then hands the envelope back, and the hand-back line names GitHub's
+// refusal and the record's failure. Another session holds the table in ACCESS EXCLUSIVE mode, the
+// intake runs on its own pool with no lock_timeout, and the message's deadline is ten minutes, so
+// a delivery whose owe waits on that deadline writes no hand-back line in the minute the test
+// waits. The test times each owe's statement on the intake's pool: the refused read's owe
+// (reason refusal) must give up no later than the owe beside it, the failure deliver owes next,
+// and a margin for a loaded machine. At 3a21edb2c9 the owe of the refused read ran on the
+// message's context and waited out a 60 s lock, where the other statements fail after 5 s
+// (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, its last note); an owe of the refused
+// read bounded at 25 s beside one bounded at 5 s passed the test's earlier form, which measured
+// only the minute (the deep audit of ac562e9837, finding 1).
 func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *testing.T) {
 	fastPageRetries(t)
 	logs := captureLogs(t)
@@ -414,8 +421,9 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	fake := newFakeGitHub(t)
 	serveGitHubPulls(t, fake, "acme/widgets")
 	release := lockOwedReads(t, ctx, pool)
+	owes := &oweWaitTracer{}
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
 		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 	awaitBoundDurable(t, natsClient)
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
@@ -435,6 +443,7 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 		return fmt.Sprintf("no hand-back line in the minute after the event of #%d, while pull_request_reads_owed is locked: the owe of GitHub's refusal waits on the message's deadline (%s)", number, intakeMessageTimeout)
 	})
 	took := time.Since(published)
+	refused, beside := owes.first(owedRefusal), owes.first(owedFailure)
 	release()
 	awaitAcknowledged(t, natsClient)
 	var reason string
@@ -443,7 +452,16 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	}
 	cause, _ := line["error"].(string)
 	record, _ := line["record_error"].(string)
-	t.Logf("hand_back_after=%s owed=%q error=%q record_error=%q", took.Round(time.Millisecond), reason, cause, record)
+	t.Logf("hand_back_after=%s refused_owe_waited=%s owe_beside_waited=%s owed=%q error=%q record_error=%q",
+		took.Round(time.Millisecond), refused.Round(time.Millisecond), beside.Round(time.Millisecond), reason, cause, record)
+	const margin = 3 * time.Second
+	if refused == 0 || beside == 0 {
+		t.Fatalf("the refused read's owe waited %s and the owe beside it %s, want both timed: the case did not happen", refused, beside)
+	}
+	if refused > beside+margin {
+		t.Errorf("the owe of GitHub's refusal waited %s on the lock, want no longer than the owe beside it (%s) and %s",
+			refused.Round(time.Millisecond), beside.Round(time.Millisecond), margin)
+	}
 	if !strings.Contains(cause, "status 404") || !strings.Contains(cause, "is owed") || !strings.Contains(record, "is owed") {
 		t.Errorf("the hand-back line's error %q and record_error %q, want GitHub's refusal (status 404) and the record's failure", cause, record)
 	}
@@ -452,9 +470,59 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	}
 }
 
+// oweWaitTracer times each owe of a read on the pool it traces: the statement of
+// owePullRequestRead that writes pull_request_reads_owed, from the moment pgx sends it to its
+// answer, by the reason it owes.
+type oweWaitTracer struct {
+	mu    sync.Mutex
+	waits []oweWait
+}
+
+type oweWait struct {
+	reason string
+	took   time.Duration
+}
+
+// oweStart is one owe's statement as pgx sent it: its reason and the moment it was sent.
+type oweStart struct {
+	reason string
+	at     time.Time
+}
+
+type oweStartKey struct{}
+
+func (o *oweWaitTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "insert into pull_request_reads_owed") && len(data.Args) == 3 {
+		return context.WithValue(ctx, oweStartKey{}, oweStart{reason: fmt.Sprint(data.Args[2]), at: time.Now()})
+	}
+	return ctx
+}
+
+func (o *oweWaitTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	started, ok := ctx.Value(oweStartKey{}).(oweStart)
+	if !ok {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.waits = append(o.waits, oweWait{reason: started.reason, took: time.Since(started.at)})
+}
+
+// first is how long the first owe of reason waited, 0 where none was made.
+func (o *oweWaitTracer) first(reason owedReason) time.Duration {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, wait := range o.waits {
+		if wait.reason == string(reason) {
+			return wait.took
+		}
+	}
+	return 0
+}
+
 // No failure of the owed record ends an envelope once the envelope's name is checked
-// (pullRequestNamed): R4 of dispatch://INFRA-3992, "While Dispatch's database cannot take that
-// record, the bus keeps the event, for as long as the bus keeps events." The values of the record
+// (pullRequestNamed): while Dispatch's database cannot take that record, the bus keeps the event,
+// for as long as the bus keeps events. The values of the record
 // are the repository and the number alone, which that check holds to what the table takes
 // (TestEachValueTheNameCheckTakesIsARowTheTablesTake), so a failure of its insert says nothing of
 // them, whatever its SQLSTATE. A unique violation (23505) of the upsert, for one, is transient:

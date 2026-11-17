@@ -1,8 +1,8 @@
 package delivery
 
 // A pull request whose read of GitHub has not yet answered for a change Dispatch knows of is held
-// in pull_request_reads_owed until a read of GitHub answers for it (dispatch://INFRA-3992, R1 to
-// R4). R2 makes GitHub's answer the only source of a head, so an event whose read of GitHub failed
+// in pull_request_reads_owed until a read of GitHub answers for it. GitHub's answer is the only
+// source of a head, so an event whose read of GitHub failed
 // would otherwise leave its pull request with no head for good: the reconcile reads only rows
 // that exist, a merged or closed row is never read again, and the read-through runs only for a
 // result's commit. The row holds which pull request changed, why its read is owed, how often the
@@ -24,10 +24,12 @@ package delivery
 // row a read of GitHub wrote. An insert of the release before, and its update of a row no read
 // marked, owe nothing: the reconcile's open arm reads such an open row, its merged arm a merged
 // one once, and a closed one stays closed, which is no basis. An envelope leaves the intake with
-// no record of its pull request only where it, or its repository's canonical name, names no pull
-// request GitHub can have (Intake.deliver), which is checked where each row is built, before any
-// statement; a GitHub answer that holds a value no head row holds is a head not stored, and owed
-// (errNoRowHolds). Every failure of a statement of the record is the database not taking it now,
+// no record of its pull request only where it names no pull request GitHub can have
+// (Intake.deliver), which is checked before anything is read or written (pullRequestNamed). Where
+// its repository's canonical name is no name GitHub can have, the read is owed under the name the
+// envelope gave (owePullRequestRead); a GitHub answer that holds a value no head row holds is a
+// head not stored, and owed (errNoRowHolds). Every failure of a statement of the record is the
+// database not taking it now,
 // so the envelope is handed back, and stays with NATS for as long as the stream keeps it, 72
 // hours, as one a stop hands back and one a lapsed hold leaves outstanding for the next holder do.
 //
@@ -53,7 +55,7 @@ package delivery
 //
 // The two budgets are what keep a forged envelope from costing a real one its head. Any bearer of
 // Envoy's /v1 publish route can name a pull request GitHub never had, and each such envelope owes
-// a refusal (dispatch://INFRA-3911 owns forged envelopes). Outside a GitHub outage, refusals take
+// a refusal. Outside a GitHub outage, refusals take
 // no read from a failure. During an outage, a pass reads up to RefusedReadsPerPass refusals and
 // each read fails, so each such row becomes a failure with fewer reads than the real failure and
 // goes before it: after the outage, each PullRequestHeadBatch of such rows can delay the real head
@@ -111,14 +113,24 @@ const (
 // and is read at most once a pass, the fewest reads first.
 const RefusedReadsPerPass = 50
 
-// owedReadWriteTimeout bounds each owe of a read (owePullRequestRead sets it, so every caller has
-// it): the intake's at each delivery whose head write failed (Intake.oweEnvelopesRead), which runs
-// on a context of its own, since the message's own deadline may be the very failure of that
-// delivery, and the intake's owe of a read GitHub refused (Intake.oweRefusedRead), which runs on
-// the message's context and so waited out a lock of pull_request_reads_owed up to that minute,
-// holding one of the intakeMaxAckPending slots its repository shares (acceptance of
-// cybermonklabs/legion#4209 at 3a21edb2c9).
+// owedReadWriteTimeout bounds each statement of the intake that can wait on a lock of
+// pull_request_reads_owed (owedTableBound), so a lock of that table, as a migration of it holds
+// one, holds a delivery, and one of the intakeMaxAckPending slots its repository shares, for
+// seconds and not for the message's whole deadline (acceptance of cybermonklabs/legion#4209 at
+// 3a21edb2c9; its review at ac562e9837, N1).
 const owedReadWriteTimeout = 5 * time.Second
+
+// owedTableBound is ctx bounded by owedReadWriteTimeout, for one statement of the intake that can
+// wait on a lock of pull_request_reads_owed: the owe of a read (owePullRequestRead, whose two
+// statements share it), the settle of the read owed before a head read (Intake.recordPullRequestHead),
+// and the head write, whose trigger can owe a read (Intake.writeHead). The intake opens no
+// transaction those statements share, so the bound is one per statement and not one
+// `SET LOCAL lock_timeout`. The owe runs it on the handling context where the message's own
+// deadline may be the delivery's failure (Intake.oweEnvelopesRead), and on the message's context
+// where GitHub refused the read (Intake.oweRefusedRead).
+func owedTableBound(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, owedReadWriteTimeout)
+}
 
 // owedRevisionReadTimeout bounds the intake's read of the revision of a pull request's owed read
 // (owedRevision), which a healthy database answers in milliseconds. It is how long a head read
@@ -175,7 +187,7 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 // the table refuses, and a failure of a statement is the database's alone, which the intake hands
 // back (recordRefused). Its statements run within owedReadWriteTimeout of the call.
 func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason) error {
-	ctx, cancel := context.WithTimeout(ctx, owedReadWriteTimeout)
+	ctx, cancel := owedTableBound(ctx)
 	defer cancel()
 	if err := checkPullRequestKey(given, number); err != nil {
 		return fmt.Errorf("the read %.140q#%d is owed: %w", given, number, err)

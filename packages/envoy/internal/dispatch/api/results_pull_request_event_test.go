@@ -16,12 +16,12 @@ import (
 )
 
 // headAfterEventBound is how long after GitHub's `pull_request` event the results route may take
-// to compare a check with the head that event reports: v-head-no-settings of
-// dispatch://INFRA-3992 says "within 5 seconds of the event".
+// to compare a check with the head that event reports: v-head-no-settings says "within 5 seconds
+// of the event".
 const headAfterEventBound = 5 * time.Second
 
 // The pull request a `before_merge` check compares its results with is the one GitHub's own
-// event reports, in a deployment that holds no delivery settings (dispatch://INFRA-3992).
+// event reports, in a deployment that holds no delivery settings.
 //
 // The case is a pull request opened after its issue's results were recorded: not a draft, in the
 // issue's own repository, which is mapped to the issue's project but is not the project's

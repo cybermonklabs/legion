@@ -1,8 +1,8 @@
 -- 20261117114124_pull_request_heads_read_start.up.sql
 --
 -- Of two answers of GitHub for one pull request that carry the same updated_at second, the one
--- whose read of GitHub began later is kept (dispatch://INFRA-3992, R3: an older event does not
--- replace a newer head).
+-- whose read of GitHub began later is kept: an older event does not replace a newer head.
+-- 20261117172917 replaces this function with one that orders the reads by a sequence.
 --
 -- GitHub's updated_at is whole seconds, so it cannot order two answers of one second, and the
 -- upsert of a head row (delivery.upsertHeadRow) applies an answer of the stored second. So the

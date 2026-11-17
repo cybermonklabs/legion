@@ -230,7 +230,7 @@ func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 // The payload names the head -- its repository, its branch and its commit -- as
 // publishMergedPullRequests does in multiprocess_test.go, and the fake answers the same head, so
 // that handling it once settles the pull request's head row for good in either build: a build
-// before dispatch://INFRA-3992 writes the row from this envelope, and this tree from the fake's
+// before this change writes the row from this envelope, and this tree from the fake's
 // answer. A reconcile pass would still read some of these pull requests again, through the call
 // this row counts as a handling: this tree's merged arm offers every merged row an older rule
 // judged once (delivery.AttributionRuleVersion), which is every row the previous build writes. So

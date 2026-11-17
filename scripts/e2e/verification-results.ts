@@ -66,8 +66,8 @@ if (
 const origin = new URL(dispatchUrl).origin;
 
 /** How long after a pull request's event, measured from its publish, the results route may take
- *  to compare a check with the head that event reports: v-head-no-settings of
- *  dispatch://INFRA-3992 says "within 5 seconds of the event". The intake binds its durable at
+ *  to compare a check with the head that event reports: v-head-no-settings says "within 5
+ *  seconds of the event". The intake binds its durable at
  *  start, takes the envelope, reads the pull request from GitHub and writes its head row;
  *  nothing else is waited on, since every other answer is computed while the results are read. */
 const headAfterEventMs = 5_000;
