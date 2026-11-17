@@ -10,7 +10,9 @@ body: |-
   relaunch whose record names one is refused before anything starts, and a pod's session
   registration (`exchange_audience`) is made for no such name; a claim's own earlier session
   and a session no claim has recorded register as before. A session id or a session file's name
-  longer than 255 bytes is refused with `400`, and a registration that would take one claim past
+  longer than 255 bytes, and a session file that is not a clean path, are refused with `400`; a
+  claim an earlier daemon recorded under such a name takes nothing under it and is suspended at
+  boot. A registration that would take one claim past
   2,048 held names is refused with `409`: a claim that records a session still resumes it, and one
   that needs a new session starts none until an operator runs `legion claims release-names`, which
   the refusal's log line names: it frees the names of the claim's other sessions once the secrets
@@ -18,7 +20,8 @@ body: |-
   frees nothing while one does. At every boot the daemon holds, in one
   statement, each name a claim records that no row holds, as after a rollback to a release before
   this one, and logs at Error each claim whose current session records a name held for another
-  claim or for none, suspending each it can. For each such claim that is not the rightful holder,
+  claim, for none or by no row, suspending each it can; a suspension that fails is logged at Error
+  and the boot goes on. For each such claim that is not the rightful holder,
   an operator runs `legion claims forget-session` as its state allows, then resumes a suspended
   one, retries a failed one and leaves a retired one as it is, and for a name held for none records
   the rightful holder (`update claim_sessions set claim = '<token>' where project = '<project>' and

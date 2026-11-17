@@ -246,9 +246,10 @@ type Hold struct {
 // asks for a `projects` directory two levels up (claudelaunch.Transcript): it refuses more, never
 // less, and no Oh My Pi file is named for a bare uuid. An empty session or file names nothing, and
 // a session id or file name longer than claim.MaxSessionNameBytes names nothing either: a
-// registration of one is refused (checkSessionNames), and one a daemon from before the bound
-// recorded is left unheld rather than stopping the boot that would hold it. The claim_sessions
-// migration's backfill spells the same rule in SQL, and its test holds the two to one answer.
+// registration of one is refused (checkSessionNames), and holdRecorded refuses a claim whose
+// record an earlier daemon wrote with one (UnholdableNames), so nothing is held for it and nothing
+// takes it. The claim_sessions migration's backfill spells the same rule in SQL, and its test
+// holds the two to one answer.
 func RecordedHolds(session, sessionFile string) []Hold {
 	var holds []Hold
 	if session != "" && len(session) <= claim.MaxSessionNameBytes {
@@ -274,16 +275,43 @@ func RecordedHolds(session, sessionFile string) []Hold {
 }
 
 // checkSessionNames refuses a registration whose session id, or whose session file's base name, is
-// longer than claim.MaxSessionNameBytes (claim.SessionNameTooLong): such a name could not be held,
-// and no real session has one.
+// longer than claim.MaxSessionNameBytes (claim.SessionNameTooLong), or whose session file is not
+// the clean path it names (claim.SessionFileNotClean): such a name could not be held, or would hold
+// another name than the file's, and no real session has one.
 func checkSessionNames(session, sessionFile string) error {
 	if len(session) > claim.MaxSessionNameBytes {
 		return claim.SessionNameTooLong("session id", len(session))
+	}
+	if sessionFile != "" && filepath.Clean(sessionFile) != sessionFile {
+		return claim.SessionFileNotClean(sessionFile)
 	}
 	if base := filepath.Base(sessionFile); sessionFile != "" && len(base) > claim.MaxSessionNameBytes {
 		return claim.SessionNameTooLong("session file's name", len(base))
 	}
 	return nil
+}
+
+// UnholdableNames is every name of a claim's record of session and sessionFile that no hold can
+// cover: a session id or a file's base name longer than claim.MaxSessionNameBytes, and a file that
+// is not the clean path it names, whose base name is not the file's (checkSessionNames refuses all
+// three at registration, so only a daemon from before the hold recorded one). Each is treated as
+// held for no claim: holdRecorded refuses the claim that records it, and the daemon's boot names
+// it and suspends that claim (store.SessionConflicts).
+func UnholdableNames(session, sessionFile string) []Hold {
+	var names []Hold
+	if len(session) > claim.MaxSessionNameBytes {
+		names = append(names, Hold{Kind: HoldSessionID, Name: session})
+	}
+	if sessionFile == "" {
+		return names
+	}
+	if filepath.Clean(sessionFile) != sessionFile {
+		return append(names, Hold{Kind: HoldFileName, Name: sessionFile})
+	}
+	if base := filepath.Base(sessionFile); len(base) > claim.MaxSessionNameBytes {
+		names = append(names, Hold{Kind: HoldFileName, Name: base})
+	}
+	return names
 }
 
 // holdRecorded holds every name a claim's record gives its session (RecordedHolds) to the claim,
@@ -297,7 +325,9 @@ func checkSessionNames(session, sessionFile string) error {
 // keeps which claim recorded each first (Store.HoldSessions), all of one record's names or none.
 // Any other is refused with claim.SessionHeldRefusal, which names no other claim; the log names
 // the holder. A name held for no claim (two claims recorded it before the hold) is refused to
-// every claim.
+// every claim, and so is a name no row can hold (UnholdableNames, claim.SessionNameUnheldRefusal),
+// which only a daemon from before the hold recorded: skipped, it would be enrolled and resumed
+// with no hold at all (review round 11 of #4220).
 //
 // A name of the current session the store answered as this claim's is kept and not asked again
 // while the claim records that session: the enrollment that follows a registration asks nothing
@@ -312,6 +342,15 @@ func checkSessionNames(session, sessionFile string) error {
 // errHoldUnanswered, which a launch tries again at the probe interval charging nothing
 // (launchNow), and any other decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
+	if unheld := UnholdableNames(session, sessionFile); len(unheld) > 0 {
+		what := "session id"
+		if unheld[0].Kind == HoldFileName {
+			what = "session file"
+		}
+		m.log.Warn("supervise: refused a session whose name this daemon cannot hold",
+			"kind", unheld[0].Kind, "name", unheld[0].Name, "bytes", len(unheld[0].Name), "claim", m.claim.Token, "holder", "none")
+		return fmt.Errorf("%s as %s of %d bytes: %w", m.claim.Token, what, len(unheld[0].Name), claim.SessionNameUnheldRefusal(what))
+	}
 	var ask []Hold
 	for _, h := range RecordedHolds(session, sessionFile) {
 		if !m.heldNames[h] {
@@ -339,8 +378,12 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 	}
 	for i, h := range ask {
 		if holders[i] != m.claim.Token {
+			holder := string(holders[i])
+			if holder == "" {
+				holder = "none"
+			}
 			m.log.Warn("supervise: refused a session another claim recorded first",
-				"kind", h.Kind, "name", h.Name, "claim", m.claim.Token, "holder", holders[i])
+				"kind", h.Kind, "name", h.Name, "claim", m.claim.Token, "holder", holder)
 			return fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))
 		}
 	}

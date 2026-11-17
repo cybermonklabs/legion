@@ -321,14 +321,27 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 				wantConflicts = append(wantConflicts, c)
 			}
 		}
-		slices.SortFunc(wantConflicts, func(a, b SessionConflict) int {
-			return cmp.Or(cmp.Compare(a.Hold.Kind, b.Hold.Kind), cmp.Compare(a.Hold.Name, b.Hold.Name))
-		})
 		if len(wantConflicts) != 4 {
 			t.Fatalf("the rows above give %d names held for none, want 4: %+v", len(wantConflicts), wantConflicts)
 		}
+		// A name no row can hold, which a daemon from before the bound recorded, is named too, for
+		// the claim whose current session records it (review round 11): 310's id and its file's name.
+		for _, row := range rows {
+			if row.project != "legion" {
+				continue
+			}
+			for _, h := range supervise.UnholdableNames(row.now.session, row.now.file) {
+				wantConflicts = append(wantConflicts, SessionConflict{Hold: h, Claims: []claim.Token{claim.Token(row.token)}, Unholdable: true})
+			}
+		}
+		slices.SortFunc(wantConflicts, func(a, b SessionConflict) int {
+			return cmp.Or(cmp.Compare(a.Hold.Kind, b.Hold.Kind), cmp.Compare(a.Hold.Name, b.Hold.Name))
+		})
+		if len(wantConflicts) != 6 {
+			t.Fatalf("the rows above give %d conflicts, want the 4 held for none and 310's 2 no row can hold: %+v", len(wantConflicts), wantConflicts)
+		}
 		sameConflicts := func(a, b SessionConflict) bool {
-			return a.Hold == b.Hold && a.Holder == b.Holder && slices.Equal(a.Claims, b.Claims) && slices.Equal(a.Abandoned, b.Abandoned)
+			return a.Hold == b.Hold && a.Holder == b.Holder && slices.Equal(a.Claims, b.Claims) && slices.Equal(a.Abandoned, b.Abandoned) && a.Unholdable == b.Unholdable
 		}
 		if !slices.EqualFunc(conflicts, wantConflicts, sameConflicts) {
 			t.Errorf("the session conflicts read %+v, want %+v", conflicts, wantConflicts)
@@ -367,7 +380,7 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 		}
 		took := SessionConflict{Hold: sessionHold("ses_own"), Holder: "legion-LEGION-301-implementer", Claims: []claim.Token{"legion-LEGION-306-implementer"}}
 		if !slices.ContainsFunc(conflicts, func(c SessionConflict) bool { return sameConflicts(c, took) }) || len(conflicts) != len(wantConflicts)+1 {
-			t.Errorf("the session conflicts read %+v, want the four held for none and %+v", conflicts, took)
+			t.Errorf("the session conflicts read %+v, want the six above and %+v", conflicts, took)
 		}
 	})
 }
@@ -777,7 +790,7 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 	// choice is not asserted, since it follows the table's statistics; the plan is logged.
 	var kinds, recordedNamesOf []string
 	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
-		current, abandoned, err := recordedNames(ctx, tx, "legion")
+		current, abandoned, _, err := recordedNames(ctx, tx, "legion")
 		for _, h := range sortedHolds(current, abandoned) {
 			kinds, recordedNamesOf = append(kinds, string(h.Kind)), append(recordedNamesOf, h.Name)
 		}

@@ -750,19 +750,25 @@ func TestAForgottenSessionIsAskedOfTheStoreAgain(t *testing.T) {
 
 // A session id, and a session file's base name, are at most claim.MaxSessionNameBytes: past it a
 // name could not be held, since a btree row of claim_sessions' primary key holds at most 2,704
-// bytes and one such name would stop the boot that holds it (review N3 of #4220). A registration of
-// one is refused 400, recording and enrolling nothing; one at the bound registers.
+// bytes and one such name would stop the boot that holds it (review N3 of #4220). And a session
+// file is a clean path: one ending in `/.` or `/..` has a base name, `.` or `..`, that is not its
+// file's, so the file-name hold would hold the wrong name (review round 11). A registration of
+// either is refused 400, recording and enrolling nothing; one at the bound registers.
 //
-// The control (the pull request records the run): no check at registration admits both, since the
-// hold skips a name past the bound rather than refusing it.
+// The controls (the pull request records each run): no length check at registration admits the
+// first two rows, since the hold skips a name past the bound rather than refusing it; no clean-path
+// check admits the last two.
 func TestASessionNamePastTheBoundIsRefused(t *testing.T) {
 	long := strings.Repeat("s", claim.MaxSessionNameBytes+1)
+	const dotdot, dot = "/state/sessions/2026-11-16T00-00-00-000Z_ses_mine.jsonl/..", "/state/sessions/2026-11-16T00-00-00-000Z_ses_mine.jsonl/."
 	for _, tc := range []struct {
 		name, session, file string
 		want                claim.Refusal
 	}{
 		{"a session id past the bound", long, sessionFile, claim.SessionNameTooLong("session id", len(long))},
 		{"a session file's name past the bound", session, "/state/sessions/" + long, claim.SessionNameTooLong("session file's name", len(long))},
+		{"a session file ending in /..", session, dotdot, claim.SessionFileNotClean(dotdot)},
+		{"a session file ending in /.", session, dot, claim.SessionFileNotClean(dot)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -795,4 +801,67 @@ func TestASessionNamePastTheBoundIsRefused(t *testing.T) {
 			t.Fatalf("the claim records %q, want the session at the bound", c.Session)
 		}
 	})
+}
+
+// A claim a daemon from before the hold recorded under a name no row can hold — a session id past
+// claim.MaxSessionNameBytes, or a session file that is not a clean path — takes nothing under it
+// (UnholdableNames): its re-adopted process is not enrolled, and its relaunch is refused before
+// anything starts, with claim.SessionNameUnheldRefusal, and fails at its launch budget. Skipped
+// rather than refused, as before review round 11 of #4220, two such claims recording one name
+// were both enrolled and resumed with no hold at all.
+//
+// The control (the pull request records the run): holdRecorded without its UnholdableNames check
+// enrolls the re-adopted process and resumes both relaunches.
+func TestARecordedNameNoHoldCoversIsTakenByNoClaim(t *testing.T) {
+	long := strings.Repeat("s", claim.MaxSessionNameBytes+45)
+	const unclean = "/state/sessions/2026-11-16T00-00-00-000Z_ses_mine.jsonl/.."
+	// record writes the claim's row as an earlier daemon left it, under session and file.
+	record := func(h *harness, session, file string) {
+		h.t.Helper()
+		stored := h.store.load(h.token)
+		stored.Session, stored.SessionFile = session, file
+		if err := h.store.PutClaim(h.ctx, stored); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+
+	t.Run("a re-adopted claim recording a session id past the bound", func(t *testing.T) {
+		h := newHarness(t)
+		broker := h.withSecrets()
+		h.reach(StateReady)
+		record(h, long, sessionFile)
+		h.restart()
+		h.helloWithIdentity()
+		if enrolled := broker.enrolled(); len(enrolled) != 0 {
+			t.Fatalf("enrollments %+v, want none: the re-adopted claim records a session id no row can hold", enrolled)
+		}
+	})
+
+	for _, tc := range []struct {
+		name, session, file, what string
+	}{
+		{"a relaunch of a claim recording a session id past the bound", long, sessionFile, "session id"},
+		{"a relaunch of a claim recording a session file that is not a clean path", session, unclean, "session file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+			record(h, tc.session, tc.file)
+			h.deps.Limits.LaunchFailures = 1
+			h.restart()
+			resumes := len(h.calls("Resume"))
+			err := h.handle(RequestResume{Claim: h.token})
+			var refusal claim.Refusal
+			if want := claim.SessionNameUnheldRefusal(tc.what); !errors.As(err, &refusal) || refusal != want {
+				t.Fatalf("resuming the claim = %v, want %v", err, want)
+			}
+			if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+				t.Fatalf("the runtime was asked to resume a session no row holds: %+v", calls)
+			}
+			if c := h.claim(); c.State != StateFailed {
+				t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under a name no row holds", c.State)
+			}
+		})
+	}
 }

@@ -606,11 +606,15 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // did. Only the rows move.
 //
 // Because a grant follows a name under one principal, the name has to belong to one principal,
-// and before anything is adopted the enrollment binds its session name to that principal
-// (bindSessionName): a name no principal holds becomes this one's, and a name another principal
-// holds is ErrSessionHeld, the whole enrollment refused and nothing written. An enrollment that
-// names no session, and one whose caller proved no principal, bind nothing and are refused
-// nothing.
+// and before anything is adopted the enrollment binds its session name to the principal it is
+// held under (bindSessionName, namePrincipal): the principal its grants follow for every kind but
+// a pod, whose name is bound to its account alone while its grants follow the pair of that account
+// and its login's (carryPrincipal), or nothing under a login that proved no account. So a pod of
+// another daemon that runs as the same account is admitted under the name, and adopts none of
+// what the session holds. A name no principal holds becomes this one's, and a name another
+// principal holds is ErrSessionHeld, the whole enrollment refused and nothing written. An
+// enrollment that names no session, and one with no principal to hold its name (namePrincipal),
+// bind nothing and are refused nothing.
 func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (Enrollment, error) {
 	if in.Slot != "" && (in.Kind != "pod" || !record.ValidSlot(in.Slot)) {
 		return Enrollment{}, ErrInvalidSlot

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -212,6 +213,106 @@ func TestAClaimWhoseIdIsHeldTwiceIsSuspendedAtBoot(t *testing.T) {
 	}
 	if holder, ok := heldFor(t, cfg.PostgresDSN, project, supervise.HoldSessionID, twice); !ok || holder != first {
 		t.Errorf("after both runs of the settle statement %q is held for %q, want %s, the claim the first run recorded", twice, holder, first)
+	}
+}
+
+// A claim a daemon from before the hold recorded under a name no row can hold — a session id past
+// claim.MaxSessionNameBytes, or a session file that is not a clean path — is named at boot and
+// suspended by the operator's suspend, as a claim whose name is held for no claim is, but with no
+// statement to settle it: no row can hold the name, so the claim is given a new session
+// (store.SessionConflict.Unholdable, review round 11 of #4220). A claim of the same boot holding
+// its own session is left as it was.
+//
+// The control (the pull request records the run): SessionConflicts without its unholdable names;
+// both claims are re-adopted live, and the test fails naming them.
+func TestABootSuspendsAClaimRecordingANameNoRowCanHold(t *testing.T) {
+	cfg := testConfig(t)
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := projectTokens(t, project)
+	longID, unclean, own := token("LEGION-921", claim.RoleImplementer), token("LEGION-922", claim.RoleImplementer), token("LEGION-923", claim.RoleImplementer)
+	long := strings.Repeat("s", claim.MaxSessionNameBytes+45)
+	const uncleanFile = "/sessions/2026-11-16T00-00-00-000Z_ses_922.jsonl/.."
+	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
+		{longID, "LEGION-921", long, "/sessions/921.jsonl", supervise.StateIdle},
+		{unclean, "LEGION-922", "ses_922", uncleanFile, supervise.StateIdle},
+		{own, "LEGION-923", "ses_own", "/sessions/923.jsonl", supervise.StateIdle},
+	}, "")
+
+	rt := fake.NewRuntime()
+	logs := &syncBuffer{}
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
+
+	for _, tok := range []claim.Token{longID, unclean} {
+		if got := d.claim(tok); got.State != string(supervise.StateSuspended) || got.SuspendedBy != string(supervise.SuspendedByOperator) {
+			t.Errorf("%s, which records a name no row can hold, is %s suspended by %q after the boot; want it suspended by the operator's suspend",
+				tok, got.State, got.SuspendedBy)
+		}
+	}
+	if got := d.claim(own); got.State != string(supervise.StateIdle) {
+		t.Errorf("%s, which holds its own session, is %s after the boot, want it idle as it was", own, got.State)
+	}
+	lines := loggedLines(t, logs.String(), "a session name this daemon cannot hold")
+	named := map[string]bool{}
+	for _, line := range lines {
+		claims, _ := line["claims"].([]any)
+		if line["level"] != "ERROR" || line["holder"] != "none" || line["settle"] != nil || len(claims) != 1 {
+			t.Errorf("the boot logged %v, want an error naming one claim, held for none, with no statement to settle it", line)
+			continue
+		}
+		named[claims[0].(string)+" "+line["kind"].(string)] = true
+	}
+	if !named[string(longID)+" session"] || !named[string(unclean)+" file-name"] || len(named) != 2 {
+		t.Errorf("the boot named %v, want %s's session id and %s's session file", named, longID, unclean)
+	}
+}
+
+// A suspension that fails at boot for a reason no state explains — here a stop the runtime refuses
+// for every claim — is logged at Error naming the claim, and the boot goes on: the claim is left as
+// it was, its hold refuses every relaunch of it, and the daemon serves, so the operator's steps,
+// which need a serving daemon, can run (review round 11 of #4220). Nothing is launched for it.
+//
+// The control (the pull request records the run): the boot failing on that error, as before; the
+// daemon never answers, and the test fails at its start.
+func TestABootThatCannotStopAClaimStillServes(t *testing.T) {
+	cfg := testConfig(t)
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := projectTokens(t, project)
+	first, second := token("LEGION-931", claim.RoleImplementer), token("LEGION-932", claim.RoleImplementer)
+	const twice = "ses_twice_931"
+	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
+		{first, "LEGION-931", twice, "/sessions/931.jsonl", supervise.StateIdle},
+		{second, "LEGION-932", twice, "/sessions/932.jsonl", supervise.StateIdle},
+	}, `($1, 'session', $2, '')`, project, twice)
+
+	rt := fake.NewRuntime()
+	rt.FailSuspend(errors.New("the pod's container cannot be reached"))
+	logs := &syncBuffer{}
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
+
+	failed := map[string]bool{}
+	for _, line := range loggedLines(t, logs.String(), "does not hold failed; it is left as it is") {
+		if line["level"] == "ERROR" {
+			failed[line["claim"].(string)] = true
+		}
+	}
+	for _, tok := range []claim.Token{first, second} {
+		if !failed[string(tok)] {
+			t.Errorf("the boot logged no Error naming %s, whose stop the runtime refused", tok)
+		}
+		if got := d.claim(tok); got.State != string(supervise.StateIdle) {
+			t.Errorf("%s, whose stop the runtime refused, is %s after the boot, want it left idle as it was", tok, got.State)
+		}
+	}
+	for _, call := range rt.Calls() {
+		if call.Method == "Spawn" || call.Method == "Resume" {
+			t.Errorf("the boot launched %s (%s), whose session is held for no claim", call.Spec.Claim, call.Method)
+		}
 	}
 }
 

@@ -126,8 +126,10 @@ func TestAPodOfAnotherDaemonCannotAdoptASessionsGrants(t *testing.T) {
 // and its trade under S never refuse each other. A pod enrolled under a login that proved no
 // account carries nothing, and its name is held under its account all the same.
 //
-// The control: bind the pair in bindSessionName (in.carry for in.name); the trade is refused
-// ErrSessionHeld, and the test fails naming S (the pull request records the run).
+// The control: bind the pair in bindSessionName (in.carry for in.name). The name is then held by
+// the pair, or by no principal under the login that proved no account, and not by the pod's
+// account, so the test fails at the name's holder, naming S, before it reaches the trade (the pull
+// request records the run).
 func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
@@ -175,11 +177,17 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 // TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration: a session's pod rows written before
 // migration 0033, carrying the account alone, one dormant and one live and each holding a grant,
 // are rewritten by the migration to the pair its own daemon's enrolment spells, in SQL spelled as
-// exchange.PodLaunchPrincipal spells it; the next enrolment of the session by that daemon then
-// takes both grants.
+// exchange.PodLaunchPrincipal spells it. An older broker replica's adopt, which matches a pod's
+// predecessors on the account alone (carry_principal = 'account:' || subject), then finds none of
+// the session's rows: that is what the rewrite is for, since while the broker rolls it keeps an
+// older replica from handing those rows to another daemon's pod enrolled under the session's name.
+// The next enrolment of the session by its own daemon then takes both grants. That half is a
+// regression guard and no proof of the rewrite: a new replica's adopt also takes an account-alone
+// row whose login proved the enrolling login's account, so it passes without the rewrite.
 //
 // The control: skip the rewrite (run nothing for 0033); the rows keep the account alone, and the
-// test fails naming them (the pull request records the run).
+// test fails naming them and the count of them the older replica's match finds, while the
+// adoption half still passes (the pull request records the run).
 func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
@@ -209,6 +217,17 @@ func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 		if got := carryPrincipalOf(t, svc, id); got != want {
 			t.Errorf("row %s carries %q after the migration, want %q, the spelling its daemon's next enrolment writes", id, got, want)
 		}
+	}
+	// The match an older replica's adopt makes for a pod enrolling under the session, the account
+	// alone, finds none of the session's rows once they carry the pair.
+	var olderReplicaFinds int
+	if err := svc.Store.Pool.QueryRow(ctx, `select count(*) from enrollments
+		where kind = 'pod' and session_id = $1 and carry_principal = 'account:' || subject`, session).Scan(&olderReplicaFinds); err != nil {
+		t.Fatalf("count the session's rows an older replica's adopt matches: %v", err)
+	}
+	if olderReplicaFinds != 0 {
+		t.Errorf("an older replica's adopt, matching the account alone, finds %d of %s's rows after the migration, want none: while the broker rolls, it would hand them to another daemon's pod enrolled under %s",
+			olderReplicaFinds, session, session)
 	}
 
 	next := enrolPod(t, svc, issuer, key, cred, session, "pod-after")

@@ -662,6 +662,9 @@ A session name another principal holds is refused outright: the enrollment is re
 A token exchange under that name is refused the same way, on the same row, so the name stays its
 principal's for 90 days past the last lease or token under it
 (`packages/envoy/internal/broker/oauthstore/exchange.go`, `ErrSessionHeld` and `SessionRetention`).
+A pod's name is held under its service account alone, though, so a pod another daemon enrolled
+under the name, running as the same account, is not refused it: its grants follow another pair,
+so it is admitted under the name and takes none of what the session holds (`enroll.go`, `adopt`).
 A box whose key a person revoked trades nothing, so it enrols nothing: a launcher proof signed with a
 revoked credential does not authenticate, and an enrollment already under way finds the credential
 revoked and is refused `LAUNCHER_INVALID`.
@@ -703,7 +706,8 @@ session was approved for, with no approval of its own.
 Within one principal what stands between a caller and a secret is the sign-in on a box, or the
 account, and never the session name.
 Three things bound it.
-Another principal is refused the name outright.
+Another principal is refused the name outright, and a pod of another daemon, which shares the
+account the name is held under, is admitted under it and takes none of what the session holds.
 Every adoption is in the audit record, naming both enrollments.
 And a person's revoke ends the grant at once.
 

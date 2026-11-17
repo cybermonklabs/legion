@@ -137,12 +137,17 @@ func scanHold(row pgx.CollectableRow) (supervise.Hold, error) {
 // holding it: a name the table holds for no claim (Holder empty), or one it holds for another claim,
 // Holder. Claims is every claim not holding it whose current session records it, which the daemon
 // suspends at boot; Abandoned is every claim not holding it that records it only in the session it
-// last abandoned, which nothing resumes or enrolls, so the boot suspends none of them.
+// last abandoned, which nothing resumes or enrolls, so the boot suspends none of them. Unholdable
+// marks a name no row can hold (supervise.UnholdableNames: longer than claim.MaxSessionNameBytes,
+// or a session file that is not a clean path), which only a daemon from before the hold recorded:
+// Holder is empty, as for a name held for no claim, and Claims is every claim whose current session
+// records it.
 type SessionConflict struct {
-	Hold      supervise.Hold
-	Holder    claim.Token
-	Claims    []claim.Token
-	Abandoned []claim.Token
+	Hold       supervise.Hold
+	Holder     claim.Token
+	Claims     []claim.Token
+	Abandoned  []claim.Token
+	Unholdable bool
 }
 
 // recordedNames is every name a claim of project records (supervise.RecordedHolds), each with the
@@ -150,16 +155,19 @@ type SessionConflict struct {
 // abandoned the names only the session it last abandoned gives it. An abandoned session an
 // operator's release freed (supervise.AbandonedSession.Released) gives none: the release deleted
 // its holds once the secrets broker carried nothing of it, and the claim keeps the record only to
-// say where the session went, so another claim may take its names since.
-func recordedNames(ctx context.Context, q pgx.Tx, project string) (current, abandoned map[supervise.Hold][]claim.Token, err error) {
+// say where the session went, so another claim may take its names since. unholdable is every name
+// of a claim's current session no row can hold (supervise.UnholdableNames), with the claims
+// recording it; one only an abandoned session records is left out, since nothing resumes or
+// enrolls it.
+func recordedNames(ctx context.Context, q pgx.Tx, project string) (current, abandoned, unholdable map[supervise.Hold][]claim.Token, err error) {
 	rows, err := q.Query(ctx, `select token, session, session_file,
 			case when coalesce(abandoned_session ->> 'released', '') = '' then coalesce(abandoned_session ->> 'session', '') else '' end,
 			case when coalesce(abandoned_session ->> 'released', '') = '' then coalesce(abandoned_session ->> 'sessionFile', '') else '' end
 		from claims where project = $1 order by token collate "C"`, project)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	current, abandoned = map[supervise.Hold][]claim.Token{}, map[supervise.Hold][]claim.Token{}
+	current, abandoned, unholdable = map[supervise.Hold][]claim.Token{}, map[supervise.Hold][]claim.Token{}, map[supervise.Hold][]claim.Token{}
 	var token, session, file, abandonedSession, abandonedFile string
 	if _, err := pgx.ForEachRow(rows, []any{&token, &session, &file, &abandonedSession, &abandonedFile}, func() error {
 		seen := map[supervise.Hold]bool{}
@@ -175,11 +183,14 @@ func recordedNames(ctx context.Context, q pgx.Tx, project string) (current, aban
 				abandoned[h] = append(abandoned[h], claim.Token(token))
 			}
 		}
+		for _, h := range supervise.UnholdableNames(session, file) {
+			unholdable[h] = append(unholdable[h], claim.Token(token))
+		}
 		return nil
 	}); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return current, abandoned, nil
+	return current, abandoned, unholdable, nil
 }
 
 // sortedHolds is the names of every map in the one order every transaction that holds several
@@ -220,7 +231,7 @@ func sortedHolds(recorders ...map[supervise.Hold][]claim.Token) []supervise.Hold
 func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, error) {
 	held := 0
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		current, abandoned, err := recordedNames(ctx, tx, project)
+		current, abandoned, _, err := recordedNames(ctx, tx, project)
 		if err != nil {
 			return err
 		}
@@ -270,11 +281,12 @@ const conflictHoldersQuery = `select r.kind, r.name, h.claim
 
 // SessionConflicts is every name a claim of project records without holding it (SessionConflict),
 // in kind and then name order: one held for no claim, which the claim_sessions migration or
-// HoldRecordedSessions found recorded by several claims, and one held for another claim, which a
-// daemon from before the hold let a claim record. A name no row holds is not one, since
-// HoldRecordedSessions holds it first. The daemon logs each at boot and suspends the claims whose
-// current session records it, for an operator to settle by hand (the claim_sessions migration gives
-// the steps).
+// HoldRecordedSessions found recorded by several claims; one held for another claim, which a
+// daemon from before the hold let a claim record; and one no row can hold (Unholdable), which such
+// a daemon recorded past the bound or as a path that is not clean. A name no row holds and a row
+// could is not one, since HoldRecordedSessions holds it first. The daemon logs each at boot and
+// suspends the claims whose current session records it, for an operator to settle by hand (the
+// claim_sessions migration gives the steps).
 //
 // It is two reads whatever the project's size: the claims, and the holders of the names they
 // record, each looked up by key (conflictHoldersQuery). A claim may hold up to
@@ -284,7 +296,7 @@ const conflictHoldersQuery = `select r.kind, r.name, h.claim
 func (s *Store) SessionConflicts(ctx context.Context, project string) ([]SessionConflict, error) {
 	var conflicts []SessionConflict
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		current, abandoned, err := recordedNames(ctx, tx, project)
+		current, abandoned, unholdable, err := recordedNames(ctx, tx, project)
 		if err != nil {
 			return err
 		}
@@ -324,6 +336,12 @@ func (s *Store) SessionConflicts(ctx context.Context, project string) ([]Session
 				conflicts = append(conflicts, c)
 			}
 		}
+		for h, tokens := range unholdable {
+			conflicts = append(conflicts, SessionConflict{Hold: h, Claims: tokens, Unholdable: true})
+		}
+		slices.SortStableFunc(conflicts, func(a, b SessionConflict) int {
+			return cmp.Or(cmp.Compare(a.Hold.Kind, b.Hold.Kind), cmp.Compare(a.Hold.Name, b.Hold.Name))
+		})
 		return nil
 	})
 	if err != nil {

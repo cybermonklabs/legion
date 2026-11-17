@@ -37,17 +37,23 @@ import (
 // session (`legion claims forget-session`, then `legion claims resume`); and for a name held for no
 // claim, record the rightful holder with the line's statement and resume that claim. A name held
 // for another claim stays that claim's: the line gives no statement for it, since the holder's
-// machine keeps the answer it was given (holdRecorded) and moving the row would not move it.
+// machine keeps the answer it was given (holdRecorded) and moving the row would not move it. A
+// name no row can hold (store.SessionConflict.Unholdable: past claim.MaxSessionNameBytes, or a
+// session file that is not a clean path) gets no statement either: every claim recording it is
+// suspended, and each is given a new session.
 //
 // A claim whose state the transition table refuses a suspension (today queued, launch_uncertain,
 // failed and retired) is named and left as it is: a retired claim launches nothing, and a queued,
 // uncertain or failed one that launches again is refused each time and fails at its launch budget.
 // The table decides (a *supervise.RefusedError), so a state it later lets a suspension reach is
-// suspended here with no change to this list. A store that refuses a read,
-// a write or a suspension refuses the boot, naming what failed, as the controller's boot stop does
-// (stopLaunchedController): the claims it names would otherwise be relaunched into that refusal. So
-// does a stop the runtime refuses, and a run of stops past the boot's budget: the suspensions run
-// one after another on that budget. A suspension the claim holds for later is no failure: a
+// suspended here with no change to this list. A suspension that fails for any other reason — a
+// stop the runtime refuses, a write the store refuses — is logged at Error naming the claim, and
+// the boot goes on: the claim is left as it was, every relaunch, resume and enrollment of it is
+// refused by its hold before anything starts (holdRecorded), the next boot asks again, and the
+// operator's steps above need a daemon that serves (review round 11 of #4220). A boot whose budget
+// runs out on the suspensions still fails, since every later step would too. A store that refuses
+// the conflicts' read refuses the boot, naming what failed, as the controller's boot stop does
+// (stopLaunchedController). A suspension the claim holds for later is no failure: a
 // working claim's is held for its turn and stops the process at the operator's stop timeout
 // (holdSuspension), and a launching claim's is held until its agent is ready, which an agent
 // refused its registration never is, so its registration deadline suspends it
@@ -91,16 +97,22 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 		if len(c.Abandoned) > 0 {
 			line = append(line, "abandoned", c.Abandoned)
 		}
-		if c.Holder == "" {
-			claims := make([]string, len(c.Claims))
-			for i, token := range c.Claims {
-				claims[i] = supervise.SQLLiteral(string(token))
+		switch {
+		case c.Unholdable:
+			s.log.Error("supervise: a session name this daemon cannot hold, past the bound or not a clean path, is recorded by claims; each of them this daemon supervises is suspended until an operator gives it a new session",
+				append(line, "bytes", len(c.Hold.Name))...)
+		default:
+			if c.Holder == "" {
+				claims := make([]string, len(c.Claims))
+				for i, token := range c.Claims {
+					claims[i] = supervise.SQLLiteral(string(token))
+				}
+				line = append(line, "settle", "update claim_sessions set claim = '<token>' where project = "+supervise.SQLLiteral(s.plan.project)+
+					" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''"+
+					" and '<token>' in ("+strings.Join(claims, ", ")+")")
 			}
-			line = append(line, "settle", "update claim_sessions set claim = '<token>' where project = "+supervise.SQLLiteral(s.plan.project)+
-				" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''"+
-				" and '<token>' in ("+strings.Join(claims, ", ")+")")
+			s.log.Error("supervise: a session name is recorded by claims that do not hold it; each of them this daemon supervises is suspended until an operator gives it a new session, or records it as the rightful holder of a name held for none, and resumes it", line...)
 		}
-		s.log.Error("supervise: a session name is recorded by claims that do not hold it; each of them this daemon supervises is suspended until an operator gives it a new session, or records it as the rightful holder of a name held for none, and resumes it", line...)
 		for _, token := range c.Claims {
 			m, ok := s.supervisor.Machine(token)
 			if !ok || suspended[token] {
@@ -112,14 +124,18 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			})
 			var refused *supervise.RefusedError
 			switch {
+			case err == nil:
 			case errors.As(err, &refused):
 				s.log.Warn("supervise: the suspension of a claim recording a session name it does not hold was refused; it is left as it is",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "state", refused.State, "reason", refused.Reason, "error", err)
 			case errors.Is(err, supervise.ErrSuspendHeld):
 				s.log.Warn("supervise: the suspension of a claim recording a session name it does not hold waits for its turn or its launch",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name)
-			case err != nil:
+			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
+			default:
+				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, its hold refuses every relaunch, resume and enrollment of it, and the next boot asks again",
+					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "error", err)
 			}
 		}
 	}
