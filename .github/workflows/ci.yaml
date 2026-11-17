@@ -3241,9 +3241,11 @@ jobs:
               - *listener_command
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
               - 'packages/envoy/internal/testnats/cmd/fixturebuckets/*'
-              # fixturebuckets provisions through internal/bus/bustest, which connects with testnats.
+              # fixturebuckets provisions through internal/bus/bustest, which connects with testnats,
+              # and testnats reserves its ports through internal/testport.
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testport/*'
               # The job reads no Markdown file: the listener, the renderer and the contracts
               # between them are its whole input, so a guide written under one of the directory
               # patterns above would start it for nothing.
