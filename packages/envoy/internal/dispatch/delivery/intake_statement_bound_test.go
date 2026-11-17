@@ -243,18 +243,21 @@ func TestTheReadsPlaceAtTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			release := holdOwedReads(t, ctx, pool, hold.statement)
 			done := deliver()
 			var took time.Duration
-			var readsDuringHold int32
+			ranOut := false
 			select {
 			case took = <-done:
-				readsDuringHold = github.reads.Load()
 			case <-time.After(time.Minute):
-				readsDuringHold = github.reads.Load()
-				release()
-				took = ended(done)
+				ranOut = true
 				t.Errorf("the delivery of #%d did not end in a minute while another session held %q, want within the bounds of the read's place and the owe (%s each): the place waits on the message's deadline (%s)",
 					number, hold.statement, owedReadWriteTimeout, intakeMessageTimeout)
 			}
+			// Counted before the hold ends: a delivery still under the hold has made every read of
+			// GitHub it makes under it, and one that ends after the hold could make another.
+			readsDuringHold := github.reads.Load()
 			release()
+			if ranOut {
+				took = ended(done)
+			}
 			waited := places.first()
 			var cause string
 			for _, record := range logs() {
