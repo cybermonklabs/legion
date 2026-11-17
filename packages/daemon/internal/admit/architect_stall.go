@@ -422,7 +422,7 @@ func tookNothingSince(held record.RoleClaim, queued time.Time) (time.Time, bool)
 		return queued, true
 	case held.Pending.Interrupted:
 		return time.Time{}, false
-	case held.State == supervise.StateSuspended || held.State == supervise.StateFailed || held.State == supervise.StateRetired:
+	case supervise.IsGone(held.State):
 		return queued, true
 	}
 	return time.Time{}, false

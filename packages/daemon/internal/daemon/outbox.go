@@ -2942,7 +2942,7 @@ func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, 
 		if held.LastReady.After(from) {
 			from = held.LastReady
 		}
-		comingUp := !supervise.SaidReady(held.State) && !slices.Contains(supervise.GoneStates(), held.State)
+		comingUp := !supervise.SaidReady(held.State) && !supervise.IsGone(held.State)
 		if comingUp && now.After(from) {
 			from = now
 		}

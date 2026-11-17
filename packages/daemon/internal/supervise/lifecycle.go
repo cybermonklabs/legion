@@ -212,7 +212,7 @@ func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State)
 
 // Gone is whether the claim is suspended, failed or retired (GoneStates): its process has been
 // let go, so a project's pause has nothing of it to stop.
-func (c Claim) Gone() bool { return slices.Contains(gone, c.State) }
+func (c Claim) Gone() bool { return IsGone(c.State) }
 
 // Retree re-points a claim to tree, the tree its issue belongs to now: a child of a closed tree
 // re-admitted as a root of its own keeps its roles' claims, which still name the tree it left. The
