@@ -4912,11 +4912,6 @@ Each item below names an endpoint and its method, then its contract, and an item
   The row is what renews a claim the copy lost, since a grant writes the role's lane topic into its holder's row beside the claim, and the copy is what renews a claim the row does not name, such as one in a row this build could not decode, which the registration's write replaced;
   a role either names whose claim record gives it to another session or process, or to nobody, is left as the store holds it.
   While the copy cannot be served the row's roles are the set, and that is no failure.
-  A registration that states no instance renews the claims of its own session that name no process, leaving them naming none, adopts nothing, and notes that renewal on the claim (`renewed_without_process`, `store.RoleClaim.RenewedWithoutProcess`):
-  an absent instance names no process, so it can be neither a holder's heartbeat for a claim that names one nor the adopter of what another process holds.
-  That arm is what keeps the claim of a client that states no instance renewed while it runs, and the note is what ends the adoption: once the holder has renewed such a claim, a registration that states an instance may be a second process that resumed the session's id, and it leaves the claim as it stands.
-  A claim no registration has renewed so is adopted by the first registration of its session that states an instance, which is the one heartbeat in which such a claim is open to any process of its session: a claim that stood before claims named a process, at its holder's next heartbeat, and a session pod's claim of its launch role, which the pod's role claimer makes with no `client_instance_id` for the session the pod's agent registered, at that agent's next registration.
-  Whether the claim was renewed is read off that note and never off `renewed_at` against `claimed_at`, which a clock that does not move, and two listeners whose clocks differ, make equal or reversed.
   The topics only say which claims to read, and the claims say what is renewed:
   a release that hands one role back and may not free its claim marks the claim instead (`store.RoleClaim.HandedBack`, `POST /v1/interests/unsubscribe` below), no registration renews a marked claim, and the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval, about ten minutes with the shipped defaults.
   A registration carrying no topic list at all is no case of its own, a lane topic a hand-back left on the row renews nothing, and a claim its holder gave up is renewed by nobody, its own process included.
@@ -4926,6 +4921,13 @@ Each item below names an endpoint and its method, then its contract, and an item
   A lost compare-and-swap, a claim another session or process holds, a handed-back claim and a role with no claim record are no failure: the claim record said what stands.
   A refused renewal buys the session's claims nothing: the claim keeps the renewal it already carries, and the reaper weighs it exactly as it weighs any other.
   It costs one role-bucket read per role it weighs and one write per role the session holds, at every heartbeat.
+
+- A claim that names no process — one whose claimant stated no `client_instance_id` — is renewed and adopted by a rule of its own (`store.Registry.renewRoleClaim`).
+  A registration that states no instance renews the claims of its own session that name no process, leaving them naming none, adopts nothing, and notes that renewal on the claim (`renewed_without_process`, `store.RoleClaim.RenewedWithoutProcess`):
+  an absent instance names no process, so it can be neither a holder's heartbeat for a claim that names one nor the adopter of what another process holds.
+  That arm is what keeps the claim of a client that states no instance renewed while it runs, and the note is what ends the adoption: once the holder has renewed such a claim, a registration that states an instance may be a second process that resumed the session's id, and it leaves the claim as it stands.
+  A claim no registration has renewed so is adopted by the first registration of its session that states an instance, which is the one heartbeat in which such a claim is open to any process of its session: a claim that stood before claims named a process, at its holder's next heartbeat, and a session pod's claim of its launch role, which the pod's role claimer makes with no `client_instance_id` for the session the pod's agent registered, at that agent's next registration.
+  Whether the claim was renewed is read off that note and never off `renewed_at` against `claimed_at`, which a clock that does not move, and two listeners whose clocks differ, make equal or reversed.
 
 - The stored subscription records the `machine_id` and `dir` of the registration that last wrote it, and a registration through another listener moves both (`store.mergeForUpsert`;
   a field the request leaves empty keeps the stored value, so `/v1/roles/set`, which sends no directory, keeps the stored one).
@@ -4963,8 +4965,6 @@ Each item below names an endpoint and its method, then its contract, and an item
   A deregistration, which names no topic and deletes the whole record, and a release whose every named topic was kept both answer the empty list, and `removed` is never written as `null`.
   It carries `client_instance_id`, the process handing the interests back, and that is what decides the role claims it frees: the claims naming that same process and no others (`store.RoleReleaseAuthority`).
   A release that names no process frees no claim, and neither does any other process's instance than the one the claim names — an absent instance is no match on either side — while every topic it named that is not such a claim's lane is removed either way.
-  A claim that names no process at all — one whose claimant stated none, a client of an older build or a session pod's role claimer — is freed by no release this route makes, whatever process it states: an absent process matches nothing in a release, so the holder's own clean stop cannot be told from a second process's.
-  Its deregistration frees nothing, its hand-back marks it (below), and the role claim reaper frees it, a marked claim once its renewal has lapsed and an unmarked one once its session is gone.
   So a second process that resumed this session's id hands back a role it does not hold, and the process that holds it keeps it.
   This route never forces a release; `DELETE /v1/interests/<session_id>` is the only caller that does.
   A release that loses its conditional delete to a record written since is not answered as a success: the claim is read again, and one still naming that same session and that same process is its own holder's renewal, which moves nothing a release weighs, so the delete goes out again at the revision that renewal left, three deletes in all (`store.roleClaimReleaseAttempts`).
@@ -4978,6 +4978,9 @@ Each item below names an endpoint and its method, then its contract, and an item
   a failure there is logged, and the plugin drops a frame no followed topic matches.
 
 - An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
+
+- A claim that names no process at all — one whose claimant stated none, a client of an older build or a session pod's role claimer — is freed by no release `/v1/interests/unsubscribe` makes, whatever process it states: an absent process matches nothing in a release, so the holder's own clean stop cannot be told from a second process's.
+  Its deregistration frees nothing, its hand-back marks it (below), and the role claim reaper frees it, a marked claim once its renewal has lapsed and an unmarked one once its session is gone.
 
 - A hand-back is the one release that marks a claim it could not free (`store.RoleClaim.HandedBack`, `store.markRoleClaimHandedBack`):
   a release that states no process, does not force, and names a role's own lane topic, which is the shape a client built before a release named its process sends, and the shape pi-envoy still sends when it takes back the subjects it opened for a role that ended, and when it acts on a `subscription.removed` frame, either of which can name a role's lane.
