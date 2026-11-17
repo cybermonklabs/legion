@@ -5566,12 +5566,18 @@ Each sleeper read larger than the grower, so the guard, which then ended the lar
 The guard reads the sizes in the band so that it knows what grew when the reading reaches the mark: the fastest rise the tester measured, six growers at once at about 1.5 GiB a second, crosses the band of a 4 GiB limit, about 410 MiB, in about 267 ms, which is two readings or more at the default interval.
 At the first reading at or above the mark it chooses the process by the sizes it read in the band, and sends the kill before it lists a process:
 at that reading it reads `/proc/meminfo`, puts the processes the band found in its order, opens the first through a pidfd, reads that process's start time and kills it, and only then lists the processes and reads their sizes, which are the sizes as of the kill.
-Where one of the processes the band found grew over the window by the band's sizes, it reads no `smaps` before the kill.
-Where none of them grew, it first reads again the `smaps` of those processes, and of no other, and orders them by those reads:
+Where one of the processes the band found grew by the band's sizes, it reads no `smaps` before the kill.
+Where none of them grew, it first reads again the `smaps` of those that grew by 1 MiB or more between two of the readings in the band since the guard last read no size, or that the band read once, and of no other process:
 it lists no process, asks no rule of "What it protects, and why" and reads no descriptor there, and to each size read again it adds the memfds that process's descriptors held as the band's reading counted them.
+Each other process the band found, read twice or more there with no growth between, keeps the size the band read.
 The order there is taken at the time of the reading at the mark: a process's growth is its newest size, the band's last or the one read again, less its oldest size kept within 300 ms of the reading at the mark, so a rise older than that is no growth, and the floor below is read on those sizes.
+Where those 300 ms hold two sizes of no process the band found, while the 300 ms that end at the band's last reading hold two of at least one, each process's growth by the band's sizes is measured over those 300 ms that end at the band's last reading instead, since band readings throttled to about 200 ms apart leave one size in the window at the mark.
 It reads the `smaps` again where none grew because the step that takes the reading over the mark comes between the band's last reading and the reading at the mark, so no size the band read shows it:
 at `a55c6e50`, which decided on the band's sizes alone, INFRA-3531's `shared` probe, a process that grew in steps beside three sleeping forks of a shared block, had its first kill end a sleeping fork rather than the grower at 4 GiB and at 8 GiB (dispatch://INFRA-3531/comment/13452df7-caa9-462a-9d26-49614851a66b).
+A process the band read once may have started between the band's last two readings and be a grower the band has not yet seen grow, and a process the band read twice or more with no growth between is not read again, since its size read again changes no choice.
+The guard measures over the band's own last 300 ms, and reads only those processes again, because at `afb73f19`, which measured over the window at the mark alone and read every process the band found again, two first kills came 201 ms (a pod of 1 CPU) and 101.75 ms (8 GiB) after the reading at the mark, more than one interval:
+throttled band readings had left one size in that window, so no growth showed and the guard read every process again under the throttle (dispatch://INFRA-3531/artifact/plan-md@v22, Decision 9).
+A process started after the band's last reading has no size from the band, so this first kill cannot choose it; the readings after the kill rank it as any other.
 It chooses by the band's sizes because under gVisor, with six processes growing at once, the host throttles the whole pod's CPU, and a band reading that costs about 2 ms of work at times took 80 to 270 ms:
 INFRA-3531's tester measured 194 ms from the reading at the mark to the kill where that reading read every size again, and choosing by the band's sizes put the kill 1.3 to 71.8 ms after the reading in 9 of 9 runs (dispatch://INFRA-3531/comment/76e592d0-e3ea-4d22-96d1-b27738dd8e5a).
 So the first kill comes within one interval of the reading reaching the mark.
@@ -5685,7 +5691,7 @@ launcher: memory guard: kill failed pid=<pid> reason=<why>
 
 `started` comes once, with the first reading, and `settings` once for each change of the settings.
 `ended` comes once for each kill: `size` is the size the guard chose the process by, `counter` is the cgroup's counter at the kill and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
-For a first kill chosen by the band's sizes, `size` is the size the band's last reading read where one of the processes the band found grew, and otherwise its `smaps` read again at the mark plus the memfds its descriptors held at the band's reading.
+For a first kill chosen by the band's sizes, `size` is the size the band's last reading read, unless the reading at the mark read that process's `smaps` again: then it is that read plus the memfds its descriptors held as the band's reading counted them.
 `stopped for this rise` says where the reading's memory is: in the processes the guard may end, in the protected ones and in the ones it could not read, and `unheld` is the reading less those three.
 `endable` counts the processes the guard may end at the sizes it ranks them by, the memfds their descriptors hold included;
 `protected` and `unread` count their processes' smaps alone, since the line reads none of their descriptors.
@@ -5764,7 +5770,7 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
 - It does not stop a fill faster than its margin.
   Between the mark and the point where the kernel stops the sandbox, measured at 95.5% to 99.4% of the limit in the tester's result at `bebc420b` and as low as 95.4% in an earlier run (above), the guard must take a reading at or above the mark and end the process.
   A process that crosses that margin before the guard's kill is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
-  That time is one interval and the band reading's scan before the reading at the mark, with, where none of the processes the band found grew, the reads again of their `smaps`, and, where the band held no size, that reading's own scan before its kill.
+  That time is one interval and the band reading's scan before the reading at the mark, with, where none of the processes the band found grew, the `smaps` of those it reads again, and, where the band held no size, that reading's own scan before its kill.
   A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14 (the tester's at `8c24499c`), the longest gap between two readings was 1082 ms, where the longest gap of any growth run was 115.8 ms in the tester's result at `bebc420b` and 228.9 ms in the implementer's result at that head;
   the kill still came at 85.23% of the limit, below every kill point measured in those results (95.4% and above).
 
