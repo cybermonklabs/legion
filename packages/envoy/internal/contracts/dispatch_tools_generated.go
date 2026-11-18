@@ -466,6 +466,12 @@ var DispatchTools = []DispatchTool{
 		Example:     json.RawMessage("{}"),
 	},
 	{
+		Name:        "dispatch_attribution",
+		Description: "What the attribution of stored pull requests to issues still waits for, counted by this Dispatch server at the call. The server reads no GitHub for it and needs no delivery settings. It prints the pull requests that wait for their facts from GitHub: the head, branch, title, body and commit messages. It prints the pull requests that a reconcile pass still reads from GitHub, and how many of them GitHub refused. It prints the pull requests whose keys come from another key reading and wait to be read again. It prints the changes of attribution whose events wait. It names the key reading that runs now. It counts the links that more than one issue holds in other letter cases. After a deploy, run it after each reconcile pass until the counts on its first three lines are 0.",
+		Arguments:   []ToolField{},
+		Example:     json.RawMessage("{}"),
+	},
+	{
 		Name:        "dispatch_handoff_write",
 		Description: "Record this session's handoff for one phase of an issue: the body, one JSON object, is stored on the issue exactly as sent, under this session, and read back byte for byte. Each write is the next version (1, 2, ...) of that phase's handoff; earlier versions stay. Write the body to a file outside your workspace and pass it with --body-file (- reads stdin). A closed issue refuses it with 409 ISSUE_CLOSED, and a body over 262144 bytes with 413 CAP_EXCEEDED. Read it back with dispatch handoff-read. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
 		Arguments: []ToolField{

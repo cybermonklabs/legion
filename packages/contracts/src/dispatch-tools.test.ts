@@ -198,6 +198,7 @@ const validCalls = {
   dispatch_answers: {},
   dispatch_whoami: {},
   dispatch_limits: {},
+  dispatch_attribution: {},
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
   dispatch_inbox: {},
@@ -301,6 +302,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_answers",
       "dispatch_whoami",
       "dispatch_limits",
+      "dispatch_attribution",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
       "dispatch_inbox",
@@ -672,6 +674,16 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
     expect(specFor("dispatch_limits").description).toContain(
       "Dispatch refuses a text over a bound and names the block or the field it passed"
+    );
+  });
+
+  test("dispatch_attribution accepts no arguments and names what the attribution waits for", () => {
+    const schema = schemaFor("dispatch_attribution");
+
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(specFor("dispatch_attribution").description).toContain(
+      "the pull requests that wait for their facts from GitHub"
     );
   });
 
