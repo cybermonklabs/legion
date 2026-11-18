@@ -126,10 +126,12 @@ func TestACreateTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 	}
 }
 
-// A write of a key, and a watch of the bucket, that the grant refuses end at once with the
-// server's refusal, as every request the bus makes of a bucket does (refusedOn), rather than after
-// the write's own wait as a write nothing answered.
-func TestAKeyWriteAndAWatchTheGrantRefusesEndAtOnceNamingTheRefusal(t *testing.T) {
+// A watch of the bucket that the grant refuses ends at once with the server's refusal (refusedOn).
+// A read and a write of a key the grant refuses name the refusal too, after their own wait: they
+// are the calls the bus makes on every request it serves, so they read the record only when the
+// server left them unanswered (refusedAfterOn), and a call the server answers costs what it cost
+// before. At main each of them reported a bare timeout.
+func TestAKeyReadWriteAndWatchTheGrantRefusesNameTheRefusal(t *testing.T) {
 	const bucket = "envoy_denied_write"
 	stream := "KV_" + bucket
 	conn, js := grantedClient(t, accountInfoSubject(), openSubject(bucket), createSubject(bucket))
@@ -140,16 +142,18 @@ func TestAKeyWriteAndAWatchTheGrantRefusesEndAtOnceNamingTheRefusal(t *testing.T
 	for _, row := range []struct {
 		name    string
 		refused string
+		bound   time.Duration
 		call    func() error
 	}{
-		{"put", "$KV." + bucket + ".key", func() error { _, err := kv.Put("key", []byte("value")); return err }},
-		{"watch", jsAPI("CONSUMER.CREATE", stream), func() error {
+		{"watch", jsAPI("CONSUMER.CREATE", stream), refusalAnswerBound, func() error {
 			watcher, err := kv.WatchKeys(t.Context(), "key")
 			if err == nil {
 				_ = watcher.Stop()
 			}
 			return err
 		}},
+		{"put", "$KV." + bucket + ".key", RequestTimeout + refusalAnswerBound, func() error { _, err := kv.Put("key", []byte("value")); return err }},
+		{"get", jsAPI("DIRECT.GET", stream, "$KV."+bucket+".key"), RequestTimeout + refusalAnswerBound, func() error { _, err := kv.Get("key"); return err }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			started := time.Now()
@@ -161,10 +165,62 @@ func TestAKeyWriteAndAWatchTheGrantRefusesEndAtOnceNamingTheRefusal(t *testing.T
 			if want := `Permissions Violation for Publish to "` + row.refused; !strings.Contains(err.Error(), want) {
 				t.Fatalf("the refused %s = %v, want it to name %q", row.name, err, want)
 			}
-			if took > refusalAnswerBound {
-				t.Fatalf("the refused %s ended after %s, want within %s", row.name, took, refusalAnswerBound)
+			if took > row.bound {
+				t.Fatalf("the refused %s ended after %s, want within %s", row.name, took, row.bound)
 			}
 		})
+	}
+}
+
+// refusingGetLegacy is a legacy handle whose Get earns the server's refusal of subject, a request
+// the Get itself never sends, as a read by revision running beside it does when the grant does not
+// cover a direct get by sequence, and then draws no answer of its own, as a read the server lost
+// does. It waits for the server's report to reach the connection's record before it answers.
+type refusingGetLegacy struct {
+	nats.KeyValue
+	conn    *nats.Conn
+	subject string
+}
+
+func (l refusingGetLegacy) Get(key string) (nats.KeyValueEntry, error) {
+	if err := l.conn.Publish(l.subject, nil); err != nil {
+		return nil, err
+	}
+	if err := l.conn.Flush(); err != nil {
+		return nil, err
+	}
+	time.Sleep(200 * time.Millisecond)
+	return nil, nats.ErrTimeout
+}
+
+// A read of a key takes only the refusal of a subject it sends: when a Get draws no answer and the
+// record holds a refusal of the bare direct get of the bucket's stream, which only a read by
+// revision sends, the Get reports its own silence, and the refusal stays in the record for the
+// read that earned it. The grant is shaped as the listener's bucket grant is (infra/core
+// bucketPermissions), every direct get by subject, the leader get and the keys, without the bare
+// direct get.
+func TestARefusalOfASubjectAReadDoesNotSendAnswersItNothing(t *testing.T) {
+	const bucket = "envoy_denied_cross"
+	stream := "KV_" + bucket
+	bare := jsAPI("DIRECT.GET", stream)
+	conn, js := grantedClient(t, accountInfoSubject(), openSubject(bucket), createSubject(bucket),
+		"$KV."+bucket+".>", bare+".>", jsAPI("STREAM.MSG.GET", stream))
+	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create the bucket: %v", err)
+	}
+	owner := clientOwning(conn)
+	if owner == nil {
+		t.Fatal("no client owns the connection, so nothing records the server's refusals")
+	}
+	sentAt := time.Now()
+	refusing := NewKeyValue(refusingGetLegacy{KeyValue: kv.Legacy(), conn: conn, subject: bare}, kv.WatchHandle(), kv.Streams())
+	_, err = refusing.Get("key")
+	if errors.Is(err, ErrPublishDenied) || !errors.Is(err, nats.ErrTimeout) {
+		t.Fatalf("a Get that drew no answer beside a refusal of %s, which a Get never sends = %v, want its own nats.ErrTimeout", bare, err)
+	}
+	if denial := owner.deniedPublish(bare, sentAt); denial == nil {
+		t.Fatalf("the record holds no refusal of %s after the Get: the Get took it, or it was never recorded and this row holds nothing", bare)
 	}
 }
 

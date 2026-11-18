@@ -17,17 +17,20 @@ func jsAPI(kind string, names ...string) string {
 	return subject
 }
 
-// readsRefusals is js with every JetStream API request this package sends through it (the methods
-// below) sent through refusedSend, each under the subjects that request publishes to, so a request
-// the connection's grant refuses ends at once with the server's refusal (ErrPublishDenied) rather
-// than at the end of its own wait as a request nothing answered. It is the one path: the client's
-// own JetStream context is one (install, ensureConnWithContext), and EnsureKeyValue,
-// SetKeyValueMaxAge, OpenKeyValue, the stream's ensure and the stream's subject read take one over
-// the context their caller hands them. A context already wrapped is returned as it is. Every
-// other method is js's own; ConsumerNames is among them, since its list reports no error a
-// refusal could answer, and so are the asynchronous publishes, whose refusal the window reads off
-// the same record (window.acknowledged). On a connection no client owns, refusedSend sends as js
-// does.
+// readsRefusals is js with the JetStream API requests this package sends through it that the bus
+// makes once in a while (the methods below) sent through refusedBy, each under the subjects that
+// request publishes to, so a request the connection's grant refuses ends at once with the server's
+// refusal (ErrPublishDenied) rather than at the end of its own wait as a request nothing answered:
+// the requests of a start, a raise or a repair, and a health check's read of a consumer. It is the
+// one path for those: the client's own JetStream context is one (install, ensureConnWithContext),
+// and EnsureKeyValue, SetKeyValueMaxAge, OpenKeyValue, the stream's ensure and the stream's subject
+// read take one over the context their caller hands them. A context already wrapped is returned as
+// it is. Every other method is js's own: ConsumerNames, since its list reports no error a refusal
+// could answer; Publish and the asynchronous publishes, which the bus makes for every message it
+// stores and whose refusal they read off the same record themselves, after the publish
+// (sendStored) or as the refusal arrives (window.acknowledged); and GetLastMsg, a read of one key
+// that GetFromLeader reads the record for after the read (refusedAfter). On a connection no client
+// owns, every method sends as js does.
 func readsRefusals(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
 	if _, ok := js.(refusalReads); ok {
 		return js
@@ -98,20 +101,6 @@ func (r refusalReads) UpdateConsumer(stream string, cfg *nats.ConsumerConfig, op
 	}
 	return refusedVia(r, subjects, func() (*nats.ConsumerInfo, error) {
 		return r.JetStreamContext.UpdateConsumer(stream, cfg, opts...)
-	})
-}
-
-func (r refusalReads) GetLastMsg(stream, subject string, opts ...nats.JSOpt) (*nats.RawStreamMsg, error) {
-	return refusedVia(r, []string{jsAPI("STREAM.MSG.GET", stream)}, func() (*nats.RawStreamMsg, error) {
-		return r.JetStreamContext.GetLastMsg(stream, subject, opts...)
-	})
-}
-
-// Publish is a stored publish to subject, which the stream acknowledges and which the server
-// refuses by reporting the violation and acknowledging nothing (sendStored).
-func (r refusalReads) Publish(subject string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error) {
-	return refusedVia(r, []string{subject}, func() (*nats.PubAck, error) {
-		return r.JetStreamContext.Publish(subject, data, opts...)
 	})
 }
 

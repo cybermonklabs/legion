@@ -88,10 +88,12 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 	defer cancel()
 	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, c.Connection())
 	js := c.JS()
-	// Each step of the pass reads the stream again after an update it sent, sent again while the
-	// server leaves it unanswered (updateStream), until the client stops or the step's hang guard
-	// passes, the one a start's step takes (startHangGuard): the next pass, 30 s later, makes the
-	// step again either way.
+	// The read each step of the pass makes of the stream after an update that drew no answer is
+	// sent again while the server leaves it unanswered (updateStream), and those reads end when the
+	// client stops or the step's hang guard passes, the one a start's step takes (startHangGuard).
+	// The step's first read and its update are one send each under the JetStream context's own
+	// wait, which the connection's close at a stop ends too (awaitKeeper); the next pass, 30 s
+	// later, makes the step again either way.
 	step := func(run func(ctx context.Context) error) error {
 		ctx, cancel := hangGuard(ctx, startHangGuard)
 		defer cancel()

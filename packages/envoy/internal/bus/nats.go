@@ -293,12 +293,11 @@ type Client struct {
 	// record retention has spent and anything past publishDenialDepth are dropped when the next
 	// one is recorded, and a read takes the violation it answers with out.
 	deniedPublishes map[string][]publishViolation
-	// denialWatches are the sends waiting on an answer right now, each with the subjects it
-	// publishes to (watchPublishDenials): recordPublishDenial signals every watch of the subject it
-	// records, so a refused send is answered as the refusal arrives rather than at the end of its
-	// own wait. denialWatchMu guards it, apart from c.mu, since every request takes a watch.
-	denialWatchMu sync.Mutex
-	denialWatches []denialWatch
+	// refusal is the channel closed when the next refusal of a publish is recorded, which every send
+	// waiting on an answer selects on beside it (refusalSignal): recordPublishDenial closes it and
+	// puts a new one in its place, so a refused send is answered as the refusal arrives rather than
+	// at the end of its own wait. It is atomic, apart from c.mu, since a send takes it with one load.
+	refusal atomic.Pointer[chan struct{}]
 	// installing is the connection install ensures the stream on before it becomes Conn, whose
 	// refusals are recorded as Conn's are (recordPublishDenial); nil outside that ensure. c.mu
 	// guards it.
@@ -2011,10 +2010,7 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 // connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge,
 // ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path: its callers
 // (publishJetStreamOn, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
-// among the options, so the acknowledgement wait ends with that bound. The client's JetStream
-// context reads the server's refusal of the publish as it arrives (readsRefusals), so a denied
-// publish ends at the refusal and not at that bound; the record is read once more below for an
-// error that is not a wait running out.
+// among the options, so the acknowledgement wait ends with that bound.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (*nats.PubAck, error) {
 	sentAt := time.Now()
 	ack, err := c.JS().Publish(subject, data, options...)

@@ -60,8 +60,8 @@ type KeyValue struct {
 	// completion check -- race on it.
 	streams jetstream.JetStream
 	// owner is the client that owns the connection streams is on, found once when the handle is
-	// built (clientOwning), whose record of the server's refusals every call of the handle reads
-	// (refusedOn); nil on a connection no client owns.
+	// built (clientOwning), whose record of the server's refusals the handle's calls read
+	// (refusedOn, refusedAfterOn); nil on a connection no client owns.
 	owner *Client
 }
 
@@ -728,32 +728,42 @@ func NewKeyValue(kv nats.KeyValue, watch jetstream.KeyValue, streams jetstream.J
 	return KeyValue{legacy: kv, watch: watch, streams: streams, owner: owner}
 }
 
-// refusedOn is call, a request kv makes of its bucket's stream or a write of one of its keys,
-// read for the server's refusal of subjects as it arrives (refusedBy), in the record of the client
-// that owns kv's connection, found when kv was built. A handle on a connection no client owns
-// sends as call does.
+// refusedOn is call, a request kv makes once in a while of its bucket's stream (a watch's create,
+// a read of the stream), read for the server's refusal of subjects as it arrives (refusedBy), in
+// the record of the client that owns kv's connection, found when kv was built. A handle on a
+// connection no client owns sends as call does.
 func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T, error) {
 	return refusedBy(kv.owner, subjects, call)
 }
 
+// refusedAfterOn is call, a read or a write of one key, which the bus makes on every request it
+// serves, made on the caller's goroutine and read for the server's refusal of subjects only when
+// the server left it unanswered (refusedAfter): a call the server answers costs exactly what it
+// cost before, and a refused one names the refusal after its own wait, where it named only the
+// silence. Only the subjects the call sends are listed: a call takes the refusal of any subject it
+// lists, and one it does not send is another call's to answer.
+func refusedAfterOn[T any](kv KeyValue, subjects func() []string, call func() (T, error)) (T, error) {
+	return refusedAfter(kv.owner, subjects, call)
+}
+
 // keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.53.1
 // kv.go, the default KV prefix).
-func (kv KeyValue) keySubjects(key string) []string {
-	return []string{"$KV." + kv.Bucket() + "." + key}
+func (kv KeyValue) keySubjects(key string) func() []string {
+	return func() []string { return []string{"$KV." + kv.Bucket() + "." + key} }
 }
 
-// getSubjects are the requests a read of key's last value can send: a direct get of the key's
-// last message, on a bucket that allows direct gets, and a get from the stream's leader on one
-// that does not (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetLastBySubjectT). Only
-// the subjects the read sends are listed: a send takes the refusal of any subject it lists, and
-// one it does not send is another call's to answer.
-func (kv KeyValue) getSubjects(key string) []string {
-	stream := "KV_" + kv.Bucket()
-	return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key), jsAPI("STREAM.MSG.GET", stream)}
+// getSubjects are the requests a read of key's last value can send: a direct get of the key's last
+// message, on a bucket that allows direct gets, and a get from the stream's leader on one that
+// does not (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetLastBySubjectT).
+func (kv KeyValue) getSubjects(key string) func() []string {
+	return func() []string {
+		stream := "KV_" + kv.Bucket()
+		return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key), jsAPI("STREAM.MSG.GET", stream)}
+	}
 }
 
-// revisionSubjects are the requests a read of one revision can send: a direct get by sequence
-// and a get from the stream's leader (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetT).
+// revisionSubjects are the requests a read of one revision can send: a direct get by sequence and
+// a get from the stream's leader (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetT).
 func (kv KeyValue) revisionSubjects() []string {
 	stream := "KV_" + kv.Bucket()
 	return []string{jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
@@ -903,7 +913,7 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	if err := kv.check(key, getOverhead(kv.Bucket())); err != nil {
 		return nil, err
 	}
-	entry, err := refusedOn(kv, kv.getSubjects(key), func() (nats.KeyValueEntry, error) { return kv.legacy.Get(key) })
+	entry, err := refusedAfterOn(kv, kv.getSubjects(key), func() (nats.KeyValueEntry, error) { return kv.legacy.Get(key) })
 	return entry, invalidKey(key, err)
 }
 
@@ -951,7 +961,7 @@ func natsKeyValid(key string) bool {
 // GetRevision gets key by revision, which names the revision rather than the key in its subject, so
 // only nats.go's alphabet check refuses a key here.
 func (kv KeyValue) GetRevision(key string, revision uint64) (nats.KeyValueEntry, error) {
-	entry, err := refusedOn(kv, kv.revisionSubjects(), func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
+	entry, err := refusedAfterOn(kv, kv.revisionSubjects, func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
 	return entry, invalidKey(key, err)
 }
 
@@ -959,7 +969,7 @@ func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
+	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -967,7 +977,7 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
+	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -975,7 +985,7 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
+	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -983,7 +993,7 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
+	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
 	return revision, invalidKey(key, err)
 }
 
@@ -999,7 +1009,7 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	_, err := refusedOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
+	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
 	return invalidKey(key, err)
 }
 
@@ -1035,7 +1045,7 @@ func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	_, err := refusedOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
+	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
 	return invalidKey(key, err)
 }
 

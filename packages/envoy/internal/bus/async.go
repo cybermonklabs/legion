@@ -449,17 +449,17 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		timer := time.NewTimer(time.Until(deadline))
 		defer timer.Stop()
 		// The record answers the request as soon as the violation is recorded too
-		// (watchPublishDenials), so a refusal the flush could not name is not left to the timeout.
-		// The watch is taken before the record is first read, so a violation recorded between the
-		// two still wakes the wait.
-		watch := w.client.watchPublishDenials([]string{subject})
-		defer w.client.unwatchPublishDenials(watch)
+		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
+		// signal is taken before the record is first read, so a violation recorded between the two
+		// still wakes the wait, and taken again on each wake before the record is read.
+		signal := w.client.refusalSignal()
 		if denial := denied(); denial != nil {
 			return denial
 		}
 		for {
 			select {
-			case <-watch.signal:
+			case <-signal:
+				signal = w.client.refusalSignal()
 				if denial := denied(); denial != nil {
 					return denial
 				}
@@ -556,13 +556,13 @@ func (w *window) Probe(timeout time.Duration) error {
 //
 // A denied publish is acknowledged by nothing, so the violation the connection reported
 // (deniedPublish) is the only evidence of it, read under this send's own subject and its own send
-// time, and it answers the publish as soon as it is recorded (watchPublishDenials) rather than at
-// the end of the acknowledgement's own wait. The watch is taken before the record is first read,
-// so a violation recorded between the two still wakes the wait.
+// time, and it answers the publish as soon as it is recorded (refusalSignal) rather than at the end
+// of the acknowledgement's own wait. The signal is taken before the record is first read, so a
+// violation recorded between the two still wakes the wait, and taking it is one atomic load, so
+// a window's publish the stream acknowledges pays nothing for it.
 func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time) error {
-	watch := w.client.watchPublishDenials([]string{topic})
-	defer w.client.unwatchPublishDenials(watch)
 	for {
+		signal := w.client.refusalSignal()
 		// A window sends every destination of one event on one connection, so a grant that
 		// denies several of them has the server report a violation of each: the record answers
 		// each send with its own, where the connection's one last error held only the one that
@@ -584,7 +584,7 @@ func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt tim
 				return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
 			}
 			return streamFull(err)
-		case <-watch.signal:
+		case <-signal:
 		}
 	}
 }
