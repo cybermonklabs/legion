@@ -150,6 +150,46 @@ func TestAHeldHookPromptFinishesWhenTheClaimEndsOrItsPhaseMovesOn(t *testing.T) 
 	}
 }
 
+// A daemon that ends during a relaunch's launch restores the claim as launch_uncertain, and a
+// claim waiting for its launch is queued; the outbox starts before the boot reconciles either.
+// Neither has left the session it records, so a role message or hook prompt for it is held until a
+// session holds the role again, as it is while the claim runs (R5), not finished as a claim that
+// ended.
+func TestARowIsHeldForAClaimRestoredMidLaunch(t *testing.T) {
+	for _, state := range []supervise.ClaimState{supervise.StateLaunchUncertain, supervise.StateQueued} {
+		for name, payload := range storedRows(t) {
+			t.Run(string(state)+"/"+name, func(t *testing.T) {
+				publisher := &holderPublisher{}
+				runner, sup, pool := hookRunner(t, publisher)
+				implementer := sessionKeptClaim(t, sup, claim.RoleImplementer, state)
+				if got := implementer.View().State; got != state {
+					t.Fatalf("the restored claim reads %s, want %s", got, state)
+				}
+				topic := notify.RoleTopicPrefix + string(implementer.Claim().Token)
+				publisher.setAbsent(topic)
+				enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute)))
+
+				drain(t, runner)
+				if left := outboxRows(t, pool); left != 1 {
+					t.Fatalf("outbox rows left = %d, want the row held for a claim %s on its session", left, state)
+				}
+				// Tried again while the claim is still so: the hold has not ended.
+				dueNow(t, pool)
+				drain(t, runner)
+				if left := outboxRows(t, pool); left != 1 {
+					t.Fatalf("outbox rows left = %d after a second try, want the row still held for a claim %s", left, state)
+				}
+				publisher.setAbsent()
+				dueNow(t, pool)
+				drain(t, runner)
+				if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != topic {
+					t.Fatalf("delivered = %#v, want the held row delivered to %s once its role is held", delivered, topic)
+				}
+			})
+		}
+	}
+}
+
 func TestARoleMessageForAClaimThatKeepsItsSessionIsHeldUntilItsPhaseMovesOn(t *testing.T) {
 	publisher := &holderPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)

@@ -1934,10 +1934,12 @@ func (r *outbox) holdEnded(ctx context.Context, row record.OutboxRow, token clai
 }
 
 // keepsItsSession is whether held, a claim's published view, still keeps the session it
-// recorded: it runs, or is launching, connected or registered on a relaunch, on that session
-// (runsOnSession), and has not been told to stop for good (holdsRole).
+// recorded: it runs, or is launching, connected or registered on a relaunch, on that session, or
+// waits for a launch there, as a claim a boot restored mid-launch (launch_uncertain) or one queued
+// for its launch does (holdsEpisode, the states the reach keeper's episode holds through), and has
+// not been told to stop for good (holdsRole).
 func keepsItsSession(held supervise.ClaimView) bool {
-	return held.Session != "" && runsOnSession(held.State) && holdsRole(held)
+	return held.Session != "" && holdsEpisode(held.State) && holdsRole(held)
 }
 
 // updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the role the
