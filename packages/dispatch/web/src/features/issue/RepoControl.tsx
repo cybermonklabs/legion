@@ -356,7 +356,9 @@ export function RepoControl({
             page === null || showsText
               ? undefined
               : (event) => {
-                  if (event.key !== "Escape") return;
+                  // A press that ends an IME composition gives up what the reader was composing,
+                  // not the box: the place leaves it alone, unmarked, as the key registry does.
+                  if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
                   // Inside `NoTooltips` the press is the box's, from the box or from its clear
                   // control: it puts back what the issue holds, closes the box in a row of
                   // Details, and closes nothing around it. On a phone the box sits in Details, a
@@ -404,9 +406,16 @@ export function RepoControl({
                   // Inside `NoTooltips` a focus moved from the box to its clear control, as Tab
                   // moves it, stays in the box's place: the box stays drawn, and with it the
                   // control the focus is now on, which gives the row back to the text once the
-                  // focus leaves the place from there (its `onBlur`). What was typed is written
-                  // all the same, as whenever the box is left.
-                  if (page === null || place.current?.contains(event.relatedTarget) !== true) {
+                  // focus leaves the place from there (its `onBlur`). A blur while the document
+                  // itself has no focus leaves the box drawn as well: a switch to another tab or
+                  // window blurs the box with no control to take the focus and leaves the
+                  // document's focus on it, which the box holds for the reader's return rather
+                  // than drop it to the body. What was typed is written all the same, as
+                  // whenever the box is left.
+                  if (
+                    page === null ||
+                    (document.hasFocus() && place.current?.contains(event.relatedTarget) !== true)
+                  ) {
                     focusHeld.current = false;
                     setOpened(false);
                   }
@@ -450,13 +459,17 @@ export function RepoControl({
                   className={`${clearPlace} items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
                   disabled={disabled}
                   // Inside `NoTooltips` the control holds the focus as the box does: a focus
-                  // moved back into the box leaves both drawn, and one that leaves the box's
-                  // place from here gives the row back to the text, as leaving the box does.
+                  // moved back into the box, or a blur while the document itself has no focus,
+                  // leaves both drawn, and one that leaves the box's place from here gives the
+                  // row back to the text, as leaving the box does.
                   onBlur={
                     page === null
                       ? undefined
                       : (event) => {
-                          if (place.current?.contains(event.relatedTarget) !== true) {
+                          if (
+                            document.hasFocus() &&
+                            place.current?.contains(event.relatedTarget) !== true
+                          ) {
                             focusHeld.current = false;
                             setOpened(false);
                           }

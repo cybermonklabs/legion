@@ -117,13 +117,18 @@ func referenceTargetOf(t *testing.T, handler http.Handler, reference string) mod
 // is the tail past the stored excerpt, and `text` is what it was. The tree is the very bytes the
 // batched reference read answers for the same block, since both read it from the block's stored
 // text by one rule: a requirement nested in a quote, whose stored text does not read back as one
-// block alone, answers the tree of that whole text, opening line included, in both.
+// block alone, answers the tree of that whole text, opening line included, in both. A requirement
+// in a list nested two levels deep and one in a footnote definition answer the tree of their
+// content, as a top-level one does, in both reads, with the same bytes.
 func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 	handler, database := blockIndexHandler(t)
+	const deep, footnoted = "Deep in a nested list.", "In a footnote."
 	issue := createInteractionIssue(t, handler, "TBT", "Whole requirements",
 		":::requirement{#r1}\n"+wholeBlockContent("TBT-1", wholeBlockTail)+"\n:::\n\n"+
 			":::requirement{#r2}\nAn answered ask leaves the list.\n:::\n\n"+
-			"> :::requirement{#r3}\n> Nested in a quote.\n> :::\n")
+			"> :::requirement{#r3}\n> Nested in a quote.\n> :::\n\n"+
+			"- a\n  - b\n\n    :::requirement{#r4}\n    "+deep+"\n    :::\n\n"+
+			"See the note.[^1]\n\n[^1]: A note.\n\n    :::requirement{#r5}\n    "+footnoted+"\n    :::\n")
 	if issue.Key != "TBT-1" {
 		t.Fatalf("the issue is %s, want TBT-1, which the requirement's reference names", issue.Key)
 	}
@@ -144,12 +149,19 @@ func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 		sameShape(t, pmdoc.DisplayJSON(quoted, pmdoc.DisplayLatest)); !bytes.Equal(got, want) {
 		t.Errorf("r3's text_tree is\n\t%s\nwant the tree of its whole stored text %q\n\t%s", got, quoted, want)
 	}
+	for index, content := range map[int]string{3: deep, 4: footnoted} {
+		path := "requirements." + strconv.Itoa(index) + ".text_tree"
+		if got, want := sameShape(t, treeAt(t, handler, target, path)),
+			sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest)); !bytes.Equal(got, want) {
+			t.Errorf("%s is\n\t%s\nwant the tree of its content %q\n\t%s", path, got, content, want)
+		}
+	}
 
 	coverage := decodeBody[model.IssueCoverage](t, treesRequest(t, handler, target, true))
 	if got := requirementOf(t, coverage, "r1").Text; got != wordsOfWholeBlock(wholeBlockTail) {
 		t.Errorf("r1's text = %q, want the words it always answered, %q", got, wordsOfWholeBlock(wholeBlockTail))
 	}
-	for _, id := range []string{"r1", "r3"} {
+	for _, id := range []string{"r1", "r3", "r4", "r5"} {
 		member := referenceTargetOf(t, handler, "dispatch://"+issue.Key+"/spec#b-"+id)
 		if got := requirementOf(t, coverage, id).TextTree; member.TextTree == nil || !bytes.Equal(got, member.TextTree) {
 			t.Errorf("%s's text_tree is\n\t%s\nin the coverage read and\n\t%s\nin the batched reference read, want the same bytes",
@@ -192,13 +204,24 @@ func referenceTargetsOf(references ...string) string {
 // to an older version of its document answers the newest version's tree, as it answers the
 // newest name. A typed block nested in a quote, whose stored text does not read back as one
 // block alone, answers the tree of that whole text, while one in a list item answers its
-// content, and so does one after the marker `10. `, whose lines stand four columns in: its
-// content reads as paragraphs, not as an indented code block. A block of no declared type, of a
-// comment, of a message and of an ask answers the tree of its own whole text, and a comment's
-// typed block that holds another, neither written with an id, answers its content as the
-// comment wrote it: no read gives the inner block an id, so two reads answer one tree under one
-// ETag, and that tag sent back is answered 304. A member that names no block carries no tree,
-// and neither does any member of a read that asked for none. The names are the same either way.
+// content, and so do one in a list nested two levels deep, one in a footnote definition and one
+// after the marker `10. `, whose lines stand four columns in: its content reads as paragraphs,
+// not as an indented code block. A block of no declared type, of a comment, of a message and of
+// an ask answers the tree of its own whole text, and a comment's typed block that holds another,
+// neither written with an id, answers its content as the comment wrote it: no read gives the
+// inner block an id, so two reads answer one tree under one ETag, and that tag sent back is
+// answered 304. A comment's typed block whose content opens with a rule `---` and holds a second
+// one answers both rules and both paragraphs: as the opening of a document of its own, that `---`
+// would start front matter that swallows the content up to the second rule. A comment's typed
+// block whose closing fence stands two spaces in, or three, while its line of content stands at
+// column 0, answers that line: the block's lines start at column 0, where such a fence closes it.
+// A comment's typed block whose fence and lines stand two spaces in, with a line four spaces in
+// between them, answers that line as the comment's own parse reads it: a code block, not a heading.
+// A comment's and a message's typed block whose opening line stands two spaces in, after a
+// paragraph, answers its content with those spaces taken off it and off its lines, as the item's
+// own parse reads them, and no word of its opening line.
+// A member that names no block carries no tree, and neither does any member of a read that asked
+// for none. The names are the same either way.
 //
 // The texts cost one statement however many blocks of a document the set names: a set of 20
 // blocks of one document makes as many statements as a set of 2, and one of them reads the
@@ -233,6 +256,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		notes[index] = "Note " + strconv.Itoa(index+1) + " of the twenty."
 	}
 	const listed = "Nested in a list."
+	const deep, footnoted = "Deep in a nested list.", "In a footnote."
 	// After the marker `10. ` an item's content stands four columns in, so each line of the
 	// requirement's stored text but its first carries four spaces.
 	const numbered = "Nested in item 10.\n\nIts second paragraph."
@@ -240,6 +264,8 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		"> :::requirement{#q1}\n> Nested in a quote.\n> :::\n\n"+
 			"- An item:\n\n  :::requirement{#l1}\n  "+listed+"\n  :::\n\n"+
 			"10. An item:\n\n    :::requirement{#l10}\n    "+strings.ReplaceAll(numbered, "\n\n", "\n\n    ")+"\n    :::\n\n"+
+			"- a\n  - b\n\n    :::requirement{#r2}\n    "+deep+"\n    :::\n\n"+
+			"See the note.[^1]\n\n[^1]: A note.\n\n    :::requirement{#f1}\n    "+footnoted+"\n    :::\n\n"+
 			strings.Join(notes, "\n\n")+"\n")
 	notesRef := "dispatch://" + issue.Key + "/artifact/" + notesDocument.Artifact.Slug
 	quoted := storedBlockText(t, database, notesDocument.Artifact.ID, "q1")
@@ -252,6 +278,12 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	if stored := storedBlockText(t, database, notesDocument.Artifact.ID, "l10"); !strings.Contains(stored, "\n    Nested in item 10.") {
 		t.Fatalf("the requirement in item 10 has the stored text %q, want its lines four spaces in", stored)
 	}
+	for id, content := range map[string]string{"r2": deep, "f1": footnoted} {
+		if stored := storedBlockText(t, database, notesDocument.Artifact.ID, id); !strings.Contains(stored, "requirement{") ||
+			!strings.Contains(stored, "\n    "+content) {
+			t.Fatalf("the requirement %s has the stored text %q, want its opening line and its lines four spaces in", id, stored)
+		}
+	}
 	const commentBlock = "Its second block, with [a link](https://example.com/second)."
 	comment := createReferenceAPIComment(t, handler, issue.Key, "A comment's first block.\n\n"+commentBlock)
 	// A comment's typed block that holds another, neither written with an id: each parse gives
@@ -259,8 +291,32 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	// opening line.
 	const nestedCallout = "::::callout{}\n:::callout{}\nInner words.\n:::\n::::"
 	nested := createReferenceAPIComment(t, handler, issue.Key, nestedCallout)
+	// A typed block whose content opens with a rule and holds a second one: cut out of the block,
+	// the first `---` would open front matter that runs to the second.
+	const ruledCallout = ":::callout{}\n---\n\nAfter a rule.\n\n---\n\nTail.\n:::"
+	ruled := createReferenceAPIComment(t, handler, issue.Key, ruledCallout)
+	// A typed block whose closing fence stands two spaces in and whose content does not: its
+	// lines start at column 0, where a fence fewer than four columns in closes the block.
+	const indentedFence = ":::callout{}\nText of the callout.\n  :::"
+	fenced := createReferenceAPIComment(t, handler, issue.Key, indentedFence)
+	// Three spaces is the most a fence can stand in and still close a block whose lines start
+	// at column 0, so the cut takes the lines as written there too.
+	const threeSpaceFence = ":::callout{}\nText of the callout, its fence three spaces in.\n   :::"
+	fencedThree := createReferenceAPIComment(t, handler, issue.Key, threeSpaceFence)
+	// A typed block whose fence and lines stand two spaces in, with a line four spaces in: the
+	// comment's own parse reads that line as an indented code block, so its content is its lines
+	// as written, and with the fence's two spaces taken out the line would read as a heading.
+	const notAHeading = "  Intro\n\n    # Not a heading"
+	codeLine := createReferenceAPIComment(t, handler, issue.Key, ":::callout{}\n"+notAHeading+"\n  :::")
 	const messageBlock = "A message's second block, with dispatch://TBT-1 in it."
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message's first block.\n\n" + messageBlock}, "alice")
+	// A comment's and a message's second block, a typed block whose opening line stands two spaces
+	// in: the block is stored from the start of its line, those spaces included, and the item's own
+	// parse reads it from past them.
+	const indentedOpener = "Indented opener."
+	indentedBody := "Intro.\n\n  :::callout{}\n  " + indentedOpener + "\n  :::"
+	indentedComment := createReferenceAPIComment(t, handler, issue.Key, indentedBody)
+	indentedMessage := createIssueMessage(t, handler, issue.Key, map[string]any{"body": indentedBody}, "alice")
 	ask := readPartAsk(t, handler, createPartAsk(t, handler, issue.Key, "Which day do we ship?",
 		map[string]string{"label": "Monday", "description": "Ship at the start of the week."},
 		map[string]string{"label": "Tuesday"}).ID)
@@ -283,6 +339,14 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		notesRef + "#b-l1",
 		notesRef + "#b-l10",
 		"dispatch://" + issue.Key + "/comment/" + nested.ID + "#b-b1",
+		"dispatch://" + issue.Key + "/comment/" + ruled.ID + "#b-b1",
+		notesRef + "#b-r2",
+		notesRef + "#b-f1",
+		"dispatch://" + issue.Key + "/comment/" + fenced.ID + "#b-b1",
+		"dispatch://" + issue.Key + "/comment/" + fencedThree.ID + "#b-b1",
+		"dispatch://" + issue.Key + "/comment/" + codeLine.ID + "#b-b1",
+		"dispatch://" + issue.Key + "/comment/" + indentedComment.ID + "#b-b2",
+		"dispatch://" + issue.Key + "/message/" + indentedMessage.ID + "#b-b2",
 	}
 	target := referenceTargetsOf(references...)
 	plain := treesRequest(t, handler, target, false)
@@ -316,7 +380,9 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	requireWholeBlockTree(t, "the plan task's text_tree", json.RawMessage(task.TextTree), issue.Key, wholeBlockTail)
 	for index, content := range map[int]string{
 		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quoted, 7: listed,
-		8: numbered, 9: ":::callout{}\nInner words.\n:::",
+		8: numbered, 9: ":::callout{}\nInner words.\n:::", 10: "***\n\nAfter a rule.\n\n---\n\nTail.",
+		11: deep, 12: footnoted, 13: "Text of the callout.", 14: "Text of the callout, its fence three spaces in.",
+		15: notAHeading,
 	} {
 		want := sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest))
 		if read[index].TextTree == nil {
@@ -338,6 +404,19 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	}
 	if tree := string(read[8].TextTree); strings.Contains(tree, "code_block") || strings.Count(tree, `"paragraph"`) != 2 {
 		t.Errorf("the requirement in item 10 answers the text_tree\n\t%s\nwant its content as two paragraphs, not a code block", tree)
+	}
+	if tree := string(read[15].TextTree); !strings.Contains(tree, `"code_block"`) || strings.Contains(tree, `"heading"`) {
+		t.Errorf("the comment's block with a line four spaces in answers the text_tree\n\t%s\nwant that line as a code block, not a heading", tree)
+	}
+	for _, member := range read[16:] {
+		if member.TextTree == nil {
+			t.Errorf("%s carries no text_tree, want the tree of %q", member.Ref, indentedOpener)
+			continue
+		}
+		want := sameShape(t, pmdoc.DisplayJSON(indentedOpener, pmdoc.DisplayLatest))
+		if got := sameShape(t, json.RawMessage(member.TextTree)); !bytes.Equal(got, want) {
+			t.Errorf("%s: text_tree is\n\t%s\nwant the tree of %q\n\t%s", member.Ref, got, indentedOpener, want)
+		}
 	}
 
 	nestedTarget := referenceTargetsOf(references[9])

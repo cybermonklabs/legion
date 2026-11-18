@@ -677,7 +677,7 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 		content := ""
 		if trees {
 			if whole, held := texts[id]; held {
-				content = blockTextContent(whole)
+				content = blockTextContent(whole, true)
 			} else {
 				content = blockContent(node)
 			}

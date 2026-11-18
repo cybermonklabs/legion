@@ -532,7 +532,7 @@ controller on an earlier plugin release never runs against this daemon: contract
 subscription, `legion controller start` refuses to launch an Oh My Pi whose plugin speaks another
 contract, and the daemon refuses its registration with 409. A later
 `legion controller start` mints a new capability, so the earlier session's grants stop working.
-The CLI's `legion status <issue> <status>` is the operator's alone: it takes
+The CLI's `legion issue status <issue> <status>` is the operator's alone: it takes
 `--operator-token-file`, which buys a controller grant over the operator's bearer and, like
 `legion claims`, is refused when its group or others can read it; the controller session writes a
 status only through its tool's `set_status`.

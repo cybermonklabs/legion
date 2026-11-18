@@ -135,6 +135,39 @@ export function FormActions({
   );
 }
 
+/** The form every editor of an issue's fields is drawn in, around the editor's label, box, buttons
+ *  and help (`children`). Escape in it, from the box, Save or Cancel, is the editor's: it closes
+ *  the editor (`cancel`) and nothing around it. On a phone the editor sits in Details, a sheet that
+ *  closes on Escape through the key registry's dialog binding (`useDialog`), which takes a press
+ *  inside a field and passes over one already `defaultPrevented` (`keymap.ts`); unmarked, one
+ *  Escape would close the editor and the whole sheet with it. A press stopped here reaches no
+ *  listener above the form either. A press that ends an IME composition gives up what the reader
+ *  was composing, not the editor: the form leaves it alone, unmarked, as the registry does. */
+function EditorForm({
+  cancel,
+  children,
+  onSubmit,
+}: {
+  cancel: () => void;
+  children: ReactNode;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}): ReactNode {
+  return (
+    <form
+      className="flex w-full min-w-0 flex-wrap items-center gap-2"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        cancel();
+      }}
+      onSubmit={onSubmit}
+    >
+      {children}
+    </form>
+  );
+}
+
 /** Where the issue's messages go: the box for the route, its buttons, and the words that say what
  *  the box takes, drawn here, where a reader is deciding what to set. */
 function RouteForm({
@@ -165,22 +198,7 @@ function RouteForm({
     onClose();
   };
   return (
-    <form
-      className="flex w-full min-w-0 flex-wrap items-center gap-2"
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        // The press is the editor's, from its box, its Save or its Cancel: it closes the editor
-        // and nothing around it. On a phone the editor sits in Details, a sheet that closes on
-        // Escape through the key registry's dialog binding (`useDialog`), which takes a press
-        // inside a field and passes over one already `defaultPrevented` (`keymap.ts`); unmarked,
-        // one Escape would close the editor and the whole sheet with it. A press stopped here
-        // reaches no listener above the form either.
-        event.preventDefault();
-        event.stopPropagation();
-        cancel();
-      }}
-      onSubmit={save}
-    >
+    <EditorForm cancel={cancel} onSubmit={save}>
       {/* The row of Details this editor is drawn in draws the property's label already, so this
           one is for a screen reader alone: it names the box, and the row's words are drawn once. */}
       <label className="sr-only" htmlFor="issue-route" {...pageChrome}>
@@ -210,7 +228,7 @@ function RouteForm({
       >
         {HELP_LINES.route_shape}
       </span>
-    </form>
+    </EditorForm>
   );
 }
 
@@ -243,19 +261,7 @@ function ParentForm({
     onClose();
   };
   return (
-    <form
-      className="flex w-full min-w-0 flex-wrap items-center gap-2"
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        // Escape closes the editor alone, from its box, its Save or its Cancel, as in the route
-        // editor above: marked and stopped, the press passes the dialog binding that would close
-        // the Details sheet around it.
-        event.preventDefault();
-        event.stopPropagation();
-        cancel();
-      }}
-      onSubmit={save}
-    >
+    <EditorForm cancel={cancel} onSubmit={save}>
       {/* Named for a screen reader alone, as the route box is: the row draws the label. */}
       <label className="sr-only" htmlFor="issue-parent" {...pageChrome}>
         {PROPERTY_LABELS.parent}
@@ -278,6 +284,6 @@ function ParentForm({
       <span className="sr-only" id="issue-parent-help">
         Parent issue key in {issue.project}; leave empty to clear the parent.
       </span>
-    </form>
+    </EditorForm>
   );
 }

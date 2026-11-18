@@ -69,23 +69,28 @@ import {
   architecture,
   CLAIMED_AT,
   classOf,
+  colourOf,
   DECISIONS_ID,
   doc,
   draw,
+  FOCUS_VARIANTS,
   GONE_SESSION,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
   minutesFromNow,
+  offPageColours,
   openAsk,
   priorities,
   proofDocument,
+  RAW_COLOR_PATTERN,
   SPEC_ID,
   STALLED_SESSION,
   type Surface,
   settleReads,
   specRequest,
+  splitToken,
   threadOf,
   tokens,
   undraw,
@@ -146,123 +151,6 @@ async function drawMount(mount: Mount, surface: Surface): Promise<Drawn> {
     (element) => !skipped.some((root) => root.contains(element))
   );
   return { elements, view };
-}
-
-// ---------------------------------------------------------------------------------------------
-// Reading a class for its colours
-// ---------------------------------------------------------------------------------------------
-
-/** `theme/no-raw-colors.test.ts`'s `COLOR_FAMILIES` and `RAW_COLOR_PATTERN`, copied as they
- *  stand there: they are constants of that test file, which exports nothing. The pattern is the
- *  palette guard's own reading of a raw Tailwind colour. */
-const COLOR_FAMILIES = [
-  "slate",
-  "sky",
-  "rose",
-  "amber",
-  "emerald",
-  "red",
-  "orange",
-  "yellow",
-  "lime",
-  "green",
-  "teal",
-  "cyan",
-  "blue",
-  "indigo",
-  "violet",
-  "purple",
-  "fuchsia",
-  "pink",
-  "gray",
-  "zinc",
-  "neutral",
-  "stone",
-] as const;
-const RAW_COLOR_PATTERN = new RegExp(
-  `\\b(?:text|bg|border|ring|placeholder|divide|outline|caret|accent|decoration|from|via|to)-(?:(?:${COLOR_FAMILIES.join("|")})-\\d{2,3}|white|black|transparent)\\b`
-);
-
-/** The variants of a focus indicator, kept inside `NoTooltips`: `focusVisibleRing`,
- *  `hasFocusVisibleRing` and `main`'s focus rule on a field stay, since the page's palette holds
- *  no focus colour and the application has one focus indicator. */
-const FOCUS_VARIANTS: readonly string[] = ["focus", "focus-visible", "has-focus-visible"];
-
-/** A token as its variants and the utility after them. A colon inside brackets or parentheses
- *  is an arbitrary value's (`[overflow-wrap:anywhere]`, `content-[attr(data-initial)]`), not a
- *  variant's. */
-function splitToken(token: string): { readonly utility: string; readonly variants: string[] } {
-  const variants: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let index = 0; index < token.length; index += 1) {
-    const character = token[index];
-    if (character === "[" || character === "(") depth += 1;
-    else if (character === "]" || character === ")") depth -= 1;
-    else if (character === ":" && depth === 0) {
-      variants.push(token.slice(start, index));
-      start = index + 1;
-    }
-  }
-  return { utility: token.slice(start), variants };
-}
-
-/** Every utility that takes a colour after its property, and what follows the property. */
-const COLOUR_PROPERTY =
-  /^-?(?:text|bg|border(?:-[xytrblse])?|outline|ring(?:-offset)?|inset-ring|shadow|inset-shadow|drop-shadow|fill|stroke|decoration|divide|placeholder|caret|accent|from|via|to)-(.+)$/;
-const SHADE = new RegExp(`^(?:${COLOR_FAMILIES.join("|")})-\\d{2,3}$`);
-
-/**
- * The colour a utility names, or `undefined` for a utility that names none.
- *
- * The same property prefix carries colours and sizes alike (`text-sky-700` and `text-xs`,
- * `border-page-line` and `border-2`, `ring-sky-600` and `ring-2`), so a utility names a colour
- * by what follows its property, an opacity (`/40`) dropped: a shade of a palette family
- * (`sky-700`), one of the keyword colours `white`, `black` and `transparent`, an arbitrary colour
- * (`[#fff]`, `[rgb(…)]`, `[color:…]`, `[var(--color-…)]`), or a token of the page's palette by its
- * own name (`page-ink`, `icon-rail`), which `PAGE_COLORS` must then hold, so a misspelt page
- * token is a colour and fails. Anything else after the same prefixes names no colour: a size
- * (`text-xs`, `border-2`, `ring-2`, `border-l-4`), a style (`border-dashed`, `outline-none`,
- * `text-left`, `shadow-lg`), an arbitrary value that is no colour (`text-[10px]`), and `current`
- * and `inherit`, which paint the element's own text colour rather than name one; that text
- * colour is a token of its own, read here too.
- */
-function colourOf(utility: string): string | undefined {
-  const named = COLOUR_PROPERTY.exec(utility)?.[1];
-  if (named === undefined) return undefined;
-  const name = named.replace(/\/(?:\d+|\[[^\]]*\])$/, "");
-  if (SHADE.test(name) || name === "white" || name === "black" || name === "transparent") {
-    return name;
-  }
-  if (/^\[(?:#|rgba?\(|hsla?\(|oklch\(|oklab\(|color:|var\(--color-)/.test(name)) return name;
-  return /^(?:page|icon-rail)(?:-[a-z]+)*$/.test(name) ? name : undefined;
-}
-
-/** What a mount's elements draw that is no colour of the page: each token the palette guard
- *  reads as raw, and each colour `PAGE_COLORS` does not name, focus indicators skipped. */
-function offPageColours(
-  name: string,
-  elements: readonly Element[]
-): { readonly colours: number; readonly offenders: string[] } {
-  const offenders: string[] = [];
-  let colours = 0;
-  for (const element of elements) {
-    const testId = element.getAttribute("data-testid");
-    const where = `${name}: <${element.tagName.toLowerCase()}${testId === null ? "" : ` data-testid="${testId}"`}>`;
-    for (const token of (element.getAttribute("class") ?? "").split(/\s+/).filter(Boolean)) {
-      const { utility, variants } = splitToken(token);
-      if (variants.some((variant) => FOCUS_VARIANTS.includes(variant))) continue;
-      if (RAW_COLOR_PATTERN.test(utility)) {
-        offenders.push(`${where} ${token}: a raw colour`);
-        continue;
-      }
-      const colour = colourOf(utility);
-      if (colour === undefined) continue;
-      colours += 1;
-      if (!Object.hasOwn(PAGE_COLORS, colour)) offenders.push(`${where} ${token}: no page colour`);
-    }
-  }
-  return { colours, offenders };
 }
 
 // ---------------------------------------------------------------------------------------------

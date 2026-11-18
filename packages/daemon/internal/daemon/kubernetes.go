@@ -103,8 +103,8 @@ const (
 // from it (cmd/legion's piLegionVersion/piEnvoyVersion, PluginsFromBinary field true; PluginsFromBinary
 // source), else nil pair and "" source — the daemon knows no plugin versions, and every stale claim is
 // recorded and reported, never relaunched or refused (supervise.Deps.PluginRelaunchable false). Nil
-// under tmux, whose pane always resumes on the plugin installed on the daemon's host. legion start
-// --check-config and the boot log both read this.
+// under tmux, whose pane always resumes on the plugin installed on the daemon's host. `legion
+// config check` and the boot log both read this.
 func ResolvedPlugins(cfg config.Config) (*runtime.PluginInstall, string) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.Plugins == nil {
@@ -137,7 +137,7 @@ func ProbeBudget(cfg config.Config) (budget time.Duration, derived bool) {
 	return cfg.SlowCommandTimeout, false
 }
 
-// ProbeBudgetLine is the plain line `legion start --check-config` prints under
+// ProbeBudgetLine is the plain line `legion config check` prints under
 // `runtime: kubernetes` when ProbeBudget's bound exceeds slow_command_timeout_seconds: how long
 // each attempt now waits, and which keys pushed it there. "", false when the bound is
 // slow_command_timeout_seconds itself.
@@ -370,7 +370,6 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		ProvidersSecrets:        providersSecrets(cfg, lookup),
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
-		SkillsRepository:        k.SkillsRepository,
 		TestPostgres:            k.TestPostgres,
 		MemoryGuard:             memoryGuard,
 		BootTimeout:             cfg.WorkerBootTimeout,

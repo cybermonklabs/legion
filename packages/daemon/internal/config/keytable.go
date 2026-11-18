@@ -17,7 +17,7 @@ import (
 // that reads its value. The table is the only way the loader dispatches a top-level key — readKeys
 // looks each key up in it and calls its Read, and a key the table does not list falls through to
 // the warned, migration and tossed classification — so a new key is a new row here, never a new
-// case. `legion config-reference --json` prints the table, the documentation site's configuration
+// case. `legion config reference --json` prints the table, the documentation site's configuration
 // reference is generated from that output, and TestNoKeyBypassesTheKeyTable holds internal/config
 // to it: a key the loader dispatches with no row, and a row with no description, each fail the
 // build.
@@ -111,7 +111,7 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveInteger(value, key, 0) }
 
 // topLevelKeys is every top-level key of legion.yaml, grouped by what the keys settle, which is the
-// order `legion config-reference --json` prints them in: the project and where the daemon keeps
+// order `legion config reference --json` prints them in: the project and where the daemon keeps
 // its state and listens, how many issues run at once, the controller, the deployment's
 // instructions and the agents' Oh My Pi and its credentials, the endpoints and token files, the
 // projects, the repository renames, the hooks, the design gate and the GitHub Apps, the runtime
@@ -187,7 +187,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "omp_invocation", Default: "`LEGION_OMP_PATH` in the daemon's environment, which names the `omp` binary directly", RequiredBy: "when runtime is tmux and `LEGION_OMP_PATH` is unset",
-			Description: "How a pane starts Oh My Pi on the daemon's own host, as `mise x <tool> -- omp`; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi.",
+			Description: "How a pane starts Oh My Pi on the daemon's own host, as `mise x <tool> -- omp`, which runs the tool's own `bin/omp` (`mise where <tool>`) with the pane's launcher directory put back first on `PATH`, ahead of any directory mise puts there; `runtime: kubernetes` refuses it, since every pod runs the worker image's Oh My Pi.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OmpInvocation = v }),
 		},
 		{
@@ -197,7 +197,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
@@ -439,7 +439,7 @@ type member struct {
 
 // memberGroup is one mapping of nested keys: the dotted path an operator writes them under, with
 // `<KEY>` for a project key and `[]` for a sequence entry, and the keys the mapping may carry. A
-// group's path begins with the top-level key it belongs to, which is how `legion config-reference
+// group's path begins with the top-level key it belongs to, which is how `legion config reference
 // --json` prints each nested key under its own top-level key.
 type memberGroup struct {
 	Path    string
@@ -598,9 +598,9 @@ var nestedKeys = []memberGroup{
 		{Name: "repository_cache", Default: "every cache runs on the daemon's own sizes and intervals", RequiredBy: "no",
 			Description: "Each mapped repository's cache pod, which an issue pod's feed is filled from before GitHub is asked for the rest."},
 		{Name: "setup", Default: "a role starts its Oh My Pi with nothing run first", RequiredBy: "no",
-			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0; it must fetch nothing, since a clone in a role's launch context ends the pod's sandbox."},
-		{Name: "skills_repository", Default: "a pod's roles install no skill", RequiredBy: "no",
-			Description: "The Oh My Pi plugin marketplace every issue pod's roles install their skills from, as `owner/name`, cloned shallow in an init container of the pod's own, so a pod's skills are that branch as of the pod's start."},
+			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0. It may install an Oh My Pi plugin marketplace from GitHub: such an install renames a directory in the role's home overlay, and gVisor's opaque mark on that directory stopped the pod's sandbox until legion-v19.18.1 mounted the overlay with `userxattr` (dispatch://INFRA-1262); a command that must stop no role skips the daemon-launched controller and exits 0 whatever step fails, as this short form does: `[/bin/sh, -c, '[ -z \"$LEGION_CONTROLLER\" ] || exit 0; cd ~ || exit 0; omp plugin marketplace remove <name> >/dev/null 2>&1; timeout 120 omp plugin marketplace add <owner>/<repo> && timeout 60 omp plugin install <plugin>@<name> --force && omp plugin enable <plugin>@<name> || echo \"skills install failed\" >&2; omp plugin marketplace remove <name> >/dev/null 2>&1; exit 0']` (docs/kubernetes.md, Configuration, gives the full example, which names the step that failed, and explains each step)."},
+		{Name: "skills_repository", Default: "", RequiredBy: "no",
+			Description: "Removed: a role installs its skills with Oh My Pi's own commands in `setup`; the loader refuses a file that still sets it."},
 		{Name: "test_postgres", Default: "`false`", RequiredBy: "no",
 			Description: "Whether every issue pod's roles container serves its own PostgreSQL for the tests that need one."},
 		{Name: "idle_release", Default: "a pod quiet for ten minutes is released, and an open phase's worker is woken an hour after that", RequiredBy: "no",
@@ -853,7 +853,7 @@ var nestedByPath = func() map[string]*memberGroup {
 	return byPath
 }()
 
-// ConfigKey is one top-level key as `legion config-reference --json` prints it: the key table's
+// ConfigKey is one top-level key as `legion config reference --json` prints it: the key table's
 // own four columns, and beneath them the nested keys that belong to this key, so a generator of
 // the documentation site renders one section per top-level key and one table of the nested keys
 // under it. Nested is never null.
@@ -876,7 +876,7 @@ type ConfigNestedKey struct {
 	Description string `json:"description"`
 }
 
-// ConfigReference is the key table as `legion config-reference --json` prints it: every top-level
+// ConfigReference is the key table as `legion config reference --json` prints it: every top-level
 // key in table order, each with its described nested keys in nestedKeys order. It reads no file
 // and no daemon.
 func ConfigReference() []ConfigKey {

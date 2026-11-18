@@ -322,7 +322,9 @@ export function IssuePriorityLine({
         <form
           className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
           onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
+            // A press that ends an IME composition gives up what the reader was composing, not
+            // the form: the form leaves it alone, unmarked, as the key registry does.
+            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
             // Escape closes this form and goes no further. The panel the line sits in closes on
             // Escape too - Details on the new issue page, which on a phone is a sheet whose
             // Escape is the key registry's dialog binding (`useDialog`) - and one press reaching

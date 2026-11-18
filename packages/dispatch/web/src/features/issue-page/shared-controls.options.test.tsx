@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   act,
   type BoundFunctions,
+  // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for a blur while the window has no focus and an Escape that ends an IME composition, neither of which user-event has a form for
+  fireEvent,
   type queries,
   type RenderResult,
   waitFor,
@@ -42,10 +44,8 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
 import {
   borderDefault,
-  focusBorder,
   focusVisibleRing,
   inputClasses,
-  PAGE_COLORS,
   pageFailedText,
   pageHairBorder,
   pageHeaderControl,
@@ -95,12 +95,14 @@ import {
   DECISIONS_ID,
   doc,
   draw,
+  FOCUS_VARIANTS,
   GONE_SESSION,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
   minutesFromNow,
+  offPageColours,
   openAsk,
   priorities,
   proofDocument,
@@ -109,6 +111,7 @@ import {
   type Surface,
   settleReads,
   specRequest,
+  splitToken,
   threadOf,
   tokens,
   undraw,
@@ -1492,7 +1495,6 @@ test("inside NoTooltips a label chip wraps a long label and is never cut", () =>
   const mainChip =
     "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
   const wraps = ["[overflow-wrap:anywhere]", "max-w-full"];
-  const cuts = ["shrink-0", "whitespace-nowrap"];
 
   for (const chipClassName of [undefined, given]) {
     for (const variant of ["default", "rail"] as const) {
@@ -1517,7 +1519,7 @@ test("inside NoTooltips a label chip wraps a long label and is never cut", () =>
           if (surface === "inside") {
             expect({
               ...which,
-              cuts: drawn.filter((token) => cuts.includes(token)),
+              cuts: holdsItsLine(chip),
               wraps: drawn.filter((token) => wraps.includes(token)).sort(),
             }).toEqual({ ...which, cuts: [], wraps });
           } else {
@@ -3676,11 +3678,8 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       const row = caseOf(view, "row");
       const holding: string[] = [];
       for (let outer = text().parentElement; outer !== null && outer !== row; ) {
-        holding.push(
-          ...classOf(outer).filter((token) =>
-            ["shrink-0", "w-[200px]", "whitespace-nowrap"].includes(token)
-          )
-        );
+        holding.push(...holdsItsLine(outer));
+        expect(classOf(outer)).not.toContain("w-[200px]");
         outer = outer.parentElement;
       }
       expect(holding).toEqual([]);
@@ -3816,11 +3815,8 @@ test("inside NoTooltips the repository box fills its row's value and keeps no ro
       const held: string[] = [];
       for (let outer: Element | null = box(); outer !== null && outer !== value; ) {
         if (!classOf(outer).includes("w-full")) narrower.push(outer.tagName);
-        held.push(
-          ...classOf(outer).filter((token) =>
-            ["shrink-0", "w-[200px]", "whitespace-nowrap"].includes(token)
-          )
-        );
+        held.push(...holdsItsLine(outer));
+        expect(classOf(outer)).not.toContain("w-[200px]");
         outer = outer.parentElement;
       }
       expect(narrower).toEqual([]);
@@ -4141,6 +4137,59 @@ test("inside NoTooltips a repository row keeps the box and its refused draft whe
       expect(scope.getByRole("alert").textContent).toBe("Write the repository as owner/name.");
       expect(scope.queryByRole("button", { name })).toBeNull();
       expect(document.activeElement).toBe(scope.getByRole("button", { name: "Elsewhere" }));
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
+/** Blurs `holder` as a switch to another tab or window blurs the control that holds the focus:
+ *  the document has no focus then, no control takes it, and the document keeps it on `holder`. */
+async function blurWithTheWindow(holder: HTMLElement): Promise<void> {
+  const hasFocus = spyOn(document, "hasFocus").mockReturnValue(false);
+  try {
+    fireEvent.blur(holder);
+  } finally {
+    hasFocus.mockRestore();
+  }
+  await settleReads();
+}
+
+// A switch to another tab or window is not the reader leaving the box opened from a repository
+// row's text: inside `NoTooltips` the box stays drawn, opened from "None" or from the
+// repository's text, and the focus stays on it, or on its clear control where the reader had
+// moved it, for the reader's return.
+test("inside NoTooltips a repository box keeps itself and its focus when the window loses the focus", async () => {
+  const user = userEvent.setup();
+  const clearName = "Clear the repository of CORE-1";
+  for (const [name, repo] of ROW_TEXTS) {
+    const view = draw(
+      <RepoControl inRow issueKey="CORE-1" project="CORE" repo={repo} resolvedRepo={repo} />,
+      "inside"
+    );
+    try {
+      await settleReads();
+      const scope = within(view.container);
+      await user.click(scope.getByRole("button", { name }));
+      const box = scope.getByRole("combobox", { name: "Repository of CORE-1" });
+      expect(document.activeElement).toBe(box);
+      // The focus in the box starts the mappings' read, which lands before what follows.
+      await settleReads();
+
+      await blurWithTheWindow(box);
+      expect(scope.queryByRole("combobox", { name: "Repository of CORE-1" })).toBe(box);
+      expect(scope.queryByRole("button", { name })).toBeNull();
+      expect(document.activeElement).toBe(box);
+      if (repo === null) continue;
+
+      await user.tab();
+      const clear = scope.getByRole("button", { name: clearName });
+      expect(document.activeElement).toBe(clear);
+      await blurWithTheWindow(clear);
+      expect(scope.queryByRole("combobox", { name: "Repository of CORE-1" })).toBe(box);
+      expect(scope.queryByRole("button", { name: clearName })).toBe(clear);
+      expect(scope.queryByRole("button", { name })).toBeNull();
+      expect(document.activeElement).toBe(clear);
     } finally {
       undraw(view);
     }
@@ -4557,13 +4606,14 @@ test("inside NoTooltips Approve leaves a focus the reader moved elsewhere where 
 
 // A dialog that drops its focus to the body is a keyboard trap broken open. While a change request
 // is out, and inside `NoTooltips` until the read after it is drawn as well, the Request changes
-// dialog refuses. Inside, its text box is read-only and its Request changes and Cancel are
-// `aria-disabled`, in place of the `disabled` that drops the focus in a browser: the focus stays
-// where it is, a press sends no second request and Cancel closes nothing. Once the new approval is
-// read the dialog closes and gives the focus back to the header's Request changes, which opened it
-// and is `aria-disabled` too while the write is out. Outside `NoTooltips` the text box, both
-// buttons and the header's Request changes are `disabled` while the write is out, and Escape
-// closes the dialog then, as on `main`.
+// dialog refuses. Inside, its text box is read-only and its Request changes `aria-disabled`, in
+// place of the `disabled` that drops the focus in a browser: the focus stays where it is and a
+// press sends no second request. Its Cancel reads Close then and is not refused, since a press of
+// it closes the dialog as Escape does and leaves the write going. Once the new approval is read
+// the dialog closes and gives the focus back to the header's Request changes, which opened it and
+// is `aria-disabled` too while the write is out. Outside `NoTooltips` the text box, both buttons
+// and the header's Request changes are `disabled` while the write is out, and Escape closes the
+// dialog then, as on `main`.
 test("inside NoTooltips the Request changes dialog keeps its focus until the change request is read", async () => {
   const user = userEvent.setup();
   const reason = "The plan names no owner";
@@ -4614,21 +4664,20 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
 
       expect(box.hasAttribute("disabled")).toBe(false);
       expect(box.hasAttribute("readonly")).toBe(true);
-      for (const control of [cancel, requestChanges]) {
-        expect(control.getAttribute("aria-disabled")).toBe("true");
-        expect(control.hasAttribute("disabled")).toBe(false);
-      }
+      expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
+      const close = dialog.getByRole("button", { name: "Close" });
+      expect(close).toBe(cancel);
+      expect(close.hasAttribute("aria-disabled")).toBe(false);
+      expect(close.hasAttribute("disabled")).toBe(false);
+      expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
+      expect(requestChanges.hasAttribute("disabled")).toBe(false);
       expectRefusedHoldingFocus(submit);
       await user.keyboard("{Enter}");
       await settleReads();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
       expectRefusedHoldingFocus(submit);
       expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
-      cancel.focus();
-      await user.keyboard("{Enter}");
-      await settleReads();
       expect(scope.queryByRole("dialog")).not.toBeNull();
-      expectRefusedHoldingFocus(cancel);
 
       // The change request lands, and the read after it is held.
       submit.focus();
@@ -4773,6 +4822,114 @@ test("inside NoTooltips Escape closes the Request changes dialog while its chang
       expect(approve.hasAttribute("aria-disabled")).toBe(false);
       expect(scope.queryByRole("dialog")).toBeNull();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    } finally {
+      written.reject(new Error("the connection dropped"));
+      createArtifactReview.mockRestore();
+      undraw(view);
+      unemulate();
+    }
+  }
+});
+
+// Inside `NoTooltips`, while a change request is out, the Request changes dialog's Cancel reads
+// Close and closes the dialog as Escape does, by Enter and by the pointer alike, and leaves the
+// write going: the dialog gives the focus back to the header's Request changes, which stays
+// `aria-disabled` beside Approve, a press of either doing nothing, until the change request lands
+// and its read is drawn, and one change request goes out in all. Once the write has ended, the
+// dialog opened next reads Cancel again. Outside `NoTooltips` the button reads Cancel and is
+// `disabled` while the write is out, as on `main`.
+test("inside NoTooltips the Request changes dialog's Close closes it while its change request is out and leaves the write going", async () => {
+  const user = userEvent.setup();
+  const reason = "The plan names no owner";
+  const changesRequested = doc(SPEC_ID, "spec.md", {
+    latest_version: 2,
+    state: "changes_requested",
+    version: 2,
+  });
+  for (const press of ["Enter", "click", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    stubs.getArtifact.mockResolvedValue(awaitingSpec());
+    const written = Promise.withResolvers<ArtifactReview>();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+      () => written.promise
+    );
+    const view = draw(
+      <KeymapProvider>
+        <ReadApprovalChip id={SPEC_ID} />
+      </KeymapProvider>,
+      press === "outside" ? "outside" : "inside"
+    );
+    try {
+      const scope = within(view.container);
+      const { approve, requestChanges } = await sendChangeRequest(
+        user,
+        view,
+        createArtifactReview,
+        reason
+      );
+      if (approve === null) throw new Error("the chip draws no Approve");
+      const dialog = within(scope.getByRole("dialog", { name: "Request changes" }));
+
+      if (press === "outside") {
+        expect(dialog.queryByRole("button", { name: "Close" })).toBeNull();
+        expectDisabledAsOnMain(dialog.getByRole("button", { name: "Cancel" }));
+        continue;
+      }
+
+      expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
+      const close = dialog.getByRole("button", { name: "Close" });
+      expect(close.hasAttribute("aria-disabled")).toBe(false);
+      expect(close.hasAttribute("disabled")).toBe(false);
+      if (press === "Enter") {
+        close.focus();
+        await user.keyboard("{Enter}");
+      } else {
+        await user.click(close);
+      }
+      await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
+      await settleReads();
+
+      // The write goes on: the review was not let go of, so both actions are still refused.
+      expectRefusedHoldingFocus(requestChanges);
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expectRefusedHoldingFocus(requestChanges);
+      approve.focus();
+      expectRefusedHoldingFocus(approve);
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expectRefusedHoldingFocus(approve);
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+
+      // The change request lands, and the read after it is held: both are still refused.
+      requestChanges.focus();
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("changes_requested", reason))
+      );
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expectRefusedHoldingFocus(requestChanges);
+      expect(approve.getAttribute("aria-disabled")).toBe("true");
+
+      answerReread(changesRequested);
+      await scope.findByRole("button", { name: "Changes requested" });
+      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await settleReads();
+      expect(document.activeElement).toBe(requestChanges);
+      expect(approve.hasAttribute("aria-disabled")).toBe(false);
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+
+      // With the write ended, the dialog opened next reads Cancel again.
+      await user.keyboard("{Enter}");
+      const next = within(await scope.findByRole("dialog", { name: "Request changes" }));
+      await settleReads();
+      expect(next.getByRole("button", { name: "Cancel" }).hasAttribute("aria-disabled")).toBe(
+        false
+      );
+      expect(next.queryByRole("button", { name: "Close" })).toBeNull();
     } finally {
       written.reject(new Error("the connection dropped"));
       createArtifactReview.mockRestore();
@@ -5892,47 +6049,140 @@ test("inside NoTooltips Escape on an editor's Save or Cancel closes the editor a
   }
 });
 
-/** `main`'s focus indicator, which the page keeps, since its palette holds no focus colour: the
- *  ring and a field's focus rule. */
-const MAIN_FOCUS: readonly string[] = [...tokens(focusVisibleRing), ...tokens(focusBorder)];
-
-/** The colour a class token names after its variants, or `undefined` for a token that names none
- *  (`text-sm`, `border`, `ring-2`, `outline-none`): what follows a colour's property, as
- *  `shared-controls.tooltips.test.tsx` reads it, an opacity dropped - a palette shade
- *  (`slate-300`), a keyword colour (`white`, `transparent`), an arbitrary colour, or a colour of
- *  the page's palette by its own name (`page-ink`), which `PAGE_COLORS` must then hold. */
-function colourNamed(token: string): string | undefined {
-  const utility = /^(?:[^:[\]]+:)*(.+)$/.exec(token)?.[1] ?? token;
-  const named =
-    /^-?(?:text|bg|border(?:-[xytrblse])?|outline|ring(?:-offset)?|placeholder|decoration|divide|caret|accent|fill|stroke|shadow|from|via|to)-(.+)$/
-      .exec(utility)?.[1]
-      ?.replace(/\/(?:\d+|\[[^\]]*\])$/, "");
-  if (named === undefined) return undefined;
-  return /^(?:[a-z]+-\d{2,3}|white|black|transparent|\[(?:#|rgba?\(|hsla?\(|oklch\(|oklab\(|color:|var\(--color-).*|(?:page|icon-rail)(?:-[a-z]+)*)$/.test(
-    named
-  )
-    ? named
-    : undefined;
+/** A control a reader types or picks a draft in, as Details on a phone draws it. */
+interface DraftControl {
+  readonly surface: Surface;
+  /** The control as the page draws it, open or not yet. */
+  readonly node: ReactNode;
+  /** What the reader types or picks in the control's field. */
+  readonly draft: string;
+  /** Opens the control if it is not open, puts `draft` in its field, and answers that field,
+   *  which holds the focus. */
+  readonly open: (
+    view: RenderResult,
+    user: UserEvent,
+    draft: string
+  ) => Promise<HTMLInputElement | HTMLSelectElement>;
+  /** The control's field while the control is open, else null. */
+  readonly fieldOf: (view: RenderResult) => HTMLElement | null;
 }
 
-/** Each class token of `root` and of every element inside it that names a colour the page's
- *  palette (`PAGE_COLORS`) does not hold and that is no token of `main`'s focus indicator, and
- *  how many of their tokens name a colour at all. */
-function offPageTokens(root: Element): { readonly colours: number; readonly offenders: string[] } {
-  const offenders: string[] = [];
-  let colours = 0;
-  for (const element of [root, ...root.querySelectorAll("*")]) {
-    for (const token of classOf(element)) {
-      const colour = colourNamed(token);
-      if (colour === undefined) continue;
-      colours += 1;
-      if (!Object.hasOwn(PAGE_COLORS, colour) && !MAIN_FOCUS.includes(token)) {
-        offenders.push(`<${element.tagName.toLowerCase()}> ${token}`);
-      }
+/** Each control a reader types or picks a draft in that its own Escape closes: the route and
+ *  parent editors, the repository box opened from a row of Details, and the priority's form, whose
+ *  Escape is the form's on both sides of `NoTooltips`. */
+const DRAFT_CONTROLS: readonly DraftControl[] = [
+  ...FIELD_EDITORS.map(
+    ([field, label]): DraftControl => ({
+      draft: field === "route" ? "role:reviewer" : "CORE-12",
+      fieldOf: (view) => within(view.container).queryByRole("textbox", { name: label }),
+      node: <OpenFieldForm field={field} onClose={() => undefined} />,
+      open: async (view, user, draft) => {
+        const box = within(view.container).getByRole("textbox", {
+          name: label,
+        }) as HTMLInputElement;
+        await waitFor(() => expect(document.activeElement).toBe(box));
+        await user.clear(box);
+        await user.keyboard(draft);
+        return box;
+      },
+      surface: "inside",
+    })
+  ),
+  {
+    draft: "acme/web",
+    fieldOf: (view) =>
+      within(view.container).queryByRole("combobox", { name: "Repository of CORE-1" }),
+    node: <RepoControl inRow issueKey="CORE-1" project="CORE" repo={null} resolvedRepo={null} />,
+    open: async (view, user, draft) => {
+      const scope = within(view.container);
+      const none = scope.getByRole("button", {
+        name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
+      });
+      // The sheet's first focus lands on the row's text before the case presses anything.
+      await waitFor(() => expect(document.activeElement).toBe(none));
+      await settleReads();
+      await user.keyboard("{Enter}");
+      const box = scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
+      // The focus in the box starts the mappings' read, which lands before what follows.
+      await settleReads();
+      await user.keyboard(draft);
+      return box;
+    },
+    surface: "inside",
+  },
+  ...(["inside", "outside"] as const).map(
+    (surface): DraftControl => ({
+      draft: "evals-now",
+      fieldOf: (view) =>
+        within(view.container).queryByRole("combobox", {
+          name: CONTROL_LABELS.priority_to_advance,
+        }),
+      node: addablePriorityLine(surface),
+      open: async (view, user, draft) => {
+        // The sheet's first focus lands on the add control before the case presses anything.
+        await waitFor(() => expect(document.activeElement).toBe(addControlOf(view, surface)));
+        await user.click(addControlOf(view, surface));
+        const picker = (await pickerOf(view)) as HTMLSelectElement;
+        await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
+        await user.selectOptions(picker, draft);
+        return picker;
+      },
+      surface,
+    })
+  ),
+];
+
+// An Escape that ends an IME composition gives up what the reader was composing, not the control
+// they compose in: each control a reader types or picks a draft in stays open with the draft and
+// the focus in its field, and the press goes on unmarked and unstopped, as the key registry
+// leaves it, so it closes nothing around the control either - neither Details, a sheet on a phone
+// that closes on Escape, nor a panel listening on `document`. A plain Escape then closes the
+// control and not the sheet, as before.
+test("an Escape that ends an IME composition leaves each open control and its draft", async () => {
+  const user = userEvent.setup();
+  for (const control of DRAFT_CONTROLS) {
+    // What each Escape closed, in order.
+    const closed: string[] = [];
+    // Each Escape that went on past the control to `document`, where a panel listens.
+    const reached: KeyboardEvent[] = [];
+    const onDocument = (event: KeyboardEvent) => {
+      if (event.key === "Escape") reached.push(event);
+    };
+    document.addEventListener("keydown", onDocument);
+    const escapes = recordEscapes();
+    const view = draw(
+      <KeymapProvider>
+        <EscapeSheet onClose={() => closed.push("sheet")}>{control.node}</EscapeSheet>
+      </KeymapProvider>,
+      control.surface
+    );
+    try {
+      const field = await control.open(view, user, control.draft);
+      expect(field.value).toBe(control.draft);
+      expect(document.activeElement).toBe(field);
+
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+      await settleReads();
+      expect(control.fieldOf(view)).toBe(field);
+      expect(field.value).toBe(control.draft);
+      expect(document.activeElement).toBe(field);
+      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([false]);
+      expect(reached).toHaveLength(1);
+      expect(closed).toEqual([]);
+
+      await user.keyboard("{Escape}");
+      expect(control.fieldOf(view)).toBeNull();
+      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([false, true]);
+      expect(reached).toHaveLength(1);
+      expect(closed).toEqual([]);
+    } finally {
+      escapes.stop();
+      document.removeEventListener("keydown", onDocument);
+      undraw(view);
     }
   }
-  return { colours, offenders };
-}
+});
 
 /** The form an editor's box sits in. */
 function formOf(box: HTMLElement): HTMLFormElement {
@@ -5950,7 +6200,9 @@ function formOf(box: HTMLElement): HTMLFormElement {
 // refusal of a draft Dispatch would not take among them, is the page's or that focus indicator.
 test("the route and parent editors draw the page's field, with a border and a focus ring", async () => {
   const user = userEvent.setup();
-  const mainField = tokens(inputClasses(true)).filter((token) => !MAIN_FOCUS.includes(token));
+  const mainField = tokens(inputClasses(true)).filter(
+    (token) => !splitToken(token).variants.some((variant) => FOCUS_VARIANTS.includes(variant))
+  );
   for (const [field, label, saveLabel] of FIELD_EDITORS) {
     const view = draw(<OpenFieldForm field={field} onClose={() => undefined} />, "inside");
     try {
@@ -5994,7 +6246,8 @@ test("the route and parent editors draw the page's field, with a border and a fo
         if (refusal === null) throw new Error("the route box names no description");
         expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(pageFailedText)));
       }
-      const read = offPageTokens(formOf(box));
+      const form = formOf(box);
+      const read = offPageColours(`the ${field} editor`, [form, ...form.querySelectorAll("*")]);
       expect(read.offenders).toEqual([]);
       // A walk that found no colour would pass with nothing read.
       expect(read.colours).toBeGreaterThan(0);
@@ -6758,5 +7011,59 @@ test("inside NoTooltips an unsent reply draws in the page's colours, and its wor
     expect(words.filter((token) => tokens(textPrimaryOnSurface).includes(token))).toEqual([]);
   } finally {
     undraw(view);
+  }
+});
+
+// An answer the reader typed under a question that closed before they sent it is drawn inside
+// `NoTooltips` in the page's colours rather than `main`'s, as the unsent reply is, and its words
+// are the reader's, a value that breaks anywhere: a long run with no space wraps inside the box.
+test("inside NoTooltips an unsent answer draws in the page's colours, and its words break anywhere", async () => {
+  const user = userEvent.setup();
+  const typed = "y".repeat(200);
+  const open = openAsk({ id: "ask-unsent-inside" });
+  const openCard = draw(
+    <AskCard ask={open} getAskThread={async () => threadOf(open)} initialThread={threadOf(open)} />,
+    "inside"
+  );
+  try {
+    await settleReads();
+    await user.click(within(openCard.container).getByRole("textbox", { name: "Your answer" }));
+    await user.paste(typed);
+  } finally {
+    undraw(openCard);
+  }
+  const closed = openAsk({
+    id: "ask-unsent-inside",
+    resolution: {
+      actor: { id: "alice", kind: "user" },
+      at: "2026-10-08T03:00:00Z",
+      kind: "retracted",
+      reason: "A newer question supersedes this one.",
+    },
+    state: "resolved",
+  });
+  const closedCard = draw(
+    <AskCard
+      ask={closed}
+      getAskThread={async () => threadOf(closed)}
+      initialThread={threadOf(closed)}
+    />,
+    "inside"
+  );
+  try {
+    await settleReads();
+    const box = within(closedCard.container).getByTestId("ask-unsent-answer");
+    expect(classOf(box)).toEqual(expect.arrayContaining(tokens(pageLineBorder)));
+    expect(classOf(box).filter((token) => tokens(borderDefault).includes(token))).toEqual([]);
+    const note = classOf(within(box).getByText(/^This question closed before you sent/));
+    expect(note).toEqual(expect.arrayContaining(tokens(pageQuietText)));
+    expect(note.filter((token) => tokens(textMutedOnSurface).includes(token))).toEqual([]);
+    const words = classOf(within(box).getByText(typed));
+    expect(words).toEqual(
+      expect.arrayContaining([...tokens(pageInkText), "max-w-full", "[overflow-wrap:anywhere]"])
+    );
+    expect(words.filter((token) => tokens(textPrimaryOnSurface).includes(token))).toEqual([]);
+  } finally {
+    undraw(closedCard);
   }
 });
