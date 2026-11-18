@@ -288,11 +288,13 @@ func (c *guardClock) advance(d time.Duration) time.Time {
 // guardSignal is a kill that ends nothing of the machine's: it records each process the guard
 // killed, and the process leaves the fake /proc at once, as a killed process does. It runs on the
 // guard's loop, so it fails nothing itself: a process it cannot take out of the fake /proc is a
-// kill that failed, which the guard logs.
+// kill that failed, which the guard logs. afterKill, where a test sets it before the guard runs,
+// changes the pod after each kill, before the guard reads anything after it.
 type guardSignal struct {
-	proc   string
-	mu     sync.Mutex
-	killed []int
+	proc      string
+	mu        sync.Mutex
+	killed    []int
+	afterKill func(pid int)
 }
 
 type guardHandle struct {
@@ -319,6 +321,9 @@ func (h *guardHandle) Kill() error {
 	}
 	h.s.killed = append(h.s.killed, h.pid)
 	h.exited = true
+	if h.s.afterKill != nil {
+		h.s.afterKill(h.pid)
+	}
 	return nil
 }
 
@@ -1897,9 +1902,10 @@ func TestControllerPodMemoryGuardEndsTheGrowerBeforeForksThatReportTheirParentsS
 // there would name the command: the kernel back at 300 MiB, no growth over the window, and the
 // command 900 MiB larger, the most grown and the largest. The guard still ends the kernel, which
 // the band's reads name, and reports it at its size at the band's last reading and at the reading
-// at the mark. It reads the command's 1300 MiB only after the kill, as the command's size as of the
-// kill, so at the next reading, which has not fallen, the command has not grown since the kill and
-// nothing more ends.
+// at the mark. It reads the command's 1300 MiB only after the kill, and the command's size as of
+// the kill is the one the decision held, 400 MiB (INFRA-3531 R1: its size at the reading the kill
+// was sent at), so at the next reading, which has not fallen, the command has grown 900 MiB since
+// the kill and the guard ends it there.
 func TestControllerPodMemoryGuardEndsAtTheMarkTheProcessTheBandsReadsNameThoughAReadThereWouldNameAnother(t *testing.T) {
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlCommand: 400 * guardMiB})
 	rig := useGuardPod(t, pod, nil)
@@ -1934,9 +1940,13 @@ func TestControllerPodMemoryGuardEndsAtTheMarkTheProcessTheBandsReadsNameThoughA
 	}
 
 	rig.tick()
-	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
-		t.Fatalf("at the reading after the kill, not fallen and with the command at its size as of the kill, the guard killed %v, want the kernel alone; its log:\n%s",
-			kills, rig.log())
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel, ctlCommand}) {
+		t.Fatalf("at the reading after the kill, not fallen and with the command 900 MiB above the size the decision held, the guard killed %v, want the kernel and then the command %d; its log:\n%s",
+			kills, ctlCommand, rig.log())
+	}
+	ended = fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", ctlCommand, 1300*guardMiB, guardHigh)
+	if got := guardLines(log, "ended "); len(got) != 2 || !strings.HasPrefix(got[1], ended) {
+		t.Fatalf("the ended lines are %q, want the second starting %q", got, ended)
 	}
 }
 
@@ -2582,6 +2592,72 @@ func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWid
 	}
 	if reports := waitingReports(m); len(reports) != 2 || reports[1].PID != grower.pid {
 		t.Fatalf("the controller's manager holds the reports %+v, want the parent's and then the grower's", reports)
+	}
+}
+
+// A kill on the band's held reads in the controller's tree has as each process's size as of it the
+// size the decision read, and not a read made after the kill (INFRA-3531 R1), in the shape of
+// `8g-latepool-q56hm` at 7356e0f6. The shell command Oh My Pi ran has started three growers, pids
+// 1710 to 1712, which step 64 MiB at each reading of the band; at the first reading at the mark,
+// 3500 MiB, the guard ends pid 1712, the largest of equal growth, on the band's held sizes. The two
+// left step 64 MiB between that reading and the guard's read after the kill, and then not again;
+// at the next reading, 3528 MiB and not fallen, each has grown 64 MiB since the kill, and the guard
+// ends pid 1711 there, where a guard that kept the read after the kill waited.
+func TestControllerPodMemoryGuardMeasuresGrowthSinceAKillOnHeldSizesFromTheSizesTheDecisionRead(t *testing.T) {
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	sizes := map[int]uint64{1710: 200 * guardMiB, 1711: 210 * guardMiB, 1712: 220 * guardMiB}
+	// put writes each grower at its size.
+	put := func() {
+		for pid, size := range sizes {
+			pod.add(guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: size})
+		}
+	}
+	// step has each grower step 64 MiB.
+	step := func() {
+		for pid := range sizes {
+			sizes[pid] += 64 * guardMiB
+		}
+		put()
+	}
+	put()
+	pod.setAnon(3200 * guardMiB)
+	rig := useGuardPod(t, pod, nil)
+	// The growers left step between the reading at the mark and the guard's read after its kill.
+	rig.signal.afterKill = func(pid int) {
+		delete(sizes, pid)
+		if pid == 1712 {
+			step()
+		}
+	}
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	for _, inTheBand := range []uint64{3300, 3400} {
+		step()
+		pod.setAnon(inTheBand * guardMiB)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+
+	pod.setAnon(3500 * guardMiB)
+	rig.tick()
+	if got, want := guardEndedLines(log), []guardEnded{{1712, "grew", "band", 0}}; !slices.Equal(got, want) {
+		t.Fatalf("at the first reading at the mark the guard ended %+v, want %+v; its log:\n%s", got, want, rig.log())
+	}
+
+	pod.setAnon(3528 * guardMiB)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{1712, 1711}) {
+		t.Fatalf("at the first reading after the exit the guard killed %v, want [1712 1711]; its log:\n%s", kills, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=1711 role=controller size=%d reading=%d ", 402*guardMiB, 3528*guardMiB)
+	if got := guardLines(log, "ended "); len(got) != 2 || !strings.HasPrefix(got[1], ended) {
+		t.Fatalf("the ended lines are %q, want the second starting %q", got, ended)
+	}
+	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up: %q", stopped)
 	}
 }
 

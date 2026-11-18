@@ -1315,16 +1315,17 @@ func TestMemoryGuardReadsNoSizeWhileARiseIsGivenUp(t *testing.T) {
 // The first kill of a rise comes at its first reading at or above the mark, on the reads the band
 // holds (INFRA-3531 T16): where one of the held processes grew by them, the guard sends it before
 // it reads any smaps at that reading, its own or the hour's scan for the largest process's, and
-// only then assesses the reading, whose sizes are every process's size as of the kill and the
-// window's newest reads. Pid 301 grows 20 MiB between the two readings in the band and pid 300
+// only then assesses the reading, whose sizes are the window's newest reads; each process's size
+// as of the kill is the one the decision read, the band's (INFRA-3531 R1: its size at the reading
+// the kill was sent at). Pid 301 grows 20 MiB between the two readings in the band and pid 300
 // none, so by the band's reads pid 301 is the one that grew; pid 300 then grows 60 MiB as the
 // reading reaches the mark, which a read there would rank first. The guard ends pid 301, at the
-// size the band read, and reads pid 300's growth only after the kill. The reading at the mark is a
-// new high of the hour 200 MiB above the high the last scan started at, more than 1% of the limit,
-// so a scan starts at that reading, and it reads every process's smaps, the agent's among them,
-// only after the kill. Where a scan runs as the guard opens its target, the rig lets it finish
-// first, as a pod whose CPU the host throttles may, so a scan started before the kill shows all
-// its reads before it.
+// size the band read, and reads pid 300's growth only after the kill, where it counts as growth
+// since the kill. The reading at the mark is a new high of the hour 200 MiB above the high the last
+// scan started at, more than 1% of the limit, so a scan starts at that reading, and it reads every
+// process's smaps, the agent's among them, only after the kill. Where a scan runs as the guard opens
+// its target, the rig lets it finish first, as a pod whose CPU the host throttles may, so a scan
+// started before the kill shows all its reads before it.
 func TestMemoryGuardEndsAtTheFirstReadingAtTheMarkOnTheBandsReadsBeforeItReadsAnySmaps(t *testing.T) {
 	pod := newFakePod(t)
 	grower := fakeProcess{pid: 300, ppid: 100, args: []string{"python3", "grow.py"}, anon: 400 * mib}
@@ -1374,14 +1375,14 @@ func TestMemoryGuardEndsAtTheFirstReadingAtTheMarkOnTheBandsReadsBeforeItReadsAn
 	}
 	now := h.clock.Now()
 	for _, want := range []struct {
-		key  procKey
-		size uint64
-	}{{procKey{pid: 300, start: 3000}, 460 * mib}, {procKey{pid: 301, start: 3010}, 600 * mib}} {
-		if got, ok := h.g.atKill[want.key]; !ok || got.size != want.size || !got.seen.Equal(now) {
-			t.Fatalf("the size as of the kill of pid %d is %+v (kept %t), want %d read at the reading at the mark", want.key.pid, got, ok, want.size)
+		key          procKey
+		atKill, read uint64
+	}{{procKey{pid: 300, start: 3000}, 400 * mib, 460 * mib}, {procKey{pid: 301, start: 3010}, 600 * mib, 600 * mib}} {
+		if got, ok := h.g.atKill[want.key]; !ok || got.size != want.atKill || !got.seen.Equal(now) {
+			t.Fatalf("the size as of the kill of pid %d is %+v (kept %t), want %d, the band's read the decision ended on", want.key.pid, got, ok, want.atKill)
 		}
-		if reads := h.g.sizes[want.key].window; len(reads) == 0 || reads[len(reads)-1] != (sizeRead{at: now, size: want.size}) {
-			t.Fatalf("the reads of pid %d are %+v, want the newest %d at the reading at the mark", want.key.pid, reads, want.size)
+		if reads := h.g.sizes[want.key].window; len(reads) == 0 || reads[len(reads)-1] != (sizeRead{at: now, size: want.read}) {
+			t.Fatalf("the reads of pid %d are %+v, want the newest %d at the reading at the mark", want.key.pid, reads, want.read)
 		}
 	}
 	if len(h.g.atKill) != 2 {
@@ -3830,6 +3831,67 @@ func TestMemoryGuardCountsAProcessFirstReadAfterAKillAsGrownOncePastItsFirstRead
 	}
 }
 
+// A kill on the band's held reads has as each process's size as of it the size the decision read,
+// and not a read made after the kill (INFRA-3531 R1: a process's growth since the kill is its size
+// at this reading less its size at the reading the kill was sent at). The shape of
+// `8g-latepool-q56hm` at 7356e0f6: three growers, pids 800 to 802, step 64 MiB at each reading of
+// the band, and at the first reading at the mark, 3500 MiB, the guard ends pid 802, the largest of
+// equal growth, on the band's held sizes. The two left step 64 MiB between that reading and the
+// guard's read after the kill, and then not again; the next reading, 100 ms later, is 3528 MiB, not
+// fallen. At that reading, pid 802 having exited at its kill, each of them has grown 64 MiB since
+// the kill, and the guard ends the larger, pid 801. A guard that kept the read after the kill as
+// their sizes as of it saw no growth there and waited, as q56hm's did for two readings.
+func TestMemoryGuardMeasuresGrowthSinceAKillOnHeldSizesFromTheSizesTheDecisionRead(t *testing.T) {
+	pod := newFakePod(t)
+	growers := []*fakeProcess{
+		{pid: 800, ppid: 100, start: 6000, args: []string{"python3", "grow.py"}, anon: 200 * mib},
+		{pid: 801, ppid: 100, start: 6001, args: []string{"python3", "grow.py"}, anon: 210 * mib},
+		{pid: 802, ppid: 100, start: 6002, args: []string{"python3", "grow.py"}, anon: 220 * mib},
+	}
+	pod.add(agent(2 * gib))
+	for _, g := range growers {
+		pod.add(*g)
+	}
+	pod.setAnon(3200 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	exit := exitFreeing(pod, 0)
+	h.signal.onKill = func(pid int) bool {
+		// The growers left step between the reading at the mark and the guard's read after the
+		// kill.
+		for _, g := range growers {
+			if g.pid != pid {
+				pod.resize(g, g.anon+64*mib)
+			}
+		}
+		return exit(pid)
+	}
+	h.run()
+	for _, inTheBand := range []uint64{3300, 3400} {
+		for _, g := range growers {
+			pod.resize(g, g.anon+64*mib)
+		}
+		pod.setAnon(inTheBand * mib)
+		h.tick()
+	}
+	h.requireKilled()
+
+	pod.setAnon(3500 * mib)
+	h.tick()
+	h.requireKilled(802)
+	requireChosenBy(h, 802, "grew", "band")
+
+	pod.setAnon(3528 * mib)
+	h.tick()
+	h.requireKilled(802, 801)
+	ended := fmt.Sprintf("ended pid=801 role=tester size=%d reading=%d ", 402*mib, 3528*mib)
+	if got := h.log.with(ended); len(got) != 1 {
+		t.Fatalf("the ended lines are %q, want one starting %q", h.log.with("ended"), linePrefix+ended)
+	}
+	if stopped := h.log.with("stopped"); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up: %q", stopped)
+	}
+}
+
 // A killed process that has not exited when the wait passes is waited on no longer. At the reading
 // at which the wait has passed, the reading not fallen, the guard ends the next in the order where
 // a process it may end has grown since the kill, and otherwise gives the rise up with reason not
@@ -4073,7 +4135,7 @@ func TestMemoryGuardMeasuresGrowthSinceAKillAllocatingNothingForAProcessReadBefo
 		cs[i] = candidate{Process: &Process{PID: 1000 + i, StartTime: uint64(i)}, size: uint64(i) * mib}
 	}
 	now := testStart
-	h.g.keepKillSizes(now, cs)
+	h.g.keepKillSizes(now, cs, nil)
 	allocs := testing.AllocsPerRun(100, func() {
 		now = now.Add(Defaults().Interval)
 		if h.g.grownSinceKill(now, cs) {
