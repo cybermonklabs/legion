@@ -204,9 +204,6 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 	for _, row := range stored {
 		rows[runAt{issue: row.Issue, place: row.Place}] = row
 	}
-	over := func(run runAt, now *record.Issue, restarted bool) (bool, error) {
-		return e.runOver(ctx, tx, runs, run, now, restarted, read)
-	}
 	// The runs the store holds open.
 	for _, row := range stored {
 		if row.Run != record.RunOpen {
@@ -218,7 +215,7 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			return err
 		}
 		restarted := starting != nil && starting.issue == row.Issue && starting.place == row.Place
-		ended, err := over(run, now, restarted)
+		ended, err := e.runOver(ctx, tx, runs, run, now, restarted, read)
 		if err != nil {
 			return err
 		}
@@ -252,10 +249,10 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 	began := &factRuns{ends: runs.ends, closed: map[string]bool{}}
 	for _, key := range order {
 		stood, err := stoodThen(key)
-		if err != nil || stood == nil {
-			if err != nil {
-				return err
-			}
+		if err != nil {
+			return err
+		}
+		if stood == nil {
 			continue
 		}
 		step, ok := standingStep(*stood)
@@ -266,17 +263,17 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			continue
 		}
 		run, open, err := e.uncountedRunOpen(ctx, tx, began, *stood, stoodThen)
-		if err != nil || !open {
-			if err != nil {
-				return err
-			}
+		if err != nil {
+			return err
+		}
+		if !open {
 			continue
 		}
 		now, err := read(key)
 		if err != nil {
 			return err
 		}
-		ended, err := over(run, now, false)
+		ended, err := e.runOver(ctx, tx, runs, run, now, false, read)
 		if err != nil {
 			return err
 		}

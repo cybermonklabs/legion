@@ -52,10 +52,11 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 		if !ok || counted[runAt{issue: issue.Key, place: step.place}] {
 			continue
 		}
-		if _, open, err := e.uncountedRunOpen(ctx, tx, booting, issue, read); err != nil || !open {
-			if err != nil {
-				return 0, err
-			}
+		_, open, err := e.uncountedRunOpen(ctx, tx, booting, issue, read)
+		if err != nil {
+			return 0, err
+		}
+		if !open {
 			continue
 		}
 		agent, startedAt, err := e.upgradedStart(ctx, tx, issue, step.at)
