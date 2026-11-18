@@ -820,14 +820,16 @@ type keptRoleHandover struct {
 // A walk that failed is not one that made no progress: it is waited out on a widening cadence
 // (roleKeepDrainBackoff) and its error is carried out of the handover. A walk or a read the
 // server refused under the listener's grant (bus.ErrPublishDenied) is the exception: the server
-// refuses it again however often it is sent, so the handover ends at once with that refusal
-// carried out, rather than holding the role's guard until its window ends, and the lane is left to
-// the role's next claim and to the sweep. A walk whose read of the role's claim record did not
-// answer is a walk that failed (roleKeepDrainHolds), so the pass after its pause
-// resolves the holder again rather than forwarding on a claim no read answered. A read that did
-// not answer - the lane head's, on whichever pass it was made, or the holder's resolution behind
-// one - says nothing about the holder, so the role's claim record decides whether the handover
-// reads again (retry, readRoleClaimHolder): a record naming a session, live or lapsed, is a lane
+// refuses it again however often it is sent, so the handover ends with the walk or the read that
+// met the refusal, carrying it out, rather than holding the role's guard until its window ends,
+// and the lane is left to the role's next claim and to the sweep. A refused cursor write is named
+// only when its publish's own wait ends (sendStored), so that walk still costs that wait. A walk
+// whose read of the role's claim record did not answer is a walk that failed (roleKeepDrainHolds),
+// so the pass after its pause resolves the holder again rather than forwarding on a claim no read
+// answered. A read that did not answer - the lane head's, on whichever pass it was made, or the
+// holder's resolution behind one - says nothing about the holder, so the role's claim record
+// decides whether the handover reads again (retry, readRoleClaimHolder): a record naming a
+// session, live or lapsed, is a lane
 // whose copies have a holder waiting, so the read is waited out the same way, on any pass
 // including the first, and its failure is carried out too, which lifts a handover that ends still
 // failing above debug; a role no record names - and a record that could not be read either, which
