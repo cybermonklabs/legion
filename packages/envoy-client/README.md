@@ -581,8 +581,9 @@ Every Dispatch the client reaches runs the keyed layer on every `POST` and `PATC
 whatever its failure says of that layer: a transport failure, a silence cut, a gateway's answer
 and Dispatch's own answer alike. Nothing is asked first: the client reads no `/healthz` and keeps
 no memory of which Dispatch runs the layer. A Dispatch older than the layer would run a retried
-write a second time, so a deployment moves its Dispatch to a build with the layer before its
-sessions take a client of this release.
+write a second time, and one whose layer passes a caller it cannot resolve on to the handler runs
+that write with no key, so a deployment moves its Dispatch to a build whose keyed layer answers
+that caller itself before its sessions take a client of this release.
 
 A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
