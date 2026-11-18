@@ -1,0 +1,102 @@
+{
+  "issue_key": "ANS-1",
+  "ask_id": "00000000-0000-4000-8000-000000000001",
+  "sessions": {
+    "A": "session-a",
+    "B": "session-b",
+    "C": "session-c",
+    "D": "session-d"
+  },
+  "copies": [
+    {
+      "reply": "first",
+      "reader": "A",
+      "topic": "notifications.agent.session-a",
+      "relation": "replied_on_your_ask",
+      "envelope": {
+        "event_id": "dispatch-1",
+        "source": "dispatch",
+        "source_event_id": "1",
+        "topic": "notifications.agent.session-a",
+        "dedupe_key": "dispatch-1",
+        "issued_at": 1767225601000,
+        "payload_summary": "ANS-1 comment created: Which pool size do you need?",
+        "payload": "{\"id\":1,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":1,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:02Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Which pool size do you need?\",\"created_at\":\"2026-01-01T00:00:03Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000002\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-1",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "reply": "first",
+      "reader": "B",
+      "topic": "notifications.agent.session-b",
+      "relation": "commented_on_an_issue",
+      "envelope": {
+        "event_id": "dispatch-1",
+        "source": "dispatch",
+        "source_event_id": "1",
+        "topic": "notifications.agent.session-b",
+        "dedupe_key": "dispatch-1",
+        "issued_at": 1767225601000,
+        "payload_summary": "ANS-1 comment created: Which pool size do you need?",
+        "payload": "{\"id\":1,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":1,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:02Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Which pool size do you need?\",\"created_at\":\"2026-01-01T00:00:03Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000002\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-1",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "reply": "first",
+      "reader": "C",
+      "topic": "notifications.agent.session-c",
+      "relation": "replied_on_your_ask",
+      "envelope": {
+        "event_id": "dispatch-1",
+        "source": "dispatch",
+        "source_event_id": "1",
+        "topic": "notifications.agent.session-c",
+        "dedupe_key": "dispatch-1",
+        "issued_at": 1767225601000,
+        "payload_summary": "ANS-1 comment created: Which pool size do you need?",
+        "payload": "{\"id\":1,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":1,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:02Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Which pool size do you need?\",\"created_at\":\"2026-01-01T00:00:03Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000002\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-1",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "reply": "first",
+      "reader": null,
+      "topic": "notifications.dispatch.issue.ANS-1.comment.created",
+      "relation": null,
+      "envelope": {
+        "event_id": "dispatch-1",
+        "source": "dispatch",
+        "source_event_id": "1",
+        "topic": "notifications.dispatch.issue.ANS-1.comment.created",
+        "dedupe_key": "dispatch-1",
+        "issued_at": 1767225601000,
+        "payload_summary": "ANS-1 comment created: Which pool size do you need?",
+        "payload": "{\"id\":1,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":1,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:02Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Which pool size do you need?\",\"created_at\":\"2026-01-01T00:00:03Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000002\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-1",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "reply": "third",
+      "reader": "A",
+      "topic": "notifications.agent.session-a",
+      "relation": "replied_on_your_ask",
+      "envelope": {
+        "event_id": "dispatch-2",
+        "source": "dispatch",
+        "source_event_id": "2",
+        "topic": "notifications.agent.session-a",
+        "dedupe_key": "dispatch-2",
+        "issued_at": 1767225604000,
+        "payload_summary": "ANS-1 comment created: Four connections will do.",
+        "payload": "{\"id\":2,\"issue_key\":\"ANS-1\",\"artifact_id\":null,\"project\":\"ANS\",\"seq\":2,\"type\":\"comment.created\",\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-01-01T00:00:05Z\",\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000001\",\"ask_question\":\"Which database backs the queue?\",\"ask_sessions\":[\"session-a\",\"session-c\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"body\":\"Four connections will do.\",\"created_at\":\"2026-01-01T00:00:06Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000003\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"quiet\":false}",
+        "trace_id": "dispatch-2",
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      }
+    }
+  ]
+}
