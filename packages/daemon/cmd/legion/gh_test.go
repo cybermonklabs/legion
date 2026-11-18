@@ -861,13 +861,14 @@ func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...st
 // testGhChildEnviron is what this package's test binary, run as `legion`, hands gh beside the
 // allowlist (ghChildTestEnviron): testMainEnv, so the `gh` wrapper gh's git runs as its credential
 // helper runs this binary as `legion` again; every variable of environ the stand-in real gh of
-// these tests reads (GH_STANDIN_*, and the guard's visibility read's own variable, which marks
-// the read the stand-ins answer public); and the pairs testGhChildEnv names. None of these is
-// one ghChildEnviron keeps, which is the point of naming them here and nowhere in the binary.
+// these tests reads (GH_STANDIN_*); and the pairs testGhChildEnv names. None of these is one
+// ghChildEnviron keeps, which is the point of naming them here and nowhere in the binary. The
+// stand-ins tell the guard's visibility read by its argv, as the real gh would have to
+// (ghStandInPrefix), so no Legion variable naming that read is handed on.
 func testGhChildEnviron(environ []string) []string {
 	out := []string{testMainEnv + "=1"}
 	for _, pair := range environ {
-		if name, _, _ := strings.Cut(pair, "="); strings.HasPrefix(name, "GH_STANDIN_") || name == leakguard.VisibilityReadVar {
+		if name, _, _ := strings.Cut(pair, "="); strings.HasPrefix(name, "GH_STANDIN_") {
 			out = append(out, pair)
 		}
 	}
@@ -1130,22 +1131,26 @@ func TestWithGitHubUseHTTPPathAddsToGitsConfiguration(t *testing.T) {
 // ghStandInPrefix is what a stand-in real gh of this package answers with first, and what every
 // one of them carries after any line of its own that records its run (loggingGh). It answers
 // `[<command>] --help` with the saved help of that command, gh's own for none, which is the help
-// the command resolver reads; and it answers the shared public leak check's own visibility read
-// — the one call `legion gh` hands gh without checking it — with a visibility, the word
-// GH_STANDIN_VISIBILITY names or public, recording it in GH_STANDIN_RECORD where the test names
-// one. Without that second answer the guard's read of a destination's visibility would get a
-// stand-in's ordinary output and refuse every call it cleared, since a visibility it cannot read
+// the command resolver reads; and it answers the leak guard's own visibility reads — `gh api
+// --hostname github.com repos/<slug> [--include] --jq .visibility`, and the GraphQL read `gh api
+// --hostname github.com graphql --include -f query=… -f owner=… -f name=…` — with a visibility,
+// the word GH_STANDIN_VISIBILITY names or public, recording it in GH_STANDIN_RECORD where the test
+// names one. It tells those reads by their argv, as the real gh would have to: `legion gh` runs gh
+// from an allowlist of its environment, which holds no Legion variable naming the read
+// (ghChildEnviron). Without that answer the guard's read of a destination's visibility would get
+// a stand-in's ordinary output and refuse every call it cleared, since a visibility it cannot read
 // is a setup failure.
 func ghStandInPrefix(help string) string {
 	return "#!/bin/sh\nfor last; do :; done\n" +
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
 		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
-		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n" +
+		"case \" $* \" in\n" +
+		"\\ api\\ --hostname\\ github.com\\ *\\ --jq\\ .visibility\\ |\\ api\\ --hostname\\ github.com\\ graphql\\ --include\\ -f\\ query=*\\ -f\\ owner=*\\ -f\\ name=*\\ )\n" +
 		"  printf 'visibility %s\\n' \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
 		"  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n" +
-		"  exit 0\n" +
-		"fi\n"
+		"  exit 0;;\n" +
+		"esac\n"
 }
 
 // ghRefusal is what the stand-in checks of this package print when they refuse a `legion gh`
@@ -1880,7 +1885,10 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	script := strings.Replace(ghStandInPrefix(help), "  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n  exit 0\n", "  echo unavailable >&2\n  exit 1\n", 1) + "exit 0\n"
+	script := strings.Replace(ghStandInPrefix(help), "  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n  exit 0;;\n", "  echo unavailable >&2\n  exit 1;;\n", 1) + "exit 0\n"
+	if !strings.Contains(script, "echo unavailable") {
+		t.Fatal("the stand-in's visibility answer was not replaced, so this test would read a visibility")
+	}
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
