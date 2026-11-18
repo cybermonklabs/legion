@@ -25,12 +25,18 @@ function oneLineJson(text: string): string {
   );
 }
 
-/** Each retro's rating with its reason, in the order the retros ran. The reason is a JSON string
- *  with no line break in it, so a quotation mark or a line break of any kind in the reason keeps
- *  the issue on one line. */
+/** The most of the scale a retro rates the plan on: each rating prints out of it. It is the
+ *  contract's `LEGION_PLAN_RATING_MOST`, typed here so that the dispatch command's bundle stays
+ *  without the daemon's API module, `@legion/contracts/legion-api`; the plans command's test holds
+ *  the two together. */
+const PLAN_RATING_MOST = 5;
+
+/** Each retro's rating out of `PLAN_RATING_MOST` with its reason, in the order the retros ran.
+ *  The reason is a JSON string with no line break in it, so a quotation mark or a line break of
+ *  any kind in the reason keeps the issue on one line. */
 function ratingsText(ratings: readonly PlanRating[] | null): string {
   if (ratings === null || ratings.length === 0) return "ratings none";
-  return `ratings ${ratings.map((rating) => `${rating.rating}/5 ${oneLineJson(rating.reason)}`).join(", ")}`;
+  return `ratings ${ratings.map((rating) => `${rating.rating}/${PLAN_RATING_MOST} ${oneLineJson(rating.reason)}`).join(", ")}`;
 }
 
 /** The issue's time in whole hours and the minutes left, rounded down, or `-` where Dispatch counts

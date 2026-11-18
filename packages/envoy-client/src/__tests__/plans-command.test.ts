@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type FinishedIssue,
   type PlanRating,
@@ -7,6 +8,7 @@ import {
   PROJECT_KEY_RULE,
   type ProjectPlans,
 } from "@legion/contracts";
+import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "@legion/contracts/legion-api";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type FakeDispatchServer,
@@ -203,6 +205,9 @@ const config = {
   error: null,
 };
 
+/** The repository's root, which the Dispatch docs pages sit under. */
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
+
 /** The route of the plans read of `project`. */
 function plansPath(project: string): string {
   return `/api/v1/projects/${project}/plans`;
@@ -257,6 +262,68 @@ describe("dispatch plans", () => {
       "INFRA: 1 finished issues",
       'INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the first merge.", 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 5h8m failed steps 0',
     ]);
+  });
+
+  // Each rating prints out of the most of the scale, which the command types and the contract
+  // states as the daemon's. The ratings here are the contract's two ends and the one above its
+  // least, in an order no sort of their scores or step ids gives, so a line that printed a rating
+  // out of another number, or out of itself, reads differently.
+  test("each rating prints out of the most of the contract's scale", async () => {
+    const [least, most] = [LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST];
+    const answer: ProjectPlans = {
+      project: "INFRA",
+      issues: [
+        {
+          ...ratedThrice,
+          ratings: [
+            {
+              rating: most,
+              reason: "The plan fit the first merge.",
+              step_id: "5a6b7c8d-9e0f-5a1b-8c2d-3e4f5a6b7c8d",
+              ended_at: "2026-11-17T05:10:00Z",
+            },
+            {
+              rating: least,
+              reason: "The plan sent the second merge back.",
+              step_id: "0b1c2d3e-4f5a-5b6c-9d7e-8f9a0b1c2d3e",
+              ended_at: "2026-11-17T07:00:00Z",
+            },
+            {
+              rating: least + 1,
+              reason: "The plan had no rollback step.",
+              step_id: "9f0a1b2c-3d4e-5f6a-8b7c-9d0e1f2a3b4c",
+              ended_at: "2026-11-17T08:55:00Z",
+            },
+          ],
+        },
+      ],
+    };
+
+    const { result } = await readPlans({ project: "INFRA" }, answer);
+
+    expect(result.text.split("\n")).toEqual([
+      "INFRA: 1 finished issues",
+      `INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings ${most}/${most} "The plan fit the first merge.", ${least}/${most} "The plan sent the second merge back.", ${least + 1}/${most} "The plan had no rollback step." time 5h8m failed steps 0`,
+    ]);
+  });
+
+  // The guide for agents spells out the line, and so states the scale twice: each rating out of
+  // the most, and the scale's two ends. Each statement is read from the page's Plans row and held
+  // to the contract's scale, so a new scale fails here until the page states it.
+  test("the guide for agents' Plans row states the contract's scale", () => {
+    const page = readFileSync(
+      join(REPO_ROOT, "docs", "site", "src", "content", "docs", "dispatch", "for-agents.md"),
+      "utf8"
+    );
+    const rows = page.split("\n").filter((line) => line.startsWith("| Plans |"));
+    expect(rows).toHaveLength(1);
+    const row = rows[0] ?? "";
+    const outOf = [...row.matchAll(/<rating>\/(\d+)/g)].map((match) => Number(match[1]));
+
+    expect(outOf).toEqual([LEGION_PLAN_RATING_MOST]);
+    expect(row).toContain(
+      `each rating is the one a retro gave the plan, ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, with its reason`
+    );
   });
 
   // JSON escapes each character below U+0020, so a line feed in a reason stays on the line. It
