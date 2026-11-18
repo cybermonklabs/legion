@@ -770,7 +770,7 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 }
 
 // The daemon holds the operator's pod to the exchange identity's names, before its boot and for
-// `legion start --check-config`, only where runtime.kubernetes.agent_secrets names an
+// `legion config check`, only where runtime.kubernetes.agent_secrets names an
 // exchange_audience. With no agent_secrets block, or one that names no exchange_audience, an
 // operator's AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_TOKEN_FILE, a volume named
 // agent-secrets-exchange and a mount at /var/run/legion/agent-secrets-exchange are the operator's,

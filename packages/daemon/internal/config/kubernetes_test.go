@@ -435,7 +435,7 @@ func TestAPodRaisingALimitAloneStaysGuaranteed(t *testing.T) {
 }
 
 // A cpu or memory request is held to its settled limit, whichever side the file set, and must be a
-// positive quantity; each refusal names the key, as `legion start --check-config` prints it.
+// positive quantity; each refusal names the key, as `legion config check` prints it.
 func TestAPodRequestMustBeAQuantityNoGreaterThanItsLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name, resources, want string
@@ -718,7 +718,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			// The tree-volume layout's key (LEGION-632): refused naming the key that replaced it, not
-			// as a generic unknown key, so --check-config says what to edit.
+			// as a generic unknown key, so `legion config check` says what to edit.
 			name: "the tree-volume layout's tree_volume",
 			body: kubernetesFile + "    tree_volume: 30Gi\n",
 			want: "runtime.kubernetes.tree_volume is now issue_volume: one volume per issue",

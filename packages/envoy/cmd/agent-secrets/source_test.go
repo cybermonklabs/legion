@@ -26,11 +26,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
-	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -229,20 +227,8 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 // broker's address, while an ordinary id still verifies and is answered.
 func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	key, err := proof.NewKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	thumbprint, err := proof.Thumbprint(&key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDir := writeKeyDir(t, key, testEnrollmentID)
-	verifier := &proof.Verifier{Skew: time.Minute,
-		Lookup: func(_ context.Context, id string) (string, bool, error) {
-			return thumbprint, id == testEnrollmentID, nil
-		},
-		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+	key := newProofKey(t)
+	keyDir := key.keyDir
 	var reached, verified atomic.Int32
 	// The handler reads broker.URL, so broker is assigned before the server serves: Start, which
 	// sets the URL, runs after the assignment and before the goroutine that serves.
@@ -253,7 +239,7 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 			return
 		}
 		reached.Add(1)
-		if _, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), r.Method, broker.URL+r.URL.Path, time.Now()); err != nil {
+		if err := key.verify(r, broker.URL); err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"code":"PROOF_INVALID","error":"the proof does not verify"}`))
 			return

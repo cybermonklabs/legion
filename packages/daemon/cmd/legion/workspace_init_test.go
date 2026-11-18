@@ -312,19 +312,19 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			name: "no subcommand",
 			args: func(*issueVolume) []string { return nil },
 			code: 2,
-			says: func(*issueVolume) string { return subcommandUsage("workspace-init", workspaceInitCommands) },
+			says: func(*issueVolume) string { return "Usage:\n  legion workspace-init [flags]\n" },
 		},
 		{
 			name: "an unknown subcommand",
 			args: func(v *issueVolume) []string { return append([]string{"init"}, v.args("LEGION-42")[1:]...) },
 			code: 2,
-			says: func(*issueVolume) string { return `unknown subcommand "init"` },
+			says: func(*issueVolume) string { return `unknown command "init" for "legion workspace-init"` },
 		},
 		{
 			name: "the one-container invocation, with no subcommand",
 			args: func(v *issueVolume) []string { return v.args("LEGION-42")[1:] },
 			code: 2,
-			says: func(*issueVolume) string { return `unknown subcommand "--issue"` },
+			says: func(*issueVolume) string { return `unknown flag: --issue` },
 		},
 		{
 			name: "no --issue",

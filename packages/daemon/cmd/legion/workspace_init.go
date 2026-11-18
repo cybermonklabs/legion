@@ -3,13 +3,15 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -42,72 +44,60 @@ func secretFileFromEnv(name string) (string, error) {
 	return file, nil
 }
 
-// workspaceInitCommands is `legion workspace-init`, the Kubernetes runtime's init containers, which
-// prepare a pod's disk before the main container's worker-shim starts, and the repository cache's
-// process, and the one list of them `legion workspace-init --help` names. An issue pod runs two of
-// them, which prepare the issue's clone and jj workspace on the pod's own disk: `fetch` is the
-// first, the one process of the pod that holds the provisioning token, in a container that mounts
-// nothing an agent of the issue can write; `provision` is the last, all the disk's work, in a
-// container the provisioning Secret is not mounted in. The controller's pod (`controller: daemon`)
-// runs none. A repository cache's pod runs `cache` as its one container, on its own volume, until
-// it is stopped. Each one's log lines go to stdout and its refusals and failures to stderr —
-// together the init log the runtime quotes — with exit 1.
-var workspaceInitCommands = map[string]command{
-	"fetch":     runWorkspaceFetch,
-	"provision": runWorkspaceProvision,
-	"cache":     runWorkspaceCache,
+// newWorkspaceInitCommand is `legion workspace-init`, the Kubernetes runtime's init containers,
+// which prepare a pod's disk before the main container's worker-shim starts, and the repository
+// cache's process. An issue pod runs two of them, which prepare the issue's clone and jj workspace
+// on the pod's own disk: `fetch` is the first, the one process of the pod that holds the
+// provisioning token, in a container that mounts nothing an agent of the issue can write;
+// `provision` is the last, all the disk's work, in a container the provisioning Secret is not
+// mounted in. The controller's pod (`controller: daemon`) runs none. A repository cache's pod runs
+// `cache` as its one container, on its own volume, until it is stopped. Each one's log lines go to
+// stdout and its refusals and failures to stderr — together the init log the runtime quotes — with
+// exit 1.
+func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
+	return group(&cobra.Command{
+		Use:    "workspace-init",
+		Short:  "an issue pod's init containers: fetch the repository, provision the issue's workspace; and a repository cache pod's process",
+		Hidden: true,
+	},
+		newWorkspaceFetchCommand(stdout, stderr),
+		newWorkspaceProvisionCommand(stdout, stderr),
+		newWorkspaceCacheCommand(stdout, stderr),
+	)
 }
 
-func runWorkspaceInit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "workspace-init", workspaceInitCommands, args, stdout, stderr)
+func newWorkspaceFetchCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{Use: "fetch --repo <owner>/<repo> --feed <dir> [--cache-url http://<cache>:8418]", Short: "fill the pod's feed directory with the repository, from its cache or from GitHub", Hidden: true, Args: noArguments}
+	repo := cmd.Flags().String("repo", "", "repository as <owner>/<name> (required)")
+	feed := cmd.Flags().String("feed", "", "the pod's feed directory, the container's own (required)")
+	cacheURL := cmd.Flags().String("cache-url", os.Getenv(cacheURLEnv), "the repository cache to fill the feed from before GitHub (default $"+cacheURLEnv+", set by the runtime while the cache is ready)")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		return workspaceInitExit(cmd, workspaceFetch(ctx, *repo, *feed, *cacheURL, stdout), stderr)
+	})
+	return cmd
 }
 
-func runWorkspaceFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("workspace-init fetch", "usage: "+workspaceFetchUsage, stderr)
-	repo := flags.String("repo", "", "repository as <owner>/<name> (required)")
-	feed := flags.String("feed", "", "the pod's feed directory, the container's own (required)")
-	cacheURL := flags.String("cache-url", os.Getenv(cacheURLEnv), "the repository cache to fill the feed from before GitHub (default $"+cacheURLEnv+", set by the runtime while the cache is ready)")
-	if code, ok := parseWorkspaceInitFlags(flags, args, stderr); !ok {
-		return code
-	}
-	return workspaceInitExit(flags, workspaceFetch(ctx, *repo, *feed, *cacheURL, stdout), stderr)
-}
-
-func runWorkspaceProvision(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("workspace-init provision", "usage: "+workspaceProvisionUsage, stderr)
-	issue := flags.String("issue", "", "Dispatch issue key, e.g. LEGION-1 (required)")
-	repo := flags.String("repo", "", "repository as <owner>/<name> (required)")
-	defaultBranch := flags.String("default-branch", "", "the repository's default branch as GitHub names it, where an issue with no branch starts (required)")
-	root := flags.String("root", "/legion", "issue volume root directory")
-	credentialHelper := flags.String("credential-helper", "", "git credential helper written into the clone's config (required)")
-	feed := flags.String("feed", "", "the pod's feed directory, which workspace-init fetch filled (required)")
-	if code, ok := parseWorkspaceInitFlags(flags, args, stderr); !ok {
-		return code
-	}
-	return workspaceInitExit(flags, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
-}
-
-// parseWorkspaceInitFlags parses one subcommand's flags, refusing a positional argument; a false
-// ok carries the exit code.
-func parseWorkspaceInitFlags(flags *flag.FlagSet, args []string, stderr io.Writer) (code int, ok bool) {
-	if code, ok := parseFlags(flags, args); !ok {
-		return code, false
-	}
-	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "%s: unexpected argument %q\n", flags.Name(), flags.Arg(0))
-		flags.Usage()
-		return 2, false
-	}
-	return 0, true
+func newWorkspaceProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{Use: strings.TrimPrefix(workspaceProvisionUsage, "legion workspace-init "), Short: "provision the issue's clone and jj workspace on the pod's disk from the feed", Hidden: true, Args: noArguments}
+	issue := cmd.Flags().String("issue", "", "Dispatch issue key, e.g. LEGION-1 (required)")
+	repo := cmd.Flags().String("repo", "", "repository as <owner>/<name> (required)")
+	defaultBranch := cmd.Flags().String("default-branch", "", "the repository's default branch as GitHub names it, where an issue with no branch starts (required)")
+	root := cmd.Flags().String("root", "/legion", "issue volume root directory")
+	credentialHelper := cmd.Flags().String("credential-helper", "", "git credential helper written into the clone's config (required)")
+	feed := cmd.Flags().String("feed", "", "the pod's feed directory, which workspace-init fetch filled (required)")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		return workspaceInitExit(cmd, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
+	})
+	return cmd
 }
 
 // workspaceInitExit is a subcommand's exit status once it has run: 0, or its failure on stderr
 // with 1.
-func workspaceInitExit(flags *flag.FlagSet, err error, stderr io.Writer) int {
+func workspaceInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 	if err == nil {
 		return 0
 	}
-	fmt.Fprintf(stderr, "%s: %v\n", flags.Name(), err)
+	fmt.Fprintf(stderr, "%s: %v\n", cmd.CommandPath(), err)
 	return 1
 }
 

@@ -28,10 +28,10 @@ import (
 // /v1/interests/unsubscribe is a client handing back the roles its own process holds, and DELETE
 // /v1/interests/<session_id> is an operator removing a session's interests whoever holds them.
 //
-// Against a claim that names the process holding it, the zero value frees nothing, and that is
-// the point of the type: a session id names no process, so a release that cannot say which
-// process it is looks exactly like the release a second process that resumed a live session's
-// id would send, and the live holder's claim is what that release would take.
+// The zero value frees nothing, and that is the point of the type: a session id names no
+// process, so a release that cannot say which process it is looks exactly like the release a
+// second process that resumed a live session's id would send, and the live holder's claim is
+// what that release would take.
 type RoleReleaseAuthority struct {
 	// ClientInstanceID is the client instance of the process asking for the release: it frees
 	// the claims naming that same process (RoleClaim.ClientInstanceID), and no claim another
@@ -45,7 +45,7 @@ type RoleReleaseAuthority struct {
 	Force bool
 	// handsBack is this release's statement that it is its caller's own hand-back of the roles
 	// whose lane topics it names, so a claim it may not free is marked handed back rather than
-	// left as it stands (RoleClaim.HandedBack, Registry.releaseReadRoleClaim). It is
+	// left as it stands (RoleClaim.HandedBack, Registry.markRoleClaimHandedBack). It is
 	// unexported because exactly one caller may decide it, Registry.Remove, which is the only
 	// code that can tell a caller's own hand-back of named roles from the expansion of a
 	// record a deregistration read: a release reaching this package from outside it hands
@@ -54,23 +54,23 @@ type RoleReleaseAuthority struct {
 }
 
 // frees reports whether this release may delete claim, the stored claim of a role the release
-// names, from the session sessionID. The claim must be that session's, and then one of three
-// things must hold: the release forces it, it names the very process the claim names, or the
-// claim names no process at all.
+// names, from the session sessionID. The claim must be that session's, and then the release must
+// force it or name the very process the claim names (RoleClaim.HeldByProcess).
 //
-// That last arm is the carve-out for a claim written before claims named a process. Such a
-// claim keeps the rule it was written under - a session's own deregistration releases it - so
-// that every claim standing at the deploy is still freed by its holder's clean stop, rather than
-// waiting out the role claim reaper. It closes nothing that was open: a second process that
-// resumed the session's id could already free that claim before this field existed, and the
-// first registration of that session id that states an instance adopts the claim and writes
-// that instance in (Registry.renewRoleClaim) - any process of the session, not only the one
-// that took the role - after which only the process named frees it.
+// An absent process matches nothing, on either side. A release that states no process frees no
+// claim but by force, and a claim that names no process - one whose claimant stated none: a
+// client of an older build, or a session pod's claim of its launch role - is freed by no release
+// but the administrator's, whatever process the release states. Such a claim names no process
+// a release could be weighed against, so a release from a second process that resumed its
+// session's id would read exactly like its holder's own. What a hand-back that states no process
+// leaves on it is the mark, as on a claim that names one (releaseReadRoleClaim), and the role
+// claim reaper frees a marked claim once its renewal has lapsed; a claim nobody hands back is
+// freed by that reaper once its holder's session is gone.
 func (a RoleReleaseAuthority) frees(claim RoleClaim, sessionID string) bool {
 	if claim.HolderSessionID != sessionID {
 		return false
 	}
-	return a.Force || claim.ClientInstanceID == "" || claim.HeldByProcess(a.ClientInstanceID)
+	return a.Force || claim.HeldByProcess(a.ClientInstanceID)
 }
 
 // releaseRoleClaims releases the claim of each role topic in topics, the topics a caller of
@@ -176,39 +176,29 @@ const roleClaimReleaseAttempts = 3
 // revision it read, the claim this release authorised, and a claim written since is kept.
 //
 // A delete that lost that condition (nats.ErrKeyExists) met a record written since the read, and
-// the two writers it could have met are told apart by reading the claim again rather than by
-// answering success to both: the release goes on while it may still free the record the re-read
-// returned (RoleReleaseAuthority.frees), sending its delete again at the revision that write
-// left, up to roleClaimReleaseAttempts deletes in all. That loop, and the bucket's answers it
-// reads, are writeRoleClaim's, which the hand-back's mark and the renewal send their own writes
-// through; what the release states is which claims it may delete and what each outcome means to
-// it. Two writers read that way. One is the holder's own renewal, which moves RenewedAt and
-// nothing a release weighs (Registry.renewRoleClaim); that is the race a client hands a role
-// back in, since pi-envoy registers outside its task queue while a queued task unsubscribes the
-// role's topic, so the registration's renewal and the hand-back's delete overlap, and a lost
-// delete answered as success left the role with the process that gave it up. The other is a
-// claim that named no process adopted by the very process this release is made for, which the
-// release may free exactly as it could free the claim that named none. Weighing the re-read
-// against the claim first read instead would lose that one: the record now names a process
-// where it named none, so the release stopped there and answered success over a claim still
-// standing. The administrator's force meets the same case.
-//
-// A re-read this release may no longer free names a process where the claim first read named
-// none, and two different records read that way. One is the claim the first read met, adopted
-// by a process of this session, which carries over the moment it was claimed at
-// (Registry.renewRoleClaim writes nothing but the instance and the renewal). The other is a
-// record the role was granted again under since this release read it - a fresh claim no
-// hand-back has released, stamped with a moment of its own. Neither is success, and only the
-// first is this release's to mark: the re-read is handed to the mark where the release is its
-// caller's own hand-back of this role and the record was claimed at the very moment the claim
-// first read was, which is the one path by which a hand-back whose delete lost to an adoption
-// still has its effect. A grant moves ClaimedAt where an adoption and a renewal carry it over,
-// so a claim granted since the read is left standing and unmarked, exactly as
-// markRoleClaimHandedBack leaves one granted since its own read: marking it would take back a
-// role its holder has just been given, through a mark that holder's own registration can no
-// longer clear. That is no error either, as a claim another session holds is none. A re-read
-// that finds no record is a role already free and is no error: the bucket answered
+// the writers it could have met are told apart by reading the claim again rather than by
+// answering success to all of them: the release goes on while it may still free the record the
+// re-read returned (RoleReleaseAuthority.frees), sending its delete again at the revision that
+// write left, up to roleClaimReleaseAttempts deletes in all. That loop, and the bucket's answers
+// it reads, are writeRoleClaim's, which the hand-back's mark and the renewal send their own
+// writes through; what the release states is which claims it may delete and what each outcome
+// means to it. The writer that loop is for is the holder's own renewal, which moves RenewedAt
+// and nothing a release weighs (Registry.renewRoleClaim); that is the race a client hands a
+// role back in, since pi-envoy registers outside its task queue while a queued task
+// unsubscribes the role's topic, so the registration's renewal and the hand-back's delete
+// overlap, and a lost delete answered as success left the role with the process that gave it
+// up. The administrator's force meets the same race, and over a claim that names no process it
+// meets the adoption too, which it may free as it could free the claim first read. A re-read
+// this release may not free - a claim another session or another process was granted since -
+// is left standing and is no error, as a claim another session holds is none. A re-read that
+// finds no record is a role already free and is no error: the bucket answered
 // nats.ErrKeyNotFound, which RoleClaim reads as a claim at a zero revision.
+//
+// A hand-back (RoleReleaseAuthority.handsBack) states no process and does not force, so it frees
+// no claim at all and sends no delete here: the claim it marks is the claim it read, whether
+// that claim names a process or none. The races the mark meets - the holder's own renewal, the
+// adoption of a claim that names no process by its session's first heartbeat, and a fresh grant
+// - are markRoleClaimHandedBack's, which reads the claim again after a write of its own lost.
 //
 // A claim renewed under every attempt is left standing and fails the release, naming the role:
 // the caller asked to free a claim this release authorises and it is still held, and a release
@@ -235,44 +225,45 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 		// not standing as this session's.
 		return false, nil
 	}
-	// The claim that stands is one this release may not free - another session's, another
-	// process's, or no record at all - so the role is still its holder's, and the hand-back
-	// this release is leaves its mark on it, while it is still the claim this release read:
-	// a record granted again since that read is another claim, which this hand-back never
-	// released, and the claim's own ClaimedAt is what tells a grant from the adoption that
-	// carries it over.
+	// The claim that stands is one this release may not free, so the role is still its holder's,
+	// and a hand-back leaves its mark on it.
 	stands := stood.HolderSessionID == sessionID
-	if !release.handsBack || stood.ClaimedAt != claim.ClaimedAt {
+	if !release.handsBack {
 		return stands, nil
 	}
 	return stands, r.markRoleClaimHandedBack(ctx, sessionID, role, stood)
 }
 
 // markRoleClaimHandedBack writes read back with RoleClaim.HandedBack set, the mark a hand-back
-// leaves on the claim it was not authorised to free, so that no registration renews it again
-// (Registry.renewRoleClaim) and the role claim reaper frees the role once that renewal has
-// lapsed, one live window and up to one reap interval later. Its
-// one caller is releaseReadRoleClaim, over a release its caller stated to be a hand-back of this
-// very role; read is that release's own read of the record.
+// leaves on the claim it was not authorised to free, so that no registration renews or adopts
+// it (Registry.renewRoleClaim) and the role claim reaper frees the role once its renewal has
+// lapsed, one live window and up to one reap interval later. Its one caller is
+// releaseReadRoleClaim, over a release its caller stated to be a hand-back of this very role;
+// read is that release's own read of the record.
 //
-// It marks only a claim of sessionID that names a process and is not marked already: a claim of
-// another session is no business of this release, a claim naming no process was freed outright
-// by the release itself (RoleReleaseAuthority.frees), and a claim already marked stands as it is.
-// None of the three is an error, and neither is a role no record claims.
+// It marks a claim of sessionID that is not marked already, whether the claim names a process
+// or none: a hand-back states no process, so it frees neither (RoleReleaseAuthority.frees), and
+// the mark is the one thing it leaves on either. A claim of another session is no business of
+// this release, and a claim already marked stands as it is. Neither is an error, and neither is
+// a role no record claims.
 //
-// The write is conditional on the revision the claim was read at, as the release's delete is,
-// and a lost compare-and-swap (nats.ErrKeyExists) is read the same way, through the same loop
+// The write is conditional on the revision the claim was read at, and a lost compare-and-swap
+// (nats.ErrKeyExists) is read the way the release's delete reads one, through the same loop
 // (writeRoleClaim): the claim is read again and the mark written at the revision that record
-// stands at, up to roleClaimReleaseAttempts writes in all, while the record is still the very
-// claim this hand-back read - the same session, the same process, the same moment it was
-// granted at - and still unmarked. That race is the holder's own renewal, which moves RenewedAt
-// and nothing weighed here. A claim that moved to
-// another session or another process is another claim and is left alone, and so is a claim its
-// own process was granted again between this release's read and its write: a grant writes a
-// fresh record, which no hand-back has released, and marking it would take back a role the
-// holder has just been given. A grant and a renewal are told apart by the claim's own
-// ClaimedAt, which a grant moves and a renewal carries over untouched
-// (Registry.renewRoleClaim). A record gone (nats.ErrKeyNotFound, or a re-read at a zero
+// stands at, up to roleClaimReleaseAttempts writes in all, while the record is still the claim
+// this hand-back read - the same session and the same moment it was granted at, still unmarked,
+// and naming the same process, or, where the claim read named none, the process whose first
+// heartbeat has adopted it since. Two writers leave it so: the holder's own renewal, which moves
+// RenewedAt (and, by a registration that states no process, notes that renewal,
+// RoleClaim.RenewedWithoutProcess) and nothing weighed here, and the adoption, which writes the
+// process in and carries the rest over (Registry.renewRoleClaim). The mark follows either, so a
+// hand-back whose write lost to one still has its effect. A claim that moved to another session,
+// or to a process other than the one read named, is another claim and is left alone, and so is
+// a claim granted again between this release's read and its write: a grant writes a fresh
+// record, which no hand-back has released, and marking it would take back a role the holder has
+// just been given, through a mark the holder's own registration can no longer clear. A grant is
+// told from a renewal and an adoption by the claim's own ClaimedAt, which a grant moves and the
+// other two carry over untouched. A record gone (nats.ErrKeyNotFound, or a re-read at a zero
 // revision) is a role already free; none of these is an error.
 //
 // A mark that could not be written under any attempt, and a read or write that did not answer,
@@ -282,13 +273,10 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 	outcome, _, err := r.writeRoleClaim(ctx, read, roleClaimWrite{
 		role:     role,
 		attempts: roleClaimReleaseAttempts,
-		// The claim this hand-back read, and no other: its session, the process it names, and
-		// the moment it was granted at, still unmarked. A renewal under the write leaves all
-		// three, so the mark follows it; another session's claim, another process's, and a
-		// fresh grant by this very process are each another claim.
+		// The claim this hand-back read, through a renewal or an adoption, and no fresh grant.
 		writes: func(claim RoleClaim) bool {
-			return claim.HolderSessionID == sessionID && claim.ClientInstanceID != "" && !claim.HandedBack &&
-				claim.ClientInstanceID == read.ClientInstanceID && claim.ClaimedAt == read.ClaimedAt
+			return claim.HolderSessionID == sessionID && !claim.HandedBack && claim.ClaimedAt == read.ClaimedAt &&
+				(read.ClientInstanceID == "" || claim.ClientInstanceID == read.ClientInstanceID)
 		},
 		send: func(claim RoleClaim) (uint64, error) {
 			marked := claim
