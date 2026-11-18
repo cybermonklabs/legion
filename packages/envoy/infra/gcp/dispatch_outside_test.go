@@ -194,6 +194,8 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 		{"dispatch-pod-with-azure-federation.golden", dispatchArgsWith(setAzureFederation)},
 		{"dispatch-pod-with-azure-answerer.golden", dispatchArgsWith(setAzureChat)},
 		{"dispatch-pod-with-chat-endpoint.golden", dispatchArgsWith(setChatEndpoint)},
+		{dispatchPublicOriginGolden, dispatchPublicOriginArgs},
+		{dispatchIAPGolden, dispatchIAPArgs},
 	}
 	committed, err := filepath.Glob("testdata/dispatch-pod*.golden")
 	require.NoError(t, err)
@@ -250,8 +252,8 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 				args.SignInOutside = true
 				return args
 			},
-			want: "signInOutside configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, " +
-				"which no OAuth provider takes as a redirect origin, so no browser could sign in; unset signInOutside, or set the tailnet inputs",
+			want: "signInOutside configures browser sign-in, which needs an https origin, the tailnet inputs' or publicOrigin: without either Dispatch is reached at an in-cluster http:// address, " +
+				"which no OAuth provider takes as a redirect origin, so no browser could sign in; unset signInOutside, or set the tailnet inputs or publicOrigin",
 		},
 		{
 			name: "outsideOrigin in a sandbox",
@@ -260,8 +262,8 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 				args.OutsideOrigin = dispatchOutsideOrigin
 				return args
 			},
-			want: "outsideOrigin needs the tailnet inputs: without them the component builds the sandbox, whose own origin is an in-cluster http:// address " +
-				"where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs",
+			want: "outsideOrigin needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address " +
+				"where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs or publicOrigin",
 		},
 		{"outsideOrigin over http", withOrigin("http://dispatch-outside.example.com"), "outsideOrigin must be an https origin: browser sign-in at it needs TLS, as the front door's does"},
 		{"outsideOrigin with no scheme", withOrigin("dispatch-outside.example.com"), notOrigin},

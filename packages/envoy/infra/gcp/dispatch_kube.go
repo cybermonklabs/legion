@@ -3,6 +3,7 @@ package gcp
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -228,6 +229,30 @@ func refuseDispatchSeed(value pulumi.StringInput, dispatch, input string) pulumi
 	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
 		if bus.HoldsSeed(v) {
 			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal(input))
+		}
+		return v, nil
+	}).(pulumi.StringOutput)
+}
+
+// iapAudienceRule is the audience IAP signs a request for when it reaches the app through a
+// load balancer's backend service: /projects/<project number>/global/backendServices/<backend
+// service id>, both numbers (https://cloud.google.com/iap/docs/signed-headers-howto, "Verifying
+// the JWT payload", aud).
+var iapAudienceRule = regexp.MustCompile(`^/projects/[0-9]+/global/backendServices/[0-9]+$`)
+
+// dispatchIAPAudience is iapAudience as DISPATCH_IAP_AUDIENCE carries it, judged once it resolves:
+// a seed is refused first, naming the input and never the value, as refuseDispatchSeed refuses
+// one, and then any value of another form, naming the input and quoting the value, which is no
+// secret. Dispatch holds each assertion's aud claim to this value as a string, so an audience of
+// another form would admit no browser at all.
+func dispatchIAPAudience(value pulumi.StringInput, dispatch string) pulumi.StringOutput {
+	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
+		if bus.HoldsSeed(v) {
+			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal("iapAudience"))
+		}
+		if !iapAudienceRule.MatchString(v) {
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience",
+				"iapAudience %q must be the audience IAP signs for a load balancer's backend service, /projects/<project number>/global/backendServices/<backend service id>", v))
 		}
 		return v, nil
 	}).(pulumi.StringOutput)
@@ -659,7 +684,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
 	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
-	// sign-in on. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
+	// sign-in on. The IAP door's three variables take that same place, since the resolver refuses
+	// the Google client beside it, and render only with iapAudience: the identity mode, the
+	// audience, and the domain whose accounts may use Dispatch, which Dispatch holds the signed
+	// header's hd claim to. A deployment without it names no identity mode, and Dispatch keeps its
+	// default. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
 	// output's own derivation (serverURL) and never a second spelling of it, and
 	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, so a deployment that sets neither
 	// outside input renders byte for byte what it always rendered.
@@ -669,6 +698,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if s.signInOutside {
 			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_OUTSIDE", "1"))
 		}
+	}
+	if s.iap {
+		appEnv = append(appEnv, valueEnv("DISPATCH_IDENTITY", "iap"),
+			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_IAP_AUDIENCE"), Value: dispatchIAPAudience(args.IapAudience, dispatch)},
+			valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
 	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
 	if s.outsideOrigin != "" {
@@ -844,8 +878,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	// The front door is a pod of this namespace, which no namespace selector covers, so without
 	// this rule Serve reaches the app at no port at all. Without a front door there is no such pod
-	// and no such rule: the allowedNamespaces rule is then the policy's only one, which is why the
-	// resolver requires at least one namespace in that mode.
+	// and no such rule: in the sandbox the allowedNamespaces rule is then the policy's only one,
+	// which is why the resolver requires at least one namespace in that mode, and with
+	// publicOrigin the deployment's own entrance admits its traffic by a policy of its own, since
+	// policies add up, so the namespaces are optional there.
 	if s.frontDoor {
 		appIngress = append(appIngress, ingressFrom(8766, networkingv1.NetworkPolicyPeerArray{podPeer(tailnetName)}))
 	}

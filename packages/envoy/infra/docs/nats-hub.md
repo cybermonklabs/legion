@@ -975,8 +975,9 @@ Both hubs render their users through one function, `authorization` in `gcp/natsh
 `core`'s `Render` under the same header, so the same `users`, listener and `sessionUser` give the
 same authorization byte for byte (`TestClusteredNatsHubRendersTheVMHubsAuthorization`). Everything
 [The hub's users](#the-hubs-users) says holds for the clustered hub, with one difference: the
-listener's user is named after `tailnet.listener.machineId`, which defaults to
-`tailnet.serviceName`, where the VM names it after its `hostname`. A deployment that moves from a
+listener's user is named after its `machineId` (`listener.machineId` or `tailnet.listener.machineId`,
+wherever the listener is declared), which defaults to `tailnet.serviceName` with `tailnet` and is
+required without it, where the VM names it after its `hostname`. A deployment that moves from a
 `gcp:NatsHub` whose `hostname` is `envoy-hub` keeps the machine id `envoy-hub`, by naming its
 Tailscale Service `envoy-hub` or by setting `machineId`: the listener's user is then the one the
 VM rendered, with `ListenerPermissions(envoy-hub)`, and its durable is the VM listener's
@@ -1120,7 +1121,7 @@ seconds of it.
 ### The session listener
 
 The session listener runs in a workload of its own, the Deployment `<n>-listener`, and in no host
-pod. One pod runs it, as machine `tailnet.listener.machineId`, and no input changes that count.
+pod. One pod runs it, as its `machineId`, and no input changes that count.
 Two copies would contend for the one durable `listener-<machine id>`: the second waits 135
 seconds for it (`cmd/listener/durable.go`, `durableBindDeadline`), then exits, and is restarted
 again and again. That holds until cybermonklabs/legion#2404 gives the listener a delivery lease.
@@ -1155,7 +1156,7 @@ for all 40 seconds, which leaves the new pod 95 seconds to its first `/healthz` 
 pod that never becomes Ready leaves the old one serving: nothing stops it, and the new one
 restarts on its bind deadline. The Tailscale Service's port 9020 refuses connections while no
 listener pod is ready, and its port 4222 serves through it. Setting, changing or removing
-`tailnet.listener.senderMessagesPerMinute` or `tailnet.listener.senderMessageBurst` is a change
+the listener's `senderMessagesPerMinute` or `senderMessageBurst` is a change
 of the listener's environment, so it rolls the pod the same way. The new pod's listener starts
 with every sender's count full, as any restart of the listener does.
 

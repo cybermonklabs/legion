@@ -52,6 +52,27 @@ func requireClusteredRefusals(t *testing.T, rows []clusteredRefusal) {
 // listener is args' tailnet listener, for the rows that edit it.
 func listener(a *gcp.ClusteredNatsHubArgs) *gcp.ClusteredHubListenerArgs { return a.Tailnet.Listener }
 
+// ownListener moves args' tailnet listener out to the hub's own listener input, as a consumer
+// declares it outside the tailnet entry, and returns it, for the rows that edit it there.
+func ownListener(a *gcp.ClusteredNatsHubArgs) *gcp.ClusteredHubListenerArgs {
+	if a.Listener == nil {
+		a.Listener, a.Tailnet.Listener = a.Tailnet.Listener, nil
+	}
+	return a.Listener
+}
+
+// standaloneListener makes args a hub with no tailnet entry whose session listener is its own
+// input, as a consumer without a tailnet declares it: tailnet's listener moved out, a machine id
+// of its own, since no tailnet serviceName stands in for one, and the namespace whose pods reach
+// it, since no tailnet host does. It returns that listener, for the rows that edit it.
+func standaloneListener(a *gcp.ClusteredNatsHubArgs) *gcp.ClusteredHubListenerArgs {
+	l := ownListener(a)
+	withoutTailnet(a)
+	l.MachineID = pulumi.StringRef("envoy-hub")
+	l.ClientNamespaces = []string{"legion"}
+	return l
+}
+
 // The resolver refuses every invalid plain input, naming it, with no engine; the constructor's own
 // test shows a refusal stops it before anything registers.
 func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
@@ -148,8 +169,8 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 
 		{"tailnet without tailnetAuthKey", func(a *A) { a.TailnetAuthKey = nil }, "tailnetAuthKey", []string{"tailnetAuthKey is required with tailnet"}},
 		{"tailnetAuthKey without tailnet", func(a *A) { a.Tailnet = nil }, "tailnetAuthKey", []string{"tailnetAuthKey is given without tailnet"}},
-		{"natsReplicas without tailnet", func(a *A) { withoutTailnet(a).NatsReplicas = pulumi.IntRef(3) }, "natsReplicas",
-			[]string{"natsReplicas is given without tailnet"}},
+		{"natsReplicas without a listener", func(a *A) { withoutTailnet(a).NatsReplicas = pulumi.IntRef(3) }, "natsReplicas",
+			[]string{"natsReplicas is given without a session listener (listener or tailnet.listener)"}},
 		{"a tailnet service name with an uppercase letter", func(a *A) { a.Tailnet.ServiceName = "Envoy-hub" }, "tailnet.serviceName",
 			[]string{`tailnet.serviceName "Envoy-hub"`}},
 		{"a tailnet DNS name outside ts.net", func(a *A) { a.Tailnet.TailnetDnsName = "example.com" }, "tailnet.tailnetDnsName",
@@ -188,6 +209,29 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"a listener memory that is no quantity", func(a *A) { listener(a).Memory = str("1 GB") }, "tailnet.listener.memory", []string{"not a Kubernetes quantity"}},
 		{"a listener memory too small for the listener pod's CPU", func(a *A) { listener(a).Cpu = str("4"); listener(a).Memory = str("1Gi") }, "tailnet.listener.memory",
 			[]string{"the listener pod must hold between 1 and 6.5 GiB of memory per CPU"}},
+
+		// The hub's own listener, declared outside the tailnet entry: one listener, refused in both
+		// places at once; without tailnet a machine id of its own and a namespace to reach it from,
+		// since no tailnet name stands in for the one and no tailnet host for the other; and its
+		// own inputs refused by its own path, as tailnet.listener's are by theirs.
+		{"a listener in both places", func(a *A) {
+			a.Listener = &gcp.ClusteredHubListenerArgs{Image: listenerImage, NKey: keyListener, SeedSecretName: "s", SeedSecretKey: "k"}
+		},
+			"listener", []string{"listener and tailnet.listener: the hub runs one session listener"}},
+		{"a listener without tailnet and with no machine id", func(a *A) { standaloneListener(a).MachineID = nil }, "listener.machineId",
+			[]string{"listener.machineId is required without tailnet"}},
+		{"a listener without tailnet and with no client namespace", func(a *A) { standaloneListener(a).ClientNamespaces = nil }, "listener.clientNamespaces",
+			[]string{"listener.clientNamespaces: at least one namespace is required without tailnet", "nothing could reach it"}},
+		{"a listener client namespace with an uppercase letter", func(a *A) { standaloneListener(a).ClientNamespaces = []string{"Legion"} }, "listener.clientNamespaces",
+			[]string{`listener.clientNamespaces[0] "Legion" must be a DNS label`}},
+		{"a repeated tailnet listener client namespace", func(a *A) { listener(a).ClientNamespaces = []string{"legion", "legion"} }, "tailnet.listener.clientNamespaces",
+			[]string{`tailnet.listener.clientNamespaces[1] "legion" repeats tailnet.listener.clientNamespaces[0]`}},
+		{"a listener image without a digest, outside the tailnet entry", func(a *A) { ownListener(a).Image = "example.invalid/envoy:latest" }, "listener.image",
+			[]string{`listener.image "example.invalid/envoy:latest" must be pinned by digest`}},
+		{"no listener nkey, outside the tailnet entry", func(a *A) { ownListener(a).NKey = "" }, "listener.nkey", []string{"listener.nkey is required"}},
+		{"a listener nkey that is no user key, outside the tailnet entry", func(a *A) { ownListener(a).NKey = "example-key" }, "listener", []string{`listener "envoy-hub"`}},
+		{"a listener cpu below Autopilot's floor, outside the tailnet entry", func(a *A) { ownListener(a).Cpu = str("100m") }, "listener.cpu",
+			[]string{`listener.cpu "100m" must be at least 250m`}},
 
 		{"no users and no tailnet", func(a *A) { withoutTailnet(a).Users = nil }, "users", []string{"at least one user is required"}},
 		{"a user with no nkey", func(a *A) { a.Users[1].NKey = "" }, "users", []string{"users[1]: nkey is required"}},
@@ -241,6 +285,21 @@ func clusteredSeedRows() []clusteredSeedRow {
 		}},
 		{"tailnet.listener.cpu", "tailnet.listener.cpu", func(a *A, s string) { listener(a).Cpu = str(s) }},
 		{"tailnet.listener.memory", "tailnet.listener.memory", func(a *A, s string) { listener(a).Memory = str(s) }},
+		{"tailnet.listener.clientNamespaces", "tailnet.listener.clientNamespaces[0]", func(a *A, s string) {
+			listener(a).ClientNamespaces = []string{strings.ToLower(s)}
+		}},
+		{"listener.image", "listener.image", func(a *A, s string) { ownListener(a).Image = "example.invalid/" + s + digest }},
+		{"listener.machineId", "listener.machineId", func(a *A, s string) { ownListener(a).MachineID = str(s) }},
+		{"listener.seedSecretName", "listener.seedSecretName", func(a *A, s string) { ownListener(a).SeedSecretName = strings.ToLower(s) }},
+		{"listener.seedSecretKey", "listener.seedSecretKey", func(a *A, s string) { ownListener(a).SeedSecretKey = s }},
+		{"listener.clientNamespaces", "listener.clientNamespaces[0]", func(a *A, s string) {
+			ownListener(a).ClientNamespaces = []string{splitSeed(strings.ToLower(s), "-")}
+		}},
+		{"listener.allowedHosts", "listener.allowedHosts[0]", func(a *A, s string) {
+			ownListener(a).AllowedHosts = []string{strings.ToLower(s) + ".example.com"}
+		}},
+		{"listener.cpu", "listener.cpu", func(a *A, s string) { ownListener(a).Cpu = str(s) }},
+		{"listener.memory", "listener.memory", func(a *A, s string) { ownListener(a).Memory = str(s) }},
 		{"authCallout.issuer", "authCallout.issuer", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.Issuer = s }},
 		{"authCallout.xkey", "authCallout.xkey", func(a *A, s string) { a.AuthCallout = authCallout(); a.AuthCallout.XKey = strings.ToLower(s) }},
 		{"authCallout.serviceUser", "authCallout.serviceUser", func(a *A, s string) {
@@ -254,6 +313,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"the session user's name", "sessionUser", func(a *A, s string) { a.SessionUser.Name = strings.ToLower(s) }},
 		{"the session user's nkey", "sessionUser", func(a *A, s string) { a.SessionUser.NKey = s }},
 		{"tailnet.listener.nkey", "tailnet.listener", func(a *A, s string) { listener(a).NKey = s }},
+		{"listener.nkey", "listener", func(a *A, s string) { ownListener(a).NKey = s }},
 	}
 }
 
@@ -270,7 +330,7 @@ func TestClusteredNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
 			var input *core.InputError
 			require.ErrorAs(t, err, &input)
 			require.Equal(t, row.input, input.Input, "%v", err)
-			if !slices.Contains([]string{"users", "sessionUser", "tailnet.listener"}, row.input) {
+			if !slices.Contains([]string{"users", "sessionUser", "tailnet.listener", "listener"}, row.input) {
 				require.EqualError(t, err, row.input+" holds an nkey seed (not echoed)")
 			}
 			require.NotContains(t, strings.ToUpper(err.Error()), seed)

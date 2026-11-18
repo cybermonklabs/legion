@@ -30,7 +30,7 @@ func NatsHubAuthConf(args *NatsHubArgs) (string, error) {
 }
 
 // ClusteredNatsHubSettings is the resolved gcp:ClusteredNatsHub configuration the external tests
-// assert. Tailnet is nil without tailnet.
+// assert. Tailnet is nil without tailnet, and Listener without a session listener.
 type ClusteredNatsHubSettings struct {
 	Name, Namespace, ServiceName, ServiceURL string
 	NatsImage, ReloaderImage, ExporterImage  string
@@ -44,19 +44,26 @@ type ClusteredNatsHubSettings struct {
 	AuthConf                                 string
 	PodSelector                              map[string]string
 	Tailnet                                  *ClusteredHubTailnetSettings
+	Listener                                 *ClusteredHubListenerSettings
 }
 
-// ClusteredHubTailnetSettings is the resolved tailnet entry, its listener's environment included.
+// ClusteredHubTailnetSettings is the resolved tailnet entry.
 type ClusteredHubTailnetSettings struct {
 	ServiceName, TailnetDNSName     string
 	Tags                            []string
 	Replicas                        int
 	TailscaleImage                  string
-	ListenerImage, MachineID        string
-	SeedSecretName, SeedSecretKey   string
-	ListenerCPU, ListenerMemory     string
-	ListenerEnv                     []string
 	TailnetNatsURL, TailnetEnvoyURL string
+}
+
+// ClusteredHubListenerSettings is the resolved session listener, its environment included,
+// wherever it was declared.
+type ClusteredHubListenerSettings struct {
+	Image, MachineID              string
+	SeedSecretName, SeedSecretKey string
+	ClientNamespaces              []string
+	CPU, Memory                   string
+	Env                           []string
 }
 
 // ResolveClusteredNatsHub resolves gcp:ClusteredNatsHub's plain inputs for the external refusal
@@ -78,12 +85,15 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 		PodSelector: clusteredHubSelector(s.name),
 	}
 	if t := s.tailnet; t != nil {
-		l := t.listener
 		settings.Tailnet = &ClusteredHubTailnetSettings{
 			ServiceName: t.serviceName, TailnetDNSName: t.tailnetDNSName, Tags: t.tags, Replicas: t.replicas,
-			TailscaleImage: t.tailscaleImage, ListenerImage: l.image, MachineID: l.machineID,
-			SeedSecretName: l.seedSecretName, SeedSecretKey: l.seedSecretKey, ListenerCPU: l.cpu, ListenerMemory: l.memory,
-			ListenerEnv: l.env, TailnetNatsURL: t.natsURL, TailnetEnvoyURL: t.envoyURL,
+			TailscaleImage: t.tailscaleImage, TailnetNatsURL: t.natsURL, TailnetEnvoyURL: t.envoyURL,
+		}
+	}
+	if l := s.listener; l != nil {
+		settings.Listener = &ClusteredHubListenerSettings{
+			Image: l.image, MachineID: l.machineID, SeedSecretName: l.seedSecretName, SeedSecretKey: l.seedSecretKey,
+			ClientNamespaces: l.clientNamespaces, CPU: l.cpu, Memory: l.memory, Env: l.env,
 		}
 	}
 	return settings, nil
@@ -133,6 +143,10 @@ type DispatchSettings struct {
 	AppEphemeral       string
 	ProxyEphemeral     string
 	PprofPort          int
+	// ServerURL is DISPATCH_SERVER_URL and the url output (serverURL), and OutsideOrigin the
+	// second origin as rendered, "" when unset.
+	ServerURL     string
+	OutsideOrigin string
 }
 
 // ResolveDispatch resolves Dispatch's plain inputs for the external refusal and default tests.
@@ -159,6 +173,8 @@ func ResolveDispatch(args *DispatchArgs) (DispatchSettings, error) {
 		AppEphemeral:       s.appResources.appEphemeralStorage,
 		ProxyEphemeral:     s.appResources.proxyEphemeralStorage,
 		PprofPort:          s.pprofPort,
+		ServerURL:          s.serverURL(),
+		OutsideOrigin:      s.outsideOrigin,
 	}
 	if rolling := strategy.rollingUpdate; rolling != nil {
 		settings.RollingUpdate = &DispatchRollingUpdate{MaxUnavailable: rolling.maxUnavailable, MaxSurge: rolling.maxSurge}
