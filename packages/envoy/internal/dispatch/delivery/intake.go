@@ -864,7 +864,7 @@ func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client,
 			return messages, asked - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
 		}
 		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, page)
-		body, status, header, err := readGitHubPage(ctx, client, current, commitsPath)
+		body, status, header, _, err := readGitHubPage(ctx, client, current, commitsPath)
 		if err != nil {
 			return messages, asked, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}

@@ -177,12 +177,12 @@ func fetchWorkflowRunsPage(ctx context.Context, client *githubapp.Client, owner,
 	created := since.UTC().Format(time.RFC3339) + ".." + until.UTC().Format(time.RFC3339)
 	path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?created=%s&per_page=%d&page=%d",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflowPath), url.QueryEscape(created), workflowRunsPageSize, page)
-	body, status, header, err := readGitHubPage(ctx, client, token, path)
+	body, status, header, attempts, err := readGitHubPage(ctx, client, token, path)
 	if err != nil {
-		return nil, 0, fmt.Errorf("page %d (%s): %w", page, pageAttemptsNote(), err)
+		return nil, 0, fmt.Errorf("page %d%s: %w", page, pageAttemptsNote(attempts), err)
 	}
 	if err := githubapp.CheckResponse(status, header, body); err != nil {
-		return nil, 0, fmt.Errorf("page %d (%s): %w", page, pageAttemptsNote(), err)
+		return nil, 0, fmt.Errorf("page %d%s: %w", page, pageAttemptsNote(attempts), err)
 	}
 	var payload workflowRunsPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -207,7 +207,7 @@ func FetchWorkflowRun(ctx context.Context, client *githubapp.Client, owner, repo
 		return FetchedRun{}, fmt.Errorf("mint installation token for %s/%s run %d: %w", owner, repo, runID, err)
 	}
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d", url.PathEscape(owner), url.PathEscape(repo), runID)
-	body, status, header, err := readGitHubPage(ctx, client, token, path)
+	body, status, header, _, err := readGitHubPage(ctx, client, token, path)
 	if err != nil {
 		return FetchedRun{}, fmt.Errorf("fetch %s/%s run %d: %w", owner, repo, runID, err)
 	}
@@ -255,15 +255,15 @@ func ListWorkflowRunJobs(ctx context.Context, client *githubapp.Client, owner, r
 		}
 		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?filter=latest&per_page=%d&page=%d",
 			url.PathEscape(owner), url.PathEscape(repo), runID, runJobsPageSize, page)
-		body, status, header, err := readGitHubPage(ctx, client, token, path)
+		body, status, header, attempts, err := readGitHubPage(ctx, client, token, path)
 		if err != nil {
-			return nil, fmt.Errorf("list jobs of %s/%s run %d (page %d, %s): %w", owner, repo, runID, page, pageAttemptsNote(), err)
+			return nil, fmt.Errorf("list jobs of %s/%s run %d (page %d)%s: %w", owner, repo, runID, page, pageAttemptsNote(attempts), err)
 		}
 		if status == http.StatusNotFound {
 			return nil, fmt.Errorf("list jobs of %s/%s run %d (page %d): %w (status %d)", owner, repo, runID, page, ErrRunNotFound, status)
 		}
 		if err := githubapp.CheckResponse(status, header, body); err != nil {
-			return nil, fmt.Errorf("list jobs of %s/%s run %d (page %d): %w", owner, repo, runID, page, err)
+			return nil, fmt.Errorf("list jobs of %s/%s run %d (page %d)%s: %w", owner, repo, runID, page, pageAttemptsNote(attempts), err)
 		}
 		fetched, pageTotal, err := DecodeJobsPage(body)
 		if err != nil {

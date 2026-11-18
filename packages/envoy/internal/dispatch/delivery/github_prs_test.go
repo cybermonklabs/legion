@@ -1022,19 +1022,21 @@ func TestSearchMergedPullRequestsNormalizesABotAuthorToRESTForm(t *testing.T) {
 
 // searchAllInstallations is SearchMergedPullRequestsAcrossInstallation for a test that wants
 // every result at once, from one window start, rather than per-installation windows with their
-// own recorded progress (reconcile_test.go's subject).
+// own recorded progress (reconcile_test.go's subject). It answers a rate limit that the search
+// kept as an error, as the reconcile's step does (reconcileMergedPullRequests).
 func searchAllInstallations(ctx context.Context, client *githubapp.Client, authors []string, since, until time.Time) ([]FetchedPullRequest, error) {
 	var mu sync.Mutex
 	var found []FetchedPullRequest
+	var limited passRateLimit
 	err := SearchMergedPullRequestsAcrossInstallation(ctx, client, authors,
-		func(int64) (time.Time, error) { return since, nil }, until, nil,
+		func(int64) (time.Time, error) { return since, nil }, until, &limited, nil,
 		func(_ githubapp.Installation, _ time.Time, prs []FetchedPullRequest) error {
 			mu.Lock()
 			defer mu.Unlock()
 			found = append(found, prs...)
 			return nil
 		})
-	if err != nil {
+	if err := errors.Join(limited.err(), err); err != nil {
 		return nil, err
 	}
 	return found, nil

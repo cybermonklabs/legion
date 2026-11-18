@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -579,12 +580,15 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 }
 
 // TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConcurrency proves the
-// errgroup.WithContext + SetLimit(8) rate-limit stop end to end: among several partial rows, the
-// one answering a 403 secondary-rate-limit response must stop every further completion from
-// starting (never more than the ones already in flight when it happened), and the pass must be
-// reported failed, not successful. The head pass's facts line reads the rows by a batched query
-// (readFactsBatch), and the fake counts it apart. The test counts the completions' REST reads
-// alone. A completion that goes on past the first limit makes it fail.
+// rate-limit stop end to end: among several partial rows of one installation, the first that
+// answers a 403 rate-limit response stops every later completion of that installation from asking
+// GitHub (never more than the ones already in flight when it happened), and the pass must be
+// reported failed, not successful. The completion keeps a limit and goes on, since a limit is on
+// one installation (passRateLimit). The shared limits of the client, as the server's client holds
+// them (githubapp.WithLimits), refuse each later read of that installation before it is sent. The
+// head pass's facts line reads the rows by a batched query (readFactsBatch), and the fake counts
+// it apart. The test counts the completions' REST reads alone. A completion that asks GitHub
+// again past the first limit makes it fail.
 func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConcurrency(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -620,7 +624,7 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 	fake.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fpr-checks.yml/runs", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 	})
-	client := fake.newTestClient()
+	client := fake.newTestClient(githubapp.WithLimits(ratelimit.New(pool)))
 
 	reconcile := NewReconcile(pool, client, events.NewBroker())
 	reconcile.runOnce(ctx)

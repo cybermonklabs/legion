@@ -131,7 +131,7 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 func completeFetchedPullRequest(ctx context.Context, client *githubapp.Client, token, owner, repo string, payload pullRequestPayload) (FetchedPullRequest, error) {
 	number := payload.Number
 	commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=1", url.PathEscape(owner), url.PathEscape(repo), number)
-	commitsBody, commitsStatus, commitsHeader, err := readGitHubPage(ctx, client, token, commitsPath)
+	commitsBody, commitsStatus, commitsHeader, _, err := readGitHubPage(ctx, client, token, commitsPath)
 	if err != nil {
 		return FetchedPullRequest{}, fmt.Errorf("fetch first commit of %s/%s PR #%d: %w", owner, repo, number, err)
 	}
@@ -177,7 +177,7 @@ func completeFetchedPullRequest(ctx context.Context, client *githubapp.Client, t
 // every pass (RefreshPullRequestHead).
 func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, token, owner, repo string, number int) (pullRequestPayload, error) {
 	pullPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", url.PathEscape(owner), url.PathEscape(repo), number)
-	body, status, header, err := readGitHubPage(ctx, client, token, pullPath)
+	body, status, header, _, err := readGitHubPage(ctx, client, token, pullPath)
 	if err != nil {
 		return pullRequestPayload{}, fmt.Errorf("fetch %s/%s PR #%d: %w", owner, repo, number, err)
 	}
@@ -207,7 +207,7 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 // commit it placed elsewhere.
 func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, token, owner, repo, sha string) ([]pullRequestPayload, error) {
 	pullsPath := fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
-	body, status, header, err := readGitHubPage(ctx, client, token, pullsPath)
+	body, status, header, _, err := readGitHubPage(ctx, client, token, pullsPath)
 	if err != nil {
 		return nil, fmt.Errorf("fetch the pull requests of %s/%s@%s: %w", owner, repo, sha, err)
 	}
@@ -388,16 +388,17 @@ const installationSearchConcurrency = 8
 // goroutines at once. One installation's own failure never stops another: its error is collected
 // by name (which installation, by id and account) rather than aborting the whole search, and
 // everything every other installation visited still stands -- the pass is reported unhealthy,
-// but nothing already imported is thrown away. A *githubapp.RateLimitError is the one
-// exception: it stops every further installation from starting (the ones already in flight
-// still finish), since a rate limit is a global condition on this installation token budget,
-// not one installation's own problem.
+// but nothing already imported is thrown away. A *githubapp.RateLimitError stops no other
+// installation either: a limit is on one installation (githubapp.InstallationScope), so limited
+// keeps it (passRateLimit), the search of every other installation goes on, and the caller
+// answers the limit after the search (limited.err). The limit is not in the error this answers.
 func SearchMergedPullRequestsAcrossInstallation(
 	ctx context.Context,
 	client *githubapp.Client,
 	authors []string,
 	since func(installationID int64) (time.Time, error),
 	until time.Time,
+	limited *passRateLimit,
 	listed func(installations []githubapp.Installation),
 	visit func(installation githubapp.Installation, windowUntil time.Time, prs []FetchedPullRequest) error,
 ) error {
@@ -414,7 +415,9 @@ func SearchMergedPullRequestsAcrossInstallation(
 
 	var mu sync.Mutex
 	var failures []string
-	fanErr := boundedFanOut(ctx, installationSearchConcurrency, installations, func(ctx context.Context, installation githubapp.Installation) error {
+	// The search of an installation answers nil on every path, so the fan-out has no failure of
+	// its own to stop on.
+	_ = boundedFanOut(ctx, installationSearchConcurrency, installations, func(ctx context.Context, installation githubapp.Installation) error {
 		windowStart, err := since(installation.ID)
 		if err != nil {
 			mu.Lock()
@@ -426,19 +429,13 @@ func SearchMergedPullRequestsAcrossInstallation(
 			func(windowUntil time.Time, prs []FetchedPullRequest) error {
 				return visit(installation, windowUntil, prs)
 			})
-		if err != nil {
-			if limited, ok := githubapp.AsRateLimit(err); ok {
-				return limited
-			}
+		if err != nil && !limited.keep(err) {
 			mu.Lock()
 			failures = append(failures, fmt.Sprintf("installation %d (%s): %s", installation.ID, installation.AccountLogin, err))
 			mu.Unlock()
 		}
 		return nil
 	})
-	if fanErr != nil {
-		return fmt.Errorf("rate-limited searching installations: %w", fanErr)
-	}
 	if len(failures) > 0 {
 		return fmt.Errorf("%d of %d installations failed: %s", len(failures), len(installations), strings.Join(failures, "; "))
 	}
@@ -550,12 +547,12 @@ func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query
 	} else {
 		variables = map[string]any{"q": query, "after": after}
 	}
-	body, status, header, err := queryGitHubPage(ctx, client, token, searchPullRequestsQuery, variables)
+	body, status, header, attempts, err := queryGitHubPage(ctx, client, token, searchPullRequestsQuery, variables)
 	if err != nil {
-		return searchPage{}, fmt.Errorf("page after %q (%s): %w", githubapp.ShownBody(after), pageAttemptsNote(), err)
+		return searchPage{}, fmt.Errorf("page after %q%s: %w", githubapp.ShownBody(after), pageAttemptsNote(attempts), err)
 	}
 	if err := githubapp.CheckResponse(status, header, body); err != nil {
-		return searchPage{}, fmt.Errorf("page after %q (%s): %w", githubapp.ShownBody(after), pageAttemptsNote(), err)
+		return searchPage{}, fmt.Errorf("page after %q%s: %w", githubapp.ShownBody(after), pageAttemptsNote(attempts), err)
 	}
 	var response searchPullRequestsResponse
 	if err := json.Unmarshal(body, &response); err != nil {

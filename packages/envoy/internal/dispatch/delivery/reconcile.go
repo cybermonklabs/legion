@@ -343,14 +343,17 @@ const mergedPullRequestsStepPrefix = "merged_pull_requests/installation/"
 // window before it in this pass succeeded: a pull request this pass could not classify (a
 // deploy-repo PR GitHub's own classifier workflow has not labelled yet, IsTaskPR's "neither
 // label") must be reachable again on a later pass, so progress stops at the window holding it
-// while every later window is still imported. The search's own error and every per-PR
-// classify/upsert failure are errors.Joined into one returned error -- not stringified into a
-// plain errors.New, so a *githubapp.RateLimitError among them still answers errors.As for a
+// while every later window is still imported. A rate limit of one installation ends the search of
+// that installation only (passRateLimit): the search goes on with every other installation, and
+// this step then answers the first limit it met. That limit, the search's own error and every
+// per-PR classify/upsert failure are errors.Joined into one returned error -- not stringified into
+// a plain errors.New, so a *githubapp.RateLimitError among them still answers errors.As for a
 // caller that needs to tell it apart from an ordinary failure, the same reason
 // reconcileWorkflow's own per-run aggregation keeps its typed error with %w.
 func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings DeliverySettings, scope string, until time.Time) error {
 	var mu sync.Mutex
 	var failures []error
+	var limited passRateLimit
 	blocked := map[int64]bool{}
 
 	since := func(installationID int64) (time.Time, error) {
@@ -405,12 +408,12 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 		return nil
 	}
 
-	if err := SearchMergedPullRequestsAcrossInstallation(ctx, r.github, settings.PopulationAuthors, since, until, listed, visit); err != nil {
+	if err := SearchMergedPullRequestsAcrossInstallation(ctx, r.github, settings.PopulationAuthors, since, until, &limited, listed, visit); err != nil {
 		mu.Lock()
 		failures = append(failures, fmt.Errorf("search merged pull requests: %w", err))
 		mu.Unlock()
 	}
-	return errors.Join(failures...)
+	return errors.Join(append([]error{limited.err()}, failures...)...)
 }
 
 // searchResultRepo recovers "owner/repo" from a search result's HTML URL
@@ -465,7 +468,9 @@ func (r *Reconcile) reconcilePullRequest(ctx context.Context, settings DeliveryS
 // before the cancellation and already past its own HTTP call does. fn decides for itself which
 // errors are the batch's own stop signal (returned) versus one item's own problem (logged and
 // swallowed inside fn, nil returned) -- this helper only runs the fan-out, never interprets fn's
-// result. reconcilePartialPullRequests and SearchMergedPullRequestsAcrossInstallation's own
+// result. No caller in this package returns a rate limit from fn: a limit is on one
+// installation, so each caller keeps it (passRateLimit) and reads the items of every other
+// installation. reconcilePartialPullRequests and SearchMergedPullRequestsAcrossInstallation's own
 // searchOneInstallation loop each hand-rolled this identical
 // errgroup.WithContext+SetLimit+groupCtx.Err()-before-each-Go shape separately before this
 // helper existed.
@@ -493,8 +498,9 @@ func boundedFanOut[T any](ctx context.Context, concurrency int, items []T, fn fu
 // concurrently at all, not a specific safe number below it -- 8 is this package's own
 // conservative, arbitrary choice, picked to meaningfully parallelize a backfill without treating
 // a single reconcile pass as free to hammer the API as hard as GitHub's documented ceiling
-// allows; the rate-limit-aware stop in reconcilePartialPullRequests is what actually protects
-// against running too hot, not this number.
+// allows; the shared rate limits of the server's client are what actually protect against
+// running too hot, not this number: once one read meets an installation's limit, the client
+// refuses each later read of that installation before it sends it (githubapp.WithLimits).
 const reconcilePartialConcurrency = 8
 
 // reconcilePartialPullRequests completes every stored partial row (written by intake when its
@@ -502,22 +508,28 @@ const reconcilePartialConcurrency = 8
 // completing fields) with a single-pull-request fetch, via boundedFanOut
 // (SetLimit(reconcilePartialConcurrency)) -- see boundedFanOut's own doc comment for the shared
 // fan-out/cancellation mechanics. Each partial row is a distinct (repo, number) key, so
-// concurrent upserts never race each other. completePartialPullRequest below returns non-nil
-// only for a *githubapp.RateLimitError, which stops the batch and is boundedFanOut's own
-// returned error here, so the pass is reported failed and last_reconcile_at does not advance
-// past rows this pass never got to -- the next pass's overlap re-reads them rather than losing
-// them for good. Any other per-row error (a 404, a deleted repository, a malformed answer) is
-// still only logged and skipped inside completePartialPullRequest, never returned: it is that
-// one row's own problem, not a reason to stop the rest of the batch.
+// concurrent upserts never race each other.
+//
+// A rate limit is on one installation, so it ends no completion of another (passRateLimit, the
+// rule of the head pass too): completePartialPullRequest keeps the limit and answers nil, so
+// boundedFanOut cancels nothing, and the rows of every other installation are completed. The step
+// then answers the first limit it met, so the pass is reported failed and last_reconcile_at does
+// not advance; the next pass reads again each row that this one did not complete. Any other
+// per-row error (a 404, a deleted repository, a malformed answer) is only logged and skipped
+// inside completePartialPullRequest: it is that one row's own problem, not a reason to stop the
+// rest of the batch.
 func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 	partials, err := ListPartialPullRequests(ctx, r.pool)
 	if err != nil {
 		return fmt.Errorf("list partial pull requests: %w", err)
 	}
-	if err := boundedFanOut(ctx, reconcilePartialConcurrency, partials, r.completePartialPullRequest); err != nil {
-		return fmt.Errorf("rate-limited completing partial pull requests: %w", err)
-	}
-	return nil
+	var limited passRateLimit
+	// completePartialPullRequest answers nil on every path, so the fan-out has no failure of its
+	// own to stop on.
+	_ = boundedFanOut(ctx, reconcilePartialConcurrency, partials, func(ctx context.Context, pr DeliveryPullRequest) error {
+		return r.completePartialPullRequest(ctx, pr, &limited)
+	})
+	return limited.err()
 }
 
 // reconcilePullRequestHeads is the head pass, the first step of every reconcile pass. In this
@@ -990,14 +1002,16 @@ func equalIssue(a, b *string) bool {
 	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
-// passRateLimit is the first rate limit the reads of one head pass met (reconcilePullRequestHeads).
-// The head pass reads the pull requests of every installation, and a limit is on one installation
-// (githubapp.InstallationScope): a client that holds the shared limits, as the server's does
-// (githubapp.WithLimits), refuses each later request of that installation before it sends it. So
-// the pass does not stop at a limit: it goes on with the rows of every other installation, at no
-// call to the limited one, and fails with the limit once its reads are done. A limit on one
-// installation then holds no other installation's heads back a pass (review of
-// cybermonklabs/legion#4209 at ff73c7358d, B3, whose intake slots this pass is the other side of).
+// passRateLimit is the first rate limit that one step of a reconcile pass met. It is the one rule
+// of a limit for each step that reads the pull requests of every installation: the head pass
+// (reconcilePullRequestHeads), the merged search (reconcileMergedPullRequests) and the completions
+// (reconcilePartialPullRequests). A limit is on one installation (githubapp.InstallationScope): a
+// client that holds the shared limits, as the server's does (githubapp.WithLimits), refuses each
+// later request of that installation before it sends it. So a step does not stop at a limit: it
+// goes on with the rows of every other installation, at no call to the limited one, and fails
+// with the limit once its reads are done. A limit on one installation then holds no other
+// installation's rows back a pass (review of cybermonklabs/legion#4209 at ff73c7358d, B3, whose
+// intake slots this pass is the other side of).
 type passRateLimit struct {
 	first atomic.Pointer[githubapp.RateLimitError]
 }
@@ -1011,10 +1025,11 @@ func (p *passRateLimit) keep(err error) bool {
 	return ok
 }
 
-// err is the failure of a pass that met a rate limit, nil for one that met none.
+// err is the failure of a step that met a rate limit, nil for one that met none. The caller's
+// record names the step (runOnce).
 func (p *passRateLimit) err() error {
 	if first := p.first.Load(); first != nil {
-		return fmt.Errorf("rate-limited reading pull request heads: %w", first)
+		return fmt.Errorf("a rate limit ended the reads of an installation, and the reads of each installation no limit held went on: %w", first)
 	}
 	return nil
 }
@@ -1085,40 +1100,31 @@ func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, ins
 // boundedFanOut goroutine. It reads the pull request once (RefreshPullRequestHead), which stores
 // its results row and its texts, and completes the timeline row from that same read: the first
 // commit's time (completeFetchedPullRequest) and the sessions (completePullRequest, which pages
-// the messages only where the read did not read them). Returns non-nil only for a
-// *githubapp.RateLimitError (the signal that stops the batch, per reconcilePartialPullRequests'
-// own doc comment); every other error is logged and swallowed here, since one row's own failure
-// must not stop any other row's completion already in flight.
+// the messages only where the read did not read them). It answers nil on every path. It keeps a
+// rate limit for the step (limited.keep), so boundedFanOut cancels nothing and the rows of every
+// other installation are completed. It logs every other error, since one row's own failure must
+// not stop the completion of any other row.
 //
 // A refusal marks the row unfetchable only where pullRequestAbsent proves that the repository is
 // readable and holds no such pull request. One 404, or a repository that the App cannot read, is
 // no such proof, so the row stays partial and the next pass reads it again.
-func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryPullRequest) error {
-	stopped := func(err error) error {
-		limited, ok := githubapp.AsRateLimit(err)
-		if !ok {
-			return nil
+func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryPullRequest, limited *passRateLimit) error {
+	// settle ends the completion of the row at err: it keeps a rate limit for the step, and it
+	// logs any other failure with message. The row stays partial for the next pass.
+	settle := func(message string, err error) error {
+		if !limited.keep(err) {
+			slog.Warn(message, "repo", pr.Repo, "number", pr.Number, "error", err)
 		}
-		slog.Warn("dispatch delivery: stopped completing partial pull requests: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
-		return limited
+		return nil
 	}
 	fetched, refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, nil, pr.Repo, pr.Number, time.Now())
 	if err != nil {
-		if limited := stopped(err); limited != nil {
-			return limited
-		}
-		slog.Warn("dispatch delivery: complete partial pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
-		return nil
+		return settle("dispatch delivery: complete partial pull request", err)
 	}
 	if refused != nil {
 		absent, askErr := pullRequestAbsent(ctx, r.github, refused)
 		if askErr != nil {
-			if limited := stopped(askErr); limited != nil {
-				return limited
-			}
-			slog.Warn("dispatch delivery: ask GitHub whether a repository holds a partial pull request it refused; the row stays partial",
-				"repo", pr.Repo, "number", pr.Number, "error", askErr)
-			return nil
+			return settle("dispatch delivery: ask GitHub whether a repository holds a partial pull request it refused; the row stays partial", askErr)
 		}
 		if !absent {
 			slog.Warn("dispatch delivery: GitHub refused the read of a partial pull request; the next pass reads it again",
@@ -1132,11 +1138,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 	}
 	full, err := completeFetchedPullRequest(ctx, r.github, fetched.Token, fetched.Owner, fetched.Repo, fetched.Payload)
 	if err != nil {
-		if limited := stopped(err); limited != nil {
-			return limited
-		}
-		slog.Warn("dispatch delivery: complete partial pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
-		return nil
+		return settle("dispatch delivery: complete partial pull request", err)
 	}
 	if full.MergedAt == nil {
 		return nil
@@ -1149,10 +1151,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 		}
 	}
 	if err := completePullRequest(ctx, r.pool, r.github, fetched.Owner, fetched.Repo, pr.Repo, pr.Number, full, messages); err != nil {
-		if limited := stopped(err); limited != nil {
-			return limited
-		}
-		slog.Warn("dispatch delivery: complete partial pull request; it stays partial for the next pass", "repo", pr.Repo, "number", pr.Number, "error", err)
+		return settle("dispatch delivery: complete partial pull request; it stays partial for the next pass", err)
 	}
 	return nil
 }
