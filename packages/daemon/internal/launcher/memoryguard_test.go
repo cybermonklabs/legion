@@ -2168,10 +2168,11 @@ func TestControllerPodMemoryGuardReadsTheNewestStartedSinceTheBandWithinHalfAnIn
 // of each process in the window. The shell command Oh My Pi ran has started a Python pool, whose
 // parent holds a block of 1.5 GiB and whose three forked workers sleep, each reporting the block
 // as its own, and a grower smaller than the block; the band reads each of them twice. At the first
-// reading at the mark nothing has grown and none is new, and the guard ends the largest, the
-// newest worker, which frees nothing. The next reading comes 400 ms later with the grower 64 MiB
-// larger and the reading not fallen: over the window nothing grew, but the grower grew since the
-// kill, and the guard ends it, not the next worker.
+// reading at the mark nothing has grown and none is new, and the guard ends the largest: the
+// parent, since each worker runs its program and ranks by what it holds over the parent's size
+// (INFRA-3531 R1 of spec version 33); its end frees nothing, its workers keeping its pages. The
+// next reading comes 400 ms later with the grower 64 MiB larger and the reading not fallen: over
+// the window nothing grew, but the grower grew since the kill, and the guard ends it, not a worker.
 func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWiderApartThanTheWindow(t *testing.T) {
 	const pool, block = 1700, 1536 * guardMiB
 	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
@@ -2196,15 +2197,15 @@ func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWid
 	reading := func() uint64 { return guardGiB + block + grower.anon }
 	pod.setAnon(reading())
 	rig.tick()
-	if kills := rig.signal.kills(); !slices.Equal(kills, []int{pool + 3}) {
-		t.Fatalf("at the mark the guard killed %v, want the newest worker %d, the largest where nothing grew; its log:\n%s", kills, pool+3, rig.log())
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{pool}) {
+		t.Fatalf("at the mark the guard killed %v, want the pool's parent %d, the largest where nothing grew; its log:\n%s", kills, pool, rig.log())
 	}
 
 	grower.anon += 64 * guardMiB
 	pod.add(grower)
 	pod.setAnon(reading())
 	rig.tickAfter(300 * time.Millisecond)
-	if kills := rig.signal.kills(); !slices.Equal(kills, []int{pool + 3, grower.pid}) {
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{pool, grower.pid}) {
 		t.Fatalf("400 ms after the kill the guard killed %v, want the grower %d next and not another worker; its log:\n%s",
 			kills, grower.pid, rig.log())
 	}
@@ -2216,7 +2217,7 @@ func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWid
 		t.Fatalf("the guard gave the rise up while the grower grew: %q", stopped)
 	}
 	if reports := waitingReports(m); len(reports) != 2 || reports[1].PID != grower.pid {
-		t.Fatalf("the controller's manager holds the reports %+v, want the worker's and then the grower's", reports)
+		t.Fatalf("the controller's manager holds the reports %+v, want the parent's and then the grower's", reports)
 	}
 }
 
@@ -2734,9 +2735,9 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	f.role("reviewer").noMemoryKill("after the kernel killed the tester's process and one of no role, the reviewer's connection")
 	f.role("tester").noMemoryKill("after its one report, the tester's connection")
 	ended := []string{off,
-		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel executable="python3.13"`,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 executable="python3.13"`,
 			testers, 900*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
-		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel executable="python3.13"`,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 executable="python3.13"`,
 			outside, 200*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
 	}
 	if got := guardLines(f.stderr, ""); !slices.Equal(got, ended) {

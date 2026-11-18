@@ -39,14 +39,20 @@ import (
 // other kill the reading it is sent at. The line's reading is always the one the kill is sent at.
 // Its rule and sizes, which come before the executable so that the name stays last, say why that
 // process was first (INFRA-3531 R3 of spec version 31): rule is the tier of the order of ends that
-// put it first, and sizes where the sizes the guard chose it by came from.
+// put it first, and sizes where the sizes the guard chose it by came from. Its less_parent, after
+// sizes, is how much of its size its rank did not count (INFRA-3531 R1 of spec version 33): for a
+// fork that runs its parent's executable with its parent's arguments, its parent being one the
+// guard has read in this stay, its parent's size at the guard's latest read of the parent, or its
+// own size where that is less, so that size less less_parent is the size it ranked by where a tier
+// ranks by size (candidate.lessParent); 0 for every other process and for a process the guest
+// kernel killed. The line's size is always the process's own.
 const (
 	linePrefix     = "launcher: memory guard: "
 	startedLine    = linePrefix + "started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d"
 	settingsLine   = linePrefix + "settings act_percent=%d floor_percent=%d wait=%s interval=%s"
 	noSettingsLine = linePrefix + "off: the daemon's acknowledgement carries no settings"
 	refusedLine    = linePrefix + "settings refused: %v; nothing changes"
-	endedLine      = linePrefix + `ended pid=%d role=%s size=%d reading=%d counter=%d shmem=%d limit=%d rule=%s sizes=%s executable="%s"`
+	endedLine      = linePrefix + `ended pid=%d role=%s size=%d reading=%d counter=%d shmem=%d limit=%d rule=%s sizes=%s less_parent=%d executable="%s"`
 	stoppedLine    = linePrefix + "stopped for this rise reason=%s reading=%d endable=%d protected=%d unread=%d unheld=%d limit=%d left_out=%d unread_processes=%s"
 	hourLine       = linePrefix + "hour start=%s end=%s reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d" +
 		` largest_pid=%d largest_role=%s largest_size=%d largest_executable="%s"`

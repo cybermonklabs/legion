@@ -38,9 +38,14 @@
 // fork, while the growers lived. Under gVisor each forked process reports the pages it shares with
 // its parent as its own, and no smaps field tells them apart, so the largest can be a sleeping fork
 // whose end frees nothing while another process fills the pod; for the same reason a process with
-// no earlier read in the window, a fresh fork among them, counts as not grown. Each kill's line
-// names the tier that chose it and where the sizes it was chosen by came from (INFRA-3531 R3 of
-// spec version 31; lines.go).
+// no earlier read in the window, a fresh fork among them, counts as not grown. Where the tier of
+// the new or the largest ranks by size, a process that runs its parent's executable with its
+// parent's arguments, its parent read in this stay, is a fork that has not run a new program, and
+// ranks by its size less its parent's at the guard's latest read of the parent (INFRA-3531 R1 of
+// spec version 33, discountForks): at 23fdd92f the new tier ended first a sleeping fork of a 2.4
+// GB parent in 2 of 7 latepool runs at 4 GiB. The parent itself ranks whole. Each kill's line
+// names the tier that chose it, where the sizes it was chosen by came from and how much of its size
+// its rank did not count (INFRA-3531 R3 of spec version 31; lines.go).
 //
 // So that it knows what grew when the reading reaches the mark, an armed guard reads those sizes
 // at each interval already in the band, the bandPercent (10%) of the limit below the mark, keeps
@@ -253,13 +258,16 @@ type Classifier func(t *Table) map[int]Class
 // outside every role. Rule is which rule of the order of ends put it first (rank: ruleGrew,
 // ruleNew, ruleGrewSinceKill or ruleLargest) and Sizes where the sizes it was chosen by came from
 // (sizesBand, sizesReread, sizesSearch or sizesReading), each ruleKernel and sizesKernel for a
-// process the guest kernel killed (INFRA-3531 R3 of spec version 31). The ended line carries both
-// (writeKill); the report on the wire carries neither.
+// process the guest kernel killed (INFRA-3531 R3 of spec version 31). LessParent is how much of its
+// size its rank did not count, as a fork that runs its parent's program (candidate.lessParent), 0
+// for every other process and every kill of the guest kernel (INFRA-3531 R1 of spec version 33).
+// The ended line carries the three (writeKill); the report on the wire carries none of them.
 type Kill struct {
 	shimwire.LauncherMemoryKill
-	Role  string
-	Rule  string
-	Sizes string
+	Role       string
+	Rule       string
+	Sizes      string
+	LessParent uint64
 }
 
 // Clock is the time a guard reads and waits on. After is called by the guard's loop alone, one
@@ -620,7 +628,7 @@ func newKillWriter(logf func(format string, args ...any), sink func(Kill)) killW
 func (w *killWriter) writeKill(k Kill, shmem uint64) {
 	w.sequence++
 	k.Guard, k.Sequence = w.id, w.sequence
-	w.logf(endedLine, k.PID, roleName(k.Role), k.SizeBytes, k.ReadingBytes, k.CounterBytes, shmem, k.LimitBytes, k.Rule, k.Sizes, k.Executable)
+	w.logf(endedLine, k.PID, roleName(k.Role), k.SizeBytes, k.ReadingBytes, k.CounterBytes, shmem, k.LimitBytes, k.Rule, k.Sizes, k.LessParent, k.Executable)
 	if w.sink != nil {
 		w.sink(k)
 	}
@@ -898,6 +906,7 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 		return false
 	}
 	sizes := sizesBand
+	var found []candidate
 	if !grew {
 		deadline := now.Add(s.Interval / 2)
 		grewSince := g.rereadHeld(now, deadline)
@@ -909,11 +918,15 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 			sizes = sizesReread
 		}
 		if !grewSince {
-			if found := g.startedSince(deadline, !readNew); len(found) > 0 {
-				g.held = append(g.held, found...)
-				sizes = sizesSearch
-			}
+			found = g.startedSince(deadline, !readNew)
 		}
+	}
+	// The held processes' parents are the band's, at their latest reads, the ones read again
+	// at now among them; the found ones were discounted by the table that placed them.
+	g.discountForks(g.held, g.heldTable)
+	if len(found) > 0 {
+		g.held = append(g.held, found...)
+		sizes = sizesSearch
 	}
 	rank(g.held)
 	return g.sendKill(now, s, reading, limit, g.held[0], sizes)
@@ -1132,6 +1145,7 @@ func (g *Guard) startedSince(deadline time.Time, must bool) []candidate {
 			break
 		}
 	}
+	g.discountForks(found, t)
 	return found
 }
 
@@ -1387,7 +1401,7 @@ func (g *Guard) sendKill(now time.Time, s Settings, reading, limit uint64, targe
 			PID: target.PID, Executable: processName(target.Process), SizeBytes: target.size,
 			ReadingBytes: reading, CounterBytes: counter, LimitBytes: limit, At: at, Cause: shimwire.MemoryKillCauseGuard,
 		},
-		Role: target.role, Rule: target.rule(), Sizes: sizes,
+		Role: target.role, Rule: target.rule(), Sizes: sizes, LessParent: target.lessParent,
 	}, shmem)
 	g.phase = waiting
 	killed := procKey{pid: target.PID, start: target.StartTime}
@@ -1449,6 +1463,8 @@ func (g *Guard) applyKillFailures(t *Table) {
 // (grownSinceKill), 0 under growthNoise and wherever no kill of the rise has been made.
 // descriptorBytes is the part of size that the memfds it holds by a descriptor alone make up
 // (addHeldMemfds), which a read of its smaps again at the mark adds as it was counted (rereadHeld).
+// lessParent is how much of size the tiers that rank by size do not count, for a fork that has not
+// run a new program (discountForks), and 0 for every other process.
 type candidate struct {
 	*Process
 	role            string
@@ -1457,6 +1473,50 @@ type candidate struct {
 	newToStay       bool
 	sinceKill       uint64
 	descriptorBytes uint64
+	lessParent      uint64
+}
+
+// rankSize is the size c ranks by where its tier ranks by size: its size less its parent's where
+// it is a fork that has not run a new program (lessParent).
+func (c *candidate) rankSize() uint64 { return c.size - c.lessParent }
+
+// discountForks sets the lessParent of each of cs, the processes the guard may end at a decision
+// whose table is t (INFRA-3531 R1 of spec version 33). A process that runs its parent's executable
+// with its parent's arguments (sameProgram), its parent being in t and read by the guard in this
+// stay, is a fork that has not run a new program: under gVisor it reports the pages it shares with
+// its parent as its own, so a sleeping fork of a large parent reads as large and its end frees
+// nothing. Its lessParent is its parent's size at the guard's latest read of the parent, the
+// newest of the parent's reads that sizes keeps, or its own size where that is less, so it ranks
+// near nothing where it only shares its parent's pages, and by what it holds over them where it
+// grows. Every other process has none: one whose parent the guard has not read in this stay (a
+// protected parent, or one no reading of the stay could read), and one that runs another
+// executable or the same with other arguments, which has run a program of its own. At 23fdd92f,
+// in 2 of 7 latepool runs at 4 GiB, the new tier ended first one of three sleeping forks of a 2.4
+// GB parent that started between the band's last two readings, or after the last, beside six
+// growers that started after them (`4g-latepool-v5s8l`, `4g-latepool-6gd5t`). Growth over the
+// window and since a kill are measured on each process's own sizes, and the floor and the reading
+// count every size whole: the discount orders, and changes nothing else.
+func (g *Guard) discountForks(cs []candidate, t *Table) {
+	for i := range cs {
+		c := &cs[i]
+		c.lessParent = 0
+		parent, listed := t.byPID[c.PPID]
+		if !listed || !sameProgram(c.Process, parent) {
+			continue
+		}
+		r := g.sizes[procKey{pid: parent.PID, start: parent.StartTime}]
+		if len(r.window) > 0 {
+			c.lessParent = min(r.window[len(r.window)-1].size, c.size)
+		}
+	}
+}
+
+// sameProgram is whether p runs parent's executable with parent's arguments: both executables read
+// and equal, and both argument lists read whole and equal. An exe link the scan could not read,
+// arguments it read none of, or arguments it cut at classifierArgsBytes are no match.
+func sameProgram(p, parent *Process) bool {
+	return p.Exe != "" && p.Exe == parent.Exe && len(p.Args) > 0 && p.argsWhole && parent.argsWhole &&
+		slices.Equal(p.Args, parent.Args)
 }
 
 // rule is the tier of the order of ends (rank) that puts c first where it is first, which the
@@ -1539,6 +1599,7 @@ func (g *Guard) assess(now time.Time) (assessment, error) {
 	// addHeldMemfds ranked them by size alone; keepSizes sets the growth and whether each is new
 	// to the stay, which rank orders by first.
 	g.keepSizes(now, a.endable)
+	g.discountForks(a.endable, t)
 	rank(a.endable)
 	for _, c := range a.endable {
 		a.endableBytes += c.size
@@ -1714,11 +1775,12 @@ func addHeldMemfds(cs []candidate, proc, link string, counted map[memfdID]bool, 
 // this stay in the band (newToStay), the largest first; then the most grown since the previous kill
 // of the rise (sinceKill, set at each reading after a kill by grownSinceKill, and none before a
 // rise's first kill); then, of those that grew by none of these, the largest first; and the newest
-// first among equal sizes: of a parent and the child it forked, which read the same, the child is
-// the one that was started for the work. Where none of cs grew or is new, the largest is first,
-// and where all of them are new, as where no reading of the stay came before the one decided on,
-// the order is by size. The ended line names the tier that put the first one first
-// (candidate.rule).
+// first among equal sizes: of a parent and the child it forked that has run a program of its own,
+// which read the same, the child is the one that was started for the work. Where none of cs grew or
+// is new, the largest is first, and where all of them are new, as where no reading of the stay came
+// before the one decided on, the order is by size. Each size it orders by is the rank size, the
+// size less what discountForks takes off a fork that runs its parent's program (INFRA-3531 R1 of
+// spec version 33). The ended line names the tier that put the first one first (candidate.rule).
 //
 // The tier of the processes new to the stay is there because a runaway can begin between two
 // readings, or just before the band's last one, and then has no earlier read to grow from, or one
@@ -1741,7 +1803,7 @@ func rank(cs []candidate) {
 			sinceKill = cmp.Compare(y.sinceKill, x.sinceKill)
 		}
 		return cmp.Or(cmp.Compare(y.growth, x.growth), cmp.Compare(ordinal(y.newToStay), ordinal(x.newToStay)),
-			sinceKill, cmp.Compare(y.size, x.size), cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
+			sinceKill, cmp.Compare(y.rankSize(), x.rankSize()), cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
 	})
 }
 

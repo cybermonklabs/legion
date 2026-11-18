@@ -490,7 +490,7 @@ func TestGuestNamesTheProcessTheKernelKilledAndTellsItsRole(t *testing.T) {
 			h.tick()
 			at := h.clock.Now()
 
-			want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel executable="python3"`,
+			want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 executable="python3"`,
 				load, 1500*mib, 3500*mib, 3900*mib, 32*mib, podLimit)
 			if got := h.log.with("ended "); !slices.Equal(got, []string{want}) {
 				t.Fatalf("the kill lines are %q, want %q; the log:\n%s", got, want, h.logged())
@@ -1469,7 +1469,7 @@ func TestGuestReportsAKillOfARolesProtectedProcessWithTheProtectedCause(t *testi
 	h.tick()
 	at := h.clock.Now()
 
-	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel executable="omp"`,
+	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 executable="omp"`,
 		guestAgent, 2*gib, 3500*mib, 3900*mib, 32*mib, podLimit)
 	if got := h.log.with("ended "); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the kill lines are %q, want %q; the log:\n%s", got, want, h.logged())
@@ -1851,7 +1851,7 @@ func TestGuestWakesAtTheFileModifiedEventOfMemoryEventsAndNamesTheKillWithNoScan
 	if len(kills) != 1 || kills[0] != wantKill {
 		t.Fatalf("the sink took %+v, want the one kill %+v; the log:\n%s", kills, wantKill, h.logged())
 	}
-	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel executable="python3"`,
+	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 executable="python3"`,
 		python, 1500*mib, 3500*mib, 3900*mib, 32*mib, podLimit)
 	if got := h.log.with("ended "); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the kill lines are %q, want %q; the log:\n%s", got, want, h.logged())

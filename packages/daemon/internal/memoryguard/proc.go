@@ -50,6 +50,10 @@ type Process struct {
 	// first classifierArgsBytes bytes alone, the last of them perhaps part of an argument, since a
 	// classifier reads a process's first arguments and nothing else reads them.
 	Args []string
+	// argsWhole is whether Args are the whole of `cmdline`, which the scan read in fewer than
+	// classifierArgsBytes bytes: a fork's arguments are compared with its parent's whole
+	// (sameProgram), and a cut one is no match.
+	argsWhole bool
 	// PIDNamespace is the target of the `ns/pid` link (`pid:[4026531836]`), empty when the scan
 	// could not read it.
 	PIDNamespace string
@@ -175,6 +179,7 @@ func readProcess(proc string, pid int, buf []byte) (*Process, error) {
 	p.PID = pid
 	if cmdline, err := readHead(filepath.Join(dir, "cmdline"), buf); err == nil {
 		p.Args = splitCmdline(cmdline)
+		p.argsWhole = len(cmdline) < len(buf)
 	}
 	exe, err := os.Readlink(filepath.Join(dir, "exe"))
 	if err != nil {
