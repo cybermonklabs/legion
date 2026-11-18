@@ -322,14 +322,14 @@ func raiseStream(ctx context.Context, js nats.JetStreamContext, info *nats.Strea
 	if info.Config.Replicas >= replicas {
 		return 0, nil
 	}
-	raise := func(current *nats.StreamInfo) nats.StreamConfig {
+	raise := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
 		raised := current.Config
 		raised.Replicas = replicas
-		return raised
+		return raised, true
 	}
-	raised, err := updateStream(ctx, js, info, raise, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas })
+	update, err := updateStream(ctx, js, info, raise, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas })
 	if err != nil {
-		return 0, fmt.Errorf("raise %s: %w", info.Config.Name, refusedSettings(err, &info.Config, &raised))
+		return 0, fmt.Errorf("raise %s: %w", info.Config.Name, refusedSettings(err, &update.from.Config, &update.sent))
 	}
 	return info.Config.Replicas, nil
 }
@@ -418,10 +418,10 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	if info.Config.MaxAge == maxAge {
 		return maxAge, nil
 	}
-	age := func(current *nats.StreamInfo) nats.StreamConfig {
+	age := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
 		aged := current.Config
 		aged.MaxAge = maxAge
-		return aged
+		return aged, true
 	}
 	if _, err := updateStream(ctx, js, info, age, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge }); err != nil {
 		return 0, fmt.Errorf("set %s max age: %w", stream, err)

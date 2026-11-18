@@ -3,9 +3,13 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,10 +82,10 @@ func TestAnUpdateRefusedAsOverlappingItsOwnStreamIsSettledFromTheStream(t *testi
 }
 
 // raisedToThree is the change of the rows above: the stream as a read found it, at three copies.
-func raisedToThree(current *nats.StreamInfo) nats.StreamConfig {
+func raisedToThree(current *nats.StreamInfo) (nats.StreamConfig, bool) {
 	raised := current.Config
 	raised.Replicas = 3
-	return raised
+	return raised, true
 }
 
 // otherWriterMaxBytes is the byte limit another writer gives the stream in a row of the table
@@ -104,6 +108,85 @@ func TestAnUpdateTheServerNeverAnswersIsSentAgainUntilTheWaitEnds(t *testing.T) 
 	if sent, _ := js.counts(); len(sent) < 2 {
 		t.Fatalf("updateStream sent %d updates, want the update sent again while the server leaves it unanswered", len(sent))
 	}
+}
+
+// An update that drew no answer is not sent again onto a stream a newer build stamped in the
+// meantime: the start and the keeper leave a newer build's stream exactly as they find it on a
+// first read (ensureStreamWithConfig, keepStream), and so on every read after a lost update. The
+// row plays a rolling release: this build's first update is lost, and while it is in flight a
+// newer build writes the stream, stamped with a higher generation and a 96 h age. Had this build
+// sent its update again from that read, the stream would carry this build's generation and its
+// 72 h age again.
+func TestALostUpdateIsNotSentAgainOntoANewerBuildsStream(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		run  func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error
+	}{
+		{"a start", func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error {
+			_, err := ensureStreamWithConfig(countedReads(t.Context()), js, cfg, capsAnUnsetStream)
+			return err
+		}},
+		{"a keeper pass", func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error {
+			restored, err := keepStream(countedReads(t.Context()), js, cfg, capsAnUnsetStream)
+			if len(restored) != 0 {
+				t.Errorf("the keeper reported %v restored, want nothing: it wrote nothing that landed", restored)
+			}
+			return err
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			js := streamTestJetStream(t)
+			own := parseConnectOptions([]ConnectOption(nil)).streamConfig()
+			if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream); err != nil {
+				t.Fatalf("this build creates the stream: %v", err)
+			}
+			// A byte limit the stream lacks, so this build's start and keeper each have an update to
+			// make.
+			limited := parseConnectOptions([]ConnectOption{WithStreamMaxBytes(keeperByteLimit)}).streamConfig()
+			lost := &newerWriteDuringLostUpdateJetStream{JetStreamContext: js}
+
+			if err := row.run(t, lost, &limited); err != nil {
+				t.Fatalf("%s whose update was lost while a newer build wrote the stream = %v, want nil", row.name, err)
+			}
+			got := deployedStream(t, js).Config
+			if want := strconv.Itoa(streamConfigGeneration + 1); got.Metadata[streamGenerationKey] != want || got.MaxAge != newerBuildMaxAge {
+				t.Fatalf("the stream carries generation %q and age %s, want the newer build's %s and %s", got.Metadata[streamGenerationKey], got.MaxAge, want, newerBuildMaxAge)
+			}
+			if updates := lost.updates.Load(); updates != 1 {
+				t.Fatalf("%s sent %d updates, want 1: the lost one, and none onto the newer build's stream", row.name, updates)
+			}
+		})
+	}
+}
+
+// newerBuildMaxAge is the age the newer build of TestALostUpdateIsNotSentAgainOntoANewerBuildsStream
+// writes, one this build never sets.
+const newerBuildMaxAge = 96 * time.Hour
+
+// newerWriteDuringLostUpdateJetStream loses the answer to the first update sent through it, and
+// while that update is in flight a newer build writes the stream: its generation above this
+// build's and its own age. Every update is counted, the lost one included.
+type newerWriteDuringLostUpdateJetStream struct {
+	nats.JetStreamContext
+	updates atomic.Int32
+}
+
+func (js *newerWriteDuringLostUpdateJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if js.updates.Add(1) > 1 {
+		return js.JetStreamContext.UpdateStream(cfg, opts...)
+	}
+	info, err := js.JetStreamContext.StreamInfo(cfg.Name)
+	if err != nil {
+		return nil, err
+	}
+	newer := info.Config
+	newer.MaxAge, newer.Duplicates = newerBuildMaxAge, time.Minute
+	newer.Metadata = maps.Clone(info.Config.Metadata)
+	newer.Metadata[streamGenerationKey] = strconv.Itoa(streamConfigGeneration + 1)
+	if _, err := js.JetStreamContext.UpdateStream(&newer); err != nil {
+		return nil, fmt.Errorf("the newer build's write: %w", err)
+	}
+	return nil, nats.ErrTimeout
 }
 
 // scriptedUpdateJetStream answers each stream update with the next of answers, applying the update
@@ -197,10 +280,10 @@ func TestConcurrentUpdatesOfOneStreamEndWithTheStreamHoldingThem(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				sent := update
-				_, errs[i] = updateStream(countedReads(t.Context()), member, &nats.StreamInfo{Config: deployed}, func(current *nats.StreamInfo) nats.StreamConfig {
+				_, errs[i] = updateStream(countedReads(t.Context()), member, &nats.StreamInfo{Config: deployed}, func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
 					changed := current.Config
 					changed.MaxBytes = sent.MaxBytes
-					return changed
+					return changed, true
 				}, func(again *nats.StreamInfo) bool {
 					return again.Config.MaxBytes >= update.MaxBytes
 				})

@@ -177,28 +177,55 @@ func (c *Client) awaitKeeper() {
 // (ensureStreamWithConfig), so the two builds a release runs at once never put their own settings
 // back in turn. An update whose answer never came succeeds when the stream, read again, needs
 // nothing more, and one the server refused as overlapping the stream itself is sent again until
-// the stream needs nothing more or its sends run out (updateStream).
+// the stream needs nothing more or its sends run out (updateStream). Each update sent again is
+// kept from the read before it, and none is sent when that read finds the stream a newer build's
+// or carrying the role lanes, the two streams a first read leaves alone; the fields it returns are
+// those of the last update against the read it was made from, so a field another writer set
+// between two sends is not reported as one this pass restored.
 func keepStream(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
 	info, err := js.StreamInfo(Stream)
 	if err != nil {
 		return nil, err
 	}
-	if MetadataGeneration(info.Config.Metadata, streamGenerationKey) > streamConfigGeneration {
+	if newerBuild(info) {
 		return nil, nil
 	}
 	kept := keptStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(kept, info.Config) {
 		return nil, nil
 	}
-	if roleLanes := slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return !subjectCapturesRoleLanes(subject) }); len(roleLanes) > 0 {
-		return nil, fmt.Errorf("the stream carries subjects that capture the role lanes, which only a start moves off it: %s", strings.Join(roleLanes, ", "))
+	if err := roleLanesLeftToAStart(info); err != nil {
+		return nil, err
 	}
-	keep := func(current *nats.StreamInfo) nats.StreamConfig { return keptStream(current, cfg, defaultsAnUnsetCap) }
-	sent, err := updateStream(ctx, js, info, keep, func(again *nats.StreamInfo) bool { return reflect.DeepEqual(keep(again), again.Config) })
-	if err != nil {
-		return nil, refusedSettings(err, &info.Config, &sent)
+	keep := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
+		if newerBuild(current) || roleLanesLeftToAStart(current) != nil {
+			return nats.StreamConfig{}, false
+		}
+		return keptStream(current, cfg, defaultsAnUnsetCap), true
 	}
-	return restoredFields(&info.Config, &sent), nil
+	update, err := updateStream(ctx, js, info, keep, func(again *nats.StreamInfo) bool {
+		kept, write := keep(again)
+		return write && reflect.DeepEqual(kept, again.Config)
+	})
+	switch {
+	case err != nil:
+		return nil, refusedSettings(err, &update.from.Config, &update.sent)
+	case update.declined && !newerBuild(update.from):
+		return nil, roleLanesLeftToAStart(update.from)
+	case update.declined:
+		return nil, nil
+	}
+	return restoredFields(&update.from.Config, &update.sent), nil
+}
+
+// roleLanesLeftToAStart is the keeper's refusal of a stream whose subjects capture the role lanes,
+// which only a start moves off it (keepStream), naming those subjects; nil when none does.
+func roleLanesLeftToAStart(info *nats.StreamInfo) error {
+	roleLanes := slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return !subjectCapturesRoleLanes(subject) })
+	if len(roleLanes) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the stream carries subjects that capture the role lanes, which only a start moves off it: %s", strings.Join(roleLanes, ", "))
 }
 
 // restoredFields names each field kept differs in from deployed, with its old and new value:

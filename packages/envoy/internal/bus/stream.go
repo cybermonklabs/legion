@@ -906,10 +906,8 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 			return nil, err
 		}
 	}
-	deployedGeneration := MetadataGeneration(info.Config.Metadata, streamGenerationKey)
-	if deployedGeneration > streamConfigGeneration {
-		slog.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
-			slog.Int("deployed_generation", deployedGeneration), slog.Int("own_generation", streamConfigGeneration))
+	if newerBuild(info) {
+		logLeftToNewerBuild(info)
 		return info.Config.Subjects, nil
 	}
 	desired, reconciliation := reconciledStream(info, cfg, defaultsAnUnsetCap)
@@ -932,23 +930,39 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	if err := written("migrate", func() error { return migrateRoleLanesOffStream(js, &info.Config, &desired) }); err != nil {
 		return nil, err
 	}
-	// An update sent again is reconciled from the stream as its read found it (updateStream).
-	reconcile := func(current *nats.StreamInfo) nats.StreamConfig {
+	// An update sent again is reconciled from the stream as its read found it, and none is sent
+	// onto a stream a newer build stamped while this one's update went unanswered (updateStream).
+	reconcile := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
+		if newerBuild(current) {
+			return nats.StreamConfig{}, false
+		}
 		reconciled, _ := reconciledStream(current, cfg, defaultsAnUnsetCap)
-		return reconciled
+		return reconciled, true
 	}
-	sent, err := updateStream(ctx, js, info, reconcile, func(again *nats.StreamInfo) bool {
-		return reflect.DeepEqual(reconcile(again), again.Config)
+	update, err := updateStream(ctx, js, info, reconcile, func(again *nats.StreamInfo) bool {
+		reconciled, write := reconcile(again)
+		return write && reflect.DeepEqual(reconciled, again.Config)
 	})
 	switch {
 	case err != nil && ctx.Err() != nil:
 		// updateStream ends on a silence only when ctx does, and a silence refused no setting.
 		return nil, fmt.Errorf("update %s: %w", Stream, err)
 	case err != nil:
-		return nil, refusedSettings(err, &info.Config, &sent)
+		return nil, refusedSettings(err, &update.from.Config, &update.sent)
+	case update.declined:
+		// A newer build's start wrote the stream while this one's update was unanswered: its
+		// settings stand, as on a first read that finds them, and so does its new election.
+		if leaderless(update.from) {
+			if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+				return nil, err
+			}
+		}
+		logLeftToNewerBuild(update.from)
+		return update.from.Config.Subjects, nil
 	}
+	_, reconciliation = reconciledStream(update.from, cfg, defaultsAnUnsetCap)
 	reconciliation.log()
-	if desired.Replicas > info.Config.Replicas {
+	if update.sent.Replicas > info.Config.Replicas {
 		if err := awaitStreamLeader(ctx, js, afterRaise, Stream); err != nil {
 			return nil, err
 		}
@@ -958,7 +972,22 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 			return nil, err
 		}
 	}
-	return desired.Subjects, nil
+	return update.sent.Subjects, nil
+}
+
+// newerBuild reports whether info's stream carries the settings of a newer build, one that stamped
+// a generation above this build's (streamGenerationKey), which this build leaves exactly as they
+// are: its start (ensureStreamWithConfig) and its keeper (keepStream) ask it of every read they
+// would write from, the first one and each one after an update that drew no answer.
+func newerBuild(info *nats.StreamInfo) bool {
+	return MetadataGeneration(info.Config.Metadata, streamGenerationKey) > streamConfigGeneration
+}
+
+// logLeftToNewerBuild logs that a start found info's stream carrying a newer build's settings and
+// leaves them as they are (newerBuild).
+func logLeftToNewerBuild(info *nats.StreamInfo) {
+	slog.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
+		slog.Int("deployed_generation", MetadataGeneration(info.Config.Metadata, streamGenerationKey)), slog.Int("own_generation", streamConfigGeneration))
 }
 
 // MetadataGeneration is the generation metadata holds under key, as a stream or a durable consumer
@@ -1075,11 +1104,23 @@ func keptSubjects(deployed, own []string) []string {
 	return kept
 }
 
+// streamUpdate is what updateStream came to: from, the read of the stream its last decision was
+// made on (the caller's own read, or the read after a send that drew no answer or an overlap
+// refusal); sent, the update it sent from that read, which the caller's error names
+// (refusedSettings) and a keeper's line reports against from (restoredFields); and declined, true
+// when change declined to write the stream as from found it, so nothing was sent from it.
+type streamUpdate struct {
+	from     *nats.StreamInfo
+	sent     nats.StreamConfig
+	declined bool
+}
+
 // updateStream writes change, the update a caller makes of a stream given a read of it, starting
 // from info, the caller's own read, and succeeds when the server accepts it or when the stream,
-// read again, holds what the caller asked for (holds). It returns the update it sent last, which
-// the caller's error names (refusedSettings). Two answers say nothing of whether the update
-// landed, and after either the stream is read again:
+// read again, holds what the caller asked for (holds). change may decline a read (false), and the
+// call then sends nothing more and reports it declined (streamUpdate): the stream ensure and the
+// keeper decline a stream a newer build stamped (newerBuild). Two answers say nothing of whether
+// the update landed, and after either the stream is read again:
 //   - an answer that never came (unanswered): nats-server v2.15.1 drops an update with no answer
 //     when its metadata proposal fails because the term moved (jsClusteredStreamUpdateRequestLocked,
 //     server/jetstream_cluster.go), and v2.10.29 was seen to leave one of two replica changes
@@ -1104,40 +1145,48 @@ func keptSubjects(deployed, own []string) []string {
 //
 // Each update sent again is change applied to the stream as the read before it found it, so it
 // changes only what the caller changes and never writes back what another writer changed since
-// the caller's read, and it goes bucketAppliedInterval after that read, as sentAgain pauses between
-// two sends. Any other refusal is the update's own error. A send in flight when ctx ends is
-// abandoned, its answer dropped (Bounded), and the step ends naming ctx's cause.
+// the caller's read, and none is sent onto a stream that read finds change declines, such as one
+// a newer build wrote while this update went unanswered. It goes bucketAppliedInterval after that
+// read, as sentAgain pauses between two sends. Any other refusal is the update's own error. A
+// send in flight when ctx ends is abandoned, its answer dropped (Bounded), and the step ends
+// naming ctx's cause.
 //
 // The read after the update is a read of a stream's state, sent again while the server leaves it
 // unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
 // sent while the stream's group elects a leader can draw no answer, and a read sent then can be
 // lost too, so a read sent once could leave a raise that landed reported as one that failed.
-func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) nats.StreamConfig, holds func(*nats.StreamInfo) bool) (nats.StreamConfig, error) {
+func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) (nats.StreamConfig, bool), holds func(*nats.StreamInfo) bool) (streamUpdate, error) {
 	name := info.Config.Name
-	update := change(info)
+	result := streamUpdate{from: info}
 	for overlaps := 0; ; {
+		update, write := change(result.from)
+		if !write {
+			result.declined = true
+			return result, nil
+		}
+		result.sent = update
 		_, answered, err := Bounded(ctx, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
 		switch {
 		case !answered:
-			return update, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))
+			return result, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))
 		case overlapRefused(err):
 			overlaps++
 		case !unanswered(err):
-			return update, err
+			return result, err
 		}
 		again, readErr := readAgain(ctx, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
 		switch {
 		case readErr == nil && holds(again):
-			return update, nil
+			return result, nil
 		case readErr != nil:
-			return update, fmt.Errorf("%w, and the read after it: %w", err, readErr)
+			return result, fmt.Errorf("%w, and the read after it: %w", err, readErr)
 		case overlaps == overlapSends:
-			return update, err
+			return result, err
 		}
 		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
-			return update, fmt.Errorf("%w, and the wait ended before it was sent again: %w", err, ended)
+			return result, fmt.Errorf("%w, and the wait ended before it was sent again: %w", err, ended)
 		}
-		update = change(again)
+		result.from = again
 	}
 }
 
