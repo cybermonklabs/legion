@@ -253,11 +253,11 @@ type Config struct {
 	// cluster the broker runs in. Each prefix is read as its network (34.118.230.7/20 is
 	// 34.118.224.0/20); an empty element, a prefix that does not parse and an IPv4-mapped IPv6
 	// prefix refuse the start, naming the element's position. With BROKER_AIRLOCK_RULES_FILE set
-	// and KUBERNETES_SERVICE_HOST set, which Kubernetes sets in every container to the address of
-	// the cluster's kubernetes Service, it is required, and the start is refused unless
-	// KUBERNETES_SERVICE_HOST is an IP address inside one of the ranges, so a list that misses
-	// the cluster's Service range cannot pass silently. Outside a cluster (no
-	// KUBERNETES_SERVICE_HOST) it is optional.
+	// and KUBERNETES_SERVICE_HOST set to a non-empty value, which Kubernetes sets in every
+	// container to the address of the cluster's kubernetes Service, it is required, and the start
+	// is refused unless KUBERNETES_SERVICE_HOST is an IP address inside one of the ranges, so a
+	// list that misses the cluster's Service range cannot pass silently. Outside a cluster
+	// (KUBERNETES_SERVICE_HOST empty or unset) it is optional.
 	AirlockClusterRanges []netip.Prefix
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
@@ -1251,14 +1251,15 @@ func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 
 // requireClusterRanges is the check of BROKER_AIRLOCK_CLUSTER_RANGES against the cluster a broker
 // with the airlock on runs in. KUBERNETES_SERVICE_HOST, which Kubernetes sets in every container
-// to the ClusterIP of the cluster's kubernetes Service, says the broker runs in a cluster; unset,
-// the broker runs outside one and the ranges are optional. Set, they are required and must hold
-// that address: it is drawn from the cluster's Service range, so a list that does not hold it has
-// missed the one range the proxy's fixed rules cannot refuse. Each refusal names both variables,
-// and a KUBERNETES_SERVICE_HOST that is no address is not quoted.
+// to the ClusterIP of the cluster's kubernetes Service, says the broker runs in a cluster; empty
+// or unset, the broker runs outside one and the ranges are optional. Set to a non-empty value,
+// they are required and must hold that address: it is drawn from the cluster's Service range, so
+// a list that does not hold it has missed the one range the proxy's fixed rules cannot refuse.
+// Each refusal names both variables, and a KUBERNETES_SERVICE_HOST that is no address is not
+// quoted.
 func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
-	// Unset is outside a cluster, and nothing else is: a value of spaces is set, and is refused
-	// below as a missing setting or as no address.
+	// Empty or unset is outside a cluster, and nothing else is: any non-empty value is a cluster,
+	// a value of spaces among them, which is refused below as a missing setting or as no address.
 	if serviceHost == "" {
 		return nil
 	}

@@ -141,6 +141,47 @@ func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 	}
 }
 
+// TestAirlockCheckRefusesAHostTheProxyNeverCompares: the proxy writes a request's host that is an
+// IP address as netaddr.Host writes it before it compares it with an entry's hosts, so a host
+// written in another form binds nothing, and airlock-check refuses it as the boot does. The
+// refusal names the form to write and repeats nothing of the host as written, whose zone is any
+// text. The control is the same addresses in that form, and an IPv6 address in upper case,
+// which fold.ASCII alone changes and airlock.HostBound folds: those files are valid.
+func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		host      string
+		canonical string
+		absent    string
+	}{
+		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", "2001:db8:7::1", "2001:db8:7:0::1"},
+		{"an IPv4-mapped IPv6 address", "::ffff:93.184.216.34", "93.184.216.34", "::ffff:"},
+		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 \"x`, "2001:db8:7::1", "eth0"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "`+c.host+`"]}]}`)
+			code, stdout, stderr := runAirlockCheck(t, path)
+			if code != 1 || stdout != "" {
+				t.Fatalf("%s = exit %d with stdout %q, want exit 1 and no report", c.name, code, stdout)
+			}
+			for _, want := range []string{`secrets[0] "GITHUB"`, "hosts[1]", "canonical form", "binds nothing", "write it as " + c.canonical} {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("the refusal does not say %q: %q", want, stderr)
+				}
+			}
+			if strings.Contains(stderr, c.absent) {
+				t.Fatalf("the refusal repeats %q as the file writes it: %q", c.absent, stderr)
+			}
+		})
+	}
+	t.Run("the control: each address in the form the proxy compares", func(t *testing.T) {
+		path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1"]}]}`)
+		if code, _, stderr := runAirlockCheck(t, path); code != 0 || stderr != "" {
+			t.Fatalf("a file of canonical addresses = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+		}
+	})
+}
+
 // TestAirlockCheckReportsWhatChangedAgainstTheOldFile is the report a reviewer reads: a host
 // added, a header added, an entry removed with the host it held, and the three fields that
 // decide the rest of where a credential may go, each as old → new.
