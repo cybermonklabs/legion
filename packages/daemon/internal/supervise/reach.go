@@ -234,24 +234,33 @@ type RequestRelaunch struct {
 // relaunchUnreachable is a claim's relaunch on its same session, in the order the requirement
 // sets: the guard, read again under the machine's lock with every step this machine has read and
 // the activity report the store holds for this launch; then, before anything is stopped, the
-// runtime's own refusal — a launcher that is not connected, or a launch that would replace the
-// pod and end every other role in it (runtime.InPlaceRelauncher); then the stop of the process,
+// refusals that need nothing stopped: the runtime's own — a launcher that is not connected, or a
+// launch that would replace the pod and end every other role in it (runtime.InPlaceRelauncher) —
+// and the tree lifecycle's recheck every launch makes first (checkLaunch: the tree's cleanup
+// reserved, or the claim's bound epoch no longer the open one); then the stop of the process,
 // after which a process that outlived it ends the relaunch with nothing more done; and only then
 // the replacement every daemon-made relaunch makes (replaceProcess's steps): the task the turn ran
 // goes back to waiting and comes back behind the cause, and the recorded session is resumed.
 //
+// The stop has ended the process, so the process is let go there, before the launch, as a
+// retirement's stop lets its process go (suspendProcess), and what it ended is recorded under the
+// relaunch's cause (letGo, recordEnd); the launch lets nothing more go. So a refusal the launch's
+// own recheck still meets — the tree's cleanup reserved, or a store that did not answer, while the
+// stop waited on the runtime — finds a claim that records no process, which is suspended for the
+// tree's close or launched again at the probe interval (relaunchRefused), rather than a claim left
+// recording a process that is gone with nothing to launch it.
+//
 // Once the stop has ended the process the claim records the relaunch (Reach.LastRelaunch), which
-// its next write carries: the take-back's, or the launch's own, which moves the generation, at the
-// latest. So the record the next relaunch within 6 hours is refused by is durable with the launch
-// it refuses a repeat of, and a daemon that ends after that write loses none of it, whatever the
-// keeper had written by then. A relaunch refused before the stop records nothing, and uses no
-// part of the 6 hours.
+// its next write carries: the take-back's, the launch's own, which moves the generation, or that
+// of the refusal the launch met, at the latest. So the record the next relaunch within 6 hours is
+// refused by is durable with the launch it refuses a repeat of, and a daemon that ends after that
+// write loses none of it, whatever the keeper had written by then. A relaunch refused before the
+// stop records nothing, and uses no part of the 6 hours.
 //
 // It charges nothing: no death, and no launch failure for the stop, since the process did nothing
 // wrong; a start the runtime refuses inside the launch is charged as any is (launchNow). The
 // launch is exempt from the wake pacing, as an operator's own request is: the process is stopped
-// already, so a launch held for its turn would leave the claim recording a process that is gone,
-// which the sweep's next report would charge as a death.
+// already, so a launch held for its turn would keep the claim's session down for the whole wait.
 //
 // A runtime whose processes share no place (tmux) answers no refusal, and its stop is Suspend:
 // an error from it is a process the runtime would not say it stopped, which is refused as one
@@ -297,6 +306,9 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 			return refuse(err)
 		}
 	}
+	if err := m.checkLaunch(ctx); err != nil {
+		return fmt.Errorf("the tree lifecycle refuses the relaunch's launch, so nothing is stopped: %w", err)
+	}
 	m.log.Warn("supervise: relaunching a claim Envoy cannot reach on its same session; the stop charges nothing",
 		"incarnation", loc.Incarnation, "cause", ev.Cause, "mayReplacePod", ev.MayReplacePod,
 		"lastStep", ev.Step.LastStep(), "tool", ev.Step.Tool, "callId", ev.Step.CallID)
@@ -330,9 +342,10 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		return m.endHeld(ctx)
 	}
 	m.relaunchCause = ev.Cause
-	defer func() { m.relaunchCause = "" }()
+	m.letGo(ctx, ev.Cause)
+	m.relaunchCause = ""
 	before := m.claim.Generation
-	if err := m.launchAfter(ctx, false, true, ev.Cause); err != nil || m.claim.Generation == before {
+	if err := m.launchAfter(ctx, false, true, noEnd); err != nil || m.claim.Generation == before {
 		return err
 	}
 	// The relaunch's launch is written; the generation it left the claim at is written beside the

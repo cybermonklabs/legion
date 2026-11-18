@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // The relaunch of a claim Envoy cannot reach (R5): the controller's `relaunch`, or the daemon's own
@@ -418,6 +419,111 @@ func TestARelaunchTheRuntimeRefusesStopsNothing(t *testing.T) {
 			h.wantCalls("Resume", 0)
 		})
 	}
+}
+
+// The tree lifecycle's recheck (checkLaunch) refuses a launch for reasons that need nothing
+// stopped: a reserved cleanup of the claim's tree, or a bound epoch that is no longer the open
+// one. The relaunch asks it before the stop, as it asks the runtime's own refusals, so a relaunch
+// it refuses stops nothing, takes nothing back and records no relaunch. Asked only after the stop,
+// the refusal would leave the process gone with no launch after it, the claim still recording it,
+// and the controller's next try refused as a relaunch made within 6 hours.
+func TestARelaunchTheTreeLifecycleRefusesStopsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		refuse func(store *epochStore)
+		says   string
+	}{
+		{name: "its tree's cleanup reserved", refuse: func(s *epochStore) { s.reserved = true }, says: "cleanup is reserved"},
+		{name: "its bound epoch no longer open", refuse: func(s *epochStore) { s.epoch++ }, says: "stale"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &epochStore{epoch: 1}
+			h := lifecycleHarness(t, store, queuedClaim())
+			sent := h.waitingSilently()
+			before := h.claim()
+			tc.refuse(store)
+
+			err := h.handle(h.relaunchOf(false))
+
+			if err == nil || !strings.Contains(err.Error(), tc.says) {
+				t.Fatalf("relaunch = %v, want the lifecycle's refusal saying %q", err, tc.says)
+			}
+			h.wantCalls("Suspend", 0)
+			h.wantCalls("Resume", 0)
+			h.wantState(StateWorking)
+			if c := h.claim(); c.Generation != before.Generation || c.Locator == nil || *c.Locator != *before.Locator || !c.Reach.LastRelaunch.IsZero() {
+				t.Fatalf("the refused relaunch left the claim at generation %d on %+v with a relaunch at %v; want it on its process at %d with no relaunch",
+					c.Generation, c.Locator, c.Reach.LastRelaunch, before.Generation)
+			}
+			if p := h.pending(); p.ID != sent || p.Interrupted {
+				t.Fatalf("pending = %+v, want the task the turn runs left as it was", p)
+			}
+			h.wantBudgets(Budgets{})
+		})
+	}
+}
+
+// A refusal can still come once the stop has run: a cleanup reserved, or a store that does not
+// answer the lifecycle's recheck, while the stop waits on the runtime, which for a Sandbox pod is
+// minutes. The stop lets the process go, as a retirement's stop does, so the launch's refusal
+// meets a claim that records no process and is answered as a retirement's is (relaunchRefused): a
+// reserved cleanup suspends the claim for the tree's close, its session kept, and a check the
+// store did not answer is tried again at the probe interval, which then resumes the same session.
+// Neither leaves the claim recording a process that is gone with nothing to launch it.
+func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *testing.T) {
+	t.Run("its tree's cleanup reserved while the stop waits", func(t *testing.T) {
+		store := &epochStore{epoch: 1}
+		h := lifecycleHarness(t, store, queuedClaim())
+		h.waitingSilently()
+		h.m.deps.Runtime = &reservingSuspend{Runtime: h.rt, store: store}
+
+		err := h.handle(h.relaunchOf(false))
+
+		if !errors.Is(err, treelifecycle.ErrCleanupReserved) {
+			t.Fatalf("relaunch = %v, want the reservation's wait", err)
+		}
+		h.wantCalls("Suspend", 1)
+		h.wantCalls("Resume", 0)
+		for where, c := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(h.token)} {
+			if c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon || c.Locator != nil || c.Session != session {
+				t.Errorf("%s holds the claim %s by %q on %+v with session %q; want it suspended by the daemon for the tree's close, with no process and its session kept",
+					where, c.State, c.SuspendedBy, c.Locator, c.Session)
+			}
+			if c.EndedWork.Cause != relaunchCause {
+				t.Errorf("%s records the stop's end as caused by %q, want the relaunch's %q", where, c.EndedWork.Cause, relaunchCause)
+			}
+		}
+		h.wantBudgets(Budgets{})
+	})
+	t.Run("its store not answering the check while the stop waits", func(t *testing.T) {
+		store := &epochStore{epoch: 1}
+		h := lifecycleHarness(t, store, queuedClaim())
+		h.waitingSilently()
+		generation := h.generation()
+		h.m.deps.Runtime = &unansweredSuspend{Runtime: h.rt, store: store, checks: 1}
+
+		if err := h.handle(h.relaunchOf(false)); !errors.Is(err, errUnanswered) {
+			t.Fatalf("relaunch = %v, want the check the store did not answer", err)
+		}
+		h.wantCalls("Suspend", 1)
+		h.wantCalls("Resume", 0)
+		if c := h.claim(); c.State != StateLaunching || c.Locator != nil || c.Generation != generation {
+			t.Fatalf("the unchecked launch left the claim %s at generation %d on %+v; want it launching at %d with no process, its launch to be tried again",
+				c.State, c.Generation, c.Locator, generation)
+		}
+
+		h.advance(testProbe)
+
+		resumed := h.wantCalls("Resume", 1)[0]
+		if c := h.claim(); c.State != StateLaunching || c.Generation != generation+1 || resumed.Spec.ResumeSessionFile != sessionFile {
+			t.Fatalf("after the probe interval the claim is %s at generation %d resuming %q; want the same session launching at %d",
+				c.State, c.Generation, resumed.Spec.ResumeSessionFile, generation+1)
+		}
+		if got := h.claim().EndedWork.Cause; got != relaunchCause {
+			t.Fatalf("the claim records the stop's end as caused by %q, want the relaunch's %q", got, relaunchCause)
+		}
+		h.wantBudgets(Budgets{})
+	})
 }
 
 func TestARelaunchWhoseProcessOutlivesItsStopDoesNothingMore(t *testing.T) {

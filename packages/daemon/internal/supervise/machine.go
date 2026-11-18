@@ -1186,7 +1186,7 @@ type Machine struct {
 	// the backstop's own event, so a turn whose agent moved in that window is left alone.
 	steppedAt time.Time
 	// relaunchCause is the cause of the relaunch of a claim Envoy cannot reach while that
-	// relaunch's own launch lets the process go (relaunchUnreachable), and "" otherwise: the
+	// relaunch lets the process go (relaunchUnreachable), and "" otherwise: the
 	// let-go records it whatever the process ended (recordEnd), since the relaunch records its own
 	// cause on the claim, where any other let-go that ended nothing worth telling records none.
 	relaunchCause string

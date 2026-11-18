@@ -115,11 +115,12 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 //
 // A live claim that records none has already let its process go: a retirement's relaunch whose
 // stop already ended the process (the registration deadline and a prompt retirement check before
-// they stop, so the check failed while the stop waited out its grace), or a launch whose write
-// failed, waiting (relaunchLater). A claim left there would have nothing watching or relaunching
-// it. A reserved cleanup suspends it for the daemon, its session kept, for the tree's close to
-// retire. Any other failure is not the tree's — a store that did not answer — and ends nothing:
-// the relaunch waits (relaunchLater), as a stop that fails does.
+// they stop, so the check failed while the stop waited out its grace), the relaunch of a claim
+// Envoy cannot reach, which checks before its stop too (relaunchUnreachable), or a launch whose
+// write failed, waiting (relaunchLater). A claim left there would have nothing watching or
+// relaunching it. A reserved cleanup suspends it for the daemon, its session kept, for the tree's
+// close to retire. Any other failure is not the tree's — a store that did not answer — and ends
+// nothing: the relaunch waits (relaunchLater), as a stop that fails does.
 func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Context) error, err error) error {
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
