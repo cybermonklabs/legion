@@ -15,8 +15,9 @@ import (
 // now (uncountedRunOpen: this release's end rule does not hold it over, its tree is not the
 // operator's, and its generation started a run) gets an open row there
 // (record.Store.OpenUncountedStep), with the agent and the moment its start would have named
-// (upgradedStart). So a member of a lingering or closed tree, and a root a hand-over carried in
-// that waits for its slot, get none. It queues no record: the run reaches Dispatch with its end,
+// (upgradedStart). So a member of a lingering or closed tree, and every issue of a tree whose root
+// waits for the promotion that opens it — a root a hand-over carried in, and the members of a tree
+// admitted again — get none. It queues no record: the run reaches Dispatch with its end,
 // as an uncounted run's end does (endStep). From then on it is an open run like any other: the
 // settle ends it (settleRuns), and the record names its agent (record.RunsAStepOn), so a fact that
 // agent's request applies waits for the agent's stream first. A place whose row is open or ended

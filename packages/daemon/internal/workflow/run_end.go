@@ -342,28 +342,36 @@ func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns
 	if err != nil || operator {
 		return run, false, err
 	}
-	started, err := e.generationStarted(ctx, tx, issue)
+	started, err := e.generationStarted(ctx, tx, issue, read)
 	return run, started, err
 }
 
-// generationStarted says whether issue's generation started a run. It did not for a root a
-// hand-over carried in at this generation (record.HandedOverRoot) that its promotion has not
-// reached: the root holds no admission slot and no mark of one taken away for a wait
-// (record.Issue.ReleasedForWaitAt), and its carried phase starts its run at that promotion
-// (admit's readmit). Every other issue that stands in a step started its run there.
-func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.ReleasedForWaitAt != nil {
-		return true, nil
+// generationStarted says whether the run issue stands in has started, with its tree's root read
+// by read. It has not while that root waits for the promotion that opens its tree
+// (record.AwaitsPromotion): a root a re-admission or a hand-over put back in the line, whose
+// carried phase starts its run at that promotion (admit's readmit), and each member such a
+// re-admission left mid-phase, which the promotion starts again (admit's startMidPhaseMembers).
+// The run a member stood in before ended with the linger the re-admission cleared, so the
+// re-admission leaves the end rule (runOver) no linger to read, and this is the clause that holds
+// such a member's run unstarted. Every other issue that stands in a step started its run there.
+func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.Issue, read issueReader) (bool, error) {
+	root := &issue
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+		var err error
+		if root, err = read(issue.Tree); err != nil || root == nil {
+			return true, err
+		}
 	}
-	carried, err := e.store.HandedOverRoot(ctx, tx, issue.Key)
-	if err != nil || carried == nil || carried.Generation != issue.Generation {
-		return true, err
+	gates, err := e.store.GatesOf(ctx, tx, root.Key)
+	if err != nil {
+		return false, err
 	}
 	slots, err := e.store.Slots(ctx, tx)
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == issue.Key }), nil
+	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == root.Key })
+	return !record.AwaitsPromotion(*root, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
 }
 
 // mergeCanLand says whether member's merge, which awaits its landing in the tree root lingers, can

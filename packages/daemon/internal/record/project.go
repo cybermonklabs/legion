@@ -1155,9 +1155,10 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// release reads the linger in the transaction that records the close, before the
 		// hand-over writes the root of its own — so the carried row is the case this is written
 		// against rather than the usual one. It is the one statement of that reasoning: the doc
-		// above, QueuedRoot and WaitsForSlot each point here rather than repeating it.
+		// above, QueuedRoot, WaitsForSlot and AwaitsPromotion, which reads it, each point here
+		// rather than repeating it.
 		_, holds := slotted[issue.Key]
-		if holds && issue.HandedOverFrom == "" {
+		if !AwaitsPromotion(issue, facts.Gates[issue.Key], holds) {
 			hold(issue)
 			continue
 		}
@@ -1359,6 +1360,18 @@ func QueuedRoot(issue Issue, gate TreeGate) bool {
 // been made.
 func ran(issue Issue, gate TreeGate) bool {
 	return issue.HandedOverFrom == "" && (issue.CarriesRun() || gate.EverOpened())
+}
+
+// AwaitsPromotion says whether root waits for the promotion that opens its tree: it is a queued
+// root (QueuedRoot, over gate, its own design gate), and holds, whether it holds a slot row, names
+// no row the daemon granted it in this tree. A queued root holding such a row has been promoted
+// already, while a root that arrived from another tree (Issue.HandedOverFrom) may carry the row it
+// held there and still wait; Waiting's queued-root loop, which reads this, states why. Until that
+// promotion nothing of the tree runs: the root's carried phase, and each member a re-admission
+// left mid-phase, start their runs there (admit's startMidPhaseMembers), so the boot and the settle
+// open and record no run of such a tree (workflow's generationStarted).
+func AwaitsPromotion(root Issue, gate TreeGate, holds bool) bool {
+	return QueuedRoot(root, gate) && !(holds && root.HandedOverFrom == "")
 }
 
 // treeLive is TreeLive over the facts of one root already in hand: its tree's lifecycle and its
