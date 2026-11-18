@@ -152,7 +152,7 @@ func TestLoadLimitsAzureLoginToOneNamedSecret(t *testing.T) {
 // whole entry, so an operator reads which one to fix.
 func TestServiceAccountBindingSettingIsRead(t *testing.T) {
 	const (
-		dev   = "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"
+		dev   = "dev-aditya@example-identities.iam.gserviceaccount.com"
 		admin = "gcp-admin@example-project.iam.gserviceaccount.com"
 	)
 	cfg, err := Load(env(validEnv()))

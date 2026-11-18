@@ -47,7 +47,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 	}))
 	defer google.Close()
 	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/projects/-/serviceAccounts/dev-aditya@theorem-agent-identities.iam.gserviceaccount.com:generateAccessToken" {
+		if r.URL.Path != "/v1/projects/-/serviceAccounts/dev-aditya@example-identities.iam.gserviceaccount.com:generateAccessToken" {
 			t.Errorf("IAM endpoint asked %s %s", r.Method, r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "service-account-access-token"})
@@ -65,7 +65,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 			// binding every mint of the type would be refused before the IAM endpoint below
 			// were asked anything, and this test would prove nothing about which minter the
 			// type reaches.
-			Accounts: map[string]string{"DEV_ADITYA": "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"},
+			Accounts: map[string]string{"DEV_ADITYA": "dev-aditya@example-identities.iam.gserviceaccount.com"},
 		},
 	)
 
@@ -82,7 +82,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 	if err != nil || minted.Value != "google-access-token" {
 		t.Fatalf("google-login minter = %q, %v; want the Google endpoint's access token", minted.Value, err)
 	}
-	account := `{"service_account":"dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"}`
+	account := `{"service_account":"dev-aditya@example-identities.iam.gserviceaccount.com"}`
 	minted, err = minters[policy.TypeGoogleServiceAccount](context.Background(), secrets.MintRequest{Name: "DEV_ADITYA", Value: account})
 	if err != nil || minted.Value != "service-account-access-token" {
 		t.Fatalf("google-service-account minter = %q, %v; want the IAM endpoint's access token", minted.Value, err)

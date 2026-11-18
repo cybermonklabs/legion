@@ -180,13 +180,13 @@ is() { [ "$1" = "$2" ] && echo true || echo false; }
 readonly worker_a="ghcr.io/cybermonklabs/legion-worker@sha256:aaaa"
 readonly worker_b="ghcr.io/cybermonklabs/legion-worker@sha256:bbbb"
 readonly worker_smoke="ghcr.io/cybermonklabs/legion-worker@sha256:5555"
-readonly infra_image="us-west1-docker.pkg.dev/theorem-agent-infra/legion/worker-infra@sha256:1111"
+readonly infra_image="us-west1-docker.pkg.dev/example-project/legion/worker-infra@sha256:1111"
 readonly fleet="    - key: SMOKE
       replicas: 0
       image: ${worker_smoke}
     - key: LINUX
       replicas: 1
-      image: us-west1-docker.pkg.dev/theorem-agent-infra/legion/worker-lean@sha256:2222
+      image: us-west1-docker.pkg.dev/example-project/legion/worker-lean@sha256:2222
       daemonImage: ${worker_a}
     - key: INFRA
       replicas: 1

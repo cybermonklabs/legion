@@ -21,7 +21,7 @@ import (
 )
 
 // serviceAccountEmail is the account a google-service-account secret of a person's fleet names.
-const serviceAccountEmail = "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"
+const serviceAccountEmail = "dev-aditya@example-identities.iam.gserviceaccount.com"
 
 // serviceAccountPath is the resource the broker must ask for that account: the generateAccessToken
 // verb keeps its colon, which an escaped path would have turned into %3A.
@@ -199,8 +199,8 @@ func TestGoogleServiceAccountMintRefusesAValueThatIsNoServiceAccount(t *testing.
 		{"a person's email at the service account domain", `{"service_account":"aditya@theorem.dev.iam.gserviceaccount.com."}`},
 		{"two accounts", `{"service_account":"dev-aditya@p.iam.gserviceaccount.com,dev-sami@p.iam.gserviceaccount.com"}`},
 		{"an empty field", `{"service_account":""}`},
-		{"a missing field", `{"project":"theorem-agent-identities"}`},
-		{"no JSON object", "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"},
+		{"a missing field", `{"project":"example-identities"}`},
+		{"no JSON object", "dev-aditya@example-identities.iam.gserviceaccount.com"},
 		{"a path of its own", `{"service_account":"../../projects/other/serviceAccounts/x@p.iam.gserviceaccount.com"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -354,7 +354,7 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 // below, and the fake IAM endpoint sees no request of its own. The refusal names the secret and
 // the bound account, which an operator reads to fix the setting, and never the stored value.
 func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
-	const otherAccount = "dev-sami@theorem-agent-identities.iam.gserviceaccount.com"
+	const otherAccount = "dev-sami@example-identities.iam.gserviceaccount.com"
 	const otherValue = `{"service_account":"` + otherAccount + `"}`
 	server, calls := iamServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-access-token"})
