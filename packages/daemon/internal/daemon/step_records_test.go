@@ -544,6 +544,7 @@ func TestAParkOfAChildInAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
 // comes after it, and the machine holds no lock while it waits, so the request reads the claim's
 // machine as it reads any live claim's. A hold inside a decision would not do: the request's grant
 // check reads the claim (supervise.Machine.Claim), which waits for the decision in flight. The
+// request is sent once the answer is held; the hold ends once the daemon says the request began
 // its wait for c's machine (overrides.streamWaitBegan), or once the request has answered without
 // one; r.waited says which.
 func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body any) (int, []byte) {
