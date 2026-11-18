@@ -193,16 +193,18 @@ func (r *pauseRuntime) suspendedOf(token claim.Token) int {
 // whose session is not live is refused as the listener refuses a role whose holder stopped inside
 // its keep window (404 `holder_lapsed`, the holder `unresponsive`): the role is still its
 // session's, so the daemon keeps the message and tries again (notify.ErrHolderUnresponsive), as it
-// does for a role a release or a pause stopped. Every other publish is taken, each recorded with
-// the topic and the moment on the test clock. A test says when a role's session holds its topic
-// (hold). The registry read and the clean session stop are answered as a listener with no record
-// of the session answers them.
+// does for a role a release or a pause stopped. A test can make a role's topic answer as the
+// listener answers a role whose session reads gone instead (gone). Every other publish is taken,
+// each recorded with the topic and the moment on the test clock. A test says when a role's session
+// holds its topic (hold). The registry read and the clean session stop are answered as a listener
+// with no record of the session answers them.
 type pauseEnvoy struct {
-	clock *waveClock
-	url   string
-	mu    sync.Mutex
-	held  map[string]bool
-	sent  []pauseEnvoyPublish
+	clock      *waveClock
+	url        string
+	mu         sync.Mutex
+	held       map[string]bool
+	goneTopics map[string]bool
+	sent       []pauseEnvoyPublish
 }
 
 // pauseEnvoyPublish is one publish the listener took.
@@ -213,7 +215,7 @@ type pauseEnvoyPublish struct {
 
 func newPauseEnvoy(t *testing.T, clock *waveClock) *pauseEnvoy {
 	t.Helper()
-	e := &pauseEnvoy{clock: clock, held: map[string]bool{}}
+	e := &pauseEnvoy{clock: clock, held: map[string]bool{}, goneTopics: map[string]bool{}}
 	server := httptest.NewServer(http.HandlerFunc(e.serve))
 	t.Cleanup(server.Close)
 	e.url = server.URL
@@ -236,8 +238,12 @@ func (e *pauseEnvoy) serve(w http.ResponseWriter, r *http.Request) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		if strings.HasPrefix(body.Topic, notify.RoleTopicPrefix) && !e.held[body.Topic] {
+			state := notify.StateUnresponsive
+			if e.goneTopics[body.Topic] {
+				state = "gone"
+			}
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":"the role's holder is not live","reason":"holder_lapsed","holder":"a-stopped-session","holder_state":"unresponsive"}`)
+			_, _ = fmt.Fprintf(w, `{"error":"the role's holder is not live","reason":"holder_lapsed","holder":"a-stopped-session","holder_state":%q}`, state)
 			return
 		}
 		e.sent = append(e.sent, pauseEnvoyPublish{topic: body.Topic, message: body.Message, at: e.clock.Now()})
@@ -255,6 +261,17 @@ func (e *pauseEnvoy) hold(token claim.Token) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.held[notify.RoleTopicPrefix+string(token)] = true
+}
+
+// gone is token's role topic answering, while no session holds it, as the production listener
+// answers a role whose session reads gone, which a stopped role's does since
+// cybermonklabs/legion#4088: 404 holder_lapsed with holder_state gone, which notify reads as
+// notify.ErrNoHolder. A topic not gone answers holder_state unresponsive
+// (notify.ErrHolderUnresponsive).
+func (e *pauseEnvoy) gone(token claim.Token) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.goneTopics[notify.RoleTopicPrefix+string(token)] = true
 }
 
 // publishedTo is every publish the listener took to token's role topic.

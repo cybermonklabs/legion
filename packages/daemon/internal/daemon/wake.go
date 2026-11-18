@@ -305,21 +305,16 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	}
 	held := machine.View()
 	if !held.Released() {
-		if held.State == supervise.StateLaunching && held.Locator == nil &&
-			held.WakeWaiting != nil && supervise.StartsProcess(held.WakeWaiting.Kind) {
-			return true, held.WakeWaiting.At, nil
+		if at, parked := parkedLaunch(held); parked {
+			return true, at, nil
 		}
 		return false, time.Time{}, nil
 	}
-	issue, err := r.issue(ctx, held.Issue)
+	issue, wakeable, err := r.wakeableIssue(ctx, held.Issue)
 	if err != nil {
 		return false, time.Time{}, err
 	}
-	root, err := r.root(ctx, issue)
-	if err != nil {
-		return false, time.Time{}, err
-	}
-	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
+	if !wakeable {
 		return false, time.Time{}, nil
 	}
 	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, token, pods.WakeDelivery, r.now().UTC(), mark)
@@ -354,6 +349,34 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	return true, time.Time{}, nil
 }
 
+// wakeableIssue is the record of issue key, and whether a released claim of it can be woken: the
+// issue is in the workflow and its tree does not linger (pods.InWorkflowNotLingering). A claim of
+// an issue that has left the workflow, or whose tree lingers, is a close's to stop, not a wake's
+// to bring back. An issue the daemon keeps no record of is an error, as outbox.issue says.
+func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, bool, error) {
+	issue, err := r.issue(ctx, key)
+	if err != nil {
+		return record.Issue{}, false, err
+	}
+	root, err := r.root(ctx, issue)
+	if err != nil {
+		return record.Issue{}, false, err
+	}
+	return issue, root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
+}
+
+// parkedLaunch is whether view's launch is parked by the wake pacing over no process, and that
+// launch's turn: the claim is launching, records no process, and its view names a waiting wake
+// that starts one (supervise.StartsProcess). wakeForDelivery says why a delivery row waits through
+// such a park and not through a relaunch parked over a process the claim still records.
+func parkedLaunch(view supervise.ClaimView) (turn time.Time, parked bool) {
+	if view.State == supervise.StateLaunching && view.Locator == nil &&
+		view.WakeWaiting != nil && supervise.StartsProcess(view.WakeWaiting.Kind) {
+		return view.WakeWaiting.At, true
+	}
+	return time.Time{}, false
+}
+
 // parkedWait is the wait of a delivery row whose role's launch the wake pacing has parked over no
 // process (wakeForDelivery's turn), with text as its message: the row runs again at turn, or
 // parkedWakeBound from now when that comes first, and reads the claim again then. A turn already
@@ -375,14 +398,14 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 // dispatch://INFRA-3759) is that pause's owed launch, whose start row waits in the outbox; the
 // wake an earlier delivery row of the role that the pause held took after the resume; or the
 // workflow's wake of a role the pause stopped, which store.PodRecords.PauseOfWake gives the pause
-// (the listener's report of a message another session sent the role, a CI settlement or a
-// backstop). The resume wakes every lane at once (projectPause.Resumed), so a held notice,
-// phase-ended message, hook prompt or merge-queue removal of the same role can run before that
-// start, or after that other wake, and find the role released under the held wake. Nothing is
-// wrong there, and the line says so at Info. Any other open resume over a released claim is one
-// whose process never came — a resume the store refused after its take committed, or a daemon
-// that stopped between the two — and the line says so at Warn, as it does when the read fails,
-// with its error: the resume goes ahead either way.
+// (the listener's report of a role message the pause held, or of a message another session sent
+// the role, a CI settlement or a backstop). The resume wakes every lane at once
+// (projectPause.Resumed), so a held notice, phase-ended message, hook prompt or merge-queue
+// removal of the same role can run before that start, or after that other wake, and find the role
+// released under the held wake. Nothing is wrong there, and the line says so at Info. Any other
+// open resume over a released claim is one whose process never came — a resume the store refused
+// after its take committed, or a daemon that stopped between the two — and the line says so at
+// Warn, as it does when the read fails, with its error: the resume goes ahead either way.
 func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role claim.Role, detail string) {
 	_, pause, open, err := r.trees.OpenPodResume(ctx, r.project, issue, role)
 	if err == nil && open && pause != 0 {

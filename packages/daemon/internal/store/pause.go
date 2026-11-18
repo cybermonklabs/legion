@@ -853,6 +853,20 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 	return owed, nil
 }
 
+// StoppingPause is the id of the pause that stopped claim token, and 0 where no pause did, in a
+// transaction of its own; see StoppingPauseTx. A role message a pause held reads it to tell a role
+// that pause stopped from one an idle release took (internal/daemon's outbox.roleMessage). project
+// is the project token, as the claim-keyed tables hold it.
+func (s *Store) StoppingPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
+	var pause int64
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		pause, err = StoppingPauseTx(ctx, tx, project, issue, token)
+		return err
+	})
+	return pause, err
+}
+
 // StoppingPauseTx is the id of the pause that stopped claim token, through tx: the pause of the
 // claim's newest stop, where that stop ended `stopped` after both issue's newest pod release and
 // the claim's last ready (claims.last_ready), and 0 otherwise. It is the one statement of which
