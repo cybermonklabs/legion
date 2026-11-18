@@ -387,13 +387,11 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 	return handover != nil && handover.Tree == root.Tree && handover.Generation == root.Generation, nil
 }
 
-// stepPhases is every phase that runs a step (stepOf).
-var stepPhases = []phase.Phase{phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
-
-// phaseAt is the phase whose step runs at place.
+// phaseAt is the phase whose step runs at place: of the workflow's line (phase.Order), the phase
+// whose step (stepOf) is at place.
 func phaseAt(place record.StepPlace) (phase.Phase, bool) {
-	for _, p := range stepPhases {
-		if at, _, _, _ := stepOf(p); at == place {
+	for _, p := range phase.Order {
+		if at, _, _, ok := stepOf(p); ok && at == place {
 			return p, true
 		}
 	}
