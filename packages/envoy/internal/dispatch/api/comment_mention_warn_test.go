@@ -377,8 +377,8 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 // A second send of the owner that joins the lane that park made is no held copy either while the
 // lane waits behind no event (queueLocked stamps it only behind one): when both then go, past the
 // threshold, neither logs a WARN. When the head's try then waits behind event 42, that park stamps
-// the send that joined unstamped (park), so each WARN as they go names event 42 and a wait of the
-// milliseconds the test takes, never the age of a send stamped at no time.
+// the send that joined unstamped (park), so each WARN as they go names event 42 and a wait no
+// longer than the test has run, never the age of a send stamped at no time.
 func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -394,6 +394,7 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 		{name: "a second send joins the lane the failed read parked, and the head then waits behind event 42", readFail: true, second: true, headWaits: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			began := time.Now()
 			logs := &storetest.LockedLog{}
 			logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 			lifetime, stop := context.WithCancel(context.Background())
@@ -495,10 +496,15 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 				}
 				return
 			}
+			// Each send waited behind event 42 no longer than this row has run, however slow the
+			// box: a send stamped at no time would report the age of the zero time instead.
+			ran := time.Since(began).Round(time.Second) + time.Second
 			second := false
 			for _, line := range lines {
-				if !strings.Contains(line, "event_id=42 ") || !strings.Contains(line, "held_for=0s") {
-					t.Fatalf("a WARN of a send that waited behind event 42 for milliseconds names another wait: %s", line)
+				_, after, found := strings.Cut(line, "held_for=")
+				waited, err := time.ParseDuration(strings.Fields(after + " ")[0])
+				if !strings.Contains(line, "event_id=42 ") || !found || err != nil || waited > ran {
+					t.Fatalf("a WARN of a send that waited behind event 42 for at most %v names another wait: %s", ran, line)
 				}
 				second = second || strings.Contains(line, "comment=a-second ")
 			}

@@ -49,10 +49,10 @@ type moduleSource struct {
 // moduleRoot is the envoy module's root, from this package.
 const moduleRoot = "../../.."
 
-// sharedModuleSources is the module's parsed source, walked once per test binary: four of this
-// package's seven guards and one_expression_guard_test.go read the same files, and the text-check
-// job's step runs all five in one go test. In the race build it has no caller at all, since
-// every one of those five carries the tag; there it is a declaration the test binary compiles
+// sharedModuleSources is the module's parsed source, walked once per test binary: five of this
+// package's eight guards and one_expression_guard_test.go read the same files, and the text-check
+// job's step runs all six in one go test. In the race build it has no caller at all, since
+// every one of those six carries the tag; there it is a declaration the test binary compiles
 // and nothing runs. A failed walk's error is kept and reported by each test that asks for the
 // sources, as the copy-lock guard's graph is.
 var sharedModuleSources = sync.OnceValues(func() ([]moduleSource, error) { return scanModuleSources(moduleRoot) })
