@@ -117,6 +117,74 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 	}
 }
 
+// The rule reads the owner's newest event through the owner's own column: a document's for a
+// comment on a document no issue owns (events.artifact_id), and a project's for an event of a
+// project (events.project_key), as it reads an issue's for an issue's comment. An earlier event
+// recorded owing nothing as of a seq before the owner's newest event holds s1's copy - a write
+// since may have made s1 one of its destinations - and the control, the same record as of the
+// owner's newest event, holds nothing. A rule that read no newest event for either owner would
+// hold nothing in either row.
+func TestTheCopyRuleReadsTheNewestEventOfADocumentOrAProject(t *testing.T) {
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	for _, owner := range []struct {
+		name string
+		// seed writes the owner and answers an event of it, its type and payload to be set, and
+		// the statement that reads the owner's last_seq.
+		seed func(t *testing.T, database *store.Store) (model.Event, string)
+	}{
+		{name: "a document no issue owns", seed: func(t *testing.T, database *store.Store) (model.Event, string) {
+			seedProject(t, database)
+			doc := seedDocument(t, database, nil, "plan", alice)
+			return model.Event{ArtifactID: new(doc)}, `select last_seq from artifacts where id = '` + doc + `'`
+		}},
+		{name: "a project", seed: func(t *testing.T, database *store.Store) (model.Event, string) {
+			seedProject(t, database)
+			return model.Event{ProjectKey: new("TT")}, `select last_seq from projects where key = 'TT'`
+		}},
+	} {
+		for _, row := range []struct {
+			name   string
+			behind int
+		}{
+			{name: "recorded owing nothing before the owner's newest event", behind: 1},
+			{name: "control: recorded owing nothing as of the owner's newest event"},
+		} {
+			t.Run(owner.name+": "+row.name, func(t *testing.T) {
+				ctx := context.Background()
+				database := storetest.Open(t)
+				broker := events.NewBroker()
+				of, lastSeq := owner.seed(t, database)
+				earlier, comment := of, of
+				earlier.Type, earlier.Actor, earlier.Payload = "message.created", alice, map[string]any{"body": "earlier"}
+				earlier = appendEvent(t, database, broker, earlier)
+				comment.Type, comment.Actor, comment.Payload = "comment.created", alice, map[string]any{"body": "@s1 look"}
+				comment = appendEvent(t, database, broker, comment)
+				if _, err := database.Pool.Exec(ctx, `
+					update events set owed_keys = '{}', owed_seq = (`+lastSeq+`) - $2 where id = $1
+				`, earlier.ID, row.behind); err != nil {
+					t.Fatalf("record the earlier event: %v", err)
+				}
+				by, err := copyHolder(ctx, Deps{Store: database}, comment.ID, contracts.LegacyAgentSubject("s1"), "s1")
+				if err != nil {
+					t.Fatalf("read the rule: %v", err)
+				}
+				t.Logf("the earlier event recorded %d behind the owner's newest event: s1's copy waits behind %s", row.behind, describeHolder(by))
+				if holds := row.behind > 0; (by != nil) != holds || (by != nil && by.EventID != earlier.ID) {
+					t.Fatalf("s1's copy waits behind %s, want holding %t (event %d)", describeHolder(by), holds, earlier.ID)
+				}
+			})
+		}
+	}
+}
+
+// seedProject inserts the project TT, which seedIssue inserts beside its issue.
+func seedProject(t *testing.T, database *store.Store) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+}
+
 // A pending subscription command (api/subscribers.go) moves its owner's last_seq, but no batch
 // reads it and it makes no session a destination, so it leaves an earlier event's record current:
 // s1's copy waits behind nothing for it. The control is the same event appended not pending, a
