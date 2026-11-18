@@ -123,6 +123,19 @@ const PLAIN_TEXTS: readonly string[] = [
   "A line\n\n\n\nfar from the next",
 ];
 
+/** Whether the plain path (`plainReading`) reads `text`, a text it takes (`isPlainText`), as the
+ *  parse does (`parsedReading`), to the character: to the same words, the same first block a
+ *  node's line is cut from, and the same words with each address written short. */
+function readsAsParsed(text: string): boolean {
+  const plain = plainReading(text);
+  const parsed = parsedReading(text);
+  return (
+    wordsOf(plain) === wordsOf(parsed) &&
+    lineWordsRaw({ text, tree: plain }) === lineWordsRaw({ text, tree: parsed }) &&
+    wordsOf(withShortAddresses(plain)) === wordsOf(withShortAddresses(parsed))
+  );
+}
+
 // A text that holds no markup is read without the parse (`plainReading`), so its words must be
 // the parse's words to the character: its whole words, the first block a node's line is cut from,
 // and its words with each address written short.
@@ -130,11 +143,8 @@ test("a plain text is read without the parse into the words the parse reads", ()
   for (const text of PLAIN_TEXTS) {
     const label = JSON.stringify(text);
     expect(isPlainText(text), label).toBe(true);
-    const plain = plainReading(text);
+    expect(readsAsParsed(text), label).toBe(true);
     const parsed = parsedReading(text);
-    expect(wordsOf(plain), label).toBe(wordsOf(parsed));
-    expect(lineWordsRaw({ text, tree: plain }), label).toBe(lineWordsRaw({ text, tree: parsed }));
-    expect(wordsOf(withShortAddresses(plain)), label).toBe(wordsOf(withShortAddresses(parsed)));
     expect(plainWordsRaw(text), label).toBe(collapsed(wordsOf(parsed)));
     expect(plainWords(text), label).toBe(collapsed(wordsOf(withShortAddresses(parsed))));
     expect(lineWordsRaw({ text }), label).toBe(collapsed(lineWordsRaw({ text, tree: parsed })));
@@ -200,19 +210,6 @@ test("a delimiter row that opens with a colon makes a table, read as the server 
   }
 });
 
-/** Whether `text`, a text the plain path takes (`isPlainText`), reads through it (`plainReading`)
- *  as the parse reads it (`parsedReading`): to the same words, the same first block a node's line
- *  is cut from, and the same words with each address written short. */
-function readsAsParsed(text: string): boolean {
-  const plain = plainReading(text);
-  const parsed = parsedReading(text);
-  return (
-    collapsed(wordsOf(plain)) === collapsed(wordsOf(parsed)) &&
-    lineWordsRaw({ text, tree: plain }) === lineWordsRaw({ text, tree: parsed }) &&
-    collapsed(wordsOf(withShortAddresses(plain))) === collapsed(wordsOf(withShortAddresses(parsed)))
-  );
-}
-
 /** Every ASCII character, the control characters among them. */
 const ASCII_CHARACTERS: readonly string[] = Array.from({ length: 0x80 }, (_, code) =>
   String.fromCharCode(code)
@@ -232,32 +229,35 @@ const SWEPT_CHARACTERS: readonly string[] = [
   "\ufffd",
 ];
 
-/** The short texts the character sweep reads, `c` standing for the swept character: alone, at a
+/** The short texts the character sweep reads, `X` standing for the swept character: alone, at a
  *  word's edges and between words, repeated, opening a line under a paragraph line as a table's
- *  delimiter row does, after spaces, after a blank line, after a digit, and ending a line. */
+ *  delimiter row does, after spaces, after a blank line, after a digit, ending a line, and beside
+ *  an address, which both readings must write short alike. */
 const SWEPT_SHAPES: readonly string[] = [
-  "c",
-  "ca",
-  "c a",
-  "ac",
-  "acb",
-  "a c b",
-  "a cc b",
-  "ccc",
-  "a\nc",
-  "a\nccc",
-  "a\nc-",
-  "a\nc--",
-  "a\nc-c",
-  "a\n cb",
-  "  ca",
-  "a\n\nc",
-  "c\na",
-  "ac\nb",
-  "1c a",
-  "a\n1c",
-  "cac",
-  "a\ncac",
+  "X",
+  "Xa",
+  "X a",
+  "aX",
+  "aXb",
+  "a X b",
+  "a XX b",
+  "XXX",
+  "a\nX",
+  "a\nXXX",
+  "a\nX-",
+  "a\nX--",
+  "a\nX-X",
+  "a\n Xb",
+  "  Xa",
+  "a\n\nX",
+  "X\na",
+  "aX\nb",
+  "1X a",
+  "a\n1X",
+  "XaX",
+  "a\nXaX",
+  "see dispatch://ACME-12 X",
+  "dispatch://ACME-12/spec#b-r1X",
 ];
 
 // The plain path must read every text it takes as the parse does, whatever character the text
@@ -269,7 +269,7 @@ test("each character in each short shape the plain path takes reads as the parse
   const taken = new Set<string>();
   for (const character of SWEPT_CHARACTERS) {
     for (const shape of SWEPT_SHAPES) {
-      const text = shape.split("c").join(character);
+      const text = shape.replaceAll("X", character);
       if (!isPlainText(text)) continue;
       taken.add(character);
       if (!readsAsParsed(text)) failing.push(JSON.stringify(text));
@@ -293,25 +293,29 @@ function seededRandom(seed: number): () => number {
 }
 
 /** The printable ASCII characters that are neither letters, digits nor white space. */
-const ASCII_MARKS = ASCII_CHARACTERS.filter((mark) => /[\p{P}\p{S}]/u.test(mark)).join("");
+const ASCII_MARKS = ASCII_CHARACTERS.filter((mark) => /[\p{P}\p{S}]/u.test(mark));
 
-/** What the random sweep draws its texts' characters from: two letters and a digit, a space, a
- *  tab and a line feed, every printable ASCII mark, and a non-breaking space. */
-const RANDOM_ALPHABET = `ab1 \t\n${ASCII_MARKS}\u00a0`;
+/** What the random sweep draws its texts from, one symbol at a time: two letters and a digit, a
+ *  space, a tab and a line feed, every printable ASCII mark, a non-breaking space, and an address,
+ *  drawn whole, so that marks and white space meet an address as they meet words. */
+const RANDOM_ALPHABET: readonly string[] = [
+  ..."ab1 \t\n",
+  ...ASCII_MARKS,
+  "\u00a0",
+  "dispatch://ACME-1",
+];
 
-// Characters drawn at random meet in ways no list of shapes names. Each of 3000 texts of 1 to 14
-// characters drawn from words, marks and white space that the plain path takes must read as the
-// parse reads it; the texts that do not are listed. The seed is fixed, so every run draws the
-// same texts, and it is one of the few under which a text drawn is a table of one column whose
-// delimiter row opens with a colon (`b;}` over `:-`): a plain path that took such a text fails
-// here, where under most seeds no text drawn holds one.
+// Symbols drawn at random meet in ways no list of shapes names. Each of 3000 texts of 1 to 14
+// symbols drawn from words, marks, white space and an address that the plain path takes must read
+// as the parse reads it; the texts that do not are listed. The seed is fixed, so every run draws
+// the same texts.
 test("random short texts the plain path takes read as the parse reads them", () => {
   const random = seededRandom(180);
   const failing: string[] = [];
   for (let drawn = 0; drawn < 3000; drawn += 1) {
     let text = "";
     for (let left = 1 + Math.floor(random() * 14); left > 0; left -= 1) {
-      text += RANDOM_ALPHABET.charAt(Math.floor(random() * RANDOM_ALPHABET.length));
+      text += RANDOM_ALPHABET[Math.floor(random() * RANDOM_ALPHABET.length)];
     }
     if (isPlainText(text) && !readsAsParsed(text)) failing.push(JSON.stringify(text));
   }
