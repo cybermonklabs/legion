@@ -443,8 +443,9 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 //
 // wget, git, go and kubectl are floor clients, held to the chains on every image. wget, go and
 // kubectl are on the toolchain row of the floor every deployment's image is held to
-// (packages/daemon/internal/capabilities/image.go); git is on no row, but the image probe's jj
-// check runs `jj git clone`, which needs a git. wget and git matter because they link GnuTLS, a TLS
+// (packages/daemon/internal/capabilities/image.go); git is on no row, but every issue pod runs
+// `legion workspace-init provision` on the image in its workspace-init container, and that command
+// needs git on PATH (provisioningTools). wget and git matter because they link GnuTLS, a TLS
 // library no other client here uses: GNU wget directly, and git through its https transport,
 // git-remote-https, which links libcurl's GnuTLS build where curl links OpenSSL. go and kubectl are
 // here because each reaches a URL a role names and verifies it through Go's crypto/x509 system
@@ -454,9 +455,9 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 //
 // gcloud, bq, az, mise and socat are probed where they are on PATH and reported absent otherwise
 // (tlsOptionalClient). None is on the floor, so an image built on another base may not carry it.
-// Such an image may also carry this image's /usr/local/bin links to gcloud, bq, az and mise
-// without the /opt trees those links point into, as LINUX's worker-lean, which copies
-// /usr/local/bin onto Ubuntu, may; socat lives in /usr/bin, which worker-lean does not copy.
+// Such an image may also carry this image's /usr/local/bin links to gcloud, bq and az without the
+// /opt trees those links point into, as LINUX's worker-lean, which copies /usr/local/bin onto
+// Ubuntu, may; socat lives in /usr/bin, which worker-lean does not copy.
 // Where one is on PATH, it must refuse both chains and reach the control, as every other client
 // must. mise is here because its http: backend downloads from any URL a role names, with its own
 // HTTP client verifying against the system roots, and socat because its OPENSSL: address verifies
@@ -522,7 +523,8 @@ var workerTLSClients = []tlsClientSpec{
 	// go's fetch of a module path at the site's host, the fetch `go install` and `go get` make with
 	// GOPROXY=direct. Every path go writes is under the state directory, and it runs there, so no
 	// go.mod of the probe's working directory is read; GOTOOLCHAIN=local keeps it from downloading
-	// a toolchain. goResponseSeen reads the status of the page the site served.
+	// a toolchain. No site serves a Go module path, so go fails at the control too; goResponseSeen
+	// reads the site's answer.
 	inTLSStateDir(tlsStateClientSpec("go", tlsDefaultProbeTimeout, goResponseSeen, false, func(site tlsSite, stateDir string) ([]string, []string) {
 		home := filepath.Join(stateDir, "go")
 		return []string{"mod", "download", tlsSiteURL(site).Hostname() + "/legion-tls-probe@latest"}, []string{
@@ -701,20 +703,27 @@ func miseResponseSeen(detail string) bool {
 	return miseHTTPStatus.MatchString(detail)
 }
 
-// gitRepositoryNotFound is how git's ls-remote names a site that answered but serves no
-// repository ("fatal: repository 'https://example.com/' not found"); a refused chain is "unable to
-// access" the URL instead.
-var gitRepositoryNotFound = regexp.MustCompile(`repository '\S+' not found`)
+// gitSiteAnswer is how git's ls-remote names a site that answered but serves no repository: a
+// 404 ("fatal: repository 'https://example.com/' not found", the control) or a page that is no
+// ref advertisement ("fatal: https://<host>/info/refs not valid: is this a git repository?", the
+// emSign and AAA sites' answer, measured on 2026-11-18 with GIT_SSL_NO_VERIFY=true). A refused
+// chain is "unable to access" the URL instead. Reading both answers keeps a git that accepted a
+// compromised chain reported as accepting it rather than as unavailable.
+var gitSiteAnswer = regexp.MustCompile(`repository '\S+' not found|/info/refs not valid`)
 
 func gitResponseSeen(detail string) bool {
-	return gitRepositoryNotFound.MatchString(detail)
+	return gitSiteAnswer.MatchString(detail)
 }
 
-// goGetStatus is the status go names for the page a site served at its go-get=1 fetch
-// ("reading https://example.com/legion-tls-probe?go-get=1: 404 Not Found"); a fetch that failed
-// names the URL in quotes and then its error.
-var goGetStatus = regexp.MustCompile(`go-get=1: [1-5][0-9][0-9]\b`)
+// goGetAnswer is how go names the page a site served at its go-get=1 fetch: its status
+// ("reading https://example.com/legion-tls-probe?go-get=1: 404 Not Found", the control), or a page
+// it read and found no go-import meta tags in ("parse https://<host>/legion-tls-probe?go-get=1: no
+// go-import meta tags ()", the emSign and AAA sites' answer, measured on 2026-11-18 with
+// GOINSECURE=*). A fetch that failed names the URL in quotes and then its error. Reading both
+// answers keeps a go that accepted a compromised chain reported as accepting it rather than as
+// unavailable.
+var goGetAnswer = regexp.MustCompile(`go-get=1: (?:[1-5][0-9][0-9]\b|no go-import meta tags)`)
 
 func goResponseSeen(detail string) bool {
-	return goGetStatus.MatchString(detail)
+	return goGetAnswer.MatchString(detail)
 }

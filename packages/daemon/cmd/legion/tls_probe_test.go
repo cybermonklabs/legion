@@ -143,6 +143,11 @@ const (
 	goEmSignRefusal      = `go: dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe@latest: unrecognized import path "dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe": https fetch: Get "https://dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe?go-get=1": tls: failed to verify certificate: x509: certificate signed by unknown authority`
 	goControlAnswer      = `go: example.com/legion-tls-probe@latest: unrecognized import path "example.com/legion-tls-probe": reading https://example.com/legion-tls-probe?go-get=1: 404 Not Found`
 	kubectlEmSignRefusal = `Unable to connect to the server: tls: failed to verify certificate: x509: certificate signed by unknown authority`
+	// git and go with their certificate checks turned off (GIT_SSL_NO_VERIFY=true, GOINSECURE=*),
+	// at the emSign site, measured in the same pod: what each says once it has accepted a
+	// compromised chain.
+	gitEmSignAccepted = `fatal: https://dv-g3b-emudhra.we-have-a-problem.com/info/refs not valid: is this a git repository?`
+	goEmSignAccepted  = `go: dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe@latest: unrecognized import path "dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe": parse https://dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe?go-get=1: no go-import meta tags ()`
 )
 
 // GNU wget and git's https transport verify through GnuTLS, and each names a refusal in words of
@@ -166,8 +171,9 @@ func TestTLSCertificateErrorRecognizesWgetAndGitRefusals(t *testing.T) {
 }
 
 // git and go fail at the control too, since example.com serves neither a git repository nor a Go
-// module path, but each names the site's answer, after a handshake it accepted. A refusal names no
-// answer.
+// module path, but each names the site's answer, after a handshake it accepted. So does each at a
+// compromised site once it has accepted that chain, which the probe must report as accepted and
+// never as unavailable. A refusal names no answer.
 func TestGitAndGoResponseSeenReadTheSitesAnswer(t *testing.T) {
 	for _, testCase := range []struct {
 		name, detail string
@@ -176,8 +182,10 @@ func TestGitAndGoResponseSeenReadTheSitesAnswer(t *testing.T) {
 	}{
 		{"git control", gitControlAnswer, gitResponseSeen, true},
 		{"git refusal", gitEmSignRefusal, gitResponseSeen, false},
+		{"git accepting a compromised chain", gitEmSignAccepted, gitResponseSeen, true},
 		{"go control", goControlAnswer, goResponseSeen, true},
 		{"go refusal", goEmSignRefusal, goResponseSeen, false},
+		{"go accepting a compromised chain", goEmSignAccepted, goResponseSeen, true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := testCase.seen(testCase.detail); got != testCase.want {
@@ -294,22 +302,38 @@ func TestWorkerTLSInventoryHoldsGNUWgetAndGit(t *testing.T) {
 	}
 }
 
-// imageFloorTLSClients returns the image's command clients that are not optional, by name.
-func imageFloorTLSClients(workDir, stateDir string) map[string]tlsCommandClient {
+// imageFloorTLSClients returns the image's command clients that are not optional, by name, each of
+// wget, git, go and kubectl present.
+func imageFloorTLSClients(t *testing.T, workDir, stateDir string) map[string]tlsCommandClient {
+	t.Helper()
 	clients := map[string]tlsCommandClient{}
 	for _, client := range imageTLSClients("omp", nil, workDir, stateDir) {
 		if command, ok := client.(tlsCommandClient); ok {
 			clients[command.name()] = command
 		}
 	}
+	for _, name := range []string{"wget", "git", "go", "kubectl"} {
+		if _, ok := clients[name]; !ok {
+			t.Fatalf("imageTLSClients() has no %s command client", name)
+		}
+	}
 	return clients
+}
+
+// tlsSiteHosts is each tlsSites site's host name, written out rather than derived from its URL as
+// the clients derive it.
+var tlsSiteHosts = map[tlsSite]string{
+	emSignTLSSite:  "dv-g3b-emudhra.we-have-a-problem.com",
+	aaaTLSSite:     "dv-g3b-aaa-emudhra.we-have-a-problem.com",
+	controlTLSSite: "example.com",
 }
 
 // wget, git, go and kubectl are each classified from the output and exit status their program
 // gave: the control's answer is an acceptance and the emSign site's refusal a refusal. git and go
-// fail at the control as well, so each needs the response marker its client reads.
+// fail at the control as well, so each needs the response marker its client reads, and the same
+// marker reads the answer each gives at a compromised site whose chain it accepted.
 func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
-	clients := imageFloorTLSClients("", t.TempDir())
+	clients := imageFloorTLSClients(t, "", t.TempDir())
 	for _, testCase := range []struct {
 		client, name, stderr, exit string
 		want                       tlsStatus
@@ -318,16 +342,15 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 		{client: "wget", name: "refusal", exit: "5", stderr: wgetEmSignRefusal, want: tlsCertificateRefused},
 		{client: "git", name: "control", exit: "128", stderr: gitControlAnswer, want: tlsConnectionAccepted},
 		{client: "git", name: "refusal", exit: "128", stderr: gitEmSignRefusal, want: tlsCertificateRefused},
+		{client: "git", name: "accepting a compromised chain", exit: "128", stderr: gitEmSignAccepted, want: tlsConnectionAccepted},
 		{client: "go", name: "control", exit: "1", stderr: goControlAnswer, want: tlsConnectionAccepted},
 		{client: "go", name: "refusal", exit: "1", stderr: goEmSignRefusal, want: tlsCertificateRefused},
+		{client: "go", name: "accepting a compromised chain", exit: "1", stderr: goEmSignAccepted, want: tlsConnectionAccepted},
 		{client: "kubectl", name: "control", exit: "0", want: tlsConnectionAccepted},
 		{client: "kubectl", name: "refusal", exit: "1", stderr: kubectlEmSignRefusal, want: tlsCertificateRefused},
 	} {
 		t.Run(testCase.client+" "+testCase.name, func(t *testing.T) {
-			client, ok := clients[testCase.client]
-			if !ok {
-				t.Fatalf("imageTLSClients() has no %s command client", testCase.client)
-			}
+			client := clients[testCase.client]
 			client.command = func(tlsSite) (string, []string, []string) {
 				return "sh", []string{"-c", `printf %s "$1" >&2; exit "$2"`, "sh", testCase.stderr, testCase.exit}, nil
 			}
@@ -351,12 +374,8 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(remove)
-	clients := imageFloorTLSClients(t.TempDir(), stateDir)
-	goClient, hasGo := clients["go"]
-	kubectl, hasKubectl := clients["kubectl"]
-	if !hasGo || !hasKubectl {
-		t.Fatalf("imageTLSClients() has no go or no kubectl command client: %q", workerTLSClientNames())
-	}
+	clients := imageFloorTLSClients(t, t.TempDir(), stateDir)
+	goClient, kubectl := clients["go"], clients["kubectl"]
 	inStateDir := func(path string) bool { return strings.HasPrefix(path, stateDir+string(os.PathSeparator)) }
 	pod := []string{
 		"HOME=/home/legion", "XDG_CONFIG_HOME=/home/legion/.config", "GOPATH=/home/legion/go",
@@ -368,11 +387,7 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 	if goClient.workDir != stateDir {
 		t.Errorf("go runs in %q, want the state directory %s", goClient.workDir, stateDir)
 	}
-	for site, host := range map[tlsSite]string{
-		emSignTLSSite:  "dv-g3b-emudhra.we-have-a-problem.com",
-		aaaTLSSite:     "dv-g3b-aaa-emudhra.we-have-a-problem.com",
-		controlTLSSite: "example.com",
-	} {
+	for site, host := range tlsSiteHosts {
 		program, args, extraEnv := goClient.command(site)
 		if want := []string{"mod", "download", host + "/legion-tls-probe@latest"}; program != "go" || !slices.Equal(args, want) {
 			t.Errorf("go command for %s = %s %q, want go %q", site.name, program, args, want)
@@ -488,8 +503,8 @@ func TestImageOptionalTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 
 // An image built on another base may not carry an optional client, or may carry its link without
 // the tree the link points into. Either way the client is absent at every site and fails nothing;
-// on PATH, it is held to the chains as every client is. Each of the image's own optional clients,
-// socat among them, is absent where PATH holds none of them.
+// on PATH, it is held to the chains as every client is. Each of the image's own optional clients is
+// absent where PATH holds none of them.
 func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
 	bin := t.TempDir()
 	if err := os.Symlink(filepath.Join(bin, "gone"), filepath.Join(bin, "legion-tls-dangling")); err != nil {
@@ -550,11 +565,6 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 	clients := imageOptionalTLSClients(t, stateDir)
 	inStateDir := func(path string) bool { return strings.HasPrefix(path, stateDir+string(os.PathSeparator)) }
 	miseData := map[string]bool{}
-	hosts := map[string]string{
-		emSignTLSSite.name:  "dv-g3b-emudhra.we-have-a-problem.com",
-		aaaTLSSite.name:     "dv-g3b-aaa-emudhra.we-have-a-problem.com",
-		controlTLSSite.name: "example.com",
-	}
 
 	for _, site := range tlsSites {
 		for name, client := range clients {
@@ -580,8 +590,8 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 		}
 		miseData[envValue(env, "MISE_DATA_DIR")] = true
 
-		if _, args, _ := clients["socat"].command(site); !slices.Equal(args, []string{"-u", "-", "OPENSSL:" + hosts[site.name] + ":443"}) {
-			t.Errorf("socat at %s runs %q, want the address OPENSSL:%s:443", site.name, args, hosts[site.name])
+		if _, args, _ := clients["socat"].command(site); !slices.Equal(args, []string{"-u", "-", "OPENSSL:" + tlsSiteHosts[site] + ":443"}) {
+			t.Errorf("socat at %s runs %q, want the address OPENSSL:%s:443", site.name, args, tlsSiteHosts[site])
 		}
 	}
 	if len(miseData) != len(tlsSites) {
@@ -602,11 +612,7 @@ func TestImageChromiumResolvesOnlyTheProbedSite(t *testing.T) {
 	if !found {
 		t.Fatal("imageTLSClients() has no chromium client of type tlsChromiumClient")
 	}
-	for site, host := range map[tlsSite]string{
-		emSignTLSSite:  "dv-g3b-emudhra.we-have-a-problem.com",
-		aaaTLSSite:     "dv-g3b-aaa-emudhra.we-have-a-problem.com",
-		controlTLSSite: "example.com",
-	} {
+	for site, host := range tlsSiteHosts {
 		program, args, _ := chromium.command(site)
 		want := []string{"--headless", "--no-sandbox", "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + host, "--dump-dom", site.url}
 		if program != "chromium" || !slices.Equal(args, want) {
