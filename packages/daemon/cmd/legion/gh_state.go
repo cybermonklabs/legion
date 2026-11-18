@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -32,29 +33,57 @@ func ghStateDir(dir string, uid int) bool {
 	return true
 }
 
+// ghOpenDir and ghOpenAt are ghOpenPrivate's opens of its directory and of the file in it. A test
+// replaces them with opens that follow a link.
+var (
+	ghOpenDir = func(dir string) (*os.File, error) {
+		return os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	}
+	ghOpenAt = openNoFollow
+)
+
 // ghOpenPrivate opens the file name in the directory dir for reading, where neither is a link and
 // both are uid's alone (ghPrivate), and says whether it did. The directory is opened with
 // O_NOFOLLOW and the file through openNoFollow, and each is checked by its open descriptor, so
 // nothing can be swapped in between the check and the read.
+//
+// Neither open is trusted to refuse a link. Under gVisor, the kernel every Legion pod runs, an
+// open of a link to a directory with O_DIRECTORY|O_NOFOLLOW opens the directory the link names,
+// where Linux answers ELOOP (measured on 2026-11-18 under gVisor 4.19.0). So after each open,
+// ghOpenedAs reads the path with Lstat, and the open is refused unless the path holds the same
+// file as the descriptor and that file is no link.
 func ghOpenPrivate(dir, name string, uid int) (*os.File, bool) {
-	parent, err := os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	parent, err := ghOpenDir(dir)
 	if err != nil {
 		return nil, false
 	}
 	defer parent.Close()
-	if info, err := parent.Stat(); err != nil || !info.IsDir() || !ghPrivate(info, uid) {
+	if !ghOpenedAs(parent, dir, fs.ModeDir, uid) {
 		return nil, false
 	}
-	fd, err := openNoFollow(int(parent.Fd()), name)
+	fd, err := ghOpenAt(int(parent.Fd()), name)
 	if err != nil {
 		return nil, false
 	}
-	file := os.NewFile(uintptr(fd), filepath.Join(dir, name))
-	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() || !ghPrivate(info, uid) {
+	path := filepath.Join(dir, name)
+	file := os.NewFile(uintptr(fd), path)
+	if !ghOpenedAs(file, path, 0, uid) {
 		file.Close()
 		return nil, false
 	}
 	return file, true
+}
+
+// ghOpenedAs says whether file, just opened from path, is uid's alone (ghPrivate) and of the type
+// kind (fs.ModeDir for a directory, 0 for a regular file), and whether Lstat of path finds the same
+// file: of that type too, so not a link, with the descriptor's device and inode (os.SameFile).
+func ghOpenedAs(file *os.File, path string, kind fs.FileMode, uid int) bool {
+	opened, err := file.Stat()
+	if err != nil || opened.Mode().Type() != kind || !ghPrivate(opened, uid) {
+		return false
+	}
+	found, err := os.Lstat(path)
+	return err == nil && found.Mode().Type() == kind && os.SameFile(opened, found)
 }
 
 // ghReplaceFile writes data as the file at path: into a file of mode 0600 made beside it, whose

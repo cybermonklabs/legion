@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -460,6 +462,67 @@ func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
 				if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 					t.Errorf("the copy %s kept again = %v, %v; want a file of mode 0600", name, info, err)
 				}
+			}
+		})
+	}
+}
+
+// ghOpenPrivate refuses a link in the directory's place and a link in the copy's place where the
+// open itself follows the link: under gVisor, the kernel every Legion pod runs, an open of a link
+// to a directory with O_DIRECTORY|O_NOFOLLOW opens the directory the link names, where Linux
+// answers ELOOP. Here both opens follow every link, so only ghOpenPrivate's own check of each path
+// can refuse one; a directory and a copy that are no link are still opened.
+func TestGhOpenPrivateRefusesALinkItsOpenFollowed(t *testing.T) {
+	openDir, openAt := ghOpenDir, ghOpenAt
+	ghOpenDir = func(dir string) (*os.File, error) { return os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY, 0) }
+	ghOpenAt = func(parent int, name string) (int, error) {
+		return unix.Openat(parent, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	}
+	t.Cleanup(func() { ghOpenDir, ghOpenAt = openDir, openAt })
+	// private makes a directory of mode 0700 holding a copy of mode 0600, both this user's alone.
+	private := func(t *testing.T) string {
+		dir := filepath.Join(t.TempDir(), "help")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "copy"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	for _, tc := range []struct {
+		name string
+		// keep is the directory ghOpenPrivate opens the copy named "copy" in.
+		keep func(t *testing.T) string
+		want bool
+	}{
+		{"a directory and a copy that are no link", private, true},
+		{"a link in the directory's place", func(t *testing.T) string {
+			link := filepath.Join(t.TempDir(), "help")
+			if err := os.Symlink(private(t), link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}, false},
+		{"a link in the copy's place", func(t *testing.T) string {
+			dir := private(t)
+			moved := filepath.Join(t.TempDir(), "copy")
+			if err := os.Rename(filepath.Join(dir, "copy"), moved); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(moved, filepath.Join(dir, "copy")); err != nil {
+				t.Fatal(err)
+			}
+			return dir
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, opened := ghOpenPrivate(tc.keep(t), "copy", os.Getuid())
+			if opened {
+				file.Close()
+			}
+			if opened != tc.want {
+				t.Errorf("with %s ghOpenPrivate opened the copy = %v, want %v", tc.name, opened, tc.want)
 			}
 		})
 	}
