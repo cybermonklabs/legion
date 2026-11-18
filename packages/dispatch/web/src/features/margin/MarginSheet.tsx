@@ -42,7 +42,8 @@ export interface MarginSheetModel {
      *  store holds for the document goes, its mark with it. */
     closeComposer: (composer: MarginComposer) => void;
     onAction: (id: string, action: MarginItemAction) => void;
-    onComposerKindChange: (kind: ComposerKind) => string | undefined;
+    /** The kind switch of the composer on the document `artifact` (`retypeCompose`). */
+    onComposerKindChange: (artifact: string, kind: ComposerKind) => string | undefined;
     onEdit: SaveCommentEdit;
     onRetryAction: () => void;
     onUnpin: (eventId: number) => void;
@@ -333,12 +334,16 @@ export function MarginSheet({
               )}
             </>
           )}
+          {/* Keyed by its document and its compose: a newer compose on the document is the host's
+              move for the one before it, so it draws a composer of its own, which takes nothing
+              of that compose's draft, while Send, a kind switch and a re-written mark keep the
+              one the reader is writing in. */}
           {composer === undefined ? null : (
             <MarginComposerSlot
               composer={composer}
               hidden={tab.value !== "comments"}
               isClosed={isClosed}
-              key={composer.anchor.artifact}
+              key={`${composer.anchor.artifact}:${composer.seq ?? ""}`}
               onClose={actions.closeComposer}
               onKindChange={actions.onComposerKindChange}
               onScreen={

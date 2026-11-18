@@ -125,14 +125,33 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   to go on with it.`, or `The message you wrote for CORE-1 is kept. Press Cancel reply to go on
   with it.`). What it holds when its host takes it off the page - the tab, the Agents page, the
   margin's document - waits the same way for the composer drawn at that address next. Leaving a
-  document leaves the margin's unsent compose open for it (`useMarginSheet`), so the compose and
-  its text are there when the reader comes back. A comment's editor keeps what the reader wrote
-  the same way when its host takes it off the page - Collapse thread, another thread opened in the
-  margin, a phone thread view's Back - with the comment's body it was written over
-  (`AwayDraft.base`; a refused edit's request carries its own, `SentRequest.edit.base`), and the
-  editor drawn for that comment next puts the edit back only while the comment still holds that
-  body, or reads as the edit would save it (`changedUnder`). Over a body another writer has
-  changed since, the field shows the newer body, read only, and the edit waits beside it
+  document leaves the margin's unsent compose open for it (`useMarginSheet`), and the margin holds
+  one open compose per document (`composeForMark` replaces only the compose on its own document),
+  so a compose opened on another document leaves it open too, and the compose and its text are
+  there when the reader comes back. The margin's compose keeps its draft for the words it was
+  written about (`AwayDraft.anchor`; `readAway` compares it): a newer compose on the same document
+  is the host's move for the one before it and draws a composer of its own (`MarginSheet` keys the
+  composer by its compose), and the earlier draft - typed, or handed back by a refusal, whose
+  refusal and mark go - is never put in that compose's field. A send the reader stopped may have
+  been delivered, so it is not reduced to a draft: it waits aside, unchanged, its mark with it
+  (`marginComposeKeptKey`, `HeldSends.carryInto`). Either waits beside the newer compose, the
+  field and an ask's fields read only and Send refused, naming the quote it was written for
+  (`offered` in `useKeptDrafts`: `You wrote this draft for other words: “<quote>”. It is kept
+  here:`), the kind it was written as where the compose is another (`AwayDraft.kind`: `You wrote
+  this draft as an ask, for other words: …`, since an ask's options show only under Ask), and,
+  for a stopped send, in the words a stopped send moved elsewhere carries, that it may have been
+  delivered there and that sending it from here is a new message (`SendMovedError`). Use my
+  draft puts it in the field with an ask's options and settings (`AwayDraft.ask`), and carries a
+  stopped send into that compose as the reader's own move carries one, so its refusal row says
+  the same, with Retry and Discard draft, until the compose sends it or the reader discards it;
+  Discard my draft drops it. Neither retypes the compose or its mark. A comment's editor
+  keeps what the reader wrote the same way when its host takes it off the page - Collapse thread,
+  another thread opened in the margin, a phone thread view's Back - with the comment's body it was
+  written over (`AwayDraft.base`; a refused edit's request carries its own,
+  `SentRequest.edit.base`), and the editor drawn for that comment next puts the edit back only
+  while the comment still holds that body, or reads as the edit would save it (`changedUnder`).
+  Over a body another writer has changed since, the field shows the newer body, read only, and
+  the edit waits beside it
   (`changed` in `useKeptDrafts`: `This comment changed since you wrote your edit. The field
   shows the comment as it reads now. Your edit is kept here:`), with Save refused until the reader
   presses Use my edit, which puts it back in the field for their own Save, or Discard my edit:
@@ -1051,11 +1070,15 @@ The composer a selection-bar action opens is anchored to the provisional mark th
 the margin owns that mark from then on (`margin-context.tsx`): its Comment / Suggest / Ask switch
 retypes the mark through `ProofEditorHandle.retypeMark` so the server verifies a mark of the kind
 being sent, and the mark is removed when the composer ends unsaved — cancelled, or replaced by a
-newer composer. The server leaves that mark where it is while the reader is there: its sweep of
-the marks no `asks` or `comments` row records keeps one whose `by` names a user with a browser on
-the room, and counts the mark's time to live from that author's last presence, so a composer open
-longer than the minute a stray mark is given still sends, and a tab that closes or goes offline
-loses the mark it left one more minute later. Each document has one compose send
+newer composer on its own document, through that document's bridge, the one registered then. The
+margin holds one open compose per document: a selection-bar action replaces only the compose on
+its own document (`composeForMark`), so one open on another document stays open, its mark and its
+text with it, for the reader's return. The server leaves that mark where it is while the reader
+is there: its sweep of the marks no `asks` or `comments` row records keeps one whose `by` names a
+user with a browser on the room, and counts the mark's time to live from that author's last
+presence, so a composer open longer than the minute a stray mark is given still sends, and a tab
+that closes or goes offline loses the mark it left one more minute later. Each document has one
+compose send
 (`marginComposeSendKey`, beneath
 `MARGIN_COMPOSER_SEND_KEY`), and from Send on the compose is that send's: the margin hands its
 mark to the held-send store, which keeps it until the send lands or the reader discards the
@@ -1065,8 +1088,10 @@ which tells no outcome), so the mark stays for it. A newer
 selection-bar action on a document whose compose send is out is refused and the editor takes its
 mark back, so a send's outcome lands on the composer and mark it was sent from; the margin then
 brings that composer back on screen - the Comments tab, the compact sheet - saying the new
-selection waits on its send. A refused send gives way: the newer compose takes the composer the
-reader has there, which keeps its draft, and the refusal and its mark go. Every compose the margin
+selection waits on its send. A refused send gives way: the refusal and its mark go, and its draft
+is kept for the words it was written about, which the newer compose - a composer of its own -
+offers beside itself and never puts in its field; a stopped send waits aside whole, its mark with
+it, and is offered the same way (`offered`, above). Every compose the margin
 shows, a new one, a turned-away one or one held for the document the reader comes back to, opens
 the desktop margin out of its rail (`Margin.tsx`). A send on another document holds no compose
 here: the check is the document's own. `MarginSheet` keeps the composer mounted, hidden, under
@@ -1075,12 +1100,12 @@ so an unsent draft is where the reader left it. A composer mounts as its compose
 margin has opened the compact sheet or come back from its rail or the Pinned tab for it, where its
 field can take no focus, so it takes focus the first time it is on screen (`onScreen` on
 `MarginComposerSlot`, `autoFocus` on `MentionComposer`, which focuses once). Leaving the document
-ends an unsent compose, and the issue closing ends an unsent suggestion or ask (a closed issue
-takes a comment, so an unsent comment compose stays and sends); a sent one is the store's, shown
-again on its document, and on a closed issue a suggestion or ask shows only that send and then its
-outcome, as a closed issue's composers do. A switch over text another reader's mark of the new
-kind covers goes through and
-leaves that mark whole, as any record mark over another does. The composer's own mark writes are
+leaves an unsent compose open for it, and the issue closing ends an unsent suggestion or ask (a
+closed issue takes a comment, so an unsent comment compose stays and sends); a sent one is the
+store's, shown again on its document, and on a closed issue a suggestion or ask shows only that
+send and then its outcome, as a closed issue's composers do. A switch over text another reader's
+mark of the new kind covers goes through and leaves that mark whole, as any record mark over
+another does. The composer's own mark writes are
 never undo steps (`@legion/proof-editor`'s `recordMarkHistoryPlugin`), in prosemirror-history or
 y-prosemirror's UndoManager: neither undo nor redo writes one back, beside a recorded suggestion,
 after the reader refines the selection under an open composer, or over someone else's comment. A

@@ -2,7 +2,7 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { createDraftStore } from "../inbox/draft-store";
-import type { ComposerOwner, ReplyTarget } from "./composer-model";
+import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
 import type { SentDraft, SentRequest } from "./send-request";
 
 /**
@@ -10,10 +10,15 @@ import type { SentDraft, SentRequest } from "./send-request";
  * thread's, an Agents row's, the margin's compose, a comment's editor - keeps for the address it
  * was written at, once the field no longer shows it: its host moved the composer to another
  * reply, or took it off the page. The address is the reply the draft answers, or none, with the
- * owner it was written for, which is what the composer's line about it names. An editor's
- * address is the comment it edits, which its send name names.
+ * owner it was written for, which is what the composer's line about it names, and, for a margin
+ * compose, the words of the document it was written about. An editor's address is the comment it
+ * edits, which its send name names.
  */
 export interface AwayDraft {
+  /** For a margin compose, the words of the document it was written about, as the compose named
+   *  them: the draft comes back in the field only at those words, and beside a compose at other
+   *  words it waits until the reader takes it or drops it (`useKeptDrafts`'s `offered`). */
+  readonly anchor?: ComposerAnchor;
   /** An ask's settings and options, which a compose of the ask kind keeps with its question. */
   readonly ask?: SentRequest["ask"];
   /** For an edit, the comment's body it was written over, as the editor last saw it: the edit is
@@ -22,8 +27,31 @@ export interface AwayDraft {
    *  `changedUnder`). */
   readonly base?: string;
   readonly draft: SentDraft;
+  /** The kind the draft was written as - a comment, a suggestion or an ask - which a compose of
+   *  another kind it is offered beside names, so what it brings back is never hidden with no
+   *  word: an ask's options show only under Ask. */
+  readonly kind?: ComposerKind;
   readonly owner: ComposerOwner;
   readonly replyTo: ReplyTarget | null;
+}
+
+/** Whether two drafts answer the same reply, or both answer none. */
+export function sameReply(a: ReplyTarget | null, b: ReplyTarget | null): boolean {
+  return (a?.id ?? null) === (b?.id ?? null);
+}
+
+/** Whether `a` and `b` name the same words of the same document: the same mark, or, where neither
+ *  names one (a closed issue's document, which takes no mark), the same quote at the same reading
+ *  of it. A composer with no anchor has none on either side. A kind switch writes the mark again
+ *  under a new id, and the margin re-addresses that compose to it, so a draft the compose keeps
+ *  is kept under the anchor it shows when it goes. */
+export function sameAnchor(a: ComposerAnchor | undefined, b: ComposerAnchor | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.artifact === b.artifact &&
+    a.mark_id === b.mark_id &&
+    (a.mark_id !== undefined || (a.quote === b.quote && a.occurrence === b.occurrence))
+  );
 }
 
 /**
@@ -39,8 +67,9 @@ export interface AwayDraft {
  * A composer whose host moves its address keeps a draft by the address too (`AwayDraft`): under
  * its send name, one per reply it was written for, so the reply typed for one message waits for
  * that message while the same composer answers another, and comes back with that message's Reply.
- * An editor keeps one with the comment's body it was written over, which decides whether the edit
- * comes back in the field or beside a newer body.
+ * The margin's compose keeps one per quote of its document, so text written about one quote never
+ * opens in a compose at another. An editor keeps one with the comment's body it was written over,
+ * which decides whether the edit comes back in the field or beside a newer body.
  */
 export interface UnsentDrafts {
   read(name: string): SentDraft | undefined;
@@ -53,13 +82,24 @@ export interface UnsentDrafts {
   signedIn(login: string | undefined): void;
   /** Keeps `draft` under `name`, or, given none, forgets the draft there. */
   write(name: string, draft: SentDraft | undefined): void;
-  /** The draft kept under `name` for the reply `replyTo` answers, or for none. */
-  readAway(name: string, replyTo: ReplyTarget | null): AwayDraft | undefined;
+  /** The draft kept under `name` for the reply `replyTo` answers, or for none, at the words
+   *  `anchor` names, or at none. */
+  readAway(
+    name: string,
+    replyTo: ReplyTarget | null,
+    anchor?: ComposerAnchor
+  ): AwayDraft | undefined;
   /** Every draft kept under `name` by its address, re-rendering whenever they change: the
    *  composer says which are kept and how to go back to each. */
   useAway(name: string): readonly AwayDraft[];
-  /** Keeps `away` under `name` for its address, or forgets what is kept for `replyTo` there. */
-  writeAway(name: string, replyTo: ReplyTarget | null, away: AwayDraft | undefined): void;
+  /** Keeps `away` under `name` for its address, or forgets what is kept there for `replyTo` at
+   *  `anchor`, which is the anchor `away` carries when one is given. */
+  writeAway(
+    name: string,
+    replyTo: ReplyTarget | null,
+    away: AwayDraft | undefined,
+    anchor?: ComposerAnchor
+  ): void;
 }
 
 function parseAway(kept: string): readonly AwayDraft[] {
@@ -88,11 +128,11 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
         const kept = store.read(name);
         return kept === "" ? undefined : (JSON.parse(kept) as SentDraft);
       },
-      // A draft is kept by the reply part of its address: one per reply, and one for a message
-      // that answers none.
-      readAway: (name, replyTo) =>
+      // A draft is kept by the reply part of its address and the words it is about: one per
+      // reply, one for a message that answers none, and one per quote of a margin compose.
+      readAway: (name, replyTo, anchor) =>
         parseAway(awayStore.read(name)).find(
-          (away) => (away.replyTo?.id ?? null) === (replyTo?.id ?? null)
+          (away) => sameReply(away.replyTo, replyTo) && sameAnchor(away.anchor, anchor)
         ),
       signedIn: (login) => {
         store.signedIn(login);
@@ -101,10 +141,10 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
       useAway,
       useKept,
       write: (name, draft) => store.set(name, draft === undefined ? "" : JSON.stringify(draft)),
-      writeAway: (name, replyTo, away) =>
+      writeAway: (name, replyTo, away, anchor = away?.anchor) =>
         awayStore.set(name, (kept) => {
           const others = parseAway(kept).filter(
-            (other) => (other.replyTo?.id ?? null) !== (replyTo?.id ?? null)
+            (other) => !(sameReply(other.replyTo, replyTo) && sameAnchor(other.anchor, anchor))
           );
           const next = away === undefined ? others : [...others, away];
           return next.length === 0 ? "" : JSON.stringify(next);

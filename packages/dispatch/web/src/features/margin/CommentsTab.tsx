@@ -17,7 +17,7 @@ import { AskCard } from "../inbox/AskCard";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
 import { DecisionList } from "./DecisionCard";
-import { marginComposeSendKey, useMargin } from "./margin-context";
+import { marginComposeKeptKey, marginComposeSendKey, useMargin } from "./margin-context";
 import { ThreadList } from "./ThreadList";
 import type { CommentActionFailure } from "./useCommentActionQueue";
 import type {
@@ -35,7 +35,9 @@ export interface MarginComposer {
   kind: ComposerKind;
   /** Where its sends go: the owner it was opened under. */
   owner: ComposerOwner;
-  /** The open compose it is, until its send holds it. */
+  /** The compose it is, by the number it opened under (`PendingCompose.seq`): the open compose,
+   *  and after its Send the held send's, which keeps the number. A send held since before a
+   *  reload has none. `MarginSheet` keys the composer by it, so each compose draws its own. */
   seq: number | undefined;
   /** A newer selection-bar action had to wait for its send. */
   turnedAway: boolean;
@@ -99,7 +101,7 @@ export function MarginComposerSlot({
   hidden: boolean;
   isClosed: boolean;
   onClose: (composer: MarginComposer) => void;
-  onKindChange: (kind: ComposerKind) => string | undefined;
+  onKindChange: (artifact: string, kind: ComposerKind) => string | undefined;
   /** The reader can see it: the margin's tabs are not covered, the compact sheet is open, and the
    *  Comments tab shows. */
   onScreen: boolean;
@@ -107,6 +109,11 @@ export function MarginComposerSlot({
   const { anchorRefusal } = useMargin();
   const sendKey = useMemo(
     () => marginComposeSendKey(composer.anchor.artifact),
+    [composer.anchor.artifact]
+  );
+  // Where a stopped compose of this document waits once a newer compose took its place.
+  const keptKey = useMemo(
+    () => marginComposeKeptKey(composer.anchor.artifact),
     [composer.anchor.artifact]
   );
   const { sending } = useSending(sendKey);
@@ -132,7 +139,8 @@ export function MarginComposerSlot({
         onSent={() => {}}
         owner={composer.owner}
         replyTo={null}
-        onKindChange={onKindChange}
+        stoppedAside={keptKey}
+        onKindChange={(kind) => onKindChange(composer.anchor.artifact, kind)}
       />
     </div>
   );

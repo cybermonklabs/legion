@@ -74,13 +74,14 @@ export function useMarginSheet(): MarginSheetModel {
     blockPlacements,
     cancelCompose,
     clearBlockFilter,
+    composeSeqs,
     documentBridge,
     focusBlock,
     focusRequest,
     hoveredItemId,
     hoveredMarkId,
     markPlacements,
-    pendingCompose,
+    pendingComposes,
     placementsReported,
     retypeCompose,
     revealCompose,
@@ -158,6 +159,10 @@ export function useMarginSheet(): MarginSheetModel {
         : issue.data?.artifacts?.find((artifact) => artifact.slug === routeArtifactSlug)
       : documentArtifact.data;
   const visibleArtifactId = visibleArtifact?.id;
+  // The compose the reader has open on the document the margin shows. Each document keeps its
+  // own, so one open on another document waits there for the reader's return.
+  const pendingCompose =
+    visibleArtifactId === undefined ? undefined : pendingComposes.get(visibleArtifactId);
   const removePin = useCallback(
     (id: string) => {
       if (owner?.kind === "issue") writePin(queryClient, owner.key, { id, op: "unpin" });
@@ -347,6 +352,8 @@ export function useMarginSheet(): MarginSheetModel {
   // The composer's Close, Escape and Discard. The open compose ends unsaved; a refusal the store
   // holds for the document goes, its draft and its mark with it (`MarginProvider` takes the mark).
   // A send still out is not the reader's to drop, and one that landed has left the store already.
+  // A held send's composer carries the number its compose opened under, which is open no longer,
+  // so `cancelCompose` leaves every open compose as it is for it.
   const closeComposer = useCallback(
     (composer: MarginComposer) => {
       if (composer.seq !== undefined) cancelCompose(composer.seq);
@@ -366,19 +373,18 @@ export function useMarginSheet(): MarginSheetModel {
   }, [openCompactSheet, shownCompose]);
   // An unsent suggestion or ask compose ends when its issue closes, which refuses both; a comment
   // compose stays, since a closed issue takes comments. `isClosed` is the open document's issue,
-  // so only a compose on that document is judged by it. Leaving the compose's document is the
+  // so only the compose on that document is judged by it. Leaving the compose's document is the
   // host's move, which carries nothing and drops nothing: the compose stays open for its document
-  // while the reader is on another, and its composer keeps what the reader wrote for it under its
-  // send name (`useKeptDrafts`'s `awayName`), so the compose shown when they come back holds it.
-  // One that was sent is the held-send store's (`MarginProvider` hands it over at Send) and stays.
+  // while the reader is on another, and opens there again on the way back (`MarginProvider` holds
+  // one per document, so a compose opened on the other document leaves it open). Its composer
+  // keeps what the reader wrote for its words under its send name (`useKeptDrafts`'s `awayName`,
+  // `AwayDraft.anchor`), so the compose shown when they come back holds it. One that was sent is
+  // the held-send store's (`MarginProvider` hands it over at Send) and stays.
   useEffect(() => {
-    if (pendingCompose === undefined || pendingCompose.anchor.artifact !== visibleArtifactId) {
-      return;
-    }
-    if (isClosed && pendingCompose.kind !== "comment") {
+    if (pendingCompose !== undefined && isClosed && pendingCompose.kind !== "comment") {
       cancelCompose(pendingCompose.seq);
     }
-  }, [cancelCompose, isClosed, pendingCompose, visibleArtifactId]);
+  }, [cancelCompose, isClosed, pendingCompose]);
   // Coming back to a document that holds a compose of the margin's shows it: the compose held for
   // the document, or the one still open for it, and a thread whose reply is held, opened as the
   // reader left it. Once per arrival, once the document's threads are in.
@@ -392,7 +398,7 @@ export function useMarginSheet(): MarginSheetModel {
     arrivedAt.current = visibleArtifactId;
     if (
       store.get(marginComposeSendKey(visibleArtifactId)) !== undefined ||
-      pendingCompose?.anchor.artifact === visibleArtifactId
+      pendingCompose !== undefined
     ) {
       revealCompose(visibleArtifactId);
     }
@@ -409,33 +415,29 @@ export function useMarginSheet(): MarginSheetModel {
     visibleArtifactId,
   ]);
   // The composer on the open document: the one its held send is - out, or refused - from Send
-  // on, or the compose the reader has open there.
+  // on, or the compose the reader has open there. A held send's composer is the compose that sent
+  // it, by the number that compose opened under, so Send keeps the composer the reader wrote in.
   const heldCompose = useHeldSend(
     visibleArtifactId === undefined ? undefined : marginComposeSendKey(visibleArtifactId)
   );
   const heldRequest = heldCompose?.request;
   const turnedAway =
     shownCompose?.turnedAway === true && shownCompose.artifact === visibleArtifactId;
+  const heldSeq = visibleArtifactId === undefined ? undefined : composeSeqs.get(visibleArtifactId);
   const shownComposer = useMemo<MarginComposer | undefined>(() => {
     if (heldRequest?.anchor !== undefined) {
       return {
         anchor: heldRequest.anchor,
         kind: heldRequest.kind,
         owner: heldRequest.owner,
-        seq: undefined,
+        seq: heldSeq,
         turnedAway,
       };
     }
-    if (
-      pendingCompose === undefined ||
-      owner === undefined ||
-      pendingCompose.anchor.artifact !== visibleArtifactId
-    ) {
-      return undefined;
-    }
+    if (pendingCompose === undefined || owner === undefined) return undefined;
     const { anchor, kind, seq } = pendingCompose;
     return { anchor, kind, owner: composerOwner(owner), seq, turnedAway: false };
-  }, [heldRequest, owner, pendingCompose, turnedAway, visibleArtifactId]);
+  }, [heldRequest, heldSeq, owner, pendingCompose, turnedAway]);
   // A project-document item link has nowhere else to land, so the compact sheet opens on it.
   // An issue's comment or ask deep link lands on its Conversation turn; the margin selects the
   // card without covering that turn with the sheet.

@@ -421,13 +421,15 @@ function heldUnder(rows: readonly Write[], mutationKey: MutationKey): HeldSend |
 
 /** `detail`, the record of a refused send whose refusal is `refusal`, carried to `to` by the
  *  reader's own move (`HeldSends.carry`): the request goes there, unless the send was stopped,
- *  whose key is used only at its own address. */
+ *  whose key is used only at its own address. `at` is the words and kind of a margin compose the
+ *  reader takes the draft into (`carryInto`), which is another address of the same owner. */
 function carriedTo(
   { stoppedSend, ...detail }: ComposerSend,
   refusal: Error,
-  to: CarriedAddress
+  to: CarriedAddress,
+  at?: Pick<SentRequest, "anchor" | "kind">
 ): ComposerSend {
-  const carried = { ...detail.request, ...to };
+  const carried = { ...detail.request, ...to, ...at };
   const stopped = stoppedSend ?? (refusal instanceof SendStoppedError ? detail.request : undefined);
   if (stopped === undefined) return { ...detail, request: carried };
   if (sameAddress(stopped, carried)) return { ...detail, request: stopped };
@@ -563,12 +565,20 @@ export class HeldSends {
    *  thread composer's Cancel reply - and `into` is the one that shows `to`, the docked composer
    *  at the issue's own address, which has taken the send's draft into its field. A composer
    *  takes a carried draft only while it holds no send of its own, out or refused
-   *  (`DraftIntake`), so the send carried in is the only one under `into`. */
-  carryInto(mutationKey: MutationKey, into: MutationKey, to: CarriedAddress): void {
+   *  (`DraftIntake`), so the send carried in is the only one under `into`. The margin moves a
+   *  stopped compose this way too: aside, unchanged, under a name no composer sends from, when a
+   *  newer compose on its document takes its place, and from there into that compose, at its
+   *  words and in its kind (`at`), when the reader presses Use my draft there. */
+  carryInto(
+    mutationKey: MutationKey,
+    into: MutationKey,
+    to: CarriedAddress,
+    at?: Pick<SentRequest, "anchor" | "kind">
+  ): void {
     const held = this.get(mutationKey);
     if (held?.status !== "refused") return;
     this.#writes.amend(held.id, composerSend, (detail) => ({
-      ...carriedTo(detail, held.refusal, to),
+      ...carriedTo(detail, held.refusal, to, at),
       mutationKey: sendName(into),
     }));
   }
