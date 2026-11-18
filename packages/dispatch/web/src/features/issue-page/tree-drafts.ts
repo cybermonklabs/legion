@@ -384,19 +384,19 @@ export function blockWords(name: string): string {
  * draws a stored text as plain words draws, since its marks are markup and no word of it (R21),
  * and a mark after a sentence's end (`today.**`) would hide that end from `firstLineOf`.
  *
- * They are the words of the text's reading (`storedReading`) - the text parsed by the CommonMark
- * and GFM base of the page's markdown engine's parse, in the shape of the server's reading -
- * taken by the walk that takes the words of the server's reading (`wordsOf`). They are so the
- * words of that base parse, which are what the server's reading holds for every text that holds
- * neither of two things the engine's own extensions read and the base parse does not: a
- * container directive (a typed block such as `:::ask`), which reads here as its literal fence
- * lines and content, and a Proof mark span (`<span data-proof=…>`), which reads here as HTML
- * around its text. An escape is the character it escapes (`1\.` is `1.`), a code span's content
- * reads as written, a link reads as its words and an autolink as its address. An image, an HTML
- * comment or tag, a table's pipes and rule, a thematic break and the markers of a heading, a
- * quote and a list are no word, and each block's words stand apart from the next block's. Every
- * character the author wrote as a word, a private-use one included, reads as written. White
- * space collapses to single spaces.
+ * They are the words of the text's reading (`storedReading`) - the text parsed by CommonMark
+ * with GFM and front matter, its lists and quotes held to the server's nesting bound, as the
+ * page's markdown engine parses it short of that engine's own extensions, in the shape of the
+ * server's reading - taken by the walk that takes the words of the server's reading (`wordsOf`).
+ * They are so what the server's reading holds for every text that holds neither of two things
+ * the engine's own extensions read and this parse does not: a container directive (a typed
+ * block such as `:::ask`), which reads here as its literal fence lines and content, and a Proof
+ * mark span (`<span data-proof=…>`), which reads here as HTML around its text. An escape is the
+ * character it escapes (`1\.` is `1.`), a code span's content reads as written, a link reads as
+ * its words and an autolink as its address. An image, an HTML comment or tag, a table's pipes
+ * and rule, a thematic break and the markers of a heading, a quote and a list are no word, and
+ * each block's words stand apart from the next block's. Every character the author wrote as a
+ * word, a private-use one included, reads as written. White space collapses to single spaces.
  *
  * A bare `dispatch://` address reads as its target's short form, run by run of the reading
  * (`withShortAddresses`): every place that reads a stored text to plain words draws it on one

@@ -1,9 +1,20 @@
+import { boundBlockNesting } from "@legion/proof-editor/block-nesting";
 import { fromMarkdown, type Options } from "mdast-util-from-markdown";
+import { frontmatterFromMarkdown } from "mdast-util-frontmatter";
 import { gfmFromMarkdown } from "mdast-util-gfm";
+import { frontmatter } from "micromark-extension-frontmatter";
 import { gfm } from "micromark-extension-gfm";
 
 import type { DisplayTree } from "../../api/types";
 import { rememberUpTo } from "../refs/worker-queue";
+
+// A stored text is parsed here on the page's own thread, often before the lazy markdown engine
+// has loaded, so the bound that engine holds micromark's lists and quotes to is put in place
+// first, before any parse. Without it a deeply nested body costs seconds or overflows the stack
+// (sjawhar/legion#2519); with it, a list or quote marker past the document service's bound reads
+// as the text it is, as the server reads it. The call rewrites the two constructs once however
+// often it is made, so the engine's own call later changes nothing.
+boundBlockNesting();
 
 /** What the parse answers for a whole text: its root, whose children are the text's blocks. It is
  *  named from the parser's own answer because the package that declares the syntax tree's types
@@ -18,15 +29,20 @@ type ParsedRow = Extract<Parsed, { type: "tableRow" }>;
 
 /**
  * The parse a stored text is read with: CommonMark with GFM's syntax - tables, strikethrough
- * with one tilde or two, task boxes, autolink literals and footnotes. It is the base of the parse
- * the page's markdown engine reads a body with, since remark-parse and remark-gfm are these two
- * extensions over `mdast-util-from-markdown`. None of the engine's own extensions on top of that
- * base is applied here; among them, a container directive (a typed block such as `:::ask`) reads
- * as its literal fence lines and the content between them, and a Proof mark span
- * (`<span data-proof=…>`) reads as HTML around its text. The extensions hold nothing of any one
- * parse, so one set serves every text.
+ * with one tilde or two, task boxes, autolink literals and footnotes - and YAML front matter, a
+ * `---` fenced block a text opens with. It is the base of the parse the page's markdown engine
+ * reads a body with, since remark-parse, remark-gfm and remark-frontmatter are these extensions
+ * over `mdast-util-from-markdown`, and its lists and quotes nest within the document service's
+ * bound (`boundBlockNesting`). The engine's other extensions on top of that base are not applied
+ * here; among them, a container directive (a typed block such as `:::ask`) reads as its literal
+ * fence lines and the content between them, and a Proof mark span (`<span data-proof=…>`) reads
+ * as HTML around its text. The extensions hold nothing of any one parse, so one set serves every
+ * text.
  */
-const GFM_PARSE: Options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] };
+const STORED_TEXT_PARSE: Options = {
+  extensions: [gfm(), frontmatter(["yaml"])],
+  mdastExtensions: [gfmFromMarkdown(), frontmatterFromMarkdown(["yaml"])],
+};
 
 /** How many readings are remembered (`storedReading`): enough that a page drawn again finds the
  *  readings its last draw made rather than parsing each text anew, and few enough that what is
@@ -46,14 +62,14 @@ const NO_MARKS: readonly DisplayTree[] = [];
 const LINE_FEED = /\r\n?|\n/gu;
 
 /**
- * The reading of a stored markdown text: the text parsed by the CommonMark and GFM base of the
- * page's markdown engine's parse (`GFM_PARSE`) and held as a `DisplayTree` of the shape the
- * server's reading of a text has. The walks that read the server's reading - its words
- * (`wordsOf`), a node's first block (`lineWords`), its addresses written short
- * (`withShortAddresses`) - so read a stored text the same way. Its words are the words of that
- * base parse, which are what the server's reading holds for every text that holds neither a
- * container directive nor a Proof mark span (`GFM_PARSE`), so a place that has only the text
- * reads what the server's reading of it would hold (R21).
+ * The reading of a stored markdown text: the text parsed by the base of the page's markdown
+ * engine's parse (`STORED_TEXT_PARSE`) and held as a `DisplayTree` of the shape the server's
+ * reading of a text has. The walks that read the server's reading - its words (`wordsOf`), a
+ * node's first block (`lineWords`), its addresses written short (`withShortAddresses`) - so read
+ * a stored text the same way. Its words are the words of that base parse, which are what the
+ * server's reading holds for every text that holds neither a container directive nor a Proof
+ * mark span (`STORED_TEXT_PARSE`), so a place that has only the text reads what the server's
+ * reading of it would hold (R21).
  *
  * The reading holds what decides the words and where they stand apart: the blocks, the text runs
  * and the marks on them, by the server's names, and no attribute, since no word lies in one. A
@@ -64,7 +80,8 @@ const LINE_FEED = /\r\n?|\n/gu;
  * quote's markers, a heading's `#`, a task box, a table's pipes and rule, a link's target, an
  * image's address and alt text, an HTML comment or tag, and a link reference definition. A text
  * run holds each line feed as a space, as the server writes a soft line break (`parseTextValue`,
- * `pmdoc/parse.go`); code - a code span and a code block - holds its text as the parse gives it.
+ * `pmdoc/parse.go`); code - a code span and a code block - holds its text as the parse gives it,
+ * and so does front matter, which reads between its two fences as the server writes it.
  *
  * The page reads a node's line on every draw, so the reading of each text is remembered, up to
  * `READING_LIMIT` texts, the one read longest ago dropped first. A reading is shared by every
@@ -79,7 +96,7 @@ export function storedReading(markdown: string): DisplayTree {
     readings.set(markdown, remembered);
     return remembered;
   }
-  const reading = withContent("doc", blocksOf(fromMarkdown(markdown, GFM_PARSE).children));
+  const reading = withContent("doc", blocksOf(fromMarkdown(markdown, STORED_TEXT_PARSE).children));
   rememberUpTo(readings, READING_LIMIT, markdown, reading);
   return reading;
 }
@@ -98,8 +115,10 @@ function blocksOf(nodes: readonly Parsed[]): DisplayTree[] {
 /**
  * The reading of one block of the parse and what it holds, by the server's name for it. A block
  * of HTML is a paragraph holding it as one `html` leaf, as the server shows one, since the
- * server's schema carries HTML inline only. A link reference definition, which only names a
- * link's target, draws nothing and is `undefined`.
+ * server's schema carries HTML inline only. Front matter is one text run of its lines between
+ * two plain `---` fences, and of the two fences alone where it holds nothing, as the server
+ * writes it (`parseFrontmatterBlock`, `pmdoc/lines.go`). A link reference definition, which only
+ * names a link's target, draws nothing and is `undefined`.
  */
 function blockOf(node: Parsed): DisplayTree | undefined {
   switch (node.type) {
@@ -131,6 +150,10 @@ function blockOf(node: Parsed): DisplayTree | undefined {
       );
     case "footnoteDefinition":
       return withContent("footnote_definition", blocksOf(node.children));
+    case "yaml": {
+      const text = node.value === "" ? "---\n---" : `---\n${node.value}\n---`;
+      return { content: [{ text, type: "text" }], type: "frontmatter" };
+    }
     default:
       return undefined;
   }
