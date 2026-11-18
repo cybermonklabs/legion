@@ -1161,10 +1161,12 @@ test("on a phone the Plan chart is one card for each step @phone @phone-only", a
       planChart(page).locator("[data-plan-head]"),
       "the chart draws its head row at 390 px"
     ).toBeHidden();
-    for (const curve of await planChart(page).locator("svg[data-plan-links] path").all()) {
-      await expect(curve, "the chart draws a curve at 390 px").toBeHidden();
-    }
+    await expect(
+      planChart(page).locator("svg[data-plan-links] path:visible"),
+      "the chart draws a curve at 390 px"
+    ).toHaveCount(0);
 
+    // The cards are settled here: their count and their order are each awaited just above.
     for (const card of await stepLayouts(page)) {
       const at = `the card of ${card.id}`;
       expect(card.row.borderLeftWidth, `${at} has no 4 px left edge`).toBe("4px");
