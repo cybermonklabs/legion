@@ -321,9 +321,13 @@ first**.
 
 The root and the two newest replies always show. Older ones fold behind **Show N earlier
 replies**, and **Show fewer replies** folds them back; a reply you have not read never folds.
-After an ask is answered, write a follow-up in **Reply**; in the Conversation tab and in document
-decisions, choose **Write a reply** first. A reply you are still typing survives if its card
-remounts elsewhere, such as switching margin tabs away and back.
+After an ask is answered, resolved, retracted, declined or withdrawn, its thread still takes a
+follow-up: write it in **Reply**; in the Conversation tab and in a live document's decisions,
+choose **Write a reply** first. A closed issue's document shows a decision's record only, with no
+reply box, so a withdrawn ask, which only a closed issue has, takes its reply in the Conversation
+tab. A reply you are still typing survives if its card remounts elsewhere, such as switching
+margin tabs away and back, and if the ask is resolved while you type. If the ask opens again
+before you send it, the card shows your text where the reply box was, for you to copy.
 
 ### Approvals
 

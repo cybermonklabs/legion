@@ -55,7 +55,7 @@ on:
 
 jobs:
   cancel-dequeued:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # A GraphQL read, one run list and one cancel: the limit is short so that a wedged API call
     # cannot hold a runner, and it is above the minute the timeline read can wait.
     timeout-minutes: 5

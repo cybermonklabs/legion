@@ -303,6 +303,11 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 // changed anything: a write that changed nothing publishes no update whose observer would arm one.
 // A settlement that got past its supersession check before the write opened commits its own work,
 // and the one the write arms then finds nothing new.
+//
+// A retirement of the room a late departure's settlement loaded that has reserved the record
+// (roomState.retiring) gives the slot to no one until ygo's close of that room has returned: the
+// write waits for it (awaitRetirement), and forks from the room the close was refused, or from the
+// store once it closed, never from a room the close then takes away under it.
 func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID string) (*liveWrite, error) {
 	write := &liveWrite{artifactID: artifactID, clientID: crdt.NewClientID(), done: make(chan struct{})}
 	for {
@@ -312,9 +317,19 @@ func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 			slog.Warn("dispatch: refuse a write on a document room closing on a replaced stored history", "room", artifactID)
 			return nil, fmt.Errorf("%w: room %s", errRoomReloading, artifactID)
 		}
+		if retiring := state.retiring; retiring != nil {
+			s.unlockState(artifactID, state)
+			if err := s.awaitRetirement(ctx, artifactID, retiring); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if state.liveWriter == nil {
 			state.liveWriter = write
 			state.roomGeneration = s.nextRoomGeneration()
+			// A writer takes up a room a late departure's settlement loaded: the room stays once
+			// that settlement has ended (retireSettlementRoom).
+			state.warmed = nil
 			// The take-over runs whatever the record already says, so it always stops an
 			// armed timer: `settleDeferred || takeOver…` would skip the call on a record
 			// that already defers one, and leave a timer to fire under this write.

@@ -106,6 +106,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Exit codes beyond 0 and 1 use BSD sysexits.h values where applicable. Every value returned by
@@ -861,7 +862,9 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		writeVerbatim(stdout, raw)
 	} else {
-		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", result.RequestID, result.State, c.source(ctx))
+		// Every value on these lines is the broker's, so each prints on one line
+		// (redact.OneLine), as every broker-answer value this CLI prints does.
+		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", redact.OneLine(result.RequestID), redact.OneLine(result.State), c.source(ctx))
 		printDetail(stdout, result.Detail)
 		if result.State == "pending" {
 			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
@@ -907,15 +910,15 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 		return 0
 	}
-	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", result.State, c.source(ctx))
+	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", redact.OneLine(result.State), c.source(ctx))
 	if result.State == "pending" {
 		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
-		fmt.Fprintf(stdout, "grant_id: %s\n", *result.GrantID)
+		fmt.Fprintf(stdout, "grant_id: %s\n", redact.OneLine(*result.GrantID))
 	}
 	if result.Decision != nil {
-		fmt.Fprintf(stdout, "decided_by: %s\n", result.Decision.By)
+		fmt.Fprintf(stdout, "decided_by: %s\n", redact.OneLine(result.Decision.By))
 	}
 	printDetail(stdout, result.Detail)
 	return 0
@@ -1024,13 +1027,13 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 		operator = *result.Operator
 	}
 	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
-		result.EnrollmentID, result.Kind, operator, result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
+		redact.OneLine(result.EnrollmentID), redact.OneLine(result.Kind), redact.OneLine(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
 		if g.ExpiresAt == nil {
-			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", g.GrantID, g.RequestID)
+			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", redact.OneLine(g.GrantID), redact.OneLine(g.RequestID))
 			continue
 		}
-		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", g.GrantID, g.RequestID, g.ExpiresAt.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", redact.OneLine(g.GrantID), redact.OneLine(g.RequestID), g.ExpiresAt.Format(time.RFC3339))
 	}
 	return 0
 }
@@ -1122,6 +1125,9 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
+	// shownID is the request's id as the lines below print it: the broker's, so on one line
+	// (redact.OneLine). requestID itself is what the polls ask after.
+	shownID := redact.OneLine(requestID)
 	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
 	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
 	// the approver may still decide before --wait runs out, and a grant this command has stopped
@@ -1153,7 +1159,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 			case retryable(err):
 				// Said once per run of failed polls, not once per poll.
 				if pollErr == nil {
-					fmt.Fprintf(stderr, "agent-secrets: %s; still waiting for request %s\n", refusalText(src(), err), requestID)
+					fmt.Fprintf(stderr, "agent-secrets: %s; still waiting for request %s\n", refusalText(src(), err), shownID)
 				}
 				pollErr = err
 			default:
@@ -1166,23 +1172,23 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	case "granted":
 	case "pending":
 		if pollErr != nil {
-			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), pollErr, requestID)
+			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), pollErr, shownID)
 			return exitPending
 		}
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), requestID)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), shownID)
 		return exitPending
 	case "denied":
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", requestID, src(), deniedBecause(detail))
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(detail))
 		return exitDenied
 	case "cancelled", "expired":
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", requestID, src(), state)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), state)
 		return 1
 	default:
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %q\n", requestID, src(), state)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %q\n", shownID, src(), state)
 		return 1
 	}
 	if grantID == nil {
-		fmt.Fprintf(stderr, "agent-secrets: request %s was granted but its grant from %s is no longer live; request it again\n", requestID, src())
+		fmt.Fprintf(stderr, "agent-secrets: request %s was granted but its grant from %s is no longer live; request it again\n", shownID, src())
 		return 1
 	}
 
@@ -1261,7 +1267,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 // the model judge while it holds the request — where the secrets it would inject come from (src),
 // and on which page of the broker a person decides it when its answer names one (waitingOn).
 func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
-	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", requestID, src, wait)
+	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", redact.OneLine(requestID), src, wait)
 	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage, judging))
 }
 
@@ -1276,7 +1282,9 @@ func reportPending(stderr io.Writer, requestID string, approver *string, brokerP
 // switch appends: a broker from before that page carries none, the suffix is empty, and the same
 // sentence names the approver alone, with no page - the request waits on the same person, who
 // opens the broker themselves. The broker names an approver for every pending request; one from
-// before it did names none, and the sentence says so rather than guessing.
+// before it did names none, and the sentence says so rather than guessing. The page is the
+// broker's, so it prints on one line (redact.OneLine): as it came, or Go-quoted where a control
+// character in it would start a line of its own.
 //
 // A request the model judge holds (judging, the answer's judge_deciding) carries no page: its
 // keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
@@ -1288,7 +1296,7 @@ func waitingOn(approver *string, brokerPage string, judging bool) string {
 	}
 	where := ""
 	if brokerPage != "" {
-		where = ": " + brokerPage
+		where = ": " + redact.OneLine(brokerPage)
 	}
 	switch {
 	case approver == nil:
@@ -1296,7 +1304,7 @@ func waitingOn(approver *string, brokerPage string, judging bool) string {
 	case *approver == record.AnyoneApprover:
 		return "waiting for anyone signed in to the secrets broker to approve it" + where
 	default:
-		return "waiting for " + *approver + " to approve it on the secrets broker" + where
+		return "waiting for " + redact.OneLine(*approver) + " to approve it on the secrets broker" + where
 	}
 }
 
@@ -1310,7 +1318,7 @@ func deniedBecause(detail *string) string {
 	if detail == nil {
 		return ""
 	}
-	return ": " + *detail
+	return ": " + redact.OneLine(*detail)
 }
 
 // printDetail writes the broker's own sentence about a request, the one the request row keeps as
@@ -1321,7 +1329,7 @@ func printDetail(stdout io.Writer, detail *string) {
 	if detail == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "detail: %s\n", *detail)
+	fmt.Fprintf(stdout, "detail: %s\n", redact.OneLine(*detail))
 }
 
 // sessionIdentityVars are the AGENT_SECRETS_* variables the exec form's child keeps: the broker's

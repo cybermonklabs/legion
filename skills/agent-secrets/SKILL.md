@@ -286,8 +286,12 @@ or the issue you work on. There is no list to browse and nothing to guess.
 ## Before you say that a service is out of reach
 
 1. Run the call through `agent-secrets`, with the secret your instructions name.
-2. Report a service unreachable only with the command you ran and the output you saw.
-3. When no instruction names a secret for that service, report that instead, with what you checked:
+2. A GitHub `404` under your session's own token is that token's reach, not your access: GitHub
+   answers `404` for a repository a token cannot see. Ask the broker for the GitHub App secret
+   your instructions name, narrowed to that repository with `--github-owner`, `--github-repo`,
+   `--github-read-only` and `--github-token`, and make the call again under it.
+3. Report a service unreachable only with the command you ran and the output you saw.
+4. When no instruction names a secret for that service, report that instead, with what you checked:
    `agent-secrets identity --source`, and which instructions you read. Request no name you guessed.
 
 ## On a person's own machine

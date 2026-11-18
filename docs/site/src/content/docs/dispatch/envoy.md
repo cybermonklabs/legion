@@ -419,17 +419,24 @@ held by another process from a different session.
 A registration renews every claim its own process holds, whatever topics it carries. What says a
 role was given up is the claim itself: a hand-back that could not free the claim — a release of
 that role's lane topic stating no client instance, the shape a client built before this change
-sends — marks the claim instead, no registration renews a marked claim, and the reaper frees the
-role at its next pass past the live window: one live window plus up to one reap interval, about
-ten minutes with the defaults above. `GET /v1/roles/<role>` answers `handed_back: true` for such
-a claim,
+sends, or any caller that leaves the instance out, so any process of the session can send it —
+marks the claim instead, whether it names a process or none, no registration renews a
+marked claim, and the reaper frees the role at its next pass past the live window: one live
+window plus up to one reap interval, about ten minutes with the defaults above.
+`GET /v1/roles/<role>` answers `handed_back: true` for such a claim,
 on the 200 and on a lapsed holder's 404 alike, and leaves the key out otherwise. Both Oh My Pi
-and Claude Code read a marked claim as a role they do not hold, so a holder marked this way
-claims the role again at its next heartbeat and has it back, the fresh record carrying no mark.
-A registration that states no client instance at all renews the claims of its own session that
-name no process, so a claim standing at a deploy is kept until a registration of that session
-that names a process adopts it — any process of the session, not only the one that took the
-role. A release
+and Claude Code read a marked claim as a role they do not hold, so a holder whose claim names its
+process and was marked this way claims the role again at its next heartbeat and has it back, the
+fresh record carrying no mark. A soft claim over a marked claim that names no process is refused
+until its renewal is older than the live window, or the reaper frees it; the way back is an
+outright claim (no `soft`), which lands at once. A release that states no client
+instance frees no claim, and no release but the administrator's force frees a claim that names
+no process. A registration that states no client instance at all renews the claims of its own
+session that name no process, so the claim of a client that states none is kept while it runs. A
+registration that names a process adopts a claim that names none only at the first heartbeat
+after the claim was written, before any registration that states no process has renewed it —
+any process of the session, not only the one that took the role; after such a renewal no
+registration takes it. A release
 that loses its conditional delete to a record written since is not reported as a release: the
 claim is read again, a record still naming that same session and that same process is its own
 holder's renewal, and the delete goes out again at the revision that renewal left, three
