@@ -243,6 +243,14 @@ describe("step-records-read.sh", () => {
     expect(code).toBe(2);
   });
 
+  test("a failed read's message keeps what it said on stderr and on stdout on lines of their own", () => {
+    const warning = "dispatch: the bearer token expires in 2 days\n";
+    const { code, stdout } = read(`${key}: 7 steps in 1 tasks\n`, [key], 1, undefined, warning);
+    expect(stdout).toContain(`exited 1, so nothing was read: ${warning}${key}: 7 steps in 1 tasks`);
+    expect(stdout).not.toContain(`days${key}`);
+    expect(code).toBe(2);
+  });
+
   test("an answer that is no read of the issue is UNKNOWN, exit 2", () => {
     const header = read("OTHER-1: 10 steps in 1 tasks\n");
     expect(header.stdout).toContain(

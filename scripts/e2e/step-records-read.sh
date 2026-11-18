@@ -36,12 +36,17 @@ command -v dispatch >/dev/null || unknown "no dispatch command is on PATH, so no
 
 # The answer is stdout alone: the command prints its own `dispatch: <warning>` lines on stderr,
 # before its answer, and a warning is no line of the answer. Stderr goes to the operator, and into
-# the message when the command fails.
+# the message when the command fails, on lines of its own above what stdout said: a command
+# substitution drops stderr's last newline, which would run the two together.
 errors=$(mktemp)
 trap 'rm -f "$errors"' EXIT
 code=0
 out=$(dispatch steps --issue "$issue" 2>"$errors") || code=$?
-[ "$code" -eq 0 ] || unknown "dispatch steps --issue $issue exited $code, so nothing was read: $(cat "$errors")$out"
+if [ "$code" -ne 0 ]; then
+  said=$(cat "$errors")
+  [ -z "$said" ] || [ -z "$out" ] || said="$said"$'\n'
+  unknown "dispatch steps --issue $issue exited $code, so nothing was read: $said$out"
+fi
 cat "$errors" >&2
 printf '%s\n' "$out"
 
