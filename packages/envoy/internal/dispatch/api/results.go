@@ -322,7 +322,8 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, body)
 		return
 	}
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact)
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -363,6 +364,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks
+	trees.resolve()
 	WriteJSON(w, http.StatusOK, body)
 }
 
@@ -600,7 +602,7 @@ func (s *server) checkBlockAttributes(ctx context.Context, artifactID, blockID s
 	// The index holds the block, so the live document has it too unless a write landed between
 	// the two reads; such a block carries the schema's defaults alone, `when` before_merge.
 	attributes := docs.CheckAttributes{When: docs.CheckWhenBeforeMerge}
-	err := s.typedBlocksIn(ctx, artifactID, "check", func(node *pmdoc.Node, id string) {
+	err := s.typedBlocksIn(ctx, artifactID, "check", false, func(node *pmdoc.Node, id, _ string) {
 		if id == blockID {
 			attributes = docs.CheckAttributesOf(node)
 		}
@@ -644,8 +646,19 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // so only the first holder of an id is visited. Both readers of a live document's typed blocks
 // come through here: the checks of a Verification document (checkBlocksIn) and the requirements
 // of a spec (requirementBlocksIn).
-func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, visit func(node *pmdoc.Node, id string)) error {
-	markdown, err := s.deps.Docs.Text(ctx, artifactID)
+//
+// When trees is true, visit is handed as content the markdown the block's text_tree is read
+// from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
+// index stores it: the block's slice of the document's markdown, between the byte range the
+// document read itself gives for the block (docs.Service.TextWithBlocks), as refs.IndexBlocks
+// cuts it. GET /api/v1/reference-targets has only that stored text to read a block's tree from,
+// so the coverage and the results reads take the same text through the same rule, and one block
+// answers one tree in all three reads, the whole stored text of a typed block in a quote included.
+// The ranges come with the markdown from that one read, which serves both from the read cache
+// without a render where it can (typedBlockMarkdown); a block the read gives no range for answers
+// the block's own content (blockContent).
+func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
+	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
 	if err != nil {
 		return err
 	}
@@ -666,23 +679,72 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 			return true
 		}
 		seen[id] = struct{}{}
-		visit(node, id)
+		content := ""
+		if trees {
+			if whole, held := texts[id]; held {
+				content = blockTextContent(whole, true)
+			} else {
+				content = blockContent(node)
+			}
+		}
+		visit(node, id, content)
 		return true
 	})
 	return nil
 }
 
+// typedBlockMarkdown is the live markdown of one document and, when trees is true, the text the
+// block index stores for each block of blockType in it, by id: the block's slice of that markdown
+// between the byte range the same read gives for it (docs.Service.TextWithBlocks). The read lists
+// blocks in document order, so the text kept for an id is its first holder's, the block
+// typedBlocksIn visits. When trees is false the document is read with Text alone.
+//
+// A read with blocks that fails is logged, and the document is read again with Text and given no
+// text at all, so every block answers its own content: a value inside a block that no block token
+// can encode refuses TextWithBlocks and not Text, and such a document still answers its blocks'
+// words. A failure Text meets as well is answered with Text's error.
+func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType string, trees bool) (string, map[string]string, error) {
+	if trees {
+		markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
+		if err == nil {
+			texts := map[string]string{}
+			for _, block := range blocks {
+				if block.Type != blockType {
+					continue
+				}
+				if _, held := texts[block.ID]; !held {
+					texts[block.ID] = sliceMarkdown(markdown, block.From, block.To)
+				}
+			}
+			return markdown, texts, nil
+		}
+		slog.Warn("dispatch: read a document's blocks for its typed blocks' trees", "artifact", artifactID, "type", blockType, "error", err)
+	}
+	markdown, err := s.deps.Docs.Text(ctx, artifactID)
+	return markdown, nil, err
+}
+
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes
-// and its words (typedBlocksIn).
-func (s *server) checkBlocksIn(ctx context.Context, artifactID string) ([]model.CheckBlock, error) {
+// and its words (typedBlocksIn). trees is the request's own reader, nil for a caller that asked
+// for no tree: each check registers with it, as its text_tree, the markdown typedBlocksIn reads
+// the block's tree from (the rule GET /api/v1/reference-targets reads the same block by), once
+// the slice has stopped growing, since what is registered is a pointer into the row.
+func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
-	err := s.typedBlocksIn(ctx, artifactID, "check", func(node *pmdoc.Node, _ string) {
+	var contents []string
+	err := s.typedBlocksIn(ctx, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
 		checks = append(checks, check)
+		if trees != nil {
+			contents = append(contents, content)
+		}
 	})
 	if err != nil {
 		return nil, err
+	}
+	for index, content := range contents {
+		trees.text(&checks[index].TextTree, content)
 	}
 	return checks, nil
 }
@@ -691,8 +753,8 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string) ([]model.
 // digest filled in. The reference is built from the document's own slug, which is a property of
 // the artifacts row and not of a block row, so a Verification document whose blocks the index
 // does not hold yet still answers a reference every check can be addressed by.
-func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact) ([]model.CheckBlock, error) {
-	checks, err := s.checkBlocksIn(ctx, artifact.ID)
+func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
+	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
 	if err != nil {
 		return nil, err
 	}
@@ -736,7 +798,8 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
 // blanks, with the text of a link and every dispatch:// reference dropped, so the pull-request
-// body line the result implies carries no link and no Dispatch host.
+// body line the result implies carries no link and no Dispatch host. blockContent is the same
+// block with both kept.
 func blockWords(node *pmdoc.Node) string {
 	var words []string
 	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
@@ -757,6 +820,30 @@ func blockWords(node *pmdoc.Node) string {
 		return true
 	})
 	return strings.Join(words, " ")
+}
+
+// blockContent is a typed block's own content as markdown: what stands between its opening line
+// and its closing one, rendered from node as a document of its own, so neither the directive's
+// line nor its attributes are in it and every link and every dispatch:// reference is. Its one
+// use is the content typedBlocksIn hands visit for a block the document's read gives no byte
+// range for. That is every block of a document whose read with blocks failed, which
+// typedBlockMarkdown then reads with Text alone and gives no text for any block. Every other
+// typed block's content is cut from its stored text (blockTextContent). node comes from the
+// parse of the document's live rendering, which writes every typed block's id, so this
+// rendering writes no id that the document does not hold. A block holding nothing has no
+// content and so no tree; one whose content cannot be rendered apart from its document is logged
+// and has none either, since the read's other fields do not depend on it.
+func blockContent(node *pmdoc.Node) string {
+	if len(node.Children) == 0 {
+		return ""
+	}
+	markdown, err := pmdoc.Render(&pmdoc.Node{Type: "doc", Children: node.Children})
+	if err != nil {
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		slog.Warn("dispatch: render a typed block's content for its tree", "type", node.Type, "block", id, "error", err)
+		return ""
+	}
+	return markdown
 }
 
 // checkResultLine is the pull-request body line one recorded result implies. Dispatch writes it

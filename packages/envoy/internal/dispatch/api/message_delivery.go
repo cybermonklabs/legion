@@ -756,6 +756,12 @@ var errAttemptNotPending = errors.New("delivery attempt is no longer pending")
 //
 // Bound or not, a send that meets a listener take-over tries again under the attempt it claimed
 // (takeoverRetry.retry, renewMessageDeliveryClaim) and settles only with the last try's outcome.
+// A last try that found no live session for the session the attempt names - the registry read's
+// answer or the send's own 404, so neither the listener's registry nor its known-session store
+// holds that session - is queued by Dispatch itself on that session's own subject
+// (queueForUnknownSession) while this sender still holds the attempt, so every sender of a
+// targeted message queues it alike: the request, a keyed repeat, a broadcast's copy, a Retry and
+// the delivery sweep.
 func (s *server) deliverMessageResuming(
 	ctx context.Context,
 	message model.Message,
@@ -791,28 +797,36 @@ func (s *server) deliverMessageResuming(
 	// on every send of it, whatever its row holds, judged in the mode this attempt is sent in
 	// (isSessionSwitch, pendingMessageDelivery.connectedOnly).
 	connectedOnly := pending.connectedOnly || isSessionSwitch(message, pending.resolved.Delivery)
+	// A direct message is written to the session it names and invites its answer; nothing about
+	// one says a reply is unwanted. A copy Dispatch queues for its session says the same.
+	wanted := contracts.ExpectsReplyOptional
 	takeover := s.newTakeoverRetry()
 	var outcome sendOutcome
+	// held is whether this sender still holds the attempt's claim when its tries end. A renew that
+	// found the attempt answered or taken meanwhile ends them holding nothing, and then nothing is
+	// queued: the settle below reads what the row holds now.
+	held := true
 	err = takeover.retry(ctx,
 		func() string {
-			// A direct message is written to the session it names and invites its answer;
-			// nothing about one says a reply is unwanted.
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, message.Body, key, pending.urgency,
-				contracts.ExpectsReplyOptional, pending.frame, connectedOnly,
+				ctx, pending.resolved, message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
 			)
 			return outcome.failure
 		},
 		func() (bool, error) {
-			renewed, held, err := s.renewMessageDeliveryClaim(ctx, message, pending)
-			if held {
+			renewed, stillHeld, err := s.renewMessageDeliveryClaim(ctx, message, pending)
+			if stillHeld {
 				pending = renewed
 			}
-			return held, err
+			held = stillHeld
+			return stillHeld, err
 		},
 	)
 	if err != nil {
 		return model.MessageDelivery{}, err
+	}
+	if held && s.mayQueueForUnknownSession(message, pending, connectedOnly, outcome.failure) {
+		outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
 }

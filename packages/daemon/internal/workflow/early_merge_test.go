@@ -178,7 +178,7 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 			seedPR(t, pool, pr)
 			seedPhase(t, pool, tc.reviewer)
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-			seedClaimSession(t, pool, "review-claim", "")
+			seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 			for i, fact := range tc.facts {
@@ -220,7 +220,7 @@ func TestAMergedPullRequestsApprovalAndItsRefusedMovesBackAgree(t *testing.T) {
 		Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-	seedClaimSession(t, pool, "review-claim", "")
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	const reason = "its pull request has merged; a merged change never moves back"
 	back := func(id string, requester claim.Role, from phase.Phase) {

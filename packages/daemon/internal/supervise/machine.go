@@ -702,10 +702,12 @@ type ClaimView struct {
 	SendInFlight bool
 	// WakeWaiting is the wake the pacing holds over this claim until its turn (reserveWake), nil
 	// while none waits. It travels on the published view rather than behind the machine's lock
-	// because the one reader of it is a reader of every claim — the state route, through the
-	// daemon's supervision (api.State.WakesWaiting) — and such a reader must never wait on the
-	// decision in flight, which is the whole reason View exists. That reader takes it through
-	// Machine.WaitingWake, which copies no claim.
+	// because none of its readers may wait on the decision in flight, which is the whole reason
+	// View exists: the state route, a reader of every claim, takes it through
+	// Machine.WaitingWake, which copies no claim (the daemon's supervision,
+	// api.State.WakesWaiting); the operator API's recoveries read it to refuse a claim whose
+	// launch waits (api's relaunchWaits); and the daemon's delivery wake reads it to hold a row
+	// until the turn of a launch that waits over no process (internal/daemon's wakeForDelivery).
 	WakeWaiting *WakeWaiting
 }
 
@@ -964,14 +966,15 @@ type Deps struct {
 	// one. Both are called inside the machine's decision, as TaskConfirmed is, so both return at
 	// once.
 	SessionStoreFault func(c Claim, detail string)
-	// SessionGone is told the Envoy session a claim recorded, once a probe has judged the agent
-	// process behind it gone (died), or a suspension has landed over a process a report found
-	// gone that no such judgement reached (suspendOverADeadProcess): the daemon's clean stop of
-	// that session's registration, which makes the listener read it `gone` at once rather than at
-	// the end of its live window (dispatch://INFRA-392). The claim's own session id is what it
-	// carries, read before any path that clears it (forgetSession). Nil tells no one — a daemon
-	// with no Envoy listener — and a claim that recorded no session tells nothing. It is called
-	// inside the machine's decision, so it returns at once and does the call elsewhere.
+	// SessionGone is told the Envoy session a claim recorded once no process stands behind it,
+	// once per process end (sessionGone says where and when, and why then). It is the daemon's
+	// clean stop of that session's registration, which makes the listener read it `gone` at once
+	// rather than at the end of its live window (dispatch://INFRA-392), so a message to a role
+	// released or suspended raises its wake rather than being stored for a session nothing reads.
+	// The claim's own session id is what it carries, read before any path that clears it
+	// (forgetSession). Nil tells no one — a daemon with no Envoy listener — and a claim that
+	// recorded no session tells nothing. It is called inside the machine's decision, so it returns
+	// at once and does the call elsewhere.
 	SessionGone func(session string)
 	// StallBackstopped is told of each turn the daemon's stall backstop did something to
 	// (backstopStalledTurn), with the record it acted on and the end it made: the owner's notice
@@ -2919,8 +2922,10 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
 // the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart
 // closes every stream while the agents run on — and the probe that reaches here is what tells the
-// two apart. The one other place the stop is sent is the suspension that lands over a process a
-// report found gone, for a death no judgement here reached (suspendOverADeadProcess).
+// two apart. It is sent before the take-back, so a death whose take-back the store would not write
+// still stops its session. A held suspension the death ends is told the stop went (endHeld,
+// stopSent), so the one death is one stop. The other places a stop is sent are listed on
+// sessionGone.
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
@@ -2932,7 +2937,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return err
 	}
 	if m.held != nil {
-		return m.endHeld(ctx)
+		return m.endHeld(ctx, stopSent)
 	}
 	if m.claim.DeathCharged {
 		return m.relaunchAfterFailure(ctx, CauseDied, ended)
@@ -2988,10 +2993,37 @@ type AbandonedSession struct {
 func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
-// stands behind it. It reads the session id from the claim before anything clears it
-// (forgetSession), and a claim that recorded none — never registered, or already forgotten — has
-// nothing to stop. A relaunch of the claim registers the same session again, which is the state
-// the listener should then read, so the stop says what is true when it is sent.
+// stands behind it. Three decisions tell it, each only once the process has ended: a death a probe
+// judged (died), before the take-back; a suspension over a process a report found gone
+// (suspendOverADeadProcess), once its take-back has landed; and a suspension whose stop ended a
+// live process (stopForSuspension, for suspendNow, letProcessGoFor and exit), once the runtime's
+// stop has returned, since both runtimes answer only when the process has ended. A decision that
+// has already sent it tells letProcessGoFor so (stopSent), so the death or the found-gone process
+// it ends is one stop. Nothing else tells it: a failure (fail), a worker's exit (release, retire)
+// and the registration deadline's retirement end a process and send no stop. A death whose
+// relaunch the wake pacing parked keeps the dead process's locator until the wake's turn
+// (parkWake), so a suspension that arrives meanwhile stops that process again and sends a second
+// stop. The first runs on a goroutine nothing in the decision waits for (Deps.SessionGone), so it
+// may still be in flight or may have failed, and the second can find the dead process's
+// registration still there. The second is told, as every stop is, once the process has ended,
+// and before any relaunch has registered, since the relaunch was still parked when the
+// suspension came. The delete's two conditions then guard a relaunch's registration as they do
+// for any stop: cleanSessionStop (internal/daemon/daemon.go) says what they keep.
+//
+// The daemon dates the stop when it is told, and the listener keeps a registration written after
+// that moment. Told after the process has ended, the stop comes after the process's last
+// heartbeat, so the listener deletes the registration rather than reading the session live for
+// the rest of its window, and a message to a released role finds the session gone and raises the
+// wake that brings it back. It is sent whether or not the write that follows lands, because the
+// process has ended either way. A stop the runtime refused, of a process no report found gone,
+// sends nothing: that process may still run, and deleting its registration would leave a live
+// agent unreachable until its next heartbeat wrote it again.
+//
+// It reads the session id from the claim before anything clears it (forgetSession), and a claim
+// that recorded none — never registered, or already forgotten — has nothing to stop. A relaunch
+// of the claim registers the same session again — in the same decision after a death, or at a
+// later wake after a suspension — which is the state the listener should then read, so the stop
+// says what is true when it is sent.
 func (m *Machine) sessionGone() {
 	if m.deps.SessionGone == nil || m.claim.Session == "" {
 		return
@@ -3676,10 +3708,11 @@ func HoldsCapability(state ClaimState) bool {
 //
 // Since INFRA-1573 the ready comes before the Envoy role as well — the plugin claims the role at
 // its session's first turn, or at a bound if no turn comes — so a claim this answers true for
-// may not answer to its name yet. The listener refuses a publish to a role no live session holds
-// with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not one rule:
-// noticeAnswered, phaseEnded and mergeQueue each decide it for the rows they finish
-// (internal/daemon).
+// may not answer to its name yet. The listener refuses a keep: false publish to a role no live
+// session holds with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not
+// one rule: noticeAnswered and mergeQueue each decide it for the rows they finish, and phaseEnded
+// and hookPrompt publish with keep, which the listener answers by keeping the message for the
+// role's next live holder (internal/daemon).
 //
 // The window is bounded at both ends: the name is taken inside the session's first turn — the
 // daemon's own task starts one, on either harness — and at the first-turn bound (30 s by

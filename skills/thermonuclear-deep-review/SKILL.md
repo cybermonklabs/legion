@@ -22,7 +22,7 @@ Priority: trace each finding end to end first. Minor changes no behavior, hides 
 
 ## Scope
 
-Audit the diff your caller names, or the checked-out branch's whole diff when it names none. Report issues in code that diff adds or modifies, in the unchanged consumers check 2 finds, and in the PR body's claims (check 6), because the author fixes only this diff and the diff never shows them.
+Audit the range your brief names, or the checked-out branch against its base when it names none. Report issues in code the pull request (the checked-out branch against its base) adds or modifies, in the unchanged consumers check 2 finds, and in the PR body's claims (check 6), because the author fixes only the pull request's diff and that diff never shows them. A range limits what you must read, never what you report: a defect you see in code the pull request changed before the range starts is a finding.
 
 ## Checks
 

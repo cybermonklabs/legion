@@ -95,7 +95,7 @@ func (s *server) resolveMentionTarget(
 	// whose requested id is kept on the attempt row, from a capability refusal. A read that
 	// did not answer gives no session id here, so it sets no pin; an existing attempt keeps
 	// the one it holds only through the coalesce(session_id, ...) update further down.
-	if sessionID != "" && !strings.HasPrefix(resolveError, "no live session ") {
+	if sessionID != "" && !strings.HasPrefix(resolveError, noLiveSessionPrefix+" ") {
 		item.SessionID = new(sessionID)
 	}
 	return item
@@ -137,30 +137,11 @@ func (s *server) sendResolvedDelivery(
 		return sendOutcome{failure: target.ResolveError}
 	}
 	if target.SessionID == nil {
-		return sendOutcome{failure: "no live session"}
+		return sendOutcome{failure: noLiveSessionPrefix}
 	}
-	// What the delivered thing wants back, except in btw mode, which interrupts the session it
-	// reaches to ask something of it and so always waits on an answer, whatever the thing
-	// delivered says. The mode is read here, on every try, because a try after a listener
-	// take-over resolves the target again and sends in the mode that resolution names
-	// (mentionResolutionFor).
-	expectsReply := wanted
-	if target.Delivery == "btw" {
-		expectsReply = contracts.ExpectsReplyRequired
-	}
-	// Message is the body a second time, beside the frame, and the listener puts it on the
-	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
-	// does, so one send never carries a body twice at two lengths.
-	carried, _ := model.EventBody(body)
-	send, err := s.deps.Envoy.Send(ctx, dispatchenvoy.SendInput{
-		TargetSession:  *target.SessionID,
-		Message:        carried,
-		Payload:        frame,
-		IdempotencyKey: idempotencyKey,
-		Urgency:        deref(urgency),
-		ExpectsReply:   expectsReply,
-		ConnectedOnly:  connectedOnly,
-	})
+	send, err := s.deps.Envoy.Send(ctx, listenerSendInput(
+		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame, connectedOnly,
+	))
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
 		return sendOutcome{failure: receiptTimeoutText}
 	}
@@ -176,6 +157,37 @@ func (s *server) sendResolvedDelivery(
 		return sendOutcome{duplicate: true, queued: queued}
 	}
 	return sendOutcome{envelopeID: &send.EnvelopeID, queued: queued}
+}
+
+// listenerSendInput is the listener send of one delivery to sessionID in mode delivery, carrying
+// frame. A targeted message Dispatch queues itself, for a session no store of the listener's
+// holds, is the envelope this send would have stored (queuedEnvelope), so both are built here.
+func listenerSendInput(
+	sessionID, delivery, body, idempotencyKey string, urgency *string,
+	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
+) dispatchenvoy.SendInput {
+	// What the delivered thing wants back, except in btw mode, which interrupts the session it
+	// reaches to ask something of it and so always waits on an answer, whatever the thing
+	// delivered says. The mode is read here, on every try, because a try after a listener
+	// take-over resolves the target again and sends in the mode that resolution names
+	// (mentionResolutionFor).
+	expectsReply := wanted
+	if delivery == "btw" {
+		expectsReply = contracts.ExpectsReplyRequired
+	}
+	// Message is the body a second time, beside the frame, and the listener puts it on the
+	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
+	// does, so one send never carries a body twice at two lengths.
+	carried, _ := model.EventBody(body)
+	return dispatchenvoy.SendInput{
+		TargetSession:  sessionID,
+		Message:        carried,
+		Payload:        frame,
+		IdempotencyKey: idempotencyKey,
+		Urgency:        deref(urgency),
+		ExpectsReply:   expectsReply,
+		ConnectedOnly:  connectedOnly,
+	}
 }
 
 // commentExpectsReply is what a mention of one comment wants back. A comment that joins no ask

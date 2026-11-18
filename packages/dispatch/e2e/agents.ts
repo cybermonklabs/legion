@@ -57,7 +57,16 @@ export async function setLiveSessions(rows: FakeSession[], port?: number): Promi
   await fixtureRequest("/__fixture/sessions", "PUT", rows, port);
 }
 
-export async function setSessionSendStatus(sessionID: string, status: 200 | 404): Promise<void> {
+/** How the fake listener answers a send to a seeded session until a reseed: `200` takes it. `404`
+ *  is "no live session": Dispatch then publishes a targeted message on the session's agent
+ *  subject itself and records the attempt queued (`listQueuedMessages`), and a mention fails.
+ *  `503` is a listener behind its starting gate, and Dispatch records the attempt failed once its
+ *  take-over window has passed. A row that reads a failed targeted message and its Retry stages
+ *  `503`. */
+export async function setSessionSendStatus(
+  sessionID: string,
+  status: 200 | 404 | 503
+): Promise<void> {
   await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", {
     send_status: status,
   });
@@ -88,10 +97,11 @@ export async function setSessionLive(sessionID: string, live: boolean): Promise<
 
 /** Says what the listener's session store holds for a seeded session: `present` is a record the
  *  per-session route answers 200 from, and answering it puts the id back in the live list as the
- *  real listener's read-through warms its cache; `absent` ends the session, which drops it from
- *  the live list and makes every answer about it - the per-session route, the list and a send -
- *  report no live session; `unreadable` is the store read that did not answer at all, a 503 the
- *  caller must retry rather than read as an ended session. */
+ *  real listener's read-through warms its cache; `absent` ends the session with no record at all,
+ *  in the registry or the known-session store, which drops it from the live list and makes every
+ *  answer about it - the per-session route, the list and a send - report no live session, so
+ *  Dispatch queues a targeted message to it itself; `unreadable` is the store read that did not
+ *  answer at all, a 503 the caller must retry rather than read as an ended session. */
 export async function setSessionRecord(sessionID: string, record: SessionRecord): Promise<void> {
   await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", { record });
 }
@@ -279,6 +289,13 @@ export function broadcastSends(page: Page): KeyedWrite<CreateBroadcastInput>[] {
 /** The reason `refuseBroadcasts` gives, which a refused row shows after `Could not send to N
  *  agents: `. */
 export const BROADCAST_REFUSED = "no selected session can receive this message";
+
+/** The sentence a person reads for an attempt Dispatch records `queued`, for a session named
+ *  `name`: the listener stored the message, or Dispatch queued it on the session's agent subject
+ *  itself. It is spelt out here rather than imported from the SPA, so a change to the SPA's
+ *  wording fails the rows that read it rather than passing with it. */
+export const QUEUED = (name: string) =>
+  `Queued: ${name} is stopped; it gets the message if it runs again within 72 hours`;
 
 /** Refuses every broadcast POST as Dispatch does one no selected session can receive (400
  *  `BROADCAST_EMPTY`), until `allow()`. A broadcast tries a failed fetch, a 5xx or a 429 again

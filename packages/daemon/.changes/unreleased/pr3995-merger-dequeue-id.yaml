@@ -1,9 +1,0 @@
-kind: Fixed
-custom:
-  Issue: pr3995
-body: |-
-  The merger's prompt takes a pull request out of the merge queue under a closed design gate with
-  `dequeuePullRequest(input:{id:…})`, which names the pull request's node id as `id`. Before, it
-  named it as `pullRequestId`, the field `enqueuePullRequest` takes, and GitHub refused the
-  mutation. So a merger could not take its pull request out of the queue, and the queue could
-  merge a head whose design was no longer approved.

@@ -30,6 +30,9 @@ func TestAMoveIntoAcceptingOfAnOwedMemberQueuesTheReconcile(t *testing.T) {
 				Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 			seedPhase(t, pool, record.PhaseRow{Issue: gatedRoot, Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1",
 				HandoffVersion: 1, Summary: "looks right"})
+			// The approval below decides the round only as the reviewer's own review: a review of
+			// the review App whose footer names the session its claim records (byReviewer).
+			seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: gatedRoot, Repo: "sjawhar/legion", Number: 42,
 				Branch: "legion/" + gatedRoot, HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true})

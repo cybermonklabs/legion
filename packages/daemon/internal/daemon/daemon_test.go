@@ -984,8 +984,8 @@ func (d *daemon) state() api.State {
 
 // claims is the operator's view of every claim the daemon holds, in one read: what a caller that
 // asks about more than one of them takes, rather than listing them again per claim. One listing
-// serves the rig's release wave (idleWakeRig.awaitReleased), where nine reads a poll would take
-// the daemon's own Postgres away from the work they wait for.
+// serves the rig's release wave (idleWakeRig.awaitReleased), where a read per pod at every poll
+// would take the daemon's own Postgres away from the work they wait for.
 func (d *daemon) claims() []api.OperatorClaim {
 	d.t.Helper()
 	status, body := d.request(http.MethodGet, "/legion/v1/operator/claims", nil, true)

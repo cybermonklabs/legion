@@ -532,6 +532,10 @@ type RequestDeliver struct {
 	// entry test above would decline it, so queue decides such a request by its outbox row
 	// alone.
 	ResendEntry bool
+	// RoundNamed marks a task that ends with the daemon's two sentences of a reviewer's review
+	// round, from the start row that queued it (record.SuperviseRequest.RoundNamed). An operator's
+	// task and the controller's carry none (Delivery.RoundNamed).
+	RoundNamed bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
@@ -2744,11 +2748,13 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // finished agent's claim never stays live, its secret still authenticating. A root's stop records
 // what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
 // retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
+// The root's suspension sends the clean stop of its Envoy session once the runtime's stop has
+// returned, and none for a stop the runtime refused (stopForSuspension).
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.endProcess(ctx, endSuspended(SuspendedByExit)); err != nil {
+		if err := m.stopForSuspension(ctx, SuspendedByExit, stopOwed); err != nil {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}

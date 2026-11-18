@@ -331,15 +331,16 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 
 // Step 5. The reviewer's claim was started by the tester's pass and nothing registered it, so no
 // session holds its role topic. A red in reviewing ends the reviewer's phase: the phase-ended row
-// is published to a topic the listener answers "no live session holds the role" (notify.ErrNoHolder),
-// which finishes the row rather than retrying it for ever, and the start acts all the same — the
-// implementer is prompted the new fix task.
+// is published with keep to a topic the listener answers 404 "no live session holds the role"
+// (notify.ErrNoHolder), which is what a listener without the kept lane, as this proof's stand-in
+// is, answers whatever the publish's keep. That finishes the row rather than retrying it for
+// ever, and the start acts all the same — the implementer is prompted the new fix task.
 func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	t := r.t
 	topic := notify.RoleTopicPrefix + string(r.reviewer)
 	r.listener.noHolder(topic)
 	r.awaitLaunch(r.reviewer)
-	r.note("the reviewer's claim was launched by the tester's pass and never registered; its topic %s now answers 404 unclaimed, as the listener answers for a role no live session holds", topic)
+	r.note("the reviewer's claim was launched by the tester's pass and never registered; its topic %s now answers 404 unclaimed, which is what a listener without the kept lane, as this stand-in is, answers for a role no live session holds, a keep: true publish included", topic)
 
 	r.push(conflictSecondHead, conflictThirdHead, "fix the red")
 	r.driveConflict()
@@ -397,11 +398,12 @@ func (r *conflictNoTakeoverLive) driveConflict() {
 }
 
 // conflictListener is the Envoy listener as this proof's daemon reaches it: the package's
-// noticeListener, which takes every publish, with the one answer it does not give — the 404 the
-// listener answers for a role topic no live session holds (writeRoleHolderError,
-// packages/envoy/cmd/listener/api.go, decoded by notify's ErrNoHolder) — added for the topics a
-// step names. Everything else, the architect's notices and the tester's own message included, goes
-// to noticeListener, so the harness's reads of it (architectNotices) are the reads of this one.
+// noticeListener, which takes every publish, with the one answer it does not give — the 404 a
+// listener without the kept lane answers for a role topic no live session holds, whatever the
+// publish's keep (writeRoleHolderError, packages/envoy/cmd/listener/api.go, decoded by notify's
+// ErrNoHolder) — added for the topics a step names. Everything else, the architect's notices and
+// the tester's own message included, goes to noticeListener, so the harness's reads of it
+// (architectNotices) are the reads of this one.
 type conflictListener struct {
 	t        *testing.T
 	notices  *noticeListener
@@ -421,8 +423,8 @@ func newConflictListener(t *testing.T, proof *liveProof) *conflictListener {
 	return l
 }
 
-// noHolder makes the listener answer every later publish to topic as it answers one to a role no
-// live session holds.
+// noHolder makes the listener answer every later publish to topic as a listener without the kept
+// lane answers one to a role no live session holds.
 func (l *conflictListener) noHolder(topic string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

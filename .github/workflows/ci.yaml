@@ -22,9 +22,9 @@ name: CI
 # the `pr-title` job at the end of this file, in the same shape and for the same reason: it runs
 # check-pr-text.sh on a pull request that is not a draft and on the merge queue's group, the two
 # events this workflow runs that carry a pull request's text, and its own check run is the report,
-# so it posts nothing. pr-title.yaml carries that same check when the pull request is edited and
-# when a review is submitted or edited, the two events this workflow does not run on, as its own
-# job's check run too; its header says why it runs on nothing else.
+# so it posts nothing. pr-title.yaml carries that same check when the pull request is edited, the
+# event this workflow does not run on, as its own job's check run too; its header says why it runs
+# on nothing else.
 # The docs site's build on a push to main, and its GitHub Pages
 # deploy, are docs-pages.yaml's, a workflow of its own whose header says why. Its paths are held
 # to the docs filter below.
@@ -121,14 +121,16 @@ name: CI
 # twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s,
 # `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s). What keeps a job on
 # ubuntu-24.04, each a reason of its own machine and not of the job's code:
-#   * a tool whose .github/ci-tools.yaml row is an x86_64 build alone: changie (test), crane
-#     (ci-images), mise and jj (pi-shared), elan (airlock-lean);
+#   * a tool with no arm64 row in .github/ci-tools.yaml: the Pulumi CLI, its docker plugin and
+#     uv, which only x86_64 jobs install (envoy-smoke, daemon-go, tool-fallback). A tool that has
+#     one is installed from its `-aarch64` row there, as changie (test), crane (ci-images), mise
+#     and jj (pi-shared) and elan (airlock-lean) are;
 #   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
 #     daemon-go, plugin-pack, pi-envoy and pi-legion;
 #   * a browser: dispatch-browser (its container is an image built for linux/amd64 alone),
 #     dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
 #   * an image of this repository built for linux/amd64: worker-image, browser-image, and
-#     envoy-smoke, which also installs the x86_64 rows of the Pulumi CLI and its docker plugin;
+#     envoy-smoke;
 #   * envoy-go-checks, whose pack step builds the release's listener archives with no
 #     CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04: Go's default turns cgo on
 #     for a native build and off for a cross build, so only an x86_64 runner builds the release's
@@ -835,6 +837,7 @@ jobs:
               - 'packages/daemon/internal/record/*'
               - 'packages/daemon/internal/registry/*'
               - 'packages/daemon/internal/repocache/*'
+              - 'packages/daemon/internal/reviewround/*'
               - 'packages/daemon/internal/runtime/*'
               - 'packages/daemon/internal/runtime/sandbox/*'
               - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -867,6 +870,8 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
@@ -951,12 +956,13 @@ jobs:
             # for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
             # outside the daemon: contracts' fixtures
             # (internal/api/state_golden_test.go:868, internal/intake/intake_test.go:802), the
-            # agents internal/prompts/roles_test.go:261 stats and the tools skill its :689 holds
-            # roles/mechanics/headless.md to, the GitHub App helper
+            # agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
+            # roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
+            # holds the reviewer's prompt to, the GitHub App helper
             # internal/api/real_github_test.go:115 sources, and the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:164,
             # internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
-            # No bun_install and no skills/** - the one page of skills/ this filter names is all
+            # No bun_install and no skills/** - the two pages of skills/ this filter names are all
             # this job reads of it: the tests of this suite that packed the two plugins - and so
             # resolved the root manifest, the lockfile and the patches - or staged each plugin's
             # partition of skills/ with the prepack script are the plugin-pack job's now, and
@@ -992,10 +998,13 @@ jobs:
               # pi-legion this suite reads. The pack and prompt probes, which read the rest of
               # it, are the plugin-pack job's.
               - 'packages/pi-legion/agents/*.md'
-              # The one page of skills/ this job still reads: the tools reference
+              # The two pages of skills/ this job still reads: the tools reference
               # internal/prompts/roles_test.go:689 holds roles/mechanics/headless.md's four CI
-              # runs to, the skill that paragraph sends a role to.
+              # runs to, the skill that paragraph sends a role to; and the merge gate
+              # internal/workflow/engine_test.go:432 holds the reviewer's prompt to, whose label
+              # for the reviewed commit it must name as the task does.
               - 'skills/legion-worker/references/tools.md'
+              - 'skills/legion-worker/references/merge-gate.md'
               - 'scripts/e2e/lib/github-apps.sh'
               # The Stage 1 proof: the script, the rig it sources, the helpers the rig runs, and
               # the two plugin manifests it copies with jq into the plugins its home holds
@@ -1028,6 +1037,7 @@ jobs:
               - '!packages/daemon/internal/daemon/claim_compaction_live_test.go'
               - '!packages/daemon/internal/daemon/conflict_no_takeover_live_test.go'
               - '!packages/daemon/internal/daemon/controller_sweep_live_test.go'
+              - '!packages/daemon/internal/daemon/github_envelopes_live_test.go'
               - '!packages/daemon/internal/daemon/handoff_records_live_test.go'
               - '!packages/daemon/internal/daemon/late_completion_live_test.go'
               - '!packages/daemon/internal/daemon/live_agent_proof_test.go'
@@ -1036,6 +1046,7 @@ jobs:
               - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
               - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
+              - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
               - '!packages/daemon/internal/daemon/sub_architect_live_test.go'
@@ -1127,6 +1138,7 @@ jobs:
               - '!packages/daemon/internal/daemon/claim_compaction_live_test.go'
               - '!packages/daemon/internal/daemon/conflict_no_takeover_live_test.go'
               - '!packages/daemon/internal/daemon/controller_sweep_live_test.go'
+              - '!packages/daemon/internal/daemon/github_envelopes_live_test.go'
               - '!packages/daemon/internal/daemon/handoff_records_live_test.go'
               - '!packages/daemon/internal/daemon/late_completion_live_test.go'
               - '!packages/daemon/internal/daemon/live_agent_proof_test.go'
@@ -1135,6 +1147,7 @@ jobs:
               - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
               - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
+              - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
               - '!packages/daemon/internal/daemon/sub_architect_live_test.go'
@@ -2362,6 +2375,8 @@ jobs:
               # (packages/envoy/dispatchbody, and the parser and contracts under it).
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
@@ -3937,6 +3952,8 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               - *go_workspace
               - 'packages/envoy/internal/contracts/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
@@ -4061,6 +4078,7 @@ jobs:
               - 'packages/daemon/internal/record/*'
               - 'packages/daemon/internal/registry/*'
               - 'packages/daemon/internal/repocache/*'
+              - 'packages/daemon/internal/reviewround/*'
               - 'packages/daemon/internal/runtime/*'
               - 'packages/daemon/internal/runtime/sandbox/*'
               - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -4093,6 +4111,8 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
@@ -4201,6 +4221,8 @@ jobs:
               # oauthwire reads the project-key rule the contracts package generates, and the
               # package's testdata is read by the job that compiles it.
               - 'packages/envoy/internal/contracts/**'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/fileowner/*'
               - 'packages/envoy/internal/fold/*'
@@ -4273,8 +4295,7 @@ jobs:
               # The image: the Dockerfile, its context's .dockerignore, the web stage's frozen
               # install (every workspace manifest and the tarball packages/proof-editor/package.json
               # installs proof-sdk-upstream from) and the Bun pin that stage holds its own Bun to,
-              # the packages it builds the SPA and the Go binaries from, and the notices scripts.
-              - 'packages/envoy/docker/Dockerfile'
+              # the packages it builds the SPA from, and the notices scripts.
               - '.dockerignore'
               - '.bun-version'
               - 'package.json'
@@ -4295,41 +4316,21 @@ jobs:
               - 'scripts/third-party-notices.ts'
               - 'scripts/go-third-party-notices.sh'
               - 'scripts/assemble-third-party-notices.sh'
-              - 'packages/envoy/go.mod'
-              - 'packages/envoy/go.sum'
-              - 'packages/envoy/agentloop/**'
-              - 'packages/envoy/cmd/**'
-              - 'packages/envoy/going/**'
-              - 'packages/envoy/internal/**'
-              - 'packages/envoy/listenfd/**'
-              - 'packages/envoy/migrationid/**'
-              - 'packages/envoy/roleholder/**'
-              - 'packages/envoy/natsversion/**'
-              - 'packages/envoy/brokeraddr/**'
-              - 'packages/envoy/docker/rds-global-bundle.pem'
+              # The Envoy module, which the image's Go stage copies whole, and the envoy-infra
+              # module under it, which the held-port image's build copies whole with it
+              # (packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore) and
+              # envoy-infra's host live tests and plugin build compile in packages/envoy/infra's own
+              # workspace. The two `!` patterns below leave out deploy and the changelog fragments,
+              # which neither .dockerignore lets in; the generated block leaves out the test files
+              # (internal/integration holds nothing else).
+              - 'packages/envoy/**'
               # TestSmoke compiles in the root workspace.
               - 'go.work'
               - 'go.work.sum'
               - 'packages/daemon/go.mod'
               - 'packages/daemon/go.sum'
-              - 'packages/envoy/daemonpermissions/*'
-              # envoy-infra's host live tests and its plugin build, in packages/envoy/infra's own
-              # workspace; the live tests compile internal/pulumitest, which holds the version
-              # they pin the docker provider at, under infra/internal. The plugin build's step is
-              # pinned whole in check-ci-filters.sh's table (an exact entry), so what it compiles
-              # is here, not the infra module.
-              - 'packages/envoy/infra/go.mod'
-              - 'packages/envoy/infra/go.sum'
-              - 'packages/envoy/infra/go.work'
-              - 'packages/envoy/infra/go.work.sum'
-              - 'packages/envoy/infra/aws/**'
-              - 'packages/envoy/infra/cmd/pulumi-resource-envoy-infra/*'
-              - 'packages/envoy/infra/core/**'
-              - 'packages/envoy/infra/gcp/**'
-              - 'packages/envoy/infra/host/**'
-              - 'packages/envoy/infra/internal/**'
-              - 'packages/envoy/infra/nats/*'
-              - 'packages/envoy/infra/provider/*'
+              - '!packages/envoy/deploy/**'
+              - '!packages/envoy/.changes/**'
               # The Pulumi CLI the live tests run, the docker provider plugin the step before them
               # downloads, and the image pull before the build and tests. Both of those installs
               # read their row of the tool manifest through the fetch helper.
@@ -4346,13 +4347,19 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
               - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
+              - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/aws/**/*_test.go'
+              - '!packages/envoy/infra/cmd/**/*_test.go'
               - '!packages/envoy/infra/core/**/*_test.go'
               - '!packages/envoy/infra/gcp/**/*_test.go'
+              - '!packages/envoy/infra/host/heldportwrapper/**/*_test.go'
               - '!packages/envoy/infra/internal/**/*_test.go'
               - '!packages/envoy/infra/provider/**/*_test.go'
+              - '!packages/envoy/infra/render/**/*_test.go'
+              - '!packages/envoy/infra/seed/**/*_test.go'
               - '!packages/envoy/internal/broker/**/*_test.go'
               - '!packages/envoy/internal/brokerclient/**/*_test.go'
               - '!packages/envoy/internal/brokertoken/**/*_test.go'
@@ -4395,6 +4402,8 @@ jobs:
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
               - '!packages/envoy/internal/weborigin/**/*_test.go'
+              - '!packages/envoy/listenfd/**/*_test.go'
+              - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
@@ -4648,7 +4657,8 @@ jobs:
   # event that can bring a new row in, and a failed copy is re-run with `gh run rerun`.
   # The copy of every tool asset is filled here too, in the step after the image half
   # (.github/scripts/mirror-ci-tools.sh): it is the same package, under the same login, and the
-  # tool-fallback job below reads what this step filled, so that copy must land before it.
+  # tool-fallback and tool-fallback-arm jobs below read what this step filled, so that copy must
+  # land before them.
   ci-images:
     needs: changes
     if: needs.changes.outputs.ci_images == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -4790,11 +4800,15 @@ jobs:
   # action over the same manifest through the same helper, so one filter decides both and
   # neither can drift from the other. CI_OK_SELECTED_BY maps this job to that filter, and
   # .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
-  # It needs the `changes` job alone: nothing it runs reads the ghcr copy the ci-images job
-  # fills, so it has no reason to wait for that job as tool-fallback does.
+  # After the Bun halves it proves the other arm64 rows the same way: crane-aarch64,
+  # changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once from its
+  # release asset and once under the fault, where each must read its ghcr copy and each install's
+  # own 504 is read after a probe of its own (the called file's comments say how). Those faulted
+  # installs read the copies the ci-images job fills, so this job needs that job for order and
+  # carries `!cancelled()`, as tool-fallback does and for the reason that job's comment gives.
   tool-fallback-arm:
-    needs: changes
-    if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    needs: [changes, ci-images]
+    if: ${{ !cancelled() && needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # contents: read is the checkout's; actions: read and checks: write are the ci-ok-report
     # step's. Both sources serve this job's bytes without a credential, so it needs no other
     # scope.
@@ -5685,8 +5699,8 @@ jobs:
   #
   # A merge group carries no pull request, only the queue branch it runs on, so
   # find-pr-payload.sh reads the pull request that branch names and writes it in the shape
-  # check-pr-text.sh wants. pr-title.yaml runs on an edit and a review alone, whose payloads
-  # carry the pull request, so a pull request that is opened, reopened or pushed to gets its
+  # check-pr-text.sh wants. pr-title.yaml runs on an edit alone, whose payload carries the pull
+  # request, so a pull request that is opened, reopened or pushed to gets its
   # pr-title from this job, and a fork's head gets one too: a job's check run costs no token
   # scope, where a POST needs `checks: write`, which a fork's run's read-only GITHUB_TOKEN does
   # not carry. A dispatched run carries

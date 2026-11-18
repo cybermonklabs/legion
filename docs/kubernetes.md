@@ -1978,6 +1978,23 @@ The step costs an operator one statement with the daemon stopped, and it leaves 
 
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
 
+#### Rolling back the release that keeps the commit a reviewer last read
+
+The change that keeps that commit adds, in its migration `20261116234034_phase_reviewed_head.up.sql`, the column `phases.reviewed_head`: the commit read by the newest deciding review of the reviewer's own whose Legion footer named the entry its row held (`phases.entry`, while `phases.entry_task` held that entry's task), which the task of the reviewer's next round names as `Last reviewed commit: <sha>.`.
+The last two sentences of each task a reviewer is sent are always the daemon's, ` Last reviewed commit: <sha>.` or ` Last reviewed commit: none.` and then ` Review entry: <n>.` or ` Review entry: none.`, in every phase and whatever queued the task.
+A stored task is sent as it stands, so the same migration appends ` Last reviewed commit: none. Review entry: <the row's entry>.` to each task a reviewer's row stores, which the earlier release stored with neither sentence.
+A typed fact, never the task's text, says that a task already ends with the two sentences: `roundNamed` on a supervise start row, and the column `pending_task_deliveries.round_named` that the same migration adds, which every delivery the earlier release wrote reads as false.
+A task of the reviewer without that fact, which a start row or a pending delivery of the earlier release and an operator's own task are, is sent with ` Last reviewed commit: none. Review entry: none.` at its end, so its reviewer reads the whole change and keeps the entry of its round.
+All three statements run in the migration's one transaction: the two adds take a short lock on their tables and rewrite no row, and the update writes the reviewer's rows that store a task.
+An earlier release boots with the columns in place: its reads and writes of `phases` and of the claims' deliveries name each column they touch, so it never reads the columns, and every row it inserts takes their defaults.
+At the rollback, with the daemon stopped, run the way back that the migration's header gives: it takes the daemon's last two sentences off each task this release stored with them (a reviewer's row, and a pending delivery and a supervise start that carry the fact), deletes the key `roundNamed` from each supervise row, since the earlier release decodes an outbox row strictly and would retry such a row for ever, drops the two columns and deletes the migration's version row, so the roll-forward's `Migrate` adds the columns again at their defaults (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+The drops and the delete are owed to the roll-forward, the key's delete to the earlier release.
+An earlier release does not clear `phases.reviewed_head` when it opens a new generation of an issue, so a column left in place could tell the first reviewer of that generation after the roll-forward a commit that a review of the generation before read, where this release names none.
+And it replaces a claim's delivery with an upsert that does not name `round_named`, so a column left in place would say of the task that release wrote that it holds the daemon's sentences.
+What the way back costs is the commit each reviewer's row held and the fact on each start row and delivery: the next round of each issue then in review reads the whole change, and each task this release queued is sent after the roll-forward ending with ` Last reviewed commit: none. Review entry: none.`.
+Each strip is anchored at the end of the task, so a sentence of the same words earlier in it, such as one a retry's reason quotes, stays, and each task then holds the text the earlier release would have written, which it sends as text.
+The roll-forward appends one pair again to each task a reviewer's row stores, so each such task ends with exactly one pair of the daemon's sentences.
+
 #### Rolling back the release that tells the merger of a merge-queue removal
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
@@ -2657,7 +2674,7 @@ On a store that a release at contract 146 migrated, run the contract 146 block a
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for what the later migrations that the list after the block leaves standing added, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
 20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552;
 20261114031356, the highest row neither block deletes, on a store #3711's release at contract 146 migrated;
-20261116165926, cybermonklabs/legion#4228's role-holders publication, on a store that release migrated;
+20261116165926, cybermonklabs/legion#4228's role-holders publication, on a store that release or cybermonklabs/legion#4328's release migrated, since the way back of #4328's 20261116234034 deletes that migration's own row;
 and 20261117133401, cybermonklabs/legion#3995's design news, on a store that release migrated.
 
 ```sh
@@ -2691,7 +2708,9 @@ The six drops and the deleted row are owed to the roll-forward rather than to th
 together they re-arm the migration, so the newer image's `Migrate` runs the file again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row) and fills the entries afresh from the tokens the earlier release kept current while it ran.
 What that second fill costs is the numbering:
 every role the earlier release had handed work is at entry 1 again, whatever entry it stood at before the rollback, and `entry_raised_at` reads the moment of the roll-forward.
-Nothing reads an entry across the rollback — what a role is owed is the difference between its own two numbers, both written by that one run — so the renumbering costs no more than the history it does not keep.
+What a role is owed is the difference between its own two numbers, both written by that one run, so that difference reads no entry from before the rollback.
+One reader does compare an entry across it: the reviewer's review names the entry of its round in its Legion footer, so a review from before the rollback that names entry 1 and is applied after the roll-forward, such as one whose webhook was lost and that the daemon's read of the pull request's reviews takes up, can match the reviewer's row at entry 1 again.
+Such a match moves the reviewed commit only for a review of the reviewer's own session that names the pull request's current head, so the commit it records is one that this session read, and the renumbering costs no more than that and the history it does not keep.
 Zeroing the six columns and leaving the row standing would cost more than that:
 the migration would never run again, and a role whose task the earlier release lost while it ran would read 0 against 0, owed nothing and swept nothing, holding its slot with nobody at work on it until a person noticed.
 The re-arm needs nothing of the other rows:
@@ -2699,15 +2718,19 @@ The re-arm needs nothing of the other rows:
 What the block does need is that no migration recorded after this one builds on the six columns it drops.
 Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
 reverse such a migration by its own way back first, and run this block after it.
-Thirteen migrations are recorded above this one on a store that cybermonklabs/legion#3995's release migrated.
-20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
-20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, and 20261116165926_role_holders_publish, of cybermonklabs/legion#4228, touch none of the six either, so the block holds over them too, and a rollback to a release before them reverses them by their own steps.
-20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
+The migrations recorded above this one are these.
 20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
+20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
+20261113082214_outbox_kinds_with_the_update_ask, of cybermonklabs/legion#3982, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
-20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 146 block above reverses both first.
+20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
+20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982 too, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
+20261113181500_architect_stalled_notices adds the table that 20261113182000_architect_entry_upgrade marks, and that upgrade writes into three of the six, so the contract 146 block above reverses both first.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
+20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
+20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
+20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named`, and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the two columns again at their defaults and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
 20261117133401_design_news, of cybermonklabs/legion#3995, adds three tables, four columns of `pending_task_deliveries` and eight functions, and touches none of the six, so the block holds over it and leaves all of them standing; its own four statements, which run before the contract 146 block, are its way back ("Rolling back the release that tells a holder of an approved new version" above).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
@@ -6058,7 +6081,17 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
 
 - each live claim of the pod is suspended with a source of its own, `released` (`supervise.SuspendedByReleased`).
   That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
-  A wake starts a released claim again, and two other steps do too, both below: admission's pass, for a claim that stands behind the entry its phases row names, and the first boot of this release, for each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`);
+  A wake starts a released claim again, and two other steps do too, both below: admission's pass, for a claim that stands behind the entry its phases row names, and the first boot of this release, for each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`).
+  Once the runtime's stop of a claim's process has returned, the daemon deletes that session's Envoy registration with the clean stop ([Liveness rules](#liveness-rules)), so the listener reads the session `gone` at once, and a message to the session or to its role raises the wake.
+  The exception is the daemon's own informational role message to a released role (`outbox.roleMessage`: the copy of a head's settled checks it sends to a role that settlement did not wake, a design gate's move, an approved round stuck on its merge state): the daemon does not publish it, so it raises no wake.
+  A release that lands between the daemon's read of the claim and that publish is refused `holder_lapsed`, and the refusal wakes the role all the same.
+  An Envoy direct message to the session raises the wake, and the listener stores it for the stopped session, which its known-session store holds for 30 days: the answer says `state: stopped`, and the woken session reads the message.
+  Until the listener's reaper frees the role claim, 5 to 10 minutes after the release, a message to the role's topic is answered `202`, kept with `kept_reason: holder_lapsed` and `holder_state: gone`; after that, it is answered `202` and kept with `kept_reason: unclaimed`.
+  One sent with `keep: false` is not kept: it is answered `404` with `holder_lapsed` while the claim stands, and `404` with `unclaimed` once the reaper has freed it.
+  A person's targeted Dispatch message to the session is recorded `queued`, and its card says so.
+  The listener stores it for a session its known-session store holds.
+  For a session that neither the listener's registry nor that store holds, Dispatch publishes the message on the session's agent subject itself.
+  A copy on the session's agent subject (a person's answer, comment or message that a Dispatch claim routes there, or the targeted message Dispatch published there) stays in the stream: the listener gives up its delivery after its retry window (`ENVOY_UNPLACEABLE_RETRY_WINDOW`, 60 seconds) with the wake, and the woken session reads the copy;
 
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), the teardown an issue's stop already runs ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 
@@ -6069,7 +6102,7 @@ A release moves no issue and ends no phase.
 A wake brings the pod back and resumes, in its own session, each role the wake is for.
 The wakes are these:
 
-- a phase start, task, backward move, notice, phase-ended message, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
+- a phase start, task, backward move, notice, phase-ended message, hook prompt, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
@@ -6078,9 +6111,16 @@ The wakes are these:
   Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
   If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
-  One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
+  One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
+  The daemon sets `keep: false` on each of its publishes but two, a phase-ended message and a hook prompt, which it publishes with `keep: true`.
+  Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role.
+  Its other messages to a role (a notice, a phase-ended message, a hook prompt, a merge-queue removal message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
+  While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
+  It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
+  A phase-ended message and a hook prompt are then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps each of them for that session.
+  A listener before #4079 keeps nothing for a claim whose holder is not live and answers them `404`: their outbox rows end with them undelivered when that holder is `gone`, and retry while it is `unresponsive`;
 
-- a message sent to the agent subject of a released session: an Envoy direct message, or a person's answer, comment or message that a Dispatch claim routes to that session;
+- a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
@@ -6327,9 +6367,17 @@ and, for a death the stream never reported, on the next resync tick, which probe
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon reads that session's registration from the Envoy listener (`GET /v1/registry/<the session the claim registered>?include=unresponsive&view=registration`) and then sends `DELETE /v1/sessions/<that session>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>&client_instance_id=<the client instance that read named>`.
 `view=registration` is the registration-only answer: the session bucket's own entry, with neither the role claims nor the session's interest record joined to it, so a claims view still refilling and an interest record this build cannot decode — neither of which the stop uses — cannot refuse the read and leave the dead session's claims standing.
 `include=unresponsive` rides with it for a listener that predates the selector, which answers the full row instead, and that row carries no `client_instance_id`, so against such a listener the stop rests on the moment alone: deploy the listener before the daemon.
-That clean stop makes the listener read the session `gone` at once, rather than `unresponsive` until the gone horizon ends, so the role claim that session held is released at the role reaper's next pass instead of an hour later, and the issue claims it held become another agent's to take at once instead of 20 minutes after it last registered (dispatch://INFRA-392).
+That clean stop deletes the session's record, so the listener reads the session `gone` at once, and the issue claims it held become another agent's to take at once (dispatch://INFRA-392).
+Without it, the session of an Oh My Pi process that died or was released reads `live` until its record expires, since the session bucket's maximum age, 5 minutes by default, equals the live window.
+Where `ENVOY_SESSION_MAX_AGE` keeps the record past the live window, that session reads `unresponsive` instead until the gone horizon, an hour by default, and there the stop also has the role reaper release the role claim the session held at its next pass instead of an hour later, and the issue claims become another agent's at once instead of 20 minutes after the session last registered.
 The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://INFRA-783, which left that rule as it was).
-The delete names the dead process's own registration rather than a moment alone, because the very decision that asks for the stop goes on to relaunch the claim under the same session id:
+A suspension whose own stop ends a live process sends the same read and the same delete: an idle release, any other suspension by the daemon or by an operator, and a tree root's own exit, each once the runtime's stop of that process has returned (`supervise.Deps.SessionGone`).
+Its moment is when that stop returned, and both runtimes answer that stop only once the process has ended, so on clocks that agree the process's last heartbeat is stamped before that moment.
+A stop the runtime refused sends nothing, because that process may still be running, and a delete then would take a live session's registration away until its next heartbeat.
+No wake acts on a claim the daemon or an operator suspended ([Idle release](#idle-release)).
+After its stop, an Envoy direct message to that session is stored for the stopped session, and a person's targeted Dispatch message to it is recorded `queued`: the listener stores it, or Dispatch publishes it on the session's agent subject itself when no store of the listener's holds the session.
+The session reads either message if the claim is resumed within the stream's 72 hours.
+The delete names the ended process's own registration rather than a moment alone, because the claim is relaunched under the same session id, after a death by the very decision that asks for the stop and after a suspension by a later wake or resume:
 the listener deletes only while the stored entry carries that client instance id, or none, and was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept, with the listener's own reason — rather than taking a working session's registration away.
 Each condition is there to make the other's weakness bearable, and the listener keeps the entry whenever either refuses it (dispatch://INFRA-2064).
 A registration's `UpdatedAt` is stamped by the listener's own clock at every write, not by the registering process, so on clocks that agree the dead pane's last heartbeat is stamped before the probe; a stop dated earlier than the probe's own moment reads that heartbeat as a registration written since and refuses the stop that is owed, and carrying the probe's moment undated is what deletes it.

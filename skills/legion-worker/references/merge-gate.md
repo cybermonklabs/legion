@@ -17,14 +17,13 @@ changed (*The reviewer*, below).
 ## The reviewer
 
 - The reviewer reads CI on GitHub and verifies the `Threads` facts and the issue's results there
-  and with `dispatch results --issue <issue>` — never from a handoff — then runs
+  and with `dispatch results --issue <issue>` — never from a handoff — then, when the diff the
+  round reads touches runtime code (the whole change, or the difference the next item names), runs
   `task(agent="thermonuclear-deep-review")` and
   `task(agent="thermonuclear-code-quality")` once at that head — the head the round reviews —
+  over that diff,
   waits for each one's result with `wait`, since each runs as a job of its own, and records the
-  verdict from what those results say. Each task names the diff the pair audits. On your first
-  review of the pull request, that is the branch's whole diff. On a later head, it is only what
-  the rule for a new head below has you review.
-  Run no pair when that diff touches no runtime code. A result that carries no report, or that names another
+  verdict from what those results say. A result that carries no report, or that names another
   place for it, is a failed run, not a verdict: run that agent again, or read its transcript, and
   record nothing from it until you have the findings text in front of you. Reading the agent's
   diff yourself and recording that in its place is the same as answering the rubric from a bare
@@ -121,13 +120,15 @@ changed (*The reviewer*, below).
   A check whose `run` is a whole test suite and has no pass standing at the head has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it. One that has a pass standing at the head is a finding for the architect too, and its pass decides the check, so the review goes on.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
+  In a later round whose difference touches no runtime code, on a PR that does touch it, the pair
+  half reads as `skill://legion-worker/references/pr-body.md` gives it for that round.
   Submit **one review per round** —
   `REQUEST_CHANGES` when any correctness finding stands, otherwise `APPROVE` of the head you
   reviewed — always named by SHA — carrying every inline comment in that single
   call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
   with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
-  Legion footer, which names the head the review read:
-  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
+  Legion footer, which names the head the review read and the entry of your round:
+  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>","entry":"<entry>"} -->`),
   and a `comments[]` array of `{path, line, side, body}`, one entry per
   finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
   That `head` is the full 40-character SHA of the head whose diff and checks you read, which is
@@ -141,11 +142,21 @@ changed (*The reviewer*, below).
   A review whose footer names another head, or no head, decides no round:
   it is set aside, the round stays open and the
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
+  That `entry` is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of your session (the daemon part of your role prompt gives the rule whole), written in quotes as a string of digits: by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from (the next item).
+  It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and the daemon then sets the review aside, while a quoted value that is no number costs the entry alone.
+  A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.
   A `COMMENT` decides nothing.
-  On a new head, read what changed since the head you last approved, or, where you have approved none, the head you last reviewed (`git diff <that head> <new head>`).
-  That head is the `head` that review's Legion footer names, never that review's `commit_id`, which GitHub can move onto a later head.
-  On your first review of the pull request, the change is the branch's whole diff.
-  Size your review to that change: review again only what it can affect, and confirm the rest by naming the earlier head.
+- **A later round reads from the commit its task names.**
+  The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round, the number its task named as `Review entry: <n>.` (the daemon part of your role prompt gives the whole rule and where the commit comes from).
+  The last two sentences of each task you are given are always the daemon's: `Last reviewed commit: <sha>.` or `Last reviewed commit: none.`, then `Review entry: <n>.` or `Review entry: none.`.
+  `Last reviewed commit: none.` means this task names no commit, so you read the whole change.
+  `Review entry: none.` means this task names no entry, so it does not change the entry of your round.
+  A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's.
+  Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit.
+  On a new head, that commit is your earlier head, unless it is not an ancestor of the head (`git merge-base --is-ancestor <sha> <head>` does not exit 0): then you read the whole change, as for `none`.
+  Size your review to the change you read: review again only what it can affect, and confirm the rest by naming the earlier head.
+  Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review.
+  The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other, and *No deferrals* in `skill://legion-worker` holds for it.
   For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
   A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
   Review the resolution and this change's own commits since your earlier head, and read the base's files only for where they meet this change.

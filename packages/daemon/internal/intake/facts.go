@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -624,16 +626,20 @@ func (r PullRequestReview) Decides() bool {
 }
 
 // legionFooterMarker opens the Legion footer every Legion role appends to a pull-request review:
-// a JSON object naming the session and phase that wrote it and the head it read
-// (skills/legion-worker/SKILL.md, the reviewer template prompts/roles/reviewer.md).
+// a JSON object naming the session and phase that wrote it and the head it read, and in the
+// reviewer's review the entry of the round it is of (skills/legion-worker/SKILL.md, the reviewer
+// template prompts/roles/reviewer.md).
 const legionFooterMarker = "<!-- legion:"
 
 // legionFooter is what the daemon reads out of that JSON object: the session that submitted the
-// review (LegionSession) and the head the review says it read (LegionHead). A role writes its
-// phase there too, which nothing here reads.
+// review (LegionSession), the head the review says it read (LegionHead) and the entry of the
+// round it says it is of (LegionEntry). A role writes its phase there too, which nothing here
+// reads. The entry is kept raw and read on its own, so an entry of the wrong JSON type costs the
+// entry alone and never the session and head beside it, which decide the round.
 type legionFooter struct {
-	Session string `json:"session"`
-	Head    string `json:"head"`
+	Session string          `json:"session"`
+	Head    string          `json:"head"`
+	Entry   json.RawMessage `json:"entry"`
 }
 
 // lastLegionFooter decodes the last Legion footer in the review's body: the JSON object between
@@ -683,6 +689,31 @@ func (r PullRequestReview) LegionHead() string {
 		return ""
 	}
 	return head
+}
+
+// LegionEntry is the entry of the round the review says it is of: the entry field of the last
+// Legion footer in the review's body (lastLegionFooter), the number the reviewer's task names
+// (reviewround.EntryLabel, record.PhaseRow.Entry). The reviewer's texts write it as a JSON
+// string of digits (`"entry":"<entry>"`), so a placeholder left unfilled keeps the footer JSON,
+// and it is read as a positive whole number written either that way or as a JSON integer. It is
+// 0 when the body carries no footer, the footer's JSON cannot be parsed, it names no entry, or
+// the entry is anything else: an unfilled placeholder, an empty string, a word, a fraction, an
+// exponent, a sign, zero, one past int64, null, a boolean, an array or an object names no entry.
+// Such a footer still names its session and head, so the review decides its round as before;
+// only the commit the reviewer read (record.PhaseRow.ReviewedHead) waits for a review that names
+// the entry that stands (workflow's review).
+func (r PullRequestReview) LegionEntry() int64 {
+	digits := string(r.lastLegionFooter().Entry)
+	if strings.HasPrefix(digits, `"`) {
+		if err := json.Unmarshal([]byte(digits), &digits); err != nil {
+			return 0
+		}
+	}
+	entry, err := strconv.ParseUint(digits, 10, 64)
+	if err != nil || entry > math.MaxInt64 {
+		return 0
+	}
+	return int64(entry)
 }
 
 // fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal

@@ -93,7 +93,7 @@ func TestTheListenerSettlesCheckRunsAsTheSharedFixtureSays(t *testing.T) {
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}

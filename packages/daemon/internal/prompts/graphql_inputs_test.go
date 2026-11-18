@@ -105,7 +105,7 @@ func TestTheMutationCheckNamesThePartTheMutationAndTheFieldsItsTypeHolds(t *test
 				"roles/merger.md:2: mutation dequeuePullRequest: DequeuePullRequestInput requires id, which the input leaves out",
 			}},
 		{"the corrected dequeue",
-			"gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position state}}}'",
+			"gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position}}}'",
 			nil},
 		{"a mutation the copy holds no input type for",
 			"gh api graphql -f query='mutation($pr:ID!){closePullRequest(input:{pullRequestId:$pr}){pullRequest{state}}}'",

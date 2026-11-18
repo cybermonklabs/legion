@@ -12,21 +12,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// queuedRow is one row the outbox holds, decoded, with the issue it is queued on.
-type queuedRow struct {
+// heldRow is one row the outbox holds, decoded, with the issue it is queued on.
+type heldRow struct {
 	issue   string
 	payload record.OutboxPayload
 }
 
 // queuedRows is every row the outbox holds, decoded, in the order they were written.
-func queuedRows(t *testing.T, pool *pgxpool.Pool) []queuedRow {
+func queuedRows(t *testing.T, pool *pgxpool.Pool) []heldRow {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), "select id, kind, issue, payload from outbox order by id")
 	if err != nil {
 		t.Fatalf("read the outbox: %v", err)
 	}
 	defer rows.Close()
-	var queued []queuedRow
+	var queued []heldRow
 	for rows.Next() {
 		var row record.OutboxRow
 		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
@@ -36,7 +36,7 @@ func queuedRows(t *testing.T, pool *pgxpool.Pool) []queuedRow {
 		if err != nil {
 			t.Fatalf("decode outbox row %d: %v", row.ID, err)
 		}
-		queued = append(queued, queuedRow{issue: row.Issue, payload: payload})
+		queued = append(queued, heldRow{issue: row.Issue, payload: payload})
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the outbox: %v", err)
@@ -45,7 +45,7 @@ func queuedRows(t *testing.T, pool *pgxpool.Pool) []queuedRow {
 }
 
 // startsOf is the index in queued of every start of role, in order.
-func startsOf(queued []queuedRow, role claim.Role) []int {
+func startsOf(queued []heldRow, role claim.Role) []int {
 	var at []int
 	for i, row := range queued {
 		if start, ok := row.payload.(record.SuperviseRequest); ok && start.Op == "start" && start.Role == role {
@@ -56,7 +56,7 @@ func startsOf(queued []queuedRow, role claim.Role) []int {
 }
 
 // branchRowsOf is the index in queued of every row that creates an issue's branch, in order.
-func branchRowsOf(queued []queuedRow) []int {
+func branchRowsOf(queued []heldRow) []int {
 	var at []int
 	for i, row := range queued {
 		if _, ok := row.payload.(record.IssueBranch); ok {

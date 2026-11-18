@@ -82,7 +82,7 @@ You resolve no review thread: the reviewer's approval already judged them, and t
 The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed: version <n> of its <step> document (<id>)` says a new version of one gated document is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
 
 ```bash
-gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position state}}}' \
+gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position}}}' \
   -f pr="$(gh pr view <n> -R <o>/<r> --json id -q .id)"
 ```
 

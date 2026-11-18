@@ -29,8 +29,8 @@ later phase keeps it current rather than replacing it:
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
-**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha>:
-<verdict>. (a docs-only PR has no `Thermo` line)
+**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>:
+<verdict>. (a docs-only PR has no `Thermo` line) (in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it)
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order. Each is the line `dispatch result` printed when the result was recorded, or the
@@ -242,11 +242,12 @@ and decides there, the only gate on such an issue.
   defect it reports is fixed outside the pass with the results recorded again, never dropped as
   out of scope; the `Thermo` line's `defects reported` half names how many and the commit that
   fixed them, so a head that moved for a reported defect is not recorded as `0 applied` alone.
-  The reviewer's pair runs at the head each round reviews: over the branch's whole diff on the
-  reviewer's first review of the pull request, over the change since the reviewer's earlier head
-  after that, and only when that diff touches runtime code (*The reviewer* in
-  `skill://legion-worker/references/merge-gate.md` names the earlier head).
-  Record both in the `Thermo` line.
+  The reviewer's pair runs at the head each round reviews, over the diff that round reads (the
+  whole change, or the difference from the commit the round's task names as
+  `Last reviewed commit:`), when that diff touches runtime code. Record both in the `Thermo` line,
+  the pair half with the range the pair read. When a later round's pair reads only a range, the
+  pair half of each earlier round stays in the line beside the new one, because a range is read
+  on top of the round that read the code up to its start.
 - **No deferrals** is the body's rule (*PR body, review, and the merge gate* in
   `skill://legion-worker`): a wording nit, and any clear fix in a file this pull request touches,
   is made in the running round: a later round costs a CI pass and another review. A requirement on the `Not proven / risk:` line is unmet, not declared away, unless only

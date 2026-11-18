@@ -168,6 +168,13 @@ Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+`legion gh` starts the real gh for a command's help only the first time:
+it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables, which nothing removes.
+It writes each copy as a file of mode 0600 in a directory of mode 0700, and reads a copy only where neither it nor its directory is a link and the role's user owns both, with no permission for their group or for others.
+In a pod every role runs as one user, so this keeps out another user and not another role.
+It reads the help from gh again when one of these changes: the gh binary, the file the `LEGION_GH_PATH` path's links end at (its path, device, inode, size, modification time, change time or mode); `config.yml` or `hosts.yml` in `GH_CONFIG_DIR` (gh lists its aliases in its help, and prints no help when either file does not parse); gh's extensions directory; or one of those variables.
+Where the links end at a file not named `gh`, such as the `mise` binary a mise shim links to, which picks the gh it runs on each run, it keeps nothing and reads every help from gh.
+The leak guard's own visibility reads and `gh api rate_limit` read no help at all.
 Under a set `GH_TOKEN` or `GITHUB_TOKEN`, `legion gh` runs these calls and refuses every other one:
 the leak guard's own two visibility reads, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token;
 the shared check's own visibility read, which `legion gh` answers itself with the guard's read;
@@ -188,6 +195,19 @@ The shared clone's `credential.helper` is `!legion git-credential` with `credent
 on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
 path git asks about — of the owner a configured rename moved that repository to where a pair
 names it — and nothing else.
+
+Oh My Pi itself holds that `PATH` when `omp_invocation` runs it through mise. `mise x` rewrites the
+`PATH` of the program it starts: it puts the tool's own directories and each `_.path` entry of the
+mise config it reads ahead of the rest, and such an entry, a dotfiles `shims` directory for example,
+can hold a `gh`, `git` or `jj` of its own. So the daemon has `mise x` start `/bin/sh` in place of
+`omp`, and that shell puts the first entry of the `PATH` the launch ran under, the state directory's
+`bin/`, back in front, then execs the tool's own `bin/omp`, so the process mise started is Oh My Pi
+itself (`keepPathHead`, `packages/daemon/internal/omplaunch`). The rest of the `PATH` stays as mise
+made it, with `bin/` in it a second time where mise left the daemon's own. Every boot probe runs Oh
+My Pi the same way. So does `legion controller start`, whose launch `PATH` begins with the `bin/` of
+its own state directory, and whose mise reads the operator's own config, since the controller keeps
+the operator's `HOME` and `XDG_CONFIG_HOME`. `LEGION_OMP_PATH` names `omp` directly, with nothing
+between the launch and Oh My Pi, so Oh My Pi holds the launch's `PATH` unchanged.
 
 The `git` in `bin/` runs `legion git --after <state_dir>/bin` (`packages/daemon/cmd/legion/git.go`).
 The daemon writes it at boot, unless the first `git` on the daemon's own `PATH` is the worker
