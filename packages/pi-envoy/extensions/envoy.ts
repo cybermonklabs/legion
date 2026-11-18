@@ -2924,10 +2924,12 @@ export default function envoyExtension(pi: PiApi): void {
   });
 
   // The host writes a message to the transcript as it ends it: a card or a person's turn handed to
-  // it, idle or taken by a turn after it streamed, is shown from here on (`UnwrittenFrames`), and a
-  // card's write is when it reached this session, unless the session already records when the
-  // card's event did, as for a card a resumed process replays (`../src/card-age`). A card the host
-  // appended also arms the wake's check (`../src/card-wake`).
+  // it, idle or taken by a turn after it streamed, is shown from here on (`UnwrittenFrames`). A
+  // card's write fixes when it reached this session in the order every request reads it too: the
+  // delivery the session records for the card's event, else the time the session's entries give
+  // the event (its ledger record, or the newest message time up to its first entry, which is the
+  // older card's for a card a resumed process replays), else the time of this write
+  // (`../src/card-age`). A card the host appended also arms the wake's check (`../src/card-wake`).
   pi.on("message_end", async (event, context) => {
     const { message } = event;
     if (!shuttingDown) cardWake.messageEnd(message, context);
