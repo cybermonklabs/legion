@@ -3080,10 +3080,11 @@ export default function envoyExtension(pi: PiApi): void {
     log: logger,
     appendRoleClaimEntry: ({ role, sessionID: claimedFor, clientInstanceID }) => {
       // The transcript is the one thing `omp --resume` guarantees, so it is the durable record
-      // of the claim: the listener reaps a dead session's interest row 15 minutes after the
-      // row's last write and releases the role claim separately, one session TTL after
-      // heartbeats stop (a role claim is not an interest: see `ReapRoleClaims` in
-      // packages/envoy/internal/store/kv.go), and this process's memory dies with it. A session
+      // of the claim: the listener takes a role's lane out of a dead session's interest row 15
+      // minutes after the row's last write, when it stops the row and keeps only its
+      // subscriptions, and releases the role claim separately, one session TTL after heartbeats
+      // stop (a role claim is not an interest: see `ReapRoleClaims` in
+      // packages/envoy/internal/store/reaper.go), and this process's memory dies with it. A session
       // that holds a role heartbeats from here on, whichever claim took it. The record names the
       // session the claim was made for and this process, so a second process reading the same
       // transcript — a continuation that resumed a live session's id — tells its own records
@@ -3590,8 +3591,9 @@ export default function envoyExtension(pi: PiApi): void {
     // followed for as long as the session runs, outliving the controller role, and the controller
     // hears its listed channels through the topics its role owns (pi-legion's
     // controller-session.ts).
-    // The topics the newest ledger state names come back too: the listener reaps a dead session's
-    // interests after its grace, and the transcript still says what the session followed. A topic
+    // The topics the newest ledger state names come back too: the listener keeps a stopped
+    // session's subscriptions for its next registration, but a listener of an earlier build reaps
+    // them after its grace, and the transcript still says what the session followed. A topic
     // it unfollowed is absent from that state. Agent and role subjects are never among them.
     const registry = await handle.readInterest(sessionID);
     const slackRetired = publishedInterface?.roleClaim.slackRoleOwned === true;

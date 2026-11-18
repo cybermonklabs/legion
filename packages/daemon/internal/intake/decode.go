@@ -150,11 +150,11 @@ func (e envoyEnvelope) factID() string {
 const legionWakeSubject = "notifications.legion.wake"
 
 // decodeListenerWake decodes one wake report of the Envoy listener (ListenerWake). Its wire shape
-// is `{"kind":..., "role":..., "session":..., "at":<epoch milliseconds>}`, the listener's own
-// clock in At's shape, because the stream's store time is the NATS server's. A report of a kind
-// this daemon does not know, and a role or agent report naming neither a role nor a session, is
-// no fact rather than poison: a listener of a later release can report a kind this build has no
-// wake for, and nothing is lost by acknowledging it.
+// is `{"kind":..., "role":..., "session":..., "topic":..., "at":<epoch milliseconds>}`, the
+// listener's own clock in At's shape, because the stream's store time is the NATS server's. A
+// report of a kind this daemon does not know, and a role, agent or followed-topic report naming
+// neither a role nor a session, is no fact rather than poison: a listener of a later release can
+// report a kind this build has no wake for, and nothing is lost by acknowledging it.
 //
 // The report's clock is bounded to the daemon's own: a payload naming a time in the future is
 // read as now. The subject is a stream subject, and a publisher that reaches it chooses every
@@ -169,6 +169,7 @@ func decodeListenerWake(eventID, payload string) (Fact, error) {
 		Kind    string `json:"kind"`
 		Role    string `json:"role"`
 		Session string `json:"session"`
+		Topic   string `json:"topic"`
 		At      int64  `json:"at"`
 	}
 	if err := json.Unmarshal([]byte(payload), &report); err != nil {
@@ -180,7 +181,7 @@ func decodeListenerWake(eventID, payload string) (Fact, error) {
 		if report.Role == "" {
 			return nil, nil
 		}
-	case ListenerWakeAgent:
+	case ListenerWakeAgent, ListenerWakeFollowed:
 		if report.Session == "" {
 			return nil, nil
 		}
@@ -194,7 +195,7 @@ func decodeListenerWake(eventID, payload string) (Fact, error) {
 	if now := time.Now().UTC(); at.After(now) {
 		at = now
 	}
-	return ListenerWake{Kind: report.Kind, Role: report.Role, Session: report.Session, At: at, Report: eventID}, nil
+	return ListenerWake{Kind: report.Kind, Role: report.Role, Session: report.Session, Topic: report.Topic, At: at, Report: eventID}, nil
 }
 
 type dispatchEvent struct {

@@ -337,9 +337,9 @@ func TestTheReaperAsksLivenessOutsideTheCacheLockAndKeepsAnInterestWrittenSince(
 	}
 
 	asked := newGate(t)
-	reaped := make(chan int, 1)
+	reaped := make(chan InterestSweep, 1)
 	go func() {
-		count, err := reg.Reap(func(sessionID string) (bool, error) {
+		sweep, err := reg.Reap(func(sessionID string) (bool, error) {
 			if sessionID == "ses_rewritten" {
 				asked.pass(func() {})
 			}
@@ -348,7 +348,7 @@ func TestTheReaperAsksLivenessOutsideTheCacheLockAndKeepsAnInterestWrittenSince(
 		if err != nil {
 			t.Errorf("Reap: %v", err)
 		}
-		reaped <- count
+		reaped <- sweep
 	}()
 	waitClosed(t, asked.reached, "the reaper to ask after ses_rewritten")
 	written := make(chan error, 1)
@@ -365,8 +365,8 @@ func TestTheReaperAsksLivenessOutsideTheCacheLockAndKeepsAnInterestWrittenSince(
 		t.Fatal("Upsert waited on the reaper's liveness check: the reaper held the cache's lock")
 	}
 	asked.open()
-	if count := <-reaped; count != 1 {
-		t.Fatalf("reaped = %d, want ses_dead's interest alone", count)
+	if sweep := <-reaped; sweep != (InterestSweep{Reaped: 1}) {
+		t.Fatalf("reaped = %+v, want ses_dead's interest alone", sweep)
 	}
 	if _, err := kv.Get("ses_dead"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("ses_dead's interest after the reaper: %v, want it deleted", err)
@@ -385,9 +385,9 @@ func TestTheReaperKeepsAnInterestWhoseSessionItCouldNotRead(t *testing.T) {
 	if _, err := reg.Get(context.Background(), "ses_unread"); err != nil {
 		t.Fatalf("warm ses_unread: %v", err)
 	}
-	count, err := reg.Reap(func(string) (bool, error) { return false, errors.New("the session bucket did not answer") }, 10*time.Minute)
-	if err != nil || count != 0 {
-		t.Fatalf("Reap = %d, %v; want nothing reaped", count, err)
+	sweep, err := reg.Reap(func(string) (bool, error) { return false, errors.New("the session bucket did not answer") }, 10*time.Minute)
+	if err != nil || sweep != (InterestSweep{}) {
+		t.Fatalf("Reap = %+v, %v; want nothing reaped", sweep, err)
 	}
 	if _, err := kv.Get("ses_unread"); err != nil {
 		t.Fatalf("ses_unread's interest after the reaper: %v, want it kept", err)
@@ -435,15 +435,15 @@ func TestTheReaperKeepsARowWrittenWhileItsCopyHeldNoRevisionForTheKey(t *testing
 		t.Fatalf("precondition: the copy holds %+v (%v), want the old bucket's stale row", item, ok)
 	}
 
-	count, err := reg.Reap(func(string) (bool, error) { return false, nil }, 10*time.Minute)
+	sweep, err := reg.Reap(func(string) (bool, error) { return false, nil }, 10*time.Minute)
 	if err != nil {
 		t.Fatalf("Reap: %v", err)
 	}
 	if _, err := recreated.Get("ses_x"); err != nil {
-		t.Fatalf("ses_x's fresh row (updated_at %d) after a pass that judged the stale row (updated_at %d, reaped=%d): %v, want it kept", fresh, stale, count, err)
+		t.Fatalf("ses_x's fresh row (updated_at %d) after a pass that judged the stale row (updated_at %d, %+v): %v, want it kept", fresh, stale, sweep, err)
 	}
-	if count != 0 {
-		t.Fatalf("the pass reaped %d, want nothing: the only row the bucket holds is one it never judged", count)
+	if sweep != (InterestSweep{}) {
+		t.Fatalf("the pass did %+v, want nothing: the only row the bucket holds is one it never judged", sweep)
 	}
 	apply.open()
 	completion.open()

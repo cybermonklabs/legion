@@ -1288,7 +1288,8 @@ func main() {
 	// it last registered, and the interest reaper's allowance
 	// (store.InterestReapAllowance(store.InterestReapGrace), 15 minutes), so /v1/interests/ can
 	// report the real last heartbeat (the row's updated_at lags it by up to
-	// store.InterestRefreshAge) of every row that reaper still lists.
+	// store.InterestRefreshAge) of every row that reaper has not stopped. A stopped row, which
+	// the reaper keeps for the session's life, carries its session's last write as its updated_at.
 	//
 	// The windows every reader of the registry judges a record's age against. Each defaults to
 	// the compiled constant (session.LiveWindow, session.GoneHorizon). The live window's is the
@@ -1655,9 +1656,11 @@ func main() {
 	// binds it again in a rebuild starts again (the self-health monitor below).
 	relays.setOwned(true)
 
-	// Phase 6b: Start interest reaper for stale KV cleanup.
-	// Cross-references envoy_sessions with envoy_interests (permanent) to prune orphaned
-	// interests from dead sessions. Each of these loops lists a bucket through
+	// Phase 6b: Start the interest reaper.
+	// Cross-references envoy_sessions with envoy_interests (permanent): it stops the rows of dead
+	// sessions past their grace, keeping their subscriptions for their next registration, and
+	// deletes the rows whose sessions' life is over (store.Registry.Reap,
+	// store.StoppedInterestRetention). Each of these loops lists a bucket through
 	// watchers whose consumers nats.go creates and deletes, so the shutdown stops them and waits for
 	// a pass in flight before it drains NATS (kvLoopsDone).
 	//

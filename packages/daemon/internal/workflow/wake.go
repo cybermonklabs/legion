@@ -19,11 +19,11 @@ import (
 // A wake brings a released pod back. The release suspended every claim of the pod with the source
 // `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
 // which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Five things wake a pod, and this file holds four of them: the CI settlement, the
-// role message and the agent message the Envoy listener reports, and the stored backstop. The
-// fifth — a delivery the daemon already had for a role of the pod — needs nothing here, because a
-// delivery to a suspended claim already resumes it (supervise's deliverResuming) and the delivery
-// is its own account of why the pod came back.
+// release saved. Six things wake a pod, and this file holds five of them: the CI settlement, the
+// role message, the agent message and the message on a followed topic the Envoy listener
+// reports, and the stored backstop. The sixth — a delivery the daemon already had for a role of
+// the pod — needs nothing here, because a delivery to a suspended claim already resumes it
+// (supervise's deliverResuming) and the delivery is its own account of why the pod came back.
 //
 // Every wake acts only on a claim that is still `released`, of an issue still in the workflow
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
@@ -109,6 +109,11 @@ func WakeTask(kind, detail string) string {
 		return preamble + "The wake is a message somebody sent to your session (" + detail +
 			") while your pod was gone. A message that Envoy or Dispatch stored for your session reaches you in this session. " +
 			"A direct Envoy message that Envoy refused reaches you when its sender sends it again."
+	case pods.WakeFollowedTopic:
+		return preamble + "The wake is a message published on a topic your session follows (" + detail +
+			") while your pod was gone. Envoy kept your subscriptions: that message, and every other one " +
+			"published on the topics you follow while you were away, reaches this session from its own " +
+			"consumer, possibly before this task."
 	case pods.WakeBackstop:
 		return preamble + "The wake is the release's backstop running out: " + detail +
 			". Nothing else asked for you, so take up your phase where you left it."
@@ -119,9 +124,9 @@ func WakeTask(kind, detail string) string {
 
 // listenerWake applies one wake report of the Envoy listener (intake.ListenerWake). A
 // `listener_ready` report is the positive liveness signal R7's gate reads and wakes nothing. A
-// role or agent report names a role token or a session, and this daemon acts only when one of its
-// own claims is released under that name: every daemon consumes the subject, because the listener
-// does not know which daemon owns a session and must not learn.
+// role, agent or followed-topic report names a role token or a session, and this daemon acts only
+// when one of its own claims is released under that name: every daemon consumes the subject,
+// because the listener does not know which daemon owns a session and must not learn.
 func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.ListenerWake) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -133,10 +138,17 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 	var found bool
 	var err error
 	kind, detail := pods.WakeRoleMessage, fact.Role
-	if fact.Kind == intake.ListenerWakeAgent {
+	switch fact.Kind {
+	case intake.ListenerWakeAgent:
 		kind, detail = pods.WakeAgentMessage, fact.Session
 		released, found, err = e.cfg.Pods.ReleasedClaimBySession(ctx, tx, fact.Session)
-	} else {
+	case intake.ListenerWakeFollowed:
+		kind, detail = pods.WakeFollowedTopic, fact.Topic
+		if detail == "" {
+			detail = fact.Session
+		}
+		released, found, err = e.cfg.Pods.ReleasedClaimBySession(ctx, tx, fact.Session)
+	default:
 		released, found, err = e.cfg.Pods.ReleasedClaimByToken(ctx, tx, fact.Role)
 	}
 	if err != nil || !found {
