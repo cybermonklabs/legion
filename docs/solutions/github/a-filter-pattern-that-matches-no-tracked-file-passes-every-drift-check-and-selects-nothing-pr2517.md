@@ -62,7 +62,8 @@ reference at all. The read it described no longer happened, so the row went rath
 repointed.
 
 The rule is `check_dead_patterns` in `.github/scripts/ci_filter_coverage.py`, counted into the
-check's own failure tally, with its cases at `.github/scripts/check-ci-filters.test.sh:263-295`.
+check's own failure tally, with its cases at `.github/scripts/check-ci-filters.test.sh:704-733` and
+`:807-816`.
 
 ## The exemption that was not needed (sjawhar/legion#2595)
 

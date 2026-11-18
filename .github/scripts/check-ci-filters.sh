@@ -21,9 +21,8 @@
 #     of a go command it starts, and each file it reads through `..`;
 #   * the module files of each go command's workspace: go.work, go.work.sum and every bound
 #     module's go.mod and go.sum (`go env GOWORK`, `go work edit -json`);
-#   * for a claimed go command this check does not reduce (below), and for every Run of an exact
-#     entry whose step's env, shell, container or job could move what it compiles, every Go file
-#     of the repository and every file under a Go module's directory;
+#   * for a claimed go command this check does not reduce (below), every Go file of the
+#     repository and every file under a Go module's directory;
 #   * the static reads of the job's other steps: actions, the Bun install, Biome, scripts, fixtures.
 # Those globs are expanded over the repository's files (tracked, and untracked ones git does not
 # ignore, so an uncommitted new file counts and a build output does not) and each file is held to
@@ -68,8 +67,9 @@
 #      in the called file, which runs them inside the caller's own run, so the steps of every one
 #      of those files are read here and each refusal names the file the step is in,
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
-#      job no longer has, a step whose run: script or directory is not the one its exact entry
-#      pins (below), a RULES source file that is gone, or a why citing a step the job no longer
+#      job no longer has, a step its exact entry pins whose run: script or directory is not the
+#      entry's, or whose env, shell, container or job could move what it compiles (below), a RULES
+#      source file that is gone, or a why citing a step the job no longer
 #      has. A gate's step is looked for in the file that gate names - ci.yaml, or the
 #      workflow it calls that holds that job's steps - and a why's in the file its citation
 #      names, so a step that moved between the two fails here until the table says where it went,
@@ -358,16 +358,21 @@
 # whole run: script (compared as text after trailing whitespace, nothing parsed) and directory,
 # and lists Runs that stand for what the script compiles. While the step holds exactly that, under
 # such an env, shell, container and job, its go lines are claimed and the Runs' closures checked.
-# A step whose script or directory differs fails, naming the file, the job, the step, the first
-# line that differs and, where all that differs on it is an anchored -run or -skip list
-# (`'^(Name|Name)$'`), each test one side names and the other lacks. The pin is also the table's
-# word for which tests the step runs, and ci_job_reads.py builds several pins from one list:
-# TEXT_CHECK_TESTS writes the text-check step's -run and is the set envoy-go's step of what the
-# race build cannot run leaves out, so a test that list names and the step drops runs in no job,
-# and one the step names and the list does not runs in both. Falling to everything, which is
-# what a step off its pin once did, says nothing where the filter already selects every Go file,
-# as text_checks' does. A step whose env, shell, container or job could move what it compiles
-# makes every one of its Runs fall to everything, as below. Any other claimed command - an
+# A step whose script or directory differs fails, naming the file, the job, the step and the
+# first line that differs, or both directories; where all that differs on that line is an
+# anchored -run or -skip list (`'^(Name|Name)$'`), it names each test the step's -run leaves out
+# or adds, or its -skip no longer skips or also skips. The pin is also the table's word for which
+# tests the step runs, and ci_job_reads.py builds several pins from one list: TEXT_CHECK_TESTS
+# writes the text-check step's -run and is the set envoy-go's step of what the race build cannot
+# run leaves out, so a test that list names and the step drops runs in no job, and one the step
+# names and the list does not runs in both. Falling to everything, which is what a step off its
+# pin once did, says nothing where the filter already selects every Go file, as text_checks'
+# does. For the same reason a pinned step fails, naming what does it, when its env, shell,
+# container or job could move what it compiles or which tests it runs: an env of the step, the
+# job or the workflow naming anything outside ENV_ALLOWED, a step of the job writing $GITHUB_ENV
+# or $GITHUB_PATH or running `go env -w`, a shell: or defaults.run.shell, or a container: -
+# `GOFLAGS: -skip=^TestOnlyTheBrokerInsertsEvents$` in the guard step's env would skip that test
+# though its -run names it, and its pin would still match. Any other claimed command - an
 # assignment of a name outside ENV_ALLOWED such as GOFLAGS or GOOS, another flag, a pipe, a
 # quote, a substitution, a cd, another line in
 # its step - counts as reading every Go file of the repository, every file under a Go module's
@@ -428,12 +433,16 @@
 # Legion worker pod is one - every closure above fails with `toolchain not available`, because the
 # go commands run over an emptied GOMODCACHE and so cannot reach the toolchain module either. The
 # real findings then sit among those, where a reader judging this by its tail or its exit status
-# sees nothing. Run it on the toolchain's own binary instead, and it answers as CI does, expanding
-# the glob in a command of its own: inside the double quotes PATH needs the shell leaves it
-# literal, and GOTOOLCHAIN=local then pins the bootstrap, whose refusal reads as a version
-# mismatch rather than as the setup it is.
-#   tc=$(ls -d "$(go env GOMODCACHE)"/golang.org/toolchain@*/bin | head -1)
-#   PATH="$tc:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
+# sees nothing. Run it on the binary of the toolchain go.work pins instead, and it answers as CI
+# does: GOTOOLCHAIN=local then keeps that binary, where it would pin the bootstrap, whose refusal
+# reads as a version mismatch rather than as the setup it is. Unset GOROOT too. The engine asks
+# `go env GOROOT` which go to run, and an exported GOROOT is that answer whichever go PATH finds
+# first, so a GOROOT another install left (mise's go1.27.0 on a dev box) runs that go, and every
+# closure fails with `go.work requires go >= 1.27.3 (running go 1.27.0; GOTOOLCHAIN=local)`: 1618
+# problems where CI finds none, measured on one tree.
+#   v=$(sed -n 's/^go //p' go.work)
+#   tc=$(env -u GOROOT go env GOMODCACHE)/golang.org/toolchain@v0.0.1-go$v.$(go env GOHOSTOS)-$(go env GOHOSTARCH)/bin
+#   test -x "$tc/go" && env -u GOROOT PATH="$tc:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
 # Either way, read its output by grepping for the problem rather than by its last line.
 set -euo pipefail
 

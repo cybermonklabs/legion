@@ -1623,13 +1623,13 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-filters.test.sh'
-              # :75-79 symlink the script and the modules it runs on into every fixture.
+              # :78-82 symlink the script and the modules it runs on into every fixture.
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
-              # :2432 imports the table to derive the plain step's -run lists, and :2876-2911 holds
+              # :2641 imports the table to derive the plain step's -run lists, and :3085-3120 holds
               # the guide's slow-suite list to the jobs the full-ci label gates.
               - '.github/scripts/ci_job_reads.py'
               - 'AGENTS.md'

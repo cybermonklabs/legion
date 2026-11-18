@@ -5,9 +5,10 @@
 # not reduce (another form, a
 # step that is more than the go line, a shell, a container, a BASH_ENV) counts as reading every
 # Go file of the repository and every file under a Go module's directory, a step off its exact
-# entry's pinned script or directory is refused naming the line that differs and, on a -run or
-# -skip list, the tests one side names and the other lacks, a why that cites a step must name a
-# workflow file that still holds it,
+# entry's pinned script or directory is refused naming the first line that differs, or both
+# directories, and on a -run or -skip list each test one side names and the other lacks, a step
+# an exact entry pins under an env, shell, container or job that could move it is refused naming
+# what does, a why that cites a step must name a workflow file that still holds it,
 # CI_OK_SELECTED_BY must map every job changes gates, it and CI_OK_PULL_REQUEST_ONLY must say what
 # each job's if: tests, every job of ci.yaml must be in exactly one of ci-ok's three classes
 # (CI_OK_SELECTED_BY, CI_OK_ALWAYS_RUN, CI_OK_EXEMPT) and a CI_OK_ALWAYS_RUN job must be gated by
@@ -1776,7 +1777,7 @@ replace "$root/.github/workflows/ci.yaml" "-count=1" "-count=2"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file, the step, the gate and both lines" \
-  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`; make the step run the entry.s text there again, or change the entry')"
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`; make the step run that text there again, or change the entry')"
 check "and still reads the step as its runs, not as everything" \
   "$(is "$(contains "$out" '::error file=mod/other/other.go::')" false)"
 
@@ -1789,17 +1790,62 @@ check "fails" "$(is "$status" 1)"
 check "names the step and the two directories" \
   "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: it runs in mod/cmd, the entry.s in mod; ')"
 
-echo "case: a step pinned whole under an env outside ENV_ALLOWED falls to everything"
-root=$(fixture exact-step-env)
+# What surrounds a pinned step can move what it compiles or which tests it runs while its text
+# stays the pin's - a GOFLAGS -skip in its env skips a test its -run names - so such a step is
+# refused too, naming what moves it, rather than read as reading everything. Each plant below is
+# one such surrounding of the app job's pinned step.
+for around in env shell container github-env; do
+  case $around in
+    env) what="an env naming GOFLAGS" ;;
+    shell) what="a shell of its own" ;;
+    container) what="a job container" ;;
+    github-env) what="an earlier step's \$GITHUB_ENV write" ;;
+  esac
+  echo "case: a step pinned whole under $what is refused, naming what moves it"
+  root=$(fixture "exact-step-$around")
+  exact_step_table "$root"
+  case $around in
+    env)
+      replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
+        $'        working-directory: mod\n        env:\n          GOFLAGS: -skip=^TestData$'
+      why='step "Test the app".s env sets GOFLAGS' ;;
+    shell)
+      replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
+        $'        working-directory: mod\n        shell: sh'
+      why='step "Test the app" runs under shell: `sh`' ;;
+    container)
+      replace "$root/.github/workflows/ci.yaml" \
+        "    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')" \
+        "    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')"$'\n    container: golang:1.21'
+      why='the job runs in a container:' ;;
+    github-env)
+      replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+        $'      - name: Skip a test in every later step\n        run: echo "GOFLAGS=-skip=^TestData$" >> "$GITHUB_ENV"\n      - name: Test the app'
+      why='step "Skip a test in every later step" runs `$GITHUB_ENV`, which every later step inherits' ;;
+  esac
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the step, the gate and what moves it" \
+    "$(contains "$out" "::error file=.github/workflows/ci.yaml::job app step \"Test the app\" is pinned whole by gate app.s exact entry, but $why, and that can change what its go commands compile, or which tests they run, where no pin holds it; ")"
+  check "and is that one problem, reading nothing wide" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+done
+
+# Both at once: a step off its pin and under an env that moves it fails on each, so neither
+# refusal hides the other - a check that asked about the env first, and compared the text only
+# without one, would name the env alone.
+echo "case: a step off its pin and under an env that moves it is refused for both"
+root=$(fixture exact-step-changed-env)
 exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "-count=1" "-count=2"
 replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
   $'        working-directory: mod\n        env:\n          GOFLAGS: -tags=probe'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the step and the env" \
-  "$(contains "$out" 'job app step "Test the app".s pinned script, which this check does not reduce (step "Test the app".s env sets GOFLAGS), so it counts as reading every Go file of the repository and every file under a Go module.s directory; filter app must select them all on any Go change')"
-check "and a file it falls to" "$(contains "$out" '::error file=mod/other/other.go::')"
-check "but holds the step to its pin all the same" "$(is "$(contains "$out" 'is off the script and directory')" false)"
+check "names the line that differs" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`; ')"
+check "and the env" \
+  "$(contains "$out" 'job app step "Test the app" is pinned whole by gate app.s exact entry, but step "Test the app".s env sets GOFLAGS, and that can change ')"
+check "and is those two problems" "$(contains "$out" '^::error::2 CI filter problem(s)$')"
 
 # guard_list_table <root>: the app job runs the library's two tests by name, its -run built in
 # ci_job_reads.py from one list as this repository's text-check job's guard step is built from
@@ -1878,6 +1924,64 @@ check "fails" "$(is "$status" 1)"
 check "quotes both lines around the difference" \
   "$(contains "$out" 'is off the script and directory gate app.s exact entry pins it to: its line 1 reads `[.][.][.]test -count=1 -run ..(TestData|TestGuard[.][*])[$]. ./lib` where the pinned text.s reads `[.][.][.]test -count=1 -run ..(TestData|TestGuard)[$]. ./lib`; ')"
 check "and does not read the pattern as a test it leaves out" "$(is "$(contains "$out" 'leaves out TestGuard')" false)"
+
+echo "case: a -skip list that drops a test says the step no longer skips it"
+root=$(fixture guard-list-skip)
+guard_list_table "$root"
+replace "$root/.github/scripts/ci_job_reads.py" "-count=1 -run '" "-count=1 -skip '"
+replace "$root/.github/workflows/ci.yaml" "-count=1 -run '" "-count=1 -skip '"
+run_check "$root"
+check "passes while the step skips exactly the list" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" ")"
+run_check "$root"
+check "fails once it skips one test fewer" "$(is "$status" 1)"
+check "and names the test it no longer skips" \
+  "$(contains "$out" 'is off the script and directory gate app.s exact entry pins it to: on its line 1, its -skip no longer skips TestGuard, which the pinned -skip skips; ')"
+
+echo "case: a name list moved along its line, the rest reading the same without it, is quoted"
+root=$(fixture guard-list-moved)
+guard_list_table "$root"
+replace "$root/.github/workflows/ci.yaml" "-count=1 -run '^(TestData|TestGuard)\$' ./lib" \
+  "-count=1  ./lib-run '^(TestData|TestGuard)\$'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "quotes both lines, as the lists alone cannot say what differs" \
+  "$(contains "$out" 'pins it to: its line 1 reads `go test -count=1  ./lib-run ..(TestData|TestGuard)[$].` where the pinned text.s reads `go test -count=1 -run ..(TestData|TestGuard)[$]. ./lib`; ')"
+check "and gives no empty reason" "$(is "$(contains "$out" 'on its line 1, ;')" false)"
+
+# shared_pin <root>: over guard_list_table, a second gate, app_step, gates the app job's step by
+# a filter of its own and pins it by the same exact entry, as this repository's two two-build
+# gates both pin that job's two Go steps.
+shared_pin() {
+  cat >> "$1/.github/scripts/ci_job_reads.py" <<'PY'
+GATES.append(gate("app_step", "app", step="Test the app", exact=GATES[0].exact,
+                  reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]))
+PY
+  replace "$1/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    $'      image: ${{ steps.filter.outputs.image }}\n      app_step: ${{ steps.filter.outputs.app_step }}'
+  replace "$1/.github/workflows/ci.yaml" "            image:" \
+    $'            app_step:\n              - \'.github/workflows/ci.yaml\'\n              - *workspace\n              - \'mod/lib/*\'\n              - \'fixtures/**\'\n            image:'
+  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
+    $'      - name: Test the app\n        if: needs.changes.outputs.app_step == \'true\''
+}
+
+echo "case: a step two gates pin passes while it runs their text"
+root=$(fixture shared-pin)
+guard_list_table "$root"
+shared_pin "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a step two gates pin, off their pin, is refused once, naming both gates"
+root=$(fixture shared-pin-dropped)
+guard_list_table "$root"
+shared_pin "$root"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" ")"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both gates and the test" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory the exact entries of gates app, app_step pin it to: on its line 1, its -run leaves out TestGuard, which the pinned -run names; make the step run that text there again, or change the entries, ')"
+check "and refuses it once" "$(is "$(grep -c 'is off the script and directory' <<<"$out" || true)" 1)"
 
 for odd in cr nbsp; do
   echo "case: a hidden command after a ${odd} that Python reads as a comment and bash runs"

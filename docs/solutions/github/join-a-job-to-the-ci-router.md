@@ -336,14 +336,17 @@ fails the pull request that adds it.
   While the step holds exactly that script (after trailing whitespace) in that directory, under
   the env, shell, container and job above, every go line of it is claimed and those runs'
   closures are checked. Any edit of the script or the directory fails the check, naming the step
-  and the first line that differs, and on an anchored `-run` or `-skip` list (`'^(Name|Name)$'`)
-  each test one side names and the other lacks, so change the entry with the step. That holds a
-  step whose list `ci_job_reads.py` builds from one declaration to it: the text-check job's guard
-  step runs exactly `TEXT_CHECK_TESTS`, the names envoy-go's plain step leaves out, so a test
-  dropped from one side fails `ci-filters` rather than running in no job. An env, shell,
-  container or environment write that could move what the step compiles makes every one of its
-  runs count as reading everything, as above. envoy-go's unit-test step, envoy-go-checks' pack
-  step and envoy-smoke's plugin-schema step are exact entries.
+  and the first line that differs, or both directories; on an anchored `-run` or `-skip` list
+  (`'^(Name|Name)$'`) it names each test the `-run` leaves out or adds, or the `-skip` no longer
+  skips or also skips, so change the entry with the step. That holds a step whose list
+  `ci_job_reads.py` builds from one declaration to it: the text-check job's guard step runs
+  exactly `TEXT_CHECK_TESTS`, the names envoy-go's plain step leaves out, so a test dropped from
+  one side fails `ci-filters` rather than running in no job. An env, shell, container or
+  environment write that could move what the step compiles or which tests it runs fails the
+  check too, naming it: `GOFLAGS: -skip=...` in the step's env skips a test its `-run` names, and
+  the pinned text would not show it. Put such a setting on the script's own line, where the pin
+  holds it and the entry's run can say it. envoy-go's unit-test step, envoy-go-checks' pack step
+  and envoy-smoke's plugin-schema step are exact entries.
 
   It fails too when a pinned text or an exact entry's step is gone, and when a job or step is
   gated on a filter neither `GATES` nor `EXCLUDED` lists. A job with no go commands still gets a

@@ -179,10 +179,10 @@ class Exact:
     whole script (compared as text, after trailing whitespace, and never parsed) and to the
     directory it runs in. Its `runs`, unpinned, stand for what the script compiles: while the
     step holds exactly that script there, every go line of it is claimed and the runs' closures
-    are what the job reads. A step whose script or directory differs is refused, naming the step
-    and the first difference (pin_difference), since the pin is also the table's word for which
-    tests the step runs; one whose env, shell, container or job could move what it compiles counts
-    every run as reading everything a go command can."""
+    are what the job reads. Since the pin is also the table's word for which tests the step runs,
+    a step whose script or directory differs is refused, naming the first line that differs or
+    both directories, and so is one whose env, shell, container or job could move what it compiles
+    or which tests it runs, naming what does (refuse_off_pin)."""
 
     step: str
     workdir: str
@@ -989,35 +989,65 @@ def excerpt(line: str, start: int, end: int) -> str:
     return f"{'...' if low else ''}{line[low:high]}{'...' if high < len(line) else ''}"
 
 
+def quoted(line: str) -> str:
+    """A line of a script as a refusal quotes it whole: in backticks, or `a blank line` for one
+    that holds nothing but spaces and tabs, which backticks would show as nothing."""
+    return f"`{line}`" if line.strip(" \t") else "a blank line"
+
+
+def name_list_difference(line: str, pin: str) -> str:
+    """What the anchored name lists (NAME_LIST) of a step's line do that its pin's do not, where
+    those lists, the same flags in the same order, are all the two lines differ in: per list, each
+    test a -run leaves out or names besides the pinned -run, each test a -skip no longer skips or
+    skips besides the pinned -skip, or that a list names the pinned one's tests in another order or
+    more than once. '' where anything else differs, and where the lists are the pin's but stand
+    elsewhere in a line that reads the same without them."""
+    lists, pins = NAME_LIST.findall(line), NAME_LIST.findall(pin)
+    if (not lists or [flag for flag, _ in lists] != [flag for flag, _ in pins]
+            or NAME_LIST.sub("", line) != NAME_LIST.sub("", pin)):
+        return ""
+    parts = []
+    for (flag, got), (_, wanted) in zip(lists, pins):
+        gone = ", ".join(sorted(set(wanted.split("|")) - set(got.split("|"))))
+        extra = ", ".join(sorted(set(got.split("|")) - set(wanted.split("|"))))
+        if gone:
+            parts.append(f"its -run leaves out {gone}, which the pinned -run names" if flag == "-run"
+                         else f"its -skip no longer skips {gone}, which the pinned -skip skips")
+        if extra:
+            parts.append(f"its -run names {extra}, which the pinned -run does not" if flag == "-run"
+                         else f"its -skip also skips {extra}, which the pinned -skip does not")
+        if got != wanted and not gone and not extra:
+            parts.append(f"its {flag} names the pinned {flag}'s tests in another order or more than once")
+    return "; ".join(parts)
+
+
 def pin_difference(script: str, pinned: str) -> str:
     """'' when a step's run: script is the text its Exact entry pins, compared as the entry
-    compares them (after trailing whitespace, nothing parsed); else the first difference: the line,
-    by its number in the script, and on it the tests one side's anchored -run or -skip names and
-    the other's lacks, where those lists are all that differs, or else both lines around the first
-    character that does."""
+    compares them (after trailing whitespace, nothing parsed). Else the first line that differs, by
+    its number in the script, in one of five forms:
+      * `its line N, <the line>, is past the pinned text's last line`: the step's script goes on
+        where the pin has ended;
+      * `it ends before the pinned text's line N, <that line>`: the pin goes on where the script
+        has ended;
+      * `on its line N, <what its name lists do>` (name_list_difference), where all that differs
+        on the line is its anchored -run or -skip lists of test names;
+      * `its line N differs from the pinned text's in spaces or tabs alone`, quoting neither;
+      * else `its line N reads <part> where the pinned text's reads <part>`: both lines from the
+        first character that differs to the last, DIFFERENCE_CONTEXT characters either side, and
+        the first character of the step's part outside printable ASCII and tab, when it holds one.
+    A line quoted whole is quoted as quoted() quotes it."""
     have, want = script.rstrip().split("\n"), pinned.rstrip().split("\n")
     if have == want:
         return ""
     i = next((i for i, (a, b) in enumerate(zip(have, want)) if a != b), min(len(have), len(want)))
     if i == len(want):
-        return f"its line {i + 1}, `{have[i]}`, is past the pinned text's last line"
+        return f"its line {i + 1}, {quoted(have[i])}, is past the pinned text's last line"
     if i == len(have):
-        return f"it ends before the pinned text's line {i + 1}, `{want[i]}`"
+        return f"it ends before the pinned text's line {i + 1}, {quoted(want[i])}"
     line, pin = have[i], want[i]
-    lists, pins = NAME_LIST.findall(line), NAME_LIST.findall(pin)
-    if (lists and [flag for flag, _ in lists] == [flag for flag, _ in pins]
-            and NAME_LIST.sub("", line) == NAME_LIST.sub("", pin)):
-        parts = []
-        for (flag, got), (_, wanted) in zip(lists, pins):
-            gone = sorted(set(wanted.split("|")) - set(got.split("|")))
-            extra = sorted(set(got.split("|")) - set(wanted.split("|")))
-            if gone:
-                parts.append(f"its {flag} leaves out {', '.join(gone)}, which the pinned {flag} names")
-            if extra:
-                parts.append(f"its {flag} names {', '.join(extra)}, which the pinned {flag} does not")
-            if got != wanted and not gone and not extra:
-                parts.append(f"its {flag} names the pinned {flag}'s tests in another order or more than once")
-        return f"on its line {i + 1}, {'; '.join(parts)}"
+    lists = name_list_difference(line, pin)
+    if lists:
+        return f"on its line {i + 1}, {lists}"
     if BASH_BLANKS.split(line.strip(" \t")) == BASH_BLANKS.split(pin.strip(" \t")):
         return f"its line {i + 1} differs from the pinned text's in spaces or tabs alone"
     start = len(os.path.commonprefix([line, pin]))
@@ -1252,6 +1282,53 @@ def around_job(units: list, owner: str) -> str:
     return ""
 
 
+def exact_entries(names) -> str:
+    """How a refusal names the gates whose Exact entries pin one step."""
+    names = sorted(set(names))
+    return f"gate {names[0]}'s exact entry" if len(names) == 1 else f"the exact entries of gates {', '.join(names)}"
+
+
+def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, workdir: str, entries: list,
+                   problems: list[Annotation]) -> None:
+    """Refuse a run: step its Exact entries pin (`entries`, each (the gate's filter, Exact)) where
+    the step is not what they pin: a script or a directory other than an entry's, named by the
+    first line that differs (pin_difference) or by both directories, and an env, shell, container
+    or job (around_reason) that can change what its go commands compile or which tests they run.
+
+    Refused rather than read as reading everything, which a step off its pin once counted as. The
+    pin is also the table's word for which tests the step runs - ci_job_reads.py builds the
+    text-check step's -run from TEXT_CHECK_TESTS, the names envoy-go's step of what the race build
+    cannot run leaves out - and reading everything says nothing where the filter selects every Go
+    file already, as the text_checks filter does: a guard test dropped from that -run ran in no job
+    while this check passed, and so did one a `GOFLAGS: -skip=` in the step's env skipped. No pinned
+    step runs under such an env, shell or container. Entries of two gates pinning one text make one
+    refusal, and the gates' entries of one step one refusal of what surrounds it."""
+    label = step_label(step)
+    script = str(step["run"])
+    pins = defaultdict(set)  # (the script an entry pins, as pin_difference compares it; its directory) -> gates
+    for name, e in entries:
+        pins[(e.script.rstrip(), clean_dir(e.workdir))].add(name)
+    drifted = False
+    for (pinned_script, directory), names in pins.items():
+        drift = [d for d in (pin_difference(script, pinned_script),
+                             "" if workdir == directory else f"it runs in {workdir}, the entry's in {directory}") if d]
+        if drift:
+            drifted = True
+            pin = "pins" if len(names) == 1 else "pin"
+            problems.append(error(path, f"{where} step \"{label}\" is off the script and directory "
+                                        f"{exact_entries(names)} {pin} it to: {'; '.join(drift)}; make the step run "
+                                        f"that text there again, or change {'the entry' if len(names) == 1 else 'the entries'}, "
+                                        f"and any list of ci_job_reads.py its text is built from, with the step"))
+    # A character a pin_difference above already named is not named again here.
+    moved = around_reason(holder, job, [step]) or ("" if drifted else script_reason(script))
+    if moved:
+        problems.append(error(path, f"{where} step \"{label}\" is pinned whole by {exact_entries(n for n, _ in entries)}, "
+                                    f"but {moved}, and that can change what its go commands compile, or which tests "
+                                    f"they run, where no pin holds it; remove it, or put what it sets on the step's "
+                                    f"own script, where the pin holds it"))
+
+
+
 # ---------------------------------------------------------------- the check
 def check_table(documents: dict, data, filters: dict, files: set, problems: list[Annotation]) -> dict:
     """The table must say what ci.yaml says: every gate a real filter on a real job, every go
@@ -1322,10 +1399,10 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
     # or by an Exact entry pinning the step's whole script. A line claimed by a Run is reduced only
     # in its one simple form, the whole script of its step, under an env, job, shell and directory
     # that cannot move it; its packages, -tags, -race and mode must then be exactly the Run's. Any
-    # other claimed command is unreduced and falls to everything a go command can read, as does
-    # every run of an Exact entry whose step's surroundings could move what it compiles. A step
-    # whose script or directory is not its Exact entry's is refused instead, naming the step and
-    # the first difference.
+    # other claimed command is unreduced and falls to everything a go command can read. A step an
+    # Exact entry pins is refused instead when its script or directory is not the entry's, naming
+    # the first line that differs or both directories, and when its env, shell, container or job
+    # could move what it compiles, naming what does.
     # Each index is keyed by the ci.yaml job the gate names, which is the job that runs the
     # steps wherever they are: a job that calls a reusable workflow keeps its id, its
     # `needs: changes` and its whole `if:` in ci.yaml and holds its steps in the called file,
@@ -1363,31 +1440,8 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
             workdir = step_workdir(holder, job, step)
             around = around_reason(holder, job, [step]) or script_reason(script)
             entries = [fe for (j, ref), fes in exacts.items() if j == own and step_matches(step, ref) for fe in fes]
-            # A step off its pin is refused rather than read wide. The pin is also the table's word
-            # for which tests the step runs - ci_job_reads.py builds the text-check step's -run from
-            # TEXT_CHECK_TESTS, the names envoy-go's step of what the race build cannot run leaves
-            # out - and reading everything says nothing where the filter selects every Go file
-            # already, as the text_checks filter does: a guard test dropped from that -run then ran
-            # in no job while this check passed. Entries of two gates pinning one text make one
-            # refusal.
-            pins = defaultdict(set)  # (the script an entry pins, its directory) -> the gates pinning it
-            for name, e in entries:
-                pins[(e.script.rstrip(), clean_dir(e.workdir))].add(name)  # as pin_difference compares them
-            for (pinned_script, directory), names in pins.items():
-                drift = [d for d in (pin_difference(script, pinned_script),
-                                     "" if workdir == directory else f"it runs in {workdir}, the entry's in {directory}") if d]
-                if drift:
-                    whose = (f"gate {min(names)}'s exact entry" if len(names) == 1
-                             else f"the exact entries of gates {', '.join(sorted(names))}")
-                    problems.append(error(path, f"{where_job(path, name_there, own)} step \"{step_label(step)}\" is off "
-                                                f"the script and directory {whose} pins it to: {'; '.join(drift)}; make the "
-                                                f"step run the entry's text there again, or change the entry, and any list "
-                                                f"of ci_job_reads.py its text is built from, with the step"))
-            if around:
-                where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\"'s pinned script"
-                for name, e in entries:
-                    unreduced[name] += [(r, where, around) for r in e.runs]
             if entries:
+                refuse_off_pin(path, where_job(path, name_there, own), step, holder, job, workdir, entries, problems)
                 continue  # every go line of the step is claimed by its Exact entries
             mine = [r for (j, ref), rs in claims.items() if j == own and step_matches(step, ref) for r in rs]
             for line in go_lines(script):
