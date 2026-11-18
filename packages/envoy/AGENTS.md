@@ -4853,12 +4853,12 @@ Each item below names an endpoint and its method, then its contract, and an item
   `connected_only` is a boolean field of the request body, which Dispatch sets on the send of a model or thinking switch the session would run as its own turn (a person's own Send or Aside, not one an agent wrote for them, on no issue, no broadcast's copy, whose body is one `/model` or `/effort` line: `isSessionSwitch`) and on every send of a message whose request to `POST /api/v1/agents/{session_id}/messages` set it, and absent it changes nothing.
   A target with no entry within the gone horizon raises the wake report whatever its record says, on the `404` and the `stopped` answer alike, and one whose probe met no-responders raises none.
 
-- The connection probe (`probeSessionConnection`, `cmd/listener/connection_probe.go`) is one core NATS request on the target's relay subject, `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`), with a reply inbox of its own, no body and the one header `Envoy-Probe: 1`, waiting at most 1 s (`connectionProbeTimeout`).
+- The connection probe (`probeSessionConnection`, `cmd/listener/connection_probe.go`) is one core NATS request on the target's relay subject, `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`), on a reply subject of its own that names the target (`bus.SessionReplySubject`, below), with no body and the one header `Envoy-Probe: 1`, waiting at most 1 s (`connectionProbeTimeout`).
   It is sent only to a target whose entry records consumer delivery, since both plugins subscribe the relay subject before they register.
   It never carries a relay frame header, so it cannot decode as a frame and move the session's resume point, and a plugin answers it `done` before it decodes anything (`RelayHeader.probe` in `@legion/envoy-client`), as does each stand-in for a session in the tests, the load test and the end-to-end scripts.
   Any other probe error, a publish this listener's own grant denies (`bus.ErrPublishDenied`) or a connection that is reconnecting, counts as `connected` and is logged at WARN:
   it says something about this listener and nothing about the session, and a listener that cannot ask must not call every session stopped.
-  The probe needs no grant of its own: the listener publishes `notifications.>` and subscribes `_INBOX.>`, and a session subscribes its relay subject and publishes `_INBOX.>` (`packages/envoy/infra/README.md`, "Permission sets").
+  The probe needs no grant of its own: the listener publishes `notifications.>` and subscribes `_INBOX.>`, and a session subscribes its relay subject and publishes its replies, `_INBOX.>` on the shared session user and `_INBOX.*.<session id>.>` (`bus.SessionReplies`) on a grant of the session's own, the one the NATS auth service gives it (`packages/envoy/infra/README.md`, "Permission sets").
 
 - `connected` promises a live plugin of that session id and never a delivery:
   the listener reads whether anything subscribes the relay subject, not which process answered, and whether the session reads the message is its consumer's business, not this answer's.
@@ -5611,9 +5611,12 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 
 - **Relay over NATS:** the owner pulls the consumer and publishes each message, in stream order, as a core frame on `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`, which the stream does not store).
   The frame's data is the stored message's bytes, and its headers are `Envoy-Subject`, `Envoy-Stream-Seq`, `Envoy-Stream-Id`, `Envoy-Delivered`, `Envoy-Stored-At` and, on the first frame after a restart below the stream's first sequence, `Envoy-Gap: true`.
-  Its reply subject is a token under the listener's one reply inbox.
+  Its reply subject is `<the listener's reply inbox>.<session id>.<token>` (`bus.SessionReplySubject`), the token 128 random bits (`crypto/rand.Text`), so no session can work out the token of a frame sent to another from its own.
+  The relay moves a frame only on a reply whose subject names the session the frame was sent to: a reply naming another session, on the frame's token, moves nothing (`sessionRelays.onReply`), so a session that learned another's token cannot answer for it under its own reply prefix.
+  The first such reply is logged at WARN, then at most one a minute (`relayRefusedReplyLogEvery`), each line counting in `held` the replies held back before it.
   The send route's connection probe is the one other message on this subject:
-  no body, the one header `Envoy-Probe: 1` and none of the frame's, on a reply inbox of its own, so it never decodes as a frame, never reaches the relay's reply handler and never moves the resume point, and the session answers it `done` before any decode (`/v1/messages/send`).
+  no body, the one header `Envoy-Probe: 1` and none of the frame's, on a reply subject of its own that also names the session, so it never decodes as a frame, never reaches the relay's reply handler and never moves the resume point, and the session answers it `done` before any decode (`/v1/messages/send`).
+  Dispatch's agent stream replay (`agentstream.NATS.Replay`), the one other request a session answers, asks on such a subject too, on the session's control subject.
   The session answers each frame with one word:
   `received` once the frame decodes, before any host work;
   `progress` every 20 s while it holds the frame unwritten (`InProgress`);
@@ -5662,9 +5665,11 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   the holder answers nothing and reads the stored copy from its own consumer (`forwardAndWait`, `startRoleForward`).
   A forward the stream did not store within the window is `delivery_failed`; no answer is `receipt_timeout` any more.
 
-- **Trust:** `core.SessionPermissions` subscribes to `notifications.envoy.deliver.*` and no other `notifications.` subject, so a client holding a session user can read any session's relay frames and publish `done` to a frame's reply subject (an `_INBOX.` subject, which every session user may publish to), which acknowledges that session's message away:
+- **Trust:** `core.SessionPermissions` subscribes to `notifications.envoy.deliver.*` and no other `notifications.` subject, so a client holding a session user can read any session's relay frames, their reply subjects with them, and publish `done` to one (an `_INBOX.` subject, which every session user may publish to), which acknowledges that session's message away:
   it can remove a stored message from the consumer of a session that is away, so that session never sees it.
-  dispatch://INFRA-840 narrows that grant to the session's own subjects.
+  A grant of one session's own, the one the NATS auth service gives a session, closes that for a session that holds it: it subscribes the session's own relay subject alone and publishes replies under its own id alone (`bus.SessionReplies`, `_INBOX.*.<session id>.>`), which every request a session answers asks on (`bus.SessionReplySubject`), and the relay refuses a reply that names another session than its frame's.
+  It stays open to every holder of the shared session user (`core.SessionPermissions`, `gcp:NatsHub`'s `sessionUser`) or of a host user (`HostPermissions`): either may read any session's relay subject and publish `done` to the reply subject a frame carries, since the relay reads the session the subject names and not who published it.
+  It closes for good once hubs admit sessions only through the auth service and render neither user.
   A host user (`HostPermissions`), which a host's sessions share with its listener, still names `notifications.>`, so there a session reads every notification topic until that change lands.
 
 ## Keyed Dispatch writes
