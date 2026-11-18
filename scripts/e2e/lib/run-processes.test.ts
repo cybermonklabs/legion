@@ -285,6 +285,31 @@ st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_mark
   expect(readFileSync(join(work, "rp.err"), "utf8")).toMatch(/has not marked its processes/);
 });
 
+test("an empty run directory names no process: marked_processes, procs_naming and names_dir refuse it with 2", () => {
+  // With DIR empty and the mark unset, `LEGION_E2E_RUN=` and `XDG_CONFIG_HOME=` followed by any
+  // absolute path matched, so the walk named every process of this user that carries an
+  // XDG_CONFIG_HOME, and a sweep given it would have ended them all. The stand-in is one such
+  // process. The row runs no sweep: against scripts that do not refuse, that would end them.
+  const work = join(dir, "empty-dir");
+  mkdirSync(join(work, "cfg"), { recursive: true });
+  const bystander = spawn(["sleep", "60"], {
+    cwd: dir,
+    env: { XDG_CONFIG_HOME: join(work, "cfg") },
+  });
+  const r = harness(
+    work,
+    `unset LEGION_E2E_RUN
+st=0; marked_processes "" >"$work/mp.out" 2>"$work/mp.err" || st=$?; echo "marked_processes $st, named $(wc -l <"$work/mp.out")"
+st=0; procs_naming "" "\${run_marks[@]}" >"$work/pn.out" 2>"$work/pn.err" || st=$?; echo "procs_naming $st, named $(wc -l <"$work/pn.out")"
+st=0; names_dir "" XDG_CONFIG_HOME ${bystander} 2>"$work/nd.err" || st=$?; echo "names_dir $st"`
+  );
+  expect(r.err).toBe("");
+  expect(r.out).toBe("marked_processes 2, named 0\nprocs_naming 2, named 0\nnames_dir 2\n");
+  expect(readFileSync(join(work, "mp.err"), "utf8")).toMatch(/no run directory/);
+  expect(readFileSync(join(work, "pn.err"), "utf8")).toMatch(/no run directory/);
+  expect(readFileSync(join(work, "nd.err"), "utf8")).toMatch(/no run directory/);
+});
+
 test("stop_marked_processes ends every marked process of the run, an escaped one too, and leaves a person's shell and tail -f under the run's directory running", async () => {
   const work = join(dir, "sweep");
   mkdirSync(work);

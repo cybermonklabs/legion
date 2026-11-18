@@ -218,11 +218,17 @@ freeze_if() {
 # names_dir DIR NAME… PID succeeds when PID's environment, read whole in this shell with no pipe,
 # gives one of the NAMEs the value DIR or a path under DIR; fails with 1 when none has that value,
 # and with 2 when the environment cannot be read or is empty (the process has gone). PID comes last,
-# so freeze_if can run it as a CHECK. It runs with xtrace off (env_of).
+# so freeze_if can run it as a CHECK. It runs with xtrace off (env_of). An empty DIR is refused with
+# 2: `NAME=` followed by any absolute path would match it, so every process carrying NAME would be
+# the run's.
 names_dir() {
   local - dir=$1 pid=${!#} entry name
   local -a names=("${@:2:$# - 2}") entries=()
   set +x
+  [ -n "$dir" ] || {
+    echo "names_dir: no run directory given, so no process is the run's" >&2
+    return 2
+  }
   { mapfile -d '' -t entries <"/proc/$pid/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
   for entry in "${entries[@]}"; do
     for name in "${names[@]}"; do
@@ -281,6 +287,11 @@ stop_tree() {
 procs_naming() {
   local dir=$1 p pid before status=0 name
   local -a names=("${@:2}") naming_patterns=() naming_files=()
+  # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
+  [ -n "$dir" ] || {
+    echo "procs_naming: no run directory given, so no process was named" >&2
+    return 2
+  }
   [ -r /proc/self/environ ] || {
     echo "procs_naming: there is no /proc/<pid>/environ to read, so the processes naming $dir were not read" >&2
     return 2
@@ -311,19 +322,33 @@ procs_naming() {
 
 # run_marks are the variables that mark a process as one of a stage proof's run, each naming the
 # run's scratch directory: LEGION_E2E_RUN, which the run exports once its transcript runs, so every
-# process it starts after carries it, and XDG_CONFIG_HOME, for the processes whose environment the
+# program it execs after carries it, and XDG_CONFIG_HOME, for the processes whose environment the
 # daemon builds from its allow-list (a pane's, paneEnvAllowList in
 # packages/daemon/internal/runtime/tmux/environment.go), which carries no variable of the run's own
 # but has its XDG directories moved under the daemon's state directory, which the run puts under its
 # scratch directory. A person's shell working in that directory, or a `tail -f` of a file there,
-# carries neither, whatever its working directory or command line, so no sweep ends it.
+# carries neither, whatever its working directory or command line, so no sweep ends it. Nor does a
+# fork of the driver that execs nothing, a background subshell, group or function (`( … ) &`,
+# `pane_watcher &`): its /proc/<pid>/environ is the driver's environment at the driver's own exec,
+# which an `export` does not rewrite, so no sweep sees it, and each is stopped by the pid it had
+# when it started, and ends of itself once the driver has gone where its loop reads `kill -0 "$$"`.
+# They are: claude-backend-tmux.sh's, stage3-devbox-workflow.sh's and stage3-4b13b-acceptance.sh's
+# pane_watcher (watcher_pid), stage3-4b13b-acceptance.sh's instructor (instructor_pid),
+# stage4b-sandbox-tree.sh's watch_raw pod and event watches (watch_pid, events_pid), its node-memory
+# and interests samplers (sampler_pid, interests_pid) and its pod_shape_watcher (shape_pid),
+# lib/github-apps.sh's token refresher (app_token_refresher) and lib/bridge-tunnel.sh's watchdog
+# (bridge_watchdog_pid).
 run_marks=(LEGION_E2E_RUN XDG_CONFIG_HOME)
 
 # marked_processes DIR prints `PID START` for every process still alive that carries the mark of the
 # run whose scratch directory is DIR (run_marks, procs_naming). It fails with 2, saying why, when
 # the walk could not read the machine's processes, and when the caller has not marked its run:
-# LEGION_E2E_RUN in its own environment is not DIR.
+# DIR is empty, or LEGION_E2E_RUN in its own environment is not DIR.
 marked_processes() {
+  [ -n "$1" ] || {
+    echo "marked_processes: no run directory given, so no process of a run was named" >&2
+    return 2
+  }
   [ "${LEGION_E2E_RUN:-}" = "$1" ] || {
     echo "marked_processes: the run under $1 has not marked its processes (LEGION_E2E_RUN is '${LEGION_E2E_RUN:-}')" >&2
     return 2
