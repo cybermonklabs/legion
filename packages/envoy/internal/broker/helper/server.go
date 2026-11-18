@@ -1042,7 +1042,7 @@ func heldPrincipal(err error) (string, bool) {
 // enrollSessionKey enrolls a key a launcher holds for a session on this machine — a broker-call
 // op (brokerCall) requiring no registered session (see Broker.EnrollSessionKey), so unlike sign
 // it does not check descendancy at all. An enrollment the helper cannot attempt for want of a
-// launcher credential logs cannotEnrollMsg, as a registered session's does. An enrollment whose
+// launcher credential logs cannotEnrollText, as a registered session's does. An enrollment whose
 // outcome the helper does not know (Broker.enrollUnder) answers ENROLL_OUTCOME_UNKNOWN
 // (enrollUnknown); a known failure answers ENROLL_FAILED with the failure as it came.
 func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string) Response {
