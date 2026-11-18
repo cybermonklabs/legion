@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // vmTestTarget is the target of these tests: two containers on one VM, so its samples carry the
@@ -248,7 +251,9 @@ func TestVMSampleFileMergesIntoCgroupJSON(t *testing.T) {
 // TestVMSampleRunsTheEmbeddedScript: the collector sends vm/sample.sh itself on the shell's
 // standard input and reads back what that script prints. The ssh here is a shim that drops the
 // target and runs the shell it was given on this machine, so the script, the arguments the
-// collector gives it and the parser are proved together, against a prepared cgroup tree.
+// collector gives it and the parser are proved together, against a prepared cgroup tree. The
+// collector runs until the file holds two readings of each kind, not for a span: a loaded
+// machine can start the shim or the script later than any span, and that is slow, not wrong.
 func TestVMSampleRunsTheEmbeddedScript(t *testing.T) {
 	dir := t.TempDir()
 	cgroup := filepath.Join(dir, "dispatch")
@@ -270,10 +275,17 @@ func TestVMSampleRunsTheEmbeddedScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "cgroup.jsonl")
-	if err := runVMSample([]string{
-		"-out", out, "-ssh", shim, "-interval", "200ms", "-until", "700ms",
+	err := vmSampleUntil(t, []string{
+		"-out", out, "-ssh", shim, "-interval", "200ms",
 		"-vm", "loadtest@app-vm:dispatch=" + cgroup,
-	}); err != nil {
+	}, "two container readings and two machine readings in "+out, func() bool {
+		roles := map[string]int{}
+		for _, s := range vmWholeSamples(out) {
+			roles[s.Role]++
+		}
+		return roles["dispatch"] >= 2 && roles["vm-app-vm"] >= 2
+	})
+	if err != nil {
 		t.Fatalf("vm-sample: %v", err)
 	}
 	b, err := os.ReadFile(out)
@@ -299,13 +311,62 @@ func TestVMSampleRunsTheEmbeddedScript(t *testing.T) {
 		}
 	}
 	if roles["dispatch"] < 2 || roles["vm-app-vm"] < 2 {
-		t.Errorf("700 ms at a 200 ms interval gave %d container readings and %d machine readings, want at least two of each", roles["dispatch"], roles["vm-app-vm"])
+		t.Errorf("the collector wrote %d container readings and %d machine readings, want at least two of each", roles["dispatch"], roles["vm-app-vm"])
 	}
+}
+
+// vmSampleUntil runs vm-sample with args until done holds, then stops it and returns its error.
+// The test waits on what the file holds, not on a span: a loaded machine can start the ssh later
+// than any span, and that makes the test slow, not wrong. The bound is five minutes, or the test
+// binary's own deadline less a second: the embedded script counts this machine's processors one
+// /proc/cpuinfo line at a time, so on a machine of hundreds of them a starved test takes most of
+// a minute for two machine readings. A broken ssh does not wait the bound out, since each ssh
+// that ends or stays silent for vmSampleSilence leaves a gap reading of every series.
+func vmSampleUntil(t *testing.T, args []string, what string, done func() bool) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	var sampled error
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		sampled = sampleVMs(ctx, args)
+	}()
+	t.Cleanup(func() { cancel(); <-stopped })
+	testwait.WithinPolling(t, testwait.Bounded(t, 5*time.Minute, time.Second), testwait.Poll, what, func() bool {
+		select {
+		case <-stopped: // a collector that stops on its own fails the caller's checks of its file
+			return true
+		default:
+		}
+		return done()
+	})
+	cancel()
+	<-stopped
+	return sampled
+}
+
+// vmWholeSamples is the samples in the whole lines of the cgroup.jsonl at path, which the
+// collector may still be writing: a line it has not finished is not read.
+func vmWholeSamples(path string) []cgroupSample {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(b), "\n")
+	var samples []cgroupSample
+	for _, line := range lines[:len(lines)-1] {
+		var s cgroupSample
+		if json.Unmarshal([]byte(line), &s) == nil {
+			samples = append(samples, s)
+		}
+	}
+	return samples
 }
 
 // TestVMSampleRestartsADeadSSH: an ssh that ends is started again, and the gap it left is an
 // error reading of every series on the VM, never a series that closes in silence. The fake ssh
-// prints one reading and exits, as a dropped connection does.
+// prints one reading and exits, as a dropped connection does. The collector runs until two ssh
+// runs have each left their reading and their gap.
 func TestVMSampleRestartsADeadSSH(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "ssh-calls")
@@ -316,10 +377,21 @@ func TestVMSampleRestartsADeadSSH(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "cgroup.jsonl")
-	if err := runVMSample([]string{
-		"-out", out, "-ssh", fake, "-interval", "100ms", "-until", "1s",
+	err := vmSampleUntil(t, []string{
+		"-out", out, "-ssh", fake, "-interval", "100ms",
 		"-vm", "loadtest@app-vm:dispatch=/sys/fs/cgroup/dispatch",
-	}); err != nil {
+	}, "two good readings and two gaps of each series in "+out, func() bool {
+		good, gaps := 0, map[string]int{}
+		for _, s := range vmWholeSamples(out) {
+			if s.good() {
+				good++
+			} else {
+				gaps[s.Role+" "+s.Container]++
+			}
+		}
+		return good >= 2 && gaps["dispatch dispatch"] >= 2 && gaps["vm-app-vm vm"] >= 2
+	})
+	if err != nil {
 		t.Fatalf("vm-sample: %v", err)
 	}
 
@@ -329,7 +401,7 @@ func TestVMSampleRestartsADeadSSH(t *testing.T) {
 	}
 	ran := strings.Count(string(callLog), "\n")
 	if ran < 2 {
-		t.Fatalf("the ssh ran %d times in 1 s, so a dead one was not started again: %s", ran, callLog)
+		t.Fatalf("the ssh ran %d times, so a dead one was not started again: %s", ran, callLog)
 	}
 	wantArgs := "loadtest@app-vm sh -s -- -i 0.1 -m vm-app-vm dispatch=/sys/fs/cgroup/dispatch"
 	if first, _, _ := strings.Cut(string(callLog), "\n"); first != wantArgs {
@@ -366,21 +438,50 @@ func TestVMSampleRestartsADeadSSH(t *testing.T) {
 
 // TestVMSampleTakesASilentSSHForDead: a VM whose script is wedged holds its ssh open and prints
 // nothing; the stream is killed once it has been silent for the sampler's silence and says so,
-// rather than reporting the kill as an ssh that died. The timer goroutine writes that fact and
-// the stream reads it after the ssh ends, so this is also what the race detector reads.
+// rather than reporting the kill as an ssh that died. The test fires the silence itself, once the
+// stream has written the reading the VM printed first: a real timer starts with the ssh, and a
+// loaded machine can start the fake later than any short silence. The fire writes that fact on
+// the test's goroutine and the stream reads it after the ssh ends, so this is also what the race
+// detector reads.
 func TestVMSampleTakesASilentSSHForDead(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake-ssh")
 	// One reading, then silence: the sampler's idle timer is what ends this ssh. The sleep is
 	// exec'd, so the process the timer kills is the one holding the stream open.
 	script := "#!/bin/sh\ncat >/dev/null\ncat <<'EOF'\n" +
-		vmReadingText("dispatch", "dispatch", 7, 0, "1600000 100000", 11, 1) + "EOF\nexec sleep 30\n"
+		vmReadingText("dispatch", "dispatch", 7, 0, "1600000 100000", 11, 1) + "EOF\nexec sleep 3600\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	expire := make(chan func(), 1)
 	s := &vmSampler{ssh: []string{fake}, interval: 100 * time.Millisecond, silence: 150 * time.Millisecond,
-		now: time.Now, lg: log.New(io.Discard, "", 0), out: io.Discard}
-	err := s.stream(t.Context(), vmTestTarget(t))
+		afterSilence: func(_ time.Duration, f func()) vmIdleTimer { expire <- f; return vmHeldTimer{} },
+		now:          time.Now, lg: log.New(io.Discard, "", 0), out: io.Discard}
+	target := vmTestTarget(t)
+	var err error
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		err = s.stream(t.Context(), target)
+	}()
+	t.Cleanup(func() { <-stopped })
+	testwait.Eventually(t, "the reading the VM printed before it went silent", func() bool {
+		select {
+		case <-stopped:
+			return true
+		default:
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.written > 0
+	})
+	select {
+	case <-stopped:
+		t.Fatalf("the stream ended before its silence passed, with %v and %d samples", err, s.written)
+	default:
+	}
+	(<-expire)()
+	<-stopped
 	if err == nil || !strings.Contains(err.Error(), "printed nothing for") {
 		t.Fatalf("a wedged VM ended the stream with %v, want the silence it was taken for dead after", err)
 	}
@@ -388,3 +489,9 @@ func TestVMSampleTakesASilentSSHForDead(t *testing.T) {
 		t.Errorf("the stream wrote %d samples, want the one reading it printed before it went silent", s.written)
 	}
 }
+
+// vmHeldTimer is a silence timer that only its test fires: a reset or a stop of it does nothing.
+type vmHeldTimer struct{}
+
+func (vmHeldTimer) Reset(time.Duration) bool { return true }
+func (vmHeldTimer) Stop() bool               { return true }
