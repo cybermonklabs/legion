@@ -278,12 +278,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   /**
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
-   * (`turn-recovery.ts:1625-1653` and `:2693-2703` at the pinned tag
-   * `v18.16.0-sami.20261104-021732`).
+   * (`turn-recovery.ts:1641-1675` and `:2715-2725` at the pinned tag
+   * `v18.18.6-sami.20261118-091112`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
-   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:249-252` at the
+   * fallback and appends an ordinary `model_change` (`session/model-controls.ts:322-325` at the
    * pinned tag), so nothing on the branch would carry the host's claim at all.
    */
   const walkChain = async (ctx: ModelFallbackContext, current: HostModel): Promise<void> => {
@@ -333,7 +333,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
     // The host is about to retry this turn itself, so it has not settled; acting on it would step
-    // the session down twice (`session/agent-session.ts:5666-5674` at the pinned tag).
+    // the session down twice (`session/agent-session.ts:5876-5884` at the pinned tag).
     if (event.willContinue === true) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;
@@ -491,7 +491,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // settled turn's last assistant message is clean and `settled` below never sees that
         // refusal. An `"other"` arming would then wait on a suppression the host never applies
         // — for a classifier refusal it pins the fallback instead
-        // (`session/turn-recovery.ts:3229` at the pinned tag) — and hand the session straight
+        // (`session/turn-recovery.ts:3290` at the pinned tag) — and hand the session straight
         // back to the model that had just refused it, with no cooldown at all.
         //
         // A host build that sends no reason arms `"other"`, as every arming did before, and

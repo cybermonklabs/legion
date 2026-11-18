@@ -146,8 +146,8 @@ compaction that fails or is cancelled after aborting the run, or a switch that f
 abort and its `session_switch`, then a prompt sent while the host is busy, or one that reaches it
 with no `input` event (another extension's `sendUserMessage` or triggered message, an ACP prompt,
 a wake of the host's own); or a run another sender starts with no wait while a manual compaction
-has the agent disconnected (`agent-session.ts` `#promptAgentInitiatedMessage`, ~9083-9095), which
-leaves the host busy at that `session_compact`. Another extension's startup send
+has the agent disconnected (`agent-session.ts` `#promptAgentInitiatedMessage`, 11397-11437 at the
+pinned tag), which leaves the host busy at that `session_compact`. Another extension's startup send
 still loading its pictures on an idle host can let the startup wake join the host's startup drain;
 the drain of `/reload-plugins` is not covered; a startup targeted Aside in plan mode gets a wake an
 aside never got; and an RPC session that receives no card while it starts stays in the startup
@@ -353,7 +353,7 @@ the terminal runs it; the extension, custom and skill commands (`pi.getCommands`
 markdown file commands and prompt templates the live session expands, read from the host's own
 `AgentSession` (`slashCommands`, `promptTemplates`) by finding, in `AgentRegistry.global().list()`,
 the ref whose live session id is this session's. At the pin, `createAgentSession` defaults its
-main session to that registry (sdk.ts:2204) and registers it (sdk.ts:4067), so print and `--mode rpc`
+main session to that registry (sdk.ts:2607) and registers it (sdk.ts:4824), so print and `--mode rpc`
 main sessions list file commands and templates too. The ref is looked up whenever commands refresh,
 since the host keeps one `AgentSession` across `/new`, `/resume` and a fork and changes its id; a
 host without the registry export, or one listing no session under this id, lists none of those two

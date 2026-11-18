@@ -17703,7 +17703,7 @@ console.log(JSON.stringify(args));
     });
 
     // An ACP host serves several top-level sessions in one process, each with its own pi-envoy,
-    // and its fork opens the source session in a new one before forking it (acp-agent.ts:1290-1310
+    // and its fork opens the source session in a new one before forking it (acp-agent.ts:1918-1939
     // at the pin). The fork's instance leaving the source id must not forget the turns the source
     // session's own instance sent in: that instance still serves the id and still asks under it.
     test("a typed turn's note survives another instance in the process passing through its session", async () => {

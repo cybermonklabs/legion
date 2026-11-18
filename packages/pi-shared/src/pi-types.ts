@@ -12,8 +12,8 @@ import type { Component } from "@oh-my-pi/pi-tui";
  */
 
 /** A model as the host names it: the provider and the id a model selector resolves to
- * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:541-560` in
- * Oh My Pi at tag `v18.16.0-sami.20261104-021732`, read on that build). */
+ * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:579-597` in
+ * Oh My Pi at tag `v18.18.6-sami.20261118-091112`, read on that build). */
 export interface HostModel {
   readonly provider: string;
   readonly id: string;
@@ -23,8 +23,8 @@ export interface HostModel {
  * chain's resolution needs as its `RetryFallbackModelLookup`
  * (`packages/coding-agent/src/session/retry-fallback-chains.ts:37-41` at the pinned tag), and the
  * suppression the host's own turn recovery reads before it picks a fallback
- * (`session/turn-recovery.ts:2026`), so an extension stepping down the same chain skips what the
- * host already skips. Each is a method of the live registry, which reads private state of its
+ * (`session/turn-recovery.ts:2047-2049`), so an extension stepping down the same chain skips what
+ * the host already skips. Each is a method of the live registry, which reads private state of its
  * own, so a caller calls it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
   /** The model one provider and id name, or undefined when this deployment disables the provider
@@ -49,7 +49,7 @@ export interface SessionContext {
   readonly taskDepth?: number;
   /** Which runner the event belongs to: the top-level session's is `main`, a `task` subagent's
    * `sub`. `id` is the host's agent registry id for that runner (`ExtensionAgentIdentity`,
-   * `extensibility/extensions/types.ts:585-600` at the pinned tag). */
+   * `extensibility/extensions/types.ts:608-625` at the pinned tag). */
   readonly agent?: { readonly kind: "main" | "sub"; readonly id?: string };
   readonly sessionManager: {
     readonly getSessionId: () => string;
@@ -135,7 +135,7 @@ export interface SessionContext {
   readonly hasPendingMessages?: () => boolean;
   /** The models the host holds, the one the session runs now, and what one selector such as
    * `anthropic/claude-opus-4-5` resolves to (`ExtensionModelQuery`,
-   * `extensibility/extensions/types.ts:541-560` at the pinned tag). */
+   * `extensibility/extensions/types.ts:579-597` at the pinned tag). */
   readonly models?: {
     readonly list: () => readonly HostModel[];
     readonly current: () => HostModel | undefined;
@@ -319,15 +319,15 @@ export interface AgentEndMessage {
    * provider failure, `length` a truncation. */
   readonly stopReason?: string;
   /** What the provider said about an `error` stop, when it said anything: Oh My Pi carries
-   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1463-1471`,
-   * `StopDetails` at `packages/ai/src/providers/anthropic-wire.ts:472-478`, at the pinned tag). */
+   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1492-1500`,
+   * `StopDetails` at `packages/ai/src/providers/anthropic-wire.ts:481-487`, at the pinned tag). */
   readonly stopDetails?: {
     readonly type?: string | null;
     readonly category?: string | null;
     readonly explanation?: string | null;
   } | null;
   /** The error text of an `error` stop, which each provider writes its own way (`AssistantMessage`,
-   * `packages/ai/src/types.ts:1463-1471` at the pinned tag). `classifyProviderTurn`
+   * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
 }
@@ -740,7 +740,7 @@ export interface PiApi {
   readonly setActiveTools: (tools: string[]) => Promise<void>;
   /**
    * Switches the session's model, as `/model` does; false when no API key for that model is
-   * available (`ExtensionAPI`, `extensibility/extensions/types.ts:2168-2177` at the pinned tag).
+   * available (`ExtensionAPI`, `extensibility/extensions/types.ts:2253-2260` at the pinned tag).
    */
   readonly setModel?: (model: HostModel) => Promise<boolean>;
   /** The session's thinking level, and a setter for it (same `ExtensionAPI` block at the pinned
