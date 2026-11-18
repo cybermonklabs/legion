@@ -812,6 +812,10 @@ One row is one session; `path` is the same string the session would have had as 
 The second child keeps that `ompSessionFile` field and carries the row path in it unchanged — no rename, no wire or contract change.
 The key embeds the home-relative sessions root, so the resuming pod must carry the same two `OMP_SESSION_*` variables and the same `HOME` (and `OMP_PROFILE`) as the pod that wrote it, and the same `OMP_CONFIG_ROOT` or none: from the pinned build on, that variable replaces the home-relative root.
 Nothing else changes: the daemon already relaunches a dead worker with `--resume=<recorded session file>`.
+From the pinned build on, the session store holds a lease per session, and a resume of a session another live process still holds waits up to 35 seconds for it and then moves the process onto a new session id, which the daemon never recorded.
+So every launch that resumes a recorded Oh My Pi session carries `OMP_SESSION_EXCLUSIVE=1`, in the generation's start command alone (a tmux pane carries it as one of its `-e` pairs), and a fresh launch or a Claude Code role carries nothing of it.
+Under it that resume exits non-zero after the wait and moves nothing, and a lease lost or a session another writer replaced ends the process rather than moving it.
+The runtime sets the variable after the operator's: neither `runtime.kubernetes.pod.env` nor `runtime.tmux.pane_env` may name it, and under Kubernetes `provider_keys` may not name it either.
 
 ### Refusals
 
@@ -7069,6 +7073,7 @@ each issue's pod (every role of it alike) and the image probe's.
   So nothing of Legion's holds a repository's settings off — they reach a pod's agent as they reach any agent session, under the operator's overlay — and nothing of Legion's turns a pinned binary's own defaults off either: background work (`async.enabled`, `bash.autoBackground.enabled`) is on for every role, as it is for `--mode rpc`.
   The pod sets `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file` on the agent where the pod leaves them unset, which an operator's pod may not set, since they decide where Oh My Pi keeps the session a resume reads.
   From the pinned build on, `OMP_CONFIG_ROOT` decides it too, and outranks `PI_CONFIG_DIR`: an operator's pod may not set it either, but the pod does not set it, so a repository's `.env` that sets it moves the config root (read from Oh My Pi's source, `env.ts` and `dirs.ts`; not run).
+  Legion's runtime sets `OMP_SESSION_EXCLUSIVE=1` on every launch that resumes a recorded Oh My Pi session ([Resume](#resume)), and an operator's pod may not set it either, since it holds that resume to the session the daemon recorded.
 
 - **Model roles.**
   Legion's shipped agents dispatch by role alias:

@@ -30,6 +30,17 @@ const ClaudeConfigDirVariable = "CLAUDE_CONFIG_DIR"
 // daemon of like any other (internal/claudebridge).
 var ClaudeDisabledFeatures = []string{"CLAUDE_CODE_DISABLE_CRON"}
 
+// SessionExclusiveVariable is the variable that holds a resumed Oh My Pi to the session it was
+// told to resume. From the pinned Oh My Pi on, its SQL session store holds a lease per session, and
+// a resume of a session another live process still holds waits out the lease and then moves the
+// process onto a new session id, which the daemon never recorded. Set to 1 (Oh My Pi reads exactly
+// "1"), that resume exits non-zero after the wait and moves nothing, and a lease lost or a session
+// file another writer replaced ends the process rather than moving it. Every runtime sets it to 1
+// on each launch that resumes a recorded Oh My Pi session, after the operator's variables, and on
+// no other launch: the tmux runtime as a resumed pane's -e pair (tmux's ompLauncher), the Sandbox
+// runtime in the resumed generation's start command (sandbox's mainEnvironment).
+const SessionExclusiveVariable = "OMP_SESSION_EXCLUSIVE"
+
 // launchSecrets are every secret the daemon hands a launch in its spec (daemon.launchSecrets: the
 // Envoy bearer and the pane NATS nkey seed, each when the daemon has one), which a runtime gives
 // the agent as a file of the launch's own behind a `<NAME>_FILE` pointer it sets per launch.
@@ -44,18 +55,21 @@ var urlPassword = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:]*:[^\s
 // (config) and the tmux runtime again at boot (tmux.New), each beside its own checks of what only
 // it can see. A variable that places the session a resume reads is refused, since the runtime
 // places a pane's sessions itself and a resume must find the session where the agent left it; so
-// is one the runtime sets on every Claude Code pane after the operator's variables, where the
-// operator's value would be overridden without a word, and a launch secret's pointer, which every
-// launch sets to a file of its own and the runtime then refuses at every launch. A value that is a
-// URL carrying a password is refused too: a pane variable is a value on tmux's command line, which
-// every process on the host can read, and a secret reaches a pane as a file. The reason names the
-// variable's role and never the value.
+// is one the runtime sets after the operator's variables on every Claude Code pane, or on every
+// resumed Oh My Pi pane (SessionExclusiveVariable), where the operator's value would be overridden
+// without a word, and a launch secret's pointer, which every launch sets to a file of its own and
+// the runtime then refuses at every launch. A value that is a URL carrying a password is refused
+// too: a pane variable is a value on tmux's command line, which every process on the host can
+// read, and a secret reaches a pane as a file. The reason names the variable's role and never the
+// value.
 func PaneVariableRefusal(name, value string) string {
 	switch {
 	case slices.Contains(sessionPlacing, name):
 		return "it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"
 	case name == ClaudeConfigDirVariable || slices.Contains(ClaudeDisabledFeatures, name):
 		return "the runtime sets it on every Claude Code pane itself, after the operator's variables"
+	case name == SessionExclusiveVariable:
+		return "the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"
 	}
 	for _, secret := range launchSecrets {
 		if name == secret+"_FILE" {

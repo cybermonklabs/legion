@@ -88,6 +88,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		byOperator   = "runtime.kubernetes.pod.env sets"
 		byController = "Legion's runtime sets for the controller it launches, from the project's slack_channels alone"
 		byClaude     = "Legion's runtime sets for a role it launches on Claude Code (worker_backends)"
+		byResume     = "Legion's runtime sets on every launch that resumes a recorded Oh My Pi session, to hold it to that session"
 	)
 	fixture := operatorRouteFixture(t)
 	for _, tc := range []struct {
@@ -110,6 +111,12 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		// a task that finishes wakes a turn the bridge reports to the daemon.
 		{name: "Claude Code's background tasks", pod: env("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0")},
 		{name: "an operator's Claude Code setting", pod: env("CLAUDE_CODE_USE_FOUNDRY", "1")},
+		// A resumed Oh My Pi is held to the session it resumes (mainEnvironment): the operator's pod
+		// may neither turn that off nor set it on the fresh launches.
+		{name: "what holds a resumed Oh My Pi to its session", pod: env("OMP_SESSION_EXCLUSIVE", "0"),
+			want: envSets("OMP_SESSION_EXCLUSIVE", byResume)},
+		{name: "a provider key for what holds a resumed Oh My Pi to its session", keys: map[string]string{"OMP_SESSION_EXCLUSIVE": "exclusive"},
+			want: keyNames("OMP_SESSION_EXCLUSIVE", byResume)},
 		{name: "the image's HOME", pod: env("HOME", "/tmp/elsewhere"), want: envSets("HOME", byImage)},
 		{name: "the AWS CLI CA bundle", pod: env("AWS_CA_BUNDLE", "/tmp/roots.pem"), want: envSets("AWS_CA_BUNDLE", byImage)},
 		{name: "the image's profile", pod: env("OMP_PROFILE", "other"), want: envSets("OMP_PROFILE", byImage)},

@@ -48,7 +48,9 @@ type setter struct {
 // store's two variables named apart, since they are Legion's under either store, the controller's
 // Slack channel list, which the runtime sets in the controller's pod alone, Claude Code's three
 // (claudelaunch.Environment) and the session its launcher keeps (claudelaunch.SessionVariable),
-// which it tells a Claude role alone, in its start command, and the name the
+// which it tells a Claude role alone, in its start command, what holds a resumed Oh My Pi to the
+// session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
+// recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
 // image (imageEnv), every launch's spec (the role App's git identity, and each launch secret's
 // `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
@@ -81,6 +83,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 		add(name, claude, false)
 	}
 	add(claudelaunch.SessionVariable, claude, false)
+	add(runtime.SessionExclusiveVariable, "Legion's runtime sets on every launch that resumes a recorded Oh My Pi session, to hold it to that session", false)
 	// The composed names are this runtime's to compose as well, from the operator's own value and
 	// the launch's issue and role (runtime.SpendResourceAttributes, roleOperatorEnv): the operator
 	// writes the attributes its whole deployment is billed under, and the runtime writes the

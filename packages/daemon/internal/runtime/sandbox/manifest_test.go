@@ -1458,16 +1458,17 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 
 // runtimeOwned and the composed names together, with the exchange identity's two where the
 // deployment names an exchange audience (Runtime.specOwned), are exactly what the worker container
-// is told by the runtime itself, a tree agent's, a Claude Code worker's and the controller's
-// together: every name mainEnvironment sets with Env empty and no secret of the spec's, every
-// optional value configured — the tree agent works a repository the project names, so it is told
-// the issue key it stamps its commits with — under an enrollment that names an exchange audience
-// and under one that names none, which tells no role either exchange variable. A name added to
-// the environment and in no set is one a spec could override; a name left in one of them that
-// the environment no longer sets is one a spec is refused for nothing. The sets are kept apart by
-// what an operator may do with a name, not by who writes the value the container carries: a
-// composed name reaches the container with the operator's own value inside it (roleOperatorEnv),
-// and every launch has a role, so the spend attributes are in every one of these environments.
+// is told by the runtime itself, a tree agent's, a resumed tree agent's, a Claude Code worker's and
+// the controller's together: every name mainEnvironment sets with Env empty and no secret of the
+// spec's, every optional value configured — the tree agent works a repository the project names,
+// so it is told the issue key it stamps its commits with — under an enrollment that names an
+// exchange audience and under one that names none, which tells no role either exchange variable.
+// A name added to the environment and in no set is one a spec could override; a name left in one
+// of them that the environment no longer sets is one a spec is refused for nothing. The sets are
+// kept apart by what an operator may do with a name, not by who writes the value the container
+// carries: a composed name reaches the container with the operator's own value inside it
+// (roleOperatorEnv), and every launch has a role, so the spend attributes are in every one of
+// these environments.
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	for name, agentSecrets := range map[string]*AgentSecrets{
 		"the exchange identity on":  exchangeEnrolled(),
@@ -1484,8 +1485,12 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 			}
 			stamping := workerSpec(t)
 			stamping.IssueTrailer = stamping.Issue
+			// The resumed tree agent is told what holds it to the session it resumes, which no fresh
+			// launch is told (runtime.SessionExclusiveVariable).
+			resuming := stamping
+			resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
 			told := map[string]bool{}
-			for _, spec := range []runtime.SpawnSpec{stamping, claudeWorkerSpec(t), controllerSpec(t)} {
+			for _, spec := range []runtime.SpawnSpec{stamping, resuming, claudeWorkerSpec(t), controllerSpec(t)} {
 				spec.Env, spec.Secrets = nil, nil
 				for name := range envOf(workerOf(t, r, spec)) {
 					told[name] = true
@@ -3174,5 +3179,51 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 	}
 	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r.agent); slices.Contains(claude, "--model") {
 		t.Errorf("the Claude pod's command %q names a model, want claudelaunch's own command", claude)
+	}
+}
+
+// A launch that resumes a recorded Oh My Pi session, a worker's or the controller's, is told
+// OMP_SESSION_EXCLUSIVE=1 once in its start command, which holds its Oh My Pi to that session: a
+// resume of a session another live process still holds exits rather than moving the role onto a
+// session id the daemon never recorded. A fresh launch is told nothing of it, and neither is a
+// Claude Code role that resumes its transcript. The variable is the start command's alone: no
+// container of the pod carries it, so a resume changes nothing of the pod it relaunches in.
+func TestOnlyAResumedOhMyPiLaunchIsHeldToItsSession(t *testing.T) {
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := workerSpec(t)
+	resumed.Generation, resumed.BootToken, resumed.ResumeSessionFile = 2, "boot-g2", resumeSession
+	controllerResumed := controllerSpec(t)
+	controllerResumed.Generation, controllerResumed.BootToken, controllerResumed.ResumeSessionFile = 2, "boot-g2", controllerSession
+	for name, tc := range map[string]struct {
+		spec runtime.SpawnSpec
+		want []string
+	}{
+		"a resumed Oh My Pi worker":    {resumed, []string{"1"}},
+		"the resumed controller":       {controllerResumed, []string{"1"}},
+		"a fresh Oh My Pi worker":      {workerSpec(t), nil},
+		"the fresh controller":         {controllerSpec(t), nil},
+		"a resumed Claude Code worker": {claudeResumeSpec(t), nil},
+	} {
+		l := launchOf(t, r, tc.spec)
+		var values []string
+		for _, entry := range launcherCommand(l, r).Env {
+			if variable, value, _ := strings.Cut(entry, "="); variable == "OMP_SESSION_EXCLUSIVE" {
+				values = append(values, value)
+			}
+		}
+		if !slices.Equal(values, tc.want) {
+			t.Errorf("%s's start command sets OMP_SESSION_EXCLUSIVE to %q, want %q", name, values, tc.want)
+		}
+		pod := r.podTemplate(l).Spec
+		for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
+			for _, v := range c.Env {
+				if v.Name == "OMP_SESSION_EXCLUSIVE" {
+					t.Errorf("%s's pod container %s carries OMP_SESSION_EXCLUSIVE=%q, want it in the start command alone", name, c.Name, v.Value)
+				}
+			}
+		}
 	}
 }
