@@ -1103,18 +1103,22 @@ type PendingStates struct {
 // rather than a function of the alias, so the constant statements below can be built from it.
 const requestBeforeDeadline = `(req.pending_expires_at is null or req.pending_expires_at > now())`
 
-// recordStateSQL is the one SQL rule for whether a credential-request record is pending or
-// expired, over cr, its credential_requests row, and req, its requests row left joined on
-// requests.record_id (none for a machine login). It is 'pending' for a record a decision may still
-// settle, 'expired' for a record whose deadline passed before anybody decided it, and null for
+// recordStateSQL is the one SQL rule for whether a credential-request record is pending, held for
+// the model judge or expired, over cr, its credential_requests row, and req, its requests row left
+// joined on requests.record_id (none for a machine login). It is 'pending' for a record a person's
+// decision may still settle, 'held' for a secret request the model judge holds before its
+// deadline, 'expired' for a record whose deadline passed before anybody decided it, and null for
 // every other record: one decided, or a secret request cancelled before its deadline, which never
 // reached it. Expired is exactly what a decision refuses as expired, with the database's now():
 //
 //   - A secret request by its request row: 'expired', which the sweep wrote; or 'pending' past its
 //     pending_expires_at (requestBeforeDeadline), which applyDecisionAttempt answers ErrExpired
-//     before the sweep gets to it; or 'cancelled' at or after that deadline (pending_expires_at <=
-//     decided_at), a cancel that came after the deadline had passed, which the requesting session
-//     (Cancel) or its enrollment's end writes on any pending request whatever its deadline.
+//     before the sweep gets to it, the judge's hold or none; or 'cancelled' at or after that
+//     deadline (pending_expires_at <= decided_at), a cancel that came after the deadline had
+//     passed, which the requesting session (Cancel) or its enrollment's end writes on any pending
+//     request whatever its deadline. Before its deadline, one with judge_until ahead is 'held': it
+//     is no person's yet, so no list shows it and Dismiss refuses it as not expired; once the hold
+//     ends (handed over, or run out) it is 'pending'.
 //   - A machine login by its terminal event: an 'expired' event, which the sweep wrote
 //     (machine.Service.ExpirePending); or none, with expires_at passed, which machine's
 //     ApplyDecision answers ErrLoginExpired. Nothing cancels a machine login.
@@ -1124,6 +1128,7 @@ const requestBeforeDeadline = `(req.pending_expires_at is null or req.pending_ex
 // refuses by it, and ReadRecord reads a record still pending past its deadline as expired by it.
 const recordStateSQL = `case cr.kind
 		when 'agent_secret' then case
+			when req.state = 'pending' and ` + requestBeforeDeadline + ` and req.judge_until > now() then 'held'
 			when req.state = 'pending' and ` + requestBeforeDeadline + ` then 'pending'
 			when req.state = 'pending' then 'expired'
 			when req.state = 'expired' then 'expired'
@@ -1425,6 +1430,11 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		where cr.id=$1`, recordID).
 		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding); err != nil {
 		return RecordDetail{}, err
+	}
+	// A record the judge holds reads pending, with JudgeDeciding saying who decides it: the page
+	// and the lookup show an undecided record as pending or expired, and the hold beside it.
+	if state == "held" {
+		state = "pending"
 	}
 	body, err := record.ParseBody(canonical)
 	if err != nil {
