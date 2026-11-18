@@ -134,16 +134,18 @@ func carryHeld(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolu
 
 // switchOff makes the one report no sweep makes: the trimmer has stopped itself, and this is the
 // last the daemon hears from it until the launcher restarts. run calls it once the third fault in
-// a row of one kind of work is counted (fault, faultRow), outside any deferred handler, and it
-// writes the line that says the trimmer is off and which row stopped it. It carries no sizes,
-// because the volume may be perfectly healthy and a size walk would cost a minute of the pod for a
-// number nobody asked for. It goes through deliver, so a connection that cannot take it holds it
-// as any other report is held, and run sends it once the connection is up again (deliverLast): R2
-// has the trimmer hold its report until that connection is up again, and this report is the one
-// that tells the daemon the pod's volume is no longer guarded. A panic here or in deliverLast ends
-// the trimmer, and this report is not tried again (run). One in deliver gives what the report
-// carried back to the trimmer under deliver's rule, as any report's panic does, and nothing
-// carries it further: the trimmer makes no report after this one.
+// a row of one kind of work is counted (fault, faultRow), outside any deferred handler, and writes
+// the line that says the trimmer is off and which row stopped it once this report has been sent,
+// held or has panicked, so the report goes first. It carries no sizes, because the volume may be
+// perfectly healthy and a size walk would cost a minute of the pod for a number nobody asked for.
+// It goes through deliver, so a connection that cannot take it holds it as any other report is
+// held, and run sends it once the connection is up again (deliverLast): R2 has the trimmer hold
+// its report until that connection is up again, and this report is the one that tells the daemon
+// the pod's volume is no longer guarded. A panic here or in deliverLast ends the trimmer, and
+// this report is not tried again (run); a panic of the line that says the trimmer is off ends
+// nothing, since run drops it and still tries a held report (deliverLast). One in deliver gives
+// what the report carried back to the trimmer under deliver's rule, as any report's panic does,
+// and nothing carries it further: the trimmer makes no report after this one.
 //
 // A report the trimmer still holds goes into this one before deliver is given it, as a newer
 // report that cannot be sent takes a held one's place (replace), and is held no more. So the
@@ -165,7 +167,6 @@ func carryHeld(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolu
 // sweep row with the two reading panics among the newest three.
 func (t *trimmer) switchOff() {
 	row, _ := t.switchedOffBy()
-	t.logf(volumeTrimLog+"%d panics in a row of %s: the trimmer is off for the life of this launcher process", t.inARow[row], row)
 	report := shimwire.LauncherVolumeReport{
 		Trimmer:             t.id,
 		Episode:             max(t.episode, 1),
@@ -203,7 +204,7 @@ func (t *trimmer) switchOff() {
 // report (manager.sendVolumeReport).
 //
 // A failed attempt is written when its reason changes and not once per attempt, for the reason
-// a refusal is (says): a connection that is down answers the same way every ten seconds for as
+// a refusal is (news): a connection that is down answers the same way every ten seconds for as
 // long as it is down.
 func (t *trimmer) deliverLast(ctx context.Context) {
 	if t.held == nil {
@@ -222,8 +223,9 @@ func (t *trimmer) deliverLast(ctx context.Context) {
 			return
 		}
 		if err := t.send(*t.held); err != nil {
-			if t.says(err.Error()) {
+			if why := err.Error(); t.news(why) {
 				t.logf(volumeTrimLog+"the last report of the switched-off trimmer could not be sent (%v); holding it for the next attempt", err)
+				t.said = why
 			}
 			continue
 		}
