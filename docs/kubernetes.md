@@ -438,7 +438,7 @@ Once it observes the probe container running, it starts the command phase for th
 Pod scheduling and image pull consume the startup phase, so the worst-case boot wait is the 300 s startup bound plus the attempt budget.
 The TLS clients each have their own 20 s bound except Chromium's 90 s cold-start bound.
 A command stopped by the aggregate budget is unavailable with `probe deadline`, so the image probe fails closed naming its client and site.
-The boot log names a derived bound when it applies, and so does `legion start --check-config`.
+The boot log names a derived bound when it applies, and so does `legion config check`.
 Oh My Pi's boot after it fits the registration deadline, `worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals` (360 s by default).
 The stage 4a harness's `image-probe` and `root-ready` checks (`scripts/e2e/README.md`) are where a launch of the published image on the production cluster is measured.
 
@@ -1831,7 +1831,7 @@ The cutover, in this order:
    The pushed branch is the one copy of the issue's work that survives the cutover.
 
 2. **Stop those issues.**
-   A person moves each out of the workflow (`backlog`, from the Dispatch dashboard or with `legion status <KEY> backlog --operator-token-file <file>`);
+   A person moves each out of the workflow (`backlog`, from the Dispatch dashboard or with `legion issue status <KEY> backlog --operator-token-file <file>`);
    for a root that takes its tree out, whose cleanup deletes every issue Sandbox of the tree, volumes and all, which is why its children's pushes are confirmed first.
    The earlier daemon ends the issue's processes and leaves its Sandbox `Suspended`, owning its volume, with no pod.
    A claim with no running process is not one the boot replaces, so the issue waits, disk intact, for the launch the operator chooses in step 7.
@@ -2781,7 +2781,7 @@ the process would come up on the same image's plugin, register the same contract
 Such a claim is therefore relaunched by nothing, and the rule is the runtime and the role's backend together, never the backend alone (`noPluginInstall`, `packages/daemon/internal/daemon/daemon.go`):
 no `StalePlugin` is posted for a Claude Code claim of a pod at any contract, round or no round (`refreshStalePlugins`), and a registration of that claim still on the old contract is accepted, uncharged, rather than relaunched (`staleRegistration`).
 What carries it is the update round over its pod, which asks it like every other role and ends at its bound whatever it answers, so the new image reaches it with nothing asked of an operator.
-A plugin-contract change for a Claude Code role in a pod is answered by a new image, never by an install, and `legion start --check-config`, which prints the line under `runtime: kubernetes` alone, says so after its plugin line, naming each role this deployment runs on Claude Code:
+A plugin-contract change for a Claude Code role in a pod is answered by a new image, never by an install, and `legion config check`, which prints the line under `runtime: kubernetes` alone, says so after its plugin line, naming each role this deployment runs on Claude Code:
 `Claude Code runs <roles>, whose plugin is the worker image's: a plugin-contract
 change for such a role is answered by a new image, not by an install.`
 
@@ -2793,7 +2793,7 @@ a dist-tag or version range is refused), or, when that key is absent, the pair a
 An exact version is pinned by npm's own immutable version;
 a tarball path or URL source carries no integrity pin beyond the installed `pi-legion`'s declared-contract check above
 — it is operator trust in what that path or URL serves.
-`legion start --check-config` prints, under `runtime: kubernetes`, after its OK line and its capability lines, either `plugins: @sjawhar/pi-legion <v> @sjawhar/pi-envoy <v> (from legion.yaml|from the binary)` or `plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none
+`legion config check` prints, under `runtime: kubernetes`, after its OK line and its capability lines, either `plugins: @sjawhar/pi-legion <v> @sjawhar/pi-envoy <v> (from legion.yaml|from the binary)` or `plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none
 relaunches no process on another plugin contract`.
 The boot logs `daemon: stale-plugin relaunches install` (`piLegion`, `piEnvoy`, `source`) when it knows a pair, or the Warn `daemon: this daemon knows no plugin versions to relaunch a stale process onto; set
 runtime.kubernetes.plugins or run a release build` when it does not.
@@ -3060,7 +3060,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
   — neither can arise under `cloudsql-iam`, where no pod mounts a session key
   — and, under every store, an operator's `pod.env` or `provider_keys` naming `OMP_SESSION_STORAGE` or `OMP_SESSION_SQL_DSN_FILE`, or a `provider_keys` entry named `OMP_SESSION_SQL_DSN` ([Selecting the store](#selecting-the-store)).
 
-`legion start --check-config` shows each of these before anything starts:
+`legion config check` shows each of these before anything starts:
 a file carrying `tree_volume: 20Gi` is refused naming `issue_volume`; one carrying `resources: {issue: {limits:
 {memory: 8Gi}}}` naming `limits`; one carrying `resources: {tester: {cpu: 2}}` naming `resources.issue`;
 one carrying `resources: {small: {cpu: 500m}}` naming `issue or controller`;
@@ -3088,7 +3088,7 @@ Load refuses a mode written in decimal, quoted or not (`440` would be 0670), one
 A change of a mode replaces no running pod, which keeps the mode its files were written with: the mode reaches each pod made after the change.
 A daemon of an earlier release refuses the key at boot (`unknown key
 runtime.kubernetes.pod.volumes[<n>].secret.default_mode`), so set it only once the daemon runs a release that reads it;
-`legion start --check-config` of that release says so first.
+`legion config check` of that release says so first (`legion start --check-config` on a release from before that command).
 
 A volume may also be an existing network share: [Network shares](#network-shares) lists the sources and what each runtime supports.
 
@@ -3271,7 +3271,7 @@ Declare it as a readiness probe and never as a liveness probe.
 The daemon's Service carries the API port and the worker-stream port under one selector, so a probe that failed while the daemon was busy would take the worker stream out of the Service while every pod's launcher was trying to reach it, and the daemon's Deployment runs one replica with the `Recreate` strategy, so no second pod answers in its place.
 A liveness probe on it would restart that one daemon for the same reason, in the middle of its drain.
 
-`legion start --check-config` runs all of it without starting the daemon, writing a file or running a key command, and then every refusal boot makes from the files and the environment before its first write, in boot's words:
+`legion config check` runs all of it without starting the daemon, writing a file or running a key command, and then every refusal boot makes from the files and the environment before its first write, in boot's words:
 the operator, Envoy and Dispatch bearers' files, the NATS nkey seed, the instructions file, and the runtime's own reads (the kubeconfig and every value's translation;
 under tmux, the OMP invocation, through `mise where` when it names a `mise` tool, and the host's `gh`, `git` and `jj`).
 After its `Config OK: project=…` line it prints one line per deployment capability the file alone leaves open with no decision
@@ -3292,7 +3292,7 @@ Mount it with `defaultMode: 0440`, never the kubelet's default `0644`, which oth
 any other seed file, the daemon's own or another user's, stays 0600.
 A daemon running as root in a pod has no such exception:
 under `fsGroup` its mount is `root:<fsGroup>` 0440, which the reader refuses for a root reader, so give that pod no `fsGroup` and mount the Secret with `defaultMode: 0400`, or pass the seed as `NATS_NKEY_SEED` (and the daemon's own as `NATS_DAEMON_NKEY_SEED`) from a `secretKeyRef`.
-`legion start --check-config` reads the seed as boot does, and its OK line then names the seed's user by public key (`Config OK: project=<project> design-gate-steps=<steps> nats-nkey-user=U…`), never the seed.
+`legion config check` reads the seed as boot does, and its OK line then names the seed's user by public key (`Config OK: project=<project> design-gate-steps=<steps> nats-nkey-user=U…`), never the seed.
 With one, every pod's `NATS_NKEY_SEED_FILE` names `/var/run/legion/providers/NATS_NKEY_SEED`, the providers Secret's own `NATS_NKEY_SEED` key, which every pod and the image probe mount beside the `provider_keys`, whatever a launch carries:
 the daemon never copies the seed into a claim's Secret.
 Put the same seed in the providers Secret under that key.
@@ -3328,7 +3328,7 @@ the process boundary holds only when the daemon runs apart from its agents, as a
 Every command the daemon itself starts (git and jj in a managed repository's checkout, `mise where`, a key command) runs without `NATS_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED`, so a seed passed by value never reaches a repository's tooling;
 still, prefer the file forms (`nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, or the `_FILE` variables), since a value stays in the daemon's own process environment.
 At boot the daemon logs, once, `legion daemon connects to NATS` with `user=U…` (the public key, never the seed), `paneUser=true|false`, and `seed=daemon|pane|none`.
-`legion start --check-config` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line.
+`legion config check` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line.
 Every permission the server refuses the daemon's connection, a subscription or a publish (its JetStream consumers' API requests included), is logged at error as `NATS refused the daemon a permission: its NATS user lacks that grant` with its `operation` and `subject`;
 the server reports a refusal asynchronously, and nats.go's default handler would only write it to stderr, outside the daemon's log.
 Every other asynchronous error is logged at warn with the `subject` of the subscription it names, a dropped connection at warn as `NATS connection lost` with its `error`, the reconnect at info as `NATS connection restored` with its `server`, and a terminal close (a fatal server `-ERR`) at error, once, as `NATS
@@ -3437,7 +3437,7 @@ The loader still checks its keys, but it requires no `compute_class` then and re
 `legion state --json` shows the block as the loader settled it, under `settings.runtime.kubernetes.sandbox`:
 `canary_issues` is `[]` when the file names none, `microvm` is absent when the file names no such block, and its `storage_class` is the class the microVM pods' disks use.
 
-The loader refuses each of these, naming the key, and `legion start --check-config` shows each before anything starts:
+The loader refuses each of these, naming the key, and `legion config check` shows each before anything starts:
 
 - a `sandbox`, `microvm` or `metadata` that is not a mapping: `runtime.kubernetes.sandbox must be a mapping`, and likewise `runtime.kubernetes.sandbox.microvm` and `runtime.kubernetes.sandbox.microvm.metadata`.
 
@@ -3527,7 +3527,7 @@ This release refuses one volume name that the release before it took: `workload-
 The name is now the daemon's own, for the projected token volume of the metadata endpoint ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 The loader refuses it in every deployment, one that runs only gVisor pods and sets no `sandbox` block included:
 `runtime.kubernetes.pod.volumes[<i>].name workload-identity-token is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
-A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout.
+A daemon of this release does not start on a file it refuses, so run this release's `legion config check` on the file before the rollout.
 Where the check refuses the name, give that volume another name, in `volumes` and in each `volume_mounts` entry whose `volume` names it.
 
 **Rolling back.**
@@ -4026,7 +4026,7 @@ and the four deployment rows are the daemon's to measure from its own configurat
   the pod `Pending` with `PodScheduled=False Unschedulable` for longer than `worker_boot_timeout_seconds`), the daemon stays up and retries without exiting ([Issue sizing](#issue-sizing-one-reservation-per-pod), "The bound"), and once the probe passes the row is open, saying how many attempts waited and the scheduler's last reason (`the image
   probe pod was Unschedulable <n> time(s) at boot before it scheduled: <reason>; the pool had no
   room for its 250m / 1Gi reservation`), unless `capabilities.decided.pool-capacity` names a reason.
-  The daemon measures it from the probe's own run (`bootprobe.ImageReport.CapacityWaits`), so `legion start --check-config` never prints it.
+  The daemon measures it from the probe's own run (`bootprobe.ImageReport.CapacityWaits`), so `legion config check` never prints it.
   Under tmux it is present: no probe pod runs.
 
 A deployment row is `present` when the deployment satisfies it, `decided` when `legion.yaml`'s `capabilities.decided.<name>: "<reason>"` records a decision on it (the report shows the reason in the gap's place;
@@ -4075,8 +4075,7 @@ The row is `present` when no live session fails it and at least one proved it, i
 <sandbox>/<container> (<role>, <issue>) measured <RFC 3339 time>: <fact>` (the latest measurement;
 `pane <window>:<pane>` in place of the pod under tmux);
 `open` when any live session fails it, its detail naming each failing session as `pod <sandbox>/<container> (<role>, <issue>):
-<fact>`, `; `-joined, the first three then ` +N more`, and carrying no `configLine` — no `capabilities.decided` line exists for a live row, since a session's failing check is a fact to fix (the operator's, or the issue's architect's), not a deployment decision, and `legion start
---check-config` says nothing of live rows;
+<fact>`, `; `-joined, the first three then ` +N more`, and carrying no `configLine` — no `capabilities.decided` line exists for a live row, since a session's failing check is a fact to fix (the operator's, or the issue's architect's), not a deployment decision, and `legion config check` says nothing of live rows;
 and `unchecked` before any live session has reported, its detail `no session has reported yet (<decision>): <summary>`, where the decision is the issue whose check proves the row (`repository-extensions`:
 dispatch://LEGION-629; `github`: dispatch://LEGION-631; the other four: dispatch://LEGION-663).
 Nothing measures again mid-session, so a session that booted during a Dispatch, GitHub or search-provider outage reads open until its next boot.
@@ -4095,8 +4094,7 @@ the image rows are `present` once the probe passed and `unchecked` before it or 
 — `measuredAt`, `incarnation`, `ok` (the names its checks passed) and `open[{name, detail}]` — whatever process sent it;
 compare its `incarnation` with the claim's `locator.incarnation` to tell the running process's report from a predecessor's.
 The controller's `tick` notice, whose `openCapabilities` names the open rows, live rows beside the deployment gaps, so the day's report names each (`skills/legion-controller/SKILL.md`).
-And `legion start
---check-config`, which prints after its OK line the rows the file alone leaves open.
+And `legion config check`, which prints after its OK line the rows the file alone leaves open.
 Nothing refuses to start over a gap: a daemon that would not run its pods would itself keep workers from working, so a deployment gap is the operator's to close or to decide, by name and with the reason, and a live gap is the session's environment to fix.
 The example `legion.yaml` (`deploy/kubernetes/daemon/legion.yaml.example`) leaves its `resources` block commented out, so the daemon's defaults reserve CPU and memory for every role, and decides `secrets`.
 
@@ -4553,7 +4551,7 @@ When a build finishes, the shim's warm-up logs one line in the `roles` container
 A stop mid-build — the launcher's one SIGTERM to the role's process group
 — ends Oh My Pi and the `codegraph` child together, and the shim exits only once the warm-up has released its lease:
 it waits for that release at least 3 s and at most what the pod's `terminationGracePeriodSeconds` (`worker_stop_timeout_seconds`, which the launcher passes the shim as `--stop-grace`) leaves once the agent's 5 s grace and the 1 s stdout drain are spent (4 s with the default 10 s).
-The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion start --check-config` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
+The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
 A relaunch in a new pod finds no index and builds one, as the issue's first pod did.
 The tester's `affected` and the reviewer's `impact`/`callers` queries answer once `codegraph status --json` reports `index.state: "complete"`;
@@ -6779,7 +6777,7 @@ a refusal is boot's own, on stderr, and exits 1.
 - **Environment.**
   Run it with the daemon's environment.
   With `nats_nkey_seed_file` unset, whether the caller's environment holds `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` decides both the probe container's providers pointer to the seed and the probe's check of the providers Secret's seed against the pane NATS user, so a caller without them runs another probe than the daemon would.
-  It also reads every secret file the configuration names, as `legion start --check-config` does, so the host it runs on holds all of them.
+  It also reads every secret file the configuration names, as `legion config check` does, so the host it runs on holds all of them.
   Of their contents, only the pane NATS seed's enters the probe: it decides the pane NATS user the probe checks the providers Secret's seed against.
   Every other file only has to pass boot's reads.
 
@@ -6973,14 +6971,14 @@ each issue's pod (every role of it alike) and the image probe's.
   no role's agent keeps its Oh My Pi state there any more
   — every role's state home is under the issue's scratch on the issue's volume, which the `/legion` mount fence already covers
   — but a mount there would still land on what that init container writes, so it is refused here rather than left to fail in a pod).
-  `legion start --check-config` runs the same check.
+  `legion config check` runs the same check.
   `OTEL_RESOURCE_ATTRIBUTES` is composed here rather than refused, as `PI_CONFIG_FILES` is:
   the operator sets the attributes their deployment's spend is billed under (`theorem.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
   The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, and a launch spec may not set the name.
   A spend row names an arm (`legion.arms`, below), an issue or a role where the collector keeps it.
   The project controller's pod serves no issue and carries the role alone, and the image probe's container, which runs no role either, keeps the operator's value as the operator wrote it.
   The value is read for its content as well as its name: load refuses a member the agent's detector would throw on — one that does not split on `=` into one key and one value, one with an empty key, one whose key or value does not percent-decode or runs past 255 characters once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which the runtime writes itself — naming that one member and what is wrong with it, never the rest of the value.
-  One such member costs the launch every attribute of the variable, the operator's own `theorem.project` among them, because the detector's caller catches the throw with an empty hand, and `legion start --check-config` gives boot's verdict before a restart.
+  One such member costs the launch every attribute of the variable, the operator's own project attribute among them, because the detector's caller catches the throw with an empty hand, and `legion config check` gives boot's verdict before a restart.
   Like every `pod.env` variable, the attributes reach a role with the start command of its next generation, in no pod specification, so no pod is replaced.
   [`deploy/kubernetes/operator-route/`](../deploy/kubernetes/operator-route/README.md) is an example of one, the one the Go live harnesses run on:
   a `models.yml` and a settings overlay from a ConfigMap, and a mounted token its key command reads.
@@ -7111,7 +7109,7 @@ each issue's pod (every role of it alike) and the image probe's.
 - Both runtimes name a role's own files right after the operator's overlays, so each outranks them, and Legion names no overlay of its own anywhere in the list: it writes none.
   Such a role's `PI_CONFIG_FILES` in a pod is therefore the `pod.env` value, then its own files in order;
   the overlays reach the role with its start command, so its pod is the one it would be without the key, and a role the key leaves out is told exactly what it was told before.
-  The loader refuses, at `legion start --check-config` too, an unknown role, an empty list, a relative path, a path named twice or one `pod.env`'s `PI_CONFIG_FILES` already names, a role `worker_backends` puts on `claude`, and a file under no `volume_mounts` mount (or, under a whole ConfigMap or Secret volume that lists `items`, a file no item writes), since a pod sees only the image and the operator's mounts.
+  The loader refuses, at `legion config check` too, an unknown role, an empty list, a relative path, a path named twice or one `pod.env`'s `PI_CONFIG_FILES` already names, a role `worker_backends` puts on `claude`, and a file under no `volume_mounts` mount (or, under a whole ConfigMap or Secret volume that lists `items`, a file no item writes), since a pod sees only the image and the operator's mounts.
   Whether the ConfigMap holds the key is the cluster's:
   the image probe is passed `--role-config-files <role>=<files>` for each named role and, in its pod, which mounts what every pod mounts, reads each file of that role's `PI_CONFIG_FILES` (an empty entry skipped, as Oh My Pi skips it), then runs `omp config get retry.modelFallback --json` on each of the role's own files alone and on the whole list.
   A file it cannot read, or Oh My Pi exiting non-zero on one, refuses the boot (`the probe pod
@@ -7191,7 +7189,7 @@ each issue's pod (every role of it alike) and the image probe's.
 - **What is refused, and where the group shows.**
   The loader refuses a `mode` that is no word of the three, a mode other than `off` that names no `config_files`, a block that names `config_files` while `worker_backends` puts an issue role on Claude Code (which reads no `PI_CONFIG_FILES`) whatever the mode, and an overlay under no `pod.volume_mounts` mount, also whatever the mode;
   boot refuses an `instructions` file it cannot read or that holds nothing.
-  `legion start --check-config` makes every one of them.
+  `legion config check` makes every one of them.
   `mode: off` with `config_files` and `instructions` still set keeps them as written, so a project moved to `on` moves one key — and they are not inert there:
   a tree already drawn into the memory group names them, which is why the mount check and the readability check hold at `off` too.
   A project with no block at all is the pod every deployment built before the block existed.
@@ -7291,7 +7289,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 141, [Rolling back the upgrade](#rolling-back-the-upgrade)).
   `settings.projects.<KEY>.experiments` carries the `experiments` key's declaration itself, and `settings.projects.<KEY>.memory` the block's.
   `legion state` prints one line per declared experiment, counting the issues that hold each arm; every project declares the `memory` experiment — one that writes neither the `memory` block nor `experiments.memory` declares it at mode `off`, and one that writes `experiments.memory` declares it at that key's own mode — so there is always a line, and `memory: none` is what a deployment reads until a tree is drawn.
-  `legion config-reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.
+  `legion config reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.
   The documentation site's configuration reference page is generated from that output.
 
 - **`runtime.kubernetes.agent_secrets`** enrolls every pod the daemon runs with the secrets broker (the broker design's pod-enrollment plan), so an agent in a pod runs `agent-secrets <SECRET> -- <command>` and gets only that pod generation's grants.
@@ -7372,7 +7370,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
   it may not be empty, and it may not equal `audience`, since the cluster projects one volume per audience and the broker verifies the enrollment's token and the exchange's at different routes.
   Nor may it equal `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM, since the pool's token is the pod's launcher's alone ([Issue pods in microVMs](#issue-pods-in-microvms) lists this refusal with the loader's others).
-  Set, the volume's name, its mount path and the two variables are Legion's: a `runtime.kubernetes.pod.env` that sets either variable, a `runtime.kubernetes.pod.volumes` entry named `agent-secrets-exchange`, or a `volume_mounts` path at, under or above `/var/run/legion/agent-secrets-exchange` is refused at boot and by `legion start --check-config`, naming the entry, and a launch spec that sets either variable is refused as one setting any variable the runtime sets itself.
+  Set, the volume's name, its mount path and the two variables are Legion's: a `runtime.kubernetes.pod.env` that sets either variable, a `runtime.kubernetes.pod.volumes` entry named `agent-secrets-exchange`, or a `volume_mounts` path at, under or above `/var/run/legion/agent-secrets-exchange` is refused at boot and by `legion config check`, naming the entry, and a launch spec that sets either variable is refused as one setting any variable the runtime sets itself.
   Unset, no pod carries the token, no role is told either variable, and the name, the path and both variables stay the operator's (the variables a launch spec's too), so a deployment that never sets it runs exactly as before the key existed.
   The token is a volume of the pod, fixed when the pod is created, so turning the key on, or moving its audience, reads as drift of every enrolled issue pod (`agent-secrets-exchange`), which its update round replaces; until then a role started in such a pod is told no identity, so its sessions keep the credential they had rather than fail every trade on a file that is not there.
   Turning the key off replaces no pod: the next generation of each role is told no identity, though its pod still mounts the token until it is replaced.

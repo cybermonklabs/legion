@@ -821,7 +821,7 @@ type plan struct {
 	pluginRelaunchable bool
 	// plugins is this daemon's resolved Kubernetes plugin pair (ResolvedPlugins), with Contract
 	// already api.DaemonAPIVersion: what specs.SpawnSpec installs for a stale-plugin relaunch, and
-	// what the boot log and `legion start --check-config` name. nil under tmux, and under
+	// what the boot log and `legion config check` name. nil under tmux, and under
 	// Kubernetes when the daemon knows no pair (LEGION-164's degraded mode); pluginsSource is
 	// "legion.yaml" or "binary" with a pair, "" without one.
 	plugins       *runtime.PluginInstall

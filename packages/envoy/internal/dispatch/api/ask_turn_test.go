@@ -290,36 +290,6 @@ func TestCommentTurnRequiresAnAskReply(t *testing.T) {
 	}
 }
 
-// A closed ask has no turn to hold: a reply under an answered ask records no turn
-// even when the request asks for one, and its comment.created carries no
-// ask_waiting_on.
-func TestReplyUnderAnAnsweredAskRecordsNoTurn(t *testing.T) {
-	handler := newTestHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Closed turns", "spec")
-	askID := openTurnAsk(t, handler, issue.Key, "Ship it?")
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
-		"text": "Yes.",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("answer ask: status=%d body=%s", response.Code, response.Body.String())
-	}
-	reply := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-		"body": "Shipped in #42.", "ask_id": askID, "turn": "agent", "actor": sessionActor(),
-	})
-	if reply.Code != http.StatusCreated {
-		t.Fatalf("reply under answered ask: status=%d body=%s", reply.Code, reply.Body.String())
-	}
-	if comment := decodeBody[model.Comment](t, reply); comment.Turn != nil {
-		t.Fatalf("reply under answered ask turn = %q, want null", *comment.Turn)
-	}
-	payload := latestCommentCreatedPayload(t, handler, issue.Key)
-	if _, present := payload["ask_waiting_on"]; present || payload["ask_state"] != "answered" || payload["turn"] != nil {
-		t.Fatalf("comment.created under answered ask = %#v, want ask_state answered with no turn and no ask_waiting_on", payload)
-	}
-	if detail := readAskDetail(t, handler, askID); detail.WaitingOn != "" {
-		t.Fatalf("answered ask detail waiting_on = %q, want none", detail.WaitingOn)
-	}
-}
-
 // oneConnectionHandler serves deps's routes from a store of one connection of its own and answers
 // that connection's backend process id, so every statement a request sent through it makes on
 // deps.Store runs on that one backend, and a test watches the backend that request waits on

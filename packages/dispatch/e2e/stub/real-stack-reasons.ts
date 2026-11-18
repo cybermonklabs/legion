@@ -197,6 +197,8 @@ export const realStackReasons: Record<string, string> = {
     "the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
+  "legion.e2e.ts":
+    "the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",
