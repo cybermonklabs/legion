@@ -213,16 +213,17 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 }
 
 // todaysMainsNewestMigration is main's newest migration at this branch's last merge of main
-// (89589c2954): #4228's role-holders publication, which is numbered after this branch's
-// claim_sessions (20261116144907). A deployment of main applies it first, so this branch's daemon
-// finds a database whose newest recorded version stands above its own new migration.
-const todaysMainsNewestMigration = 20261116165926
+// (958173da0e): the update ask mark's cutover, numbered after the role-holders publication
+// (20261116165926), both after this branch's claim_sessions (20261116144907). A deployment of main
+// applies them first, so this branch's daemon finds a database whose newest recorded version
+// stands above its own new migration.
+const todaysMainsNewestMigration = 20261117200337
 
 // thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
 const thisBranchsClaimSessions = 20261116144907
 
 // A database today's main migrated has recorded every migration up to main's newest,
-// 20261116165926, but claim_sessions, which is numbered below it. Store.Migrate applies every
+// 20261117200337, but claim_sessions, which is numbered below it. Store.Migrate applies every
 // migration that database has not recorded, whatever version stands highest (apply asks each
 // migration whether its own version is recorded), so the upgrade applies 20261116144907 below that
 // newest: claim_sessions is created, and its backfill holds the session a claim of main's daemon
