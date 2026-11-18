@@ -652,7 +652,7 @@ jobs:
           # tests read is .github/scripts/check-ci-tools.sh, in lint.
           # A digest is no version, so this keeps its own word as the bunx reading does rather
           # than joining the list below, whose sentence is about versions.
-          plugin=read
+          plugin="read"
           tarball="${{ steps.docker-plugin.outputs.tarball }}"
           echo "pulumi-docker is the tarball $tarball, and its row pins $(ci_tools_field pulumi-docker version)"
           ci_tools_verify pulumi-docker "$tarball" "the docker provider plugin tarball this job installed" ||
