@@ -94,6 +94,7 @@ import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
+import { watchdogCheckMs } from "../src/registration-watchdog";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 import { runSessionPod } from "../test/session-pod-report";
 import {
@@ -23236,22 +23237,49 @@ describe("the watchdog over a heartbeat that stopped", () => {
     }
   });
 
+  // The watchdog judges a window by `Date.now` (`armRegistrationWatchdog`, and the registration's
+  // own stamp in `../src/registration-state`), so this row steps that clock itself, from before
+  // the session starts: half a window per tick, which is a heartbeat that ticks through every
+  // window. Read off the real clock, a loaded box that stops this process for longer than a window
+  // between two ticks shows a heartbeat that missed one, and the watchdog rightly arms another.
   test("a heartbeat that still ticks is left alone through a listener outage", async () => {
-    const session = await bootWatchdog("watchdog-ticking");
+    let now = Date.now();
+    setSystemTime(new Date(now));
     try {
-      session.refuse();
-      // Whole windows pass with no registration accepted, and the heartbeat ticks through them:
-      // its own one extra call per interval is the retry, and the watchdog arms no second
-      // heartbeat.
-      const armed = session.intervals.length;
-      for (let window = 0; window < 4; window += 1) {
-        session.tick();
-        await Bun.sleep(WINDOW_MS / 2);
+      const session = await bootWatchdog("watchdog-ticking");
+      try {
+        session.refuse();
+        const armed = session.intervals.length;
+        // Whole windows pass with no registration accepted, and the heartbeat ticks through them:
+        // its own one extra call per interval is the retry, and the watchdog arms no second
+        // heartbeat.
+        for (let step = 0; step < 4; step += 1) {
+          now += WINDOW_MS / 2;
+          setSystemTime(new Date(now));
+          session.tick();
+          // The watchdog reads on this process's own timer, which the row leaves real so that it
+          // is the timer production runs; so the row waits real time for a few of its reads. The
+          // clock those reads judge by stands still meanwhile, so a wait that runs long ages
+          // nothing.
+          await Bun.sleep(watchdogCheckMs(WINDOW_MS) * 3);
+        }
+        await settle();
+        expect(session.intervals.length).toBe(armed);
+        // The control: the same watchdog on the same clock arms a heartbeat again once a whole
+        // window passes with no tick, so the reads above judged the stepped clock and found the
+        // heartbeat ticking.
+        now += WINDOW_MS;
+        setSystemTime(new Date(now));
+        await until(
+          () => session.intervals.length > armed,
+          "the restart once the ticks stop",
+          5_000
+        );
+      } finally {
+        await session.stop();
       }
-      await settle();
-      expect(session.intervals.length).toBe(armed);
     } finally {
-      await session.stop();
+      setSystemTime();
     }
   });
 
