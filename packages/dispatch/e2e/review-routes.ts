@@ -546,12 +546,16 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  names everything its page draws only once its data is in, which is the half of this wait
  *  that is a route's own.
  *
- *  The other half is page-wide and belongs to no row, and it is two waits. No element may be
+ *  The other half is page-wide and belongs to no row, and it is three waits. No element may be
  *  left carrying `data-markdown-pending`, the mark a body wears while the parse worker owes its
  *  formatting (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that
  *  long holds its own literal text until the answer lands, so a page read in between is a page
  *  of unformatted source, and it is cheap to rule out for every row at once rather than to argue
- *  per row about which bodies cross the threshold. And the shell's one Inbox number must have
+ *  per row about which bodies cross the threshold. No artifact header may still wear the ring it
+ *  draws for 2 s after a link lands on its artifact (`ArtifactHeader.tsx`'s `highlighted`): a
+ *  shot inside those 2 s draws it and one after does not, so a scheme shot after a slower settle
+ *  lost it while the other kept it (CI runs 44308307388 and 44323538727 read the dark
+ *  `issue-artifact` row without it and with it). And the shell's one Inbox number must have
  *  stopped moving (`waitForInboxCountSettled` below), which every page draws and no row names.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
@@ -565,6 +569,7 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await expect(page.getByTestId("artifact-header")).not.toHaveClass(/\bring-2\b/);
   await waitForInboxCountSettled(page);
 }
 
