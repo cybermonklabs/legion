@@ -129,8 +129,8 @@ type outbox struct {
 	// launches run issues side by side, so several issues' provisions are in flight together.
 	provisions provisionLocks
 	// githubAPI is the GitHub REST root a row's GitHub call is made under — an issue_branch row's
-	// create and a check_compare's compare: the workflow's
-	// (workflowRuntime.githubAPI), which empty, in production, is https://api.github.com.
+	// create: the workflow's (workflowRuntime.githubAPI), which empty, in production, is
+	// https://api.github.com.
 	githubAPI string
 	// repositories is the daemon's view of the project's repositories, which the outbox reads for
 	// the deployment's repository equivalence alone (`repository_renames`): which repository
@@ -2821,7 +2821,7 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 	// by, which a rename must not move.
 	served := r.repositories.serving(repo)
 	mint := func() (string, error) {
-		lease, err := r.tokens.Token(ctx, appauth.Implement, served)
+		lease, err := r.tokens.Token(ctx, appauth.Implement, served.Owner())
 		if err != nil {
 			return "", fmt.Errorf("mint the implement App token for %s to provision %s: %w", served, key, err)
 		}

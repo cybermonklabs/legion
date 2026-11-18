@@ -8,6 +8,7 @@ import {
   placeCaret,
   selectTextIn,
 } from "./editor";
+import { settledState } from "./settled";
 import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -144,13 +145,11 @@ test("two editors that each add an option list to an ask while their edits cross
     // the two editors' Yjs client ids, so the second list is read from the page; Backspace at the
     // start of the first list would lift its item into the question instead.
     const [alicePage] = pages;
-    const secondList = (await optionList(alicePage, 1).textContent()) ?? "";
-    await placeCaret(
-      alicePage,
-      "before",
-      secondList.includes("Option B") ? "Option B" : "Option A",
-      askContent(alicePage)
-    );
+    const second = await settledState("the second option list", [
+      ["Option B", optionList(alicePage, 1).filter({ hasText: "Option B" })],
+      ["Option A", optionList(alicePage, 1).filter({ hasText: "Option A" })],
+    ]);
+    await placeCaret(alicePage, "before", second, askContent(alicePage));
     await alicePage.keyboard.press("Backspace");
     for (const page of pages) {
       await expect(askBlock(page)).not.toHaveAttribute("data-dispatch-ask-malformed");
@@ -195,12 +194,13 @@ async function withTwoLists(
     }
     const [alicePage] = pages;
     await expect(askContent(alicePage).locator(":scope > ul")).toHaveCount(2);
-    // A list's text also holds the other editor's cursor label when its caret is in it, so it is
-    // matched, not compared.
-    const firstList = (await optionList(alicePage, 0).textContent()) ?? "";
-    const [first, second] = firstList.includes("Option A")
-      ? ["Option A", "Option B"]
-      : ["Option B", "Option A"];
+    // A list's text also holds the other editor's cursor label when its caret is in it, so the
+    // first list is found by the option it holds, not by its whole text.
+    const first = await settledState("the first option list", [
+      ["Option A", optionList(alicePage, 0).filter({ hasText: "Option A" })],
+      ["Option B", optionList(alicePage, 0).filter({ hasText: "Option B" })],
+    ]);
+    const second = first === "Option A" ? "Option B" : "Option A";
     await expect(optionList(alicePage, 1)).toContainText(second);
 
     const words = await act({
@@ -371,11 +371,16 @@ test("dragging a selection from the question into the first list of an ask holdi
 }) => {
   await withTwoLists(browser, async ({ alicePage, first, second }) => {
     await selectQuestionIntoFirstList(alicePage, first, second);
+    // The helper above set this selection in the page itself before it returned, so the
+    // selection's box is there to read at once.
     const from = await alicePage.evaluate(() => {
       const box = window.getSelection()?.getRangeAt(0).getBoundingClientRect();
       return box && { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     });
-    const to = await optionList(alicePage, 1).getByText(second).boundingBox();
+    const option = optionList(alicePage, 1).getByText(second);
+    await expect(option).toBeVisible();
+    // The wait above drew the second list's option, and a drawn element has a box.
+    const to = await option.boundingBox();
     if (!from || !to) throw new Error("the selection or the second list's option has no box");
     await alicePage.mouse.move(from.x, from.y);
     await alicePage.mouse.down();

@@ -56,9 +56,9 @@ func TestLoadWebhookConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:       "ghostwispr enabled without secret (ok — optional)",
-			env:        map[string]string{"ENVOY_WEBHOOKS": "ghostwispr"},
-			wantGhostW: true,
+			name:    "ghostwispr enabled without secret → error",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "ghostwispr"},
+			wantErr: true,
 		},
 		{
 			name: "ghostwispr enabled with secret",
@@ -71,10 +71,11 @@ func TestLoadWebhookConfig(t *testing.T) {
 		{
 			name: "all three enabled",
 			env: map[string]string{
-				"ENVOY_WEBHOOKS":              "github,slack,ghostwispr",
-				"ENVOY_GITHUB_WEBHOOK_SECRET": "s",
-				"ENVOY_SLACK_SIGNING_SECRET":  "s",
-				"ENVOY_REVIEWER_APP_ID":       "app123",
+				"ENVOY_WEBHOOKS":                  "github,slack,ghostwispr",
+				"ENVOY_GITHUB_WEBHOOK_SECRET":     "s",
+				"ENVOY_SLACK_SIGNING_SECRET":      "s",
+				"ENVOY_GHOSTWISPR_SIGNING_SECRET": "s",
+				"ENVOY_REVIEWER_APP_ID":           "app123",
 			},
 			wantGitHub: true, wantSlack: true, wantGhostW: true, wantReviewerAppID: "app123",
 		},
@@ -137,6 +138,82 @@ func TestLoadWebhookConfig(t *testing.T) {
 			}
 			if cfg.GitHub != nil && cfg.GitHub.ReviewerAppID != tc.wantReviewerAppID {
 				t.Errorf("GitHub.ReviewerAppID = %q, want %q", cfg.GitHub.ReviewerAppID, tc.wantReviewerAppID)
+			}
+		})
+	}
+}
+
+// TestLoadWebhookConfigRefusesGhostWisprWithoutASecret reads the start-up path the listener's main
+// calls and stops on: Ghost Wispr enabled with no signing secret refuses the start with an error
+// naming ENVOY_GHOSTWISPR_SIGNING_SECRET, as Slack and GitHub with no secret do, and Ghost Wispr
+// with a secret gets its route with that secret.
+func TestLoadWebhookConfigRefusesGhostWisprWithoutASecret(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		env        map[string]string
+		wantErr    string // the variable the error names; empty wants the Ghost Wispr route
+		wantSecret string
+	}{
+		{
+			name:    "ghostwispr with no signing secret",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "ghostwispr"},
+			wantErr: "ENVOY_GHOSTWISPR_SIGNING_SECRET",
+		},
+		{
+			name:    "ghostwispr with a blank signing secret",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "ghostwispr", "ENVOY_GHOSTWISPR_SIGNING_SECRET": " \t "},
+			wantErr: "ENVOY_GHOSTWISPR_SIGNING_SECRET",
+		},
+		{
+			name: "ghostwispr beside github and slack, which have their secrets",
+			env: map[string]string{
+				"ENVOY_WEBHOOKS":              "github,slack,ghostwispr",
+				"ENVOY_GITHUB_WEBHOOK_SECRET": "s",
+				"ENVOY_SLACK_SIGNING_SECRET":  "s",
+			},
+			wantErr: "ENVOY_GHOSTWISPR_SIGNING_SECRET",
+		},
+		{
+			name:    "control: slack with no signing secret",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "slack"},
+			wantErr: "ENVOY_SLACK_SIGNING_SECRET",
+		},
+		{
+			name:    "control: github with no webhook secret",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "github"},
+			wantErr: "ENVOY_GITHUB_WEBHOOK_SECRET",
+		},
+		{
+			name:       "control: ghostwispr with a signing secret",
+			env:        map[string]string{"ENVOY_WEBHOOKS": "ghostwispr", "ENVOY_GHOSTWISPR_SIGNING_SECRET": "s3cret"},
+			wantSecret: "s3cret",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range []string{"ENVOY_GHOSTWISPR_SIGNING_SECRET", "ENVOY_SLACK_SIGNING_SECRET", "ENVOY_GITHUB_WEBHOOK_SECRET"} {
+				t.Setenv(k, "")
+			}
+			t.Setenv("ENVOY_REVIEWER_APP_ID", "1")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cfg, err := LoadWebhookConfig()
+			route := cfg != nil && cfg.GhostWispr != nil
+			t.Logf("LoadWebhookConfig(ENVOY_WEBHOOKS=%s) = ghostwispr route %v, err %v", tc.env["ENVOY_WEBHOOKS"], route, err)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want an error naming %s", err, tc.wantErr)
+				}
+				if cfg != nil {
+					t.Fatalf("cfg = %+v beside the error, want none", cfg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v, want the Ghost Wispr route", err)
+			}
+			if !route || cfg.GhostWispr.Secret != tc.wantSecret {
+				t.Fatalf("cfg.GhostWispr = %+v, want the route with secret %q", cfg.GhostWispr, tc.wantSecret)
 			}
 		})
 	}
