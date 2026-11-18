@@ -1181,8 +1181,10 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 // and ygo logs them in Parked, beside an Update that carries only what the commit integrated, the
 // bytes OnUpdate hands the room's persistence. The parked bytes are no part of the document until
 // the commit that lands them, whose own update carries them (leaveParkedOut), so nothing here
-// takes them. A commit that only parked is logged with an empty update (emptyUpdateV1), and ygo
-// calls no OnUpdate for it, so no persistence call will ever take a class for it: none is queued.
+// takes them but the claim rule's set of the ids the stored history names, which takes the ids
+// they are under (storedClients.took): a catch-up's row that parks here is stored all the same.
+// A commit that only parked is logged with an empty update (emptyUpdateV1), and ygo calls no
+// OnUpdate for it, so no persistence call will ever take a class for it: none is queued.
 //
 // The cursor is the instance's, taken here rather than looked up when the update reaches the
 // store: a room evicted and reloaded in between is a different instance, which did not take this
@@ -1194,6 +1196,9 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 func (s *Service) classifyDrained(room string, instance *roomInstance, logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}) (settles, changed, local bool) {
 	origin, published := logged.Origin.(*liveWriteOrigin)
 	_, remote := logged.Origin.(*remoteUpdateOrigin)
+	// The claim rule's set of the ids the stored history names takes every commit the instance
+	// makes as it is classified here, the ids of what it parked included.
+	instance.storedClients.took(logged.Update, logged.Parked)
 	if len(logged.Parked) > 0 && bytes.Equal(logged.Update, emptyUpdateV1) {
 		return false, false, false
 	}

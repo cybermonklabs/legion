@@ -432,6 +432,10 @@ type Service struct {
 	// (document_client_ids_since), read once it is recorded and never again: no boot moves it
 	// (claimWindowOpen, client_ids.go). Nil until a read found it.
 	clientIDsSince atomic.Pointer[time.Time]
+	// onHistoryRead runs once a claim's read of a document's stored history has read its rows
+	// (readHistoryClients, client_ids.go), with how many it read. Nil outside tests; tests use it
+	// to count the reads.
+	onHistoryRead func(room string, rows int)
 	// preloads holds, per room, the durable state a document socket's admission check read and
 	// what it rendered of it (*preloadedDocument), for the room load that socket makes next
 	// (takePreload), which decodes that state rather than reading the store again.

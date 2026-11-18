@@ -474,8 +474,13 @@ export const DOCUMENT_UPDATE_REFUSED_CLOSE_REASON = "DOC_UPDATE_REFUSED";
 
 /** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the update
  *  carries an edit under a client id that is not the sender's: one Dispatch gave another person,
- *  one another person's edits claimed first, or one Dispatch never gave out at all
- *  (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`). Nothing of it is stored or relayed. Permanent like the
+ *  one another person's edits claimed first, one Dispatch never gave out at all
+ *  (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`), or one below 2^32 that the sender may not claim - one
+ *  the document's history names, past the 30-day claim window or by a person who did not edit the
+ *  document since, or one past the bounds on a socket's claims when it presents no client id. It
+ *  is the same close for an edit at clocks another person claimed first that differs from what
+ *  the document holds there, and for a socket presenting no client id whose update carries such
+ *  clocks under more than 4 claimed ids. Nothing of it is stored or relayed. Permanent like the
  *  size refusal: the browser that sent it would send it again on every reconnect, so the dashboard
  *  drops the refused edit, re-reads the document and takes a fresh client id with it. Generated
  *  into Go as `contracts.DocumentClientIdRefusedCloseReason`. */

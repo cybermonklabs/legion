@@ -925,9 +925,10 @@ func main() {
 	// version write stored: every mention indexed before migration 0092, and each rebuild-refs
 	// inserts (LEGION-531), woken by the refs trigger that announces each mention left owed.
 	go documentService.RunReferenceExcerptReconciliation(ctx, referenceExcerptLeases, excerptsWake)
-	// The first boot of a build that gives client ids out records when that was, once: an
-	// earlier build's client ids stay claimable for 30 days from it, and no later boot moves it
-	// (docs.Service.RecordClientIDsSince).
+	// The first boot of a build that gives client ids out records when that was, once: an id
+	// below 2^32 that the stored history names stays claimable for 30 days from it, and so does
+	// any id a page that presents a client id claims, while a socket that presents none claims an
+	// id no history names at any time; no later boot moves it (docs.Service.RecordClientIDsSince).
 	if err := documentService.RecordClientIDsSince(ctx); err != nil {
 		slog.Error("dispatch: boot", "error", err)
 	}

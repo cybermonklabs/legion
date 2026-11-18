@@ -64,6 +64,12 @@ type roomInstance struct {
 	// leaves it standing.
 	issueCloseStarted atomic.Bool
 
+	// storedClients is the client ids the stored history behind this instance names, which the
+	// claim rule reads once, at the first claim that needs them, and which every commit the
+	// instance takes from then on adds to (client_ids.go, classifyDrained). It goes with the
+	// instance, so the room's next load reads the history afresh.
+	storedClients storedClients
+
 	unstoredMu sync.Mutex
 	unstored   []*queuedClass
 }

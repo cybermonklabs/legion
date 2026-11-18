@@ -61,9 +61,8 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	seedServiceText(t, service, artifactID, "before")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(server.Close)
-	// Pages of this build, each given its own client id: a page of the earlier build would claim
-	// the id it drew on its first edit, and a claim waits for the room's appends to land
-	// (claimable, waitForDurableAppends), which the held hand-over keeps from landing.
+	// Pages of this build, each given its own client id, so no edit of theirs is a claim
+	// (claimable), as a page of the earlier build's first edit is.
 	alpha := openPage(t, server.URL, artifactID, "alice")
 	beta := openPage(t, server.URL, artifactID, "alice")
 	first.Store(uint64(alpha.Doc.ClientID()))

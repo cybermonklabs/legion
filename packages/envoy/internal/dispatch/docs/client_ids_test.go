@@ -519,8 +519,10 @@ func logClaimTrace(t *testing.T, service *Service, artifactID string, client crd
 	ctx := context.Background()
 	since := func(at time.Time) time.Duration { return at.Sub(start).Round(time.Millisecond) }
 	t.Logf("claim trace at %v, test began %s", since(time.Now()), start.UTC().Format(time.RFC3339Nano))
-	named, from, heldTo, err := service.historyNames(ctx, artifactID, client)
-	t.Logf("claim trace: the stored history names client %d: %t, from version %d, to clock %d (error %v)", client, named, from, heldTo, err)
+	names, through, err := service.readHistoryClients(ctx, artifactID)
+	entry, named := names[client]
+	t.Logf("claim trace: the stored history, read through version %d, names client %d: %t, from version %d, to clock %d (error %v)",
+		through, client, named, entry.from, entry.heldTo, err)
 	if rows, err := service.store.Pool.Query(ctx, `select version, update, created_at from doc_updates where artifact_id = $1 order by version`, artifactID); err != nil {
 		t.Logf("claim trace: read doc_updates: %v", err)
 	} else {
@@ -654,6 +656,283 @@ func TestAnEditAtAClockACoAuthorClaimedFirstIsRefusedNotDroppedInSilence(t *test
 	if clock := room().StateVector().Clock(tab); clock != next+uint64(len("BOB")) {
 		t.Fatalf("the room holds the tab's id to clock %d, want bob's claim's end %d", clock, next+uint64(len("BOB")))
 	}
+}
+
+// Once the claim window has closed a legacy socket claims an id no history names whenever it
+// writes, and every forgery the rule refused before is refused still. Mallory, through a legacy
+// socket of her own each time, writes at the next clock of: the id alice's page of this build was
+// given; an id at 2^32 or above that no admission gave out; the id alice's legacy tab claimed; and
+// the id of an earlier-build tab of alice's that the history names and no row does.
+func TestALegacySocketsForgeriesAreRefusedAfterTheWindowAsBefore(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	setClientIDsSince(t, service, time.Now().Add(-31*24*time.Hour))
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	given := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, given, "the document")
+	sendTyped(t, given, 0, "g")
+	const claimed, unbound = crdt.ClientID(1_234_567_701), crdt.ClientID(1_234_567_702)
+	tab := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(claimed)))
+	awaitAnswer(t, tab, "the document")
+	sendTyped(t, tab, 0, "c")
+	earlier := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(unbound)))
+	awaitAnswer(t, earlier, "the document")
+	sendTyped(t, earlier, 0, "e")
+	awaitHeld(t, room, []crdt.ClientID{given.Doc.ClientID(), claimed, unbound}, "alice's three edits")
+	earlier.Close()
+	<-earlier.Ended
+	// The earlier build stored no binding for that tab's id: the history names it, and no row does.
+	if _, err := service.store.Pool.Exec(context.Background(),
+		`delete from document_client_ids where artifact_id = $1 and client_id = $2`, artifactID, int64(unbound)); err != nil {
+		t.Fatal(err)
+	}
+	for _, forged := range []struct {
+		name   string
+		client crdt.ClientID
+	}{
+		{name: "the id alice's page was given", client: given.Doc.ClientID()},
+		{name: "an id at 2^32 or above no admission gave out", client: mintedClientFloor + 1_234_567},
+		{name: "the id alice's legacy tab claimed", client: claimed},
+		{name: "the id the history names and no row does", client: unbound},
+	} {
+		mallory := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("mallory"), artifactID, crdt.New(crdt.WithClientID(1_234_567_799)))
+		awaitAnswer(t, mallory, "the document")
+		next := mallory.Doc.StateVector().Clock(forged.client)
+		if err := mallory.Write(ygsync.EncodeUpdate(forgedUnder(t, mallory.Doc, "EVIL", forged.client, next))); err != nil {
+			t.Fatal(err)
+		}
+		awaitRefused(t, mallory, "mallory writing under "+forged.name)
+		if clock := room().StateVector().Clock(forged.client); clock != next {
+			t.Fatalf("the room holds %s to clock %d after mallory's edit, want %d: the forged struct landed", forged.name, clock, next)
+		}
+	}
+	requireConnected(t, given, "alice's page")
+	requireConnected(t, tab, "alice's legacy tab")
+}
+
+// Once the claim window has closed, a forger who reads a legacy tab's id off the room's awareness
+// - a page of the earlier build announces its presence under the id it drew before it types - and
+// claims it first, through a legacy socket of her own, at the clocks the tab writes next, does not
+// take the tab's keystroke in silence: the keystroke, in flight as the forger's edit landed, falls
+// wholly at clocks the room holds and differs from what it holds there, and the tab is refused
+// with the client id refusal instead of answered as if the room had taken it.
+func TestAForgerWhoClaimsALegacyTabsIDFirstAfterTheWindowHasTheTabRefusedNotDropped(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	setClientIDsSince(t, service, time.Now().Add(-31*24*time.Hour))
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	const tabClient = crdt.ClientID(1_234_567_801)
+	tab := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(tabClient)))
+	awaitAnswer(t, tab, "the document")
+	mallory := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("mallory"), artifactID, crdt.New(crdt.WithClientID(1_234_567_802)))
+	awaitAnswer(t, mallory, "the document")
+	if err := tab.SetAwareness(uint64(tabClient), map[string]any{"user": map[string]string{"name": "alice"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mallory.WaitForAwareness(30*time.Second, func(states map[uint64]json.RawMessage) bool {
+		return len(states[uint64(tabClient)]) > 0
+	}); err != nil {
+		t.Fatalf("mallory never read the tab's client id off the room's awareness: %v", err)
+	}
+	// The tab types its first keystroke, whose frame is in flight as mallory's arrives.
+	inFlight := typeAt(t, tab.Doc, 0, "a")
+	if err := mallory.Write(ygsync.EncodeUpdate(forgedUnder(t, mallory.Doc, "EVIL", tabClient, 0))); err != nil {
+		t.Fatal(err)
+	}
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "EVIL") }, "the room holding mallory's claim")
+	requireConnected(t, mallory, "mallory, whose claim of an id no history names stands")
+	if err := tab.Write(ygsync.EncodeUpdate(inFlight)); err != nil {
+		t.Fatal(err)
+	}
+	awaitRefused(t, tab, "the legacy tab whose keystroke fell at the clocks mallory claimed")
+	if clock := room().StateVector().Clock(tabClient); clock != uint64(len("EVIL")) {
+		t.Fatalf("the room holds the tab's id to clock %d, want mallory's claim's end %d", clock, len("EVIL"))
+	}
+}
+
+// The same forger, and a tab whose keystroke never left on the socket mallory read its id off: the
+// tab's socket drops with the keystroke queued, mallory claims the id meanwhile, and the tab's
+// first frame on its reconnect, before it announces anything, is the queued keystroke, at the
+// clocks mallory claimed. It is refused with the client id refusal, not dropped as a duplicate.
+func TestAForgerWhoClaimsALegacyTabsIDFirstHasTheTabsQueuedKeystrokeRefusedOnItsReconnect(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	setClientIDsSince(t, service, time.Now().Add(-31*24*time.Hour))
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	const tabClient = crdt.ClientID(1_234_568_001)
+	tab := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(tabClient)))
+	awaitAnswer(t, tab, "the document")
+	mallory := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("mallory"), artifactID, crdt.New(crdt.WithClientID(1_234_568_002)))
+	awaitAnswer(t, mallory, "the document")
+	if err := tab.SetAwareness(uint64(tabClient), map[string]any{"user": map[string]string{"name": "alice"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mallory.WaitForAwareness(30*time.Second, func(states map[uint64]json.RawMessage) bool {
+		return len(states[uint64(tabClient)]) > 0
+	}); err != nil {
+		t.Fatalf("mallory never read the tab's client id off the room's awareness: %v", err)
+	}
+	// The tab types, and its socket drops before the keystroke is sent: the provider queues it.
+	queued := typeAt(t, tab.Doc, 0, "a")
+	tab.Close()
+	<-tab.Ended
+	if err := mallory.Write(ygsync.EncodeUpdate(forgedUnder(t, mallory.Doc, "EVIL", tabClient, 0))); err != nil {
+		t.Fatal(err)
+	}
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "EVIL") }, "the room holding mallory's claim")
+	back := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, tab.Doc)
+	awaitAnswer(t, back, "the document after the tab's reconnect")
+	if err := back.Write(ygsync.EncodeUpdate(queued)); err != nil {
+		t.Fatal(err)
+	}
+	awaitRefused(t, back, "the reconnected tab whose queued keystroke fell at the clocks mallory claimed")
+	if clock := room().StateVector().Clock(tabClient); clock != uint64(len("EVIL")) {
+		t.Fatalf("the room holds the tab's id to clock %d, want mallory's claim's end %d", clock, len("EVIL"))
+	}
+}
+
+// The deploy's race after day 30: bob, a co-author, claims an earlier-build tab's id at its next
+// clock while the window is open, and the tab's saved row at that clock is replayed by alice's
+// reloaded page of this build only once the window has closed. The replay falls wholly at clocks
+// the room holds and differs from bob's text there: it is refused with the client id refusal, as
+// inside the window, rather than dropped as a duplicate.
+func TestAPageReplayingAnOldTabsSavedRowAfterTheWindowAtClocksClaimedInsideItIsRefused(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	const tab = crdt.ClientID(1_234_568_101)
+	oldTab := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(tab)))
+	awaitAnswer(t, oldTab, "the document")
+	sendTyped(t, oldTab, 0, "o")
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "oAlice") }, "the room holding the tab's edit")
+	bob := openPage(t, serverURL, artifactID, "bob")
+	awaitAnswer(t, bob, "the document")
+	sendTyped(t, bob, 0, "b")
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "boAlice") }, "the room holding bob's edit")
+	oldTab.Close()
+	<-oldTab.Ended
+	if _, err := service.store.Pool.Exec(context.Background(),
+		`delete from document_client_ids where artifact_id = $1 and client_id = $2`, artifactID, int64(tab)); err != nil {
+		t.Fatal(err)
+	}
+	next := oldTab.Doc.StateVector().Clock(tab)
+	saved := typeAt(t, oldTab.Doc, 0, "T")
+	// Inside the window, bob writes under the tab's id first, at that clock.
+	if err := bob.Write(ygsync.EncodeUpdate(forgedUnder(t, bob.Doc, "BOB", tab, next))); err != nil {
+		t.Fatal(err)
+	}
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "BOB") }, "the room holding bob's claim")
+	requireConnected(t, bob, "bob")
+	// Day 31: alice reloads, and her page replays the tab's saved row.
+	setClientIDsSince(t, service, time.Now().Add(-31*24*time.Hour))
+	before := mustRendering(t, room())
+	page := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, page, "the document in the reloaded page")
+	if err := page.Write(ygsync.EncodeUpdate(saved)); err != nil {
+		t.Fatal(err)
+	}
+	awaitRefused(t, page, "alice's reloaded page replaying the tab's saved row after the window")
+	if after := mustRendering(t, room()); after != before {
+		t.Fatalf("the room renders %q after the refused row, want %q as before it", after, before)
+	}
+}
+
+// mergedUpdate is updates merged into one, as a whole-state handoff carries them.
+func mergedUpdate(t *testing.T, updates [][]byte) []byte {
+	t.Helper()
+	merged, err := crdt.MergeUpdatesV1(updates...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return merged
+}
+
+// An update is compared only where it carries structs at clocks the room holds under at most
+// maxComparedClaims ids other people claimed. Bob's legacy socket claims five ids. A page of this
+// build sending structs at their clocks that differ from bob's is refused for four of the ids, as
+// a resend under them is compared, and not for all five, which is a whole-state handoff of the
+// history and is neither compared nor refused for it. A legacy socket sending bob's own structs
+// back is let through for four ids, equal as they are, and refused whole for five: an honest
+// legacy tab writes under one id.
+func TestAnUpdateUnderMoreClaimedIDsThanTheComparedFewIsNotComparedOrIsRefusedFromALegacySocket(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	bob := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("bob"), artifactID, crdt.New(crdt.WithClientID(1_234_568_200)))
+	awaitAnswer(t, bob, "the document")
+	claimed := make([]crdt.ClientID, maxComparedClaims+1)
+	bobs := make([][]byte, len(claimed))
+	for i := range claimed {
+		claimed[i] = crdt.ClientID(1_234_568_201 + i)
+		bobs[i] = forgedUnder(t, bob.Doc, "x", claimed[i], 0)
+		if err := bob.Write(ygsync.EncodeUpdate(bobs[i])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	awaitHeld(t, room, claimed, "bob's claims")
+	before := mustRendering(t, room())
+	differing := func(page *docstest.Peer, ids []crdt.ClientID) []byte {
+		updates := make([][]byte, len(ids))
+		for i, id := range ids {
+			updates[i] = forgedUnder(t, page.Doc, "y", id, 0)
+		}
+		return mergedUpdate(t, updates)
+	}
+	handoff := openPage(t, serverURL, artifactID, "carol")
+	awaitAnswer(t, handoff, "the document")
+	if err := handoff.Write(ygsync.EncodeUpdate(differing(handoff, claimed))); err != nil {
+		t.Fatal(err)
+	}
+	requireConnected(t, handoff, "carol's page sending structs under five claimed ids")
+	resend := openPage(t, serverURL, artifactID, "carol")
+	awaitAnswer(t, resend, "the document")
+	if err := resend.Write(ygsync.EncodeUpdate(differing(resend, claimed[:maxComparedClaims]))); err != nil {
+		t.Fatal(err)
+	}
+	awaitRefused(t, resend, "carol's page sending differing structs under four claimed ids")
+	few := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("dave"), artifactID, crdt.New(crdt.WithClientID(1_234_568_300)))
+	awaitAnswer(t, few, "the document")
+	if err := few.Write(ygsync.EncodeUpdate(mergedUpdate(t, bobs[:maxComparedClaims]))); err != nil {
+		t.Fatal(err)
+	}
+	requireConnected(t, few, "dave's legacy socket handing back bob's structs under four ids")
+	many := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("dave"), artifactID, crdt.New(crdt.WithClientID(1_234_568_301)))
+	awaitAnswer(t, many, "the document")
+	if err := many.Write(ygsync.EncodeUpdate(mergedUpdate(t, bobs))); err != nil {
+		t.Fatal(err)
+	}
+	awaitRefused(t, many, "dave's legacy socket handing back bob's structs under five ids")
+	if after := mustRendering(t, room()); after != before {
+		t.Fatalf("the room renders %q after the duplicates, want %q as before them", after, before)
+	}
+}
+
+// Once the claim window has closed, a legacy tab whose socket dropped before the room answered its
+// keystroke sends the keystroke again on its reconnect: its structs under the id it claimed all
+// fall at clocks the room holds, and the new socket has shown nothing of that id yet, so they are
+// looked up and compared, and pass, the claim being the tab's own person's. The tab types on, and a
+// page of this build handing the room back its whole state, the tab's structs in it, passes too.
+func TestALegacyTabResendingItsOwnClaimedKeystrokeAfterTheWindowIsNotRefused(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	setClientIDsSince(t, service, time.Now().Add(-31*24*time.Hour))
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	doc := crdt.New(crdt.WithClientID(1_234_567_901))
+	tab := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, doc)
+	awaitAnswer(t, tab, "the document")
+	keystroke := typeAt(t, doc, 0, "a")
+	if err := tab.Write(ygsync.EncodeUpdate(keystroke)); err != nil {
+		t.Fatal(err)
+	}
+	awaitRendering(t, room, "# Title\n\naAlice's paragraph.\n", "the room")
+	tab.Close()
+	<-tab.Ended
+	back := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, doc)
+	awaitAnswer(t, back, "the document after the tab's reconnect")
+	if err := back.Write(ygsync.EncodeUpdate(keystroke)); err != nil {
+		t.Fatal(err)
+	}
+	sendTyped(t, back, 1, "b")
+	awaitRendering(t, room, "# Title\n\nabAlice's paragraph.\n", "the room after the tab's next keystroke")
+	carol := openPage(t, serverURL, artifactID, "carol")
+	awaitAnswer(t, carol, "the document")
+	sendStepTwo(t, carol, crdt.EncodeStateAsUpdateV1(carol.Doc, nil))
+	requireConnected(t, back, "the reconnected tab")
+	requireConnected(t, carol, "carol")
 }
 
 // sendStepTwo sends the room update as a sync step 2, the whole-state answer a provider gives the

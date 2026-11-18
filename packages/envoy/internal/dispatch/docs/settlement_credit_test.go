@@ -441,9 +441,8 @@ func TestABrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *
 }
 
 // connectBrowser connects login's browser to artifactID's room as a page of this build, given a
-// client id of its own (openPage), and returns once the browser holds the room's document. A page
-// of the earlier build would claim the id it drew on its first edit, and a claim waits for the
-// room's appends to land (claimable), which these tests hold behind an open transaction. The
+// client id of its own (openPage), and returns once the browser holds the room's document. No
+// edit of the browser's is a claim (claimable), as a page of the earlier build's first edit is. The
 // browser stays connected until the caller closes it or the room closes it. A room's last browser
 // leaving settles what the room is owed at once (settleLastPeer), so a test that needs credit
 // left pending keeps a browser connected until the issue's close, which stops that settlement
