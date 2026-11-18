@@ -51,6 +51,52 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 	}
 }
 
+// A phase's end and a hook's prompt publish with keep (publishKeptToRole), and a kept copy waits
+// on the role's kept lane for the role's next live holder, which is the unheld session's process
+// while it lives. So the gate holds a kept publish as it holds every other (outbox.publishKept,
+// the merge of cybermonklabs/legion#4088 into #4220): to a claim that records a session it does
+// not hold, neither row publishes anything, kept or not, and each finishes undelivered. To a
+// claim holding its own session, each is published with keep as before (R9).
+//
+// The control (the pull request records the run): publishKeptToRole calling the publisher's
+// PublishKept directly, as #4088 wrote it, publishes both rows to the claim whose session
+// another claim holds.
+func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *testing.T) {
+	ctx := context.Background()
+	_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true}, []supervise.Claim{
+		{Token: mustClaimToken(t, "LEGION-941", claim.RoleTester), Tree: "LEGION-941", Issue: "LEGION-941", Role: claim.RoleTester, Session: "ses_941", State: supervise.StateReady},
+		{Token: mustClaimToken(t, "LEGION-942", claim.RoleTester), Tree: "LEGION-942", Issue: "LEGION-942", Role: claim.RoleTester, Session: "ses_942", State: supervise.StateReady},
+	}, "ses_942")
+	held, unheld := mustClaimToken(t, "LEGION-941", claim.RoleTester), mustClaimToken(t, "LEGION-942", claim.RoleTester)
+
+	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+	hook := record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing,
+		Count: 1, Counts: map[string]int{"testing-implementing": 1}, Prompt: "Read the tester's thread before you write anything."}
+	id := int64(80)
+	for _, issue := range []string{"LEGION-942", "LEGION-941"} {
+		for _, payload := range []record.OutboxPayload{ended, hook} {
+			row := mustOutboxRow(t, issue, payload, time.Now())
+			row.ID, id = id, id+1
+			if err := runner.execute(ctx, row); err != nil {
+				t.Fatalf("execute %s's %T row: %v", issue, payload, err)
+			}
+		}
+	}
+	publisher.mu.Lock()
+	published := slices.Clone(publisher.publish)
+	publisher.mu.Unlock()
+	want := notify.RoleTopicPrefix + string(held)
+	if len(published) != 2 {
+		t.Fatalf("published %d messages, want 2, both to %s: %s records a session another claim holds, so nothing goes to its role, kept or not: %+v",
+			len(published), want, unheld, published)
+	}
+	for _, p := range published {
+		if p.topic != want || !p.keep {
+			t.Fatalf("published to %s (keep %v), want %s with keep: %s records a session another claim holds", p.topic, p.keep, want, unheld)
+		}
+	}
+}
+
 // The controller topic follows the deployment's controller mode (heldTopic, review round 15 of
 // #4220). Under `controller: daemon` the launched controller claim is the project's controller, so
 // a controller notice waits while that claim records a session it does not hold: the row is

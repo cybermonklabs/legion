@@ -218,28 +218,50 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 	}
 }
 
-// publish is every executor's publish to Envoy (r.notices), held to the claims this daemon
-// supervises. A publish to the role topic of a claim the daemon supervises, or to its project's
-// controller topic under `controller: daemon` (heldTopic), is made only while that claim holds
-// the session it records (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot
-// could not suspend keeps its process, and that process keeps the Envoy role its session claimed,
-// so a notice, a role message, a phase's end, a hook's prompt, an update ask, a merge-queue
-// removal or a controller notice would reach a process working under another claim's session, or
-// one no claim holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
-// notify.ErrNoHolder, which every executor already answers its own way — a notice is held for its
-// architect, a merge-queue removal and a controller notice wait, and a role message, a phase's
-// end, a hook's prompt and an update ask finish undelivered — so an operator's settle of the name
-// lets the next attempt through. A store that does not answer publishes nothing and fails the
-// attempt, which the row's backoff retries.
+// publish is every executor's publish to Envoy (r.notices), and publishKept its publish with keep,
+// both held to the claims this daemon supervises (heldBack). A publish to the role topic of a
+// claim the daemon supervises, or to its project's controller topic under `controller: daemon`
+// (heldTopic), is made only while that claim holds the session it records
+// (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
+// its process, and that process keeps the Envoy role its session claimed, so a notice, a role
+// message, a phase's end, a hook's prompt, an update ask, a merge-queue removal or a controller
+// notice would reach a process working under another claim's session, or one no claim holds
+// (review rounds 13 to 16 of #4220). Such a publish is not made and answers notify.ErrNoHolder,
+// which every executor already answers its own way — a notice is held for its architect, a
+// merge-queue removal and a controller notice wait, and a role message, a phase's end, a hook's
+// prompt and an update ask finish undelivered — so an operator's settle of the name lets the next
+// attempt through. A store that does not answer publishes nothing and fails the attempt, which the
+// row's backoff retries.
 //
 // HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
 // relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
 // newOutbox is given, so every executor, and every test that builds an outbox, publishes through
-// it. A claim's role topics are held whatever its state: a retired or failed claim's unheld
-// session may still be a live process the daemon no longer manages, and the Envoy listener does
-// not yet withhold the role from it, so the daemon withholds its own messages. A topic of no claim
-// this daemon supervises, and every other topic, is published as made.
+// it. A kept publish is held as much as any other: its copy waits on the role's kept lane for the
+// role's next live holder, and while the unheld session's process lives, that holder is it. A
+// claim's role topics are held whatever its state: a retired or failed claim's unheld session may
+// still be a live process the daemon no longer manages, and the Envoy listener does not yet
+// withhold the role from it, so the daemon withholds its own messages. A topic of no claim this
+// daemon supervises, and every other topic, is published as made.
 func (r *outbox) publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
+		return err
+	}
+	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
+}
+
+// publishKept is publish with keep (notify.Publisher.PublishKept), the publish phaseEnded and
+// hookPrompt share through publishKeptToRole, held as publish is: a topic heldBack refuses is
+// not published, kept or not, and answers the gate's notify.ErrNoHolder.
+func (r *outbox) publishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
+	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
+		return false, err
+	}
+	return r.notices.PublishKept(ctx, topic, message, payload, dedupeKey)
+}
+
+// heldBack is the gate publish and publishKept share: nil when topic may be published to, and
+// otherwise why not.
+func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
 	if token, held := r.heldTopic(topic); held && r.supervisor != nil {
 		if m, ok := r.supervisor.Machine(token); ok {
 			if err := m.HoldsItsSession(ctx); err != nil {
@@ -263,7 +285,7 @@ func (r *outbox) publish(ctx context.Context, topic, message string, payload any
 			r.unheldWarned.Delete(token)
 		}
 	}
-	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
+	return nil
 }
 
 // heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
@@ -1925,17 +1947,19 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 
 // publishKeptToRole publishes message to topic, the Envoy topic of one role's claim
 // (notify.RoleTopicPrefix and the claim's token), under the row's own key, and asks the listener
-// to keep it for the role's next live holder. A retry of the row while its copy is still on the
-// role's kept lane stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's
-// answers and what a repeat after the copy's hand-over does. It is the publish phaseEnded and
+// to keep it for the role's next live holder, through the gate every publish of the outbox goes
+// through (publishKept). A retry of the row while its copy is still on the role's kept lane
+// stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and what a
+// repeat after the copy's hand-over does. It is the publish phaseEnded and
 // hookPrompt share; each decides what comes before it, and each wraps the error it returns. What
 // each answer does to the row:
 //
 //   - a live holder took the message: the row ends, with nothing logged;
 //   - the listener kept the message on the role's kept lane for one hour: the row ends with kept
 //     logged at Info with fields, the listener being the message's keeper from there;
-//   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder): the row
-//     ends undelivered with noHolder logged at Info with fields;
+//   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), or the
+//     role's claim records a session it does not hold and nothing was published (the gate's
+//     notify.ErrNoHolder): the row ends undelivered with noHolder logged at Info with fields;
 //   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
 //     failure: the error is returned as the publisher gave it, and the row keeps its retry.
 //
@@ -1967,7 +1991,7 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // updateAsk's round ends at its bound whether or not the role answers. So whoever changes the
 // rule for a topic with no holder must read all six executors, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message, kept, noHolder string, fields ...any) error {
-	keeps, err := r.notices.PublishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
+	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
 		r.log.Info(noHolder, fields...)
