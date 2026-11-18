@@ -171,161 +171,26 @@ func (c ruleHostRow) absents() []string {
 	return absent
 }
 
-// ruleHostRows is every host spelling outside the one grammar a rules host is written in
-// (rulehost.Refusal), one row per way out of it, each refused by airlock-check
-// (TestAirlockCheckRefusesAHostTheProxyNeverCompares) and by the boot
-// (TestMainRefusesAnAirlockRulesFileItCannotServe) alike. A row names the form to write where the
-// host has one, and no form otherwise.
-var ruleHostRows = func() []ruleHostRow {
-	// An IP address is refused in every spelling, each with what it would do served: the
-	// canonical spelling and upper-case IPv6 bind and are decrypted, a trailing dot makes a name
-	// the resolver refuses, and every other spelling binds nothing and is tunnelled unread. Where
-	// the file writes the address another way than netaddr.Canonical's, the refusal names that
-	// form.
-	ip := func(does []string, canonical string) []string {
-		want := append([]string{"is an IP address", "carries no secret there", "name the service by its host name"}, does...)
-		if canonical != "" {
-			want = append(want, canonical+" in its canonical form")
-		}
-		return want
-	}
-	decrypted := []string{"no TLS server name", "proxy decrypts a CONNECT to it", "sni mismatch"}
-	tunnelled := []string{"no CONNECT's host", "binds nothing", "tunnelled unread"}
-	dotted := []string{"trailing dot", "the resolver refuses", "refused before anything is bound"}
-	formed := func(why, form string) []string { return []string{why, "write it as " + form} }
-	noForm := func(why ...string) []string {
-		return append(why, ruleHostAdvice)
-	}
-	const numbered = "clients read such a host differently"
-	const noDNSName = "is no DNS name"
-	// decryptedDot is the reason of one trailing dot after a name the resolver reads: a CONNECT
-	// that writes the dot binds the entry and is decrypted, and every request it carries is
-	// refused, whatever else is wrong with the name.
-	decryptedDot := []string{"ends in a dot", "proxy decrypts a CONNECT to it", "sni mismatch"}
-	longLabel := strings.Repeat("a", 64) + ".example"
-	longName := strings.Repeat(strings.Repeat("b", 63)+".", 4) + "example"
-	return []ruleHostRow{
-		{"a canonical IPv4 address", "93.184.216.34", ip(decrypted, ""), "216.34"},
-		{"a canonical IPv6 address", "2001:db8:7::1", ip(decrypted, ""), "7::1"},
-		{"a canonical IPv6 address with an embedded IPv4 part", "2001:db8::5db8:d822", ip(decrypted, ""), "5db8"},
-		{"an IPv6 address in upper case", "2001:DB8:8::1", ip(decrypted, "2001:db8:8::1"), "DB8"},
-		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", ip(tunnelled, "2001:db8:7::1"), "7:0::1"},
-		{"an IPv6 address with a leading zero in a group", "2001:0db8:7::1", ip(tunnelled, "2001:db8:7::1"), "0db8"},
-		{"an IPv4-mapped IPv6 address", "::ffff:93.184.216.34", ip(tunnelled, "93.184.216.34"), "::ffff:"},
-		{"an IPv6 address written with an IPv4 part", "2001:db8::93.184.216.34", ip(tunnelled, "2001:db8::5db8:d822"), "::93.184"},
-		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 "x`, ip(tunnelled, "2001:db8:7::1"), "eth0"},
-		{"an IPv6 address in brackets", "[2001:db8:7::1]", ip(tunnelled, "2001:db8:7::1"), "[2001"},
-		{"an IPv6 address with a zone in brackets", `[2001:db8:7::1%eth0 "x]`, ip(tunnelled, "2001:db8:7::1"), "eth0"},
-		{"an IPv4-mapped IPv6 address in brackets", "[::ffff:93.184.216.34]", ip(tunnelled, "93.184.216.34"), "::ffff:"},
-		{"an IPv6 address after an opening bracket alone", "[2001:db8:7::1", ip(tunnelled, "2001:db8:7::1"), "[2001"},
-		{"an IPv4 address with a trailing dot", "93.184.216.34.", ip(dotted, "93.184.216.34"), "216.34."},
-		{"an IPv6 address with a trailing dot", "2001:db8:7::1.", ip(dotted, "2001:db8:7::1"), "::1."},
-		{"an IPv4 address with a port", "93.184.216.34:443", ip(tunnelled, "93.184.216.34"), ":443"},
-		{"an IPv6 address in brackets with a port", "[2001:db8:7::1]:443", ip(tunnelled, "2001:db8:7::1"), "]:443"},
-		// A host name written another way than the grammar's: the refusal names the grammar's
-		// spelling of the same host, in lower case.
-		{"a host name with a trailing dot", "api.github.com.", formed("sni mismatch", "api.github.com"), "github.com."},
-		// In mixed case and with a trailing dot the host binds, since airlock.HostBound folds
-		// case, and so it is decrypted and refused as the same name in lower case is.
-		{"a host name in mixed case with a trailing dot", "API.GitHub.com.", append(formed("ends in a dot", "api.github.com"), "sni mismatch"), "GitHub"},
-		{"a wildcard with a trailing dot", "*.googleapis.com.", append(formed("ends in a dot", "*.googleapis.com"), "sni mismatch"), "googleapis.com."},
-		{"a wildcard in mixed case with a trailing dot", "*.GoogleAPIs.com.", append(formed("ends in a dot", "*.googleapis.com"), "sni mismatch"), "GoogleAPIs"},
-		{"a name of 253 characters with a trailing dot", longestRuleHost + ".", formed("ends in a dot", longestRuleHost), longestRuleHost + "."},
-		{"a Unicode internationalized name", "bücher.example", formed("punycode", "xn--bcher-kva.example"), "bücher"},
-		{"a Unicode internationalized name under a wildcard", "*.bücher.example", formed("punycode", "*.xn--bcher-kva.example"), "bücher"},
-		{"a host name ending in an ideographic full stop", "api.github.com\u3002", formed("is not ASCII", "api.github.com"), "\u3002"},
-		{"a host name ending in a full-width full stop", "api.github.com\uff0e", formed("is not ASCII", "api.github.com"), "\uff0e"},
-		{"a trailing dot and a zero-width space", "api.github.com.\u200b", formed("is not ASCII", "api.github.com"), "\u200b"},
-		// Text that is no host name in any spelling: the refusal names no form.
-		{"an empty host", "", noForm("is empty", "binds nothing"), ""},
-		{"a wildcard alone", "*", noForm("has a * other than one leading", "binds nothing"), ""},
-		{"a wildcard over a wildcard", "*.*", noForm("has a * other than one leading", "binds nothing"), ""},
-		{"a wildcard before a doubled dot", "*..com", noForm("has an empty label", "binds nothing"), "..com"},
-		{"a leading dot", ".api.github.com", noForm("has an empty label", "binds nothing"), ".api"},
-		{"a doubled dot", "a..b.com", noForm("has an empty label", "binds nothing"), "a..b"},
-		{"a space", " ", noForm("white space", "binds nothing"), ""},
-		{"a tab", "\t", noForm("white space", "binds nothing"), ""},
-		{"a DEL character", "api\x7f.github.com", noForm("white space or a control character", "binds nothing"), "api\x7f"},
-		{"a leading space", " api.github.com", noForm("white space", "binds nothing"), "github"},
-		{"a trailing space", "api.github.com ", noForm("white space", "binds nothing"), "github"},
-		{"a trailing dot and a space", "api.github.com. ", noForm("white space", "binds nothing"), "github"},
-		{"a trailing dot and a newline", "api.github.com.\n", noForm("white space", "binds nothing"), "github"},
-		// A port is digits after a colon; a colon before anything else is no DNS name's, and its
-		// refusal says nothing of a port.
-		{"a host name with a port", "api.github.com:443", noForm("holds a port", "without its port", "binds nothing"), ":443"},
-		{"a scheme with one slash", "https:/slack.com", noForm(noDNSName), "https:"},
-		{"a user and a password", "user:pw@slack.com", noForm(noDNSName), "pw@"},
-		{"a mail address", "mailto:ops@slack.com", noForm(noDNSName), "ops@"},
-		{"a host name with a service for its port", "api.github.com:https", noForm(noDNSName), ":https"},
-		{"a host with a scheme", "https://slack.com", []string{"holds a scheme", "write the service's host name with no scheme"}, "https"},
-		{"a host name in brackets", "[api.github.com]", noForm("holds a bracket", "binds nothing"), "[api"},
-		{"a host name holding a %", "api%x.github.com", noForm("holds a %", "binds nothing"), "%x"},
-		{"a host name holding a slash", "a/b.example", noForm("holds a character other than a letter, a digit, a hyphen and a dot", "binds nothing"), "a/b"},
-		{"a colon in no IP address", "2001:db8::g", noForm(noDNSName), "::g"},
-		{"an underscore", "a_b.example.com", noForm("holds an underscore", "outside the LDH grammar"), "a_b"},
-		{"a label starting with a hyphen", "-api.github.com", noForm("starts or ends with a hyphen"), "-api"},
-		{"a label ending in a hyphen", "api-.github.com", noForm("starts or ends with a hyphen"), "api-"},
-		{"a label with -- as its third and fourth characters", "ab--cd.example", noForm("as its third and fourth characters", "reserved form"), "ab--cd"},
-		{"an xn-- label that is no punycode", "xn--zz.example", noForm("xn-- label the IDNA lookup profile refuses", "Fake A-label"), "xn--zz"},
-		// The punycode of the ﬁ ligature: punycode decodes it, and the IDNA lookup profile, which
-		// maps ﬁ to fi, refuses it as no A-label.
-		{"an xn-- label that decodes but no lookup reads", "xn--le-1b1n.example", noForm("xn-- label the IDNA lookup profile refuses", "Fake A-label"), "xn--le-1b1n"},
-		{"a label over 63 characters", longLabel, noForm("label longer than 63 characters", "binds nothing"), strings.Repeat("a", 64)},
-		{"a name over 253 characters", longName, noForm("longer than 253 characters", "binds nothing"), strings.Repeat("b", 63)},
-		{"a name of 254 characters", longestRuleHost + "c", noForm("longer than 253 characters", "binds nothing"), strings.Repeat("c", 63)},
-		{"a trailing dot after text that is no host name", "api github.com.", noForm("ends in a dot", "no host name either", "binds nothing"), "api github"},
-		{"two trailing dots", "api.github.com..", noForm("ends in a dot", "no host name either", "binds nothing"), "github.com."},
-		// One trailing dot after text Go's resolver does not read as a name either: digits
-		// alone, a label with a hyphen at an end, a label over 63 characters, a name over 253.
-		{"a trailing dot after numbers alone", "1.2.3.", noForm("ends in a dot", "no host name either", "binds nothing"), "1.2.3"},
-		{"a trailing dot after a label starting with a hyphen", "-api.github.com.", noForm("ends in a dot", "no host name either", "binds nothing"), "-api"},
-		{"a trailing dot after a label ending in a hyphen", "api-.github.com.", noForm("ends in a dot", "no host name either", "binds nothing"), "api-"},
-		{"a trailing dot after a label over 63 characters", strings.Repeat("a", 64) + ".example.", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("a", 64)},
-		{"a trailing dot after a name of 254 characters", longestRuleHost + "c.", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("c", 63)},
-		// One trailing dot after a name the resolver reads and the grammar refuses: a CONNECT
-		// with the dot binds and is refused "sni mismatch", and the refusal names why the name
-		// without its dot is refused as well.
-		{"an underscore before a trailing dot", "a_b.example.com.", noForm(append(decryptedDot, "without the dot it holds an underscore")...), "a_b"},
-		{"a -- label before a trailing dot", "ab--cd.example.", noForm(append(decryptedDot, "without the dot it has a label with", "as its third and fourth characters")...), "ab--cd"},
-		{"a Fake A-label before a trailing dot", "xn--zz.example.", noForm(append(decryptedDot, "without the dot it has an xn-- label")...), "xn--zz"},
-		{"a last label of digits before a trailing dot", "foo.123.", noForm(append(decryptedDot, "without the dot it ends in a number")...), "foo.123"},
-		// A wildcard with a trailing dot is read as the names it matches, the shortest of which
-		// is "a." and its suffix: a.216.34. and a.123. are names the resolver reads, so the
-		// wildcard binds and is decrypted as they are, and a suffix of 252 characters matches
-		// no name of 253 or fewer.
-		{"a wildcard over the last labels of an address before a trailing dot", "*.216.34.", noForm(append(decryptedDot, "without the dot it is a wildcard whose last label is a number")...), "216.34"},
-		{"a wildcard over a number before a trailing dot", "*.123.", noForm(append(decryptedDot, "without the dot it is a wildcard whose last label is a number")...), "123"},
-		{"a wildcard over 252 characters before a trailing dot", "*." + strings.Repeat(strings.Repeat("e", 63)+".", 3) + strings.Repeat("e", 60) + ".", noForm("ends in a dot", "no host name either", "binds nothing"), strings.Repeat("e", 60)},
-		// The boundary: "a." and a suffix of 251 characters is a name of exactly 253, which the
-		// resolver reads, so this wildcard binds and is decrypted with its dot, and its refusal
-		// names the wildcard without the dot as the form to write.
-		{"a wildcard over 251 characters before a trailing dot", "*." + strings.Repeat(strings.Repeat("f", 63)+".", 3) + strings.Repeat("f", 59) + ".",
-			formed("sni mismatch", "*."+strings.Repeat(strings.Repeat("f", 63)+".", 3)+strings.Repeat("f", 59)), ""},
-		{"an IPv4 address with a leading zero", "093.184.216.34", noForm("ends in a number", "leading zero", numbered), "093.184"},
-		{"an IPv4 address of fewer than four parts", "93.184.54818", noForm("ends in a number", "fewer than four parts", numbered), "184.54818"},
-		{"an IPv4 address written as one number", "1572395042", noForm("ends in a number", numbered), "1572395042"},
-		{"an IPv4 address written in hex", "0x5db8d822", noForm("ends in a number", "hex part", numbered), "0x5db8"},
-		{"a name whose last label is a number", "foo.123", noForm("ends in a number", numbered), "foo.123"},
-		{"a name whose last label is 0x alone", "foo.0x", noForm("ends in a number", numbered), "foo.0x"},
-		// In upper case the hex is read as its lower case, as the proxy and HostBound read it.
-		{"a last label of hex digits in upper case", "foo.0X1F", noForm("ends in a number", numbered), "0X1F"},
-		{"one label before 0x alone", "a.0x", noForm("ends in a number", numbered), "a.0x"},
-		{"a number before 0x alone", "10.0x", noForm("ends in a number", numbered), "10.0x"},
-		{"0x alone", "0x", noForm("ends in a number", numbered), ""},
-		{"a wildcard over the last labels of an address", "*.216.34", noForm("wildcard whose last label is a number", "addresses by their text"), "*.216"},
-		{"a wildcard over 0x alone", "*.0x", noForm("wildcard whose last label is a number", "addresses by their text"), "*.0x"},
-		// The hosts of the airlock package's own HostShapeOK rows that no row above already
-		// spells, each refused ahead of airlock.Validate, whose refusal would quote it.
-		{"a bare wildcard with a trailing dot", "*.", noForm("ends in a dot", "no host name either"), ""},
-		{"a path", "slack.com/x", noForm("holds a character other than a letter, a digit, a hyphen and a dot"), "slack.com/"},
-		{"a wildcard inside a name", "*.*.com", noForm("has a * other than one leading"), "*.*"},
-		{"a Kelvin sign", "sl\u212aack.com", []string{"is not ASCII"}, "\u212a"},
-	}
-}()
+// ruleHostRows are the host spellings airlock-check
+// (TestAirlockCheckRefusesAHostTheProxyNeverCompares) and the boot
+// (TestMainRefusesAnAirlockRulesFileItCannotServe) both refuse. rulehost's own test holds a row
+// for every way out of the grammar and reads Refusal's text; these rows read the wiring: that the
+// host Refusal reads is the host the file writes, which a reader of the file would change if it
+// folded case, took a trailing dot or white space off, wrote an address in its canonical form,
+// read the host as a URL or converted it to punycode, and that each kind of advice a refusal
+// gives - a form to write, an address's, a scheme's and the grammar's own - reaches its reader.
+var ruleHostRows = []ruleHostRow{
+	{"a host name in mixed case with a trailing dot", "API.GitHub.com.", []string{"ends in a dot", "write it as api.github.com", "sni mismatch"}, "GitHub"},
+	{"an IPv6 address in upper case", "2001:DB8:8::1",
+		[]string{"is an IP address", "2001:db8:8::1 in its canonical form", "no TLS server name", "sni mismatch", "name the service by its host name"}, "DB8"},
+	{"a scheme with one slash", "https:/slack.com", []string{"is no DNS name", ruleHostAdvice}, "https:"},
+	{"a host with a scheme", "https://slack.com", []string{"holds a scheme", "write the service's host name with no scheme"}, "https"},
+	{"a Unicode internationalized name", "bücher.example", []string{"punycode", "write it as xn--bcher-kva.example"}, "bücher"},
+	{"a trailing dot and a newline", "api.github.com.\n", []string{"white space", "binds nothing", ruleHostAdvice}, "github"},
+}
 
 // longestRuleHost is a name of 253 characters, the longest the grammar reads, and
-// longestRuleLabel a name whose first label is 63 characters, the longest label it reads: a row
-// one character past either is refused, and these two are read.
+// longestRuleLabel a name whose first label is 63 characters, the longest label it reads.
 var (
 	longestRuleHost  = strings.Repeat(strings.Repeat("c", 63)+".", 3) + strings.Repeat("c", 61)
 	longestRuleLabel = strings.Repeat("d", 63) + ".example"
@@ -337,6 +202,7 @@ var (
 // airlock.HostShapeOK accepts and airlock.HostBound folds on both sides, the punycode in upper
 // case among them, which the grammar reads as its lower case - and the edges of the grammar it
 // reads: the longest name, the longest label, and a number as a label other than the last.
+// rulehost's own test reads the same hosts with Refusal; these are the file a broker serves.
 var canonicalRuleHosts = []string{"api.github.com", "*.googleapis.com", "s3.us-east-1.amazonaws.com", "xn--bcher-kva.example", "localhost",
 	"API.GitHub.com", "*.GoogleAPIs.com", "XN--BCHER-KVA.example", longestRuleHost, longestRuleLabel, "123.foo"}
 
@@ -359,8 +225,8 @@ func rulesWithHosts(t *testing.T, name string, hosts ...string) string {
 }
 
 // TestAirlockCheckRefusesAHostTheProxyNeverCompares: a rules host is served only in the one
-// grammar a rules host is written in, the one spelling the proxy compares a request's host in,
-// and airlock-check refuses every other spelling as the boot does, naming the entry and the
+// grammar a rules host is written in (rulehost.Refusal, whose own test holds every spelling out of
+// it), and airlock-check refuses a spelling outside it as the boot does, naming the entry and the
 // host's position, saying why, and naming the form to write where one exists, with nothing else
 // of the host as written. The control is a file of hosts of each shape a deployment names, in the
 // grammar's spelling: it is valid.
@@ -372,9 +238,9 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 			if code != 1 || stdout != "" {
 				t.Fatalf("%s = exit %d with stdout %q, want exit 1 and no report", c.name, code, stdout)
 			}
-			// The file's path is the row's temporary directory, which holds the subtest's name,
-			// and a subtest's name holds words a want looks for, such as "underscore": every want,
-			// and the text that must be absent, is looked for with the path taken out.
+			// The refusal names the file, whose path is the row's temporary directory: it holds
+			// the subtest's name and whatever the temporary directory's own path holds, so every
+			// want, and the text that must be absent, is looked for with the path taken out.
 			text := strings.ReplaceAll(stderr, path, "")
 			for _, want := range append([]string{`secrets[0] "GITHUB"`, "hosts[1]"}, c.want...) {
 				if !strings.Contains(text, want) {

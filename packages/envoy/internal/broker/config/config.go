@@ -1295,10 +1295,8 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 
 // parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
 // holds every exchange to and compares the ASCII lower-cased host of a token request's
-// connection with, exactly. It refuses, naming the value and the reason, a host the rules-host
-// grammar refuses (rulehost.Refusal, whose first test is airlock.HostShapeOK: a scheme, a port, a
-// path, an address, an empty label, a label opening or closing with "-", a last label that is a
-// number), since a token request reaches the proxy only at a host an entry binds. On top of that
+// connection with, exactly. It refuses, naming the value and the reason, a host rulehost.Refusal
+// refuses, since a token request reaches the proxy only at a host an entry binds. On top of that
 // grammar it refuses two hosts a rules entry may hold: a "*." suffix, which is no one host, and a
 // capital letter, since the proxy compares the value as it is written with a lower-cased host. A
 // value of any of those would refuse every exchange.

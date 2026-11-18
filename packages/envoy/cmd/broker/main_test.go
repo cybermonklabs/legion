@@ -1055,12 +1055,12 @@ func airlockEnv(t *testing.T) []string {
 
 // TestMainRefusesAnAirlockRulesFileItCannotServe drives the real binary with each kind of rules
 // file it must refuse — one whose entry the airlock will not validate, one whose entry names a
-// secret by a name no session can ask for, one for each host spelling outside the grammar a rules
-// host is written in (ruleHostRows, the rows TestAirlockCheckRefusesAHostTheProxyNeverCompares
-// drives through airlock-check), one that is not JSON, and a path that is not there — and asserts
-// it exits non-zero naming the file and what is wrong with it, without ever binding. The database
-// it is given is unreachable, so a broker that read the file after opening the store would fail
-// on the host instead of on the file.
+// secret by a name no session can ask for, one for each host spelling of ruleHostRows (the rows
+// TestAirlockCheckRefusesAHostTheProxyNeverCompares drives through airlock-check, which read that
+// the host the grammar reads is the host the file writes), one that is not JSON, and a path that
+// is not there — and asserts it exits non-zero naming the file and what is wrong with it, without
+// ever binding. The database it is given is unreachable, so a broker that read the file after
+// opening the store would fail on the host instead of on the file.
 func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
@@ -1074,9 +1074,10 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		if !strings.Contains(out, "BROKER_AIRLOCK_RULES_FILE") {
 			t.Fatalf("broker refused, but its output does not name BROKER_AIRLOCK_RULES_FILE: %s", out)
 		}
-		// The file's path is the row's temporary directory, which holds the subtest's name, and
-		// a subtest's name holds words a want looks for, such as "underscore": every want but the
-		// path itself, and the text that must be absent, is looked for with the path taken out.
+		// The refusal names the file, whose path is a temporary directory: it holds the test's or
+		// the subtest's name and whatever the temporary directory's own path holds, so every want
+		// but the path itself, and the text that must be absent, is looked for with the path
+		// taken out.
 		text := strings.ReplaceAll(out, path, "")
 		for _, want := range want {
 			in := text

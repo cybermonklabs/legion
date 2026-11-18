@@ -50,22 +50,29 @@ const (
 // or closes with a hyphen; a "*" other than one leading "*."; and a last label of digits alone.
 // A host HostShapeOK accepts is refused only for what the grammar adds to it (beyondShape): more
 // than 253 characters or a label of more than 63, a last label that is a number as the WHATWG URL
-// parser's IPv4 reading takes one (0x and hex digits, 0x alone), and a label with "--" as its
-// third and fourth characters other than an xn-- label the IDNA lookup profile reads back
-// unchanged (weborigin.ReservedLabel). A capital letter is no reason: HostShapeOK accepts it and
-// HostBound folds it, so a host in any case is read as its lower case (fold.ASCII).
+// parser's IPv4 reading takes one (0x and hex digits, 0x alone; weborigin.NumericLabel), and a
+// label with "--" as its third and fourth characters other than an xn-- label the IDNA lookup
+// profile reads back unchanged (weborigin.ReservedLabel). A capital letter is no reason:
+// HostShapeOK accepts it and HostBound folds it, so a host in any case is read as its lower case
+// (fold.ASCII).
 //
 // A refusal names the form to write when h is a host the grammar reads written another way - with
 // a trailing dot, or as a Unicode name the IDNA lookup profile converts to punycode - and, for an
 // IP address, the address in netaddr.Canonical's form. It repeats nothing else of h, since a
 // rules file's text is any text.
 func Refusal(h string) string {
-	reason, advised := why(h)
-	switch {
-	case reason == "":
+	// A scheme's refusal and an IP address's carry their own advice. airlock.HostShapeOK accepts
+	// neither, as it takes no ':' and no last label of digits alone, so reading them first
+	// changes no host it accepts.
+	if strings.Contains(h, "://") {
+		return "holds a scheme, and a host is a name alone, so it binds nothing; write the service's host name with no scheme, path or port"
+	}
+	if addr, ok := ipLiteral(h); ok {
+		return ipHostRefusal(h, addr)
+	}
+	reason := why(h)
+	if reason == "" {
 		return ""
-	case advised:
-		return reason
 	}
 	if form := canonicalForm(h); form != "" {
 		return reason + "; write it as " + form
@@ -73,27 +80,22 @@ func Refusal(h string) string {
 	return reason + "; " + writeAHostName
 }
 
-// why is the reason h is refused with no form after it, or "" for a host the grammar reads.
-// advised says the reason carries its own advice, which a scheme's and an IP address's do.
-func why(h string) (reason string, advised bool) {
+// why is the reason h is refused with no form after it, or "" for a host the grammar reads. It
+// names no scheme and no IP address: Refusal refuses those first, dotReason asks of a name the
+// resolver reads, which is neither, and canonicalForm asks only whether its form is read.
+func why(h string) string {
 	if airlock.HostShapeOK(h) {
-		return beyondShape(fold.ASCII(h)), false
-	}
-	if strings.Contains(h, "://") {
-		return "holds a scheme, and a host is a name alone, so it binds nothing; write the service's host name with no scheme, path or port", true
-	}
-	if addr, ok := ipLiteral(h); ok {
-		return ipHostRefusal(h, addr), true
+		return beyondShape(fold.ASCII(h))
 	}
 	if reason := shapeReason(fold.ASCII(h)); reason != "" {
-		return reason, false
+		return reason
 	}
-	return noDNSName, false
+	return noDNSName
 }
 
 // shapeReason names why airlock.HostShapeOK refuses h, written in lower case and holding no
-// scheme and no IP address, or "" for a refusal no rule here names, which Refusal gives as no DNS
-// name.
+// scheme and no IP address (why), or "" for a refusal no rule here names, which why gives as no
+// DNS name.
 func shapeReason(h string) string {
 	switch {
 	case h == "":
@@ -173,7 +175,7 @@ func beyondShape(h string) string {
 			return "has a label with \"--\" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for, so it is no host in the one spelling a rules host is written in"
 		}
 	}
-	if numericLabel(labels[len(labels)-1]) {
+	if weborigin.NumericLabel(labels[len(labels)-1]) {
 		return numberReason(wildcard)
 	}
 	return ""
@@ -202,7 +204,7 @@ func dotReason(h string) string {
 	if len(h)-len(name) > 1 || !resolverReads(name) {
 		return noName
 	}
-	if rest, _ := why(name); rest != "" {
+	if rest := why(name); rest != "" {
 		return decrypted + ", and without the dot it " + rest
 	}
 	return decrypted
@@ -237,16 +239,6 @@ func resolverReads(name string) bool {
 		}
 	}
 	return nonNumeric
-}
-
-// numericLabel reports whether a label is a number as the WHATWG URL parser's IPv4 reading takes
-// one: decimal, or 0x and hex digits, where 0x alone is the number 0. The last label of no host
-// name is one; the WHATWG parser reads a host ending in one as an IPv4 address or refuses it.
-func numericLabel(label string) bool {
-	if hex, ok := strings.CutPrefix(label, "0x"); ok {
-		return strings.Trim(hex, "0123456789abcdef") == ""
-	}
-	return label != "" && strings.Trim(label, "0123456789") == ""
 }
 
 // isASCII reports whether s holds only ASCII bytes.
@@ -314,7 +306,7 @@ func canonicalForm(h string) string {
 		name = ascii
 	}
 	form := prefix + strings.TrimSuffix(fold.ASCII(name), ".")
-	if reason, _ := why(form); reason != "" {
+	if why(form) != "" {
 		return ""
 	}
 	return form

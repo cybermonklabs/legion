@@ -983,21 +983,15 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 }
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: a host outside the one
-// grammar a rules host is written in (rulehost.Refusal), then airlock.Validate's answer, which is
-// the Lean model's, then an entry whose name is not a name a session can ask for. The hosts come
-// first because rulehost.Refusal names each host's reason and repeats no text of the file but the
-// form to write, where Validate's refusal of a host airlock.HostShapeOK refuses quotes the host as
-// written; and because that grammar's first test is HostShapeOK, Validate then refuses no host. So
-// a file with two faults reports its first bad host, by entry and then by position, ahead of any
-// other fault Validate finds (a repeated name, an entry with no host, a judge above 900 seconds,
-// another kind). Some of the host refusals are this program's own and not the Lean model's, the
-// ones the grammar adds to HostShapeOK: a last label that is 0x and hex digits (0x1f,
-// a.0x7f000001) or 0x alone, which clients read as an IPv4 address, and a wildcard over one; a
-// name of more than 253 characters or a label of more than 63; and a label with "--" as its
-// third and fourth characters (ab--cd.example) or an xn-- label the IDNA lookup profile refuses
-// (xn--zz.example). A host in upper or mixed case is served, as HostShapeOK accepts it and
-// airlock.HostBound folds both sides.
+// that the boot and airlock-check refuse the same file in the same words: a host rulehost.Refusal
+// refuses, then airlock.Validate's answer, which is the Lean model's, then an entry whose name is
+// not a name a session can ask for. The hosts come first because rulehost.Refusal names each
+// host's reason and repeats no text of the file but the form to write, where Validate's refusal of
+// a host airlock.HostShapeOK refuses quotes the host as written; and because that grammar's first
+// test is HostShapeOK, Validate then refuses no host. So a file with two faults reports its first
+// bad host, by entry and then by position, ahead of any other fault Validate finds (a repeated
+// name, an entry with no host, a judge above 900 seconds, another kind). The host refusals
+// rulehost.Refusal adds to HostShapeOK are this program's own and not the Lean model's.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
