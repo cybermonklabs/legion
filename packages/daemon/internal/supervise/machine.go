@@ -3045,9 +3045,12 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // would read gone until the next heartbeat. The boot suspends such a claim (the merge of
 // cybermonklabs/legion#4088 into #4220 made that suspension send a stop), so the stop is held as
 // a publish to the claim's role is (outbox.publish). A store that does not answer sends nothing
-// either; the registration then lapses when its record expires, the wait the session had before
-// the stop existed. A claim holding its session asks nothing of the store (Machine.heldNames) and
-// is stopped as before (R9).
+// either, since whose registration the id names is then unknown; the registration lapses when its
+// record expires, the wait the session had before the stop existed. A claim holding its session
+// is stopped as before (R9): with names this machine has admitted already (Machine.heldNames) it
+// asks nothing of the store, and with names it has not, as after a restart, which NewMachine
+// starts with none of, it asks the store once, and a store that does not answer then sends no
+// stop for it either.
 func (m *Machine) sessionGone(ctx context.Context) {
 	if m.deps.SessionGone == nil || m.claim.Session == "" {
 		return
