@@ -192,10 +192,11 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 //
 // A granted name the airlock's rules name is released as placeholders instead of as its value:
 // its value is read or minted exactly as every other name's is, which is what says the value
-// exists and which slots it fills, and is then discarded. Such a name is left out of Values
-// altogether — a CLI from before the airlock finds it missing and runs nothing, rather than
-// running the command with a placeholder it does not understand — and what the session needs to
-// reach it is Release.Airlock.
+// exists and which slots it fills, and is then discarded, a minted one given back to its upstream
+// once the release is recorded (giveBack, heldBack), since the proxy mints a value of its own
+// (AirlockValues). Such a name is left out of Values altogether — a CLI from before the airlock
+// finds it missing and runs nothing, rather than running the command with a placeholder it does
+// not understand — and what the session needs to reach it is Release.Airlock.
 //
 // call is what the session says of this release: the command it starts and the reason its own
 // call gave. The release records both, with the reason of the grant's request, in its grant.used
@@ -232,6 +233,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	release := Release{Values: values, Expires: checked.expires}
 	if len(splits) > 0 {
 		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
+			m.giveBack(ctx, read)
 			return Release{}, err
 		}
 	}
@@ -243,8 +245,12 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	}
 	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason), narrowing: narrowing}
 	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
+		// The row is what says the values left the broker, and a release whose row failed hands
+		// nothing over, so what it minted is given back.
+		m.giveBack(ctx, read)
 		return Release{}, err
 	}
+	m.giveBack(ctx, heldBack(read))
 	return release, nil
 }
 
@@ -1178,7 +1184,7 @@ const pendingForApproverQuery = pendingListFrom + `(
 // pendingOrExpiredForApproverQuery is PendingForApprover's statement for a caller that asks for
 // states, $3 for the pending records and $4 for the expired ones: the records of the approver
 // recordStateSQL reads 'pending' while $3 holds, and those it reads 'expired' that have no row in
-// credential_request_dismissals (migration 0033) while $4 holds. The pending rows come first and
+// credential_request_dismissals (migration 0034) while $4 holds. The pending rows come first and
 // the expired ones after them, each newest first, so a caller that cuts the list into pages from
 // the front never pushes a record a person can still decide off its first page to show records
 // nobody can.

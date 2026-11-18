@@ -2183,12 +2183,13 @@ func TestLoadRefusesAnySignInSwitchButOff(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheAirlocksTestOnlySettings pins each of the eight settings the broker's local
-// stack configures with: the airlock's seven — the two minter bases, the addresses the proxy
-// may dial although they are loopback, the extra upstream roots, where a name resolves to, and
-// its two negative-control switches — and the judge's one, the switch that turns its checks
-// before the model off. Each is read as it is given and is empty or off when unset. The
-// refusal of each on a production start is cmd/broker's, which has its own rows.
+// TestLoadReadsTheAirlocksTestOnlySettings pins each of the nine settings the broker's local
+// stack configures with: the airlock's eight — the two minter bases, the addresses the proxy
+// may dial although they are loopback, the extra upstream roots, where a name resolves to, the
+// token authority the azure exchange is held to, and its two negative-control switches — and
+// the judge's one, the switch that turns its checks before the model off. Each is read as it is
+// given and is empty or off when unset. The refusal of each on a production start is
+// cmd/broker's, which has its own rows.
 func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2196,6 +2197,7 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	}
 	if cfg.AirlockTestGitHubAPIBase != "" || cfg.AirlockTestGoogleTokenURL != "" || cfg.AirlockTestUpstreamCAFile != "" ||
 		len(cfg.AirlockTestDialAllow) != 0 || len(cfg.AirlockTestResolve) != 0 || cfg.AirlockTestKeepValues || cfg.AirlockTestNoKind ||
+		cfg.AirlockTestAzureAuthority != "" ||
 		cfg.JudgeTestSkipChecks {
 		t.Fatalf("with none of them set the local stack's test settings read %+v; want every one empty or off", cfg)
 	}
@@ -2208,6 +2210,7 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.1 login.microsoftonline.com=127.0.0.2"
 	e["BROKER_AIRLOCK_TEST_KEEP_VALUES"] = "true"
 	e["BROKER_AIRLOCK_TEST_NO_KIND"] = "1"
+	e["BROKER_AIRLOCK_TEST_AZURE_AUTHORITY"] = " microsoft.airlock.test "
 	e["BROKER_JUDGE_TEST_SKIP_CHECKS"] = "true"
 	cfg, err = Load(env(e))
 	if err != nil {
@@ -2229,6 +2232,9 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	if !maps.Equal(cfg.AirlockTestResolve, want) {
 		t.Errorf("the resolve map reads %v; want %v", cfg.AirlockTestResolve, want)
 	}
+	if cfg.AirlockTestAzureAuthority != "microsoft.airlock.test" {
+		t.Errorf("the azure token authority reads %q; want microsoft.airlock.test, the host the environment named", cfg.AirlockTestAzureAuthority)
+	}
 	if !cfg.AirlockTestKeepValues || !cfg.AirlockTestNoKind || !cfg.JudgeTestSkipChecks {
 		t.Errorf("the three switches read %v, %v and %v; want all three on", cfg.AirlockTestKeepValues, cfg.AirlockTestNoKind, cfg.JudgeTestSkipChecks)
 	}
@@ -2236,8 +2242,9 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 
 // TestLoadRefusesAnAirlockTestSettingItCannotActOn pins that a value the proxy or the judge
 // could not act on refuses the start naming the setting, rather than being read as none: an
-// address with no port, an entry that is no IP address, a host resolved twice, and a switch
-// that is neither true nor false.
+// address with no port, an entry that is no IP address, a host resolved twice, a token authority
+// that is no lower-case host name a rules entry can bind, and a switch that is neither true nor
+// false.
 func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 	for _, c := range []struct{ setting, value, want string }{
 		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", "s.airlock.test", "must be <host>:<port>"},
@@ -2247,6 +2254,14 @@ func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 		{"BROKER_AIRLOCK_TEST_RESOLVE", "s.airlock.test=127.0.0.1 s.airlock.test=127.0.0.2", "twice"},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", "yes please", "must be true or false"},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", "off-ish", "must be true or false"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "https://microsoft.airlock.test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft.airlock.test:443", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "Microsoft.Airlock.Test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft.airlock.test.", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "127.0.0.4", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "-microsoft.airlock.test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft-.airlock.test", "must be a host name"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "*.airlock.test", "must be a host name"},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", "skip", "must be true or false"},
 	} {
 		e := validEnv()

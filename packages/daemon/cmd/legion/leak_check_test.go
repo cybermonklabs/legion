@@ -63,7 +63,7 @@ func leakCheck(t *testing.T, stdin string, args ...string) (int, string) {
 	t.Cleanup(func() { leakCheckStdin = previous })
 	leakCheckStdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
-	code := runLeakCheck(ctx, args, &stdout, &stderr)
+	code := run(ctx, append([]string{"legion", "leak-check"}, args...), &stdout, &stderr)
 	if stdout.Len() > 0 {
 		t.Errorf("printed %q on standard output, want nothing", stdout.String())
 	}
@@ -206,7 +206,7 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 
 // A call the command cannot read is a usage error, exit 2, and no write is checked by it: a hook
 // or a script that called it wrongly has cleared nothing. A help request is the one call that
-// prints the usage and exits 0.
+// prints the usage, on standard output, and exits 0.
 func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -214,12 +214,11 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 		code int
 		says string
 	}{
-		{name: "no shape at all", code: 2, says: subcommandUsage("leak-check", leakCheckCommands)},
-		{name: "a shape it does not know", args: []string{"pre-receive"}, code: 2, says: `legion leak-check: unknown subcommand "pre-receive"`},
+		{name: "no shape at all", code: 2, says: "Usage:\n  legion leak-check [flags]\n"},
+		{name: "a shape it does not know", args: []string{"pre-receive"}, code: 2, says: `legion leak-check: unknown command "pre-receive" for "legion leak-check"`},
 		{name: "a pre-push with no url", args: []string{"pre-push", "origin"}, code: 2, says: leakCheckPrePushUsage},
 		{name: "a pre-push with a third argument", args: []string{"pre-push", "origin", "url", "extra"}, code: 2, says: leakCheckPrePushUsage},
 		{name: "a text with no kind", args: []string{"text"}, code: 2, says: leakCheckTextUsage},
-		{name: "a help request", args: []string{"--help"}, code: 0, says: subcommandUsage("leak-check", leakCheckCommands)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, printed := leakCheck(t, "", tc.args...)
@@ -228,5 +227,9 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 			}
 			says(t, printed, []string{tc.says})
 		})
+	}
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "leak-check", "--help"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "Usage:\n  legion leak-check [flags]\n") {
+		t.Errorf("legion leak-check --help = %d, stdout %q, stderr %q; want exit 0 and its usage", code, out.String(), errb.String())
 	}
 }

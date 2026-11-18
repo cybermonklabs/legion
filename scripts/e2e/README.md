@@ -106,11 +106,11 @@ Each item below names a script, then what it proves.
 - `controller-start-tmux.sh`
 
   the operator-launched controller on the Go daemon under tmux:
-  `legion start --check-config` passes a real config, reporting after its OK line the two deployment capabilities a tmux file alone leaves open (secrets, resource-limits), and names the key on each broken variant, running no key command;
+  `legion config check` passes a real config, reporting after its OK line the two deployment capabilities a tmux file alone leaves open (secrets, resource-limits), and names the key on each broken variant, running no key command;
   the boot gate refuses a plugin of another contract;
   `legion state --config` runs no key command;
   `legion controller start` refuses a group-readable operator token file, claims the controller role, shows in `controllerLocator`, runs Oh My Pi interactive with the controller environment and its secret only as a file, leaves Ctrl-C to Oh My Pi, and exits with its code;
-  `legion status` from an operator shell mints its grant with the operator bearer;
+  `legion issue status` from an operator shell mints its grant with the operator bearer;
   a second start revokes the first's capability and grants; the controller liveness probe reads the live listener.
   Devbox only
 
@@ -195,7 +195,7 @@ Each item below names a script, then what it proves.
 - `burstable-kind.sh`
 
   on a throwaway kind cluster with Agent Sandbox v1.0.3 and gVisor, an issue pod Legion's own loader, `sandboxOptions` and Sandbox runtime build from a `legion.yaml` giving the issue pod `issue: {memory: 32Gi, memory_request: 8Gi}` is admitted, scheduled and recorded `Burstable`, its `roles` container carrying exactly that request and limit, while one from a file with no `resources` block stays `Guaranteed`;
-  `legion start --check-config` names the Burstable issue pod and refuses a request past its limit or that is no quantity, naming the key
+  `legion config check` names the Burstable issue pod and refuses a request past its limit or that is no quantity, naming the key
 
 - `controller-sweep-kind.sh`
 
@@ -206,7 +206,7 @@ Each item below names a script, then what it proves.
 
   on a throwaway kind cluster with Agent Sandbox v1.0.3 and gVisor, an issue pod Legion's own loader, `sandboxOptions` and Sandbox runtime build from a `legion.yaml` whose `runtime.kubernetes.pod` mounts an existing NFS share twice
   — through a PersistentVolumeClaim (read-only by default) and as an `nfs` export with `read_only: false` — reads the server's seed file through the claim, is refused a write there, and writes a file through the export that the server then holds;
-  `legion start --check-config` refuses a volume naming two sources, and `legion probe-boot` mounts both shares and refuses a missing claim, a missing export and a server that never answers, each naming the volume and its share, and an image digest the registry does not have, naming the image
+  `legion config check` refuses a volume naming two sources, and `legion probe-boot` mounts both shares and refuses a missing claim, a missing export and a server that never answers, each naming the volume and its share, and an image digest the registry does not have, naming the image
 
 - `dispatch-claimant-delivery.sh`
 
@@ -850,7 +850,8 @@ It also proves `pr-blocked` and a held worker after its launch budget and the ar
 the root waits on the person keeping its slot, the human's changes request answers it and the root resumes at `admitted` with its architect's session resumed, which `close_root` requires;
 the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
 in one bash tool call of a real implementer pane, `gh` — the launcher directory's `legion gh` wrapper, over the daemon's PATH's real gh (`LEGION_GH_PATH`)
-— authenticates as the implement App's bot (`role_app implementer`) from the repository owner's directory of the claim's gh bundle, which the pane's `GH_CONFIG_DIR` names and whose root (`LEGION_GH_OWNERS_DIR`) holds that one owner's directory alone, that directory holding `config.yml`, `hosts.yml` and a directory per other repository the project serves under that owner, each holding those two files alone;
+— authenticates as the implement App's bot (`role_app implementer`) from the repository owner's directory of the claim's gh bundle, which the pane's `GH_CONFIG_DIR` names and which holds `config.yml` and `hosts.yml` alone;
+the bundle's root (`LEGION_GH_OWNERS_DIR`), as the pane's own `ls` lists it in that tool call's result, holds that owner's directory and nothing but other owners' directories and `renames.txt`, and as the host holds it, holds that owner's directory and the bundle's `renames.txt`, and beside them only other owners' directories, since a bundle holds one directory per owner account the App is installed on, which GitHub decides and the run does not, and no directory for a repository (INFRA-2543 R2);
 the shared clone's helper is `!legion git-credential` with `credential.useHttpPath`;
 a `task` subagent of that pane does the same with no bash command of the parent's first, since it inherits the same directory, and `gh auth status` names account `x-access-token`;
 nothing of the pane's redeems a grant for GitHub, no pane carries a grant file, and no agent runs `legion` from bash, so there is no `idle-pr-read` checkpoint, which proved a per-read grant mint (LEGION-262) that no longer exists.
@@ -1909,12 +1910,14 @@ Each item below names a check, then what it does and what it requires.
 
 - `second-owner`
 
-  an issue on `LEGION_E2E_REPO_SECOND_OWNER`, a repository of another owner, gets an issue pod whose init log names its workspace from that repository's default branch as GitHub names it, whose launch makes that repository's own cache (recorded for the teardown first) and whose fetch log streams its feed from it alone, and whose agent is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh` (listing both owners), `GH_CONFIG_DIR` its own owner's directory and `LEGION_GH_PATH=/usr/local/bin/gh`.
-  Under the agent's own environment its gh, the image's `legion gh` wrapper, answers `gh api repos/sjawhar/legion-smoke --jq .full_name` from sjawhar's read-only directory;
-  `git ls-remote` of sjawhar/legion-smoke through the clone's `legion git-credential` helper answers its `HEAD`, and `git push` there of `HEAD:refs/heads/legion/s4a-7-must-not-land-<run>` (the run's claim project, so a push that ever landed fails only its own run) is refused `403`.
-  Negative controls: the real gh with the issue owner's own directory answers `404` on sjawhar/legion-smoke, which is private to its owner, so the wrapper's pick is what reads it;
-  the operator's gh finds no branch `legion/s4a-7-must-not-land-<run>` on sjawhar/legion-smoke.
-  Nothing is pushed to the second owner's repository
+  an issue on `LEGION_E2E_REPO_SECOND_OWNER`, a repository of another owner, gets an issue pod whose init log names its workspace from that repository's default branch as GitHub names it, whose launch makes that repository's own cache (recorded for the teardown first) and whose fetch log streams its feed from it alone, and whose agent is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh` (one directory per owner account its App is installed on, the run's two owners among them), `GH_CONFIG_DIR` its own owner's directory and `LEGION_GH_PATH=/usr/local/bin/gh`.
+  Under the agent's own environment its gh, the image's `legion gh` wrapper, answers `gh api repos/sjawhar/legion-smoke --jq .full_name` from sjawhar's directory;
+  `git ls-remote` of sjawhar/legion-smoke through the clone's `legion git-credential` helper answers its `HEAD`;
+  and the request a `git push` there opens with, `GET https://github.com/sjawhar/legion-smoke.git/info/refs?service=git-receive-pack` sent with the credential that same helper gives for it, answers `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
+  The role of an issue on one owner's repository writes another owner's: what it reaches is the accounts its App is installed on.
+  The run maps both repositories, so the check shows reach across owners and nothing about a repository no mapping names.
+  Negative control: the real gh with the issue owner's own directory answers `404` on sjawhar/legion-smoke, which is private to its owner, so the wrapper's pick is what reads it.
+  Nothing is pushed to either repository: the advertisement request is the read a push opens with, and writes no ref
 
 - `repository-cache`
 
@@ -2125,7 +2128,7 @@ Tree 1 runs the whole workflow to `done`;
 while its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own, closes one as `done` and parks the other in backlog.
 Two more children are in the workflow while tree 1 stands in `accepting`, so the daemon refuses its sign-off until the proof human has parked both, one at a time; the merge then closes it.
 Its `legion.yaml` names `runtime.kubernetes.plugins` with the latest published `@sjawhar/pi-legion` and `@sjawhar/pi-envoy`, resolved at run time:
-the branch-built daemon links no release plugin pair, so without it the run would boot in the degraded mode (`plugins: none` from `--check-config`) instead of the pair a stale-plugin relaunch would install, even though this run's own claims register at the branch daemon's own contract and so never go stale enough to trigger that install.
+the branch-built daemon links no release plugin pair, so without it the run would boot in the degraded mode (`plugins: none` from `legion config check`) instead of the pair a stale-plugin relaunch would install, even though this run's own claims register at the branch daemon's own contract and so never go stale enough to trigger that install.
 It sets `linger_hours: 0.5` (tree 1's linger runs from the close its merge brought on, and holds its production check's first look and suspension, the smoke main's cleanup and the check's bound;
 `close` then waits for the expiry) and `production_check_hours: 0.25` (the check's bound, 14 days by default, brought inside the run:
 15 minutes, after the first look's report, since a look open at the bound defers it by the look's own two-hour bound).
@@ -2262,8 +2265,7 @@ A pass proves that and no more:
 - Run it from the release tag the deployment pins and with `LEGION_E2E_IMAGE` set to the worker image it pins:
   the daemon's boot probe, its launch and the pod's shape are that release's.
 
-- The rest of `runtime.kubernetes` (namespace, pool, scheduling, the controller and the deployment's other keys) is Stage 4b's own, never the deployment's, so pair the run with `legion start
-  --check-config` on the deployment's whole `legion.yaml` at that release.
+- The rest of `runtime.kubernetes` (namespace, pool, scheduling, the controller and the deployment's other keys) is Stage 4b's own, never the deployment's, so pair the run with `legion config check` on the deployment's whole `legion.yaml` at that release.
 
 - A Secret or ConfigMap volume is compared by its kind and object name, not its `items`.
 
@@ -2294,7 +2296,7 @@ No merge closes a root that way any more, and since INFRA-980 no issue enters a 
 That wait is still the daemon's, for the states a deploy meets — a root a migration finds already in `merging` with an issue of its tree in a phase, a carried child's hand-over, and a close delivered late — and it is proven where that shape can be written down, in the daemon's own tests of the close (`packages/daemon/internal/workflow/merged_chain_close_test.go` and `merged_child_close_test.go`).
 Stage 4b proves instead the rule that makes it unreachable, against real pods: the sign-off the daemon refuses while an issue beneath the root is in the workflow (`children-first-acceptance`).
 The one close that still lingers a tree children and all is a person's own in the Dispatch dashboard, which this driver cannot make
-— every write it sends production Dispatch names a session as its author (`lib/workflow.sh`), the daemon sets a live root's status back when the session writing it holds no claim in the tree, and the operator's `legion status` writes only `todo`, `backlog` or `icebox`, never the `done` a hand-over needs.
+— every write it sends production Dispatch names a session as its author (`lib/workflow.sh`), the daemon sets a live root's status back when the session writing it holds no claim in the tree, and the operator's `legion issue status` writes only `todo`, `backlog` or `icebox`, never the `done` a hand-over needs.
 A finished root's hand-over of a child keeps its cover in the daemon's own tests (`packages/daemon/internal/admit/finished_root_test.go`).
 
 **One run at a time per identity.**
@@ -2376,7 +2378,7 @@ A signal to the whole process group does not stop the removal:
   The preflight moves stale todo issues to backlog, roots and the children a failed run left todo alike.
   The proof human's writes use the agents' bearer and name the session `legion-e2e4b-proof-human-<pid>` as their actor, which production Dispatch requires;
   it holds no claim, so the daemon sets back its status write on a live root as it does any outside session's.
-  The run takes trees out with `legion status` from the operator shell, the daemon's own write.
+  The run takes trees out with `legion issue status` from the operator shell, the daemon's own write.
 
 - **`sjawhar/legion-smoke`**: the fixture branch `legion/<tree 2>`, tree 1's pull request, which the merger merges itself while the proof only reads it (`await_merger_merge`), and `done`'s cleanup pull request on `proof/clean-main-<run_label>` (`legsmoke` by default), which the proof human merges.
   The teardown closes any pull request the run left open, such as one from a run that stopped before the merge, and deletes each tree's branch `legion/<tree>`.
@@ -2456,7 +2458,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `boot`
 
   the build's source is the one prerequisites recorded;
-  `legion start --check-config` passes the `runtime: kubernetes` config, whose `pod` is the operator fixture's ([`deploy/kubernetes/operator-route`](../../deploy/kubernetes/operator-route/pod.yml)) with its ConfigMap renamed to the run's copy, whose `issue_volume` is 20Gi, and whose `resources` block sets the issue pod's cpu and memory alone (`issue: { cpu: 2950m, memory: 16Gi }`, `resources_block`), its ephemeral-storage limit and request the daemon's defaults (80Gi and 6Gi), so the issue pod's reservation comes from both paths the loader has, the disk bound's included;
+  `legion config check` passes the `runtime: kubernetes` config, whose `pod` is the operator fixture's ([`deploy/kubernetes/operator-route`](../../deploy/kubernetes/operator-route/pod.yml)) with its ConfigMap renamed to the run's copy, whose `issue_volume` is 20Gi, and whose `resources` block sets the issue pod's cpu and memory alone (`issue: { cpu: 2950m, memory: 16Gi }`, `resources_block`), its ephemeral-storage limit and request the daemon's defaults (80Gi and 6Gi), so the issue pod's reservation comes from both paths the loader has, the disk bound's included;
   the operator creates that ConfigMap from the fixture's `models.yml` and `overlay.yml`;
   the audit window opens and the interest sampler starts; the daemon boots, and the image probe passes (its first attempt's timeline is kept).
   The daemon's capability report (`legion state --json`'s `.capabilities`, kept as `capabilities-at-boot.json`), once the probe's verdict is in it (waited for:
@@ -2478,7 +2480,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The verdict names what is missing or wrong and never prints a value.
   When the block sets `KUBECONFIG`, kubectl in the architect's namespaces on that file answers `auth whoami` as `system:serviceaccount:<namespace>:<the block's ServiceAccount>`, and its `auth can-i --list` in the namespace is kept as `deployment-block-can-i.txt`, for the deployment to judge its own policy.
   A token is checked as carried, never as accepted by its service;
-  the rest of `runtime.kubernetes` is the run's own and the daemon's controller pod is not launched, so a deployment pairs this with `legion start --check-config` on its whole file at the release and image it pins (the paragraph on `LEGION_E2E_POD_FILE` above).
+  the rest of `runtime.kubernetes` is the run's own and the daemon's controller pod is not launched, so a deployment pairs this with `legion config check` on its whole file at the release and image it pins (the paragraph on `LEGION_E2E_POD_FILE` above).
   The teardown sets the root `done` once the daemon has stopped, since the live daemon sets back a status an outside session writes on a root it runs
 
 - `admitted-issue-cap`
@@ -2589,7 +2591,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   the proof human's `backlog` on tree 2's live root is set back:
   the next status write is `legion-daemon:LEGSMOKE`'s (a control re-attributing it must fail), tree 2's architect receives a `status-reasserted` notice naming the proof human, and tree 2 keeps its slot;
-  `legion status … backlog` then takes tree 2 out, the slot its root held is freed (`admission.active` and `admission.trees` name it no longer), and its pods are gone.
+  `legion issue status … backlog` then takes tree 2 out, the slot its root held is freed (`admission.active` and `admission.trees` name it no longer), and its pods are gone.
   Nothing waits for that slot here: the line's one waiting root took one at `child-release`
 
 - `tree-moved`
@@ -2713,7 +2715,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   in tree 1's issue pod, the implementer's `gh` is the image's wrapper `/opt/legion/bin/gh` (`legion gh`), which, handed the agent's `LEGION_GH_PATH=/usr/local/bin/gh` and `LEGION_GH_OWNERS_DIR=/var/run/legion/gh` since an exec carries none of the agent's variables, authenticates as the implement App's bot (`role_app implementer`, the login `read_app_logins` read from GitHub) from the gh files of the repository owner's directory its `GH_CONFIG_DIR` (`/var/run/legion/gh/<owner>`, the read-only `gh-implementer` projection of its role Secret, which its role-init binds there) names, and `gh auth status` there names account `x-access-token`;
   its Oh My Pi environment carries `GH_CONFIG_DIR`, `LEGION_GH_OWNERS_DIR`, `LEGION_GH_PATH`, an empty `GH_TOKEN`, none of the old tool pins, no grant file (`LEGION_GRANT_FILE`, `LEGION_GRANT`), no App login variable and a PATH with no `worker-bin`;
   a `task` subagent of that session answers the same login with no `legion` command of the parent's first, since it inherits the directory, and the implementer's own bash runs `jj undo --help` and reports jj's first help line, nothing refusing it (acceptance 4c);
-  in the same pod the reviewer's `gh` is the review App's bot from a different `hosts.yml`, and each role's bundle root holds owners' directories and the kubelet's entries alone, its own owner's directory `config.yml`, `hosts.yml` and a directory per other repository the project serves under that owner, each holding those two files alone.
+  in the same pod the reviewer's `gh` is the review App's bot from a different `hosts.yml`, and each role's bundle root holds owners' directories, the bundle's `renames.txt` and the kubelet's entries alone, its own owner's directory holding `config.yml` and `hosts.yml` alone and no directory for a repository (INFRA-2543 R2).
   Isolation in the pod's one `roles` container, each read in the role's own namespaces (entered as its agent sees the pod:
   `nsenter -t <its role-init> -U -m -p -i`, then its shim's `-U`):
   the container holds all six roles' directories under `/var/run/legion/roles` (the control that a cover, not an absent mount, hides each sibling's), while in the implementer's and in the reviewer's namespaces that directory is empty, `/proc` lists one worker-shim, its own, and the `hosts.yml` at its `GH_CONFIG_DIR` hashes to its own `/var/run/legion/roles/<role>/gh` copy in the container and differs from the other's;
@@ -2830,7 +2832,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `controller-walk`
 
-  `legion status … backlog` from the operator shell moves tree 3, Dispatch shows it, and tree 3's pods are gone.
+  `legion issue status … backlog` from the operator shell moves tree 3, Dispatch shows it, and tree 3's pods are gone.
   With tree 3 out and a slot free, the controller's slot wakes reach it:
   its Oh My Pi was launched with the daemon's `Design gate steps: none.` line;
   an unlabelled issue set to `todo` puts `todo on <KEY>` in its session, and the daemon's tick (`controller_wake_interval_seconds: 60`) `tick on LEGSMOKE`;
@@ -2852,7 +2854,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The operator's controller quits, and the listener answers 404 for the controller role.
   The daemon restarts with `controller: daemon` and `runtime.kubernetes.resources.controller` sized to run:
   the controller it launches registers, holds the role and is ready, `controllerLocator` names its session, and for 270 s (two boot timeouts and 30 s) the daemon logs neither line, the negative control (`controller-liveness-up.json`);
-  its gh, from the repository owner's directory of the pod's gh bundle `/var/run/legion/gh`, answers tree 1's pull request's state and the review App's bot as viewer, that directory holds `config.yml`, `hosts.yml` and nothing else, since a controller is built with no repository of its own and so takes no `<owner>/<repo>` directory, and the bundle's root the kubelet's `..data` (a `subPath` mount, which never refreshes, has none) and, beside the owners' directories, only the kubelet's other atomic-writer entries, and the real gh with `GH_CONFIG_DIR=/nonexistent` fails.
+  its gh, from the repository owner's directory of the pod's gh bundle `/var/run/legion/gh`, answers tree 1's pull request's state and the review App's bot as viewer, that directory holds `config.yml` and `hosts.yml` and nothing else, since a bundle holds one directory per owner account the App is installed on and no directory for a repository (INFRA-2543 R2), and the bundle's root the kubelet's `..data` (a `subPath` mount, which never refreshes, has none) and, beside the owners' directories, only the kubelet's other atomic-writer entries, and the real gh with `GH_CONFIG_DIR=/nonexistent` fails.
   It restarts with the controller's CPU request at 100000, more than any node holds, re-adopts the running controller, and the driver deletes its pod.
   The relaunch's Running patch makes a pod whose role launcher never connects, so each launch onto it fails at the boot timeout (`supervise: launch failed`) with no process recorded.
   The daemon logs `controller liveness: the controller role has no live holder; the controller is gone` on at least 3 sweeps, naming the dead session, and `controller not registered; run legion controller start only under controller: operator; …` at least twice, 120 s or more apart, with `mode: daemon`, `registered: true` and a claim state that is not a live controller's, one of them after the first failed launch.
@@ -2866,7 +2868,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   tree 4, admitted once tree 3 has left: its planner, killed once mid-turn, is sent its task again, told the turn was interrupted, and finishes planning;
   its implementer, killed after each ready with its task outstanding, is failed after 3 deaths in a row (`budgets.deaths` 3, `supervise: claim failed` because "deaths with work outstanding ran out"), tree 4 is held and nothing relaunches it;
-  `legion status … backlog` then takes tree 4 out.
+  `legion issue status … backlog` then takes tree 4 out.
   A kill of either that lands after its task's turn has ended is given a new task and repeated, as in `controller`, and restarts the implementer's run of deaths
 
 - `done`
@@ -2945,7 +2947,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   `legion claims close` on the Sandbox runtime:
   the close of re-admitted tree 1's live root is refused 409, and its claims, Sandboxes, pods and those pods' disks are unchanged;
-  `legion status … backlog` then takes tree 1 out;
+  `legion issue status … backlog` then takes tree 1 out;
   an operator-spawned tree closes with its worker live, the root and the worker are retired, and the tree's Sandboxes, pods and the disk of each of those pods are gone
 
 - `pod-shape`
@@ -3007,14 +3009,14 @@ No secret is written there.
 
 Each item below names a check, then what it holds, with 4b.5's acceptance item in parentheses.
 
-- `check-config-passes`
+- `config-check-passes`
 
-  `legion start --check-config` passes the run's tmux config:
+  `legion config check` passes the run's tmux config:
   its first line is the `Config OK` line, and the lines after it are exactly the two deployment capabilities a tmux file alone leaves open (`capability secrets is open: …` then `capability resource-limits is open: …`, each ending with its `capabilities.decided.<name>: "<reason>"` line), a report that keeps the exit 0 (LEGION-578).
-  4b.5's "`--check-config` passes on the proof's config" is the full-tree driver's, whose config is `runtime: kubernetes`:
+  4b.5's item that the check passes on the proof's config is the full-tree driver's, whose config is `runtime: kubernetes`:
   `stage4b-sandbox-tree.sh`'s `boot` checkpoint runs it before the daemon starts
 
-- `check-config-names-each-broken-key`
+- `config-check-names-each-broken-key`
 
   an unknown key, a zero `admission_cap`, a bad `envoy_url`, and a Dispatch URL without its token file are each refused by name, and neither App's `private_key_command` runs (names the key on each broken variant)
 
@@ -3045,7 +3047,7 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
 
 - `status-from-an-operator-shell`
 
-  `legion status --operator-token-file` mints a grant with the operator bearer and reaches the status route;
+  `legion issue status --operator-token-file` mints a grant with the operator bearer and reaches the status route;
   the rig has no Dispatch, so the route answers 500 naming it.
   A wrong bearer is refused 403 (decision 3's operator path; the status write itself is the full-tree proof's)
 
@@ -3139,7 +3141,7 @@ The transcript records the duration of each wait.
 
 - `rig`: The tokens, Postgres, NATS, the listener on a port the kernel chose (`start_held`), Dispatch on a port its keeper holds for the run (`keep_port`, `start_kept`), the project and its repository mapping, the isolated profile with this checkout's `pi-envoy` and `pi-legion`, and the model route.
 
-- `boot`: The daemon's port is held by its keeper (`keep_port`) and named in `legion.yaml`, `legion start --check-config` passes, the daemon starts on that port's socket (`start_kept`, `LEGION_LISTEN_FD`), and `legion state` answers.
+- `boot`: The daemon's port is held by its keeper (`keep_port`) and named in `legion.yaml`, `legion config check` passes, the daemon starts on that port's socket (`start_kept`, `LEGION_LISTEN_FD`), and `legion state` answers.
 
 - `controller-up`: The first controller starts.
   `controllerLocator.sessionId` names session 1.
@@ -3149,7 +3151,7 @@ The transcript records the duration of each wait.
 - `trees-wait-on-a-person`: The person files trees 1, 2, 4 and 5 and sets each to `todo`.
   Each tree gets to `awaiting_person` with `waitingOn.kind: gate`.
 
-- `trees-parked`: `legion status <key> backlog` parks trees 1 and 2.
+- `trees-parked`: `legion issue status <key> backlog` parks trees 1 and 2.
   Right after tree 1's park, the script posts the controller's hold mark on tree 1 as session 1 (`Parked by Legion while it waits on: …`), the comment the controller posts when it parks a tree for a hold.
   Tree 2 gets no mark.
   The person sets tree 4 to `backlog`.
@@ -3200,7 +3202,7 @@ The transcript records the duration of each wait.
 - `walk-on-start`: A4.
   The person files tree 3.
   The tree waits on its gate.
-  The script parks it with `legion status`, posts the hold mark as session 1, and opens a question on it as the stand-in session.
+  The script parks it with `legion issue status`, posts the hold mark as session 1, and opens a question on it as the stand-in session.
   When the tree is phase `done` and its architect is `suspended`, the person answers the question while no controller runs, and the daemon logs the relay.
   The second controller starts.
   The script reads only its session file.
@@ -3269,7 +3271,7 @@ LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> DISPAT
 | `LEGION_E2E_MODEL_GATEWAY_URL` | required under `gateway` | the model gateway's Anthropic endpoint; checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh) |
 | `LEGION_E2E_ANTHROPIC_KEY_FILE` | required under `key-file` | a 0600 file holding a plaintext Anthropic key, read by the key command on every call; the key command is written under the run's scratch directory, which every exit removes |
 | `DISPATCH_USER_TURNS_ONLY` | unset, every check | `spec-edit`: `session-registers` and the two spec-edit checks alone, then PASS; `spec-edit-card`: `session-registers` and `a-persons-spec-edit-reaches-its-writer` alone, then PASS |
-| `DISPATCH_USER_TURNS_OMP` | the pinned build, `.omp-pin`'s mise tool spec (`github:sjawhar/oh-my-pi@<version>`) | another Oh My Pi, as a mise tool spec |
+| `DISPATCH_USER_TURNS_OMP` | the pinned build, `.omp-pin`'s mise tool spec (`github:cybermonklabs/oh-my-pi@<version>`) | another Oh My Pi, as a mise tool spec |
 | `DISPATCH_USER_TURNS_EVIDENCE_DIR` | a fresh `/tmp/legion-e2e-user-turns-evidence.XXXXXXXX` | kept on every outcome and printed at exit: `logs/` (the listener, Dispatch and the SPA build), `checks/` (the page's screenshots, the session's pane at exit, `extension-command-args` and `message-starts.jsonl`) and `session.jsonl`, the session's transcript |
 
 Each check prints `== <name>`, what it observed, and `ok <name>`.
@@ -3734,9 +3736,12 @@ Each item below names an observation, then what it judges; an item that names no
   a test lays fakes out under `MULTIREPO_TRUSTED_ROOT`, same marker).
   `gh api repos/<T> --jq .full_name` must say T.
   Then, for O and for T, GitHub's answer to the request a `git push` opens with, `GET https://github.com/<repo>.git/info/refs?service=git-receive-pack`, sent with the credential that helper prints for that repository:
-  for O, `200` and an `application/x-git-receive-pack-advertisement` (the positive control:
-  network, helper and token are sound); for T, `403` with a one-line body that is GitHub's whole refusal, `Write access to repository not granted.` or `Permission to <T>.git denied to <who>.`, which shows the credential the helper hands out for T cannot push T.
-  A `200` for T, a `404`, no answer, another repository's refusal or any other body is a FAIL.
+  for each of them, `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
+  O, the issue's own repository, is the control that the network, the helper and the token are sound;
+  T is a repository of another owner, so its `200` is the reach the App's installations give across owners.
+  The observation reads no repository mapping, so it says nothing of whether a mapping names T.
+  A `403` for either, a `404`, any other status, no answer or any other content type is a FAIL.
+  The request writes nothing: it is the read a push opens with, and no ref of either repository changes.
   No git runs: git reads `~/.netrc`, `~/.gitconfig`, the repository's own `.git/config`, any scratch repository's and the `GIT_*` variables, all of which the agent's uid can write while the check runs;
   the request is Python's `urllib`, which reads none of them.
   What `as-role.py` prints is one JSON object, kept as `second-owner-probe.raw`; it never holds an argument's or an environment variable's value or a token.
@@ -3838,7 +3843,7 @@ The cluster is deleted on any exit.
 | `image` | the worker image, pulled into the node's containerd by digest |
 | `launch` | `TestABurstableIssuePodRendersLive` (`internal/daemon/burstable_live_test.go`, `-tags e2e`), built as a static test binary and run in a container on the kind network, writes two `legion.yaml` files, reads each with the daemon's loader, translates it with `sandboxOptions`, runs the cluster check, and launches one issue's root through the Sandbox runtime's `Spawn` on a worker stream bound to that container's address (pods reach the kind network's containers, while a host firewall can keep them from the host itself); the launch makes the repository's cache first, as every issue pod's does; it holds the `roles` container to the issue pod's request and limit (3 CPU, 8Gi under 32Gi, 6Gi under 80Gi for the first file; 3 CPU, 19Gi, 6Gi under 80Gi for the second) and the pod to its QoS class |
 | `qos-class` | `kubectl get pod <pod> -o jsonpath='{.status.qosClass}'` reads `Burstable` for the file with `issue: {memory: 32Gi, memory_request: 8Gi}` and `Guaranteed` for the file with no `resources` block; each pod has a `roles` container, is `PodScheduled=True` under `runtimeClassName: gvisor`, and its manifest is kept as evidence |
-| `check-config` | `legion start --check-config` passes both files, printing `resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed` for the first and no `resources:` line for the second, and refuses `memory_request: 40Gi` (`runtime.kubernetes.resources.issue.memory_request 40Gi exceeds memory 32Gi`) and `memory_request: lots` (`… must be a positive Kubernetes quantity …`) with exit 1 |
+| `config-check` | `legion config check` passes both files, printing `resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed` for the first and no `resources:` line for the second, and refuses `memory_request: 40Gi` (`runtime.kubernetes.resources.issue.memory_request 40Gi exceeds memory 32Gi`) and `memory_request: lots` (`… must be a positive Kubernetes quantity …`) with exit 1 |
 
 What the proof stands in for lies outside the reservation path:
 each role's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the files are documentation placeholders);
@@ -3893,7 +3898,7 @@ The kind node's own `mount.nfs` mounts the share, as a GKE node's does.
 | `nfs-server` | NFS-Ganesha in the `nfs` namespace, behind a Service, exporting `/team` (seeded with one file naming the run) and `/scratch`; the node mounts `/team` and reads the seed; a PersistentVolume of `/team` and the claim `team-share` in `legion`, `Bound` |
 | `launch` | the driver, in a container on the kind network, writes four `legion.yaml` files, holds each to the pod block the loader reads from it, and launches the `shares` file's issue root through the runtime's `Spawn`; its pod carries the claim and the export as volumes, both mounted in its one `roles` container — the claim read-only, the export writable — and in no init container, under `runtimeClassName: gvisor` |
 | `pod-shares` | in the pod's `roles` container, whose kernel is gVisor's: `cat /mnt/team/seed.txt` reads the server's seed through the claim, a write to `/mnt/team` is refused `Read-only file system`, and a file written to `/mnt/scratch` is what the server's `/export/scratch` then holds |
-| `check-config` | `legion start --check-config` passes the `shares` file and refuses a volume naming a claim and an export (`… must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs`), exit 1 |
+| `config-check` | `legion config check` passes the `shares` file and refuses a volume naming a claim and an export (`… must set exactly one of secret, config_map, projected, persistent_volume_claim, nfs`), exit 1 |
 | `probe-mounts-shares` | `legion probe-boot` on the `shares` file: the probe pod mounts both shares and its container runs, so the refusal, exit 1, is the image's own verdict on the run's agents' models, which have no route here, and names no share (`failed its probe: pod <name> Failed`, never `cannot mount` or `over its mounts`) |
 | `probe-silent-server` | `legion probe-boot` refuses, exit 1, within its first attempt, the file whose export's server is `192.0.2.10` (RFC 5737's documentation range, where nothing answers): `… gives it from NFS export 192.0.2.10:/scratch: MountVolume.SetUp failed … mount failed: … Connection timed out …`, the kubelet's first report, which already stands for mount.nfs's own two minutes of retries |
 | `probe-missing-claim`, `probe-missing-export` | `legion probe-boot`, in a container on the kind network, refuses, exit 1, the file naming a claim that does not exist (`cannot mount volume "team", which runtime.kubernetes.pod.volumes gives it from PersistentVolumeClaim "absent-share": … persistentvolumeclaim "absent-share" not found`) and the file naming an export the server lacks (`… gives it from NFS export <server>:/absent: MountVolume.SetUp failed … mount failed: …`) |
@@ -5522,7 +5527,7 @@ Each item below names a flag, then what it means.
 
 - `--omp <mise tool spec>`
 
-  optional: the Oh My Pi build steps 2 and 3 run (`github:sjawhar/oh-my-pi@<version>`), `.omp-pin`'s by default.
+  optional: the Oh My Pi build steps 2 and 3 run (`github:cybermonklabs/oh-my-pi@<version>`), `.omp-pin`'s by default.
   Stage 2 and Stage 3 pass the build their daemon and panes run, so no other build opens the profile;
   under `LEGION_E2E_MODEL_ROUTE=box-login` that profile's `agent.db` is the operator's login database ([`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)).
   Refused when empty.
@@ -6367,7 +6372,7 @@ Two key commands an operator might give, as examples and not as values any scrip
 
 Either prints the PEM on stdout, which is all the run reads of it.
 The run runs that command once, in `prerequisites`, before it writes anything;
-the key file it writes then lasts the whole run, because the daemon runs the `cat` of it at every load of a configuration whose App credentials it resolves, which is every daemon start and not `legion start --check-config` or `legion state --config` (`internal/config`, `Load` and `LoadForValidation`), and three of the six proofs restart their daemon mid-run (Stage 3, the 4b.13b acceptance and Stage 4b), so each start reads that file again.
+the key file it writes then lasts the whole run, because the daemon runs the `cat` of it at every load of a configuration whose App credentials it resolves, which is every daemon start and not `legion config check` or `legion state --config` (`internal/config`, `Load` and `LoadForValidation`), and three of the six proofs restart their daemon mid-run (Stage 3, the 4b.13b acceptance and Stage 4b), so each start reads that file again.
 The operator's own command is run neither then nor by the check, so a command that works once in their shell is enough, and no environment of theirs stands between what `check_github_apps` proves and what the daemon loads.
 Under `bridge` the Claude Code sandbox proof writes the key into the App credential directory the daemon's container mounts, since that container can run neither `agent-secrets` nor anything else of the devbox's ([Pod reachability](#pod-reachability));
 the command still runs on the devbox, as it does in every other mode, and only the directory differs.
@@ -6377,8 +6382,8 @@ an id that is not a number of at most 12 digits, or a secret name that is not le
 A refusal never prints the value.
 For the review role it applies the key command's own refusals above, and refuses a run that still exports the retired `LEGION_E2E_REVIEW_APP_SECRET`, naming the key command to set in its place.
 With both roles read it also refuses one id for both Apps.
-`app_token_command NAME` prints the token command for the github-app secret `NAME`, `agent-secrets NAME --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$NAME"'`, whose three `${…}` expansions the daemon's `sh` expands:
-the daemon sets `LEGION_GITHUB_OWNER` to the owner it needs a token for (empty for every installation), `LEGION_GITHUB_REPOS` to the repositories of that owner the token may touch, separated by single spaces (one `--github-repo` each, empty where it asks for no narrowing), and `LEGION_GITHUB_READ_ONLY` to `1` for a read-only token (contents, metadata, pull requests and Actions read, the last left out for an installation that does not hold it).
+`app_token_command NAME` prints the token command for the github-app secret `NAME`, `agent-secrets NAME --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$NAME"'`, whose two `${…}` expansions the daemon's `sh` expands:
+the daemon sets `LEGION_GITHUB_OWNER` to the owner it needs a token for (empty for every installation) and `LEGION_GITHUB_READ_ONLY` to `1` for a read-only token (contents, metadata, pull requests and Actions read, the last left out for an installation that does not hold it), and asks for no narrowing by repository, so a release reaches every repository the owner's installation holds.
 The `--ttl 12h` is the deployment example's (`docs/deployment.md`): a deployment may hold a role's github-app secret at human tier, a request of one naming no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one, so without the flag every renewal of such a run would wait for a person again, where with it the approver reads the twelve hours on the card and decides them once.
 It depends on nothing but `NAME`.
 `write_github_apps (--token-dir DIR | --key-dir DIR) ROLE...` writes `$work/github-apps.yaml`, the `github_apps` block a run's `legion.yaml` includes as it is:
@@ -6389,7 +6394,7 @@ a call naming both is refused the same way, since the two name one key file by t
 this call runs `LEGION_E2E_REVIEW_APP_KEY_COMMAND` once, on the driver, in the caller's own environment, into `DIR/review/key.pem` (0600, in a directory of mode 0700, through `app_token_mint_key`), before a line of the block is written, so a key command that fails leaves no block behind either, and the implement App's `token_command` still runs `agent-secrets`.
 `--token-dir DIR` is the directory `mint_app_tokens` already wrote, which holds that key file and the releases:
 each command reads a file of it with `cat --` instead, the implement App's `token_command` the release file `DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json`, the owner lowercased and refused unless it is letters, digits and `-`, and the review App's `private_key_command` that same `DIR/review/key.pem`.
-That second form serves what the refresher minted, which is keyed by owner and the read-only flag alone, so it ignores `LEGION_GITHUB_REPOS` and answers a token over every repository of the owner's installation.
+That second form serves what the refresher minted, which is keyed by owner and the read-only flag, as every release the daemon asks for is, and answers a token over every repository of the owner's installation.
 Either `DIR` must be a path the caller's cleanup removes unconditionally, on every exit, since the App's private key is in it:
 not the evidence directory, and not a workspace a failing run keeps for debugging — the rule [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)'s own `--key-dir` states for the model key, and the reason is the same.
 It refuses, writing nothing, a role the last `require_app_inputs` did not read, and the block it writes names commands, never a token and never a key.

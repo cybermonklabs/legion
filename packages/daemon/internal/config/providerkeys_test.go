@@ -218,7 +218,7 @@ func TestProviderKeysMayNotNameAnAgentSecretsVariable(t *testing.T) {
 }
 
 // A provider key named for a gh variable the daemon sets on every pane and pod is refused by the
-// loader, naming the key and that every pane sets it, so `legion start --check-config` refuses the
+// loader, naming the key and that every pane sets it, so `legion config check` refuses the
 // file under either runtime rather than the deployment stopping on every pane's shim; a key of
 // another name passes.
 func TestProviderKeysMayNotNameAGhVariableEveryPaneSets(t *testing.T) {

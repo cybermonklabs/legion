@@ -164,13 +164,16 @@ func (r unreadRepositories) ResolveRepository(resolved string) (workflow.Resolut
 
 // unreadRelease is a harness whose release_children runs over a live tree LEGION-208 on
 // acme/widgets, with zeta/tools left out while unread is set, and every child it leaves to a
-// recovery (Options.AwaitRecovery) in awaited.
+// recovery (Options.AwaitRecovery) in awaited. While refuse is set the recovery refuses every
+// wait, as the daemon does once its recovery has stopped holding the repository unread between
+// the route's read of RepositoryUnread and its call of AwaitRecovery.
 type unreadRelease struct {
 	h        *harness
 	records  record.Store
 	engine   *workflow.Engine
 	statuses *statusRecorder
 	unread   *atomic.Bool
+	refuse   atomic.Bool
 	awaited  []string
 	grant    func() string
 }
@@ -188,8 +191,12 @@ func newUnreadRelease(t *testing.T, issues ...dispatch.Issue) *unreadRelease {
 		Controller: u.h.store, Grants: credential.New(nil), Pool: u.h.store.Pool(), Record: u.records,
 		Handlers: []intake.Handler{u.engine, admit.New(u.records, u.engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: u.statuses,
 		RepositoryUnread: func(resolved string) bool { return resolved == "zeta/tools" && u.unread.Load() },
-		AwaitRecovery: func(repo, tree, child, _ string) {
+		AwaitRecovery: func(repo, tree, child, _ string) bool {
+			if u.refuse.Load() {
+				return false
+			}
 			u.awaited = append(u.awaited, repo+" "+tree+" "+child)
+			return true
 		},
 	}).Handler
 	u.h.recordIssue(record.Issue{Key: unreadRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: unreadRoot, Project: testProject, Title: unreadRoot, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
@@ -341,6 +348,62 @@ func TestWaveReleaseSendsNoNoticeForAChildUnderATodoParentNotRecordedYet(t *test
 		if got := recordedChild(t, u.h, key); got == nil || got.Tree != unreadRoot {
 			t.Fatalf("%s = %+v after the serve, want it recorded in %s's tree", key, got, unreadRoot)
 		}
+	}
+}
+
+// A todo child left for a repository the daemon stops holding unread between this route's read of
+// it and the wait is not answered released: the daemon refuses the wait (Options.AwaitRecovery
+// answers false), so no recovery would ever read the child or tell its architect, and the route
+// schedules the child-release retry instead, as for a child on no unread repository. The retry is
+// what picks the child up: its release-retry record stands, the answer tells the architect to
+// retry, and the retry records the child once its parent is. No child-release-stalled notice is
+// written, since its reason would say the repository is left out. Before, the child was answered
+// released on the strength of a wait the daemon no longer read, and nothing ever came back for it.
+func TestWaveReleaseRetriesAChildWhoseRepositoryTheDaemonStoppedHoldingUnread(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// issues is what Dispatch shows: the child, and its parent where that is not the
+		// recorded root; recorded is whether the retry records the child once the daemon reads
+		// zeta/tools, which it does only under a recorded parent.
+		issues   []dispatch.Issue
+		recorded bool
+	}{
+		{name: "a child under the recorded root", recorded: true,
+			issues: []dispatch.Issue{on("LEGION-240", "zeta/tools", "todo", unreadRoot, 2)}},
+		{name: "a child under a backlog parent the recovery would not record it under",
+			issues: []dispatch.Issue{on("LEGION-241", "zeta/tools", "backlog", unreadRoot, 2), on("LEGION-240", "zeta/tools", "todo", "LEGION-241", 3)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const child = "LEGION-240"
+			u := newUnreadRelease(t, tc.issues...)
+			u.refuse.Store(true)
+			recorder := u.h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": u.grant(), "issues": []string{child}}, nil)
+			if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "CHILD_NOT_RECORDED") {
+				t.Fatalf("wave release of %s = %d: %s, want the child-release retry's CHILD_NOT_RECORDED", child, recorder.Code, recorder.Body)
+			}
+			if !u.retryRow(t, child) {
+				t.Fatalf("%s has no release-retry record, want the retry scheduled: nothing else picks it up", child)
+			}
+			if len(u.awaited) != 0 {
+				t.Fatalf("children left to the recovery = %q, want none: the daemon refused the wait", u.awaited)
+			}
+			if notices := u.notices(t); len(notices) != 0 {
+				t.Fatalf("notices = %q, want none: the daemon no longer holds zeta/tools unread", notices)
+			}
+			if recordedChild(t, u.h, child) != nil {
+				t.Fatalf("%s recorded before its retry", child)
+			}
+			if !tc.recorded {
+				return
+			}
+			// The daemon reads zeta/tools now, and the architect's retry records the child.
+			u.unread.Store(false)
+			u.refuse.Store(false)
+			u.release(t, child)
+			if got := recordedChild(t, u.h, child); got == nil || got.Tree != unreadRoot {
+				t.Fatalf("%s = %+v after its retry, want it recorded in %s's tree", child, got, unreadRoot)
+			}
+		})
 	}
 }
 

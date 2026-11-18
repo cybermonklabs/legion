@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ---------------------------------------------------------------------------
@@ -128,11 +129,13 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 		return 1
 	}
 	path := filepath.Join(dir, enrollmentFile)
+	// The file keeps the id as the broker made it, and the lines print it on one line
+	// (redact.OneLine), as every broker-answer value this CLI prints does.
 	if err := writeFileAtomic(path, []byte(resp.EnrollmentID+"\n"), 0o600); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets enroll: the broker made enrollment %s, but this command could not write its id to %s: %v\n", resp.EnrollmentID, path, err)
+		fmt.Fprintf(stderr, "agent-secrets enroll: the broker made enrollment %s, but this command could not write its id to %s: %v\n", redact.OneLine(resp.EnrollmentID), path, err)
 		return 1
 	}
-	fmt.Fprintln(stdout, resp.EnrollmentID)
+	fmt.Fprintln(stdout, redact.OneLine(resp.EnrollmentID))
 	return 0
 }
 

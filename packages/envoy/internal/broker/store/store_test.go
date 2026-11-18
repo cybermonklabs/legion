@@ -662,18 +662,18 @@ func TestMigrationTwentySixRetiresVMEnrollmentsAndDropsTheKind(t *testing.T) {
 	}
 }
 
-// TestMigrationThirtyThreeDismissesWhatTheSweepAlreadyTookOut runs 0033 over a database 0032 left,
+// TestMigrationThirtyFourDismissesWhatTheSweepAlreadyTookOut runs 0034 over a database 0033 left,
 // holding one record of each shape the backfill must tell apart, and finds a dismissal by broker
 // for exactly the three records the old expiry sweep had already taken out of the approvers'
 // lists: a secret request expired, a secret request cancelled after its deadline and a machine
 // login with an expired event. A secret request cancelled before its deadline never reached it;
 // a pending secret request, overdue or live, and a machine login past its deadline with no event
-// are still listed, as they were before 0033; and a decided record has nothing to dismiss. None of
-// them gets a row. The table's foreign key, which 0033 adds after the backfill, refuses a
+// are still listed, as they were before 0034; and a decided record has nothing to dismiss. None of
+// them gets a row. The table's foreign key, which 0034 adds after the backfill, refuses a
 // dismissal of a record the broker does not have.
-func TestMigrationThirtyThreeDismissesWhatTheSweepAlreadyTookOut(t *testing.T) {
+func TestMigrationThirtyFourDismissesWhatTheSweepAlreadyTookOut(t *testing.T) {
 	ctx := context.Background()
-	tx, apply := migrationSchema(t, "migration_thirtythree_dismissals", 33)
+	tx, apply := migrationSchema(t, "migration_thirtyfour_dismissals", 34)
 	const credential, enrollment = "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000e1"
 	if _, err := tx.Exec(ctx, `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
 		values ($1, 'ada@example.com', 'example-host-devbox', 'tp-launcher', '{}'::jsonb, now() + interval '1 day')`, credential); err != nil {
@@ -726,7 +726,7 @@ func TestMigrationThirtyThreeDismissesWhatTheSweepAlreadyTookOut(t *testing.T) {
 	login("overdue-pending-login", -60, "")
 	login("denied-login", 60, "denied")
 
-	apply("0033_credential_request_dismissals.up.sql")
+	apply("0034_credential_request_dismissals.up.sql")
 
 	rows, err := tx.Query(ctx, `select record_id from credential_request_dismissals
 		where dismissed_by = 'broker' and dismissed_at = now() order by record_id`)
@@ -743,7 +743,7 @@ func TestMigrationThirtyThreeDismissesWhatTheSweepAlreadyTookOut(t *testing.T) {
 	}
 	want := []string{"cancelled-after-its-deadline", "expired-login", "expired-secret"}
 	if !slices.Equal(dismissed, want) || total != len(want) {
-		t.Fatalf("records 0033 dismissed by broker = %q of %d rows, want exactly %q", dismissed, total, want)
+		t.Fatalf("records 0034 dismissed by broker = %q of %d rows, want exactly %q", dismissed, total, want)
 	}
 	sp, err := tx.Begin(ctx)
 	if err != nil {
@@ -754,6 +754,6 @@ func TestMigrationThirtyThreeDismissesWhatTheSweepAlreadyTookOut(t *testing.T) {
 		t.Fatalf("roll back the refused dismissal's savepoint: %v", rollback)
 	}
 	if err == nil || !strings.Contains(err.Error(), "credential_request_dismissals_record_id_fkey") {
-		t.Fatalf("a dismissal of a record the broker does not have after 0033 = %v, want a violation of credential_request_dismissals_record_id_fkey", err)
+		t.Fatalf("a dismissal of a record the broker does not have after 0034 = %v, want a violation of credential_request_dismissals_record_id_fkey", err)
 	}
 }
