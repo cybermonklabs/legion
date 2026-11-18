@@ -50,6 +50,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/machine"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -62,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -986,8 +988,9 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
 // that the boot and airlock-check refuse the same file in the same words: airlock.Validate's
-// answer, which is the Lean model's, and then the one refusal that is this program's own and not
-// that model's — an entry whose name is not a name a session can ask for.
+// answer, which is the Lean model's, and then the two refusals that are this program's own and
+// not that model's — an entry whose name is not a name a session can ask for, and a host written
+// as an IP address in a form the proxy never compares.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -995,6 +998,17 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 // value of the very secret the file was reviewed as holding back. The check is here rather than
 // in airlock.Validate because the airlock knows nothing of how a secret is named under the
 // policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
+//
+// The proxy writes a request's host that is an IP address as netaddr.Host writes it before
+// airlock.HostBound compares it with an entry's hosts, which it reads as text after fold.ASCII
+// (airlockproxy's serveConnect and servePlain). So a host written 2001:db8:7:0::1,
+// ::ffff:93.184.216.34 or with a zone matches no request: the entry reads as binding that
+// address while the proxy tunnels a CONNECT to it unread. A host only fold.ASCII changes, such
+// as 2001:DB8:7::1, is still bound, because HostBound folds both sides. The refusal names the
+// entry, the host's position and the form to write it in, which netip writes, and repeats
+// nothing of the host as written, since a zone is any text. The check is here rather than in
+// airlock.Validate for the same reason as the name's: the airlock compares hosts as text and
+// knows nothing of how the proxy reads an address.
 func validateRulesFile(rules airlock.Rules) error {
 	if err := airlock.Validate(rules); err != nil {
 		return err
@@ -1002,6 +1016,16 @@ func validateRulesFile(rules airlock.Rules) error {
 	for i, s := range rules.Secrets {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
+		}
+		for j, h := range s.Hosts {
+			addr, err := netip.ParseAddr(h)
+			if err != nil {
+				continue
+			}
+			// netaddr.Host's own answer for h, from the address already parsed.
+			if canonical := netaddr.Canonical(addr).String(); canonical != fold.ASCII(h) {
+				return fmt.Errorf("secrets[%d] %q: hosts[%d] is an IP address not written in its canonical form, the only form the proxy compares a request's address in, so the host binds nothing; write it as %s", i, s.Name, j, canonical)
+			}
 		}
 	}
 	return nil
