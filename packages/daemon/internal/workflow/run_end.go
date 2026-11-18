@@ -98,7 +98,7 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 		return nil
 	}
 	runs.settled = true
-	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), true, nil)
+	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
 }
 
 // nameMoveEnd names the end of the run issue stands in that a move on trigger into to ends: the
@@ -137,14 +137,15 @@ func (e *Engine) settleStart(ctx context.Context, tx pgx.Tx, issue string, place
 	if err != nil {
 		return err
 	}
-	return e.settleRuns(ctx, tx, runs, []string{issue}, false, &runAt{issue: issue, place: place})
+	return e.settleRuns(ctx, tx, runs, []string{issue}, &runAt{issue: issue, place: place})
 }
 
 // settleRuns ends each run of keys that is over (runOver), with the end the fact named for it or
-// stopped. withTrees adds the members of each tree whose root among keys lingers, and of each tree
-// whose linger the fact closed. starting is the place a start of one issue is about to begin (its
-// generation unread), nil for none. It is the one writer of a run's end (endStep).
-func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys []string, withTrees bool, starting *runAt) error {
+// stopped. starting is the place a start of one issue is about to begin (its generation unread),
+// whose settle reads that issue alone (settleStart); nil is the fact's own settle (SettleFact),
+// which adds the members of each tree whose root among keys lingers, and of each tree whose linger
+// the fact closed. It is the one writer of a run's end (endStep).
+func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys []string, starting *runAt) error {
 	issues := map[string]*record.Issue{}
 	read := func(key string) (*record.Issue, error) {
 		if issue, ok := issues[key]; ok {
@@ -163,7 +164,7 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			order = append(order, key)
 		}
 	}
-	if withTrees {
+	if starting == nil {
 		var trees []string
 		for _, key := range order {
 			issue, err := read(key)
