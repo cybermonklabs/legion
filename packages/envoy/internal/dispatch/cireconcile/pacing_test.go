@@ -471,6 +471,82 @@ func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.
 	}
 }
 
+// readBothHeads runs a pass under a five-second bound that reads both heads whole, so the
+// Reconciler holds their pages: two listings of each and the repository's identity, five
+// requests, which nine tenths of the bound spread over is 900ms and the ceiling clamps to 500ms.
+func readBothHeads(t *testing.T, h *harness) {
+	t.Helper()
+	h.reconciler.PassTimeout = 5 * time.Second
+	h.pass()
+	if line := h.passLine(); number(t, line, "heads") != 2 || line["deadline_reached"] != false {
+		t.Fatalf("the first pass reached %v heads (deadline_reached %v), want both within its bound: nothing here is tested: %v",
+			line["heads"], line["deadline_reached"], line)
+	}
+}
+
+// A deadline of the caller's own that ends a pass before it reaches a head is no bound of the
+// pass's: the pace did not stop that pass, so the pass after it paces itself by the work the
+// Reconciler holds, not at the floor.
+func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHeads(head(7), head(8))
+	h.github.refuseChecks(gitHubRepository, head(7).sha)
+	h.github.refuseChecks(gitHubRepository, head(8).sha)
+	h.reconciler.Pace = RequestPace
+	readBothHeads(t, h)
+
+	// GitHub holds the first head's check runs until the request is given up, and the caller's
+	// own deadline, a second away, gives it up well inside the pass's own bound of five seconds.
+	h.github.stall(runsOf(head(7)), time.Minute)
+	ctx, cancel := context.WithTimeout(h.ctx, time.Second)
+	h.reconciler.Pass(ctx)
+	cancel()
+	if line := h.passLine(); number(t, line, "heads") != 0 || line["deadline_reached"] != true {
+		t.Fatalf("the pass the caller's deadline ended reached %v heads (deadline_reached %v), want a deadline to end it before it reached one: nothing here is tested: %v",
+			line["heads"], line["deadline_reached"], line)
+	}
+	h.github.stall(runsOf(head(7)), 0)
+
+	h.pass()
+
+	line := h.passLine()
+	if got, want := text(t, line, "pace"), RequestPace.String(); got != want {
+		t.Errorf("the pass after one its caller's deadline ended paced itself at %s, want %s from the work the Reconciler holds: that deadline is no bound of the pass's: %v", got, want, line)
+	}
+}
+
+// A bound that ends a pass before it reads GitHub at all -- inside the read of the repository
+// mappings, before the walk that counts a cut (counts.deadline) -- is the pass's own bound ending
+// it with no head reached, as a bound inside a head's reads is: the pass after it reads at the
+// floor.
+func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHeads(head(7), head(8))
+	h.github.refuseChecks(gitHubRepository, head(7).sha)
+	h.github.refuseChecks(gitHubRepository, head(8).sha)
+	h.reconciler.Pace = RequestPace
+	readBothHeads(t, h)
+
+	// A bound already over as the pass begins: its first read, the mappings', is refused.
+	h.reconciler.PassTimeout = time.Nanosecond
+	sentBefore := h.github.count()
+	h.pass()
+	if line := h.passLine(); number(t, line, "heads") != 0 || line["deadline_reached"] != false || h.github.count() != sentBefore {
+		t.Fatalf("the pass under a spent bound reached %v heads (deadline_reached %v) and sent GitHub %d requests, want none, and no cut counted: nothing here is tested: %v",
+			line["heads"], line["deadline_reached"], h.github.count()-sentBefore, line)
+	}
+	h.reconciler.PassTimeout = 5 * time.Second
+
+	h.pass()
+
+	line := h.passLine()
+	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
+		t.Errorf("the pass after one its bound ended before it read GitHub paced itself at %s, want the floor %s: %v", got, want, line)
+	}
+}
+
 // The pass's queries go one at a time and leave GitHub the processing time its secondary limit
 // asks for: no two queries of a pass overlap, each is followed by a wait of a third of what the
 // query before it took, and the query time the pass sustains is three quarters of the clock,
