@@ -452,16 +452,6 @@ Each item below names a task and where its code is, then notes on it.
   the same lines end `dispatch read --issue` and the answer to an approval request.
   Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
 
-- **Words and trees of check and requirement blocks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/api/reference_targets.go`
-
-  A check's and a requirement's `text` is its words with every link and `dispatch://` reference dropped (`blockWords`): a check's is what the `dispatch results` lines print, and a requirement's is what the Spec tab shows.
-  A caller that sent `Dispatch-Trees: 1` is given the block's whole content beside it as `text_tree`, links and references kept: the tree is read from the block's slice of the live rendering (`typedBlocksIn`) through `blockTextContent`, the rule `GET /api/v1/reference-targets` uses, and read for display as a decision's section is, through the request's one tree reader.
-  So one block answers one tree in the three reads: its content when its stored text reads back as that block alone, and its whole stored text when it does not (a typed block in a quote).
-  The content is cut from the stored text itself, never rendered again: its first and last lines are dropped and the closing fence's indentation is taken out of each line between them, so a typed block nested in it with no id is given none, and its tree is the same on every read.
-  `GET /api/v1/reference-targets` answers the same for every member that names a block, a plan task among them, whose `name` is the stored excerpt and so holds the directive line and stops at 480 runes: the block's whole text is read in one statement per kind of block (`refs.BlockTexts`), a typed block's is cut to its own content when it reads back as that block alone (`blockTextContent`), and no document is loaded; the read's ETag hashes each tree.
-  A block of a document, a comment or an ask has its text read from the block index; no table records the texts of a message's blocks, so a message block's text is split again from its message's body (`messageBlockTexts` in `internal/dispatch/refs/target_texts.go`).
-  Shapes: `RequirementCoverage`, `CheckBlock`, `ReferenceTarget` in `packages/contracts/src/dispatch-api.ts`
-
 - **Load test**: `loadtest/`
 
   the 2-core reproduction of the 2026-10-26 outage load:
@@ -2706,7 +2696,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   — both always notify, like `child.status`.
   Issue-detail `children` rows are one recursive-CTE query (`issueChildrenStatement`, read by `scanIssueChildren`; the issue read queues it in its first batch and nothing else reads it, so there is no loader of its own):
   each direct child carries `subtree_done` / `subtree_total` (the child itself included, every status;
-  done = `status='done'`), `active_at` (the subtree's newest `updated_at`), its own `external_links`, `needs` (the keys it waits on, sorted — the elements of the issue read's own `blocked_by` — from one lateral over `issue_links` keyed by the child's own key; left out when it waits on nothing) and `claim` (`model.IssueClaim`: who holds the child and since when, the `claimed_by` / `claimed_at` of the child's own row, which the statement already reads, so it costs no join; left out when nobody holds it), still ordered by key.
+  done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
 
 - Every issue has a nullable `assignee`: the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`fold.ASCII(strings.TrimSpace(login))`, which lowers ASCII letters alone, so no Unicode letter such as U+212A KELVIN SIGN is folded onto another person's `k`) is the stored form and plain `=` compares it;
