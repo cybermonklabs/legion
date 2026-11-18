@@ -566,14 +566,20 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 }
 
 // The acceptance of a child is the work of the architect that owns the child when the step starts
-// (record.OwnerWalk.Architect): the child's own architect while its claim holds its role, and the
-// tree's architect when it does not. The record of step 5 names that architect's token at the
-// start the review's approval writes and at the end the sign-off writes, and the end names the
-// session and the model the daemon reads of that token (the start names neither: startStep); so
-// does the end of a run of accepting the release before started, which no start counted. Each
-// architect answers with a session and a model of its own, so a record that named the other one
-// would carry the other's. The control is the child's architect failed: it holds no role, and the
-// tree's architect owns the child.
+// (record.OwnerWalk.Architect): the child's own architect while its claim holds its role, or while
+// a start of it the outbox will act on is queued (the move into accepting starts a failed one
+// again, reviveArchitect), and the tree's architect otherwise. The record of step 5 names that
+// architect's token at the start the review's approval writes and at the end the sign-off writes,
+// and the end names the session and the model the daemon reads of that token (the start names
+// neither: startStep); so does the end of a run of accepting the release before started, which no
+// start counted. Each architect answers with a session and a model of its own, so a record that
+// named the other one would carry the other's.
+//
+// A failed child architect is the tree's at a run the release before started: nothing starts it
+// again before the sign-off, and the start the sign-off's own move into the retro queues is the
+// retro's, not the acceptance's. The controls are a child architect with no claim, and one the
+// operator suspended, which no start wakes before the operator's resume: neither holds its role,
+// and the tree's architect owns the child.
 func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 	tree, own := treeRoleToken(t, "LEGION-208", claim.RoleArchitect), treeRoleToken(t, "LEGION-209", claim.RoleArchitect)
 	reads := map[string]StepAgent{
@@ -582,12 +588,18 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 	}
 	agent := func(token claim.Token) StepAgent { return reads[string(token)] }
 	for _, tc := range []struct {
-		name  string
+		name string
+		// state is the child architect's claim, "" for none, suspended by by.
 		state supervise.ClaimState
-		owner string
+		by    supervise.SuspendSource
+		// approval is the owner of a run the approval starts, before of one the release before
+		// started.
+		approval, before string
 	}{
-		{name: "the child's own architect holds its role", state: supervise.StateIdle, owner: own},
-		{name: "control: the child's own architect failed", state: supervise.StateFailed, owner: tree},
+		{name: "the child's own architect holds its role", state: supervise.StateIdle, approval: own, before: own},
+		{name: "the child's own architect failed, which the move into accepting starts again", state: supervise.StateFailed, approval: own, before: tree},
+		{name: "control: the child's own architect has no claim", approval: tree, before: tree},
+		{name: "control: the operator suspended the child's own architect", state: supervise.StateSuspended, by: supervise.SuspendedByOperator, approval: tree, before: tree},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := func(t *testing.T, at phase.Phase, enter func(pool *pgxpool.Pool, engine *Engine)) []record.StepRecord {
@@ -596,7 +608,9 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				stepRoot(t, pool, phase.Implementing)
 				stepChild(t, pool, "LEGION-209", at, nil)
 				seedChildPR(t, pool, record.PullRequestOpen)
-				seedArchitectClaimIn(t, pool, "LEGION-209", tc.state, "")
+				if tc.state != "" {
+					seedArchitectClaimIn(t, pool, "LEGION-209", tc.state, tc.by)
+				}
 				engine := stepEngine(agent)
 				enter(pool, engine)
 				applyFacts(t, pool, engine)("sign-off", intake.SignOff{Issue: "LEGION-209"})
@@ -605,10 +619,10 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				}
 				return writesAt(stepWrites(t, pool, "LEGION-209"), "step", 5)
 			}
-			owners := func(t *testing.T, w record.StepRecord) {
+			owners := func(t *testing.T, w record.StepRecord, owner string) {
 				t.Helper()
-				if w.Agent != tc.owner || w.Role != "acceptance" || w.Generation != 3 {
-					t.Fatalf("the record of LEGION-209's acceptance = %+v, want agent %s, the architect that owns the child", w, tc.owner)
+				if w.Agent != owner || w.Role != "acceptance" || w.Generation != 3 {
+					t.Fatalf("the record of LEGION-209's acceptance = %+v, want agent %s, the architect that owns the child", w, owner)
 				}
 				if !isEnd(w) {
 					if w.Session != nil || w.Model != nil {
@@ -616,7 +630,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 					}
 					return
 				}
-				if want := reads[tc.owner]; w.Session == nil || *w.Session != want.Session || w.Model == nil || *w.Model != want.Model {
+				if want := reads[owner]; w.Session == nil || *w.Session != want.Session || w.Model == nil || *w.Model != want.Model {
 					t.Fatalf("the end of LEGION-209's acceptance names session %v and model %v, want the owner's %s and %s", w.Session, w.Model, want.Session, want.Model)
 				}
 			}
@@ -628,8 +642,8 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				if len(writes) != 2 || !isStart(writes[0]) || !isEnd(writes[1]) || writes[1].ID != writes[0].ID {
 					t.Fatalf("the writes of LEGION-209's step 5 = %+v, want the start of accepting and its end", writes)
 				}
-				owners(t, writes[0])
-				owners(t, writes[1])
+				owners(t, writes[0], tc.approval)
+				owners(t, writes[1], tc.approval)
 				assertEnd(t, writes[1], "step", 5, 3, "passed", nil)
 			})
 			t.Run("a run the release before started", func(t *testing.T) {
@@ -637,7 +651,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				if len(writes) != 1 || writes[0].ID != StepID("LEGION-209", 3, placeOf("step", 5), 0) {
 					t.Fatalf("the writes of LEGION-209's step 5 = %+v, want one end at the count 0", writes)
 				}
-				owners(t, writes[0])
+				owners(t, writes[0], tc.before)
 				assertEnd(t, writes[0], "step", 5, 3, "passed", nil)
 			})
 		})

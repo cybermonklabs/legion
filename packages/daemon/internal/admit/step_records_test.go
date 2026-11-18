@@ -11,10 +11,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -261,33 +263,79 @@ func TestAReadmittedTreeEndsTheOpenMergeStepBeforeItStartsTheMemberAgain(t *test
 	})
 }
 
+// putOwnArchitect records the claim of the accepting member's own architect in state, suspended by
+// by, as the claim store holds it: idle while it holds its role, suspended once the outbox has run
+// its tree's close or an operator suspended it.
+func putOwnArchitect(t *testing.T, pool *pgxpool.Pool, state supervise.ClaimState, by supervise.SuspendSource) {
+	t.Helper()
+	project, err := claim.ProjectToken(testProject)
+	if err != nil {
+		t.Fatalf("project token: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+		values ($1, $2, $3, $4, 'architect', 1, 'ses_own', '/sessions/ses_own.jsonl', $5, 0, 0, 0, 0, $6)
+		on conflict (token) do update set state = excluded.state, suspended_by = excluded.suspended_by`,
+		string(architectToken(t, inAccepting)), project, finishedRoot, inAccepting, string(state), string(by)); err != nil {
+		t.Fatalf("record the architect claim of %s in state %s: %v", inAccepting, state, err)
+	}
+}
+
 // A tree admitted again starts each member's step again: the linger ended each member's run
 // stopped, and the promotion starts a new run of the same place, another record. A member whose
 // phase worker the promotion starts gets it from that start (workflow.Engine.StartPromotedWorker);
-// a member in accepting, whose role is the tree's architect, and one held from testing, whose hold
-// starts no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord). The
-// member in accepting is its tree's work: each write of its record names the tree's architect,
-// never an architect of the member's own.
+// a member in accepting, whose role is an architect, and one held from testing, whose hold starts
+// no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord).
+//
+// The member in accepting is the work of the architect that owns it: its own, which held its role
+// when the run began and which the tree's close then suspended. The promotion queues a start of it
+// in the transaction that starts the new run, and once that start runs the member's own architect
+// owns it again, so each write of its record names that architect. The control is the operator's
+// suspension, which no start wakes before the operator's resume: the new run names the tree's
+// architect, which owns the member until then.
 func TestATreeAdmittedAgainStartsEachMemberAgain(t *testing.T) {
-	pool, admission, engine := seedFinishingTree(t)
-	members := []struct {
-		key  string
-		kind string
-		step int
-	}{{planning, "step", 1}, {heldTesting, "step", 3}, {inAccepting, "step", 5}, {inRetro, "retro", 0}}
-	for _, member := range members {
-		countStart(t, pool, engine, member.key)
-	}
-	closeFinishingTree(t, pool, admission, engine)
-	reopenFinishingTree(t, pool, admission, engine)
-	for _, member := range members {
-		assertStepWrites(t, pool, member.key, start(member.kind, member.step, 1, 1), end("stopped", member.kind, member.step, 1, 1), start(member.kind, member.step, 1, 2))
-	}
-	assertStepWrites(t, pool, unstarted)
-	architect, own := architectToken(t, finishedRoot), architectToken(t, inAccepting)
-	for _, w := range stepWrites(t, pool, inAccepting) {
-		if w.Agent != string(architect) || w.Agent == string(own) {
-			t.Fatalf("a write of %s's acceptance names agent %q, want the tree's architect %s, not its own %s", inAccepting, w.Agent, architect, own)
-		}
+	tree, own := architectToken(t, finishedRoot), architectToken(t, inAccepting)
+	for _, tc := range []struct {
+		name string
+		by   supervise.SuspendSource
+		// again is the agent of the accepting member's new run.
+		again claim.Token
+	}{
+		{name: "the tree's close suspended the member's own architect", by: supervise.SuspendedByDaemon, again: own},
+		{name: "control: the operator suspended the member's own architect", by: supervise.SuspendedByOperator, again: tree},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, admission, engine := seedFinishingTree(t)
+			putOwnArchitect(t, pool, supervise.StateIdle, "")
+			members := []struct {
+				key  string
+				kind string
+				step int
+			}{{planning, "step", 1}, {heldTesting, "step", 3}, {inAccepting, "step", 5}, {inRetro, "retro", 0}}
+			for _, member := range members {
+				countStart(t, pool, engine, member.key)
+			}
+			closeFinishingTree(t, pool, admission, engine)
+			putOwnArchitect(t, pool, supervise.StateSuspended, tc.by)
+			reopenFinishingTree(t, pool, admission, engine)
+			for _, member := range members {
+				assertStepWrites(t, pool, member.key, start(member.kind, member.step, 1, 1), end("stopped", member.kind, member.step, 1, 1), start(member.kind, member.step, 1, 2))
+			}
+			assertStepWrites(t, pool, unstarted)
+			// The promotion's start of the member's own architect names its phase and carries no
+			// task, a row effects leaves out, so it is counted here.
+			var queued int
+			if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = $1 and issue = $2
+				and payload->>'op' = 'start' and payload->>'role' = 'architect' and payload->>'phase' = $3`,
+				string(record.OutboxKindSupervise), inAccepting, string(phase.Accepting)).Scan(&queued); err != nil || queued != 1 {
+				t.Fatalf("the promotion queued %d starts of %s's own architect in accepting (%v), want one", queued, inAccepting, err)
+			}
+			writes := stepWrites(t, pool, inAccepting)
+			for i, want := range []claim.Token{own, own, tc.again} {
+				if writes[i].Agent != string(want) {
+					t.Fatalf("write %d of %s's acceptance names agent %q, want %s (the tree's is %s, its own %s)", i, inAccepting, writes[i].Agent, want, tree, own)
+				}
+			}
+		})
 	}
 }

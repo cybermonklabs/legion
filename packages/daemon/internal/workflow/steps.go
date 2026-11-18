@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // defaultTask is the one task of today's fixed phases: until an issue carries a plan of its own,
@@ -311,18 +312,55 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // acceptingAgent is the agent of issue's accepting step: the claim of the architect that owns
-// issue now (owningArchitect, the owner walk over the claims this transaction reads), the one that
-// signs it off or moves it back. That is a child's own architect while its claim holds its role,
-// else the nearest architect above it whose claim does, else the tree's. It is the one place both
-// a start of accepting (startAgent) and the end of a run of accepting no start counted
-// (upgradedStart) read, so the record names the architect whose request ends the step, and that
-// request waits for that architect's stream (api's apply, record.RunsAStepOn).
+// issue now, the one that signs it off or moves it back. That is a child's own architect while its
+// claim holds its role (owningArchitect, the owner walk over the claims this transaction reads), or
+// while a start of it that will run waits in the outbox (ownArchitectStarting), else the nearest
+// architect above it whose claim holds its role, else the tree's. It is the one place both a start
+// of accepting (startAgent) and the end of a run of accepting no start counted (upgradedStart)
+// read, so the record names the architect whose request ends the step, and that request waits for
+// that architect's stream (api's apply, record.RunsAStepOn).
 func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, error) {
-	owner, err := e.owningArchitect(ctx, tx, issue)
+	starting, err := e.ownArchitectStarting(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
+	owner := issue.Key
+	if !starting {
+		if owner, err = e.owningArchitect(ctx, tx, issue); err != nil {
+			return "", err
+		}
+	}
 	return stepClaim(issue, owner, claim.RoleArchitect)
+}
+
+// ownArchitectStarting is whether issue's own architect, a child's, owns its accepting step by a
+// start the outbox will act on, which the owner walk does not see: the walk reads a claim as the
+// store records it, and a claim whose start is only queued does not hold its role yet
+// (record.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
+// move into accepting, which starts a failed child architect again (reviveArchitect), and a
+// re-admission's promotion, which brings back a member's suspended architect (admit's
+// startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
+// signs it off. The start is one of no phase or of accepting (architectStartQueued).
+//
+// Two such starts do not count. One queued for a claim the operator suspended: that suspension is
+// woken by no start, queued or not, since each waits for the operator's resume
+// (supervise.Claim.RuleHolds). And one queued once the issue has left accepting, which the store's
+// record of the issue says: the start is then the next phase's (reviveArchitect at that phase's
+// start), and the end of a run of accepting no start counted that the move out of it settles
+// (upgradedStart) names the architect that owned the issue while it stood there.
+func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	run, child, err := e.ownArchitectRun(ctx, tx, issue)
+	if err != nil || !child || !architectStartQueued(run, phase.Accepting) {
+		return false, err
+	}
+	if run.Claim != nil && (supervise.Claim{State: run.Claim.State, SuspendedBy: run.Claim.SuspendedBy}).RuleHolds() {
+		return false, nil
+	}
+	stands, err := e.store.Issue(ctx, tx, issue.Key)
+	if err != nil || stands == nil {
+		return false, err
+	}
+	return record.StandsAt(*stands) == phase.Accepting && stands.Generation == issue.Generation, nil
 }
 
 // startNamedStep writes the start of step, the step issue stands in (standingStep), under the agent
