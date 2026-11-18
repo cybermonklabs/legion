@@ -181,43 +181,6 @@ after the change that added them; `command -v unzip yq` says whether yours has t
   program — kislyuk's Python wrapper over `jq`, 3.4.3 in trixie — so an expression written for one
   does not run on the other, and a recipe you found may be written for the other one.
 
-## The cloud CLIs and rig tools the image carries
-
-Six more programs ride in the image for a role's own work, with the runtime user's name and
-WebKit's host libraries beside them. Like the five clients, they are on a role's `PATH` only once
-its deployment pins a digest at or after the change that added them (dispatch://INFRA-3257): a
-role still on an older digest finds none of them. Run `command -v gcloud bq az mise tmux busybox`
-to see which you have.
-
-- `gcloud` and `bq` — the Google Cloud SDK 594.0.0 at `/opt/google-cloud-sdk`, the two linked into
-  `/usr/local/bin`. `gsutil` stays inside the SDK and is not on `PATH`. Both trust Debian's root
-  bundle, `/etc/ssl/certs/ca-certificates.crt`, and not the CA files the SDK ships, which hold the
-  compromised emSign and AAA roots. That is a default of the SDK's installation, its property
-  `core/custom_ca_certs_file`: `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE` or a gcloud configuration of
-  your own overrides it. The SDK's update check and its usage reporting are off.
-- `az` — azure-cli 2.93.0, in a tree of its own at `/opt/azure-cli`. `/usr/local/bin/az` is a link
-  to a wrapper (`packages/daemon/docker/azure-cli/az`) that sets two defaults, each only where you
-  left it unset or empty: `REQUESTS_CA_BUNDLE` to Debian's root bundle, and
-  `AZURE_CORE_COLLECT_TELEMETRY=no`. No setting stops az's version check. az reads
-  `https://azcliprod.blob.core.windows.net/cli` at the first command in a configuration directory,
-  at the first command after its own version changes, and at every `az version` and `az --version`.
-- `mise` — the pinned release at `/usr/local/bin/mise`, for the two scripts that resolve the Oh My
-  Pi pin with it: `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig
-  (`packages/pi-legion/scripts/skill-scenarios/rig.sh`). The image holds no mise store, so the
-  rig's first build in a fresh pod downloads the pin from GitHub into your `MISE_DATA_DIR`. To give
-  that download a GitHub token, set `MISE_GITHUB_TOKEN`, which is mise's own variable.
-- `tmux` — Debian trixie's, at `/usr/bin/tmux`: the skill-scenario rig runs its panes in it.
-- `busybox` — Debian trixie's, at `/usr/bin/busybox` alone, with no applet links. Run an applet as
-  `busybox <applet>`, such as `busybox sh`. The image's `wget` and `sh` stay GNU wget and dash.
-  Download nothing with `busybox wget`: it checks no TLS certificate.
-- `USER` — the image sets `USER=legion`, the runtime user's name, so a script that reads `$USER`
-  under `set -u` runs. A deployment's `runtime.kubernetes.pod.env` may not set it.
-- WebKit's host libraries — the 56 Debian packages Playwright 1.64.1 names for WebKit on Debian 13.
-  They are for the Dispatch browser suite's WebKit projects, which a role runs as the runtime user
-  once `bun run e2e:install` has downloaded the browsers. The image build launches that WebKit once
-  as the runtime user, so a Playwright bump whose WebKit needs a library the image lacks fails the
-  build.
-
 ## Why a tool the image lacks is an image change, not an install
 
 Your role runs as an unprivileged user with no writable system prefix: `/usr/local/bin` and `/opt`
@@ -444,8 +407,7 @@ the capability and `probe-image` tests fail on an image that does not carry it; 
 Those four are for a tool every deployment's image must carry: the `toolchain` row is the floor the
 probe holds every image to, not an inventory of this one, so a program this image carries need not
 be named there — `aws` is in the image and not in that row — and a name added to the row makes the
-probe refuse every other deployment's image that lacks it. `unzip`, `yq`, `gcloud`, `bq`, `az`,
-`mise`, `tmux` and `busybox` are in the image and in none of the four.
+probe refuse every other deployment's image that lacks it. `unzip` and `yq` are in none of the four.
 
 Miss one of those four and the suite is red, which is what makes them easy to find. Nothing holds
 a Dockerfile comment or the smoke step to anything, so a change that stops at the gated sites opens

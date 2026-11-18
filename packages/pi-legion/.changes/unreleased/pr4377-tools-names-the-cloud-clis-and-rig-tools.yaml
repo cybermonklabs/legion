@@ -1,7 +1,0 @@
-kind: Added
-body: |-
-  `skills/legion-worker/references/tools.md` names the tools the worker image now carries for a
-  role's own work: `gcloud`, `bq` and `az`, held to Debian's root bundle by defaults a role can
-  override; `mise`, `tmux` and `busybox`; `USER=legion`; and WebKit's host libraries. It tells a
-  role to run `command -v gcloud bq az mise tmux busybox` to see which of them its digest carries,
-  since a pod on an older digest has none of them.
