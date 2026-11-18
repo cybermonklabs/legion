@@ -79,3 +79,4 @@ jobs:
           job: sessions-script
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
+# selection probe for INFRA-1413
