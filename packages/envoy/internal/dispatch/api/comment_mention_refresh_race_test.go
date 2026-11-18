@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -321,6 +323,134 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			t.Logf("A-1's attempts %v; s1 took %q", states, bodies)
 			if !slices.Equal(states, []string{"1:sent"}) || !slices.Equal(bodies, []string{"first", "second"}) {
 				t.Fatalf("A-1's attempts are %v and s1 took %q, want A-1 sent and s1 to take [first second]", states, bodies)
+			}
+		})
+	}
+}
+
+// A delivery sweep that takes a parked send's attempt while that send's try is in flight - the
+// claim the send parked under lapsed on the row - hands the send back to the sender under the
+// claim the sweep took (resumeOwedDelivery, queueLocked). The try, carrying the claim from before,
+// is refused as another sender's; the sender must try the send again under the hand-off's claim
+// and send it, rather than let it go with its attempt pending under a claim no sender holds, which
+// nothing sends until that claim lapses a lease later. The send, the sweep and the rule are the
+// server's own, on the database; only their order is the test's: the try is held inside the
+// sender's send until the sweep has handed the send over and the earlier events are sent. The
+// control row has no hand-off: the try, under the sender's own claim, waits behind the earlier
+// events and parks again.
+func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handOff bool
+	}{
+		{name: "control: no hand-off, the try waits and parks again"},
+		{name: "the delivery sweep hands the send over while its try is in flight", handOff: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			listener, state := newMentionListener(t)
+			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+				envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true,
+			})
+			served.mentions.wait()
+			var gated atomic.Bool
+			tryEntered, tryGo := make(chan struct{}), make(chan struct{})
+			// tried is the claim each try of the parked send carried, in order.
+			var mu sync.Mutex
+			var tried []time.Time
+			sender := newMentionSender(served.lifetime, time.Hour,
+				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
+					if item.heldFor != "" {
+						mu.Lock()
+						tried = append(tried, item.claimed)
+						mu.Unlock()
+						if gated.CompareAndSwap(true, false) {
+							tryEntered <- struct{}{}
+							<-tryGo
+						}
+					}
+					return served.sendCommentMention(ctx, item)
+				},
+				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
+			timers := make(chan func(), 4)
+			sender.mu.Lock()
+			sender.after = func(_ time.Duration, f func()) { timers <- f }
+			sender.mu.Unlock()
+			served.mentions = sender
+
+			// No outbox runs, so the issue's earlier events stay unsent and the comment's send
+			// parks under the claim its first try took, its timer left to the test.
+			issue := createInteractionIssue(t, handler, "TEST", "A hand-off during a try", "before")
+			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
+			unpark := <-timers
+			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
+			// A lease and a second with no refresh: the claim the send parked under lapsed, on
+			// its row and in the sender's record alike, and the attempt is old enough to be owed.
+			ageAttempts(t, database, comment)
+			ageClaimAndRecord(t, database, sender, key, model.DeliveryClaimLapse+time.Second)
+			parked, _ := recordedClaim(sender, key)
+
+			gated.Store(true)
+			go unpark()
+			<-tryEntered // the lane has started the send's try, carrying the lapsed claim
+			want := []time.Time{parked}
+			if tc.handOff {
+				owed, err := served.owedDeliveries(ctx)
+				if err != nil {
+					t.Fatalf("read the owed deliveries: %v", err)
+				}
+				index := slices.IndexFunc(owed, func(delivery owedDelivery) bool { return delivery.commentID == comment })
+				if index < 0 {
+					t.Fatalf("the delivery sweep does not find the parked send's attempt owed under its lapsed claim: %+v", owed)
+				}
+				// The sweep claims the attempt, finds the earlier events still owed and hands
+				// the send to the sender under the claim it took.
+				if err := served.resumeOwedDelivery(ctx, owed[index]); err != nil {
+					t.Fatalf("the sweep's send of the parked one: %v", err)
+				}
+				handedOver := attemptClaimedAt(t, database, comment, "session:s1")
+				recorded, _ := recordedClaim(sender, key)
+				t.Logf("parked under %v; the sweep handed the send over under %v, and the sender records %v",
+					parked, handedOver, recorded)
+				if !handedOver.After(parked) || !recorded.Equal(handedOver) {
+					t.Fatalf("the sweep's hand-off left the row's claim at %v and the sender's record at %v, want both at a claim past %v",
+						handedOver, recorded, parked)
+				}
+				want = append(want, handedOver)
+				publishIssueEvents(t, database, issue.Key)
+			}
+			close(tryGo)
+			if !tc.handOff {
+				unpark = <-timers // the try read the rule alone, waited and parked again
+				recorded, unsure := recordedClaim(sender, key)
+				row := attemptClaimedAt(t, database, comment, "session:s1")
+				t.Logf("parked again: the sender records %v (unsure %t), the row carries %v", recorded, unsure, row)
+				if unsure || !recorded.Equal(row) || !row.Equal(parked) {
+					t.Fatalf("parked again, the sender records %v (unsure %t) and the row carries %v, want both the claim it parked under, %v",
+						recorded, unsure, row, parked)
+				}
+				publishIssueEvents(t, database, issue.Key)
+				want = append(want, parked)
+				go unpark()
+			}
+			waitUntil(t, 30*time.Second, "the sender done with the parked send", func() bool {
+				sender.mu.Lock()
+				defer sender.mu.Unlock()
+				_, holds := sender.held[key]
+				return !holds
+			})
+			states := attemptStates(t, database, "comment_deliveries", "comment_id", comment)
+			bodies := state.bodiesTo("s1")
+			mu.Lock()
+			carried := slices.Clone(tried)
+			mu.Unlock()
+			t.Logf("the tries carried %v; the attempts are %v, and s1 took %q", carried, states, bodies)
+			if !slices.EqualFunc(carried, want, time.Time.Equal) {
+				t.Errorf("the parked send's tries carried %v, want %v", carried, want)
+			}
+			if !slices.Equal(states, []string{"1:sent"}) || !slices.Equal(bodies, []string{"the parked one"}) {
+				t.Fatalf("the sender let the parked send go with its attempts %v and s1 taking %q, want it sent once: a send let go under the hand-off's claim leaves the attempt pending under a claim no sender holds",
+					states, bodies)
 			}
 		})
 	}
