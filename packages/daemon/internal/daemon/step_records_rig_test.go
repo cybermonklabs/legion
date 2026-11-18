@@ -55,6 +55,10 @@ type stepRecordsRig struct {
 	// held is the answer heldRequest holds on its claim's feed (overrides.beforeDecision), nil
 	// while it holds none.
 	held atomic.Pointer[heldAnswer]
+	// waited is whether the request heldRequest sent last began its wait for its claim's machine
+	// (overrides.streamWaitBegan) before it answered: what a test reads to tell a request that
+	// waited for its agent's stream from one that applied at once.
+	waited bool
 }
 
 // heldAnswer is the answer heldRequest holds: the feed of token's claim stops before its machine

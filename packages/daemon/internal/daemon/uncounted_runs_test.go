@@ -22,12 +22,13 @@ import (
 // A run the release before this one started has no row in step_starts, so the record names no
 // agent of a run on its issue, and a fact its agent's request applies waits for nothing
 // (api's apply). The boot gives the run an open row (workflow's OpenUncountedRuns), so the
-// planner's completion waits for its stream, and the record of planning ends naming the model
-// that answered last, under the id of the count 0, with the planner and the moment its entry was
-// raised. The control takes the row out after the boot, as a boot without that pass leaves the
-// store: the boot's row is the one path a run no start counted is ended by, so the completion
-// ends no run of planning, and Dispatch holds no record of it once the next step's start, written
-// by the same fact, has reached it.
+// planner's completion waits for its stream (the daemon says the wait began,
+// overrides.streamWaitBegan), and the record of planning ends naming the model that answered
+// last, under the id of the count 0, with the planner and the moment its entry was raised. The
+// control takes the row out after the boot, as a boot without that pass leaves the store: the
+// completion applies at once, with no wait for the planner's stream, and since the boot's row is
+// the one path a run no start counted is ended by, it ends no run of planning, and Dispatch holds
+// no record of it once the next step's start, written by the same fact, has reached it.
 func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForItsStream(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -52,6 +53,9 @@ func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForIts
 			req.GrantID = planner.grant()
 			if status, body := r.heldRequest(planner, "stand-in/planner-second", "/legion/v1/handoff/complete", req); status != http.StatusOK {
 				t.Fatalf("the planner's completion = %d %s, want 200", status, body)
+			}
+			if r.waited == tc.noRow {
+				t.Fatalf("the planner's completion waited for its stream: %t; want %t, as the run's row in step_starts says (none %t)", r.waited, !tc.noRow, tc.noRow)
 			}
 			planner.endTurn()
 			r.waitPhase(phase.Implementing)
