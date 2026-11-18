@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -740,4 +741,98 @@ func searchAllInstallations(ctx context.Context, client *githubapp.Client, autho
 		return nil, err
 	}
 	return found, nil
+}
+
+// GitHub's error of a search page it answered 200 is shown to the bound a body is shown to
+// (githubapp.ShownBody): the reconcile's search logs the page's error, and a message of 1 MiB in
+// GitHub's errors array was a line of 1 MiB (the deep audit of cybermonklabs/legion#4209 at
+// 3a21edb2c9, note 1). The start of the message, and its size, are kept.
+func TestASearchPageGitHubAnswersWithAnErrorShowsItToABound(t *testing.T) {
+	fake := newFakeGitHub(t)
+	const start = "The search could not be completed "
+	fake.handle("POST /graphql", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"data": nil, "errors": []any{map[string]any{"message": start + strings.Repeat("y", 1<<20-200)}}})
+	})
+	_, err := fetchSearchPage(t.Context(), fake.newTestClient(), "ghs_test", "repo:acme/widgets is:pr is:merged", "")
+	if err == nil {
+		t.Fatal("a search page GitHub answered with an error answered no error")
+	}
+	text := err.Error()
+	t.Logf("bytes=%d", len(text))
+	if len(text) > 1024 || !strings.Contains(text, start) || !strings.Contains(text, "bytes)") {
+		t.Errorf("the search page's error is %d bytes and begins %.120q, want at most 1,024 that keep the start of GitHub's message and its size", len(text), text)
+	}
+}
+
+// The cursor a search page names is GitHub's own text, the endCursor of the page before it, so each
+// error of the page shows it to the bound a body is shown to (githubapp.ShownBody), as it shows
+// GitHub's message (TestASearchPageGitHubAnswersWithAnErrorShowsItToABound): an endCursor as long
+// as an answer may hold (githubapp's 1 MiB limit) was a line of that size in each of the five
+// errors that name the cursor. The start of the cursor, and its size, are kept.
+func TestEachErrorOfASearchPageShowsGitHubsCursorToABound(t *testing.T) {
+	const start = "Y3Vyc29yOnYyOpK0"
+	cursor := start + strings.Repeat("Q", 1<<20-4096)
+	for _, page := range []struct {
+		name   string
+		answer http.HandlerFunc
+	}{
+		{name: "github_answers_errors", answer: func(w http.ResponseWriter, _ *http.Request) {
+			mustEncode(t, w, map[string]any{"data": nil, "errors": []any{map[string]any{"message": "Something went wrong"}}})
+		}},
+		{name: "github_refuses_the_page", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprint(w, `{"message":"Validation Failed"}`)
+		}},
+		{name: "the_page_does_not_decode", answer: func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, "not json")
+		}},
+		{name: "the_connection_closes", answer: func(w http.ResponseWriter, _ *http.Request) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack the page's connection: %v", err)
+				return
+			}
+			conn.Close()
+		}},
+	} {
+		t.Run(page.name, func(t *testing.T) {
+			fastPageRetries(t)
+			fake := newFakeGitHub(t)
+			fake.handle("POST /graphql", page.answer)
+			_, err := fetchSearchPage(t.Context(), fake.newTestClient(), "ghs_test", "repo:acme/widgets is:pr is:merged", cursor)
+			requireCursorShownToABound(t, err, start)
+		})
+	}
+	t.Run("the_next_pages_token_is_not_minted", func(t *testing.T) {
+		fake := newFakeGitHub(t)
+		fake.handle("POST /graphql", func(w http.ResponseWriter, _ *http.Request) {
+			node := searchNodeJSON(5, "t", "alice", "2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z")
+			mustEncode(t, w, searchResponseJSON(2, []map[string]any{node}, true, cursor))
+		})
+		var minted atomic.Int32
+		token := func() (string, error) {
+			if minted.Add(1) > 1 {
+				return "", errors.New("the test mints no second token")
+			}
+			return "ghs_test", nil
+		}
+		err := searchMergedPullRequests(t.Context(), fake.newTestClient(), token, []string{"acme/widgets"}, []string{"alice"},
+			time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+			func(time.Time, []FetchedPullRequest) error { return nil })
+		requireCursorShownToABound(t, err, start)
+	})
+}
+
+// requireCursorShownToABound fails t unless err is an error of at most 1,024 bytes that keeps the
+// start of the cursor and its size.
+func requireCursorShownToABound(t *testing.T, err error, start string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("the page answered no error")
+	}
+	text := err.Error()
+	t.Logf("bytes=%d", len(text))
+	if len(text) > 1024 || !strings.Contains(text, start) || !strings.Contains(text, "bytes)") {
+		t.Errorf("the page's error is %d bytes and begins %.160q, want at most 1,024 that keep the start of GitHub's cursor and its size", len(text), text)
+	}
 }

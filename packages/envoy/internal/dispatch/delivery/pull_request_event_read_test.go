@@ -1,11 +1,12 @@
 package delivery
 
 // What a `pull_request` envelope may write: GitHub's own answer about the pull request it names,
-// and nothing the envelope itself carries (dispatch://INFRA-3992). With no delivery settings, as
-// the deployment that change was made for holds none.
+// and nothing the envelope itself carries. With no delivery settings, as the deployment that
+// change was made for holds none.
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,7 +17,10 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
@@ -381,8 +385,7 @@ func TestARateLimitedPullRequestReadWritesNoRowAndIsAHeadNotStored(t *testing.T)
 // A GitHub outage loses no pull request's head: the intake owes each failed read and
 // acknowledges its envelope, and once GitHub answers again the reconcile's next pass writes the
 // head of a pull request that opened during the outage, and of one that was pushed during it,
-// with no later event of either (acceptance of cybermonklabs/legion#4209, round 2, defect 3; R1,
-// R2 and R4 of dispatch://INFRA-3992).
+// with no later event of either (acceptance of cybermonklabs/legion#4209, round 2, defect 3).
 //
 // Taken from the acceptance tester's TestAcceptAGitHubOutageLongerThanTheCapLosesNoHead, with
 // three changes. The step after the outage runs one reconcile pass, since the fix is that the
@@ -525,5 +528,63 @@ func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *t
 	}
 	if count := headRowCount(t, ctx, intake, "acme/widgets", never); count != 0 {
 		t.Fatalf("#%d has %d head rows, want none", never, count)
+	}
+}
+
+// A pull request whose branch, title and body name no issue reaches its issue only through a link
+// the issue holds, and with no delivery settings the intake still stores its head, so after the
+// link and a push the issue lists the pull request at the pushed head (HeadsAttributedTo, what
+// the results route compares each check with). #302 is the control: the same pull request with
+// no link is listed nowhere. At origin/main 7e33d96621 no head row was stored for either, so the
+// issue listed nothing and every check read "Compared with nothing" (three live cases; the probe
+// of the planner of the next change: "head rows: #301 0, #302 0"). Each envelope
+// goes through Intake.deliver with the settings production holds: none.
+func TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliverySettings(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 9301)
+	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, "acme/widgets")
+	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil))
+	const opened, pushed = "4301430143014301430143014301430143014301", "e273e273e273e273e273e273e273e273e273e273"
+	const branch, body = "test/nats-hooked-server", "No key here."
+	deliver := func(number int, action, head string, at time.Time) {
+		t.Helper()
+		github.set("acme/widgets", number, "open", head, branch, body, at)
+		payload, err := json.Marshal(prEnvelope("acme/widgets", number, action, head, branch, body, at))
+		if err != nil {
+			t.Fatal(err)
+		}
+		intake.deliver(&intakeDelivery{handling: ctx}, intakeMessage{
+			msg:      &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr." + strconv.Itoa(number)},
+			envelope: &contracts.Envelope{Payload: string(payload)},
+		})
+	}
+	at := time.Date(2026, 11, 17, 9, 12, 0, 0, time.UTC)
+	for _, number := range []int{301, 302} {
+		deliver(number, "opened", opened, at)
+	}
+	if _, err := pool.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')`,
+		issue, "https://github.com/acme/widgets/pull/301"); err != nil {
+		t.Fatalf("link #301 to %s: %v", issue, err)
+	}
+	for _, number := range []int{301, 302} {
+		deliver(number, "synchronize", pushed, at.Add(48*time.Minute))
+	}
+	heads, err := HeadsAttributedTo(ctx, pool, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[int]string{}
+	for _, head := range heads {
+		listed[head.Number] = head.HeadSHA
+	}
+	t.Logf("head rows: #301 %d, #302 %d; %s lists %v", headRowCount(t, ctx, intake, "acme/widgets", 301),
+		headRowCount(t, ctx, intake, "acme/widgets", 302), issue, listed)
+	if listed[301] != pushed {
+		t.Errorf("%s lists %v, want #301 at the pushed head %.12s: the results route compares its checks with nothing", issue, listed, pushed)
+	}
+	if _, has := listed[302]; has {
+		t.Errorf("%s lists #302, which no link and no key names", issue)
 	}
 }

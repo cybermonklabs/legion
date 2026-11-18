@@ -1970,6 +1970,52 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that publishes each issue's role sessions to Dispatch
+
+This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, and its version stands above `20261114031356`, so it writes the list last on any database.
+A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
+The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
+The migration changes no column.
+
+The daemon and Dispatch deploy in either order.
+A Dispatch without the route answers `404 NOT_FOUND` "no route for …", and the daemon waits: it runs the row again on its backoff, at most 64 s apart, until Dispatch has the route.
+While it waits, each issue's row logs `outbox row waits` and no ERROR line: INFO at its first run, DEBUG after, and from its seventh retry, about two minutes after the first run, one WARN line at each run.
+That WARN line means a fault only once the Dispatch release that has the route is live: then the daemon reaches a Dispatch that does not serve the route.
+The daemon retries a `5xx` as a failure, with one ERROR line `outbox row failed` at each run.
+A `400` from the route is final: the daemon ends the row and logs one ERROR line with the issue and Dispatch's code, and the next ready, end or other change of a claim on that issue queues a fresh publication.
+
+**The session of an ended claim keeps its role for a time.**
+It keeps its role until the daemon's publication of the end lands.
+The claim write that ends the claim queues that publication in its own transaction, so the end and its publication commit together or not at all.
+An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published only when the daemon makes that write again, at the claim's next decision, because until then the store still holds the claim live.
+In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
+An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
+Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
+
+**Who can write the set.**
+The route takes a write that names the actor `legion-daemon:<project>`.
+Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name that actor: the deployment's shared token, and a person's own agent token whatever its scopes.
+The airlock closes that case.
+
+**A row of the new kind can stay through a rollback.**
+An earlier release puts the kind in no outbox lane, so it never runs such a row.
+Observed on the release before this one: its daemon booted with such a row in the outbox and worked as before, and 60 s later the row was still there with 0 attempts, and no log line named it.
+At the roll forward, this release runs the row, and it sends the live set that it reads then, so the row does no harm.
+The boot of this release queues each issue with a live claim or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
+To leave no row behind, you can run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The publication of an issue's role sessions to Dispatch.
+delete from outbox where kind = 'role_holders_publish';
+```
+
+While no Dispatch release reads `issue_role_holders` to record a result, the rollback costs nothing.
+After such a release is live, an earlier daemon publishes nothing, and each new or relaunched session records its results with no role.
+So roll Dispatch back first, to the release before that one, and then roll back the daemon.
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -5949,10 +5995,10 @@ each issue's pod (every role of it alike) and the image probe's.
   `legion start --check-config` runs the same check.
   `OTEL_RESOURCE_ATTRIBUTES` is composed here rather than refused, as `PI_CONFIG_FILES` is:
   the operator sets the attributes their deployment's spend is billed under (`theorem.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
-  The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, a launch spec may not set the name, and the spend collector's `theorem.*` keep-list drops both keys today.
-  A row grouped by issue follows when that collector keeps them (dispatch://INFRA-1835).
+  The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, and a launch spec may not set the name.
+  A spend row names an arm (`legion.arms`, below), an issue or a role where the collector keeps it.
   The project controller's pod serves no issue and carries the role alone, and the image probe's container, which runs no role either, keeps the operator's value as the operator wrote it.
-  The value is read for its content as well as its name: load refuses a member the agent's detector would throw on — one that does not split on `=` into one key and one value, one with an empty key, one whose key or value does not percent-decode or runs past 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the runtime writes itself — naming that one member and what is wrong with it, never the rest of the value.
+  The value is read for its content as well as its name: load refuses a member the agent's detector would throw on — one that does not split on `=` into one key and one value, one with an empty key, one whose key or value does not percent-decode or runs past 255 characters once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which the runtime writes itself — naming that one member and what is wrong with it, never the rest of the value.
   One such member costs the launch every attribute of the variable, the operator's own `theorem.project` among them, because the detector's caller catches the throw with an empty hand, and `legion start --check-config` gives boot's verdict before a restart.
   Like every `pod.env` variable, the attributes reach a role with the start command of its next generation, in no pod specification, so no pod is replaced.
   [`deploy/kubernetes/operator-route/`](../deploy/kubernetes/operator-route/README.md) is an example of one, the one the Go live harnesses run on:
@@ -6207,6 +6253,14 @@ each issue's pod (every role of it alike) and the image probe's.
   ```
 
   (beside the block's other volumes and mounts).
+
+- **Which arm each model call ran in.**
+  A launch in an arm of a declared experiment carries `legion.arms` in `OTEL_RESOURCE_ATTRIBUTES`, after `legion.issue` and `legion.role`: one `<experiment>:<variant>` for each arm whose every overlay it runs with, comma-joined in the order the project's file declares the experiments (`legion.arms=memory:memory,plan-length:long` once decoded).
+  A launch that keeps a pod built before an arm's overlays were mounted names that arm nowhere: it starts with only the overlays that pod holds, some of the arm's or none.
+  The arm's instructions still end that launch's prompt, since the daemon writes them, so such a launch runs with part of its arm and is named in none.
+  A role an experiment's `roles` leaves out names none of its arms, and a launch in no arm carries no such pair.
+  So each model call says which arm's files it ran with, where the unit's recorded arm says only what the unit was drawn into.
+  The agent's telemetry takes the value up to 255 characters, so load refuses a project whose experiments, each at its longest arm's name and the memory experiment among them, would make it longer.
 
 - **The draw is the unit's, and is made once.**
   A tree experiment is drawn when the tree's lifecycle row is first created, on both paths that open a tree — admission's own and the operator's `POST /legion/v1/operator/claims` — and is recorded against the tree's root key.

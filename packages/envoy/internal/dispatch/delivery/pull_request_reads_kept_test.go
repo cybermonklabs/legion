@@ -1,9 +1,9 @@
 package delivery
 
 // The record of an owed read is what lets the intake let go, and a refusal ends what R4 keeps on
-// evidence and never by its age (review and red team of cybermonklabs/legion#4209 at ff73c7358d;
-// R4 of dispatch://INFRA-3992: "A read of GitHub that fails loses no head. Dispatch keeps which
-// pull request changed until a read succeeds, also for a pull request with no stored head.").
+// evidence and never by its age (review and red team of cybermonklabs/legion#4209 at ff73c7358d):
+// a read of GitHub that fails loses no head, and Dispatch keeps which pull request changed until a
+// read succeeds, also for a pull request with no stored head.
 
 import (
 	"fmt"

@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 )
 
-// Acceptance round 4 of cybermonklabs/legion#4209 (dispatch://INFRA-3992) at ff73c7358d, the
+// Acceptance round 4 of cybermonklabs/legion#4209 at ff73c7358d, the
 // fresh tester's defect D8: a close that the release before writes over a row this build read is
 // never read again, unless its time is GitHub's own second.
 //
@@ -48,7 +48,7 @@ func TestAcceptACloseTheReleaseBeforeWritesOverAReadRowIsReadAgain(t *testing.T)
 			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{Repo: "acme/widgets", Number: kase.number,
 				HeadSHA: head, HeadRef: "topic", BaseRef: "main", State: "open",
 				AttributionSource: string(sourceNone), AttributionComplete: true, EventAt: &at, CheckedAt: &now,
-				GitHubRead: true}); err != nil {
+				GitHubReadAt: &now}); err != nil {
 				t.Fatal(err)
 			}
 			closedAt := at.Add(kase.ahead)

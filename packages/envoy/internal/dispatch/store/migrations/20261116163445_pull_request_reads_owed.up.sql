@@ -1,7 +1,7 @@
 -- 20261116163445_pull_request_reads_owed.up.sql
 --
 -- The pull requests whose read of GitHub has not yet answered for a change Dispatch knows of,
--- held until a read of GitHub answers for them (dispatch://INFRA-3992, R1 to R4).
+-- held until a read of GitHub answers for them.
 --
 --   repo, number  the pull request, as pull_request_heads names one: the repository under its
 --                 canonical name (refs.CanonicalRepo) and the number.
@@ -34,8 +34,8 @@
 --
 -- The two reasons have a budget each in a pass, and every failure is read before any refusal:
 -- any bearer of Envoy's /v1 publish route can name a pull request GitHub never had, and each such
--- envelope owes a refusal, so refusals must take no read from a failure (dispatch://INFRA-3911
--- owns forged envelopes). Inside each reason the row read the fewest times goes first, then the
+-- envelope owes a refusal, so refusals must take no read from a failure. Inside each reason the
+-- row read the fewest times goes first, then the
 -- one owed longest, so every row has its first read before any row has its second. The index
 -- serves that order, so a table of forged refusals costs a pass an index scan of its budget and
 -- not a sort of every row.

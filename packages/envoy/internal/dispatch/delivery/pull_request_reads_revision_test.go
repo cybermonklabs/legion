@@ -1,8 +1,8 @@
 package delivery
 
-// No time value proves what a read of GitHub covers (dispatch://INFRA-3992, R3: "An older event
-// does not replace a newer head"; R4: "Dispatch keeps which pull request changed until a read
-// succeeds"). A read deletes an owed read only at the revision it read before it read GitHub, and
+// No time value proves what a read of GitHub covers: an older event does not replace a newer head,
+// and Dispatch keeps which pull request changed until a read succeeds. A read deletes an owed read
+// only at the revision it read before it read GitHub, and
 // an answer of the same GitHub second as the stored one covers no event and owes a read where its
 // facts differ. Each test below is one reviewer's reproduction of cybermonklabs/legion#4209 at
 // 57443e201d, under a name of its own, with its control.
@@ -10,13 +10,17 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"maps"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -184,7 +188,7 @@ func TestAnOweOfATransactionThatBeganBeforeTheReadOutlivesTheRead(t *testing.T) 
 					Number: number, HeadSHA: older, HeadRef: branch, BaseRef: "main", State: "open", IssueKey: &issue,
 					AttributionSource: string(sourceBranch), AttributionComplete: true, Title: fmt.Sprintf("Change %d", number),
 					URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number), EventAt: &t1, CheckedAt: &now,
-					GitHubRead: true})
+					GitHubReadAt: &now})
 			}()
 			waitOn(t, aWaiting, "writer A's transaction")
 			time.Sleep(age)
@@ -312,7 +316,7 @@ func TestASnapshotThatLandsAfterANewerAnswerOfItsSecondIsReadAgain(t *testing.T)
 			if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{Repo: "acme/widgets", Number: number,
 				HeadSHA: head, HeadRef: branch, BaseRef: "main", State: "open", IssueKey: &issue,
 				AttributionSource: string(sourceBranch), AttributionComplete: true, EventAt: &earlier,
-				CheckedAt: &earlier, GitHubRead: true}); err != nil {
+				CheckedAt: &earlier, GitHubReadAt: &earlier}); err != nil {
 				t.Fatal(err)
 			}
 			intakeA, intakeB := newIntake(nil, pool, nil, client, nil, nil), newIntake(nil, pool, nil, client, nil, nil)
@@ -350,6 +354,105 @@ func TestASnapshotThatLandsAfterANewerAnswerOfItsSecondIsReadAgain(t *testing.T)
 				t.Errorf("after both answers and the reconcile's next pass the row is %s and its head is a basis = %v, want GitHub's open and a basis", got.State, basis)
 			}
 		})
+	}
+}
+
+// An answer whose read of GitHub started before the stored row's read never replaces that row
+// where the two carry the same updated_at second: GitHub's updated_at is whole seconds, so the
+// order the answers arrive in cannot tell which is the newer, and a read that started later holds
+// the later state: an older event does not replace a newer head.
+// The slow read is each of the three writers of a head row in turn: the intake, the reconcile's
+// refresh, and the read a result starts (ReadThroughCommitPulls). Its read takes GitHub's answer
+// at head A; GitHub then moves the pull request to head B in the same second, and the answer is
+// held. Meanwhile the intake reads the event of B and stores B; then the held answer A lands. The
+// row must hold B at once, not after a reconcile pass, and the read stays owed, the repair for
+// what no order can decide. The control lands A before the intake reads B, in head order. At
+// 3a21edb2c9 the answer that landed last won, so the row held A until the next pass, and a pass at
+// A stood 158 s and 214 s (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D2).
+func TestAnAnswerWhoseReadStartedEarlierNeverReplacesTheHeadOfItsSecond(t *testing.T) {
+	const repo = "acme/widgets"
+	for _, writer := range []struct {
+		name string
+		// commits is whether the slow read is GET /repos/{o}/{r}/commits/{sha}/pulls, and not the
+		// pull request's own read.
+		commits bool
+		read    func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, head string, second time.Time) error
+	}{
+		{name: "the_intake", read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, head string, second time.Time) error {
+			_, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil,
+				prEnvelope(repo, number, "synchronize", head, "feature/x", "", second))
+			return err
+		}},
+		{name: "the_reconcile", read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, _ string, _ time.Time) error {
+			_, err := RefreshPullRequestHead(ctx, pool, client, nil, nil, repo, number, time.Now())
+			return err
+		}},
+		{name: "the_read_a_result_starts", commits: true, read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, _ int, head string, _ time.Time) error {
+			_, _, err := ReadThroughCommitPulls(ctx, pool, client, nil, repo, head, time.Now())
+			return err
+		}},
+	} {
+		for _, slow := range []bool{true, false} {
+			t.Run(writer.name+map[bool]string{true: "_slow_read_of_the_older_head", false: "_in_head_order"}[slow], func(t *testing.T) {
+				fastPageRetries(t)
+				pool, ctx := deliveryTestPool(t)
+				const number = 88606
+				older, newer := fakeSHA("a", number), fakeSHA("b", number)
+				second := time.Now().UTC().Truncate(time.Second)
+				fake := newFakeGitHub(t)
+				github := serveGitHubPulls(t, fake, repo)
+				github.set(repo, number, "open", older, "feature/x", "", second)
+				taken, release := make(chan struct{}, 1), make(chan struct{})
+				// hold runs once the slow read's answer A is taken: GitHub moves to B in the same
+				// second, and the answer waits for release.
+				hold := func() {
+					github.set(repo, number, "open", newer, "feature/x", "", second)
+					taken <- struct{}{}
+					<-release
+				}
+				if writer.commits {
+					var once sync.Once
+					fake.handle("GET /repos/"+repo+"/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
+						github.mu.Lock()
+						answer := maps.Clone(github.pulls[number])
+						github.mu.Unlock()
+						once.Do(hold)
+						mustEncode(t, w, []any{answer})
+					})
+				} else {
+					github.holdFirst = hold
+				}
+				client := fake.newTestClient()
+				done := make(chan error, 1)
+				go func() { done <- writer.read(ctx, pool, client, number, older, second) }()
+				waitOn(t, taken, "the slow read's answer")
+				if !slow {
+					close(release)
+					if err := <-done; err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil,
+					prEnvelope(repo, number, "synchronize", newer, "feature/x", "", second)); err != nil {
+					t.Fatalf("the intake's read of the event of B: %v", err)
+				}
+				if slow {
+					close(release)
+					if err := <-done; err != nil {
+						t.Fatal(err)
+					}
+				}
+				got := readHead(t, ctx, pool, repo, number)
+				owed := owedCount(t, ctx, pool, repo, number)
+				t.Logf("writer=%s slow=%v head_after_both=%.12s owed_after_both=%d pull_reads=%d", writer.name, slow, got.HeadSHA, owed, github.reads.Load())
+				if got.HeadSHA != newer {
+					t.Errorf("after both answers of second %s the row holds %.12s, want B, %.12s: the answer of the read that started first replaced the newer head", second.Format(time.RFC3339), got.HeadSHA, newer)
+				}
+				if owed != 1 {
+					t.Errorf("after two answers of one second with two heads, %d reads are owed, want 1: the owed read is the repair for what no order can decide", owed)
+				}
+			})
+		}
 	}
 }
 

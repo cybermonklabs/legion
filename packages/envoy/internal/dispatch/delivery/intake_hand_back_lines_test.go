@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -31,18 +32,26 @@ import (
 
 // Each case is a fault that hands one envelope back and makes each of its deliveries write a
 // line before the hand-back decides, from another part of the path: the read of the owed read's
-// revision while the table is locked (D9's own), GitHub's 404 while the owed record cannot be
-// written (the line N2 of the review at def907052c moved), an attribution line before a head
-// write that fails, and the GitHub client's line for a shared rate limit it cannot read. The
-// envelope is handed back at least 32 times, so the cadence's second WARN delivery, the 31st, is
-// among them, and a delivery after it; then the fault ends and the envelope is acknowledged.
+// revision while the table is locked (D9's own), the same while GitHub answers 404, so that both
+// of the delivery's owes fail, an attribution line before a head write that fails, and the GitHub
+// client's line for a shared rate limit it cannot read. Since N2 of the review at def907052c a
+// 404 whose owe fails writes no line of its own before the hand-back's, so the 404 case has the
+// locked table's line to bound, without which it passed with the cadence taken out (N13 of the
+// review at 3a21edb2c9); the line N2 moved, written once after its owe, is
+// TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed's. The envelope is handed
+// back at least 32 times, so the cadence's second WARN delivery, the 31st, is among them, and a
+// delivery after it; then the fault ends and the envelope is acknowledged.
 //
 // The log is read at DEBUG and cut at each hand-back line, which a delivery writes last: the lines
-// before it are that delivery's. A line above DEBUG in a delivery outside the cadence fails the
-// test, whatever wrote it. Where the case's line is named, every delivery must have written it,
-// at its own level at the first, so the test sees the line it bounds; and the delivery that is
-// acknowledged must write its own line above DEBUG, so the test sees that a line is held to the
-// cadence only where its delivery hands the envelope back.
+// before it are that delivery's. So the envelope is published only once the intake's take-over of
+// its durable has ended in the log, and only the lines after that are read (awaitIntakeStarted):
+// the durable delivers as soon as it is created, before the take-over writes its own lines, and
+// under load its `NATS consumer bound` line was read as delivery 2's (2026-11-17). A line above
+// DEBUG in a delivery outside the cadence fails the test, whatever wrote it. Where the case's line
+// is named, every delivery must have written it, at its own level at the first, so the test sees
+// the line it bounds; and the delivery that is acknowledged must write its own line above DEBUG,
+// so the test sees that a line is held to the cadence only where its delivery hands the envelope
+// back.
 func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 	const number = 4216
 	for _, fault := range []struct {
@@ -66,12 +75,13 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 			},
 		},
 		{
-			name: "github_has_no_such_pull_request", cause: "status 404", final: "the read is owed, and the reconcile reads it again",
+			name: "github_has_no_such_pull_request_while_the_owed_table_is_locked", line: "read the revision of the read a pull request is owed",
+			cause: "status 404", final: "the read is owed, and the reconcile reads it again",
 			start: func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub, github *githubPulls) (*store.Pool, *githubapp.Client, func()) {
 				github.mu.Lock()
 				delete(github.pulls, number)
 				github.mu.Unlock()
-				return pool, fake.newTestClient(), refuseOwedReads(t, ctx, pool)
+				return poolWithLockTimeout(t, ctx, pool, 50*time.Millisecond), fake.newTestClient(), lockOwedReads(t, ctx, pool)
 			},
 		},
 		{
@@ -105,9 +115,6 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 	} {
 		t.Run(fault.name, func(t *testing.T) {
 			fastPageRetries(t)
-			redeliverAfter := headWriteRedeliverAfter
-			headWriteRedeliverAfter = 20 * time.Millisecond
-			t.Cleanup(func() { headWriteRedeliverAfter = redeliverAfter })
 			logs := captureLogsAt(t, slog.LevelDebug)
 			pool, ctx := deliveryTestPool(t)
 			issue := seedHeadIssue(t, ctx, pool, number)
@@ -119,25 +126,30 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 			intakePool, client, lift := fault.start(t, ctx, pool, fake, github)
 
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, intakePool, deliveryTestLeases(t, pool),
-				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+			intake := newIntake(natsClient, intakePool, deliveryTestLeases(t, pool),
+				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+			// This intake's own delay, so 32 hand-backs take a second, not five minutes.
+			intake.redeliverAfter = 20 * time.Millisecond
+			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
+			started := awaitIntakeStarted(t, logs)
+			deliveries := func() []map[string]any { return logs()[started:] }
 			publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
 				prEnvelope("acme/widgets", number, "opened", head, branch, body, at))
 			const handedBack = 32
 			waitFor(t, 3*time.Minute, func() bool {
-				return len(handBackSegments(logs())) >= handedBack
+				return len(handBackSegments(deliveries())) >= handedBack
 			}, func() string {
 				return fmt.Sprintf("the envelope was handed back %d times in 3 minutes, want %d: %+v",
-					len(handBackSegments(logs())), handedBack, deliveryConsumerInfo(t, natsClient))
+					len(handBackSegments(deliveries())), handedBack, deliveryConsumerInfo(t, natsClient))
 			})
 			lift()
 			awaitAcknowledged(t, natsClient)
 
-			records := logs()
+			records := deliveries()
 			segments := handBackSegments(records)
 			final := records[segments[len(segments)-1].end:]
-			t.Logf("hand-backs=%d lines=%d final_lines=%d", len(segments), len(records), len(final))
+			t.Logf("start_lines=%d hand-backs=%d lines=%d final_lines=%d", started, len(segments), len(records), len(final))
 			for i, segment := range segments {
 				due := segment.delivered%handBackLineEvery == 1
 				if want := i + 1; segment.delivered != want {
@@ -203,6 +215,36 @@ func handBackSegments(records []map[string]any) []handBackSegment {
 	return segments
 }
 
+// awaitIntakeStarted waits until the intake's take-over of its durable has ended in the log, and
+// answers how many records the log held then: the `NATS consumer bound` line, and after it the
+// consumer lease's `leased pass ran` line, which duty.Exclusive writes once the take-over returns.
+// awaitBoundDurable reads the server, where the durable delivers as soon as it is created, while
+// the take-over records its hold's token and writes those lines after (heldDurable.finishTakeOver).
+// So a test that judges a delivery's lines by their place in the log publishes only after this,
+// and reads only the records after the count: no line of the intake's start is a delivery's.
+func awaitIntakeStarted(t *testing.T, logs func() []map[string]any) int {
+	t.Helper()
+	lease := consumerLease(bus.DispatchDeliveryDurable)
+	started := 0
+	waitFor(t, 20*time.Second, func() bool {
+		bound := false
+		for i, record := range logs() {
+			message, _ := record["msg"].(string)
+			switch {
+			case message == "dispatch delivery: NATS consumer bound" && record["name"] == bus.DispatchDeliveryDurable:
+				bound = true
+			case bound && message == "dispatch duty: leased pass ran" && record["lease"] == lease:
+				started = i + 1
+				return true
+			}
+		}
+		return false
+	}, func() string {
+		return fmt.Sprintf("in 20 s the log holds no `NATS consumer bound` line of %s followed by the end of the %s pass", bus.DispatchDeliveryDurable, lease)
+	})
+	return started
+}
+
 // poolWithLockTimeout is a pool of pool's database whose sessions wait at most timeout for a lock,
 // so a statement on a table another session holds locked fails in that time, as it fails in a
 // second (owedRevisionReadTimeout) or five (owedReadWriteTimeout) on the intake's own pool.
@@ -226,24 +268,32 @@ func poolWithLockTimeout(t *testing.T, ctx context.Context, pool *store.Pool, ti
 // own, as a migration of the table holds it, until the function it answers ends the hold.
 func lockOwedReads(t *testing.T, ctx context.Context, pool *store.Pool) (release func()) {
 	t.Helper()
+	return holdOwedReads(t, ctx, pool, "lock table pull_request_reads_owed in access exclusive mode")
+}
+
+// holdOwedReads runs statement, a migration's statement on pull_request_reads_owed or its
+// revision sequence, in a transaction of a connection of its own, and holds the locks it takes
+// until the function it answers rolls the transaction back.
+func holdOwedReads(t *testing.T, ctx context.Context, pool *store.Pool, statement string) (release func()) {
+	t.Helper()
 	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig)
 	if err != nil {
-		t.Fatalf("connect to hold pull_request_reads_owed locked: %v", err)
+		t.Fatalf("connect to hold %q: %v", statement, err)
 	}
 	tx, err := conn.Begin(ctx)
 	if err == nil {
-		_, err = tx.Exec(ctx, "lock table pull_request_reads_owed in access exclusive mode")
+		_, err = tx.Exec(ctx, statement)
 	}
 	if err != nil {
-		t.Fatalf("lock pull_request_reads_owed: %v", err)
+		t.Fatalf("hold %q: %v", statement, err)
 	}
 	release = sync.OnceFunc(func() {
 		ended := context.WithoutCancel(ctx)
 		if err := tx.Rollback(ended); err != nil {
-			t.Errorf("end the lock of pull_request_reads_owed: %v", err)
+			t.Errorf("end the hold of %q: %v", statement, err)
 		}
 		if err := conn.Close(ended); err != nil {
-			t.Errorf("close the connection that held pull_request_reads_owed locked: %v", err)
+			t.Errorf("close the connection that held %q: %v", statement, err)
 		}
 	})
 	t.Cleanup(release)

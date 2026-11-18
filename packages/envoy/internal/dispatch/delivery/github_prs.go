@@ -495,7 +495,8 @@ const searchMergedPullRequestsWindow = githubResultCap
 // and a fresh (nil) cursor for every window walkWindowed asks for -- the original call and each
 // recursive half -- so GitHub's own cursor, not a REST page number, is this fetcher's only
 // pagination state. Each page asks token for its own installation token, by readGitHubPage's
-// rule; walkWindowed's error names the scope and the window, and each page's names its cursor.
+// rule; walkWindowed's error names the scope and the window, and each page's names its cursor,
+// which is GitHub's text and so shown to a body's bound (githubapp.ShownBody).
 func searchMergedPullRequests(ctx context.Context, client *githubapp.Client, token func() (string, error), repos, authors []string, since, until time.Time, visit func(time.Time, []FetchedPullRequest) error) error {
 	scope := searchScopeLabel(repos)
 	newFetcher := func(since, until time.Time) func() ([]FetchedPullRequest, int, error) {
@@ -504,7 +505,7 @@ func searchMergedPullRequests(ctx context.Context, client *githubapp.Client, tok
 		return func() ([]FetchedPullRequest, int, error) {
 			current, err := token()
 			if err != nil {
-				return nil, 0, fmt.Errorf("page after %q: mint installation token: %w", cursor, err)
+				return nil, 0, fmt.Errorf("page after %q: mint installation token: %w", githubapp.ShownBody(cursor), err)
 			}
 			result, err := fetchSearchPage(ctx, client, current, query, cursor)
 			if err != nil {
@@ -565,7 +566,8 @@ type searchPage struct {
 
 // fetchSearchPage runs one page of query, after cursor ("" for the first page), returning the
 // page's pull requests, its own pagination cursor, and the connection's total issueCount (the
-// 1,000-result cap walkWindowed checks).
+// 1,000-result cap walkWindowed checks). Its errors name the cursor, GitHub's endCursor of the page
+// before, as githubapp.ShownBody shows GitHub's text: an answer may hold a cursor of up to 1 MiB.
 func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query, after string) (searchPage, error) {
 	var variables map[string]any
 	if after == "" {
@@ -575,17 +577,17 @@ func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query
 	}
 	body, status, header, err := queryGitHubPage(ctx, client, token, searchPullRequestsQuery, variables)
 	if err != nil {
-		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
+		return searchPage{}, fmt.Errorf("page after %q (%s): %w", githubapp.ShownBody(after), pageAttemptsNote(), err)
 	}
 	if err := githubapp.CheckResponse(status, header, body); err != nil {
-		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
+		return searchPage{}, fmt.Errorf("page after %q (%s): %w", githubapp.ShownBody(after), pageAttemptsNote(), err)
 	}
 	var response searchPullRequestsResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return searchPage{}, fmt.Errorf("decode page after %q: %w", after, err)
+		return searchPage{}, fmt.Errorf("decode page after %q: %w", githubapp.ShownBody(after), err)
 	}
 	if len(response.Errors) > 0 {
-		return searchPage{}, fmt.Errorf("page after %q: %s", after, response.Errors[0].Message)
+		return searchPage{}, fmt.Errorf("page after %q: %s", githubapp.ShownBody(after), githubapp.ShownBody(response.Errors[0].Message))
 	}
 	items := make([]FetchedPullRequest, 0, len(response.Data.Search.Nodes))
 	for _, node := range response.Data.Search.Nodes {

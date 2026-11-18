@@ -2,9 +2,9 @@ package delivery
 
 // What ends a refusal the reconcile reads, and what a pass spends on refusals: the one answer of
 // GitHub that settles a refusal (pullRequestAbsent), and the pass's lookups of each repository's
-// installation (passInstallations). R4 of dispatch://INFRA-3992: "One answer of GitHub can show
-// that a repository is readable and that it holds no such pull request. That answer is a read that
-// succeeded, and Dispatch keeps nothing for that number."
+// installation (passInstallations). One answer of GitHub can show that a repository is readable
+// and that it holds no such pull request; that answer is a read that succeeded, and Dispatch keeps
+// nothing for that number.
 
 import (
 	"context"
@@ -122,7 +122,7 @@ func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *p
 // on a repository is asked of GitHub again at every read, each one signed by the App JWT under the
 // App's own budget, which every token mint shares (githubapp.AppScope). A pass reads up to
 // RefusedReadsPerPass owed rows, and any bearer of Envoy's /v1 publish route can owe rows of a
-// repository the App is not installed on (dispatch://INFRA-3911). So the first read of a
+// repository the App is not installed on. So the first read of a
 // repository in a pass looks its installation up, the reads of it beside that one wait for that
 // answer, and a repository the App is not installed on costs the pass no further call: each of its
 // rows is read as the refusal it is, and stays owed. It is a memory of work and nothing more: it

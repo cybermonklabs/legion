@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -271,34 +272,43 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 	}
 }
 
-// HeadStoredAt compares the repository without case, and the two spellings meet here: a row the
+// OpenHeadAt compares the repository without case, and the two spellings meet here: a row the
 // intake writes carries GitHub's own spelling of the repository, from the envelope's
 // `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling the
 // repository-to-project mapping stores (api/results_comparison.go, comparisonReader.repositoryOf).
 // An exact comparison would answer "no row" for every repository whose owner writes their name
 // with capitals, and the read would spend a GitHub call on each commit Dispatch already holds
-// the pull request for. Another repository's row is still another repository's: the case is all
-// that is forgiven.
-func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
+// the open pull request for. Another repository's row is still another repository's: the case is
+// all that is forgiven. An open row answers whatever issue it credits; a merged row answers no.
+func TestOpenHeadAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	const sha = "cccccccccccccccccccccccccccccccccccccccc"
-	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
-		Repo: "Acme/Widgets", Number: 41, HeadSHA: sha, HeadRef: "legion/x", BaseRef: "main",
-		State: "open", AttributionSource: string(sourceNone),
-		Title: "HEAD-41 the work", URL: "https://github.com/Acme/Widgets/pull/41",
-	}); err != nil {
-		t.Fatalf("store a head row under GitHub's spelling of the repository: %v", err)
+	issue := seedHeadIssue(t, ctx, pool, 41)
+	const open, merged = "cccccccccccccccccccccccccccccccccccccccc", "dddddddddddddddddddddddddddddddddddddddd"
+	for _, row := range []struct {
+		number int
+		sha    string
+		state  string
+	}{{41, open, "open"}, {42, merged, "merged"}} {
+		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: "Acme/Widgets", Number: row.number, HeadSHA: row.sha, HeadRef: "legion/x", BaseRef: "main",
+			State: row.state, IssueKey: &issue, AttributionSource: string(sourceTitleBody), AttributionComplete: true,
+			Title: issue + " the work", URL: fmt.Sprintf("https://github.com/Acme/Widgets/pull/%d", row.number),
+		}); err != nil {
+			t.Fatalf("store a head row under GitHub's spelling of the repository: %v", err)
+		}
 	}
-
-	stored, err := HeadStoredAt(ctx, pool, "acme/widgets", sha)
-	if err != nil || !stored {
-		t.Fatalf("HeadStoredAt(acme/widgets) = %v, %v; want true: the row is that repository's, spelt as GitHub spells it",
-			stored, err)
-	}
-	elsewhere, err := HeadStoredAt(ctx, pool, "acme/gadgets", sha)
-	if err != nil || elsewhere {
-		t.Fatalf("HeadStoredAt(acme/gadgets) = %v, %v; want false: another repository's commit is not this one's",
-			elsewhere, err)
+	for _, ask := range []struct {
+		repo, sha string
+		want      bool
+	}{
+		{"acme/widgets", open, true},
+		{"acme/widgets", merged, false},
+		{"acme/gadgets", open, false},
+	} {
+		kept, err := OpenHeadAt(ctx, pool, ask.repo, ask.sha)
+		if err != nil || kept != ask.want {
+			t.Errorf("OpenHeadAt(%s, %.4s) = %v, %v; want %v", ask.repo, ask.sha, kept, err, ask.want)
+		}
 	}
 }
 
@@ -787,7 +797,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 }
 
 // A merged row credited to nobody that no read has reached is attributed by the next reconcile
-// pass, and by that pass alone. A build before dispatch://INFRA-3992 left such rows: it wrote a
+// pass, and by that pass alone. A build before this change left such rows: it wrote a
 // merge from an envelope a publisher older than head_repo made, which could not show the head to
 // be this repository's. The envelope's handler now reads the pull request from GitHub, whose
 // answer always names head.repo, so no envelope leaves such a row any more, but the rows already
@@ -1505,8 +1515,8 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 // A hand-back with a delay leaves the message in the consumer's ack-pending set until it is
 // redelivered, so an envelope handed back without end holds one of the four in-flight slots
 // (intakeMaxAckPending) for the life of the process, and four of them stop the intake being
-// given anything at all; the owed read is what keeps the pull request (R4 of
-// dispatch://INFRA-3992), and the reconcile reads it every pass.
+// given anything at all; the owed read is what keeps the pull request, and the reconcile reads it
+// every pass.
 //
 // Driven as the hand-back's own test drives it: branch_commits is away, so the transaction
 // that writes a merge's head row and its branch seed together rolls back at every delivery and
@@ -1570,15 +1580,15 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *tes
 // name and the attribution's candidates — and in a connection-level outage those are the reads
 // that fail first; the head row of a new pull request is lost whichever step lost it, since no
 // reconcile pass offers a row that was never written. So ErrHeadNotStored marks every failure
-// of that path that making the same attempt again may get past (markHeadNotStored).
+// of that path (markHeadNotStored).
 //
-// The one failure it leaves unmarked is here too, since what the sentinel is worth is in the
-// line it draws. A repository name that is not `owner/repo` never reaches markHeadNotStored at
-// all: recordPullRequestHead checks the canonical name for itself, before any read of GitHub
-// (checkPullRequestKey), and returns that failure bare, which is the line this case covers; every
-// redelivery of the envelope carries the same name. A rate limit is marked, and keeps GitHub's wait
+// A canonical name that names no pull request GitHub can have is marked too, though no redelivery
+// mends it: the envelope's own name was checked before this runs (pullRequestNamed), so deliver
+// owes the read under that name, and the reconcile reads it once an operator corrects the stored
+// rename target. Left bare, it ended the envelope with nothing owed (acceptance of
+// cybermonklabs/legion#4209 at 3a21edb2c9, D1). A rate limit is marked, and keeps GitHub's wait
 // inside the mark, so the line deliver logs as it owes the read names the limit.
-func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(t *testing.T) {
+func TestEveryFailureOfTheReadsBeforeAHeadWriteIsMarked(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
 	in := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil)
@@ -1596,17 +1606,15 @@ func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(
 			err, ErrHeadNotStored)
 	}
 
-	malformed := map[string]string{
-		"kind": "pr", "action": "opened", "repo": "widgets", "number": "9103",
-		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "widgets",
+	const old = "acme/legacy-9103"
+	renameRepository(t, ctx, pool, old, "acme/"+strings.Repeat("x", 101))
+	renamed := map[string]string{
+		"kind": "pr", "action": "opened", "repo": old, "number": "9103",
+		"head_sha": landedCommit, "head_ref": "legion/ACME-1691", "head_repo": old,
 	}
-	_, err := in.recordPullRequestHead(ctx, malformed, 9103)
-	switch {
-	case err == nil:
-		t.Fatal("recording a head under a repository name that is not owner/repo = nil, want that name's error")
-	case errors.Is(err, ErrHeadNotStored):
-		t.Fatalf("the split recordPullRequestHead makes for itself was marked %v, want it left bare: the next delivery of the envelope carries the same name",
-			ErrHeadNotStored)
+	if _, err := in.recordPullRequestHead(ctx, renamed, 9103); !errors.Is(err, ErrHeadNotStored) {
+		t.Fatalf("recording a head of %s, whose stored rename target names no pull request GitHub can have, = %v, want it marked %v so deliver owes the read under %s",
+			old, err, ErrHeadNotStored, old)
 	}
 
 	limited := &githubapp.RateLimitError{Status: http.StatusForbidden, Wait: time.Minute}

@@ -62,7 +62,7 @@ import (
 // first. 2 is the order above, with the two links and the head branch over the title and the
 // body. 3 is that order judged on GitHub's own answer about the pull request alone: under 2 the
 // `pull_request` envelope's writer attributed a row from the envelope's title, body and branch,
-// which a caller sets, and wrote its head and state from it too (dispatch://INFRA-3992), so every
+// which a caller sets, and wrote its head and state from it too, so every
 // merged row stored before 3 is read from GitHub once more. 0 is also what the trigger
 // pull_request_heads_unread_write gives a row a write of no GitHub read changed, so that row is
 // read once more too.

@@ -1,8 +1,8 @@
 package delivery
 
-// Which stored time a read of GitHub may trust: only one that a read of GitHub wrote
-// (dispatch://INFRA-3992, R2: the head and the state of a pull request come from a read of
-// GitHub). A release before that change wrote a row's head, state and updated_at from a
+// Which stored time a read of GitHub may trust: only one that a read of GitHub wrote (the head
+// and the state of a pull request come from a read of GitHub). A release before that change wrote
+// a row's head, state and updated_at from a
 // `pull_request` envelope, whose fields a caller sets, and a rolling deploy runs that release
 // beside this one on one database, so it can still write such a row after the migration has run.
 // Such a row must stop no read of GitHub and win against none of GitHub's answers.
@@ -80,7 +80,7 @@ func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
 	}
 }
 
-// releaseBeforeUpsertHeadRow is upsertHeadRow as the release before dispatch://INFRA-3992 runs
+// releaseBeforeUpsertHeadRow is upsertHeadRow as the release before this change runs
 // it, word for word (main at 5bd14c323bdf): it names no column it does not know, so it leaves
 // whatever else the row holds as it was, and it orders its own writes by the time it is handed.
 // That release handed it an envelope's updated_at, head and state.

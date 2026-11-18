@@ -28,8 +28,10 @@ import (
 // (renamedFrom) read the repository's canonical name from repo_projects, which a target stored
 // before the settings route held it to the name rule (api's parseRepoRename), or by direct SQL,
 // holds to nothing, so that name is checked where the row is built too: a rename to a name of 101
-// characters, or of 3,500, which the btree of the owed table refused (SQLSTATE 54000), is refused
-// there, and the head row of it as well.
+// characters, or of 3,500, which the btree of the owed table refused (SQLSTATE 54000), reaches no
+// statement. The read is owed under the name given, which the check takes, so the reconcile reads
+// it once the target is corrected (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D1), and
+// the head row of the refused name is refused where it is built.
 func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const (
@@ -105,8 +107,11 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 				what string
 				err  error
 				rows int
-			}{{"owed read", oweErr, owed}, {"head row", headErr, heads}} {
-				if takes {
+				// takes is whether the check takes the row's name: an owed read of a renamed
+				// repository is stored under the name given where the canonical one is refused.
+				takes bool
+			}{{"owed read", oweErr, owed, takes || row.renamedFrom != ""}, {"head row", headErr, heads, takes}} {
+				if write.takes {
 					if write.err != nil || write.rows != 1 {
 						t.Errorf("the check takes %.50q#%d, and its %s was not stored (%d rows written): %v", row.repo, row.number, write.what, write.rows, write.err)
 					}
@@ -115,6 +120,12 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 				var postgres *pgconn.PgError
 				if !errors.Is(write.err, errNoPullRequestNamed) || errors.As(write.err, &postgres) || write.rows != 0 {
 					t.Errorf("the check refuses %.50q#%d (%s), and its %s was not refused where it was built, before any statement: %d rows written, error %v", row.repo, row.number, row.bound, write.what, write.rows, write.err)
+				}
+			}
+			if row.renamedFrom != "" && !takes {
+				var under string
+				if err := pool.QueryRow(ctx, `select repo from pull_request_reads_owed where number = $1`, row.number).Scan(&under); err != nil || under != row.renamedFrom {
+					t.Errorf("the read of %s#%d, renamed to the refused %.50q, is owed under %q (%v), want under the name given, %s", row.renamedFrom, row.number, row.repo, under, err, row.renamedFrom)
 				}
 			}
 		})
