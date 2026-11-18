@@ -23,12 +23,14 @@ afterEach(() => {
   }
 });
 
+/** A store of `clientId`, keyed: the id is known when it opens, and its last row has been read. */
 async function open(artifact: string, clientId: number): Promise<PendingEdits> {
   const store = await openPendingEdits(artifact, clientId);
   if (store === undefined) {
     throw new Error("fake-indexeddb refused to open");
   }
   opened.push(store);
+  await store.keyed;
   return store;
 }
 
@@ -171,6 +173,36 @@ test("a client reopened on a document continues after its last sequence number",
   const after = await open(artifact, 31);
 
   expect(after.record(edit(31, "c")).seq).toBe(3);
+});
+
+// A page learns the client id it writes under from its document socket's first frame
+// (`connection.ts`), and names the edits saved here before any socket has answered.
+test("a store opened before its client id is known reads every client's rows at once, and keeps its own under the id once it comes", async () => {
+  const artifact = artifactId();
+  const earlier = await open(artifact, 51);
+  await Promise.all(edits(51, ["a", "b"]).map((update) => earlier.record(update).written));
+  const given = Promise.withResolvers<number>();
+  const store = await openPendingEdits(artifact, given.promise);
+  if (store === undefined) {
+    throw new Error("fake-indexeddb refused to open");
+  }
+  opened.push(store);
+
+  expect(await store.count()).toBe(2);
+  expect(await keysOf(store)).toEqual([
+    [artifact, 51, 1],
+    [artifact, 51, 2],
+  ]);
+  expect(() => store.record(edit(52, "c"))).toThrow("no client id");
+
+  given.resolve(52);
+  await store.keyed;
+  await store.record(edit(52, "c")).written;
+  expect(await keysOf(store)).toEqual([
+    [artifact, 51, 1],
+    [artifact, 51, 2],
+    [artifact, 52, 1],
+  ]);
 });
 
 test("deleting a document's edits removes every client's rows and no other document's", async () => {

@@ -1305,6 +1305,23 @@ test("a reloaded page replays a row an earlier page saved under the client id th
   });
 });
 
+// A reload while the network is down: the page's socket is never answered, so the page never
+// learns the client id it would write under, and it still names the edits an earlier page saved
+// in this browser ("1 edit saved in this browser, not sent yet.", `pendingNotice`).
+test("a page whose socket has not answered names the edits an earlier page saved in this browser", async () => {
+  const artifact = artifactId();
+  await savedChanges(artifact, serverWith("shared", 100), (browser) => typeInto(browser, " saved"));
+  await withProvider(artifact, async ({ pending, socket }) => {
+    // The provider has written its first frames, and the test, as the server, answers none.
+    await socket(0);
+    await waitFor(() =>
+      expect(pending).toEqual([
+        { count: 1, readOnly: false, rebuiltAt: undefined, stored: true, unsent: false },
+      ])
+    );
+  });
+});
+
 // A refusal of a replayed row as under another person's client id: what a reloaded tab of the
 // build before client ids meets when someone claimed its id first (client_ids.go, claimClients).
 // Every saved row under the refused id goes at once, and the host is told how many; a row another

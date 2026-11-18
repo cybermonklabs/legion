@@ -243,6 +243,8 @@ async function recordDocumentSockets(page: Page): Promise<() => Promise<Document
     };
   });
   return async () => {
+    // The init script sets this record before the page's own code runs, so a page loaded after
+    // it was installed holds it from its first instant and one loaded before never will.
     const record = await page.evaluate(() => {
       const recorded = window.documentSockets;
       return recorded === undefined
@@ -277,6 +279,8 @@ function updateOf(frame: Uint8Array): Uint8Array {
  * frames cross from the page once, here, as base64, and are decoded on this side, where Yjs is.
  */
 async function replacedHistoryHandoffs(page: Page, from: number): Promise<number[]> {
+  // One instant's record is what this reads: its callers have waited for what these frames
+  // caused, and the init script's record is there from the page's first instant or never.
   const frames = await page.evaluate((first) => {
     const record = window.documentSockets;
     if (record === undefined) {

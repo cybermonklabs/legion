@@ -54,12 +54,14 @@ export function closeStores(): void {
   }
 }
 
+/** A store of `clientId`, keyed: the id is known when it opens, and its last row has been read. */
 export async function storeFor(artifact: string, clientId: number): Promise<PendingEdits> {
   const store = await openPendingEdits(artifact, clientId);
   if (store === undefined) {
     throw new Error("fake-indexeddb refused to open");
   }
   openStores.push(store);
+  await store.keyed;
   return store;
 }
 

@@ -103,6 +103,7 @@ test("ProofDocument removes locally saved edits only when its artifact is gone",
   if (stored === undefined) {
     throw new Error("fake-indexeddb refused to open");
   }
+  await stored.keyed;
   await stored.record(Uint8Array.of(0)).written;
   stored.close();
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
@@ -124,6 +125,7 @@ test("ProofDocument keeps locally saved edits when another 404 blocks admission"
   if (stored === undefined) {
     throw new Error("fake-indexeddb refused to open");
   }
+  await stored.keyed;
   await stored.record(Uint8Array.of(0)).written;
   stored.close();
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(

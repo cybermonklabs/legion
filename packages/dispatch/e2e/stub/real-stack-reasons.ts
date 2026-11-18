@@ -87,6 +87,8 @@ export const realStackReasons: Record<string, string> = {
     "unresponsive, takeable and a second agent's refusal are server decisions",
   "claim.e2e.ts":
     "a claim is taken, refused and released by the server, and the page reads back what it decided",
+  "client-ids.e2e.ts":
+    "the client id is minted by the document socket's admission, stored with the person and given back to the socket that presents it; the row reads what the live room relays and what a settled version holds under it",
   "close-withdraws-asks.e2e.ts":
     "close withdraws asks server-side, then reopen and version history are re-read",
   "closed-issue-posting.e2e.ts": "posts on a closed issue and asserts the server accepted them",

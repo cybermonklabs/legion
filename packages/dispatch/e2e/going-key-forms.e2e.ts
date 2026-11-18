@@ -26,8 +26,13 @@ async function seedProject(project: string): Promise<string> {
 }
 
 /** Opens the bar with `/`. Its rows are this page's actions and the person's recent items as
- *  well as the hits, so the checks below count the hits by their own ids. */
+ *  well as the hits, so the checks below count the hits by their own ids.
+ *
+ *  The press waits for the shell's own Search button first: until `/auth/whoami` answers the page
+ *  is the loading skeleton, which binds no `/`, so a press made then is lost and the bar never
+ *  opens - how this row failed on run 44333064387, its `/` 56 ms before whoami answered. */
 async function openSearch(page: Page): Promise<void> {
+  await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("/");
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();

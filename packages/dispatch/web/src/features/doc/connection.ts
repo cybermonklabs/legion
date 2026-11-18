@@ -619,14 +619,11 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       doc,
       onChange: callbacks.onPending,
       remoteOrigin: provider,
-      // The saved rows are keyed by the id this document writes under, which its first socket
-      // gives it; no edit is typed before then, since the editor is made only once that socket
-      // has synced (`onSynced`). A browser with no IndexedDB keeps no rows under any id, and says
-      // so as the connection starts rather than once a socket has answered.
-      store:
-        globalThis.indexedDB === undefined
-          ? Promise.resolve(undefined)
-          : clientId.promise.then((id) => openPendingEdits(artifactId, id)),
+      // The store opens at once, so the rows earlier pages saved are named while no socket has
+      // answered yet - a reload with the network down shows them. The rows this document saves
+      // are keyed by the id it writes under, which its first socket gives it; no edit is typed
+      // before then, since the editor is made only once that socket has synced (`onSynced`).
+      store: openPendingEdits(artifactId, clientId.promise),
     });
     void websocket.connect();
     return {

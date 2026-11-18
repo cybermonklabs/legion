@@ -214,6 +214,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/claim-refilling.e2e.ts` | the claim's lapse is the server's judgement against the agent list |
 | `e2e/claim-unresponsive.e2e.ts` | unresponsive, takeable and a second agent's refusal are server decisions |
 | `e2e/claim.e2e.ts` | a claim is taken, refused and released by the server, and the page reads back what it decided |
+| `e2e/client-ids.e2e.ts` | the client id is minted by the document socket's admission, stored with the person and given back to the socket that presents it; the row reads what the live room relays and what a settled version holds under it |
 | `e2e/close-withdraws-asks.e2e.ts` | close withdraws asks server-side, then reopen and version history are re-read |
 | `e2e/closed-issue-posting.e2e.ts` | posts on a closed issue and asserts the server accepted them |
 | `e2e/code-line-replace.e2e.ts` | typing in the live document editor |

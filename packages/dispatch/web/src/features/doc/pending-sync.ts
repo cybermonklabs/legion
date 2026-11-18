@@ -499,10 +499,13 @@ export function startPendingSync({
     };
     recorded.push(entry);
     entry.written = ready
-      .then((edits) => {
+      .then(async (edits) => {
         if (edits === undefined) {
           return;
         }
+        // The store counts and reads from the moment it opens, and keys a row only once it knows
+        // the client id this document writes under (`PendingEdits.keyed`).
+        await edits.keyed;
         const row = edits.record(update);
         entry.seq = row.seq;
         recordedThrough = row.seq;
