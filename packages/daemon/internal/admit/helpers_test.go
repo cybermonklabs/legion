@@ -165,8 +165,8 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // package's own helpers are. A start that names no phase is no phase worker's — the architect
 // start promotion makes, the production check's look — and is left in. A step record is written
 // beside the rows of each start and end of a step, and the tests of those sites read it exactly
-// (workflow's step_sites_test.go, and step_records_test.go here for admission's own sites), so
-// every row of any other kind is still compared here.
+// (workflow's step_sites_test.go and step_sites_linger_test.go, and step_records_test.go here for
+// admission's own sites), so every row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
 // which the transition raised on the role's phases row: the record counts the entries a role has

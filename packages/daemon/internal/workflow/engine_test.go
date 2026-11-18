@@ -848,8 +848,8 @@ func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 // assertOutboxKinds is every row the transition left, by kind and in the order it wrote them. A
 // phase worker's start is one of them: one row, which carries the task (StartOrOwe). A step record
 // is left out: each start and end of a step writes one beside the move's own rows, and the tests
-// of the step sites (step_sites_test.go) read those rows exactly (stepWrites), so every row of
-// any other kind is still compared here.
+// of the step sites (step_sites_test.go, step_sites_linger_test.go) read those rows exactly
+// (stepWrites), so every row of any other kind is still compared here.
 func assertOutboxKinds(t *testing.T, pool *pgxpool.Pool, want []string) {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select kind from outbox where kind <> $1 order by id`, string(record.OutboxKindStepRecord))

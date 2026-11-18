@@ -238,8 +238,8 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 // worker's start is one row and carries its task (StartOrOwe); a child's own architect's plain
 // start carries none (gateOpened, reviveArchitect), and the task-less starts admission brings back
 // are written in internal/admit, never here. A step record is left out: the tests of the step sites
-// (step_sites_test.go) read those rows exactly (stepWrites), so every row of any other kind is
-// still counted here.
+// (step_sites_test.go, step_sites_linger_test.go) read those rows exactly (stepWrites), so every
+// row of any other kind is still counted here.
 func queuedKinds(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select kind from outbox where kind <> $1`, string(record.OutboxKindStepRecord))
