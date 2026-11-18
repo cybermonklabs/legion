@@ -362,6 +362,10 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = r.paneEnvironment(variables, workDir)
+	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
+	if spec.ResumeSessionFile != "" {
+		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"=1")
+	}
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	// Its own process group: one signal ends the shim, Oh My Pi and whatever Oh My Pi started.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
