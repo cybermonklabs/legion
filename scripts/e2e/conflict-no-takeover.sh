@@ -17,7 +17,8 @@
 # this script builds with `-tags e2e`). Each check prints `== <name>`, what it observed and
 # `ok <name>`; the first that fails ends the run non-zero, naming it.
 #
-# Run it from a checkout on a Linux host with go, awk and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/conflict-no-takeover.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on — CI's

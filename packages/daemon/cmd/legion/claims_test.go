@@ -1086,8 +1086,8 @@ func TestClaimsWithoutAKnownSubcommandIsAUsageError(t *testing.T) {
 		args []string
 		want string
 	}{
-		{nil, subcommandUsage("claims", claimsCommands)},
-		{[]string{"frobnicate"}, `legion claims: unknown subcommand "frobnicate"`},
+		{nil, "legion claims [command]"},
+		{[]string{"frobnicate"}, `legion claims: unknown command "frobnicate" for "legion claims"`},
 	} {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), append([]string{"legion", "claims"}, testCase.args...), &out, &errb)

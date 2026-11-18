@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // signInTimeout bounds a whole sign-in, the person's walk to another device included. The device
@@ -125,7 +126,9 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	if err := brokerclient.SignIns(homeGetenv).Write(record); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, record.EnrollmentID)
+	// The enrollment is the broker's, so it prints on one line (redact.OneLine); the record
+	// keeps it as it came. The person is the one Google's identity token names.
+	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, redact.OneLine(record.EnrollmentID))
 	return nil
 }
 

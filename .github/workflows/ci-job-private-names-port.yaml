@@ -59,7 +59,7 @@ env:
 
 jobs:
   private-names-port:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The harness takes 71 s on a machine whose Go build cache is warm, the build of ./cmd/legion
     # included (measured here, dispatch://INFRA-1413). This job restores no cache, so every run
     # compiles that command's 1,217 packages from nothing; 20 minutes is many times the cold

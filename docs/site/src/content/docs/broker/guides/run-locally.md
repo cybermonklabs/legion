@@ -495,7 +495,7 @@ $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP --github-owner acme-org --github-token -- sh -c 'printf "%s characters, starting %s\n" "${#DEMO_GITHUB_APP}" "${DEMO_GITHUB_APP%%_*}"'
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-20 characters, starting ghs
+22 characters, starting ghs
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 6
 broker_policy_store_reads_total{read="list"} 6
@@ -531,11 +531,13 @@ airlock needs: `cmd/dev-airlock-stands`, which serves the stand-in services and 
 request each one is sent; a rules file (`BROKER_AIRLOCK_RULES_FILE`) and a fake secrets file that
 name the same secrets; two broker processes on one database, each with an API port and a proxy
 port of its own, behind one TCP front over both API ports and one over both proxy ports; one
-enrolled pod session, whose key directory the exports name; and the model judge on both brokers
-([let the judge decide a request](#let-the-judge-decide-a-request)). Run it in place of
-`dev-broker.sh`, from `packages/envoy`, and set the same `DEV_BROKER_POSTGRES_URL` where you have
-no Docker. Each bound host listens on port 443 of a loopback address of its own (127.0.0.2 and
-up), so the machine must let this user bind 443, and one such stack runs at a time.
+enrolled pod session, whose key directory the exports name and whose lease an
+`agent-secrets renew` keeps alive for as long as the stack runs, as a Legion worker pod's is; and
+the model judge on both brokers ([let the judge decide a request](#let-the-judge-decide-a-request)).
+Run it in place of `dev-broker.sh`, from `packages/envoy`, and set the same
+`DEV_BROKER_POSTGRES_URL` where you have no Docker. Each bound host listens on port 443 of a
+loopback address of its own (127.0.0.2 and up), so the machine must let this user bind 443, and
+one such stack runs at a time.
 
 This run used the same Postgres server as the first section. The lines `dev-broker.sh` prints are
 the ones that section shows, and are cut here:

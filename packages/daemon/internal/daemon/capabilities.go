@@ -24,7 +24,7 @@ import (
 // that reserve no CPU and memory (config.Reservation.Reserved) and the pods that request less cpu
 // or memory than their limit (config.Reservation.Burstable) — the issue pod, and the controller's
 // pod when the daemon launches it. What boot learns (the broker login, the probe, model fallback)
-// is the supervision's to add (supervision.deployment); `legion start --check-config` reports from
+// is the supervision's to add (supervision.deployment); `legion config check` reports from
 // this alone.
 func Deployment(cfg config.Config) capabilities.Deployment {
 	d := capabilities.Deployment{Decided: cfg.Capabilities.Decided, Runtime: cfg.Runtime.Name}

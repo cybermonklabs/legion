@@ -28,11 +28,13 @@ body: |-
   the revocation for good, the claim records it no longer, logs that at Error, and the process
   renews it until it stops), and the daemon publishes nothing to its Envoy role, whatever the
   claim's state, or, for the daemon's own controller, the controller topic, and sends it no task
-  and no compaction. The process runs on under the session, and the Envoy listener does not yet
-  withhold the role its session claimed, so a message another session sends to that role reaches
-  the session until it ends. With no process registering the session id, the listener frees the
-  role at the role reaper's first pass after the session's record is gone and the role claim's
-  last renewal is a live window old: at most `max(min(ENVOY_SESSION_MAX_AGE,
+  and no compaction. The daemon sends no clean stop of such a claim's Envoy session either, when
+  the boot suspends it or its process dies, since the registration under that id can be the live
+  process of the claim that holds it. The process runs on under the session, and the Envoy
+  listener does not yet withhold the role its session claimed, so a message another session sends
+  to that role reaches the session until it ends. With no process registering the session id, the
+  listener frees the role at the role reaper's first pass after the session's record is gone and
+  the role claim's last renewal is a live window old: at most `max(min(ENVOY_SESSION_MAX_AGE,
   ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL` after
   the last registration, ten minutes with the defaults and about 65 minutes where the session
   bucket keeps records past the gone horizon, and later across a listener restart or a reaper

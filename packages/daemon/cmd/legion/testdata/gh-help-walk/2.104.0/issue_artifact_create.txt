@@ -1,0 +1,58 @@
+Create one artifact for each file or URL. A text file becomes a document
+named after the file; add `#<name>` to choose a different name. A `.html` or
+`.htm` file becomes an HTML document. A URL, or a `.url` Internet Shortcut
+file, becomes a link; a URL is named after its host.
+
+Artifact names can't contain some characters, such as parentheses. When a
+file's name has them, they're removed: `plan (1).md` is named `plan 1.md`.
+
+Use `--body` to create a single document from text, or `--body-file` to create
+one artifact from a file (`-` reads standard input). `--name` sets its name.
+
+Documents are saved as `generic`, and HTML documents as `embedded_html`. Use
+`--type` to set the type of every document instead, whatever the file
+extension. A plan currently behaves the same as a generic document.
+
+
+USAGE
+  gh issue artifact create {<issue-number> | <issue-url>} [<file>[#<name>] | <url>]... [flags]
+
+ALIASES
+  gh issue artifact new
+
+FLAGS
+      --attach file      Attach an image or video file, in '<file>#<image alt text>' format
+  -b, --body string      Content for a single document
+  -F, --body-file file   Read content for a single artifact from file (use "-" to read from standard input)
+      --name string      Name for a single artifact
+      --type string      Type for documents: {generic|plan|embedded_html}
+
+INHERITED FLAGS
+      --help[=true|false]        Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+
+EXAMPLES
+  # Create a document from a file
+  $ gh issue artifact create 142 signin-plan.md
+  
+  # Create documents from two files, naming the first
+  $ gh issue artifact create 142 'docs/signin-plan.md#Sign-in plan' oauth-research.md
+  
+  # Create an HTML document from a file
+  $ gh issue artifact create 142 menu-prototype.html
+  
+  # Create a link with a name
+  $ gh issue artifact create 142 https://github.com/monalisa/monas-cafe/wiki/OAuth-runbook --name 'Staging OAuth runbook'
+  
+  # Create a document from standard input
+  $ cat order-sync.log | gh issue artifact create 142 --body-file - --name 'Order sync log'
+  
+  # Upload an image that the document references
+  $ gh issue artifact create 142 signin-plan.md --attach ./signin-flow.png
+
+LEARN MORE
+  Use `gh <command> <subcommand> --help` for more information about a command.
+  Read the manual at https://cli.github.com/manual
+  Learn about exit codes using `gh help exit-codes`
+  Learn about accessibility experiences using `gh help accessibility`
+
