@@ -39,21 +39,27 @@
 // their pull requests, gates, slots and lifecycles are written through the store, as part one
 // writes them. Each role the run seeds is then started through the daemon's own start path, by
 // the function part one's seed starts its claims with (startRoles): a root's architect as
-// admission's promotion starts it (workflow.Engine.StartArchitect), and a member's phase worker as
-// the promotion of a mid-phase member starts it (Engine.StartPromotedWorker). Each start raises its
-// role's entry on the role's phases row. A worker's raise also writes its issue's holder row of the
-// told record, from the gate the seed wrote (record.Store.BaselineTold). Each claim is a launch the
-// daemon before the boot began and never recorded, which the boot relaunches. That daemon's outbox
-// ran each start, so the seed takes the start's row off the queue and writes the claim as the
-// start leaves it: given the start's entry. A role whose step needs a task of its own
-// (holderStart, reviewerStart) holds that task at that entry, in place of the start's own resume
-// task. A root architect took its start's task before the boot, and holds none. A root's
-// architect row of the told record comes from its tree's first opening, which the seed does not
-// run, so the seed writes it by hand and checks it against the row that opening writes. Before the
-// boot the seed checks each claim by part one's rule (standAtTheirEntries): it stands at an entry
-// of 1 or more of its role's phases row, given that entry, and it holds its task at that entry. A
-// seed that differs fails the run's harness before any pane starts, and the failure names the
-// claim or the row, the field and both values.
+// admission's promotion starts it (workflow.Engine.StartArchitect), a child's own architect as the
+// child's first phase start starts it for every child the daemon starts (Engine.StartFirstPhase,
+// which queues the plain start workflow's childArchitectStart builds), and a member's phase worker
+// as the promotion of a mid-phase member starts it (Engine.StartPromotedWorker). Each start of a
+// root's architect or a worker raises its role's entry on the role's phases row; the plain start
+// of a child's own architect raises none and carries no task. A worker's raise also writes its
+// issue's holder row of the told record, from the gate the seed wrote (record.Store.BaselineTold).
+// Each claim is a launch the daemon before the boot began and never recorded, which the boot
+// relaunches. That daemon's outbox ran each start, and every other row a child's first phase start
+// queued (the row that creates its branch, the notices of its move into planning), so the seed
+// takes those rows off the queue and writes the claim as the start leaves it: given the start's
+// entry. A role whose step needs a task of its own (holderStart, reviewerStart, parentStart) holds
+// that task at that entry, in place of the start's own task. Any other root architect took its
+// start's task before the boot, and holds none, and a child's own architect was given none. A
+// root's architect row of the told record comes from its tree's first opening, which the seed
+// does not run, so the seed writes it by hand and checks it against the row that opening writes.
+// Before the boot the seed checks each claim by part one's rule (standAtTheirEntries): it stands
+// at an entry of 1 or more of its role's phases row, given that entry, and it holds its task at
+// that entry; a child's own architect stands at no entry, given none, holding no task, as its
+// plain start leaves it. A seed that differs fails the run's harness before any pane starts, and
+// the failure names the claim or the row, the field and both values.
 //
 // Two arms. The head arm launches each pane on the prompts the daemon snapshots below its state
 // directory at boot (prompts.New). The base arm writes the base commit's prompt files,
@@ -66,21 +72,30 @@
 //
 // Three steps, each run three times in each arm, each run on trees of its own:
 //   - a4-the-architect-tells-the-child-reviewer: under root-issues, a root waiting in admitted and
-//     its child in reviewing, whose reviewer is live; the root architect is asked to write version
-//     2 of the child's Verification document. It passes when the reviewer's transcript holds an
-//     Envoy message naming version 2 and the changed check, the architect's transcript holds its
-//     envoy_publish to the reviewer's role topic naming the same, and the child has no approval
-//     request;
+//     its child in reviewing, whose reviewer and own architect are live, with the root's architect
+//     live above them; the child's architect is asked to write version 2 of its issue's
+//     Verification document. Once it tells its parent of the version, the proof reviews it in the
+//     parent's place and form and tells the child's architect, from the parent's own session
+//     (sessionsRun.reviewAsParent); a run whose child's architect did not tell its parent stopped
+//     before the assertion. It passes when the reviewer's transcript holds an Envoy message naming
+//     version 2 and the changed check, the child's architect's transcript holds its envoy_publish
+//     to the reviewer's role topic naming the same, and the child has no approval request;
 //   - off-the-architect-tells-the-holders: under gates.design off, a root in implementing and its
-//     child in reviewing, both holders live; the architect is asked to write version 2 of the
-//     root's spec. It passes when each holder's transcript holds an Envoy message naming version 2
-//     and the change, and the architect's transcript holds its envoy_publish to that holder's
-//     role topic naming the same;
+//     child in reviewing, both holders and the child's own architect live; the root's architect
+//     is asked to write version 2 of the root's spec. It passes when each holder's transcript
+//     holds an Envoy message naming version 2 and the change, and the root architect's transcript
+//     holds its envoy_publish to that holder's role topic naming the same;
 //   - answers-a-stale-reviewer-moves-back-a-current-one-comments: under root-issues, two roots in
 //     reviewing, each reviewer told what its review rests on; the person approves a version 2 of
 //     each spec, one changing the section the review rests on and one a section it does not touch.
 //     It passes when the first reviewer's request_backward_move names version 2 and moves its
 //     issue back, and the second writes a comment on its issue naming version 2 and stays.
+//
+// Three variables the script passes through narrow a run of part two (pickSessions):
+// APPROVED_VERSION_NEWS_STEP names one step by its word (a4, off or answers),
+// APPROVED_VERSION_NEWS_ARM one arm (head or base), and APPROVED_VERSION_NEWS_RUNS the count of
+// runs each arm makes of each step, so one command measures one arm of one step as often as it
+// asks.
 //
 // Each run prints `== <step> <arm> <n>`, its evidence (the tool calls and the messages, from the
 // sessions' own transcripts) and `run <step> <arm> <n>: <outcome> …` with its time and the model
@@ -152,6 +167,11 @@ const (
 	sessionsBasePromptsEnv = "APPROVED_VERSION_NEWS_BASE_PROMPTS"
 	sessionsBaseCommitEnv  = "APPROVED_VERSION_NEWS_BASE_COMMIT"
 	sessionsModelEnv       = "APPROVED_VERSION_NEWS_MODEL"
+	// The three that narrow a run of part two to one step, one arm or another count of runs
+	// (pickSessions), each unset for every step, both arms and sessionsRuns.
+	sessionsStepEnv = "APPROVED_VERSION_NEWS_STEP"
+	sessionsArmEnv  = "APPROVED_VERSION_NEWS_ARM"
+	sessionsRunsEnv = "APPROVED_VERSION_NEWS_RUNS"
 )
 
 // sessionsDefaultModel is the model every session runs when the script names none, at
@@ -170,19 +190,79 @@ const (
 	sessionsAnswers = "answers-a-stale-reviewer-moves-back-a-current-one-comments"
 )
 
+// sessionsStep is one step of part two: its name, which each run's line prints; its word, which
+// the script's last line names it by and APPROVED_VERSION_NEWS_STEP picks it by; the design gate
+// its runs boot under; and its body.
+type sessionsStep struct {
+	name, word string
+	gates      config.DesignGate
+	body       func(*sessionsRun) (sessionsOutcome, string)
+}
+
+// sessionsSteps is every step of part two, in the order a run makes them.
+var sessionsSteps = []sessionsStep{
+	{sessionsA4, "a4", config.DesignGateRootIssues, (*sessionsRun).a4},
+	{sessionsOff, "off", config.DesignGateOff, (*sessionsRun).off},
+	{sessionsAnswers, "answers", config.DesignGateRootIssues, (*sessionsRun).answers},
+}
+
 // The two arms: the prompts this checkout composes, and the base commit's.
 const (
 	sessionsHead = "head"
 	sessionsBase = "base"
 )
 
-// sessionsRuns is how many runs each arm makes of each step.
+// sessionsRuns is how many runs each arm makes of each step, unless APPROVED_VERSION_NEWS_RUNS
+// names another count.
 const sessionsRuns = 3
 
 // sessionsRunBound bounds a run from its daemon's boot to its verdict. A run still waiting at its
 // bound fails, and its sessions are ended with it, so an agent that wanders spends no more than
 // this.
 const sessionsRunBound = 8 * time.Minute
+
+// sessionsPick is what one run of part two makes: the steps, the arms, and how many runs each arm
+// makes of each step.
+type sessionsPick struct {
+	steps []sessionsStep
+	arms  []string
+	runs  int
+}
+
+// pickSessions is the pick that APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and
+// APPROVED_VERSION_NEWS_RUNS name, given here as step, arm and runs: one step by its word, one
+// arm, and a count of runs of 1 or more. Each left empty picks every step, both arms, or
+// sessionsRuns runs. A value that names none of these is refused, naming what it may be.
+func pickSessions(step, arm, runs string) (sessionsPick, error) {
+	pick := sessionsPick{steps: sessionsSteps, arms: []string{sessionsHead, sessionsBase}, runs: sessionsRuns}
+	if step != "" {
+		words := make([]string, len(sessionsSteps))
+		for i, each := range sessionsSteps {
+			words[i] = each.word
+			if each.word == step {
+				pick.steps = []sessionsStep{each}
+			}
+		}
+		if !slices.Contains(words, step) {
+			return sessionsPick{}, fmt.Errorf("%s=%q names no step of part two: it is one of %s", sessionsStepEnv, step, strings.Join(words, ", "))
+		}
+	}
+	switch arm {
+	case "":
+	case sessionsHead, sessionsBase:
+		pick.arms = []string{arm}
+	default:
+		return sessionsPick{}, fmt.Errorf("%s=%q names no arm: it is %s or %s", sessionsArmEnv, arm, sessionsHead, sessionsBase)
+	}
+	if runs != "" {
+		count, err := strconv.Atoi(runs)
+		if err != nil || count < 1 {
+			return sessionsPick{}, fmt.Errorf("%s=%q is no count of runs: it is a whole number of 1 or more", sessionsRunsEnv, runs)
+		}
+		pick.runs = count
+	}
+	return pick, nil
+}
 
 // sessionsSettle is how long a session must hold no task and stay out of a turn before its work
 // counts as done: Oh My Pi's own plugins can start a turn again just after one ends.
@@ -237,28 +317,23 @@ type sessionsLive struct {
 	evidence string
 }
 
-// TestRealSessionsTellAndAnswerANewVersionLive runs each step three times in the head arm and
-// then three times in the base arm, and stops at the first head run that does not pass: one that
-// failed its assertion, or one that stopped before it. It stops at a run of either arm that the
-// harness failed too (run). A run that -test.run leaves out is none of these, which is how one run
-// is driven alone.
+// TestRealSessionsTellAndAnswerANewVersionLive runs the steps, arms and count of runs the pick
+// names (pickSessions), by default every step three times in the head arm and then three times in
+// the base arm, and stops at the first head run that does not pass: one that failed its
+// assertion, or one that stopped before it. It stops at a run of either arm that the harness
+// failed too (run). A run that -test.run leaves out is none of these.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 	fixtureenv.Live(t)
-	s := newSessionsLive(t)
-	steps := []struct {
-		name  string
-		gates config.DesignGate
-		body  func(*sessionsRun) (sessionsOutcome, string)
-	}{
-		{sessionsA4, config.DesignGateRootIssues, (*sessionsRun).a4},
-		{sessionsOff, config.DesignGateOff, (*sessionsRun).off},
-		{sessionsAnswers, config.DesignGateRootIssues, (*sessionsRun).answers},
+	pick, err := pickSessions(os.Getenv(sessionsStepEnv), os.Getenv(sessionsArmEnv), os.Getenv(sessionsRunsEnv))
+	if err != nil {
+		t.Fatal(err)
 	}
+	s := newSessionsLive(t)
 	runs := 0
-	for _, step := range steps {
-		for _, arm := range []string{sessionsHead, sessionsBase} {
-			for n := 1; n <= sessionsRuns; n++ {
-				ran, outcome := s.run(step.name, arm, n, step.gates, step.body)
+	for _, step := range pick.steps {
+		for _, arm := range pick.arms {
+			for n := 1; n <= pick.runs; n++ {
+				ran, outcome := s.run(step, arm, n)
 				if !ran {
 					continue
 				}
@@ -538,7 +613,8 @@ type sessionsRun struct {
 // root), its phase, the roles whose claims the run seeds, the root's spec and the issue's
 // Verification document with its one check ("" for none), and the task each role's claim holds at
 // the boot, at the entry the start path raised for it, in place of that start's own task ("" for a
-// role that took its start's task before the boot: sessionsRun.seedClaim).
+// role that took its start's task before the boot, and for a child's own architect, whose start
+// carries none: sessionsRun.seedClaim).
 type sessionsMember struct {
 	key, tree, parent string
 	phase             phase.Phase
@@ -547,6 +623,12 @@ type sessionsMember struct {
 	verification      string
 	check             string
 	tasks             map[claim.Role]string
+}
+
+// ownArchitect says whether the run seeds the member's own architect on a child: the claim #4203
+// gives every child the daemon starts, which its first phase start starts.
+func (m *sessionsMember) ownArchitect() bool {
+	return m.parent != "" && slices.Contains(m.roles, claim.RoleArchitect)
 }
 
 // run makes one run in a subtest of its own, whose cleanup stops its daemon, and answers whether
@@ -562,10 +644,10 @@ type sessionsMember struct {
 //   - a session whose transcript holds the plugin's refusal of a daemon answer (sessionsEnding).
 //
 // Otherwise the step's own outcome is the answer.
-func (s *sessionsLive) run(step, arm string, n int, gates config.DesignGate, body func(*sessionsRun) (sessionsOutcome, string)) (ran bool, outcome sessionsOutcome) {
-	name := fmt.Sprintf("%s %s %d", step, arm, n)
+func (s *sessionsLive) run(step sessionsStep, arm string, n int) (ran bool, outcome sessionsOutcome) {
+	name := fmt.Sprintf("%s %s %d", step.name, arm, n)
 	line := newSessionsRunLine()
-	succeeded := s.t.Run(fmt.Sprintf("%s-%s-%d", step, arm, n), func(t *testing.T) {
+	succeeded := s.t.Run(fmt.Sprintf("%s-%s-%d", step.name, arm, n), func(t *testing.T) {
 		ran = true
 		// The run's line is the subtest's first cleanup, so it prints last.
 		line.printAtEnd(t, name, s.calls.count)
@@ -584,8 +666,8 @@ func (s *sessionsLive) run(step, arm string, n int, gates config.DesignGate, bod
 				t.Errorf("the legion plugin refused a daemon answer as a body the daemon API contract does not describe, in the transcript of %s", session)
 			}
 		}()
-		r = s.newRun(t, name, arm, gates)
-		line.outcome, line.why = body(r)
+		r = s.newRun(t, name, arm, step.gates)
+		line.outcome, line.why = step.body(r)
 	})
 	if !succeeded {
 		s.t.Fatalf("the harness failed in run %s; its log is above", name)
@@ -700,10 +782,12 @@ func sessionsSpec(summary, design, later string) string {
 // deployment gates spec holds its gate open at version 1, which the person approved on Dispatch
 // too, and its architect's row of the told record says so (seedArchitectTold). Each role is then
 // started by part one's startRoles, which raises its entry and, for a phase worker, writes its
-// issue's holder row from that gate. The start's row is taken off the outbox (takeStart), and the
-// claim is written as that start leaves it (seedClaim), once the lifecycles are open. No role
-// prompt file is written below the state directory: such a file is a launch's whole prompt
-// (specs.rolePromptPaths), and the composed prompts would reach no pane.
+// issue's holder row from that gate; a child's own architect is started by the child's first
+// phase start, as every started child's is, which raises no entry. The start's row is taken off
+// the outbox (takeStart), and so are the other rows a child's first phase start queued
+// (takeFirstPhase), and the claim is written as that start leaves it (seedClaim), once the
+// lifecycles are open. No role prompt file is written below the state directory: such a file is
+// a launch's whole prompt (specs.rolePromptPaths), and the composed prompts would reach no pane.
 //
 // A row the seed writes by hand that differs from the row the start path writes fails the run's
 // harness here, after the transaction commits, naming the row, the field and both values. The
@@ -730,8 +814,9 @@ func (r *sessionsRun) seed() {
 	one := 1
 	var starts map[claim.Token]record.SuperviseRequest
 	var differences []string
+	var firstPhase map[string][]string
 	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
-		starts, differences = map[claim.Token]record.SuperviseRequest{}, nil
+		starts, differences, firstPhase = map[claim.Token]record.SuperviseRequest{}, nil, map[string][]string{}
 		issues := make([]record.Issue, len(r.members))
 		for i, member := range r.members {
 			var listed struct {
@@ -789,6 +874,12 @@ func (r *sessionsRun) seed() {
 			}
 		}
 		for i, member := range r.members {
+			// The last row the outbox held before the member's starts, so that the rows a
+			// child's first phase start queues beside its architect's are known (takeFirstPhase).
+			var before int64
+			if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from outbox`).Scan(&before); err != nil {
+				return err
+			}
 			if err := startRoles(ctx, tx, r.records, engine, issues[i], member.roles); err != nil {
 				return err
 			}
@@ -798,6 +889,13 @@ func (r *sessionsRun) seed() {
 					return err
 				}
 				starts[r.token(member, role)] = start
+			}
+			if member.ownArchitect() {
+				taken, err := takeFirstPhase(ctx, tx, member.key, before)
+				if err != nil {
+					return err
+				}
+				firstPhase[member.key] = taken
 			}
 		}
 		return nil
@@ -818,6 +916,10 @@ func (r *sessionsRun) seed() {
 	for _, member := range r.members {
 		for _, role := range member.roles {
 			r.seedClaim(ctx, member, role, starts[r.token(member, role)])
+		}
+		if taken, ok := firstPhase[member.key]; ok {
+			r.note("%s's first phase start, which started its own architect, also queued %s, which the daemon before the boot ran: "+
+				"the seed took them off the outbox", member.key, strings.Join(taken, ", "))
 		}
 		if gated && member.spec != "" {
 			r.note("%s's architect took %s at its tree's first opening, in a row written by hand and the same as the row that opening writes",
@@ -901,15 +1003,55 @@ func takeStart(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (r
 	return start, nil
 }
 
+// takeFirstPhase takes off the outbox every row queued in tx on issue, a child, after the row
+// after, once takeStart has taken the starts of its roles, and answers what each row was, oldest
+// first. They are the rest of the child's first phase start (workflow.Engine.StartFirstPhase),
+// which started its own architect: the row that creates its branch and the notices of its move
+// into planning. Its planner's start is not among them: the start of the phase worker the child
+// stands in took that row's place, as a phase worker's start takes out the one its issue already
+// owes (record.Store.EnqueueStart), and takeStart took that start. The daemon before the boot ran
+// these rows long before the child reached the phase it stands in, as it ran the starts, so none
+// is left for the boot to run again.
+func takeFirstPhase(ctx context.Context, tx pgx.Tx, issue string, after int64) ([]string, error) {
+	rows, err := tx.Query(ctx, `with taken as (delete from outbox where issue = $1 and id > $2 returning id, kind, payload)
+		select kind, coalesce(payload->>'op', ''), coalesce(payload->>'role', ''), coalesce(payload->>'kind', '') from taken order by id`,
+		issue, after)
+	if err != nil {
+		return nil, fmt.Errorf("take the rest of the first phase start of %s off the outbox: %w", issue, err)
+	}
+	taken, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
+		var kind, op, role, notice string
+		if err := row.Scan(&kind, &op, &role, &notice); err != nil {
+			return "", err
+		}
+		switch {
+		case kind == string(record.OutboxKindSupervise):
+			return fmt.Sprintf("the %s of its %s", op, role), nil
+		case kind == string(record.OutboxKindNotice):
+			return fmt.Sprintf("a %s notice", notice), nil
+		}
+		return "a row of kind " + kind, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("take the rest of the first phase start of %s off the outbox: %w", issue, err)
+	}
+	return taken, nil
+}
+
 // seedClaim records role's claim on member as start, the start the daemon's start path queued for
 // it, leaves it, with that start's launch begun and never recorded by the daemon before the boot,
-// which the boot relaunches: launching, with the hash of a boot token no pane holds. It is given
-// the entry start raised, with the handshake the queue writes beside it (supervise.Claim.GivenEntry,
-// Handshake). A role its step gives a task of its own (member.tasks) holds that task as the
-// delivery of that entry, of the start's phase and run, unconfirmed, in place of the start's own
-// task: the daemon sends it once the relaunched pane is ready. A role with none took its start's
-// task before the boot (supervise.Claim.ServedEntry), as a root architect mid-run has, and holds
-// nothing. The run's runtime launches this claim and the others the run seeds, and no other.
+// which the boot relaunches: launching, with the hash of a boot token no pane holds. A start that
+// raised an entry gives the claim that entry, with the handshake the queue writes beside it
+// (supervise.Claim.GivenEntry, Handshake). A role its step gives a task of its own (member.tasks)
+// holds that task as the delivery of that entry, of the start's phase and run, unconfirmed, in
+// place of the start's own task: the daemon sends it once the relaunched pane is ready. A role
+// with none took its start's task before the boot (supervise.Claim.ServedEntry), as a root
+// architect mid-run has, and holds nothing. The plain start of a child's own architect
+// (workflow's childArchitectStart) raises no entry and carries no task, so its claim is given
+// none, holds no handshake and serves no run: its first instruction is the catch-up at its
+// launch's ready, and a step's task reaches it through the operator's route once the run has
+// booted (deliver). The run's runtime launches this claim and the others the run seeds, and no
+// other.
 func (r *sessionsRun) seedClaim(ctx context.Context, member *sessionsMember, role claim.Role, start record.SuperviseRequest) {
 	t := r.t
 	t.Helper()
@@ -919,11 +1061,17 @@ func (r *sessionsRun) seedClaim(ctx context.Context, member *sessionsMember, rol
 	task := member.tasks[role]
 	seeded := supervise.Claim{
 		Token: token, Project: r.project, Tree: member.tree, Issue: member.key, Role: role, Generation: 1,
-		State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)), ServingGeneration: 1,
-		GivenEntry: start.Entry, Handshake: supervise.EntryHandshake{Entry: start.Entry, Generation: start.Generation, QueuedAt: now},
+		State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)),
 	}
-	if task == "" {
-		seeded.ServedEntry, seeded.Handshake.ConfirmedAt = start.Entry, now
+	switch {
+	case start.Entry == 0 && task != "":
+		t.Fatalf("setup: the step gives the %s of %s a start task, where its start raised no entry to hold it at", role, member.key)
+	case start.Entry > 0:
+		seeded.ServingGeneration, seeded.GivenEntry = 1, start.Entry
+		seeded.Handshake = supervise.EntryHandshake{Entry: start.Entry, Generation: start.Generation, QueuedAt: now}
+		if task == "" {
+			seeded.ServedEntry, seeded.Handshake.ConfirmedAt = start.Entry, now
+		}
 	}
 	if _, err := r.st.AdmitClaim(ctx, seeded); err != nil {
 		t.Fatalf("record the %s's unfinished launch on %s: %v", role, member.key, err)
@@ -941,11 +1089,12 @@ func (r *sessionsRun) seedClaim(ctx context.Context, member *sessionsMember, rol
 // standAtTheirEntries is the seed's SETUP check, part one's (versionNewsLive.standAtTheirEntries)
 // by the same rule (claimEntries, entryRefusal): each claim the seed wrote stands at an entry of 1
 // or more of its role's phases row, given that entry, and a claim that holds a task holds it at
-// that entry. It runs before the boot, where part one's runs after it, because part two's claims
-// are written before the boot rather than by it: a run whose seed differs stops before any pane
-// starts or spends a model call. A claim that stands anywhere else fails the run's harness, and
-// the failure names the claim and both numbers. Each tree's claims are noted with their entries,
-// which is the run's evidence of them.
+// that entry. A child's own architect is held to its plain start's rule instead
+// (plainStartRefusal): no entry, given none, holding no task. It runs before the boot, where part
+// one's runs after it, because part two's claims are written before the boot rather than by it: a
+// run whose seed differs stops before any pane starts or spends a model call. A claim that stands
+// anywhere else fails the run's harness, and the failure names the claim and both numbers. Each
+// tree's claims are noted with their entries, which is the run's evidence of them.
 func (r *sessionsRun) standAtTheirEntries() {
 	t := r.t
 	t.Helper()
@@ -963,7 +1112,11 @@ func (r *sessionsRun) standAtTheirEntries() {
 			if err != nil {
 				t.Fatalf("setup: read the entries of %s: %v", name, err)
 			}
-			if refusal := entryRefusal(name, entry, given); refusal != "" {
+			refusal := entryRefusal(name, entry, given)
+			if role == claim.RoleArchitect && member.parent != "" {
+				refusal = plainStartRefusal(name, entry, given)
+			}
+			if refusal != "" {
 				t.Fatalf("setup: %s", refusal)
 			}
 			var held *int64
@@ -972,6 +1125,9 @@ func (r *sessionsRun) standAtTheirEntries() {
 				t.Fatalf("setup: read the task %s holds: %v", name, err)
 			}
 			holds := "its start's task taken before the boot"
+			if entry == 0 {
+				holds = "holding no task, as its plain start gives none"
+			}
 			if held != nil {
 				if *held != entry {
 					t.Fatalf("setup: %s holds its start task at entry %d, where the daemon's start path raised entry %d for it", name, *held, entry)
@@ -984,6 +1140,20 @@ func (r *sessionsRun) standAtTheirEntries() {
 	for _, tree := range trees {
 		r.note("tree %s as the daemon's start path left it, each claim given its entry: %s", tree, strings.Join(stood[tree], "; "))
 	}
+}
+
+// plainStartRefusal is why a child's own architect, named name, that stands at entry of its role's
+// phases row and was given given does not stand where its plain start leaves it (workflow's
+// childArchitectStart, which the child's first phase start queues): that start raises no entry
+// and gives none, so both are 0. It is "" where the claim stands there. A claim given an entry, or
+// a child whose architect's row names one, was not started the way the daemon starts every
+// child's own architect, and the sentence names the claim and both numbers.
+func plainStartRefusal(name string, entry, given int64) string {
+	if entry == 0 && given == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s stands at entry %d of its phases row and was given entry %d, where the plain start of a child's own architect, "+
+		"which its first phase start queues, raises no entry and gives none", name, entry, given)
 }
 
 // boot boots the whole daemon over the local runtime, in the base arm after writing the base
@@ -1427,57 +1597,110 @@ func (r *sessionsRun) dispatchCall(method, path string, body any, want int, into
 	}
 }
 
-// architectTask is the task the driver gives a root architect: one edit of one document, the
-// tree as its catch-up would show it, and nothing about who to tell.
+// architectTask is the task the driver gives an architect: one edit of one document, the tree as
+// its catch-up would show it, and nothing about who to tell.
 func architectTask(document, issue, find, with, tree string) string {
 	return fmt.Sprintf("A task from the operator of this tree. Write a new version, version 2, of the %s of %s. "+
 		"In it, replace the words `%s` with `%s`. Make that one edit with `dispatch doc-edit`, and change nothing else "+
 		"in that document. Your tree stands as follows: %s.", document, issue, find, with, tree)
 }
 
-// Step A4. A root waits in admitted while its child stands in reviewing under a live reviewer;
-// the root's gate stands open at version 1 of its spec. The root architect is asked to write
-// version 2 of the child's Verification document. The child's checks are the architect's to
-// change and no person approves them, so the daemon sends no news of it: the reviewer hears of it
-// only from the architect. The architect's own envoy_publish to the reviewer's role topic must
-// carry it, since a card in the reviewer's transcript does not say who sent it or how.
+// Step A4. A root waits in admitted while its child stands in reviewing under a live reviewer and
+// a live architect of its own, which the child's first phase start started, as it starts every
+// child's (workflow.Engine.StartFirstPhase); the root's gate stands open at version 1 of its spec,
+// and the root's architect is live above the child. The child's architect is asked to write
+// version 2 of its own issue's Verification document. A child's documents are its architect's to
+// change and no person approves them, so the daemon sends no news of the version: the reviewer
+// hears of it only from the architect that wrote it. Both arms' prompts tell that architect to
+// tell the architect above it of each version it writes, and tell that parent to review each
+// version, post its verdict as a `Spec review of` comment on the child and tell the child's
+// architect with envoy_publish; the head's tell the child's architect to tell the holder of each
+// issue the version changes once the version has that approving review.
+//
+// The parent's review is the proof's (reviewAsParent), in the parent's form and through the
+// parent's own channels, once the child's architect has told the parent of the version. A live
+// parent reviewed the fixture's version in round 13's first run and asked for changes to what the
+// version had not changed, the child's empty spec and its check's run and negative control, so a
+// live review measures the fixture rather than the telling R4 is about; and the version must have
+// its approving review before the head's prompt puts that telling to the child's architect at
+// all. The root's architect is live all the same, as every running tree's is, and its start task
+// tells it that the operator reviews the child's versions in its place (parentStart), so the
+// version gets one review. A run whose version the child's architect did not write, or did not
+// tell its parent of, stopped before the assertion. The assertion is the child's architect's own
+// envoy_publish to the reviewer's role topic naming version 2 and the changed check, since a card
+// in the reviewer's transcript does not say who sent it or how; the reviewer's transcript holding
+// a message that names both; and no approval request on the child.
 func (r *sessionsRun) a4() (sessionsOutcome, string) {
-	root := &sessionsMember{phase: phase.Admitted, roles: []claim.Role{claim.RoleArchitect}}
-	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, check: sessionsCheckID, tasks: map[claim.Role]string{}}
+	root := &sessionsMember{phase: phase.Admitted, roles: []claim.Role{claim.RoleArchitect}, tasks: map[claim.Role]string{}}
+	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleArchitect, claim.RoleReviewer}, check: sessionsCheckID,
+		tasks: map[claim.Role]string{}}
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign, sessionsLater), root, child)
+	root.tasks[claim.RoleArchitect] = parentStart(root.key, child.key)
 	child.tasks[claim.RoleReviewer] = holderStart(child.key, phase.Reviewing)
 	r.boot()
+	r.checkArm(child, claim.RoleArchitect, sessionsArchitectMark)
 	r.checkArm(root, claim.RoleArchitect, sessionsArchitectMark)
-	if !r.settled(child, claim.RoleReviewer) {
-		return sessionsSetup, fmt.Sprintf("the reviewer of %s did not end its start turn within the run's bound", child.key)
+	for _, held := range []struct {
+		member *sessionsMember
+		role   claim.Role
+	}{{root, claim.RoleArchitect}, {child, claim.RoleReviewer}} {
+		if !r.settled(held.member, held.role) {
+			return sessionsSetup, fmt.Sprintf("the %s of %s did not end its start turn within the run's bound", held.role, held.member.key)
+		}
 	}
-	r.deliver(root, claim.RoleArchitect, architectTask(
+	r.deliver(child, claim.RoleArchitect, architectTask(
 		fmt.Sprintf("Verification document (`verification.md`, document %s)", child.verification), child.key, sessionsCheck, sessionsCheckAgain,
-		fmt.Sprintf("%s, the root, in admitted, waiting for its child; %s, its child, in reviewing, where its reviewer holds it", root.key, child.key)))
+		fmt.Sprintf("%s, the root, in admitted, waiting for its child; %s, its child and your own issue, in reviewing, where its reviewer holds it",
+			root.key, child.key)))
 	change := sessionsChecksChange
-	told := ""
-	var quiet time.Time
+	reviewer := notify.RoleTopicPrefix + string(r.token(child, claim.RoleReviewer))
+	parentTopic := notify.RoleTopicPrefix + string(r.token(root, claim.RoleArchitect))
+	told, review := "", ""
+	var architectQuiet, parentQuiet time.Time
 	r.until(r.deadline, func() bool {
+		architect := r.transcript(child, claim.RoleArchitect)
+		if _, toldParent := architect.publishedTo(parentTopic, "verification"); review == "" && toldParent {
+			if written, text := r.version2(child.verification); sessionsUnwritten("", written, text, sessionsCheckAgain) == "" {
+				review = r.reviewAsParent(child, root)
+				// The review starts the child's architect's next turn, which no quiet read
+				// before it can have seen.
+				architectQuiet, parentQuiet = time.Time{}, time.Time{}
+				return false
+			}
+		}
 		told = r.transcript(child, claim.RoleReviewer).toldOf(change...)
-		return told != "" || r.quiet(root, claim.RoleArchitect, &quiet)
+		if _, published := architect.publishedTo(reviewer, change...); published && told != "" {
+			return true
+		}
+		// The route stopped wherever it stopped once both architects are out of a turn at once,
+		// each holding no task.
+		architectDone, parentDone := r.quiet(child, claim.RoleArchitect, &architectQuiet), r.quiet(root, claim.RoleArchitect, &parentQuiet)
+		return architectDone && parentDone
 	})
 	if told == "" {
-		// The architect settled: a message it sent may still be on its way.
+		// The architects settled: a message one of them sent may still be on its way.
 		r.until(time.Now().Add(sessionsGrace), func() bool {
 			told = r.transcript(child, claim.RoleReviewer).toldOf(change...)
 			return told != ""
 		})
 	}
-	// The architect may still be in its turn: a request for approval would come in it.
-	if !r.settled(root, claim.RoleArchitect) {
-		r.evidence("the architect of %s was still in a turn or held a task at the run's bound, so what follows is what it did by then", root.key)
+	// The child's architect may still be in its turn: a request for approval would come in it.
+	if !r.settled(child, claim.RoleArchitect) {
+		r.evidence("the architect of %s was still in a turn or held a task at the run's bound, so what follows is what it did by then", child.key)
 	}
-	architect := r.transcript(root, claim.RoleArchitect)
-	r.printCalls(root, claim.RoleArchitect, architect.bash("dispatch "), "ran")
-	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
+	architect, parent := r.transcript(child, claim.RoleArchitect), r.transcript(root, claim.RoleArchitect)
+	r.printCalls(child, claim.RoleArchitect, architect.bash("dispatch "), "ran")
+	r.printCalls(child, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
+	r.printCalls(root, claim.RoleArchitect, parent.bash("dispatch "), "ran")
+	r.printCalls(root, claim.RoleArchitect, parent.calling("envoy_publish"), "called")
 	written, text := r.version2(child.verification)
-	unwritten := sessionsUnwritten(child.key+"'s Verification document", written, text, sessionsCheckAgain)
-	if unwritten == "" {
+	stopped := sessionsUnwritten(child.key+"'s Verification document", written, text, sessionsCheckAgain)
+	switch {
+	case stopped != "":
+	case review == "":
+		stopped = fmt.Sprintf("the architect of %s made no envoy_publish to %s, its parent's role topic, naming version 2 of its Verification document, "+
+			"so its parent never heard of the version to review it, and the run did not reach its assertion", child.key, parentTopic)
+	default:
 		r.evidence("version 2 of %s's Verification document %s holds %q", child.key, child.verification, sessionsCheckAgain)
 	}
 	var why []string
@@ -1486,7 +1709,7 @@ func (r *sessionsRun) a4() (sessionsOutcome, string) {
 	} else {
 		r.evidence("the reviewer of %s's transcript holds the Envoy message %s", child.key, sessionsExcerpt(told))
 	}
-	if missed := r.publishedBy(architect, child, claim.RoleReviewer, change); missed != "" {
+	if missed := r.publishedBy(architect, "the architect of "+child.key, child, claim.RoleReviewer, change); missed != "" {
 		why = append(why, missed)
 	}
 	if asks := r.approvalAsks(child.key); len(asks) > 0 {
@@ -1494,31 +1717,104 @@ func (r *sessionsRun) a4() (sessionsOutcome, string) {
 	} else {
 		r.evidence("Dispatch holds no approval request on %s", child.key)
 	}
-	return sessionsJudged(unwritten, why)
+	return sessionsJudged(stopped, why)
 }
 
-// publishedBy reads architect's transcript for its envoy_publish of the change to the role topic
-// of role on member, which the architect's prompt asks for (prompts/go/architect-common.md). It
-// prints the call it found as evidence and answers "", or answers why the step failed.
-func (r *sessionsRun) publishedBy(architect sessionsTranscript, member *sessionsMember, role claim.Role, change []string) string {
+// parentStart is the start task the root architect of the a4 step holds at the boot, at the entry
+// the daemon's start path raised for it, in place of that start's own task: that the proof runs
+// no repository, where its tree stands, and that the operator reviews each version of child's
+// documents in its place, posting the review as its `Spec review of` comment and telling child's
+// architect in its name (reviewAsParent). So it reviews none of them itself, and each version gets
+// one review. It says nothing of who tells the child's reviewer.
+func parentStart(root, child string) string {
+	return fmt.Sprintf("This proof runs no GitHub and no repository, and you have no GitHub access, so run no `gh`, `git` or `jj`. You hold the "+
+		"tree of %s, and its work stands where your earlier session left it: %s, the root, in admitted, waiting for its child; %s, its child, "+
+		"in reviewing, where its reviewer and its own architect hold it. In this proof the operator of this tree reviews each version of "+
+		"%s's spec and Verification document in your place: it posts that review on %s as your `Spec review of` comment and tells %s's "+
+		"architect of it in your name, so review none of them yourself. Start no work now: reply with one line that starts with WAITING, "+
+		"and end your turn.", root, root, child, child, child, child)
+}
+
+// reviewAsParent is the a4 step's parent's review of version 2 of child's Verification document,
+// which the proof makes in the place of root's architect once the child's architect has told that
+// parent of the version. It is what a live parent posts, through the live parent's own channels,
+// as the parent's prompt tells it to (skill://legion-architect/references/decomposition.md,
+// "Reviewing a child's spec"): a `dispatch comment` on the child as the parent's own session,
+// whose first two lines are those round 12's live root architect wrote when it approved this
+// version, `Spec review of <child> v1 by <root>: approved` and `Verification document v2`, with
+// its reason after them; then an Envoy message from the parent's session to the role topic of the
+// child's architect, in the words round 13's live parent published its verdict in, `<root> review
+// of <child>: <verdict>, spec v1 and Verification document v2`, naming the comment. The comment is
+// read back as an approval (sessionsApprovedReview), and a review that does not read as one, or a
+// message the listener refuses, fails the run's harness. It answers the comment's body.
+func (r *sessionsRun) reviewAsParent(child, root *sessionsMember) string {
+	t := r.t
+	t.Helper()
+	session := r.claim(r.token(root, claim.RoleArchitect)).Session
+	if session == "" {
+		t.Fatalf("the architect of %s holds no session to post its review of %s as", root.key, child.key)
+	}
+	body := fmt.Sprintf("Spec review of %s v1 by %s: approved\nVerification document v2\n\n"+
+		"I read version 2 of the Verification document against the root spec at its approved version 1. It changes one check, %s, from %q "+
+		"to %q. The check still serves the root's design, %q, narrows nothing of it and adds no scope.\n",
+		child.key, root.key, sessionsCheckID, sessionsCheck, sessionsCheckAgain, sessionsDesign)
+	var posted struct {
+		ID string `json:"id"`
+	}
+	r.dispatchAgent(http.MethodPost, "/api/v1/issues/"+child.key+"/comments", map[string]any{
+		"body": body, "actor": map[string]string{"kind": "session", "id": session},
+	}, 0, &posted)
+	if posted.ID == "" || sessionsApprovedReview(child.key, root.key, r.comments(child.key)) == "" {
+		t.Fatalf("the review the proof posted on %s as %s's architect (comment %q) does not read back as an approval of version 2", child.key, root.key, posted.ID)
+	}
+	topic := notify.RoleTopicPrefix + string(r.token(child, claim.RoleArchitect))
+	message := fmt.Sprintf("%s review of %s: approved, spec v1 and Verification document v2: dispatch://%s/comment/%s",
+		root.key, child.key, child.key, posted.ID)
+	encoded, err := json.Marshal(map[string]string{
+		"source": "agent", "source_session": session, "topic": topic, "message": message, "idempotency_key": "a4-review-" + randomSuffix(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := r.s.client.Post(r.s.listener+"/v1/messages/publish", "application/json", bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("publish the review of %s to %s as %s's architect: %v", child.key, topic, root.key, err)
+	}
+	answer, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode/100 != 2 {
+		t.Fatalf("publish the review of %s to %s as %s's architect = %d %s", child.key, topic, root.key, response.StatusCode, answer)
+	}
+	r.note("the parent's review, posted as the session %s of the architect of %s: comment %s on %s, %s; and published to %s, %s",
+		session, root.key, posted.ID, child.key, sessionsExcerpt(body), topic, sessionsExcerpt(message))
+	return body
+}
+
+// publishedBy reads the transcript of the architect named who for its envoy_publish of the change
+// to the role topic of role on member, which the architect's prompt asks for
+// (prompts/go/architect-common.md). It prints the call it found as evidence and answers "", or
+// answers why the step failed.
+func (r *sessionsRun) publishedBy(architect sessionsTranscript, who string, member *sessionsMember, role claim.Role, change []string) string {
 	r.t.Helper()
 	topic := notify.RoleTopicPrefix + string(r.token(member, role))
 	call, published := architect.publishedTo(topic, change...)
 	if !published {
-		return fmt.Sprintf("the architect made no envoy_publish to %s, the role topic of the %s of %s, naming version 2 and the change",
-			topic, role, member.key)
+		return fmt.Sprintf("%s made no envoy_publish to %s, the role topic of the %s of %s, naming version 2 and the change",
+			who, topic, role, member.key)
 	}
-	r.evidence("the architect's envoy_publish to %s, the role topic of the %s of %s: %s %s", topic, role, member.key, call.name, sessionsExcerpt(call.text))
+	r.evidence("%s's envoy_publish to %s, the role topic of the %s of %s: %s %s", who, topic, role, member.key, call.name, sessionsExcerpt(call.text))
 	return ""
 }
 
 // Step off. Under gates.design off a root in implementing and its child in reviewing are each held
-// by a live worker. The root architect is asked to write version 2 of the root's spec, which a
-// deployment that gates nothing sends no news of: each holder hears of it only from the architect,
-// by its own envoy_publish to that holder's role topic.
+// by a live worker, and the child has its own live architect, which its first phase start started,
+// as it starts every child's (workflow.Engine.StartFirstPhase). The root architect is asked to
+// write version 2 of the root's spec, which a deployment that gates nothing sends no news of: each
+// holder hears of it only from the architect, by its own envoy_publish to that holder's role
+// topic.
 func (r *sessionsRun) off() (sessionsOutcome, string) {
 	root := &sessionsMember{phase: phase.Implementing, roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer}, tasks: map[claim.Role]string{}}
-	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, tasks: map[claim.Role]string{}}
+	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleArchitect, claim.RoleReviewer}, tasks: map[claim.Role]string{}}
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign+" The child issue builds the reader's fetch, and the root builds the cache in front of it.", sessionsLater), root, child)
 	root.tasks[claim.RoleImplementer] = holderStart(root.key, phase.Implementing)
 	child.tasks[claim.RoleReviewer] = holderStart(child.key, phase.Reviewing)
@@ -1550,6 +1846,7 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 	architect := r.transcript(root, claim.RoleArchitect)
 	r.printCalls(root, claim.RoleArchitect, architect.bash("dispatch "), "ran")
 	r.printCalls(root, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
+	r.printCalls(child, claim.RoleArchitect, r.transcript(child, claim.RoleArchitect).calling("envoy_publish"), "called")
 	written, text := r.version2(root.spec)
 	unwritten := sessionsUnwritten(root.key+"'s spec", written, text, "two pages")
 	if unwritten == "" {
@@ -1562,7 +1859,7 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 		} else {
 			r.evidence("the %s of %s's transcript holds the Envoy message %s", holder.role, holder.member.key, sessionsExcerpt(told[i]))
 		}
-		if missed := r.publishedBy(architect, holder.member, holder.role, change); missed != "" {
+		if missed := r.publishedBy(architect, "the architect of "+root.key, holder.member, holder.role, change); missed != "" {
 			why = append(why, missed)
 		}
 	}

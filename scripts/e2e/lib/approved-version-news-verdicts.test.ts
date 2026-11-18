@@ -60,6 +60,7 @@ ${note}
 ${assignment("control_step")}
 ${assignment("control_setup_checks")}
 ${assignment("control_failure")}
+${assignment("part_two_arms")}
 ${assignment("part_two_runs")}
 ${fn("control_verdict")}
 ${fn("part_two_step")}
@@ -196,11 +197,13 @@ const setupFailed =
   "SETUP: the reviewer of AS1-2 did not end its start turn within the run's bound";
 const harnessFailed = "HARNESS: the harness failed; its log is above";
 
-/** part_two_step over the A4 lines LINES: the step's part of the last line, the head runs that
- * missed, and the notes it printed. */
-function partTwoStep(lines: string[]) {
+/** part_two_step over the A4 lines LINES, after PICK, the settings the arguments check makes of a
+ * pick ("" for none): the step's part of the last line, the head runs that missed, and the notes
+ * it printed. */
+function partTwoStep(lines: string[], pick = "") {
   const proof = proofLog([`=== RUN   TestRealSessionsTellAndAnswerANewVersionLive`, ...lines]);
-  const run = controls(`part_two_step ${JSON.stringify(proof)} ${a4} a4
+  const run = controls(`${pick}
+part_two_step ${JSON.stringify(proof)} ${a4} a4
 printf 'said=%s\\nmissed=%s\\n' "$step_said" "$head_missed"`);
   expect(run.err).toBe("");
   const said = /^said=(.*)$/m.exec(run.out)?.[1];
@@ -253,6 +256,28 @@ describe("part two's count of each arm", () => {
     const step = partTwoStep([runLine("head", 1, passed), runLine("head", 2, setupFailed)]);
     expect(step.said).toBe("a4 head 1/1 with 1 not counted, base 0/0 (base did not run)");
     expect(step.missed).toBe(`; a4: 2 of 3 head runs ran; ${runLine("head", 2, setupFailed)}`);
+  });
+
+  // A pick of the base arm alone, as the measurement of a4's control makes it: the arm is counted
+  // against the pick's own count of runs, no head run is owed, and a base FAIL still bites.
+  test("counts a pick of the base arm alone against its own count of runs", () => {
+    const outcomes = [passed, failed, failed, setupFailed, passed];
+    const runs = [...outcomes, failed, failed, passed, failed, failed];
+    const step = partTwoStep(
+      runs.map((outcome, i) => runLine("base", i + 1, outcome)),
+      "part_two_arms=base part_two_runs=10"
+    );
+    expect(step.said).toBe("a4 base 3/9 with 1 not counted (control bites)");
+    expect(step.missed).toBe("");
+    expect(step.notes).toContain(
+      `   ${a4} base: 3 of 9 runs that reached the assertion passed; 1 not counted (SETUP or HARNESS)\n`
+    );
+  });
+
+  test("is no control when the pick leaves the base arm out", () => {
+    const step = partTwoStep(headPassed, "part_two_arms=head");
+    expect(step.said).toBe("a4 head 3/3 (no control: the pick leaves the base arm out)");
+    expect(step.missed).toBe("");
   });
 });
 

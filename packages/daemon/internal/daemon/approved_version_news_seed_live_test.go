@@ -237,11 +237,16 @@ func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workf
 // queued root starts it (workflow.Engine.StartArchitect), on the root recorded at admitted, where
 // that promotion finds it: the derivation gives a root at admitted a first task, raised as the
 // architect's entry. The root is then recorded again in the phase it stands in, as the transitions
-// after that promotion leave it. A member's phase worker is started as the promotion of a mid-phase
-// member starts it (workflow.Engine.StartPromotedWorker), which raises that role's entry on the
-// phase the member stands in, with the phase's resume task as the entry's work. Each start writes
-// the role's phases row and queues the start on the outbox. A role that is neither has no start on
-// that path, and is refused.
+// after that promotion leave it. A child's own architect is started as the child's first phase
+// start starts it (workflow.Engine.StartFirstPhase), on the child recorded at admitted, where the
+// waiting line finds it once the tree's gate is open: that start queues the child's plain architect
+// start, which hands the role no entry and no task, beside the rows of the child's move into
+// planning. The child is then recorded again in the phase it stands in. A member's phase worker is
+// started as the promotion of a mid-phase member starts it (workflow.Engine.StartPromotedWorker),
+// which raises that role's entry on the phase the member stands in, with the phase's resume task
+// as the entry's work. Each start queues its role's start on the outbox, and each but the child
+// architect's writes its role's phases row. A role that is none of these has no start on that
+// path, and is refused.
 func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *workflow.Engine, issue record.Issue, roles []claim.Role) error {
 	for _, role := range roles {
 		switch {
@@ -257,13 +262,25 @@ func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *wo
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
-		case role != claim.RoleArchitect && role == phase.RoleFor(issue.Phase):
+		case role == claim.RoleArchitect:
+			admitted := issue
+			admitted.Phase = phase.Admitted
+			if err := records.PutIssue(ctx, tx, admitted); err != nil {
+				return err
+			}
+			if err := engine.StartFirstPhase(ctx, tx, admitted, nil); err != nil {
+				return fmt.Errorf("start the first phase of %s, which starts its own architect: %w", issue.Key, err)
+			}
+			if err := records.PutIssue(ctx, tx, issue); err != nil {
+				return err
+			}
+		case role == phase.RoleFor(issue.Phase):
 			if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
 				return fmt.Errorf("start the %s of %s: %w", role, issue.Key, err)
 			}
 		default:
 			return fmt.Errorf("the fixture names the %s of %s in %s, which the daemon's start path does not start: it starts a root's "+
-				"architect and a member's phase worker", role, issue.Key, issue.Phase)
+				"architect, a child's own architect and a member's phase worker", role, issue.Key, issue.Phase)
 		}
 	}
 	return nil

@@ -79,9 +79,24 @@
 # one. Once part two ran, the key-leak check counts the key's first 8 characters in the evidence
 # directory, without printing them, and fails the run on any.
 #
+# Three variables narrow part two to the runs one measurement needs, and the script passes them to
+# its driver unchanged: APPROVED_VERSION_NEWS_STEP names one step by the word the last line names
+# it by (a4, off or answers), APPROVED_VERSION_NEWS_ARM one arm (head or base), and
+# APPROVED_VERSION_NEWS_RUNS how many runs each arm makes of each step, a whole number of 1 or more.
+# Each left unset keeps every step, both arms, or three runs. The arguments check refuses with exit
+# 2 a value that names none of these, and any of the three beside --part one, --control or
+# --base-commit, which run no part two. The script then counts each arm against that many runs,
+# prints no line for a step the pick leaves out, and prints a step whose base arm the pick leaves
+# out as no control. So the measurement of the a4 base arm is one command:
+#   APPROVED_VERSION_NEWS_STEP=a4 APPROVED_VERSION_NEWS_ARM=base APPROVED_VERSION_NEWS_RUNS=10 \
+#     bash scripts/e2e/approved-version-news.sh
+# with the variables of the usage below beside them.
+#
 # Run it from a checkout on a Linux host with go, git, tar, awk, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp ANTHROPIC_BASE_URL=<model gateway> \
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+#     [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head|base] \
+#     [APPROVED_VERSION_NEWS_RUNS=<n>] \
 #     bash scripts/e2e/approved-version-news.sh [--part one|both] [--control | --base-commit <rev>]
 # LEGION_TEST_PG_DSN is required and names a loopback PostgreSQL with the pgvector extension: the
 # drivers create their daemon runs' databases and Dispatch's on it and drop them on exit, and the
@@ -165,16 +180,22 @@ control_setup_checks=5
 # daemon dies, and says nothing about the change.
 control_failure='waited [^ ]+ for a task queued for the reviewer of [^ ]+ behind its open turn; last seen: '
 
-# Each step of part two, with the word the last line names it by, and how many runs each arm makes
-# of it. The driver's own deadline is the lib's for part two: eighteen runs of real sessions took 44
-# minutes in a measured run, each bounded at eight.
+# Each step of part two, with the word the last line names it by and APPROVED_VERSION_NEWS_STEP
+# picks it by, the arms each step runs in, and how many runs each arm makes of it, both of which the
+# pick can narrow (the arguments check). The driver's own deadline is the lib's for part two,
+# part_two_minutes for each run the pick makes, the eight minutes the driver bounds a run at and
+# one for its daemon to boot and stop, with part_two_setup_minutes more for what the driver builds
+# and starts before its first run: eighteen runs of real sessions took 44 minutes in a measured
+# run.
 part_two_steps=(
   a4-the-architect-tells-the-child-reviewer:a4
   off-the-architect-tells-the-holders:off
   answers-a-stale-reviewer-moves-back-a-current-one-comments:answers
 )
+part_two_arms='head base'
 part_two_runs=3
-part_two_timeout=150m
+part_two_minutes=9
+part_two_setup_minutes=20
 
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
@@ -248,17 +269,18 @@ control_verdict() {
 }
 
 # part_two_step PROOF STEP WORD reads STEP's `run STEP <arm> <n>: <outcome> …` lines in part two's
-# driver output PROOF. A PASS or FAIL run reached the step's assertion, and it counts for its arm. A
-# SETUP run stopped before the assertion, and a HARNESS run is a fault of the harness before or
-# after it. Neither counts, and each is noted by its line. It sets step_said, the step's part of the
-# last line: WORD, each arm's passed runs of those that reached the assertion, the runs not
-# counted, and the control's verdict. The control bites only when a base run failed at its
-# assertion. It also sets head_missed: each head run that did not reach its assertion and pass, by
-# its line, each after `; `.
+# driver output PROOF, for each arm of part_two_arms, each of which the driver ran part_two_runs
+# times. A PASS or FAIL run reached the step's assertion, and it counts for its arm. A SETUP run
+# stopped before the assertion, and a HARNESS run is a fault of the harness before or after it.
+# Neither counts, and each is noted by its line. It sets step_said, the step's part of the last
+# line: WORD, each arm's passed runs of those that reached the assertion, the runs not counted,
+# and the control's verdict. The control bites only when a base run failed at its assertion, and a
+# pick that leaves the base arm out has none. It also sets head_missed: each head run that did not
+# reach its assertion and pass, by its line, each after `; `.
 part_two_step() {
-  local proof=$1 step=$2 word=$3 arm lines ran passed failed line count counts=() base_ran=0 base_passed=0 base_failed=0
+  local proof=$1 step=$2 word=$3 arm lines ran passed failed line count counts='' base_ran=0 base_passed=0 base_failed=0
   head_missed=''
-  for arm in head base; do
+  for arm in $part_two_arms; do
     lines=$(grep -E "^run $step $arm [0-9]+: " "$proof" 2>/dev/null || true)
     ran=$(grep -c . <<<"$lines" || true)
     passed=$(grep -cE "^run $step $arm [0-9]+: PASS " <<<"$lines" || true)
@@ -271,7 +293,7 @@ part_two_step() {
     fi
     [ "$ran" -eq "$part_two_runs" ] || line="$line ($ran of $part_two_runs ran)"
     note "$line"
-    counts+=("$count")
+    counts="${counts:+$counts, }$count"
     while IFS= read -r line; do
       [ -z "$line" ] || note "not counted: $line"
     done < <(grep -vE "^run $step $arm [0-9]+: (PASS |FAIL: )" <<<"$lines" || true)
@@ -284,8 +306,10 @@ part_two_step() {
       base_ran=$ran base_passed=$passed base_failed=$failed
     fi
   done
-  step_said="$word ${counts[0]}, ${counts[1]}"
-  if [ "$base_ran" -eq 0 ]; then
+  step_said="$word $counts"
+  if [[ " $part_two_arms " != *" base "* ]]; then
+    step_said="$step_said (no control: the pick leaves the base arm out)"
+  elif [ "$base_ran" -eq 0 ]; then
     step_said="$step_said (base did not run)"
   elif [ "$base_failed" -gt 0 ]; then
     step_said="$step_said (control bites)"
@@ -341,6 +365,29 @@ if [ -n "$control" ]; then
     refuse "the negative control is part one's and runs part one alone: --part both does not go with --control or --base-commit"
   parts=one
 fi
+# The pick of part two's runs, which the driver reads from the same three variables: only a run of
+# part two has runs to pick, and a value that names no step, no arm or no count is the caller's.
+pick_step=${APPROVED_VERSION_NEWS_STEP:-} pick_arm=${APPROVED_VERSION_NEWS_ARM:-} pick_runs=${APPROVED_VERSION_NEWS_RUNS:-}
+[ -z "$pick_step$pick_arm$pick_runs" ] || [ "$parts" = both ] ||
+  refuse "APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and APPROVED_VERSION_NEWS_RUNS pick part two's runs, and --part one, --control and --base-commit run part one alone"
+if [ -n "$pick_step" ]; then
+  picked='' words=''
+  for entry in "${part_two_steps[@]}"; do
+    words="${words:+$words, }${entry##*:}"
+    [ "${entry##*:}" != "$pick_step" ] || picked=$entry
+  done
+  [ -n "$picked" ] || refuse "APPROVED_VERSION_NEWS_STEP '$pick_step' names no step of part two: it is one of $words"
+  part_two_steps=("$picked")
+fi
+case "$pick_arm" in
+  '') ;;
+  head | base) part_two_arms=$pick_arm ;;
+  *) refuse "APPROVED_VERSION_NEWS_ARM '$pick_arm' names no arm: it is head or base" ;;
+esac
+if [ -n "$pick_runs" ]; then
+  [[ "$pick_runs" =~ ^[1-9][0-9]*$ ]] || refuse "APPROVED_VERSION_NEWS_RUNS '$pick_runs' is no count of runs: it is a whole number of 1 or more"
+  part_two_runs=$pick_runs
+fi
 for tool in go git tar awk python3; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
@@ -394,6 +441,13 @@ if [ "$parts" = both ]; then
   [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" packages/daemon/internal/prompts/roles)" ] ||
     refuse "the base $base_sha holds no packages/daemon/internal/prompts/roles, so part two has no base prompts"
   note "part two against the base $base_sha's prompts, Oh My Pi $LEGION_OMP_PATH, model key file $key_file (read by the driver, never printed)"
+  read -ra arms <<<"$part_two_arms"
+  part_two_timeout=$((${#part_two_steps[@]} * ${#arms[@]} * part_two_runs * part_two_minutes + part_two_setup_minutes))m
+  picked=''
+  for entry in "${part_two_steps[@]}"; do
+    picked="${picked:+$picked, }${entry##*:}"
+  done
+  note "part two runs $picked in the $part_two_arms arm(s), $part_two_runs runs each, under a deadline of $part_two_timeout"
 fi
 note "parts: $parts; evidence: $version_news_evidence"
 pass
