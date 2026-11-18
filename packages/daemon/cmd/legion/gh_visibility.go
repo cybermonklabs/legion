@@ -81,12 +81,3 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 	fmt.Fprintln(stdout, visibility)
 	return 0
 }
-
-// signalled is the status a signal that cancelled ctx ends this command with (endedBySignal), and
-// whether one did.
-func signalled(ctx context.Context) (int, bool) {
-	if cause := context.Cause(ctx); cause != nil {
-		return endedBySignal(cause)
-	}
-	return 0, false
-}

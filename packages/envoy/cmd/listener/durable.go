@@ -56,9 +56,18 @@ func applyListenerConsumerPolicy(config *nats.ConsumerConfig, subjects []string)
 // it is asked: no retry can succeed, so the listener's startup exits at once.
 var errListenerDurableRefused = errors.New("listener durable refused")
 
-// durableRefusedLine is the line a start logs when it refuses its durable, at the check after the
-// NATS connect and at the bind. The deployed durable-refusal metric filter matches it exactly
-// (defined in the deployment repository's listener infrastructure), so both sites use this constant.
+// durableRefused reports whether err ends a start's durable at once, as no retry can get past it:
+// the listener's own refusal of the durable (errListenerDurableRefused), or the server's refusal of
+// a request of the durable's read, create or update under the connection's grant
+// (bus.ErrPublishDenied), which the server gives again however often the request is sent.
+func durableRefused(err error) bool {
+	return errors.Is(err, errListenerDurableRefused) || errors.Is(err, bus.ErrPublishDenied)
+}
+
+// durableRefusedLine is the line a start logs when its durable is refused (durableRefused), at the
+// check after the NATS connect and at the bind, with the refusal as its error. The deployed
+// durable-refusal metric filter matches it exactly (defined in the deployment repository's listener
+// infrastructure), so both sites use this constant.
 const durableRefusedLine = "subscribe refused, shutting down"
 
 // listenerDurableRefusal refuses an existing durable carrying a setting the listener's consumer
@@ -184,9 +193,11 @@ type durableBind struct {
 
 // bindListenerDurable binds consumer through startListenerSubscription every interval until it
 // binds, the bus's auto-resubscribe after a reconnect binds it, the durable is refused
-// (errListenerDurableRefused, returned as is), deadline passes (errListenerDurableBindExhausted,
-// wrapping the last refusal), or ctx ends (ctx.Err()). It logs the first refusal and then one every
-// durableBindLogEvery, and the bind itself.
+// (errListenerDurableRefused, returned as is), the connection's grant refuses a request of the
+// bind (bus.ErrPublishDenied, returned as is: the grant refuses it again however often it is
+// sent, so waiting out deadline would only delay the start's end), deadline passes
+// (errListenerDurableBindExhausted, wrapping the last failure), or ctx ends (ctx.Err()). It logs
+// the first failure and then one every durableBindLogEvery, and the bind itself.
 func bindListenerDurable(ctx context.Context, client *bus.Client, consumer string, handler nats.MsgHandler, logger *logging.Logger, interval, deadline time.Duration) (durableBind, error) {
 	start := time.Now()
 	var bind durableBind
@@ -210,7 +221,7 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 		if err == nil {
 			return bound(false)
 		}
-		if errors.Is(err, errListenerDurableRefused) {
+		if durableRefused(err) {
 			return bind, err
 		}
 		if bind.waited >= deadline {
@@ -315,10 +326,11 @@ const (
 
 // awaitDurableBound waits until the server itself reports consumer delivering to client's own
 // subscription, so a rebuild reports success only once the binding exists rather than once the
-// subscribe call returned. It returns ctx.Err() when ctx ends first and an error wrapping
-// errDurableUnbound, naming how long it waited, once deadline passes. Each read runs under ctx and
-// ends no later than deadline, so neither a cancellation nor the deadline waits on a read the
-// server has not answered.
+// subscribe call returned. It returns ctx.Err() when ctx ends first, an error wrapping
+// errDurableUnbound, naming how long it waited, once deadline passes, and a read the connection's
+// grant refuses (bus.ErrPublishDenied) at once, since no later read gets past it. Each read runs
+// under ctx and ends no later than deadline, so neither a cancellation nor the deadline waits on
+// a read the server has not answered.
 func awaitDurableBound(ctx context.Context, client *bus.Client, consumer string, interval, deadline time.Duration) error {
 	start := time.Now()
 	for {
@@ -332,6 +344,9 @@ func awaitDurableBound(ctx context.Context, client *bus.Client, consumer string,
 		readCtx, cancel := context.WithTimeout(ctx, deadline-waited)
 		info, err := client.JS().ConsumerInfo(bus.Stream, consumer, nats.Context(readCtx))
 		cancel()
+		if errors.Is(err, bus.ErrPublishDenied) {
+			return fmt.Errorf("read durable %s: %w", consumer, err)
+		}
 		if err == nil && !durableUnbound(info, client) {
 			return nil
 		}

@@ -1150,6 +1150,27 @@ export function slowWrites(
   return post("/api/v1/writes/_test/slow", { body: { delay_ms: delayMs, method, path } }, options);
 }
 
+/**
+ * `GET /api/v1/messages/_test/queued`: every targeted message the server queued itself for a
+ * session that neither the listener's registry nor its known-session store held, oldest first,
+ * each as the envelope that session's agent subject would hold. Test-only endpoint (mounted when
+ * DISPATCH_TEST_HOOKS=1, see run-server.sh): the harness runs Dispatch with NATS disabled, so the
+ * server keeps them in its own memory rather than on a stream, and keeps them for its whole life -
+ * a database reset does not clear them, so a row reads its own message's (`queuedEnvelopesOf`).
+ */
+export function listQueuedMessages(options: ApiOptions = {}) {
+  return get("/api/v1/messages/_test/queued", {}, options);
+}
+
+/** The envelopes the server queued for the message `messageId` (`listQueuedMessages`), oldest
+ *  first: those whose dedupe key, `agent.<session>.<message id>:<mode>`, names it. The rows before
+ *  a row share what the server queued, so this is what a row compares with its own message. */
+export async function queuedEnvelopesOf(messageId: string, options: ApiOptions = {}) {
+  return ((await listQueuedMessages(options)).queued ?? []).filter((envelope) =>
+    envelope.dedupe_key.includes(messageId)
+  );
+}
+
 /** Adds `repo`'s `.dispatch/architecture` on `branch` as one of `project`'s sources, or moves that
  *  source to `branch` (the fake GitHub serves it). */
 export function putArchitectureSource(

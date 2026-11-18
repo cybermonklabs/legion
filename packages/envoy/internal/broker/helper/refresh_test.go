@@ -106,7 +106,7 @@ func TestARefusedRefreshDropsTheLoginAndItsFile(t *testing.T) {
 	if _, err := LoadMachineFile(b.MachineFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the machine file after a refused refresh: %v; want it deleted", err)
 	}
-	line := waitForRecord(t, &out, dropRefreshRefused+"; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)")
+	line := waitForRecord(t, &out, dropRefreshRefused+"; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it")
 	if line["level"] != "ERROR" || line["credential_id"] != held.id || line["code"] != "invalid_grant" {
 		t.Fatalf("the drop line: %v; want an ERROR naming %s and invalid_grant", line, held.id)
 	}

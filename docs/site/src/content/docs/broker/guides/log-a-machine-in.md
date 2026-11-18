@@ -182,7 +182,7 @@ says why when the machine needs it:
 ```console
 $ agent-secrets machine login-status
 none
-agent-secrets machine login-status: no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login
+agent-secrets machine login-status: no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login, and have a human approve it
 ```
 
 A login nobody approves [expires](/legion/broker/concepts/#machine-login); start a new one. When

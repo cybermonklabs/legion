@@ -76,6 +76,17 @@ type ServiceTokenVerifier interface {
 	Verify(ctx context.Context, raw string) (oidc.Claims, error)
 }
 
+// AgentPublisher is what a person's targeted message is queued through when no store of the
+// listener's holds its session (queueForUnknownSession, message_queue_publish.go): the bus client
+// (*bus.Client) where the deployment has NATS, and an AgentPublishRecorder in a test process that
+// has none.
+type AgentPublisher interface {
+	// PublishReportingDuplicateWithin publishes the envelope and returns once the stream has
+	// acknowledged it, reporting whether the stream already held it. ctx bounds the whole publish,
+	// and a publish whose ctx has ended sends nothing.
+	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
+}
+
 // Deps are the API's application dependencies.
 type Deps struct {
 	Store          *store.Store
@@ -124,6 +135,10 @@ type Deps struct {
 	// AgentStream relays a live session's own conversation to a human watching it; nil is a
 	// deployment with no NATS, where an agent view is refused STREAM_UNAVAILABLE.
 	AgentStream agentstream.Source
+	// AgentPublisher queues a person's targeted message on its session's own subject when neither
+	// the listener's registry nor its known-session store holds that session. Nil is a deployment
+	// with no NATS and no test hooks, where such a message settles failed instead.
+	AgentPublisher AgentPublisher
 	// AgentSecrets relays the credential-request UI to the secrets broker; nil (the broker URL
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
@@ -226,6 +241,9 @@ type DepsInput struct {
 	BrokerTokens *brokertoken.Verifier
 	// AgentStream is the live agent conversation relay; nil where the deployment has no NATS.
 	AgentStream agentstream.Source
+	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
+	// nil queues none. See Deps.AgentPublisher; cmd/dispatch passes its NATS client.
+	AgentPublisher AgentPublisher
 	// AgentSecretsURL is the secrets broker's API base URL (DISPATCH_AGENT_SECRETS_URL); empty
 	// means the feature is off. AgentSecretsTokenFile is the file holding Dispatch's own
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
@@ -328,6 +346,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		OIDC:                   input.OIDC,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
+		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,

@@ -955,7 +955,11 @@ What the two processes share, and what each keeps to itself:
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
   a send that meets one of those (or a receipt timeout) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
-  A request that sends during a take-over answers up to 12 seconds later, and a send to a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  A request that sends during a take-over answers up to 12 seconds later, and a mention of a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  A targeted message to such a session is queued instead at that moment:
+  when neither the listener's registry nor its known-session store holds the session, Dispatch publishes the message on the session's own subject, `notifications.agent.<session>`, under the dedupe key the listener's send would have used, and records the attempt `queued` (`api/message_queue_publish.go`).
+  The listener gives that copy up after its retry window with the agent wake, and the session reads it when it registers again under its id within the stream's 72 hours.
+  A process with no NATS (`DISPATCH_NATS_DISABLED=1` without test hooks), a failed publish, a role target, a send whose request set `connected_only`, and a model or thinking switch, which is sent `connected_only` whatever its request says, still settle `failed`.
   A process killed during the wait leaves the attempt to the delivery sweep.
 
 - Times that one process writes and another compares come from the database's clock, never a host's:
@@ -3772,6 +3776,14 @@ Each item below names a path with its method and identity, then its purpose.
 
   `{label, session}` replaces what `GET /api/v1/settings/new-issue` answers on the process the call reached, in place of what that process's environment set; an empty value is none, and a bad body is `400`.
   A browser test reads the bar with a label and a session configured and then with the session cleared, which no deployment setting can change while the server runs.
+  Not mounted otherwise.
+
+- `/api/v1/messages/_test/queued` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  List the targeted messages this process queued itself for a session that neither the listener's registry nor its known-session store held, oldest first, each as the envelope that session's own subject would hold:
+  `{"queued": [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}`.
+  A process with `DISPATCH_NATS_DISABLED=1` keeps them in its own memory, where this route reads them.
+  A process with NATS publishes them to the stream, and answers `404 QUEUED_ON_BUS` here.
   Not mounted otherwise.
 
 - `/ws/live` (GET; cookie, trusted header, or bearer)

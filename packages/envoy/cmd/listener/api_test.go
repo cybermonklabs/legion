@@ -407,8 +407,9 @@ func TestSendHandlerRefusesAModeThatIsNotADeliveryMode(t *testing.T) {
 }
 
 // TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload proves the guard
-// checks messageEnvelope's effective payload, not only the optional HTTP
-// payload field. A long structured message becomes the receiver's payload.
+// checks the envelope's effective payload (contracts.MessageEnvelope), not only
+// the optional HTTP payload field. A long structured message becomes the
+// receiver's payload.
 func TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
@@ -805,12 +806,12 @@ func trailingListeners(t *testing.T) (claimant, observer *listenerDeps) {
 	client := setupPublishTestClient(t)
 	open := func(name string) *listenerDeps {
 		t.Helper()
-		registry, err := store.Open(client.Conn, store.WithReplicas(1))
+		registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 		if err != nil {
 			t.Fatalf("open the %s's interest registry: %v", name, err)
 		}
 		waitForRegistry(t, registry)
-		sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+		sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 		if err != nil {
 			t.Fatalf("open the %s's session registry: %v", name, err)
 		}
@@ -1183,7 +1184,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		harness := newListenerDeliveryHarness(t)
 		claimant := &listenerDeps{client: harness.client, registry: harness.registry, delivery: &harness.config}
 		var err error
-		if claimant.sessions, err = session.OpenSessionRegistry(harness.client.Conn, session.WithSessionReplicas(1)); err != nil {
+		if claimant.sessions, err = session.OpenSessionRegistry(t.Context(), harness.client.Conn, session.WithSessionReplicas(1)); err != nil {
 			t.Fatalf("open the claimant's session registry: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1427,15 +1428,13 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 		role       = "restart-survivor"
 		sessionTTL = time.Minute
 	)
-	firstRegistry, err := store.Open(client.Conn, store.WithReplicas(1))
+	firstRegistry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open first role registry: %v", err)
 	}
-	firstSessions, err := session.OpenSessionRegistry(
-		client.Conn,
+	firstSessions, err := session.OpenSessionRegistry(t.Context(), client.Conn,
 		session.WithSessionReplicas(1),
-		session.WithSessionTTL(sessionTTL),
-	)
+		session.WithSessionTTL(sessionTTL))
 	if err != nil {
 		t.Fatalf("open first session registry: %v", err)
 	}
@@ -1467,11 +1466,11 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	var elapsed atomic.Int64
 	opened := time.Now()
 	clock := func() time.Time { return opened.Add(time.Duration(elapsed.Load())) }
-	restoredRegistry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock))
+	restoredRegistry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(clock))
 	if err != nil {
 		t.Fatalf("restore role registry: %v", err)
 	}
-	restoredSessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	restoredSessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("restore session registry: %v", err)
 	}
@@ -2207,7 +2206,7 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 
 func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	client := setupPublishTestClient(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -2215,7 +2214,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry connection: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(routeClient.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), routeClient.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -2571,7 +2570,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			registry.EndWatch(endCtx)
 			cancel()
-			writer, err := store.Open(setupPublishTestClient(t).Conn, store.WithReplicas(1))
+			writer, err := store.Open(t.Context(), setupPublishTestClient(t).Conn, store.WithReplicas(1))
 			if err != nil {
 				t.Fatalf("open the writing listener's registry: %v", err)
 			}
@@ -2652,7 +2651,7 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 			endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			sessions.EndWatch(endCtx)
 			cancel()
-			writer, err := session.OpenSessionRegistry(setupPublishTestClient(t).Conn, session.WithSessionReplicas(1))
+			writer, err := session.OpenSessionRegistry(t.Context(), setupPublishTestClient(t).Conn, session.WithSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the writing listener's session registry: %v", err)
 			}
@@ -2948,18 +2947,18 @@ func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
 	if err := sessions.Put("ses_live", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register ses_live: %v", err)
 	}
-	legionAgents, err := legionagents.Open(client.Conn, legionagents.WithReplicas(1))
+	legionAgents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open legion agent registry: %v", err)
 	}
@@ -4267,13 +4266,13 @@ func decodeRegistrationView(t *testing.T, recorder *httptest.ResponseRecorder) s
 func registrationViewDeps(t *testing.T) *listenerDeps {
 	t.Helper()
 	client := setupPublishTestClient(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

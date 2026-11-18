@@ -201,6 +201,11 @@ const ReceiptTimeoutCause = "The listener didn't answer within the send window; 
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
 
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = 256
+
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the `dispatch search`
 // command's cannot drift apart.

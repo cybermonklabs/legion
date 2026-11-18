@@ -263,7 +263,7 @@ func TestLiveRowsRenderWhatTheSessionsReported(t *testing.T) {
 
 // Open names every open row in Table order, the live rows a session's check failed among the
 // deployment gaps; OpenFromConfiguration never names a live row, since no legion.yaml line
-// decides one, so `legion start --check-config` says nothing of them.
+// decides one, so `legion config check` says nothing of them.
 func TestOpenNamesLiveRowsInTableOrder(t *testing.T) {
 	d := Deployment{Runtime: "tmux", Decided: map[Name]string{ModelFallback: "the host's own", ResourceLimits: "a pane has none"},
 		Sessions: []Session{paneSession("LEGION-663", claim.RoleArchitect, measured, map[Name]string{Subagents: "task agents are disabled", GitHub: "gh: not logged in"})}}
@@ -455,7 +455,7 @@ func TestOpenAndLogNameTheGapsAlone(t *testing.T) {
 	}
 }
 
-// OpenFromConfiguration is what `legion start --check-config` prints: the open rows the file alone
+// OpenFromConfiguration is what `legion config check` prints: the open rows the file alone
 // decides, each as Report renders it — secrets where no broker is configured, resource-limits where
 // a pod lacks a reservation — and never a configured broker's secrets row, whose login boot
 // measures, nor model fallback, which the probe or the plugin gate reads, nor pool capacity, which

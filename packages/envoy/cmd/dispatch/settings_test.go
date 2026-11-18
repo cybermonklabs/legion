@@ -827,7 +827,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if err != nil {
 				t.Fatalf("build the webhook sweeper: %v", err)
 			}
-			if _, err := sweeper.Open(); err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3: ") {
+			if _, err := sweeper.Open(t.Context()); err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3: ") {
 				t.Errorf("the redelivery bucket at ENVOY_NATS_REPLICAS=3 on one server: err = %v, want the server's refusal naming the setting", err)
 			}
 			github := githubapptest.NewWebhook(t, &key.PublicKey, replicasTestClientID, nil)

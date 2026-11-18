@@ -12,7 +12,9 @@
 # means booting and running it, so the rig is part of the proof rather than a test beside it.
 #
 # THE VERBS, in the order the `tool-fallback` job runs them; `tool-fallback-arm` runs
-# `start-fault`, `probe`, `installed-bun` and `stop-fault`.
+# `installed-bun` and `version-answers` before the fault, then `start-fault`, `probe`,
+# `installed-bun`, `shorten-ladder`, and one `probe`, `version-answers` and `refusals` per
+# faulted install, then `stop-fault`.
 #
 #   origin-start
 #       Writes a small python3 HTTP origin to $RUNNER_TEMP/ci-tools-proof/origin.py, starts it on
@@ -273,7 +275,8 @@ stand_in="$stand_in_bin/curl"
 
 # The rows a case installs, which are the rows `stage` fetches the correct bytes of.
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
-# and no case installs them, so nothing would serve their payload.
+# and no case installs them, so nothing would serve their payload. The -aarch64 rows are the
+# `tool-fallback-arm` job's, whose installs read their real sources and no origin of this rig's.
 STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cli"
 
 # The hosts both jobs fault, written here and in no step of .github/workflows/ci.yaml:
