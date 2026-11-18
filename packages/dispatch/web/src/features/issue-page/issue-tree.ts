@@ -477,13 +477,14 @@ export function lineWordsRaw(node: { readonly text: string; readonly tree?: Disp
 
 /** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: the first block of
  *  the node's reading read to words by `firstBlock`, and where the node has none the first block
- *  of its stored text's reading (`storedReading`) read the same way, its white space collapsed. */
+ *  of its stored text's reading (`storedReading`) read the same way, its white space collapsed.
+ *  The node holds that reading, so it is remembered while the node lives. */
 function lineWordsBy(
   node: { readonly text: string; readonly tree?: DisplayTree },
   firstBlock: (reading: DisplayTree) => string
 ): string {
   if (node.tree !== undefined) return firstBlock(node.tree);
-  return firstBlock(storedReading(node.text)).replace(/\s+/gu, " ").trim();
+  return firstBlock(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
 }
 
 /** The words of the first top-level block of a reading that holds any (`lineWords`), each bare

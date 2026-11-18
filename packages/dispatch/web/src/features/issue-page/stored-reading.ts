@@ -6,7 +6,6 @@ import { frontmatter } from "micromark-extension-frontmatter";
 import { gfm } from "micromark-extension-gfm";
 
 import type { DisplayTree } from "../../api/types";
-import { rememberUpTo } from "../refs/worker-queue";
 
 // A stored text is parsed here on the page's own thread, often before the lazy markdown engine
 // has loaded, so the bound that engine holds micromark's lists and quotes to is put in place
@@ -44,32 +43,70 @@ const STORED_TEXT_PARSE: Options = {
   mdastExtensions: [gfmFromMarkdown(), frontmatterFromMarkdown(["yaml"])],
 };
 
-/** How many readings are remembered (`storedReading`): enough that a page drawn again finds the
- *  readings its last draw made rather than parsing each text anew, and few enough that what is
- *  remembered stays small however many texts a session reads. */
-const READING_LIMIT = 500;
+/** One remembered reading (`readings`): the reading, and how many registrations (`releases`) of
+ *  the holders that asked for its text still hold it. */
+interface HeldReading {
+  readonly reading: DisplayTree;
+  holders: number;
+}
 
-/** The readings made so far, by the text each was read from, the one read longest ago first: a
- *  reading is moved to the end each time it is read (`storedReading`), so where the memo is full
- *  the reading it drops (`rememberUpTo`) is the one read longest ago, never one the page still
- *  draws. */
-const readings = new Map<string, DisplayTree>();
+/** The readings some living holder asked for (`storedReading`), by the text each was read from.
+ *  An entry goes when the last registration that holds it is released (`releases`). */
+const readings = new Map<string, HeldReading>();
+
+/** The text each holder last asked for and that text's reading, so a holder asking again for the
+ *  same text finds its own answer and is registered no second time (`storedReading`). It holds
+ *  no holder alive. */
+const held = new WeakMap<object, { readonly markdown: string; readonly reading: DisplayTree }>();
+
+/** Releases one holder's hold on a text once that holder is collected: the held value is the
+ *  text, whose count of holders goes down by one, and its reading goes with the last of them. */
+const releases = new FinalizationRegistry<string>((markdown) => {
+  const entry = readings.get(markdown);
+  if (entry === undefined) return;
+  entry.holders -= 1;
+  if (entry.holders === 0) readings.delete(markdown);
+});
 
 /** The marks of a run that stands in no mark. */
 const NO_MARKS: readonly DisplayTree[] = [];
 
-/** A line ending inside a text run, in any of the three forms markdown reads as one. */
+/** A line ending, in any of the three forms markdown reads as one: inside a text run, where the
+ *  parse leaves it, and between the lines of a plain text (`plainReading`). */
 const LINE_FEED = /\r\n?|\n/gu;
+
+/**
+ * Whatever in a stored text the parse could read as markup (`isPlainText`). Each alternative errs
+ * toward the parse: a text it flags is parsed, so it may flag a text that reads as plain, and it
+ * misses no markup.
+ * - Anywhere: `\` an escape or a hard break; `` ` `` code; `*` and `_` emphasis and strong, and a
+ *   list or a thematic break made of them; `[` and `]` a link, an image, a footnote, a task box
+ *   or a link reference definition; `<` and `>` HTML, an autolink and a quote; `&` an entity or
+ *   character reference; `|` a table; `~` strikethrough and a tilde fence; NUL, which the parse
+ *   replaces with U+FFFD; a byte order mark, which the parse drops where a text opens with one,
+ *   so the line after it can open a block.
+ * - A line opening, past spaces and tabs, with `#`, `+`, `=` or `-`: a heading, a list, a setext
+ *   underline, a thematic break or front matter; or with up to nine digits and `.` or `)`: an
+ *   ordered list.
+ * - A line indented into code: a tab after at most three spaces, which reaches the fourth column,
+ *   or four spaces.
+ */
+const MARKUP = /[\\`*_[\]<>&|~\0\uFEFF]|^[ \t]*(?:[#+=-]|\d{1,9}[.)])|^ {0,3}\t|^ {4}/mu;
+
+/** The spaces and tabs a line opens and ends with, which the parse leaves out of a paragraph's
+ *  words; no other white space, which it keeps. */
+const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
 
 /**
  * The reading of a stored markdown text: the text parsed by the base of the page's markdown
  * engine's parse (`STORED_TEXT_PARSE`) and held as a `DisplayTree` of the shape the server's
- * reading of a text has. The walks that read the server's reading - its words (`wordsOf`), a
- * node's first block (`lineWords`), its addresses written short (`withShortAddresses`) - so read
- * a stored text the same way. Its words are the words of that base parse, which are what the
- * server's reading holds for every text that holds neither a container directive nor a Proof
- * mark span (`STORED_TEXT_PARSE`), so a place that has only the text reads what the server's
- * reading of it would hold (R21).
+ * reading of a text has, or, for a text that holds no markup (`isPlainText`), built as that parse
+ * would read it (`plainReading`). The walks that read the server's reading - its words
+ * (`wordsOf`), a node's first block (`lineWords`), its addresses written short
+ * (`withShortAddresses`) - so read a stored text the same way. Its words are the words of that
+ * base parse, which are what the server's reading holds for every text that holds neither a
+ * container directive nor a Proof mark span (`STORED_TEXT_PARSE`), so a place that has only the
+ * text reads what the server's reading of it would hold (R21).
  *
  * The reading holds what decides the words and where they stand apart: the blocks, the text runs
  * and the marks on them, by the server's names, and no attribute, since no word lies in one. A
@@ -83,22 +120,78 @@ const LINE_FEED = /\r\n?|\n/gu;
  * `pmdoc/parse.go`); code - a code span and a code block - holds its text as the parse gives it,
  * and so does front matter, which reads between its two fences as the server writes it.
  *
- * The page reads a node's line on every draw, so the reading of each text is remembered, up to
- * `READING_LIMIT` texts, the one read longest ago dropped first. A reading is shared by every
- * caller that reads its text, so nothing may change one: `withShortAddresses` writes an address
- * into a copy of the nodes it changes.
+ * The page reads a node's line on every draw. A plain text's reading costs a split, so it is
+ * built each time and remembered nowhere. Any other text's reading is remembered while any
+ * `holder` that asked for it lives - a tree node, a read's answer, another caller's object - and
+ * goes once the last of them is collected. The memo has no bound on how many readings it holds:
+ * a memo bounded by count drops every reading on a redraw once an issue holds more texts than the
+ * bound, while this one holds each reading exactly as long as a tree node, a read's answer or
+ * another caller that asked for it still lives, and a FinalizationRegistry's cleanup never runs
+ * inside the synchronous code that drew, so one draw's readings are all there for the next. A
+ * caller that names no holder is answered the reading a holder holds where there is one, and
+ * otherwise a reading parsed for it alone and remembered nowhere, since nothing would ever
+ * release it. A reading is shared by every caller that reads its text, so nothing may change
+ * one: `withShortAddresses` writes an address into a copy of the nodes it changes.
  */
-export function storedReading(markdown: string): DisplayTree {
-  const remembered = readings.get(markdown);
-  if (remembered !== undefined) {
-    // Reading a reading keeps it: it goes to the end, behind every reading read since.
-    readings.delete(markdown);
-    readings.set(markdown, remembered);
-    return remembered;
+export function storedReading(markdown: string, holder?: object): DisplayTree {
+  if (isPlainText(markdown)) return plainReading(markdown);
+  if (holder === undefined) return readings.get(markdown)?.reading ?? parsedReading(markdown);
+  const own = held.get(holder);
+  if (own?.markdown === markdown) return own.reading;
+  let entry = readings.get(markdown);
+  if (entry === undefined) {
+    entry = { holders: 0, reading: parsedReading(markdown) };
+    readings.set(markdown, entry);
   }
-  const reading = withContent("doc", blocksOf(fromMarkdown(markdown, STORED_TEXT_PARSE).children));
-  rememberUpTo(readings, READING_LIMIT, markdown, reading);
-  return reading;
+  // A holder new to this text holds it until the holder is collected, even where it asks for
+  // another text after: this registration releases this text then, and the other's its own.
+  entry.holders += 1;
+  releases.register(holder, markdown);
+  held.set(holder, { markdown, reading: entry.reading });
+  return entry.reading;
+}
+
+/** Whether `markdown` holds nothing the parse could read as markup (`MARKUP`), so that its
+ *  reading is its paragraphs' words alone (`plainReading`). */
+export function isPlainText(markdown: string): boolean {
+  return !MARKUP.test(markdown);
+}
+
+/**
+ * The reading the parse gives a plain text (`isPlainText`), built without the parse. Such a text
+ * is paragraphs and nothing else, each a run of lines between lines that hold only spaces and
+ * tabs, which are blank. The parse leaves out of a paragraph's words the spaces and tabs each of
+ * its lines opens and ends with, and reads a soft line break and a hard one - two spaces or more
+ * before the line ending - each as one space between words, so a paragraph's words are its lines
+ * trimmed of spaces and tabs, joined by one space. A text with no paragraph is an empty document.
+ */
+export function plainReading(markdown: string): DisplayTree {
+  const paragraphs: DisplayTree[] = [];
+  let lines: string[] = [];
+  for (const line of markdown.split(LINE_FEED)) {
+    const words = line.replace(EDGE_SPACE, "");
+    if (words !== "") {
+      lines.push(words);
+    } else if (lines.length > 0) {
+      paragraphs.push(paragraphOf(lines));
+      lines = [];
+    }
+  }
+  if (lines.length > 0) paragraphs.push(paragraphOf(lines));
+  return withContent("doc", paragraphs);
+}
+
+/** A paragraph of a plain text (`plainReading`): its trimmed lines as one text run, one space
+ *  between each two. */
+function paragraphOf(lines: readonly string[]): DisplayTree {
+  return { content: [{ text: lines.join(" "), type: "text" }], type: "paragraph" };
+}
+
+/** The reading of a stored text by the parse alone (`STORED_TEXT_PARSE`), with no plain path and
+ *  nothing remembered: what `storedReading` reads a text by where it holds no reading of it, and
+ *  what a test holds the plain path (`plainReading`) equal to. */
+export function parsedReading(markdown: string): DisplayTree {
+  return withContent("doc", blocksOf(fromMarkdown(markdown, STORED_TEXT_PARSE).children));
 }
 
 /** The readings of `nodes`, the blocks of one container, in order, less each that draws nothing

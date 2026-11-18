@@ -323,11 +323,12 @@ function decisionWords(row: Pick<Decision, "text" | "text_tree">): string {
 
 /** The reading a decision is read by, the one rule this module reads a decision by: the server's
  *  reading of its text (`Decision.text_tree`) where the read carried one that holds blocks, and
- *  otherwise the reading of its stored text (`storedReading`). A reading with no `content` holds
- *  no blocks and is none, so a decision whose read sent one is read by its stored text. */
+ *  otherwise the reading of its stored text (`storedReading`), which the row holds, so it is
+ *  remembered while the row lives. A reading with no `content` holds no blocks and is none, so a
+ *  decision whose read sent one is read by its stored text. */
 function readingOf(row: Pick<Decision, "text" | "text_tree">): DisplayTree {
   const tree = row.text_tree;
-  return tree !== undefined && Array.isArray(tree.content) ? tree : storedReading(row.text);
+  return tree !== undefined && Array.isArray(tree.content) ? tree : storedReading(row.text, row);
 }
 
 /** How many places of `text` hold `quote` and start before `end`, overlapping ones included, as

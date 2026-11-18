@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 
+import { wordsOf } from "../refs/tree-fragment";
 import { lineWordsRaw } from "./issue-tree";
-import { plainWordsRaw } from "./tree-drafts";
+import { isPlainText, parsedReading, plainReading, storedReading } from "./stored-reading";
+import { plainWords, plainWordsRaw, withShortAddresses } from "./tree-drafts";
 
 /** A wall-clock budget for one stored text read to words, not one of the machine-sensitive waits
  *  this package's defaults cover (`web/src/__tests__/setup.ts`). The regression it guards, a
@@ -67,4 +69,129 @@ test("the lines of more stored texts than the memo holds are drawn again without
   const start = performance.now();
   for (const text of texts) lineWordsRaw({ text });
   expect(performance.now() - start).toBeLessThan(REDRAW_BUDGET_MS);
+});
+
+/** Texts that hold nothing the parse reads as markup, each with a turn the plain path must read as
+ *  the parse does: line breaks soft and hard, the spaces and tabs a line opens and ends with,
+ *  blank lines, white space the parse keeps, addresses and links the parse reads as words, and
+ *  the line endings markdown knows. */
+const PLAIN_TEXTS: readonly string[] = [
+  "Keep the model pure.",
+  "The first line\nwraps onto a second\nand a third.",
+  "A line that ends in two spaces  \nbreaks before this one.",
+  "A line that ends in three spaces   \nbreaks too.",
+  "A line that ends in one space \nruns on.",
+  "A line that ends in a tab\t\nruns on.",
+  "One paragraph.\n\nAnother paragraph.",
+  "One paragraph.\n   \nAnother after a blank line of spaces.\n \n\nAnd a third.",
+  "   Up to three spaces open this line,\n  two open this one,\n and one this.",
+  "A non-breaking\u00a0space between two words.",
+  "A line ending in a non-breaking space\u00a0\nruns on.",
+  "Tabs\tinside\ta line.",
+  "See dispatch://ACME-12 for the plan.",
+  "Read dispatch://ACME-12/spec#b-r1 first, then dispatch://ACME-12.",
+  "The page https://example.com/a?b=c answers.",
+  "Or www.example.com, which links too.",
+  "Mail ops@example.com about it.",
+  "exit 0 (73 pass, 0 fail).",
+  "2026 was the year it shipped.",
+  "1a. is no list marker, nor is 1234567890. with ten digits.",
+  "1234567890. ten digits open no list.",
+  "Issue #12 holds it, and so does this # sign.",
+  "A well-known, long-standing rule.",
+  "Time: 10:30, path: /usr/local/bin, ratio 3/4.",
+  "Ünïcödé wörds, 漢字, Ελληνικά and an emoji 🚀 or 👩‍💻.",
+  "Quotes ‘curly’ and “double”, an ellipsis… and a dash — here.",
+  "A question? An answer! Fifty percent, 50%, five dollars, $5, a caret ^ and braces {a}.",
+  "A plus + sign, an equals = sign and a minus - sign inside a line.",
+  "   \n  \n ",
+  "",
+  "x",
+  "First line\rsecond line\r\rthird paragraph",
+  "First line\r\nsecond line\r\n\r\nthird paragraph\r\n",
+  "Mixed\r\nline\nendings\rhere",
+  "\n\nLeading blank lines, then words.",
+  "Words, then trailing blank lines and spaces.\n\n  \n",
+  "A paragraph whose last line ends in two spaces  ",
+  "A line\n\n\n\nfar from the next",
+];
+
+// A text that holds no markup is read without the parse (`plainReading`), so its words must be
+// the parse's words to the character: its whole words, the first block a node's line is cut from,
+// and its words with each address written short.
+test("a plain text is read without the parse into the words the parse reads", () => {
+  expect(PLAIN_TEXTS.length).toBeGreaterThanOrEqual(30);
+  for (const text of PLAIN_TEXTS) {
+    const label = JSON.stringify(text);
+    expect(isPlainText(text), label).toBe(true);
+    const plain = plainReading(text);
+    const parsed = parsedReading(text);
+    expect(wordsOf(plain), label).toBe(wordsOf(parsed));
+    expect(lineWordsRaw({ text, tree: plain }), label).toBe(lineWordsRaw({ text, tree: parsed }));
+    expect(wordsOf(withShortAddresses(plain)), label).toBe(wordsOf(withShortAddresses(parsed)));
+    const words = wordsOf(parsed).replace(/\s+/gu, " ").trim();
+    expect(plainWordsRaw(text), label).toBe(words);
+    expect(plainWords(text), label).toBe(
+      wordsOf(withShortAddresses(parsed)).replace(/\s+/gu, " ").trim()
+    );
+    expect(lineWordsRaw({ text }), label).toBe(
+      lineWordsRaw({ text, tree: parsed }).replace(/\s+/gu, " ").trim()
+    );
+  }
+});
+
+// Each family of markup the parse reads sends a text to the parse, and the text then reads as
+// the parse reads it.
+test("a text holding any family of markup is read by the parse", () => {
+  for (const text of [
+    "a `b` c",
+    "a *b*",
+    "a _b_",
+    "a \\* b",
+    "[x](y)",
+    "![i](u)",
+    "a [^1] note",
+    "- [x] done",
+    "<!-- c -->",
+    "<https://example.com>",
+    "> quote",
+    "a &amp; b",
+    "a | b",
+    "~~x~~",
+    "a\0b",
+    "\uFEFF# Title",
+    "# h",
+    "   ## indented heading",
+    "- item",
+    "+ item",
+    "1. one",
+    "2) two",
+    "a\n---",
+    "---",
+    "a\n===",
+    "---\ntitle: x\n---\nbody",
+    "    code",
+    "\tcode",
+    "  \tcode",
+    "a\n    lazy",
+  ]) {
+    const label = JSON.stringify(text);
+    expect(isPlainText(text), label).toBe(false);
+    expect(storedReading(text), label).toEqual(parsedReading(text));
+  }
+});
+
+// A parsed reading is remembered while any holder that asked for its text lives, and shared:
+// another holder, and a caller that names none, read the same reading rather than a parse of
+// their own.
+test("a parsed reading is shared by every holder of its text and by a caller naming none", () => {
+  const text = "A **held** reading of `code` no other test reads.";
+  const first = {};
+  const second = {};
+  const reading = storedReading(text, first);
+  expect(storedReading(text, second)).toBe(reading);
+  expect(storedReading(text)).toBe(reading);
+  expect(storedReading(text, first)).toBe(reading);
+  // Both holders are read here, so both live to the end of the test.
+  expect(first).not.toBe(second);
 });

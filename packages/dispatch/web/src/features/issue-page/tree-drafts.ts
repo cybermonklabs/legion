@@ -297,7 +297,7 @@ export function treeContext(
       return documentWord(reads.issue, route.key === key ? documents.get(route.slug) : undefined);
     }
     if (target?.kind === "ask" || target?.kind === "comment" || target?.kind === "message") {
-      return plainWords(target.name);
+      return plainWords(target.name, target);
     }
     return blockWords(target?.name ?? "");
   };
@@ -406,18 +406,22 @@ export function blockWords(name: string): string {
  * an autolink's words, its address, read short as a bare address does. An address in code reads
  * as its author wrote it, as a rendered body draws it: a code span holding
  * `dispatch read dispatch://CORE-2` keeps its address.
+ *
+ * `holder` is what holds the text, a read's answer: the text's reading is remembered while it
+ * lives (`storedReading`). With none, a reading is remembered only where a holder holds it.
  */
-export function plainWords(markdown: string): string {
-  return wordsOf(withShortAddresses(storedReading(markdown)))
+export function plainWords(markdown: string, holder?: object): string {
+  return wordsOf(withShortAddresses(storedReading(markdown, holder)))
     .replace(/\s+/gu, " ")
     .trim();
 }
 
 /** The words of a stored markdown text as `plainWords` reads them, with no address written
  *  short: a bare address and an autolink's stay as written. A caller that names each reference
- *  itself reads these, since a short form leaves it no address to name. */
-export function plainWordsRaw(markdown: string): string {
-  return wordsOf(storedReading(markdown)).replace(/\s+/gu, " ").trim();
+ *  itself reads these, since a short form leaves it no address to name. `holder` is what holds
+ *  the text, as `plainWords` takes it. */
+export function plainWordsRaw(markdown: string, holder?: object): string {
+  return wordsOf(storedReading(markdown, holder)).replace(/\s+/gu, " ").trim();
 }
 
 /**
