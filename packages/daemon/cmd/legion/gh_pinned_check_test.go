@@ -12,9 +12,15 @@ import (
 )
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
-// from, leak-check-v15's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
-// ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
-const ghPinnedCheckPortSHA256 = "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554"
+// from, leak-check-v18's. From leak-check-v15, which the port was first written from, to v18,
+// is_read, READ_ALL and READ_TWO are the same byte for byte, gh_guard returns before a lookup where
+// it did, and collect reads the endpoint, the method, the field mark, the input and the host as it
+// did. api_read changed in one line: it asks graphql_endpoint whether the endpoint is GitHub's
+// GraphQL one, which cuts the endpoint at its first `?` or `#` before it compares it with
+// `graphql`, so ghPinnedAPIRead cuts it there too. TestGhReadsAreProvenAgainstThePinnedCheck fails
+// while it is not ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves
+// with it.
+const ghPinnedCheckPortSHA256 = "9c8aa217e9bade9e1f82ae59120f0a86b97be208375f1dde592b6c9da9fd61d7"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // ghPinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether
@@ -111,9 +117,12 @@ var (
 // the last input as given.
 //
 // api_read then reads a read where the host is github.com, the endpoint holds no `://` and is not
-// `graphql` once its leading slashes are gone, the call has no input, and the method, or the
-// field mark where no method is given, is one of "0", "GET" and "HEAD": the check's
-// `(st.M or str(st.F)) in ("0", "GET", "HEAD")`, with the field mark 0 or 1.
+// GitHub's GraphQL one, and the call has no input, and the method, or the field mark where no
+// method is given, is one of "0", "GET" and "HEAD": the check's `(st.M or str(st.F)) in ("0",
+// "GET", "HEAD")`, with the field mark 0 or 1. The endpoint is GraphQL's where it is `graphql` once
+// its leading slashes are gone and it is cut at its first `?` or `#` (the check's
+// graphql_endpoint, which also strips a leading scheme and host: an endpoint holding `://` is no
+// read before that matters).
 func ghPinnedAPIRead(args []string) bool {
 	var endpoint, method, host, input, pending string
 	field := false
@@ -159,7 +168,11 @@ func ghPinnedAPIRead(args []string) bool {
 	if len(host) != len("github.com") || !strings.EqualFold(host, "github.com") || strings.Contains(endpoint, "://") {
 		return false
 	}
-	if strings.TrimLeft(endpoint, "/") == "graphql" || input != "" {
+	path := strings.TrimLeft(endpoint, "/")
+	if end := strings.IndexAny(path, "?#"); end >= 0 {
+		path = path[:end]
+	}
+	if path == "graphql" || input != "" {
 		return false
 	}
 	if method != "" {
