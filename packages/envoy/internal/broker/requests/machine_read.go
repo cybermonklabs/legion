@@ -53,7 +53,24 @@ const NarrowingRefusedMessage = "broker: narrowing refused"
 // most often "aud does not match", from a request signed for another BROKER_PUBLIC_URL, after
 // the public URL changed while it waited or when a second broker shares this database. It names
 // the record id and the reason. Every other record of the list is listed and can be decided.
+// A request whose record is signed for another broker address stays off every list here only
+// until its session asks this broker again for one of its names: Create then ends it
+// (RequestEndedBrokerMovedMessage).
 const PendingLeftOutMessage = "broker: a pending request's record does not verify for this broker; it is left out of the pending list"
+
+// RequestEndedBrokerMovedMessage is logged, at INFO, once for each pending request Create ends
+// because its record is signed for another broker address (signedForAnotherBroker): its session
+// asked a broker of another BROKER_PUBLIC_URL that shares this database, or this broker before
+// its public URL changed, and asks again here, where no person and no judge could decide the
+// request it left waiting (PendingLeftOutMessage). It is written once the transaction that ended
+// the request has committed, beside the request.cancelled grant-log line of the same end, so a
+// Create that rolls back or whose commit fails writes none. It carries request=<the ended
+// request's id>, record_id=<its credential-request record's id>, new_request=<the request the
+// session is referred to now: the one Create made, or the pending request of this broker it
+// coalesced onto or refused the ask with ErrRequestPending for> and enrollment=<the enrollment
+// that asked>, and nothing else. Each is an id, so the line holds no secret value, no token and no
+// request object.
+const RequestEndedBrokerMovedMessage = "broker: a pending request's record is signed for another broker address; it is ended, and its session's new request replaces it"
 
 // Release is one release of a grant: the values the session may hold, when the grant expires,
 // and, when the grant holds a name behind the airlock, how to reach the proxy that holds the
@@ -832,6 +849,13 @@ type pendingRequestRow struct {
 	// Legacy is a request written before migration 0013 (writtenBeforeMigration13), which asked
 	// for no lifetime and recorded the release's fixed one.
 	Legacy bool
+	// RecordID, RecordBody and RecordCreatedAt are the request's credential-request record: its
+	// id, its canonical body and when it was written, which is what signedForAnotherBroker
+	// verifies it against. They are pointers because the left join reads NULL in all three for a
+	// request with no record, which pgx scans into no string and no time.Time.
+	RecordID        *string
+	RecordBody      *string
+	RecordCreatedAt *time.Time
 }
 
 // pendingRequest returns the oldest pending request for any name sorted names shares. Create holds
@@ -841,12 +865,17 @@ type pendingRequestRow struct {
 // under the enrollment holding it now: the moved session coalesces onto the card a person is
 // already holding rather than opening a second one, and the box it moved off, which holds the
 // card no longer, is refused nothing.
+// It reads the request's credential-request record beside it, so Create can tell one signed for
+// another broker address (signedForAnotherBroker), end it and ask again, which then answers the
+// next oldest. The record is a left join, so a request with no record is still found, as before.
 func pendingRequest(ctx context.Context, q querier, enrollmentID string, sorted []string) (pendingRequestRow, error) {
-	rows, err := q.Query(ctx, `select r.id, r.lifetime_seconds, array_agg(s.name order by s.name), `+writtenBeforeMigration13("r")+`
+	rows, err := q.Query(ctx, `select r.id, r.lifetime_seconds, array_agg(s.name order by s.name), `+writtenBeforeMigration13("r")+`,
+			cr.id, cr.body, cr.created_at
 		from requests r join request_secrets s on s.request_id=r.id
+		left join credential_requests cr on cr.id = r.record_id
 		where r.enrollment_id=$1 and r.state='pending' and exists (
 			select 1 from request_secrets matching where matching.request_id=r.id and matching.name = any($2)
-		) group by r.id, r.lifetime_seconds, r.created_at order by min(r.created_at)`, enrollmentID, sorted)
+		) group by r.id, r.lifetime_seconds, r.created_at, cr.id, cr.body, cr.created_at order by min(r.created_at)`, enrollmentID, sorted)
 	if err != nil {
 		return pendingRequestRow{}, err
 	}
@@ -855,7 +884,8 @@ func pendingRequest(ctx context.Context, q querier, enrollmentID string, sorted 
 		return pendingRequestRow{}, rows.Err()
 	}
 	var pending pendingRequestRow
-	if err := rows.Scan(&pending.ID, &pending.Lifetime, &pending.Names, &pending.Legacy); err != nil {
+	if err := rows.Scan(&pending.ID, &pending.Lifetime, &pending.Names, &pending.Legacy,
+		&pending.RecordID, &pending.RecordBody, &pending.RecordCreatedAt); err != nil {
 		return pendingRequestRow{}, err
 	}
 	return pending, rows.Err()
@@ -873,6 +903,21 @@ func sameLifetime(a, b *int) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+// signedForAnotherBroker reports whether pending request p's record is signed for another broker
+// address: its request object does not verify for this broker, by the check PendingForApprover
+// lists a record by (requestedIdentifiers), because its aud is not Machine.Audience
+// (record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
+// approver's list shows it and the judge was never handed it. A request with no record, a body
+// that does not parse and every other refusal (a signature, a time) answer false, so Create
+// applies today's rules to such a request: the broker's move is the one reason it ends one.
+func (m *Machine) signedForAnotherBroker(p pendingRequestRow) bool {
+	if p.RecordBody == nil || p.RecordCreatedAt == nil {
+		return false
+	}
+	_, err := m.requestedIdentifiers(*p.RecordBody, *p.RecordCreatedAt)
+	return errors.Is(err, record.ErrAudienceMismatch)
 }
 
 // querier is what a read takes to run inside a transaction or straight on the pool.
