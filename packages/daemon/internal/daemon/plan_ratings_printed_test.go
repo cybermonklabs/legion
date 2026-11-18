@@ -32,7 +32,7 @@ func defaultPlanPrinted() string {
 }
 
 // plansPrintedWith is what `dispatch plans --project SR1` prints of one finished issue whose
-// ratings print as ratings, the answer both tests below parse.
+// ratings print as ratings, the answer the tests below parse.
 func plansPrintedWith(ratings string) string {
 	return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() +
 		" ratings " + ratings + " time 0h1m failed steps 0"

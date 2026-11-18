@@ -366,8 +366,8 @@ func setOnce(nodes map[string]map[string]any, stored map[string]any, key, id str
 // putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does: only
 // the session legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), a plan
 // names its generation, its source and at least one task, each with at least one step, and a plan
-// of the source default names no document and no version (400 PLAN_INPUT otherwise, before the id
-// is read, as the store checks a write's fields before it finds the node), an id whose plan is
+// of the source default names no document and no version (400 PLAN_INPUT otherwise, before the
+// node of its id is found, as the store checks a write's fields first), an id whose plan is
 // another issue's is refused 409 PLAN_OTHER_ISSUE and nothing of the write is kept, each field is
 // set once, and the answer is 200 with the plan as it stands after the write.
 func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
@@ -459,12 +459,13 @@ func issueOfDispatchPath(path string) string {
 // The board refuses a write whose id names a record or a plan of another issue, as Dispatch does:
 // 409 STEP_OTHER_ISSUE from both step routes and 409 PLAN_OTHER_ISSUE from the plan route, keeping
 // nothing of the write, so the record and the plan stay their first issue's as they were. Each
-// refused write is one Dispatch takes under its own issue, so the 409 is the other-issue rule's.
-// The rating of another issue's record of kind step is refused for its issue, not its kind, since
+// refused write but the rating of the step record is one Dispatch takes under its own issue, so
+// the 409 is the other-issue rule's. That rating Dispatch refuses under its own issue too, for the
+// record's kind (400 STEP_INPUT), and under another issue for its issue, not its kind, since
 // Dispatch's store judges the issue before the kind the record holds (workflowstore's putNode). A
-// plan Dispatch refuses for what it states is refused 400 PLAN_INPUT before its id is read, as the
-// store checks a plan write's fields before it finds the node (workflowstore's PutPlan): a plan
-// with no task, and a task with no step, under the other issue's key.
+// plan Dispatch refuses for what it states is refused 400 PLAN_INPUT under any issue's key, since
+// the store checks a plan write's fields before it finds the node of its id (workflowstore's
+// PutPlan): a plan with no task, and a task with no step, under the other issue's key.
 func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 	b := newLiveDispatch(t, "SR1")
 	first, other := "SR1-1", "SR1-2"
@@ -530,7 +531,7 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 	} {
 		write := map[string]any{"generation": 2, "source": "default", "tasks": tasks}
 		if status, answer := put(other, "/plans/"+plan, write); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"PLAN_INPUT"`) {
-			t.Errorf("%s under %s's id = %d %s, want 400 PLAN_INPUT, the input refused before the id is read", what, first, status, strings.TrimSpace(answer))
+			t.Errorf("%s under %s's id = %d %s, want 400 PLAN_INPUT, the input refused before the node of the id is found", what, first, status, strings.TrimSpace(answer))
 		}
 	}
 	if after := held(); after != before {
